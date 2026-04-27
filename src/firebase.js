@@ -1,8 +1,7 @@
-// Firebase initialization. The values below are the public client config —
-// they identify the project but don't grant data access. Real security comes
-// from Firestore security rules, configured in the Firebase console.
+// Firebase initialization. Public client config — safe to commit.
 import { initializeApp } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
+import { getAuth } from 'firebase/auth';
 
 const firebaseConfig = {
   apiKey: 'AIzaSyBeF0B3h2yphkoxk5CSGmrNgboafb-zG6Y',
@@ -15,3 +14,4 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app);
+export const auth = getAuth(app);
