@@ -1,7 +1,4 @@
 // Firebase Authentication and user profile management.
-// Self-healing: if the Firestore profile is missing for a signed-in user,
-// auto-create one. This prevents "Account not found" dead-ends.
-
 import { auth, db } from './firebase.js';
 import {
   createUserWithEmailAndPassword,
@@ -25,7 +22,6 @@ import {
   onSnapshot,
 } from 'firebase/firestore';
 
-// Diagnostic state — exposed for the UI to show error details
 let lastDiagnostic = null;
 export function getLastDiagnostic() {
   return lastDiagnostic;
@@ -49,13 +45,11 @@ export function watchAuth(onChange) {
       onChange({ state: 'signed-out' });
       return;
     }
-
     try {
       await reloadAuthUser(user);
     } catch (err) {
       console.warn('reloadAuthUser failed', err);
     }
-
     let profile = null;
     let readError = null;
     try {
@@ -65,13 +59,9 @@ export function watchAuth(onChange) {
       readError = err;
       setDiag('profile-read', err, { uid: user.uid });
     }
-
-    // Self-heal: if no profile but we successfully read (just nothing there),
-    // create one. The first user becomes admin.
     if (!profile && !readError) {
       profile = await tryCreateProfile(user);
     }
-
     if (!profile) {
       onChange({ state: 'no-profile', user, error: readError });
       return;
@@ -88,9 +78,6 @@ export function watchAuth(onChange) {
   });
 }
 
-// Try to create a profile for the current user. If we can't tell if there are
-// existing admins (read failed), default to admin to avoid lockout — better
-// to grant the first user too much access than to lock them out forever.
 async function tryCreateProfile(user) {
   let isFirstUser = true;
   try {
@@ -101,7 +88,6 @@ async function tryCreateProfile(user) {
     console.warn('Cannot check for admins, assuming first user', err);
     isFirstUser = true;
   }
-
   const profile = {
     email: user.email || '',
     name: (user.displayName || user.email || '').split('@')[0],
@@ -112,7 +98,6 @@ async function tryCreateProfile(user) {
     createdAt: Date.now(),
     active: true,
   };
-
   try {
     await setDoc(doc(db, 'users', user.uid), profile);
     return { uid: user.uid, ...profile };
@@ -122,7 +107,6 @@ async function tryCreateProfile(user) {
   }
 }
 
-// Manual repair function — exposed via "Repair Account" button on no-profile screen
 export async function repairProfile() {
   if (!auth.currentUser) throw new Error('Not signed in');
   const profile = await tryCreateProfile(auth.currentUser);
@@ -136,7 +120,6 @@ export async function repairProfile() {
 export async function signUp({ email, password, name, callsign, jetinsightName }) {
   if (!email || !password) throw new Error('Email and password are required');
   if (password.length < 8) throw new Error('Password must be at least 8 characters');
-
   let isFirstUser = true;
   try {
     const adminsQuery = query(collection(db, 'users'), where('role', '==', 'admin'));
@@ -146,9 +129,7 @@ export async function signUp({ email, password, name, callsign, jetinsightName }
     console.warn('Cannot check for admins, assuming first user', err);
     isFirstUser = true;
   }
-
   const credential = await createUserWithEmailAndPassword(auth, email.trim(), password);
-
   const profile = {
     email: email.trim(),
     name: name?.trim() || email.trim().split('@')[0],
@@ -159,20 +140,16 @@ export async function signUp({ email, password, name, callsign, jetinsightName }
     createdAt: Date.now(),
     active: true,
   };
-
   try {
     await setDoc(doc(db, 'users', credential.user.uid), profile);
   } catch (err) {
     setDiag('signup-profile-create', err, { uid: credential.user.uid });
-    // Don't throw — auth account exists, watchAuth will try to heal
   }
-
   try {
     await sendEmailVerification(credential.user);
   } catch (err) {
     console.error('Failed to send verification email:', err);
   }
-
   return { uid: credential.user.uid, ...profile, isFirstUser };
 }
 
