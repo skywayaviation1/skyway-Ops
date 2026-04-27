@@ -1,4 +1,4 @@
-// Firebase initialization. Public client config — safe to commit.
+// Firebase initialization. Public client config - safe to commit.
 import { initializeApp } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
@@ -13,5 +13,5 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app);
+export const db = getFirestore(app, 'appusers');
 export const auth = getAuth(app);
