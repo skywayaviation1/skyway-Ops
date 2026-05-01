@@ -51,10 +51,27 @@ export function subscribeToTripState(tripId, onUpdate) {
           hasCatering: data.hasCatering !== false,
           // null means "use iCal pax"; a number means crew has overridden it
           paxOverride: typeof data.paxOverride === 'number' ? data.paxOverride : null,
+          // Trip sheet PDF (uploaded by ops/admin, viewable by crew)
+          tripSheetUrl: data.tripSheetUrl || null,
+          tripSheetPath: data.tripSheetPath || null,
+          tripSheetUploadedAt: data.tripSheetUploadedAt || null,
+          tripSheetUploadedBy: data.tripSheetUploadedBy || null,
+          tripSheetFilename: data.tripSheetFilename || null,
+          // Pre-loaded passengers parsed from the trip sheet — array of
+          // { id, firstName, lastName, dob, weight, gender, primary, scannedPaxId }
+          // scannedPaxId points to an entry in passengers[] once crew has scanned.
+          preloadedPax: Array.isArray(data.preloadedPax) ? data.preloadedPax : [],
         });
       } else {
         // No state yet — emit empty defaults
-        onUpdate({ statuses: {}, passengers: [], brokerEmail: '', autoNotify: false, completed: false, completedAt: null, archived: false, archivedAt: null, hasCatering: true, paxOverride: null });
+        onUpdate({
+          statuses: {}, passengers: [], brokerEmail: '', autoNotify: false,
+          completed: false, completedAt: null, archived: false, archivedAt: null,
+          hasCatering: true, paxOverride: null,
+          tripSheetUrl: null, tripSheetPath: null, tripSheetUploadedAt: null,
+          tripSheetUploadedBy: null, tripSheetFilename: null,
+          preloadedPax: [],
+        });
       }
     },
     (err) => {
@@ -82,8 +99,56 @@ export async function saveTripState(tripId, state) {
       archivedAt: state.archivedAt || null,
       hasCatering: state.hasCatering !== false,
       paxOverride: typeof state.paxOverride === 'number' ? state.paxOverride : null,
+      tripSheetUrl: state.tripSheetUrl || null,
+      tripSheetPath: state.tripSheetPath || null,
+      tripSheetUploadedAt: state.tripSheetUploadedAt || null,
+      tripSheetUploadedBy: state.tripSheetUploadedBy || null,
+      tripSheetFilename: state.tripSheetFilename || null,
+      preloadedPax: Array.isArray(state.preloadedPax) ? state.preloadedPax : [],
       updatedAt: Date.now(),
     }
+  );
+}
+
+/**
+ * Attach (or clear) trip-sheet metadata + pre-loaded pax to a single leg.
+ * Uses merge:true so we don't clobber statuses, passengers, etc.
+ *
+ * legUpdate shape:
+ *   { tripUid, preloadedPax, tripSheetUrl, tripSheetPath, tripSheetFilename, uploadedBy }
+ * Or to clear:
+ *   { tripUid, clear: true }
+ */
+export async function attachTripSheetToLeg(legUpdate) {
+  const safeId = sanitizeKey(legUpdate.tripUid);
+  if (legUpdate.clear) {
+    await setDoc(
+      doc(db, 'trip-state', safeId),
+      {
+        tripSheetUrl: null,
+        tripSheetPath: null,
+        tripSheetUploadedAt: null,
+        tripSheetUploadedBy: null,
+        tripSheetFilename: null,
+        preloadedPax: [],
+        updatedAt: Date.now(),
+      },
+      { merge: true }
+    );
+    return;
+  }
+  await setDoc(
+    doc(db, 'trip-state', safeId),
+    {
+      tripSheetUrl: legUpdate.tripSheetUrl || null,
+      tripSheetPath: legUpdate.tripSheetPath || null,
+      tripSheetUploadedAt: Date.now(),
+      tripSheetUploadedBy: legUpdate.uploadedBy || null,
+      tripSheetFilename: legUpdate.tripSheetFilename || null,
+      preloadedPax: Array.isArray(legUpdate.preloadedPax) ? legUpdate.preloadedPax : [],
+      updatedAt: Date.now(),
+    },
+    { merge: true }
   );
 }
 
