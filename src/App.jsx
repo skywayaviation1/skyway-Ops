@@ -310,6 +310,26 @@ function parseJetInsightTripSheet(text) {
   const tailMatch = text.match(/\b(N\d{1,5}[A-Z]{0,2})\b/);
   const tail = tailMatch ? tailMatch[1] : null;
 
+  // Extract trip-level notes (apply to all legs, not per-leg).
+  // Stop at the next top-level section header so we don't bleed into other content.
+  const extractNote = (labelPattern) => {
+    const re = new RegExp(
+      `${labelPattern}\\s*:\\s*([\\s\\S]*?)(?=(?:Trip notes \\(|Customer notes:|Special items:|Leg \\s*\\d+|Distance:|Client:|Planner:)|$)`,
+      'i'
+    );
+    const m = text.match(re);
+    if (!m) return null;
+    const cleaned = m[1].trim().replace(/\s+/g, ' ');
+    return cleaned ? cleaned.slice(0, 2000) : null;
+  };
+
+  const notes = {
+    crew: extractNote('Trip notes \\(crew\\)'),
+    pax: extractNote('Trip notes \\(pax\\)'),
+    customer: extractNote('Customer notes'),
+    specialItems: extractNote('Special items'),
+  };
+
   // Leg summary lines look like (in PDF text after extraction):
   //   Leg 1: Pax: 0 SDF 04/30/2026 - 18:24 EDT (22:24 Z) → 1:06 → CLE 04/30/2026 - 19:30 EDT (23:30 Z)
   // PDF text extraction loses the arrow chars and reorders some content. To be robust,
@@ -422,7 +442,7 @@ function parseJetInsightTripSheet(text) {
     pax: paxByLeg[s.legNumber] || [],
   }));
 
-  return { tripCode, tail, legs };
+  return { tripCode, tail, legs, notes };
 }
 
 /**
@@ -1907,6 +1927,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
   const [tripSheetUploadedAt, setTripSheetUploadedAt] = useState(null);
   const [tripSheetUploadedBy, setTripSheetUploadedBy] = useState(null);
   const [preloadedPax, setPreloadedPax] = useState([]);
+  const [tripSheetNotes, setTripSheetNotes] = useState(null);
   const [pendingScanPax, setPendingScanPax] = useState(null); // pre-loaded pax being checked in
   const [loading, setLoading] = useState(true);
   const geo = useGeolocation();
@@ -1936,6 +1957,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
           setTripSheetUploadedAt(state.tripSheetUploadedAt || null);
           setTripSheetUploadedBy(state.tripSheetUploadedBy || null);
           setPreloadedPax(Array.isArray(state.preloadedPax) ? state.preloadedPax : []);
+          setTripSheetNotes(state.tripSheetNotes || null);
           setCompleted(state.completed === true);
           setLoading(false);
         });
@@ -1961,6 +1983,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
         tripSheetUploadedAt,
         tripSheetUploadedBy,
         preloadedPax,
+        tripSheetNotes,
         ...next,
       };
       await saveTripState(trip.uid, merged);
@@ -1968,7 +1991,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
       console.error('Failed to save trip state:', err);
       alert('Failed to save — check your connection');
     }
-  }, [trip.uid, tripSheetUrl, tripSheetPath, tripSheetFilename, tripSheetUploadedAt, tripSheetUploadedBy, preloadedPax]);
+  }, [trip.uid, tripSheetUrl, tripSheetPath, tripSheetFilename, tripSheetUploadedAt, tripSheetUploadedBy, preloadedPax, tripSheetNotes]);
 
   const openMailto = (url) => {
     const a = document.createElement('a');
@@ -2384,16 +2407,24 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
 
       {/* Tabs */}
       <div className="flex border-b border-slate-800 bg-slate-950 sticky top-0 z-10 overflow-x-auto">
-        {[
-          { id: 'status', label: 'STATUS', icon: Zap, badge: `${completedCount}/${applicableSteps.length}`, hidden: !trip.info.isOps },
-          { id: 'pax', label: 'PASSENGERS', icon: Users, badge: trip.info.pax === 0 ? null : `${compliantPax}/${trip.info.pax}`, hidden: trip.info.pax === 0 || !trip.info.isOps },
-          { id: 'chat', label: 'COMMS', icon: MessageSquare },
-          { id: 'notify', label: 'NOTIFY', icon: Bell, hidden: !trip.info.isOps },
-        ].filter(t => !t.hidden).map(t => (
+        {(() => {
+          const hasNotes = tripSheetNotes && (tripSheetNotes.crew || tripSheetNotes.pax || tripSheetNotes.customer || tripSheetNotes.specialItems);
+          const canManageSheet = ['ops', 'admin'].includes(currentUser?.role);
+          // SHEET tab: visible if trip sheet exists OR user can upload one
+          const showSheetTab = trip.info.isOps && (tripSheetUrl || canManageSheet);
+          return [
+            { id: 'status', label: 'STATUS', icon: Zap, badge: `${completedCount}/${applicableSteps.length}`, hidden: !trip.info.isOps },
+            { id: 'pax', label: 'PAX', icon: Users, badge: trip.info.pax === 0 ? null : `${compliantPax}/${effectivePax}`, hidden: trip.info.pax === 0 || !trip.info.isOps },
+            { id: 'sheet', label: 'SHEET', icon: FileText, badge: tripSheetUrl ? '✓' : null, hidden: !showSheetTab },
+            { id: 'notes', label: 'NOTES', icon: AlertCircle, hidden: !hasNotes },
+            { id: 'chat', label: 'COMMS', icon: MessageSquare },
+            { id: 'notify', label: 'NOTIFY', icon: Bell, hidden: !trip.info.isOps },
+          ];
+        })().filter(t => !t.hidden).map(t => (
           <button
             key={t.id}
             onClick={() => setTab(t.id)}
-            className={`flex items-center gap-2 px-4 py-3 text-xs tracking-widest transition-colors relative shrink-0 ${
+            className={`flex items-center gap-2 px-3 py-3 text-xs tracking-widest transition-colors relative shrink-0 ${
               tab === t.id ? 'text-cyan-400' : 'text-slate-500 hover:text-slate-300'
             }`}
             style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}
@@ -2474,21 +2505,6 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
               </>
             ) : (
               <>
-                {/* Trip sheet PDF — upload (ops/admin) or view (crew) */}
-                <TripSheetPanel
-                  trip={trip}
-                  allTrips={allTrips}
-                  currentUser={currentUser}
-                  currentUserUid={currentUser?.uid || currentUser?.id}
-                  tripSheetUrl={tripSheetUrl}
-                  tripSheetFilename={tripSheetFilename}
-                  tripSheetUploadedAt={tripSheetUploadedAt}
-                  tripSheetUploadedBy={tripSheetUploadedBy}
-                  preloadedPax={preloadedPax}
-                  onUploaded={() => { /* trip-state listener picks up the change */ }}
-                  onCleared={clearTripSheet}
-                />
-
                 <div className="flex items-start justify-between gap-2 flex-wrap">
                   <div>
                     <div className="text-xs text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
@@ -2560,6 +2576,26 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
                 )}
               </>
             )}
+          </div>
+        ) : tab === 'sheet' ? (
+          <div className="p-6 max-w-2xl">
+            <TripSheetPanel
+              trip={trip}
+              allTrips={allTrips}
+              currentUser={currentUser}
+              currentUserUid={currentUser?.uid || currentUser?.id}
+              tripSheetUrl={tripSheetUrl}
+              tripSheetFilename={tripSheetFilename}
+              tripSheetUploadedAt={tripSheetUploadedAt}
+              tripSheetUploadedBy={tripSheetUploadedBy}
+              preloadedPax={preloadedPax}
+              onUploaded={() => { /* trip-state listener picks up the change */ }}
+              onCleared={clearTripSheet}
+            />
+          </div>
+        ) : tab === 'notes' ? (
+          <div className="p-6 max-w-2xl space-y-4">
+            <TripNotesPanel notes={tripSheetNotes} />
           </div>
         ) : tab === 'chat' ? (
           <ChatPanel tripId={trip.uid} currentUser={currentUserDisplayName || currentUser?.name || ''} />
@@ -2853,6 +2889,7 @@ function TripSheetPanel({
           tripSheetFilename: matchPreview.file.name,
           uploadedBy: currentUserUid || currentUser.name,
           preloadedPax,
+          tripSheetNotes: matchPreview.notes || null,
         });
       }
 
@@ -3040,6 +3077,52 @@ function TripSheetPanel({
 }
 
 // Pre-loaded pax row — what crew sees before scanning. Tap to scan ID.
+// Display parsed notes from the trip sheet PDF.
+// Notes types: crew (action items, amber), customer (FYI, cyan), pax (luggage, neutral).
+function TripNotesPanel({ notes }) {
+  if (!notes || (!notes.crew && !notes.customer && !notes.pax && !notes.specialItems)) {
+    return (
+      <div className="text-center py-12 border border-dashed border-slate-800">
+        <AlertCircle className="w-8 h-8 text-slate-700 mx-auto mb-2" />
+        <p className="text-sm text-slate-500">No notes parsed from trip sheet</p>
+        <p className="text-xs text-slate-600 mt-1">Upload a JetInsight trip sheet on the SHEET tab to see notes here.</p>
+      </div>
+    );
+  }
+
+  const renderNote = (label, body, tone) => {
+    if (!body) return null;
+    const toneClass = tone === 'amber'
+      ? 'border-amber-500/40 bg-amber-500/5'
+      : tone === 'cyan'
+      ? 'border-cyan-500/40 bg-cyan-500/5'
+      : 'border-slate-700 bg-slate-900/40';
+    const labelColor = tone === 'amber' ? 'text-amber-300' : tone === 'cyan' ? 'text-cyan-300' : 'text-slate-400';
+    return (
+      <div className={`p-3 border ${toneClass}`}>
+        <div className={`text-[10px] tracking-widest ${labelColor} mb-1`} style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+          {label}
+        </div>
+        <div className="text-sm text-slate-100 whitespace-pre-wrap" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+          {body}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <>
+      <div className="text-xs text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        FROM TRIP SHEET
+      </div>
+      {renderNote('CREW NOTES (ACTION)', notes.crew, 'amber')}
+      {renderNote('CUSTOMER NOTES', notes.customer, 'cyan')}
+      {renderNote('PAX NOTES', notes.pax, 'neutral')}
+      {renderNote('SPECIAL ITEMS', notes.specialItems, 'neutral')}
+    </>
+  );
+}
+
 function PreloadedPaxRow({ pax, onCheckIn, onSkip, scanned }) {
   // Find the scanned pax matched to this preloaded entry
   const isMatched = pax.checkInStatus === 'matched';
