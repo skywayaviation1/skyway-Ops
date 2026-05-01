@@ -265,6 +265,166 @@ function nameMatchesPilot(jetinsightName, pilotName) {
   return wordRe(first).test(target) && wordRe(last).test(target);
 }
 
+// Compare two names (e.g. "Adrian Stitts" from trip sheet vs "ADRIAN J STITTS"
+// from scanned ID). Returns 'exact' | 'fuzzy' | 'no_match'.
+// 'fuzzy' = first AND last token both appear; OK with crew confirmation.
+// 'no_match' = either first or last is missing; show a warning.
+function comparePaxNames(preloaded, scanned) {
+  const norm = (s) => (s || '').toLowerCase().replace(/[^a-z\s]/g, '').trim();
+  const a = norm(preloaded);
+  const b = norm(scanned);
+  if (!a || !b) return 'no_match';
+  if (a === b) return 'exact';
+  const aTokens = a.split(/\s+/).filter(Boolean);
+  const bTokens = b.split(/\s+/).filter(Boolean);
+  if (aTokens.length < 2 || bTokens.length < 2) return 'no_match';
+  const aFirst = aTokens[0], aLast = aTokens[aTokens.length - 1];
+  const bHasFirst = bTokens.some(t => t === aFirst);
+  const bHasLast = bTokens.some(t => t === aLast);
+  if (bHasFirst && bHasLast) return aTokens.length === bTokens.length ? 'exact' : 'fuzzy';
+  return 'no_match';
+}
+
+/**
+ * Parse a JetInsight crew-itinerary PDF text dump into a structured object.
+ * Returns:
+ *   {
+ *     tripCode: 'WEQVQD',
+ *     tail: 'N444AM',
+ *     legs: [
+ *       { legNumber, from, to, depDate, depTimeLocal, depTimeZ, paxCount, pax: [{ firstName, lastName, gender, dob, weight, primary }] }
+ *     ]
+ *   }
+ *
+ * Format-tolerant — built against the JetInsight crew itinerary format. If
+ * a future format change breaks this, we'll need to retune the regexes.
+ */
+function parseJetInsightTripSheet(text) {
+  if (!text || typeof text !== 'string') return null;
+
+  // Trip code lives in "Crew Itinerary (WEQVQD)"
+  const tripCodeMatch = text.match(/Crew Itinerary\s*\(([A-Z0-9]+)\)/i);
+  const tripCode = tripCodeMatch ? tripCodeMatch[1] : null;
+
+  // Tail is a standalone N-number block — there's only ever one per itinerary
+  const tailMatch = text.match(/\b(N\d{1,5}[A-Z]{0,2})\b/);
+  const tail = tailMatch ? tailMatch[1] : null;
+
+  // Leg summary lines look like:
+  //   Leg 1: Pax: 0 SDF 04/30/2026 - 18:24 EDT (22:24 Z)  1:06  CLE 04/30/2026 - 19:30 EDT (23:30 Z)
+  // Capture: leg #, pax count, FROM, dep date, dep local time, dep Z, TO
+  const legSummaryRe = /Leg\s+(\d+)\s*:\s*Pax\s*:\s*(\d+)\s+([A-Z]{3,4})\s+(\d{1,2}\/\d{1,2}\/\d{4})\s*-\s*(\d{1,2}:\d{2})\s+([A-Z]{2,4})\s*\((\d{1,2}:\d{2})\s*Z\)\s+\d{1,2}:\d{2}\s+([A-Z]{3,4})/gi;
+  const legSummaries = [];
+  let m;
+  while ((m = legSummaryRe.exec(text)) !== null) {
+    legSummaries.push({
+      legNumber: parseInt(m[1], 10),
+      paxCount: parseInt(m[2], 10),
+      from: m[3].toUpperCase(),
+      depDate: m[4],       // MM/DD/YYYY
+      depTimeLocal: m[5],
+      depTimeLocalTz: m[6],
+      depTimeZ: m[7],
+      to: m[8].toUpperCase(),
+    });
+  }
+
+  // Find ALL pax blocks in document order. Each leg has exactly one pax block
+  // (either "Pax (N)" with names, or "Pax (0) No passengers"). They appear in
+  // leg order (leg 1 first, leg 2 second, etc.).
+  // Pre-spec: blocks are separated by section breaks; we capture the block
+  // body until we hit another "Pax (N)", a "Distance:" line, or a "Leg N :" header.
+  const paxBlocks = [];
+  const paxHeaderRe = /Pax\s*\((\d+)\)\s*/g;
+  let phMatch;
+  while ((phMatch = paxHeaderRe.exec(text)) !== null) {
+    const startIdx = phMatch.index + phMatch[0].length;
+    // Find the end of this block: the next "Pax (" or "Distance:" or end-of-text
+    const rest = text.slice(startIdx);
+    const stopRe = /(?:\bPax\s*\(|Distance:|Leg\s+\d+\s*:)/;
+    const stopMatch = rest.match(stopRe);
+    const endIdx = stopMatch ? startIdx + stopMatch.index : text.length;
+    paxBlocks.push({
+      count: parseInt(phMatch[1], 10),
+      body: text.slice(startIdx, endIdx).trim(),
+    });
+  }
+
+  // Map blocks to legs by index (first block = leg 1, etc.)
+  // Falls back gracefully if # of blocks != # of legs.
+  const paxByLeg = {};
+  legSummaries.forEach((leg, i) => {
+    const block = paxBlocks[i];
+    if (!block) {
+      paxByLeg[leg.legNumber] = [];
+      return;
+    }
+    if (block.count === 0 || /no passengers/i.test(block.body)) {
+      paxByLeg[leg.legNumber] = [];
+      return;
+    }
+    const paxRe = /([A-Za-z][A-Za-z\s\-'.]+?)\s*\(\s*(Male|Female|M|F)\s*-\s*(\d{1,2}\/\d{1,2}\/\d{2,4})\s*-\s*(\d+)\s*lbs?\s*\)(?:\s*\(([^)]+)\))?/gi;
+    const list = [];
+    let pm;
+    while ((pm = paxRe.exec(block.body)) !== null) {
+      const fullName = pm[1].replace(/[,;]+\s*$/, '').trim();
+      const tokens = fullName.split(/\s+/).filter(Boolean);
+      list.push({
+        firstName: tokens[0] || '',
+        lastName: tokens.slice(1).join(' ') || '',
+        gender: pm[2].length === 1 ? (pm[2].toUpperCase() === 'M' ? 'Male' : 'Female') : pm[2],
+        dob: pm[3],
+        weight: parseInt(pm[4], 10),
+        primary: pm[5] ? /primary/i.test(pm[5]) : false,
+      });
+    }
+    paxByLeg[leg.legNumber] = list;
+  });
+
+  // Combine summaries + pax
+  const legs = legSummaries.map(s => ({
+    ...s,
+    pax: paxByLeg[s.legNumber] || [],
+  }));
+
+  return { tripCode, tail, legs };
+}
+
+/**
+ * Find iCal trips in `allTrips` that match a parsed leg from a trip sheet.
+ * Match criteria: same tail + same departure date (UTC) + same FROM airport.
+ * Returns array of trip objects (usually 1 match per leg, sometimes 0).
+ */
+function findMatchingTrips(parsedLeg, tail, allTrips) {
+  if (!parsedLeg || !tail || !Array.isArray(allTrips)) return [];
+
+  // Parse the depDate (MM/DD/YYYY) into a UTC date string YYYY-MM-DD
+  const dateMatch = parsedLeg.depDate.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (!dateMatch) return [];
+  const mm = String(parseInt(dateMatch[1], 10)).padStart(2, '0');
+  const dd = String(parseInt(dateMatch[2], 10)).padStart(2, '0');
+  const yyyy = dateMatch[3];
+  const targetDateStr = `${yyyy}-${mm}-${dd}`;
+
+  // Match against each trip in the schedule
+  return allTrips.filter(trip => {
+    if (!trip || !trip.info) return false;
+    if ((trip.info.tail || '').toUpperCase() !== tail.toUpperCase()) return false;
+    const fromMatch = (trip.info.from || '').toUpperCase().slice(-3) === parsedLeg.from.slice(-3);
+    if (!fromMatch) return false;
+    const toMatch = (trip.info.to || '').toUpperCase().slice(-3) === parsedLeg.to.slice(-3);
+    if (!toMatch) return false;
+    // Compare date in BOTH UTC and local — JetInsight publishes local times,
+    // iCal could be either depending on timezone. Accept match if either lines up.
+    if (!trip.start) return false;
+    const d = trip.start instanceof Date ? trip.start : new Date(trip.start);
+    if (isNaN(d.getTime())) return false;
+    const utcStr = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+    const locStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    return utcStr === targetDateStr || locStr === targetDateStr;
+  });
+}
+
 function sanitizeKey(s) {
   return String(s).replace(/[\s\/\\'"]/g, '_').slice(0, 180);
 }
@@ -1696,7 +1856,7 @@ function NotifyPanel({ trip, opsEmail, brokerEmail, setBrokerEmail, statuses, au
 /* ============================================================
    Trip detail view
    ============================================================ */
-function TripDetail({ trip, currentUser, opsEmail, onBack }) {
+function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEmail, onBack }) {
   const [tab, setTab] = useState(trip.info.isOps ? 'status' : 'chat');
   const [statuses, setStatuses] = useState({});
   const [passengers, setPassengers] = useState([]);
@@ -1706,6 +1866,13 @@ function TripDetail({ trip, currentUser, opsEmail, onBack }) {
   const [hasCatering, setHasCatering] = useState(true);
   const [paxOverride, setPaxOverride] = useState(null);
   const [completed, setCompleted] = useState(false);
+  const [tripSheetUrl, setTripSheetUrl] = useState(null);
+  const [tripSheetPath, setTripSheetPath] = useState(null);
+  const [tripSheetFilename, setTripSheetFilename] = useState(null);
+  const [tripSheetUploadedAt, setTripSheetUploadedAt] = useState(null);
+  const [tripSheetUploadedBy, setTripSheetUploadedBy] = useState(null);
+  const [preloadedPax, setPreloadedPax] = useState([]);
+  const [pendingScanPax, setPendingScanPax] = useState(null); // pre-loaded pax being checked in
   const [loading, setLoading] = useState(true);
   const geo = useGeolocation();
 
@@ -1728,6 +1895,12 @@ function TripDetail({ trip, currentUser, opsEmail, onBack }) {
           setAutoNotify(state.autoNotify);
           setHasCatering(state.hasCatering !== false);
           setPaxOverride(typeof state.paxOverride === 'number' ? state.paxOverride : null);
+          setTripSheetUrl(state.tripSheetUrl || null);
+          setTripSheetPath(state.tripSheetPath || null);
+          setTripSheetFilename(state.tripSheetFilename || null);
+          setTripSheetUploadedAt(state.tripSheetUploadedAt || null);
+          setTripSheetUploadedBy(state.tripSheetUploadedBy || null);
+          setPreloadedPax(Array.isArray(state.preloadedPax) ? state.preloadedPax : []);
           setCompleted(state.completed === true);
           setLoading(false);
         });
@@ -1740,15 +1913,27 @@ function TripDetail({ trip, currentUser, opsEmail, onBack }) {
   }, [trip.uid, trip.info.broker]);
 
   // Persist on change — writes to Firebase, real-time listener picks it up everywhere
+  // Auto-merges trip-sheet fields from current state since they're mostly read-only
+  // from this component's perspective (set by TripSheetPanel via attachTripSheetToLeg).
   const persist = useCallback(async (next) => {
     try {
       const { saveTripState } = await import('./firebase-data.js');
-      await saveTripState(trip.uid, next);
+      // Merge in trip-sheet fields and preloadedPax unless caller passed them explicitly
+      const merged = {
+        tripSheetUrl,
+        tripSheetPath,
+        tripSheetFilename,
+        tripSheetUploadedAt,
+        tripSheetUploadedBy,
+        preloadedPax,
+        ...next,
+      };
+      await saveTripState(trip.uid, merged);
     } catch (err) {
       console.error('Failed to save trip state:', err);
       alert('Failed to save — check your connection');
     }
-  }, [trip.uid]);
+  }, [trip.uid, tripSheetUrl, tripSheetPath, tripSheetFilename, tripSheetUploadedAt, tripSheetUploadedBy, preloadedPax]);
 
   const openMailto = (url) => {
     const a = document.createElement('a');
@@ -1764,7 +1949,7 @@ function TripDetail({ trip, currentUser, opsEmail, onBack }) {
     const newStatus = {
       timestamp: Date.now(),
       coords: gpsCoords || null,
-      author: currentUser,
+      author: currentUserDisplayName || (currentUser?.name || 'Unknown'),
       notified: false, // set to true only after email actually sends
     };
     const nextStatuses = { ...statuses, [step.id]: newStatus };
@@ -1848,9 +2033,65 @@ function TripDetail({ trip, currentUser, opsEmail, onBack }) {
   };
 
   const addPassenger = async (pax) => {
+    setScanning(false);
+    // If we were checking in a pre-loaded pax, run name match logic
+    if (pendingScanPax) {
+      const target = pendingScanPax;
+      setPendingScanPax(null);
+      // Skip match logic for photo-only / no-name pax — just attach the photo
+      // to the preloaded entry as 'manual_override' so the row still flips.
+      if (pax.paxType === 'MANUAL_CAPTURE' || (!pax.firstName && !pax.lastName)) {
+        const newPax = { ...pax, id: pax.id || `pax-${Date.now()}` };
+        const nextPassengers = [...passengers, newPax];
+        const nextPreloaded = preloadedPax.map(p =>
+          p.id === target.id
+            ? { ...p, scannedPaxId: newPax.id, checkInStatus: 'manual_override' }
+            : p
+        );
+        setPassengers(nextPassengers);
+        setPreloadedPax(nextPreloaded);
+        await persist({
+          statuses, passengers: nextPassengers, brokerEmail, autoNotify, completed,
+          hasCatering, paxOverride, preloadedPax: nextPreloaded,
+        });
+        return;
+      }
+      // Compare scanned name against preloaded name
+      const preloadedName = `${target.firstName} ${target.lastName}`.trim();
+      const scannedName = `${pax.firstName} ${pax.lastName}`.trim();
+      const cmp = comparePaxNames(preloadedName, scannedName);
+
+      if (cmp === 'no_match') {
+        const proceed = window.confirm(
+          `NAME MISMATCH:\n\n` +
+          `Trip sheet: ${preloadedName}\n` +
+          `Scanned ID: ${scannedName}\n\n` +
+          `Press OK to check in this pax under the trip-sheet name (override),\n` +
+          `or Cancel to discard the scan.`
+        );
+        if (!proceed) return;
+      }
+
+      const checkInStatus = cmp === 'no_match' ? 'mismatch' : (cmp === 'fuzzy' ? 'manual_override' : 'matched');
+      const newPax = { ...pax, id: pax.id || `pax-${Date.now()}`, preloadedRefId: target.id };
+      const nextPassengers = [...passengers, newPax];
+      const nextPreloaded = preloadedPax.map(p =>
+        p.id === target.id
+          ? { ...p, scannedPaxId: newPax.id, checkInStatus }
+          : p
+      );
+      setPassengers(nextPassengers);
+      setPreloadedPax(nextPreloaded);
+      await persist({
+        statuses, passengers: nextPassengers, brokerEmail, autoNotify, completed,
+        hasCatering, paxOverride, preloadedPax: nextPreloaded,
+      });
+      return;
+    }
+
+    // No preloaded target — just add normally
     const next = [...passengers, pax];
     setPassengers(next);
-    setScanning(false);
     await persist({ statuses, passengers: next, brokerEmail, autoNotify, completed, hasCatering, paxOverride });
   };
 
@@ -1898,6 +2139,42 @@ function TripDetail({ trip, currentUser, opsEmail, onBack }) {
   const updatePaxOverride = async (val) => {
     setPaxOverride(val);
     await persist({ statuses, passengers, brokerEmail, autoNotify, completed, hasCatering, paxOverride: val });
+  };
+
+  // Begin checking in a pre-loaded pax: stash the target and open the scanner.
+  // After scan, the scan completion handler will run name comparison.
+  const startPreloadedCheckIn = (preloadPax) => {
+    setPendingScanPax(preloadPax);
+    setScanning(true);
+  };
+
+  // Toggle skip status on a preloaded pax. Doesn't add to passengers[],
+  // just flags this pre-loaded entry as 'skipped'.
+  const togglePreloadedSkip = async (preloadPax) => {
+    const next = preloadedPax.map(p =>
+      p.id === preloadPax.id
+        ? {
+            ...p,
+            checkInStatus: p.checkInStatus === 'skipped' ? 'pending' : 'skipped',
+          }
+        : p
+    );
+    setPreloadedPax(next);
+    await persist({
+      statuses, passengers, brokerEmail, autoNotify, completed, hasCatering, paxOverride,
+      preloadedPax: next,
+    });
+  };
+
+  // Clear trip sheet from this leg only (pre-loaded pax cleared, scanned pax preserved).
+  const clearTripSheet = async () => {
+    try {
+      const { attachTripSheetToLeg } = await import('./firebase-data.js');
+      await attachTripSheetToLeg({ tripUid: trip.uid, clear: true });
+    } catch (err) {
+      console.error('Failed to clear trip sheet:', err);
+      alert('Failed to clear — check your connection');
+    }
   };
 
   const updateBroker = async (email) => {
@@ -2141,12 +2418,42 @@ function TripDetail({ trip, currentUser, opsEmail, onBack }) {
         ) : tab === 'pax' ? (
           <div className="p-6 space-y-3 max-w-2xl">
             {scanning ? (
-              <IDScanner
-                onComplete={addPassenger}
-                onCancel={() => setScanning(false)}
-              />
+              <>
+                {pendingScanPax && (
+                  <div className="p-3 border border-cyan-500/40 bg-cyan-500/10 mb-2">
+                    <div className="text-[10px] tracking-widest text-cyan-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                      CHECKING IN
+                    </div>
+                    <div className="text-sm text-slate-100" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
+                      {pendingScanPax.firstName} {pendingScanPax.lastName}
+                    </div>
+                    <div className="text-[10px] text-slate-500 mt-0.5">
+                      Scan their ID — names will be compared. Use Photo Only if the barcode won't scan.
+                    </div>
+                  </div>
+                )}
+                <IDScanner
+                  onComplete={addPassenger}
+                  onCancel={() => { setScanning(false); setPendingScanPax(null); }}
+                />
+              </>
             ) : (
               <>
+                {/* Trip sheet PDF — upload (ops/admin) or view (crew) */}
+                <TripSheetPanel
+                  trip={trip}
+                  allTrips={allTrips}
+                  currentUser={currentUser}
+                  currentUserUid={currentUser?.uid || currentUser?.id}
+                  tripSheetUrl={tripSheetUrl}
+                  tripSheetFilename={tripSheetFilename}
+                  tripSheetUploadedAt={tripSheetUploadedAt}
+                  tripSheetUploadedBy={tripSheetUploadedBy}
+                  preloadedPax={preloadedPax}
+                  onUploaded={() => { /* trip-state listener picks up the change */ }}
+                  onCleared={clearTripSheet}
+                />
+
                 <div className="flex items-start justify-between gap-2 flex-wrap">
                   <div>
                     <div className="text-xs text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
@@ -2159,11 +2466,11 @@ function TripDetail({ trip, currentUser, opsEmail, onBack }) {
                       trip={trip}
                       paxOverride={paxOverride}
                       onChange={updatePaxOverride}
-                      canEdit={['crew', 'ops', 'admin'].includes(currentUser.role)}
+                      canEdit={['crew', 'ops', 'admin'].includes(currentUser?.role)}
                     />
                   </div>
                   <button
-                    onClick={() => setScanning(true)}
+                    onClick={() => { setPendingScanPax(null); setScanning(true); }}
                     className="flex items-center gap-2 px-3 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-sm font-medium"
                     style={{ fontFamily: 'DM Sans, sans-serif' }}
                   >
@@ -2171,17 +2478,41 @@ function TripDetail({ trip, currentUser, opsEmail, onBack }) {
                   </button>
                 </div>
 
+                {/* Pre-loaded pax from trip sheet — crew taps CHECK IN to scan ID */}
+                {preloadedPax.length > 0 && (
+                  <div className="space-y-2">
+                    <div className="text-[10px] tracking-widest text-slate-500 uppercase" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                      FROM TRIP SHEET ({preloadedPax.filter(p => p.checkInStatus !== 'skipped').length})
+                    </div>
+                    {preloadedPax.map(p => (
+                      <PreloadedPaxRow
+                        key={p.id}
+                        pax={p}
+                        scanned={passengers.find(s => s.id === p.scannedPaxId)}
+                        onCheckIn={startPreloadedCheckIn}
+                        onSkip={togglePreloadedSkip}
+                      />
+                    ))}
+                  </div>
+                )}
+
                 {/* Quick-add buttons for pax that don't need ID scan */}
                 <QuickAddPax onAdd={addQuickPax} />
 
+                {/* Already-scanned manifest */}
                 {passengers.length === 0 ? (
-                  <div className="text-center py-12 border border-dashed border-slate-800">
-                    <UserCheck className="w-8 h-8 text-slate-700 mx-auto mb-2" />
-                    <p className="text-sm text-slate-500">No passengers verified yet</p>
-                    <p className="text-xs text-slate-600 mt-1">Scan IDs, take a photo, or add child/passport pax above.</p>
-                  </div>
+                  preloadedPax.length === 0 ? (
+                    <div className="text-center py-12 border border-dashed border-slate-800">
+                      <UserCheck className="w-8 h-8 text-slate-700 mx-auto mb-2" />
+                      <p className="text-sm text-slate-500">No passengers verified yet</p>
+                      <p className="text-xs text-slate-600 mt-1">Upload a trip sheet, scan IDs, or add child/passport pax.</p>
+                    </div>
+                  ) : null
                 ) : (
                   <div className="space-y-2">
+                    <div className="text-[10px] tracking-widest text-slate-500 uppercase pt-2 border-t border-slate-800" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                      VERIFIED MANIFEST
+                    </div>
                     {passengers.map(p => (
                       <PassengerRow
                         key={p.id}
@@ -2196,7 +2527,7 @@ function TripDetail({ trip, currentUser, opsEmail, onBack }) {
             )}
           </div>
         ) : tab === 'chat' ? (
-          <ChatPanel tripId={trip.uid} currentUser={currentUser} />
+          <ChatPanel tripId={trip.uid} currentUser={currentUserDisplayName || currentUser?.name || ''} />
         ) : tab === 'notify' ? (
           <div className="p-6 max-w-2xl">
             <NotifyPanel
@@ -2366,6 +2697,373 @@ function PaxCountEditor({ trip, paxOverride, onChange, canEdit }) {
       >
         CANCEL
       </button>
+    </div>
+  );
+}
+
+/* ============================================================
+   Trip sheet PDF — upload (ops/admin), view (all), parse pax
+   ============================================================ */
+
+// Extract plain text from a PDF File using pdfjs-dist (dynamically imported
+// so the ~500KB library only loads when ops actually uploads a PDF).
+async function extractPdfText(file) {
+  const pdfjsLib = await import('pdfjs-dist/build/pdf.mjs');
+  // Worker setup — Vite serves the worker from the bundled package
+  pdfjsLib.GlobalWorkerOptions.workerSrc = (await import('pdfjs-dist/build/pdf.worker.mjs?url')).default;
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  let fullText = '';
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    const pageText = content.items.map(it => it.str).join(' ');
+    fullText += pageText + '\n';
+  }
+  return fullText;
+}
+
+// Trip sheet upload + view panel. Upload UI is gated to ops/admin;
+// crew see only the viewer + delete-restricted message.
+function TripSheetPanel({
+  trip, allTrips, currentUser, currentUserUid,
+  tripSheetUrl, tripSheetFilename, tripSheetUploadedAt, tripSheetUploadedBy,
+  preloadedPax, onUploaded, onCleared,
+}) {
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState(null);
+  const [matchPreview, setMatchPreview] = useState(null); // {tripCode, tail, legs, matches: [{leg, candidates}]}
+  const [showViewer, setShowViewer] = useState(false);
+
+  const canUpload = ['ops', 'admin'].includes(currentUser.role);
+  const hasSheet = !!tripSheetUrl;
+
+  const handleFile = async (e) => {
+    setError(null);
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith('.pdf')) {
+      setError('File must be a PDF');
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      setError('File too large (max 10MB)');
+      return;
+    }
+    setUploading(true);
+    try {
+      // 1. Extract text and parse
+      const text = await extractPdfText(file);
+      const parsed = parseJetInsightTripSheet(text);
+      if (!parsed || !parsed.legs || parsed.legs.length === 0) {
+        throw new Error('Could not parse trip sheet — format unrecognized');
+      }
+
+      // 2. For each parsed leg, find matching trips in the schedule
+      const matches = parsed.legs.map(leg => ({
+        leg,
+        candidates: findMatchingTrips(leg, parsed.tail, allTrips),
+      }));
+
+      // 3. Show preview before uploading
+      setMatchPreview({ ...parsed, matches, file });
+    } catch (err) {
+      setError(err.message || 'Upload failed');
+    } finally {
+      setUploading(false);
+      // Reset the input so picking the same file again still triggers onChange
+      e.target.value = '';
+    }
+  };
+
+  const confirmUpload = async () => {
+    if (!matchPreview) return;
+    setUploading(true);
+    setError(null);
+    try {
+      const { uploadTripSheet, computeTripGroupId } = await import('./firebase-storage.js');
+      const tripGroupId = computeTripGroupId(matchPreview.tail, trip.start);
+      if (!tripGroupId) throw new Error('Could not compute trip group ID');
+      const { url, path } = await uploadTripSheet(matchPreview.file, tripGroupId);
+
+      // For each leg with a matched trip, attach the PDF + preloaded pax
+      const { attachTripSheetToLeg } = await import('./firebase-data.js');
+      for (const m of matchPreview.matches) {
+        if (m.candidates.length === 0) continue;
+        // If multiple candidates, take the first (most recent). Could prompt later.
+        const matched = m.candidates[0];
+        const preloadedPax = m.leg.pax.map((p, i) => ({
+          id: `pre-${matched.uid}-${i}`,
+          firstName: p.firstName,
+          lastName: p.lastName,
+          gender: p.gender,
+          dob: p.dob,
+          weight: p.weight,
+          primary: p.primary,
+          scannedPaxId: null,
+          checkInStatus: 'pending', // 'pending' | 'matched' | 'mismatch' | 'manual_override'
+        }));
+        await attachTripSheetToLeg({
+          tripUid: matched.uid,
+          tripSheetUrl: url,
+          tripSheetPath: path,
+          tripSheetFilename: matchPreview.file.name,
+          uploadedBy: currentUserUid || currentUser.name,
+          preloadedPax,
+        });
+      }
+
+      setMatchPreview(null);
+      if (onUploaded) onUploaded();
+    } catch (err) {
+      setError(err.message || 'Upload failed');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleClear = async () => {
+    if (!window.confirm('Remove the trip sheet from this leg? Pre-loaded passengers will be cleared (already-checked-in passengers stay).')) return;
+    if (onCleared) await onCleared();
+  };
+
+  // Match preview UI
+  if (matchPreview) {
+    return (
+      <div className="border border-cyan-500/40 bg-cyan-500/5 p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-xs tracking-widest text-cyan-300" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+              REVIEW BEFORE UPLOAD
+            </div>
+            <div className="text-[10px] text-slate-500 mt-0.5">
+              Trip {matchPreview.tripCode} · {matchPreview.tail} · {matchPreview.legs.length} legs
+            </div>
+          </div>
+          <button
+            onClick={() => setMatchPreview(null)}
+            className="text-slate-500 hover:text-slate-300 text-xs"
+          >
+            Cancel
+          </button>
+        </div>
+
+        <div className="space-y-2">
+          {matchPreview.matches.map((m, i) => {
+            const matched = m.candidates[0];
+            return (
+              <div key={i} className={`p-2 border ${matched ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-amber-500/30 bg-amber-500/5'}`}>
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="text-xs">
+                    <span className="text-slate-300" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+                      Leg {m.leg.legNumber}: {m.leg.from} → {m.leg.to}
+                    </span>
+                    <span className="text-slate-500 ml-2">({m.leg.depDate})</span>
+                  </div>
+                  {matched ? (
+                    <span className="text-[10px] text-emerald-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                      → MATCHED ({m.leg.pax.length} pax)
+                    </span>
+                  ) : (
+                    <span className="text-[10px] text-amber-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                      → NO MATCH IN SCHEDULE
+                    </span>
+                  )}
+                </div>
+                {m.leg.pax.length > 0 && (
+                  <div className="mt-1 text-[10px] text-slate-400 pl-2">
+                    {m.leg.pax.map((p, j) => (
+                      <div key={j}>· {p.firstName} {p.lastName} ({p.weight} lbs)</div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {error && (
+          <div className="p-2 border border-red-500/30 bg-red-500/5 text-xs text-red-300">{error}</div>
+        )}
+
+        <div className="flex gap-2">
+          <button
+            onClick={confirmUpload}
+            disabled={uploading || matchPreview.matches.every(m => m.candidates.length === 0)}
+            className="flex-1 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+            style={{ fontFamily: 'DM Sans, sans-serif' }}
+          >
+            {uploading ? 'Uploading...' : 'Upload & Attach to Matched Legs'}
+          </button>
+          <button
+            onClick={() => setMatchPreview(null)}
+            className="px-4 py-2 border border-slate-700 text-sm text-slate-300"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // No sheet, ops/admin view (upload UI)
+  if (!hasSheet && canUpload) {
+    return (
+      <div className="border border-dashed border-slate-700 p-4 space-y-2">
+        <div className="text-xs tracking-widest text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+          TRIP SHEET
+        </div>
+        <p className="text-[10px] text-slate-500">
+          Upload the JetInsight crew itinerary PDF. Pax will be auto-populated and the sheet will be attached to all matching legs.
+        </p>
+        <label className={`block w-full text-center py-2 border ${uploading ? 'border-slate-600 bg-slate-900/40 text-slate-500' : 'border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 cursor-pointer'} text-sm`} style={{ fontFamily: 'DM Sans, sans-serif' }}>
+          {uploading ? 'Parsing...' : 'CHOOSE PDF'}
+          <input
+            type="file"
+            accept="application/pdf,.pdf"
+            onChange={handleFile}
+            className="hidden"
+            disabled={uploading}
+          />
+        </label>
+        {error && (
+          <div className="p-2 border border-red-500/30 bg-red-500/5 text-xs text-red-300">{error}</div>
+        )}
+      </div>
+    );
+  }
+
+  // No sheet, crew view
+  if (!hasSheet && !canUpload) {
+    return null;
+  }
+
+  // Has sheet — viewer
+  return (
+    <div className="border border-cyan-500/30 bg-cyan-500/5 p-3 space-y-2">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex items-center gap-2">
+          <FileText className="w-4 h-4 text-cyan-400" />
+          <div>
+            <div className="text-xs text-slate-200" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
+              {tripSheetFilename || 'Trip Sheet'}
+            </div>
+            <div className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {tripSheetUploadedAt ? new Date(tripSheetUploadedAt).toLocaleString() : ''}
+            </div>
+          </div>
+        </div>
+        <div className="flex gap-1">
+          <button
+            onClick={() => setShowViewer(v => !v)}
+            className="text-[10px] px-2 py-1 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 tracking-widest"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            {showViewer ? 'HIDE' : 'VIEW'}
+          </button>
+          <a
+            href={tripSheetUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[10px] px-2 py-1 border border-slate-700 text-slate-400 hover:border-cyan-500/40 hover:text-cyan-300 tracking-widest"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            OPEN
+          </a>
+          {canUpload && (
+            <button
+              onClick={handleClear}
+              className="text-[10px] px-2 py-1 border border-slate-700 text-slate-400 hover:border-red-500/40 hover:text-red-300 tracking-widest"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              title="Remove trip sheet from this leg"
+            >
+              REMOVE
+            </button>
+          )}
+        </div>
+      </div>
+      {showViewer && (
+        <div className="aspect-[8.5/11] bg-slate-950 border border-slate-700 overflow-hidden">
+          <iframe
+            src={tripSheetUrl}
+            title="Trip Sheet"
+            className="w-full h-full"
+            style={{ minHeight: '600px' }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Pre-loaded pax row — what crew sees before scanning. Tap to scan ID.
+function PreloadedPaxRow({ pax, onCheckIn, onSkip, scanned }) {
+  // Find the scanned pax matched to this preloaded entry
+  const isMatched = pax.checkInStatus === 'matched';
+  const isMismatch = pax.checkInStatus === 'mismatch';
+  const isOverride = pax.checkInStatus === 'manual_override';
+  const isSkipped = pax.checkInStatus === 'skipped';
+  const checkedIn = isMatched || isMismatch || isOverride;
+
+  let borderClass;
+  if (isSkipped) borderClass = 'border-slate-700 bg-slate-900/30 opacity-60';
+  else if (isMatched) borderClass = 'border-emerald-500/30 bg-emerald-500/5';
+  else if (isOverride) borderClass = 'border-amber-500/30 bg-amber-500/5';
+  else if (isMismatch) borderClass = 'border-red-500/30 bg-red-500/5';
+  else borderClass = 'border-slate-700 bg-slate-900/40 hover:border-cyan-500/40';
+
+  return (
+    <div className={`p-3 border ${borderClass}`}>
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className={`text-sm ${isSkipped ? 'text-slate-500 line-through' : 'text-slate-100'}`} style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
+              {pax.firstName} {pax.lastName}
+            </span>
+            {pax.primary && <Pill tone="cyan">PRIMARY</Pill>}
+            {isMatched && <Pill tone="green"><Shield className="w-2.5 h-2.5" /> MATCHED</Pill>}
+            {isOverride && <Pill tone="amber">OVERRIDE</Pill>}
+            {isMismatch && <Pill tone="red">MISMATCH</Pill>}
+            {isSkipped && <Pill tone="neutral">SKIPPED</Pill>}
+            {!checkedIn && !isSkipped && <Pill tone="neutral">PENDING</Pill>}
+          </div>
+          <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1 text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {pax.gender && <span>{pax.gender}</span>}
+            {pax.dob && <span>DOB {pax.dob}</span>}
+            {pax.weight && <span>{pax.weight} lbs</span>}
+          </div>
+        </div>
+        <div className="flex gap-1 shrink-0">
+          {!checkedIn && !isSkipped && (
+            <>
+              <button
+                onClick={() => onCheckIn(pax)}
+                className="text-[10px] px-2 py-1 bg-cyan-500 hover:bg-cyan-400 text-slate-950 tracking-widest font-medium"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              >
+                CHECK IN
+              </button>
+              <button
+                onClick={() => onSkip(pax)}
+                className="text-[10px] px-2 py-1 border border-slate-700 text-slate-400 hover:border-amber-500/40 hover:text-amber-300 tracking-widest"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                title="No-show / not flying"
+              >
+                SKIP
+              </button>
+            </>
+          )}
+          {(isSkipped || checkedIn) && (
+            <button
+              onClick={() => onSkip(pax)}
+              className="text-[10px] px-2 py-1 border border-slate-700 text-slate-400 hover:border-cyan-500/40 hover:text-cyan-300 tracking-widest"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              UNDO
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -4298,7 +4996,9 @@ export default function CharterOps() {
               {selectedTrip ? (
                 <TripDetail
                   trip={selectedTrip}
-                  currentUser={userDisplayName}
+                  currentUser={currentUser}
+                  currentUserDisplayName={userDisplayName}
+                  allTrips={allTrips}
                   opsEmail={config.opsEmail}
                   onBack={() => setSelectedId(null)}
                 />
