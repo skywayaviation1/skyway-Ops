@@ -61,6 +61,8 @@ export function subscribeToTripState(tripId, onUpdate) {
           // { id, firstName, lastName, dob, weight, gender, primary, scannedPaxId }
           // scannedPaxId points to an entry in passengers[] once crew has scanned.
           preloadedPax: Array.isArray(data.preloadedPax) ? data.preloadedPax : [],
+          // Notes parsed from trip sheet (crew/pax/customer/specialItems)
+          tripSheetNotes: data.tripSheetNotes || null,
         });
       } else {
         // No state yet — emit empty defaults
@@ -71,6 +73,7 @@ export function subscribeToTripState(tripId, onUpdate) {
           tripSheetUrl: null, tripSheetPath: null, tripSheetUploadedAt: null,
           tripSheetUploadedBy: null, tripSheetFilename: null,
           preloadedPax: [],
+          tripSheetNotes: null,
         });
       }
     },
@@ -105,6 +108,7 @@ export async function saveTripState(tripId, state) {
       tripSheetUploadedBy: state.tripSheetUploadedBy || null,
       tripSheetFilename: state.tripSheetFilename || null,
       preloadedPax: Array.isArray(state.preloadedPax) ? state.preloadedPax : [],
+      tripSheetNotes: state.tripSheetNotes || null,
       updatedAt: Date.now(),
     }
   );
@@ -131,6 +135,7 @@ export async function attachTripSheetToLeg(legUpdate) {
         tripSheetUploadedBy: null,
         tripSheetFilename: null,
         preloadedPax: [],
+        tripSheetNotes: null,
         updatedAt: Date.now(),
       },
       { merge: true }
@@ -146,6 +151,7 @@ export async function attachTripSheetToLeg(legUpdate) {
       tripSheetUploadedBy: legUpdate.uploadedBy || null,
       tripSheetFilename: legUpdate.tripSheetFilename || null,
       preloadedPax: Array.isArray(legUpdate.preloadedPax) ? legUpdate.preloadedPax : [],
+      tripSheetNotes: legUpdate.tripSheetNotes || null,
       updatedAt: Date.now(),
     },
     { merge: true }
