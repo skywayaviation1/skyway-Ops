@@ -4702,7 +4702,19 @@ function SignaturePad({ onSave, onCancel, height = 160 }) {
 
   const save = () => {
     if (!hasInk) return;
-    const dataUrl = canvasRef.current.toDataURL('image/png');
+    // Resize the signature down to a reasonable size for storage.
+    // Max 600x160 — keeps the PNG under ~50KB for typical signatures.
+    const src = canvasRef.current;
+    const targetW = 600;
+    const targetH = 160;
+    const tmp = document.createElement('canvas');
+    tmp.width = targetW;
+    tmp.height = targetH;
+    const ctx = tmp.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, targetW, targetH);
+    ctx.drawImage(src, 0, 0, src.width, src.height, 0, 0, targetW, targetH);
+    const dataUrl = tmp.toDataURL('image/png');
     onSave(dataUrl);
   };
 
@@ -7046,17 +7058,22 @@ export default function CharterOps() {
 
   const currentUser = useMemo(() => {
     if (!profile) return null;
+    // Use the LIVE version of the profile from `users` (subscribed to
+    // Firestore) when available — `profile` itself only updates on auth
+    // state changes, so saving e.g. savedSignature wouldn't reflect without
+    // this. Fall back to `profile` if users list hasn't loaded yet.
+    const liveProfile = users.find(u => u.uid === profile.uid) || profile;
     const realUser = {
-      id: profile.uid,
-      uid: profile.uid,
-      name: profile.name || '',
-      email: profile.email || '',
-      callsign: profile.callsign || '',
-      jetinsightName: profile.jetinsightName || profile.name || '',
-      role: profile.role || 'crew',
-      active: profile.active !== false,
-      approved: profile.approved === true,
-      savedSignature: profile.savedSignature || null,
+      id: liveProfile.uid,
+      uid: liveProfile.uid,
+      name: liveProfile.name || '',
+      email: liveProfile.email || '',
+      callsign: liveProfile.callsign || '',
+      jetinsightName: liveProfile.jetinsightName || liveProfile.name || '',
+      role: liveProfile.role || 'crew',
+      active: liveProfile.active !== false,
+      approved: liveProfile.approved === true,
+      savedSignature: liveProfile.savedSignature || null,
     };
     // Only admins can impersonate
     if (impersonateUid && realUser.role === 'admin') {
