@@ -26,6 +26,25 @@ function sanitizeKey(s) {
    ============================================================ */
 
 /**
+ * One-shot fetch: get the preloadedPax array for a trip, if any.
+ * Returns [] if no trip-state doc or no preloadedPax.
+ * Used by Load Manifest pre-populate to grab pax names without subscribing.
+ */
+export async function fetchPreloadedPax(tripId) {
+  if (!tripId) return [];
+  const safeId = sanitizeKey(tripId);
+  try {
+    const snap = await getDoc(doc(db, 'trip-state', safeId));
+    if (!snap.exists()) return [];
+    const data = snap.data();
+    return Array.isArray(data.preloadedPax) ? data.preloadedPax : [];
+  } catch (err) {
+    console.error('[firebase-data] fetchPreloadedPax failed:', tripId, err);
+    return [];
+  }
+}
+
+/**
  * Subscribe to a trip's state. Calls onUpdate({statuses, passengers, brokerEmail, autoNotify})
  * whenever ANY user changes ANY field of this trip's state.
  * Returns unsubscribe function.
