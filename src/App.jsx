@@ -794,8 +794,47 @@ function useFirestoreUsers(currentProfile) {
 
   const removeUser = async (uid) => {
     try {
-      const { deleteUserProfile } = await import('./firebase-auth.js');
-      await deleteUserProfile(uid);
+      // Get the caller's Firebase ID token to authenticate the server-side
+      // delete (which uses the Admin SDK to remove from both Auth + Firestore).
+      const { auth } = await import('./firebase.js');
+      if (!auth.currentUser) throw new Error('Not signed in');
+      const idToken = await auth.currentUser.getIdToken();
+
+      const r = await fetch('/api/delete-user', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken, targetUid: uid }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        // If the server endpoint isn't deployed yet OR the service account
+        // isn't configured, fall back to Firestore-only delete and warn the
+        // admin that they need to manually delete the Auth account.
+        const fallback = data.error?.includes('FIREBASE_SERVICE_ACCOUNT_JSON')
+          || data.error?.includes('not configured');
+        if (fallback) {
+          const { deleteUserProfile } = await import('./firebase-auth.js');
+          await deleteUserProfile(uid);
+          alert(
+            `Profile deleted from Firestore, but the Firebase Auth account ` +
+            `still exists (server delete is not configured).\n\n` +
+            `To free up the email for re-registration:\n` +
+            `1. Firebase Console → Authentication → Users\n` +
+            `2. Find the email and delete it manually.\n\n` +
+            `Server error: ${data.error}`
+          );
+          return;
+        }
+        throw new Error(data.error || `Server returned ${r.status}`);
+      }
+
+      // Sanity check — both deletes should have succeeded
+      if (!data.authDeleted || !data.firestoreDeleted) {
+        const issues = [];
+        if (!data.authDeleted) issues.push(`Auth: ${data.authError || 'unknown'}`);
+        if (!data.firestoreDeleted) issues.push(`Firestore: ${data.firestoreError || 'unknown'}`);
+        alert(`User partially deleted. Issues: ${issues.join('; ')}`);
+      }
     } catch (err) {
       console.error('Remove failed:', err);
       alert('Failed to remove user: ' + err.message);
