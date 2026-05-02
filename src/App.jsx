@@ -2550,6 +2550,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
             { id: 'pax', label: 'PAX', icon: Users, badge: trip.info.pax === 0 ? null : `${totalVerified}/${totalExpected}`, hidden: trip.info.pax === 0 || !trip.info.isOps },
             { id: 'sheet', label: 'SHEET', icon: FileText, badge: tripSheetUrl ? '✓' : null, hidden: !showSheetTab },
             { id: 'notes', label: 'NOTES', icon: AlertCircle, hidden: !hasNotes },
+            { id: 'manifest', label: 'MANIFEST', icon: FileText, hidden: !['crew', 'ops', 'admin'].includes(currentUser?.role) },
             { id: 'chat', label: 'COMMS', icon: MessageSquare },
             { id: 'notify', label: 'NOTIFY', icon: Bell, hidden: !trip.info.isOps },
           ];
@@ -2730,6 +2731,12 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
           <div className="p-6 max-w-2xl space-y-4">
             <TripNotesPanel notes={tripSheetNotes} />
           </div>
+        ) : tab === 'manifest' ? (
+          <ManifestPanel
+            trip={trip}
+            currentUser={currentUser}
+            preloadedPax={preloadedPax}
+          />
         ) : tab === 'chat' ? (
           <ChatPanel tripId={trip.uid} currentUser={currentUserDisplayName || currentUser?.name || ''} />
         ) : tab === 'notify' ? (
@@ -3212,6 +3219,518 @@ function TripSheetPanel({
 // Pre-loaded pax row — what crew sees before scanning. Tap to scan ID.
 // Display parsed notes from the trip sheet PDF.
 // Notes types: crew (action items, amber), customer (FYI, cyan), pax (luggage, neutral).
+// ============================================================
+//   Manifest panel — fillable Skyway S-5/R-37 Load Manifest
+// ============================================================
+//
+// Auto-fills only safe trip metadata: tail #, date, from/to per leg,
+// passenger names. Crew fills weight/balance/Hobbs/duty time manually.
+//
+// E-signatures are typed name + click 'I confirm' + audit log (UID, email,
+// timestamp). Saved drawn signatures from user profile auto-attach.
+// Submission is final (record locks); PDF emails to Loadmanifest@flyskyway.com.
+function ManifestPanel({ trip, currentUser, preloadedPax }) {
+  const [manifest, setManifest] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+  const [submitInfo, setSubmitInfo] = useState(null);
+
+  const isCrew = currentUser?.role === 'crew';
+  const isOps = currentUser?.role === 'ops';
+  const isAdmin = currentUser?.role === 'admin';
+  // Crew (PIC + SIC) can sign. Admin can edit but cannot sign.
+  const canSign = isCrew;
+  const canEdit = isCrew || isOps || isAdmin;
+
+  // Subscribe to manifests for this trip
+  useEffect(() => {
+    let unsub = null;
+    let cancelled = false;
+    (async () => {
+      const m = await import('./firebase-manifests.js');
+      if (cancelled) return;
+      unsub = m.subscribeToTripManifests(trip.uid, (list) => {
+        // Take the most recent (or null if none)
+        setManifest(list[0] || null);
+        setLoading(false);
+      });
+    })();
+    return () => { cancelled = true; if (unsub) unsub(); };
+  }, [trip.uid]);
+
+  // Build initial manifest from trip data — safe AI auto-fill only
+  const buildInitialManifest = () => {
+    // Get all legs of this trip (multi-leg trip support)
+    // The current trip.uid corresponds to ONE leg; for multi-leg, we look up
+    // sibling legs by tripId/code in the parent app — for simplicity here we
+    // just include the current leg.
+    const dateStr = trip.start instanceof Date ? trip.start.toLocaleDateString('en-US') : '';
+    const legs = [
+      {
+        from: trip.info.from || '',
+        to: trip.info.to || '',
+        airport: trip.info.from || '',
+        // Build passenger names from preloadedPax (trip sheet) — names only, no weights
+        passengers: preloadedPax
+          .filter(p => p.checkInStatus !== 'skipped')
+          .slice(0, 7)
+          .map(p => `${p.firstName} ${p.lastName}`.trim()),
+        // Numeric fields left empty for crew to fill
+        timeOut: '', timeIn: '', total: '',
+        cycles: '', nightLdgs: '',
+        toWeight: '', maxAllowable: '',
+        fwdCG: '', toCG: '', aftCG: '',
+        numPax: preloadedPax.filter(p => p.checkInStatus !== 'skipped').length || '',
+        configuration: '',
+      },
+    ];
+    return {
+      id: null, // will be assigned on first save
+      tripUid: trip.uid,
+      tripCode: trip.info.tripId || trip.info.summary || '',
+      tail: trip.info.tail || '',
+      tripDate: dateStr,
+      hobbsOut: '', hobbsIn: '', hobbsTotal: '',
+      waitTime: '',
+      legs,
+      dutyTimeIn: '', dutyTimeOut: '', dutyTimeTotal: '',
+      picSig: null,
+      sicSig: null,
+      status: 'draft',
+      createdBy: currentUser?.name || '',
+    };
+  };
+
+  // Local working copy (for in-progress edits)
+  const [draft, setDraft] = useState(null);
+  useEffect(() => {
+    if (loading) return;
+    if (manifest) {
+      setDraft(manifest);
+    } else {
+      setDraft(buildInitialManifest());
+    }
+  }, [manifest, loading]); // eslint-disable-line
+
+  if (loading) {
+    return (
+      <div className="p-12 text-center text-slate-500">
+        <Loader2 className="w-5 h-5 animate-spin mx-auto mb-2" /> Loading manifest...
+      </div>
+    );
+  }
+
+  if (!draft) return null;
+
+  const isSubmitted = draft.status === 'submitted';
+  const readOnly = isSubmitted || (!canEdit);
+
+  const setField = (key) => (value) => {
+    if (readOnly) return;
+    setDraft(d => ({ ...d, [key]: value }));
+  };
+  const setLegField = (idx, key) => (value) => {
+    if (readOnly) return;
+    setDraft(d => {
+      const legs = [...(d.legs || [])];
+      legs[idx] = { ...legs[idx], [key]: value };
+      return { ...d, legs };
+    });
+  };
+  const setPaxName = (legIdx, paxIdx) => (value) => {
+    if (readOnly) return;
+    setDraft(d => {
+      const legs = [...(d.legs || [])];
+      const passengers = [...(legs[legIdx]?.passengers || [])];
+      passengers[paxIdx] = value;
+      legs[legIdx] = { ...legs[legIdx], passengers };
+      return { ...d, legs };
+    });
+  };
+  const addLeg = () => {
+    if (readOnly) return;
+    if ((draft.legs || []).length >= 7) {
+      alert('Maximum 7 legs per manifest. Start a new manifest if needed.');
+      return;
+    }
+    setDraft(d => ({
+      ...d,
+      legs: [...(d.legs || []), {
+        from: '', to: '', timeOut: '', timeIn: '', total: '',
+        airport: '', cycles: '', nightLdgs: '', passengers: [],
+        toWeight: '', maxAllowable: '', fwdCG: '', toCG: '', aftCG: '',
+        numPax: '', configuration: '',
+      }],
+    }));
+  };
+  const removeLeg = (idx) => {
+    if (readOnly) return;
+    setDraft(d => ({ ...d, legs: (d.legs || []).filter((_, i) => i !== idx) }));
+  };
+
+  const saveDraft = async () => {
+    if (readOnly) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const m = await import('./firebase-manifests.js');
+      const id = draft.id || m.newManifestId(trip.uid);
+      const next = { ...draft, id };
+      await m.saveManifest(next);
+      setDraft(next);
+    } catch (err) {
+      console.error('[manifest] save failed:', err);
+      setError(err.message || 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const sign = async (role /* 'pic' | 'sic' */) => {
+    if (!canSign) {
+      alert('Only crew (PIC/SIC) can sign. Admin can edit but cannot sign.');
+      return;
+    }
+    if (!currentUser?.savedSignature) {
+      alert('No saved signature on your profile. Tap your name in the top-right and draw a signature first.');
+      return;
+    }
+    const typedName = window.prompt(
+      `Type your full name to sign as ${role.toUpperCase()}.\n\n` +
+      `By typing your name and clicking OK, you electronically sign this load manifest. ` +
+      `Your name, email, timestamp, and saved signature image will be recorded.`,
+      currentUser.name || ''
+    );
+    if (!typedName || !typedName.trim()) return;
+
+    const sig = {
+      name: typedName.trim(),
+      uid: currentUser.uid || currentUser.id,
+      email: currentUser.email,
+      signatureImg: currentUser.savedSignature,
+      timestamp: Date.now(),
+    };
+    const next = { ...draft, [`${role}Sig`]: sig };
+    setDraft(next);
+    // Auto-save after sign so we don't lose the signature
+    try {
+      const m = await import('./firebase-manifests.js');
+      const id = next.id || m.newManifestId(trip.uid);
+      await m.saveManifest({ ...next, id });
+      setDraft({ ...next, id });
+    } catch (err) {
+      console.error('[manifest] sign save failed:', err);
+      alert('Signature recorded locally but failed to save to server. Try again.');
+    }
+  };
+
+  const unsign = async (role) => {
+    if (readOnly) return;
+    if (!window.confirm(`Remove ${role.toUpperCase()} signature?`)) return;
+    const next = { ...draft, [`${role}Sig`]: null };
+    setDraft(next);
+    try {
+      const m = await import('./firebase-manifests.js');
+      await m.saveManifest({ ...next, id: next.id });
+    } catch (err) {
+      console.error('[manifest] unsign failed:', err);
+    }
+  };
+
+  const submitManifest = async () => {
+    if (!draft.picSig || !draft.sicSig) {
+      alert('Both PIC and SIC must sign before submitting.');
+      return;
+    }
+    if (!window.confirm(
+      'Submit this load manifest? This action is FINAL.\n\n' +
+      'The PDF will be generated and emailed to Loadmanifest@flyskyway.com. ' +
+      'After submitting, the manifest cannot be edited.'
+    )) return;
+    setSaving(true);
+    setError(null);
+    setSubmitInfo(null);
+    try {
+      const m = await import('./firebase-manifests.js');
+      const id = draft.id || m.newManifestId(trip.uid);
+      const submitted = {
+        ...draft,
+        id,
+        status: 'submitted',
+        submittedAt: Date.now(),
+        submittedBy: currentUser?.name || '',
+      };
+      // Save with submitted status first (so we lock it even if email fails)
+      await m.saveManifest(submitted);
+      setDraft(submitted);
+
+      // Generate PDF + email
+      const r = await fetch('/api/generate-manifest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ manifest: submitted }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setError(`Manifest submitted but email failed: ${data.error || r.status}. The submitted manifest is locked in the system.`);
+        return;
+      }
+      if (data.emailError) {
+        setError(`Manifest submitted, PDF generated, but email failed: ${data.emailError}`);
+      } else {
+        setSubmitInfo(`Manifest submitted and emailed to Loadmanifest@flyskyway.com (id: ${data.emailId || 'sent'}).`);
+      }
+    } catch (err) {
+      console.error('[manifest] submit failed:', err);
+      setError(err.message || 'Submit failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="p-4 max-w-5xl space-y-4">
+      {/* Form header */}
+      <div className="border border-slate-700 bg-slate-900/40 p-3">
+        <div className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>SKYWAY AVIATION SERVICES, INC.</div>
+        <div className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>GENERAL OPERATIONS MANUAL · S-5/R-37/10-30-23</div>
+        <h2 className="text-2xl tracking-wider mt-1" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>LOAD MANIFEST</h2>
+      </div>
+
+      {/* Status banner */}
+      {isSubmitted && (
+        <div className="border border-emerald-500/40 bg-emerald-500/5 p-3">
+          <div className="text-[10px] tracking-widest text-emerald-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>SUBMITTED — RECORD LOCKED</div>
+          <div className="text-sm text-slate-200 mt-1">
+            Submitted by {draft.submittedBy} on {new Date(draft.submittedAt).toLocaleString()}
+          </div>
+        </div>
+      )}
+      {!canSign && !isAdmin && !isOps && (
+        <div className="border border-amber-500/40 bg-amber-500/5 p-3 text-xs text-amber-200">
+          Only crew (PIC/SIC), ops, or admin can access this form.
+        </div>
+      )}
+      {error && <div className="border border-red-500/40 bg-red-500/5 p-3 text-xs text-red-300">{error}</div>}
+      {submitInfo && <div className="border border-emerald-500/40 bg-emerald-500/5 p-3 text-xs text-emerald-300">{submitInfo}</div>}
+
+      {/* Top metadata row */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+        <ManifestField label="N #" value={draft.tail} onChange={setField('tail')} readOnly={readOnly} mono />
+        <ManifestField label="DATE" value={draft.tripDate} onChange={setField('tripDate')} readOnly={readOnly} mono />
+        <ManifestField label="HOBBS OUT" value={draft.hobbsOut} onChange={setField('hobbsOut')} readOnly={readOnly} mono />
+        <ManifestField label="HOBBS IN" value={draft.hobbsIn} onChange={setField('hobbsIn')} readOnly={readOnly} mono />
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+        <ManifestField label="HOBBS TOTAL" value={draft.hobbsTotal} onChange={setField('hobbsTotal')} readOnly={readOnly} mono />
+        <ManifestField label="WAIT TIME" value={draft.waitTime} onChange={setField('waitTime')} readOnly={readOnly} mono />
+        <ManifestField label="DUTY TIME IN" value={draft.dutyTimeIn} onChange={setField('dutyTimeIn')} readOnly={readOnly} mono />
+        <ManifestField label="DUTY TIME OUT" value={draft.dutyTimeOut} onChange={setField('dutyTimeOut')} readOnly={readOnly} mono />
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+        <ManifestField label="DUTY TIME TOTAL" value={draft.dutyTimeTotal} onChange={setField('dutyTimeTotal')} readOnly={readOnly} mono />
+      </div>
+
+      {/* Legs */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm tracking-widest text-slate-300" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}>LEGS</h3>
+          {!readOnly && (
+            <button
+              onClick={addLeg}
+              className="text-[10px] px-2 py-1 border border-slate-700 text-slate-400 hover:border-cyan-500/40 hover:text-cyan-300 tracking-widest"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              + ADD LEG ({(draft.legs || []).length}/7)
+            </button>
+          )}
+        </div>
+
+        {(draft.legs || []).map((leg, idx) => (
+          <ManifestLegCard
+            key={idx}
+            idx={idx}
+            leg={leg}
+            readOnly={readOnly}
+            onChange={(key) => setLegField(idx, key)}
+            onPaxChange={(paxIdx) => setPaxName(idx, paxIdx)}
+            onRemove={() => removeLeg(idx)}
+          />
+        ))}
+      </div>
+
+      {/* Acceptance text */}
+      <div className="border border-slate-700 bg-slate-900/40 p-3 text-xs text-slate-400 italic" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+        Acceptance of Flight Release: I have completed a preflight inspection of the aircraft, checked the scale used for weight & balance purposes and completed all duties required by FAA regulations and Skyway Aviation's Operations Manual and hereby accept this aircraft for flight.
+      </div>
+
+      {/* Signatures */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <SigBlock role="pic" sig={draft.picSig} canSign={canSign && !isSubmitted} onSign={() => sign('pic')} onUnsign={() => unsign('pic')} />
+        <SigBlock role="sic" sig={draft.sicSig} canSign={canSign && !isSubmitted} onSign={() => sign('sic')} onUnsign={() => unsign('sic')} />
+      </div>
+
+      {/* Action buttons */}
+      {!isSubmitted && (
+        <div className="flex flex-wrap gap-2 pt-3 border-t border-slate-800">
+          {canEdit && (
+            <button
+              onClick={saveDraft}
+              disabled={saving}
+              className="px-4 py-2 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 text-sm tracking-widest disabled:opacity-50"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              {saving ? 'SAVING...' : 'SAVE DRAFT'}
+            </button>
+          )}
+          {canSign && (
+            <button
+              onClick={submitManifest}
+              disabled={saving || !draft.picSig || !draft.sicSig}
+              className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-sm font-medium tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
+              style={{ fontFamily: 'DM Sans, sans-serif' }}
+              title={!draft.picSig || !draft.sicSig ? 'Both PIC and SIC must sign before submitting' : 'Submit final manifest'}
+            >
+              SUBMIT MANIFEST
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ManifestField({ label, value, onChange, readOnly, mono }) {
+  return (
+    <label className="block">
+      <span className="text-[10px] tracking-widest text-slate-500 uppercase" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{label}</span>
+      <input
+        type="text"
+        value={value || ''}
+        onChange={(e) => onChange(e.target.value)}
+        readOnly={readOnly}
+        className={`mt-1 w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400 disabled:opacity-50 ${readOnly ? 'cursor-not-allowed' : ''}`}
+        style={{ fontFamily: mono ? 'JetBrains Mono, monospace' : 'DM Sans, sans-serif' }}
+      />
+    </label>
+  );
+}
+
+function ManifestLegCard({ idx, leg, readOnly, onChange, onPaxChange, onRemove }) {
+  return (
+    <div className="border border-slate-700 bg-slate-900/40 p-3 space-y-2">
+      <div className="flex items-center justify-between">
+        <div className="text-[10px] tracking-widest text-cyan-400" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+          LEG {idx + 1}
+        </div>
+        {!readOnly && idx > 0 && (
+          <button
+            onClick={onRemove}
+            className="text-[10px] text-slate-500 hover:text-red-300 tracking-widest"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            REMOVE
+          </button>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <ManifestField label="FROM" value={leg.from} onChange={onChange('from')} readOnly={readOnly} mono />
+        <ManifestField label="TO" value={leg.to} onChange={onChange('to')} readOnly={readOnly} mono />
+        <ManifestField label="TIME OUT" value={leg.timeOut} onChange={onChange('timeOut')} readOnly={readOnly} mono />
+        <ManifestField label="TIME IN" value={leg.timeIn} onChange={onChange('timeIn')} readOnly={readOnly} mono />
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <ManifestField label="TOTAL" value={leg.total} onChange={onChange('total')} readOnly={readOnly} mono />
+        <ManifestField label="AIRPORT" value={leg.airport} onChange={onChange('airport')} readOnly={readOnly} mono />
+        <ManifestField label="CYCLES" value={leg.cycles} onChange={onChange('cycles')} readOnly={readOnly} mono />
+        <ManifestField label="NIGHT LDGS" value={leg.nightLdgs} onChange={onChange('nightLdgs')} readOnly={readOnly} mono />
+      </div>
+
+      <div>
+        <div className="text-[10px] tracking-widest text-slate-500 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>PASSENGERS (UP TO 7)</div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+          {[0,1,2,3,4,5,6].map(i => (
+            <input
+              key={i}
+              type="text"
+              value={(leg.passengers || [])[i] || ''}
+              onChange={(e) => onPaxChange(i)(e.target.value)}
+              readOnly={readOnly}
+              placeholder={`Pax ${i + 1}`}
+              className="bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400 disabled:opacity-50"
+              style={{ fontFamily: 'DM Sans, sans-serif' }}
+            />
+          ))}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 pt-2 border-t border-slate-800">
+        <ManifestField label="T/O WEIGHT" value={leg.toWeight} onChange={onChange('toWeight')} readOnly={readOnly} mono />
+        <ManifestField label="MAX ALLOWABLE" value={leg.maxAllowable} onChange={onChange('maxAllowable')} readOnly={readOnly} mono />
+        <ManifestField label="FWD C.G. LIMIT" value={leg.fwdCG} onChange={onChange('fwdCG')} readOnly={readOnly} mono />
+        <ManifestField label="T/O C.G." value={leg.toCG} onChange={onChange('toCG')} readOnly={readOnly} mono />
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <ManifestField label="AFT C.G. LIMIT" value={leg.aftCG} onChange={onChange('aftCG')} readOnly={readOnly} mono />
+        <ManifestField label="# PASSENGERS" value={leg.numPax} onChange={onChange('numPax')} readOnly={readOnly} mono />
+        <ManifestField label="CONFIGURATION" value={leg.configuration} onChange={onChange('configuration')} readOnly={readOnly} />
+      </div>
+    </div>
+  );
+}
+
+function SigBlock({ role, sig, canSign, onSign, onUnsign }) {
+  const label = role.toUpperCase();
+  return (
+    <div className="border border-slate-700 bg-slate-900/40 p-3 space-y-2">
+      <div className="text-[10px] tracking-widest text-cyan-400" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+        {label} SIGNATURE
+      </div>
+      {sig ? (
+        <div className="space-y-2">
+          <div className="border border-slate-600 bg-white p-2">
+            {sig.signatureImg ? (
+              <img src={sig.signatureImg} alt={`${label} signature`} className="w-full max-h-20 object-contain" />
+            ) : (
+              <div className="h-16 flex items-center justify-center text-slate-400 italic text-sm">
+                (signature image unavailable)
+              </div>
+            )}
+          </div>
+          <div className="text-sm text-slate-200" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
+            {sig.name}
+          </div>
+          <div className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            Signed electronically by {sig.email}<br />
+            at {new Date(sig.timestamp).toLocaleString()}
+          </div>
+          {canSign && (
+            <button
+              onClick={onUnsign}
+              className="text-[10px] text-slate-500 hover:text-red-300 tracking-widest"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              UNSIGN
+            </button>
+          )}
+        </div>
+      ) : canSign ? (
+        <button
+          onClick={onSign}
+          className="w-full py-3 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 text-sm tracking-widest"
+          style={{ fontFamily: 'DM Sans, sans-serif' }}
+        >
+          SIGN AS {label}
+        </button>
+      ) : (
+        <div className="text-xs text-slate-500 italic">Awaiting {label} signature</div>
+      )}
+    </div>
+  );
+}
+
 function TripNotesPanel({ notes }) {
   if (!notes || (!notes.crew && !notes.customer && !notes.pax && !notes.specialItems)) {
     return (
@@ -3431,6 +3950,232 @@ function PassengerRow({ passenger, onRemove, onToggleNoShow }) {
 }
 
 /* ============================================================
+   My Profile modal — current user edits own profile + signature
+   ============================================================ */
+function MyProfileModal({ currentUser, onClose, onSave }) {
+  const [name, setName] = useState(currentUser?.name || '');
+  const [callsign, setCallsign] = useState(currentUser?.callsign || '');
+  const [jetinsightName, setJetinsightName] = useState(currentUser?.jetinsightName || '');
+  const [savedSignature, setSavedSignature] = useState(currentUser?.savedSignature || null);
+  const [drawing, setDrawing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+
+  const handleSave = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      await onSave({
+        name: name.trim(),
+        callsign: callsign.trim(),
+        jetinsightName: jetinsightName.trim(),
+        savedSignature,
+      });
+      onClose();
+    } catch (err) {
+      setError(err.message || 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-950/90 flex items-center justify-center p-4 overflow-y-auto" onClick={onClose}>
+      <div className="bg-slate-950 border border-slate-700 max-w-lg w-full my-8" onClick={(e) => e.stopPropagation()}>
+        <div className="p-5 border-b border-slate-800 flex items-center justify-between">
+          <h2 className="text-lg tracking-wider" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>MY PROFILE</h2>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-300"><X className="w-5 h-5" /></button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          {/* Read-only identity */}
+          <div className="space-y-2">
+            <div className="flex items-baseline gap-3">
+              <div className="w-24 text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>EMAIL</div>
+              <div className="text-sm text-slate-300">{currentUser?.email}</div>
+            </div>
+            <div className="flex items-baseline gap-3">
+              <div className="w-24 text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>ROLE</div>
+              <div className="text-sm text-slate-300">{USER_ROLES[currentUser?.role]?.label || (currentUser?.role || '').toUpperCase()}</div>
+            </div>
+          </div>
+
+          {/* Editable fields */}
+          <FieldInput label="FULL NAME" value={name} onChange={(e) => setName(e.target.value)} />
+          <FieldInput label="CALLSIGN" value={callsign} onChange={(e) => setCallsign(e.target.value)} placeholder="e.g. Annalise" />
+          <FieldInput label="NAME IN JETINSIGHT" value={jetinsightName} onChange={(e) => setJetinsightName(e.target.value)} placeholder="e.g. Annalise Marie Gonzales" />
+
+          {/* Saved signature */}
+          <div>
+            <div className="text-[10px] tracking-widest text-slate-500 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              SAVED SIGNATURE
+            </div>
+            <p className="text-[11px] text-slate-500 mb-2">
+              Draw your signature once. It auto-applies when you sign load manifests and other documents.
+            </p>
+            {drawing ? (
+              <SignaturePad
+                onSave={(dataUrl) => { setSavedSignature(dataUrl); setDrawing(false); }}
+                onCancel={() => setDrawing(false)}
+              />
+            ) : savedSignature ? (
+              <div className="space-y-2">
+                <div className="border border-slate-700 bg-white p-2">
+                  <img src={savedSignature} alt="Signature" className="w-full max-h-32 object-contain" />
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setDrawing(true)}
+                    className="flex-1 py-2 border border-slate-700 text-sm text-slate-300 hover:border-cyan-500/40"
+                  >
+                    REDRAW
+                  </button>
+                  <button
+                    onClick={() => setSavedSignature(null)}
+                    className="px-4 py-2 border border-slate-700 text-sm text-slate-400 hover:border-red-500/40 hover:text-red-300"
+                  >
+                    CLEAR
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                onClick={() => setDrawing(true)}
+                className="w-full py-3 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 text-sm tracking-widest"
+                style={{ fontFamily: 'DM Sans, sans-serif' }}
+              >
+                + DRAW SIGNATURE
+              </button>
+            )}
+          </div>
+
+          {error && (
+            <div className="p-2 border border-red-500/30 bg-red-500/5 text-xs text-red-300">{error}</div>
+          )}
+
+          <div className="flex gap-2 pt-2">
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="flex-1 py-3 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-medium tracking-widest disabled:opacity-50"
+              style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}
+            >
+              {saving ? 'SAVING...' : 'SAVE PROFILE'}
+            </button>
+            <button onClick={onClose} className="px-4 py-3 border border-slate-700 text-sm text-slate-300">
+              CANCEL
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Drawable signature pad — touch + mouse, outputs a PNG data URL.
+function SignaturePad({ onSave, onCancel, height = 160 }) {
+  const canvasRef = useRef(null);
+  const drawingRef = useRef(false);
+  const lastRef = useRef(null);
+  const [hasInk, setHasInk] = useState(false);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    // Match canvas backing store to display size for crisp lines
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+    ctx.scale(dpr, dpr);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, rect.width, rect.height);
+    ctx.lineWidth = 2;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = '#000000';
+  }, []);
+
+  const getPoint = (e) => {
+    const canvas = canvasRef.current;
+    const rect = canvas.getBoundingClientRect();
+    const t = e.touches ? e.touches[0] : e;
+    return { x: t.clientX - rect.left, y: t.clientY - rect.top };
+  };
+
+  const start = (e) => {
+    e.preventDefault();
+    drawingRef.current = true;
+    lastRef.current = getPoint(e);
+  };
+  const move = (e) => {
+    if (!drawingRef.current) return;
+    e.preventDefault();
+    const p = getPoint(e);
+    const ctx = canvasRef.current.getContext('2d');
+    ctx.beginPath();
+    ctx.moveTo(lastRef.current.x, lastRef.current.y);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+    lastRef.current = p;
+    if (!hasInk) setHasInk(true);
+  };
+  const end = () => {
+    drawingRef.current = false;
+    lastRef.current = null;
+  };
+
+  const clear = () => {
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    const rect = canvas.getBoundingClientRect();
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, rect.width, rect.height);
+    setHasInk(false);
+  };
+
+  const save = () => {
+    if (!hasInk) return;
+    const dataUrl = canvasRef.current.toDataURL('image/png');
+    onSave(dataUrl);
+  };
+
+  return (
+    <div className="space-y-2">
+      <canvas
+        ref={canvasRef}
+        style={{ width: '100%', height: `${height}px`, touchAction: 'none', backgroundColor: '#fff' }}
+        className="border border-slate-600 cursor-crosshair"
+        onMouseDown={start}
+        onMouseMove={move}
+        onMouseUp={end}
+        onMouseLeave={end}
+        onTouchStart={start}
+        onTouchMove={move}
+        onTouchEnd={end}
+      />
+      <div className="flex gap-2">
+        <button
+          onClick={save}
+          disabled={!hasInk}
+          className="flex-1 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+          style={{ fontFamily: 'DM Sans, sans-serif' }}
+        >
+          SAVE SIGNATURE
+        </button>
+        <button onClick={clear} className="px-4 py-2 border border-slate-700 text-sm text-slate-300 hover:border-amber-500/40">
+          CLEAR
+        </button>
+        <button onClick={onCancel} className="px-4 py-2 border border-slate-700 text-sm text-slate-300">
+          CANCEL
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
    Settings modal
    ============================================================ */
 function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, onLoadFromText, syncStatus }) {
@@ -3613,9 +4358,9 @@ function LoginScreen({ initialMode = 'login' }) {
       });
       // Auth state listener will pick up the new user
       if (result.isFirstUser) {
-        setInfo('Welcome! As the first user, you have admin access. Check your email for a verification link.');
+        setInfo('Welcome! As the first user, you have admin access.');
       } else {
-        setInfo('Account created. Check your email for a verification link. Once verified, an admin will approve your account.');
+        setInfo('Account created. An admin will approve your account before you can sign in.');
       }
     } catch (err) {
       setError(prettyAuthError(err));
@@ -3966,7 +4711,7 @@ function NoProfileScreen({ user, onSignOut }) {
 /* ============================================================
    Top navigation (post-login chrome)
    ============================================================ */
-function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, syncStatus, now, tripCount, onOpenSettings }) {
+function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, syncStatus, now, tripCount, onOpenSettings, onOpenProfile }) {
   const sections = [
     { id: 'schedule', label: 'SCHEDULE',  icon: Calendar, roles: ['crew', 'ops', 'admin'] },
     { id: 'archive',  label: 'ARCHIVE',   icon: Hash,     roles: ['crew', 'ops', 'admin'] },
@@ -4002,11 +4747,15 @@ function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, sync
           {syncStatus.status === 'error' && (
             <Pill tone="red"><WifiOff className="w-2.5 h-2.5" /> SYNC</Pill>
           )}
-          <div className="hidden md:flex items-center gap-2 px-2.5 py-1.5 border border-slate-800">
+          <button
+            onClick={onOpenProfile}
+            className="hidden md:flex items-center gap-2 px-2.5 py-1.5 border border-slate-800 hover:border-cyan-500/40"
+            title="Edit my profile (signature, name, callsign)"
+          >
             <div className="w-7 h-7 bg-cyan-500/10 border border-cyan-500/40 flex items-center justify-center text-cyan-300 text-sm" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
               {currentUser.name.charAt(0).toUpperCase()}
             </div>
-            <div className="text-xs">
+            <div className="text-xs text-left">
               <div className="text-slate-200 leading-tight" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
                 {currentUser.callsign || currentUser.name.split(' ').slice(-1)[0]}
               </div>
@@ -4014,7 +4763,10 @@ function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, sync
                 {USER_ROLES[currentUser.role]?.label || currentUser.role.toUpperCase()}
               </div>
             </div>
-          </div>
+          </button>
+          <button onClick={onOpenProfile} className="md:hidden p-2 border border-slate-800 hover:border-cyan-500/40 text-cyan-300" title="My profile">
+            <UserCheck className="w-4 h-4" />
+          </button>
           <button onClick={onOpenSettings} className="p-2 border border-slate-800 hover:border-slate-600 text-slate-400 hover:text-slate-200" title="Settings">
             <SettingsIcon className="w-4 h-4" />
           </button>
@@ -5595,6 +6347,7 @@ export default function CharterOps() {
   const [selectedId, setSelectedId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
+  const [showProfile, setShowProfile] = useState(false);
   const [syncStatus, setSyncStatus] = useState({ status: 'idle', message: '' });
   const [syncLog, setSyncLog] = useState([]);
   const [tripStatusCounts, setTripStatusCounts] = useState({});
@@ -5729,6 +6482,7 @@ export default function CharterOps() {
     if (!profile) return null;
     const realUser = {
       id: profile.uid,
+      uid: profile.uid,
       name: profile.name || '',
       email: profile.email || '',
       callsign: profile.callsign || '',
@@ -5736,6 +6490,7 @@ export default function CharterOps() {
       role: profile.role || 'crew',
       active: profile.active !== false,
       approved: profile.approved === true,
+      savedSignature: profile.savedSignature || null,
     };
     // Only admins can impersonate
     if (impersonateUid && realUser.role === 'admin') {
@@ -6215,6 +6970,7 @@ export default function CharterOps() {
           now={now}
           tripCount={allTrips.length}
           onOpenSettings={() => setShowSettings(true)}
+          onOpenProfile={() => setShowProfile(true)}
         />
 
         {/* === SCHEDULE SECTION (existing trip view) === */}
@@ -6529,6 +7285,16 @@ export default function CharterOps() {
           onLoadDemo={loadDemo}
           onLoadFromUrl={loadFromUrl}
           onLoadFromText={loadFromText}
+        />
+      )}
+
+      {showProfile && currentUser && (
+        <MyProfileModal
+          currentUser={currentUser}
+          onClose={() => setShowProfile(false)}
+          onSave={async (patch) => {
+            await updateUser(currentUser.uid || currentUser.id, patch);
+          }}
         />
       )}
     </div>
