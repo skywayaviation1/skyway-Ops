@@ -244,10 +244,11 @@ const CATEGORY_META = {
 };
 
 const USER_ROLES = {
-  crew:  { label: 'CREW',  tone: 'cyan',   description: 'Pilots, SIC, flight attendants' },
-  sales: { label: 'SALES', tone: 'green',  description: 'Sales team — trip creation, broker contact' },
-  ops:   { label: 'OPS',   tone: 'amber',  description: 'Dispatch, scheduling, ground ops' },
-  admin: { label: 'ADMIN', tone: 'violet', description: 'Full access — manage users & system' },
+  crew:       { label: 'CREW',       tone: 'cyan',   description: 'Pilots, SIC, flight attendants' },
+  sales:      { label: 'SALES',      tone: 'green',  description: 'Sales team — trip creation, broker contact' },
+  ops:        { label: 'OPS',        tone: 'amber',  description: 'Dispatch, scheduling, ground ops' },
+  accounting: { label: 'ACCOUNTING', tone: 'violet', description: 'Read-only access to all expenses + CSV export' },
+  admin:      { label: 'ADMIN',      tone: 'violet', description: 'Full access — manage users & system' },
 };
 
 function genId(prefix) {
@@ -3944,6 +3945,7 @@ function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, sync
   const sections = [
     { id: 'schedule', label: 'SCHEDULE',  icon: Calendar, roles: ['crew', 'ops', 'admin'] },
     { id: 'archive',  label: 'ARCHIVE',   icon: Hash,     roles: ['crew', 'ops', 'admin'] },
+    { id: 'expenses', label: 'EXPENSES',  icon: Mail,     roles: ['crew', 'sales', 'ops', 'accounting', 'admin'] },
     { id: 'ops',      label: 'OPS',       icon: Zap,      roles: ['ops', 'admin'] },
     { id: 'users',    label: 'USERS',     icon: Users,    roles: ['ops', 'admin'] },
   ];
@@ -4273,6 +4275,1085 @@ function OpsDashboard({ trips, currentUser, onSelectTrip, onAddManualTrip, onRem
           onSubmit={async (trip) => { await onAddManualTrip(trip); setShowManual(false); }}
         />
       )}
+    </div>
+  );
+}
+
+/* ============================================================
+   Expenses screen — receipt upload, AI parsing, approval, export
+   ============================================================ */
+
+const EXPENSE_CATEGORIES = [
+  'Fuel', 'Catering', 'FBO Fees', 'Hangar', 'Ground Transport',
+  'Crew Meals', 'Crew Lodging', 'Supplies', 'Maintenance', 'Office', 'Other',
+];
+
+function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName }) {
+  const [expenses, setExpenses] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState('mine'); // 'mine' | 'all' | 'pending' | 'approved' | 'unexported'
+  const [selectedId, setSelectedId] = useState(null);
+  const [showUploader, setShowUploader] = useState(false);
+  const [uploadError, setUploadError] = useState(null);
+  // Month filter for totals panel — null = current month, or 'YYYY-MM' string
+  const [statsMonth, setStatsMonth] = useState(null);
+
+  const isOpsOrAdmin = ['ops', 'admin'].includes(currentUser?.role);
+  const isAccounting = currentUser?.role === 'accounting';
+  const isAdmin = currentUser?.role === 'admin';
+  // Anyone who can see all expenses (accounting + ops + admin)
+  const canSeeAll = isOpsOrAdmin || isAccounting;
+  // Approval moved from ops → accounting. Now: accounting + admin only.
+  const canApprove = isAccounting || isAdmin;
+  // Only ops/admin/accounting can export.
+  const canExport = isOpsOrAdmin || isAccounting;
+  // Accounting cannot upload (they're a downstream consumer of data).
+  const canUpload = !isAccounting;
+
+  // Default the filter for accounting users to "unexported" — that's the
+  // natural workflow for downloading new expenses each pay period.
+  useEffect(() => {
+    if (isAccounting && filter === 'mine') setFilter('unexported');
+  }, [isAccounting]); // eslint-disable-line
+
+  useEffect(() => {
+    if (!currentUserUid) return;
+    let unsub = null;
+    let cancelled = false;
+    (async () => {
+      const m = await import('./firebase-expenses.js');
+      if (cancelled) return;
+      if (canSeeAll) {
+        unsub = m.subscribeToAllExpenses((list) => {
+          setExpenses(list);
+          setLoading(false);
+        });
+      } else {
+        unsub = m.subscribeToUserExpenses(currentUserUid, (list) => {
+          setExpenses(list);
+          setLoading(false);
+        });
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (unsub) unsub();
+    };
+  }, [currentUserUid, canSeeAll]);
+
+  const filteredExpenses = useMemo(() => {
+    let out = expenses;
+    if (canSeeAll) {
+      if (filter === 'mine') out = out.filter(e => e.uid === currentUserUid);
+      else if (filter === 'pending') out = out.filter(e => e.status === 'pending');
+      else if (filter === 'review') out = out.filter(e => e.status === 'needs_review');
+      else if (filter === 'approved') out = out.filter(e => e.status === 'approved');
+      else if (filter === 'unexported') out = out.filter(e => e.status === 'approved' && !e.exportedAt);
+      // 'all' = no filter
+    }
+    return out;
+  }, [expenses, filter, canSeeAll, currentUserUid]);
+
+  // Monthly totals — group APPROVED (or synced) expenses by category for the selected month
+  const monthlyStats = useMemo(() => {
+    // Use filteredExpenses if accounting/ops, otherwise just user's own
+    const source = canSeeAll ? expenses : expenses.filter(e => e.uid === currentUserUid);
+    const counted = source.filter(e =>
+      (e.status === 'approved' || e.status === 'synced') &&
+      e.totalAmount != null
+    );
+
+    const targetMonth = statsMonth || new Date().toISOString().slice(0, 7); // YYYY-MM
+    const byCategory = {};
+    let total = 0;
+    let count = 0;
+    for (const e of counted) {
+      const date = e.transactionDate || (e.approvedAt ? new Date(e.approvedAt).toISOString().slice(0,10) : null);
+      if (!date) continue;
+      const month = date.slice(0, 7);
+      if (month !== targetMonth) continue;
+      const cat = e.category || 'Other';
+      byCategory[cat] = (byCategory[cat] || 0) + Number(e.totalAmount);
+      total += Number(e.totalAmount);
+      count += 1;
+    }
+    // Available months for the month picker
+    const allMonths = new Set();
+    for (const e of counted) {
+      const date = e.transactionDate || (e.approvedAt ? new Date(e.approvedAt).toISOString().slice(0,10) : null);
+      if (date) allMonths.add(date.slice(0, 7));
+    }
+    const monthList = Array.from(allMonths).sort().reverse();
+    return { byCategory, total, count, targetMonth, monthList };
+  }, [expenses, canSeeAll, currentUserUid, statsMonth]);
+
+  const handleUpload = async (file) => {
+    setUploadError(null);
+    setShowUploader(false);
+    try {
+      const m = await import('./firebase-expenses.js');
+      const id = m.newExpenseId();
+      const draft = {
+        id,
+        uid: currentUserUid,
+        authorName: currentUserDisplayName || currentUser?.name || 'Unknown',
+        authorEmail: currentUser?.email || '',
+        authorRole: currentUser?.role || 'crew',
+        status: 'draft',
+        category: 'Other',
+        currency: 'USD',
+        lineItems: [],
+        notes: 'Parsing receipt with AI...',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      await m.saveExpense(draft);
+      setSelectedId(id);
+
+      const { url, path, contentType, sizeBytes } = await m.uploadReceipt(file, currentUserUid);
+      await m.saveExpense({
+        ...draft, receiptUrl: url, receiptPath: path,
+        receiptContentType: contentType, receiptSizeBytes: sizeBytes,
+        receiptFilename: file.name,
+      });
+
+      const base64 = await fileToBase64(file);
+      const r = await fetch('/api/parse-receipt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageBase64: base64, mediaType: contentType || 'image/jpeg' }),
+      });
+      const data = await r.json();
+      if (!r.ok) {
+        await m.saveExpense({
+          ...draft,
+          receiptUrl: url, receiptPath: path, receiptContentType: contentType,
+          receiptSizeBytes: sizeBytes, receiptFilename: file.name,
+          notes: `AI parse failed: ${data.error}. Edit fields manually.`,
+          status: 'draft',
+        });
+        return;
+      }
+      const p = data.parsed;
+      await m.saveExpense({
+        ...draft,
+        receiptUrl: url, receiptPath: path, receiptContentType: contentType,
+        receiptSizeBytes: sizeBytes, receiptFilename: file.name,
+        vendor: p.vendor, transactionDate: p.transactionDate, totalAmount: p.totalAmount,
+        currency: p.currency, subtotal: p.subtotal, tax: p.tax, tip: p.tip,
+        category: p.category, lineItems: p.lineItems,
+        notes: p.notes || '',
+        parsedAt: Date.now(), parsedBy: 'claude-vision',
+        confidence: p.confidence,
+        status: 'draft',
+      });
+    } catch (err) {
+      console.error('[expenses] upload failed:', err);
+      setUploadError(err.message || 'Upload failed');
+    }
+  };
+
+  const submitExpense = async (expense) => {
+    const m = await import('./firebase-expenses.js');
+    await m.saveExpense({ ...expense, status: 'pending', submittedAt: Date.now() });
+  };
+  const approveExpense = async (expense) => {
+    if (!canApprove) return;
+    const m = await import('./firebase-expenses.js');
+    await m.saveExpense({
+      ...expense, status: 'approved',
+      approvedAt: Date.now(),
+      approvedBy: currentUserDisplayName || currentUser?.name,
+    });
+  };
+  const rejectExpense = async (expense, reason) => {
+    if (!canApprove) return;
+    const m = await import('./firebase-expenses.js');
+    await m.saveExpense({
+      ...expense, status: 'rejected',
+      rejectedAt: Date.now(),
+      rejectedBy: currentUserDisplayName || currentUser?.name,
+      rejectionReason: reason || '',
+    });
+  };
+
+  // Request review — sets status to 'needs_review' and emails the submitter
+  // with the question. Submitter replies to the email; accountant approves
+  // manually after they have the info they need.
+  const requestReviewExpense = async (expense, question) => {
+    if (!canApprove) return;
+    if (!question || !question.trim()) {
+      alert('Review question is required.');
+      return;
+    }
+    const reviewerName = currentUserDisplayName || currentUser?.name || 'Accounting';
+    const reviewerEmail = currentUser?.email || '';
+    const m = await import('./firebase-expenses.js');
+
+    // Append to review history (chain of custody — accounting may ask multiple
+    // questions over time before approving)
+    const reviewEntry = {
+      ts: Date.now(),
+      by: reviewerName,
+      byEmail: reviewerEmail,
+      question: question.trim(),
+    };
+    const history = Array.isArray(expense.reviewHistory) ? expense.reviewHistory : [];
+
+    await m.saveExpense({
+      ...expense,
+      status: 'needs_review',
+      reviewRequestedAt: Date.now(),
+      reviewRequestedBy: reviewerName,
+      reviewRequestedByEmail: reviewerEmail,
+      reviewQuestion: question.trim(),
+      reviewHistory: [...history, reviewEntry],
+    });
+
+    // Send email to submitter
+    const recipient = expense.authorEmail;
+    if (!recipient || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipient)) {
+      alert('Status updated, but no valid email on file for submitter — could not notify them. They can still see the request in the app.');
+      return;
+    }
+    try {
+      const subject = `Expense review needed — ${expense.vendor || 'receipt'} ${expense.totalAmount != null ? `$${Number(expense.totalAmount).toFixed(2)}` : ''}`;
+      const lines = [
+        `Hi ${expense.authorName || 'there'},`,
+        '',
+        `${reviewerName} from accounting has a question about an expense you submitted:`,
+        '',
+        `> ${question.trim()}`,
+        '',
+        '— Expense details —',
+        `Vendor: ${expense.vendor || '(not parsed)'}`,
+        `Date: ${expense.transactionDate || '(not parsed)'}`,
+        `Amount: ${expense.totalAmount != null ? `$${Number(expense.totalAmount).toFixed(2)}` : '(not parsed)'}`,
+        `Category: ${expense.category || 'Other'}`,
+        '',
+        `Please reply to this email with the requested info, or log in to https://skyway-ops.vercel.app to update the expense and resubmit.`,
+        '',
+        '— Skyway Aviation',
+      ];
+      const r = await fetch('/api/send-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to: [recipient, ...(reviewerEmail ? [reviewerEmail] : [])], // CC the reviewer so they have a record
+          subject,
+          text: lines.join('\n'),
+        }),
+      });
+      if (!r.ok) {
+        const data = await r.json().catch(() => ({}));
+        console.error('[expenses] review email failed:', r.status, data.error || '');
+        alert(`Status updated, but the email failed to send (${data.error || r.status}). The submitter can still see the request in the app.`);
+      } else {
+        console.log('[expenses] review email sent to', recipient);
+      }
+    } catch (err) {
+      console.error('[expenses] review email error:', err);
+      alert('Status updated, but the email could not be sent. The submitter can still see the request in the app.');
+    }
+  };
+  const updateExpense = async (expense, changes) => {
+    const m = await import('./firebase-expenses.js');
+    await m.saveExpense({ ...expense, ...changes });
+  };
+  const deleteExpenseDoc = async (expense) => {
+    if (!window.confirm('Delete this expense? This cannot be undone.')) return;
+    const m = await import('./firebase-expenses.js');
+    await m.deleteExpense(expense);
+    setSelectedId(null);
+  };
+
+  // Export — two modes:
+  //   'new' — only approved + not previously exported (default workflow)
+  //   'full' — all approved (re-download for audits / recovery)
+  // Marks exported items with exportedAt + exportedBy timestamp so the next
+  // "new" export skips them.
+  const exportCsv = async (mode = 'new') => {
+    let toExport = filteredExpenses.filter(e => e.status === 'approved');
+    if (mode === 'new') {
+      toExport = toExport.filter(e => !e.exportedAt);
+    }
+    if (toExport.length === 0) {
+      alert(mode === 'new'
+        ? 'No new approved expenses to export. Switch to "FULL EXPORT" to re-download previously exported items.'
+        : 'No approved expenses to export.');
+      return;
+    }
+
+    const confirmMsg = mode === 'new'
+      ? `Export ${toExport.length} new expense(s) to CSV? They will be marked as exported and excluded from future "new" exports.`
+      : `Re-export ${toExport.length} approved expense(s) to CSV (full export — does NOT change exported flags)?`;
+    if (!window.confirm(confirmMsg)) return;
+
+    const rows = toExport.map(e => ({
+      Date: e.transactionDate || '',
+      Vendor: e.vendor || '',
+      Category: e.category || '',
+      Amount: e.totalAmount || '',
+      Subtotal: e.subtotal || '',
+      Tax: e.tax || '',
+      Tip: e.tip || '',
+      Currency: e.currency || 'USD',
+      Submitter: e.authorName || '',
+      Notes: (e.notes || '').replace(/[\r\n]+/g, ' '),
+      ApprovedAt: e.approvedAt ? new Date(e.approvedAt).toISOString() : '',
+      ApprovedBy: e.approvedBy || '',
+      ExpenseID: e.id || '',
+      ReceiptURL: e.receiptUrl || '',
+    }));
+    const headers = Object.keys(rows[0]);
+    const csv = [
+      headers.join(','),
+      ...rows.map(r => headers.map(h => csvEscape(r[h])).join(',')),
+    ].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const tag = mode === 'new' ? 'new' : 'full';
+    a.download = `expenses_${tag}_${new Date().toISOString().slice(0,10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+
+    // Mark items as exported (only for 'new' mode — full mode preserves history)
+    if (mode === 'new') {
+      const m = await import('./firebase-expenses.js');
+      const now = Date.now();
+      const exportedBy = currentUserDisplayName || currentUser?.name || 'unknown';
+      for (const e of toExport) {
+        try {
+          await m.saveExpense({
+            ...e,
+            exportedAt: now,
+            exportedBy,
+            // Preserve a history of all exports — accountants may re-export and we want a paper trail
+            exportHistory: [...(e.exportHistory || []), { ts: now, by: exportedBy, mode: 'new' }],
+          });
+        } catch (err) {
+          console.error('[expenses] failed to mark exported:', e.id, err);
+        }
+      }
+    }
+  };
+
+  const selected = filteredExpenses.find(e => e.id === selectedId) || expenses.find(e => e.id === selectedId);
+
+  return (
+    <div className="flex-1 overflow-hidden flex flex-col md:flex-row">
+      <aside className={`${selected ? 'hidden md:block' : 'block'} w-full md:w-96 md:border-r md:border-slate-800 overflow-y-auto scroll-area`}>
+        {/* Monthly totals panel */}
+        <ExpenseMonthlyStats
+          stats={monthlyStats}
+          onMonthChange={setStatsMonth}
+        />
+
+        <div className="px-4 py-3 border-b border-slate-800 bg-slate-950 sticky top-0 z-10">
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <h2 className="text-xs tracking-[0.2em]" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}>
+              EXPENSES{isAccounting ? ' · ACCOUNTING' : ''}
+            </h2>
+            {canUpload && (
+              <button
+                onClick={() => setShowUploader(true)}
+                className="text-[10px] px-2 py-1 bg-cyan-500 hover:bg-cyan-400 text-slate-950 tracking-widest font-medium"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              >
+                + UPLOAD
+              </button>
+            )}
+          </div>
+          {canSeeAll && (
+            <div className="flex flex-wrap gap-1">
+              {[
+                { id: 'unexported', label: 'NEW', title: 'Approved + not yet exported' },
+                { id: 'mine', label: 'MINE' },
+                { id: 'all', label: 'ALL' },
+                { id: 'pending', label: 'PENDING' },
+                { id: 'review', label: 'REVIEW', title: 'Needs review — waiting on submitter' },
+                { id: 'approved', label: 'APPROVED' },
+              ].map(f => (
+                <button
+                  key={f.id}
+                  onClick={() => setFilter(f.id)}
+                  title={f.title}
+                  className={`text-[10px] px-2 py-1 border ${filter === f.id ? 'border-cyan-400 text-cyan-300' : 'border-slate-700 text-slate-500 hover:text-slate-300'} tracking-widest`}
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+          )}
+          {canExport && (
+            <div className="flex gap-1 mt-2">
+              <button
+                onClick={() => exportCsv('new')}
+                className="flex-1 text-[10px] px-2 py-1.5 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10 tracking-widest"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                title="Download approved expenses not previously exported"
+              >
+                ↓ EXPORT NEW
+              </button>
+              <button
+                onClick={() => exportCsv('full')}
+                className="text-[10px] px-2 py-1.5 border border-slate-700 text-slate-500 hover:text-slate-300 tracking-widest"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                title="Re-download all approved (for audits)"
+              >
+                ⤓ FULL
+              </button>
+            </div>
+          )}
+        </div>
+
+        {showUploader && canUpload && (
+          <div className="p-4 border-b border-slate-800 bg-slate-900/40">
+            <div className="text-xs tracking-widest text-cyan-300 mb-2" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+              NEW RECEIPT
+            </div>
+            <p className="text-[10px] text-slate-500 mb-3">
+              Take a photo or pick a file. AI will extract vendor, date, amount, and category.
+            </p>
+            <label className="block w-full text-center py-2 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 cursor-pointer text-sm" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+              <Camera className="w-4 h-4 inline mr-2" /> CAMERA / FILE
+              <input
+                type="file"
+                accept="image/*,application/pdf"
+                capture="environment"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) handleUpload(f);
+                  e.target.value = '';
+                }}
+                className="hidden"
+              />
+            </label>
+            <button
+              onClick={() => setShowUploader(false)}
+              className="mt-2 w-full py-1 text-[10px] text-slate-500 hover:text-slate-300 tracking-widest"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              CANCEL
+            </button>
+            {uploadError && (
+              <div className="mt-2 p-2 border border-red-500/30 bg-red-500/5 text-xs text-red-300">{uploadError}</div>
+            )}
+          </div>
+        )}
+
+        {loading ? (
+          <div className="p-8 text-center text-slate-500">
+            <Loader2 className="w-5 h-5 animate-spin mx-auto mb-2" /> Loading expenses...
+          </div>
+        ) : filteredExpenses.length === 0 ? (
+          <div className="p-12 text-center">
+            <Mail className="w-8 h-8 text-slate-700 mx-auto mb-2" />
+            <p className="text-sm text-slate-500">No expenses{filter === 'unexported' ? ' to export' : ' yet'}</p>
+            <p className="text-xs text-slate-600 mt-1">
+              {filter === 'unexported' ? 'All approved expenses have been exported.' : canUpload ? 'Tap UPLOAD to add a receipt.' : 'Nothing to review yet.'}
+            </p>
+          </div>
+        ) : (
+          <div>
+            {filteredExpenses.map(e => (
+              <ExpenseRow
+                key={e.id}
+                expense={e}
+                selected={e.id === selectedId}
+                onClick={() => setSelectedId(e.id)}
+              />
+            ))}
+          </div>
+        )}
+      </aside>
+
+      <main className={`flex-1 overflow-y-auto scroll-area ${selected ? 'block' : 'hidden md:block'}`}>
+        {selected ? (
+          <ExpenseDetail
+            expense={selected}
+            currentUser={currentUser}
+            canApprove={canApprove}
+            isAccounting={isAccounting}
+            onBack={() => setSelectedId(null)}
+            onUpdate={updateExpense}
+            onSubmit={submitExpense}
+            onApprove={approveExpense}
+            onReject={rejectExpense}
+            onRequestReview={requestReviewExpense}
+            onDelete={deleteExpenseDoc}
+          />
+        ) : (
+          <div className="h-full flex items-center justify-center p-8 grid-bg">
+            <div className="text-center max-w-md">
+              <div className="w-20 h-20 mx-auto mb-4 border border-slate-800 flex items-center justify-center">
+                <Mail className="w-10 h-10 text-slate-700" />
+              </div>
+              <h2 className="text-2xl tracking-wider mb-2" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
+                EXPENSES
+              </h2>
+              <p className="text-sm text-slate-500">
+                {isAccounting
+                  ? 'Read-only access to all expenses. Use EXPORT NEW to download new approved items.'
+                  : 'Select a receipt to view details, or tap UPLOAD to add a new one.'}
+              </p>
+            </div>
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
+
+// Monthly totals panel — shown above the expense list
+function ExpenseMonthlyStats({ stats, onMonthChange }) {
+  const [expanded, setExpanded] = useState(true);
+  const fmt = (n) => `$${Number(n).toFixed(2)}`;
+  const formatMonth = (m) => {
+    if (!m) return '';
+    const [y, mo] = m.split('-');
+    const d = new Date(parseInt(y), parseInt(mo) - 1, 1);
+    return d.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+  };
+
+  return (
+    <div className="border-b border-slate-800 bg-slate-950">
+      <button
+        onClick={() => setExpanded(v => !v)}
+        className="w-full px-4 py-2 flex items-center justify-between hover:bg-slate-900/40"
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            MONTHLY TOTAL
+          </span>
+          <span className="text-base text-slate-100" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+            {fmt(stats.total)}
+          </span>
+          <span className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            ({stats.count} item{stats.count === 1 ? '' : 's'})
+          </span>
+        </div>
+        <span className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {expanded ? '▾' : '▸'}
+        </span>
+      </button>
+
+      {expanded && (
+        <div className="px-4 pb-3 space-y-2">
+          {/* Month picker */}
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>MONTH</span>
+            <select
+              value={stats.targetMonth}
+              onChange={(e) => onMonthChange(e.target.value)}
+              className="bg-slate-900/60 border border-slate-700 px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-cyan-400"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              {/* Always show current month even if no data */}
+              {!stats.monthList.includes(stats.targetMonth) && (
+                <option value={stats.targetMonth}>{formatMonth(stats.targetMonth)}</option>
+              )}
+              {stats.monthList.map(m => (
+                <option key={m} value={m}>{formatMonth(m)}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Category breakdown */}
+          {Object.keys(stats.byCategory).length === 0 ? (
+            <div className="text-[11px] text-slate-600 italic">No approved expenses for {formatMonth(stats.targetMonth)}</div>
+          ) : (
+            <div className="space-y-0.5">
+              {Object.entries(stats.byCategory)
+                .sort((a, b) => b[1] - a[1])
+                .map(([cat, amount]) => {
+                  const pct = stats.total > 0 ? (amount / stats.total) * 100 : 0;
+                  return (
+                    <div key={cat} className="flex items-center gap-2 text-xs">
+                      <span className="flex-1 text-slate-300 truncate" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                        {cat}
+                      </span>
+                      <span className="text-slate-500 text-[10px] w-10 text-right" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                        {pct.toFixed(0)}%
+                      </span>
+                      <span className="text-slate-100 text-right shrink-0" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600, minWidth: 70 }}>
+                        {fmt(amount)}
+                      </span>
+                    </div>
+                  );
+                })}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function csvEscape(v) {
+  if (v == null) return '';
+  const s = String(v);
+  if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+async function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result;
+      const base64 = String(dataUrl).split(',')[1] || '';
+      resolve(base64);
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+function ExpenseRow({ expense, selected, onClick }) {
+  const status = expense.status || 'draft';
+  const tone = status === 'approved'
+    ? { border: 'border-emerald-500/30', bg: 'bg-emerald-500/5', label: 'text-emerald-300', text: 'APPROVED' }
+    : status === 'rejected'
+    ? { border: 'border-red-500/30', bg: 'bg-red-500/5', label: 'text-red-300', text: 'REJECTED' }
+    : status === 'needs_review'
+    ? { border: 'border-amber-500/40', bg: 'bg-amber-500/5', label: 'text-amber-300', text: 'NEEDS REVIEW' }
+    : status === 'pending'
+    ? { border: 'border-amber-500/30', bg: 'bg-amber-500/5', label: 'text-amber-300', text: 'PENDING' }
+    : status === 'synced'
+    ? { border: 'border-cyan-500/30', bg: 'bg-cyan-500/5', label: 'text-cyan-300', text: 'SYNCED' }
+    : { border: 'border-slate-700', bg: 'bg-slate-900/40', label: 'text-slate-400', text: 'DRAFT' };
+  const isParsing = expense.notes === 'Parsing receipt with AI...';
+  const isExported = !!expense.exportedAt;
+  return (
+    <button
+      onClick={onClick}
+      className={`block w-full text-left p-3 border-b border-slate-800 ${selected ? 'bg-slate-900/60' : 'hover:bg-slate-900/40'} transition-colors`}
+    >
+      <div className="flex items-center justify-between gap-2 mb-1">
+        <span className="text-sm text-slate-100 truncate" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
+          {expense.vendor || (isParsing ? 'Parsing...' : '(no vendor)')}
+        </span>
+        <div className="flex items-center gap-1 shrink-0">
+          {isExported && (
+            <span className="text-[9px] tracking-widest text-violet-300" style={{ fontFamily: 'JetBrains Mono, monospace' }} title={`Exported ${new Date(expense.exportedAt).toLocaleString()}`}>
+              ↓EXP
+            </span>
+          )}
+          <span className={`text-[10px] tracking-widest ${tone.label}`} style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+            {tone.text}
+          </span>
+        </div>
+      </div>
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-[11px] text-slate-500 truncate" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {expense.category || 'Uncategorized'}
+          {expense.transactionDate && ` · ${expense.transactionDate}`}
+        </div>
+        <span className="text-sm text-slate-200 shrink-0" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+          {expense.totalAmount != null ? `$${Number(expense.totalAmount).toFixed(2)}` : '—'}
+        </span>
+      </div>
+      <div className="text-[10px] text-slate-600 mt-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        {expense.authorName || 'Unknown'}
+      </div>
+    </button>
+  );
+}
+
+function ExpenseDetail({ expense, currentUser, canApprove, isAccounting, onBack, onUpdate, onSubmit, onApprove, onReject, onRequestReview, onDelete }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(expense);
+  const [showImg, setShowImg] = useState(true);
+  const [showReviewPrompt, setShowReviewPrompt] = useState(false);
+  const [reviewQuestion, setReviewQuestion] = useState('');
+
+  useEffect(() => { setDraft(expense); }, [expense.id, expense.updatedAt]);
+
+  const isOwner = expense.uid === (currentUser?.uid || currentUser?.id);
+  const status = expense.status || 'draft';
+  const isParsing = expense.notes === 'Parsing receipt with AI...';
+  // Owner can edit own drafts/rejected/needs_review. Admin can edit anything.
+  // Accounting is read-only on the data; their power is approve/reject/review.
+  const canEdit = !isAccounting && ((isOwner && (status === 'draft' || status === 'rejected' || status === 'needs_review')) || canApprove);
+
+  const set = (k) => (v) => setDraft(d => ({ ...d, [k]: v }));
+
+  const saveEdits = async () => {
+    await onUpdate(expense, {
+      vendor: draft.vendor,
+      transactionDate: draft.transactionDate,
+      totalAmount: draft.totalAmount != null ? Number(draft.totalAmount) : null,
+      subtotal: draft.subtotal != null && draft.subtotal !== '' ? Number(draft.subtotal) : null,
+      tax: draft.tax != null && draft.tax !== '' ? Number(draft.tax) : null,
+      tip: draft.tip != null && draft.tip !== '' ? Number(draft.tip) : null,
+      category: draft.category,
+      notes: draft.notes,
+    });
+    setEditing(false);
+  };
+
+  return (
+    <div className="p-6 max-w-3xl mx-auto">
+      <div className="flex items-center gap-2 mb-4">
+        <button
+          onClick={onBack}
+          className="md:hidden text-slate-500 hover:text-cyan-400 p-1"
+          aria-label="Back"
+        >
+          <ChevronLeft className="w-5 h-5" />
+        </button>
+        <h1 className="text-xl tracking-wider flex-1" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
+          {expense.vendor || (isParsing ? 'PARSING RECEIPT...' : 'EXPENSE')}
+        </h1>
+        {isOwner && (status === 'draft' || status === 'rejected') && (
+          <button
+            onClick={() => onDelete(expense)}
+            className="text-[10px] px-2 py-1 border border-slate-700 text-slate-400 hover:border-red-500/40 hover:text-red-300 tracking-widest"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            DELETE
+          </button>
+        )}
+      </div>
+
+      {expense.receiptUrl && (
+        <div className="mb-4">
+          <button
+            onClick={() => setShowImg(v => !v)}
+            className="text-[10px] tracking-widest text-slate-500 hover:text-cyan-300 mb-1"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            {showImg ? 'HIDE RECEIPT' : 'SHOW RECEIPT'}
+          </button>
+          {showImg && (
+            <div className="border border-slate-800 bg-slate-900/40 overflow-hidden">
+              {(expense.receiptContentType || '').includes('pdf') ? (
+                <iframe src={expense.receiptUrl} title="Receipt" className="w-full" style={{ minHeight: 500 }} />
+              ) : (
+                <img src={expense.receiptUrl} alt="Receipt" className="w-full max-h-96 object-contain bg-black" />
+              )}
+            </div>
+          )}
+          <a
+            href={expense.receiptUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-block mt-1 text-[10px] tracking-widest text-cyan-500 hover:text-cyan-300"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            OPEN ORIGINAL ↗
+          </a>
+        </div>
+      )}
+
+      {/* Status banner */}
+      <div className={`mb-4 p-3 border ${status === 'needs_review' ? 'border-amber-500/40 bg-amber-500/5' : 'border-slate-700 bg-slate-900/40'} flex items-center justify-between gap-2`}>
+        <div className="flex-1">
+          <div className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>STATUS</div>
+          <div className={`text-sm ${status === 'needs_review' ? 'text-amber-200' : 'text-slate-100'}`} style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
+            {status === 'needs_review' ? 'NEEDS REVIEW' : status.toUpperCase()}
+            {status === 'approved' && expense.approvedBy && ` · by ${expense.approvedBy}`}
+            {status === 'rejected' && expense.rejectionReason && ` · ${expense.rejectionReason}`}
+            {status === 'needs_review' && expense.reviewRequestedBy && ` · from ${expense.reviewRequestedBy}`}
+          </div>
+        </div>
+        {expense.confidence && (
+          <div className="text-right shrink-0">
+            <div className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>AI CONFIDENCE</div>
+            <div className={`text-sm ${expense.confidence === 'high' ? 'text-emerald-300' : expense.confidence === 'medium' ? 'text-amber-300' : 'text-red-300'}`} style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
+              {expense.confidence.toUpperCase()}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Review question banner — prominent when accounting has asked for info */}
+      {status === 'needs_review' && expense.reviewQuestion && (
+        <div className="mb-4 p-3 border border-amber-500/40 bg-amber-500/10">
+          <div className="text-[10px] tracking-widest text-amber-300 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+            REVIEW QUESTION
+          </div>
+          <div className="text-sm text-slate-100 whitespace-pre-wrap" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+            {expense.reviewQuestion}
+          </div>
+          <div className="text-[10px] text-slate-500 mt-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            Asked by {expense.reviewRequestedBy} · {expense.reviewRequestedAt ? new Date(expense.reviewRequestedAt).toLocaleString() : ''}
+          </div>
+          {isOwner && (
+            <p className="text-[11px] text-amber-200 mt-2">
+              Reply to the email you received, or edit the expense below and resubmit.
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Fields */}
+      {editing ? (
+        <div className="space-y-3">
+          <FieldRow label="VENDOR">
+            <input value={draft.vendor || ''} onChange={(e) => set('vendor')(e.target.value)} className="w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400" />
+          </FieldRow>
+          <FieldRow label="DATE (YYYY-MM-DD)">
+            <input value={draft.transactionDate || ''} onChange={(e) => set('transactionDate')(e.target.value)} className="w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400" placeholder="2026-05-02" />
+          </FieldRow>
+          <FieldRow label="CATEGORY">
+            <select value={draft.category || 'Other'} onChange={(e) => set('category')(e.target.value)} className="w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400">
+              {EXPENSE_CATEGORIES.map(c => <option key={c}>{c}</option>)}
+            </select>
+          </FieldRow>
+          <div className="grid grid-cols-3 gap-2">
+            <FieldRow label="SUBTOTAL"><input type="number" step="0.01" value={draft.subtotal ?? ''} onChange={(e) => set('subtotal')(e.target.value)} className="w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400" /></FieldRow>
+            <FieldRow label="TAX"><input type="number" step="0.01" value={draft.tax ?? ''} onChange={(e) => set('tax')(e.target.value)} className="w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400" /></FieldRow>
+            <FieldRow label="TIP"><input type="number" step="0.01" value={draft.tip ?? ''} onChange={(e) => set('tip')(e.target.value)} className="w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400" /></FieldRow>
+          </div>
+          <FieldRow label="TOTAL">
+            <input type="number" step="0.01" value={draft.totalAmount ?? ''} onChange={(e) => set('totalAmount')(e.target.value)} className="w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400" />
+          </FieldRow>
+          <FieldRow label="NOTES">
+            <textarea value={draft.notes || ''} onChange={(e) => set('notes')(e.target.value)} rows={3} className="w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400" />
+          </FieldRow>
+          <div className="flex gap-2">
+            <button onClick={saveEdits} className="flex-1 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-sm font-medium" style={{ fontFamily: 'DM Sans, sans-serif' }}>SAVE</button>
+            <button onClick={() => { setDraft(expense); setEditing(false); }} className="px-4 py-2 border border-slate-700 text-sm text-slate-300">CANCEL</button>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <ReadField label="VENDOR" value={expense.vendor || '—'} />
+          <ReadField label="DATE" value={expense.transactionDate || '—'} />
+          <ReadField label="CATEGORY" value={expense.category || '—'} />
+          <div className="grid grid-cols-3 gap-2">
+            <ReadField label="SUBTOTAL" value={expense.subtotal != null ? `$${Number(expense.subtotal).toFixed(2)}` : '—'} />
+            <ReadField label="TAX" value={expense.tax != null ? `$${Number(expense.tax).toFixed(2)}` : '—'} />
+            <ReadField label="TIP" value={expense.tip != null ? `$${Number(expense.tip).toFixed(2)}` : '—'} />
+          </div>
+          <ReadField label="TOTAL" value={expense.totalAmount != null ? `$${Number(expense.totalAmount).toFixed(2)}` : '—'} highlight />
+          {expense.lineItems && expense.lineItems.length > 0 && (
+            <div className="mt-3">
+              <div className="text-[10px] tracking-widest text-slate-500 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>LINE ITEMS</div>
+              <div className="border border-slate-800 bg-slate-900/40 divide-y divide-slate-800">
+                {expense.lineItems.map((li, i) => (
+                  <div key={i} className="flex items-center justify-between gap-2 px-3 py-2 text-xs">
+                    <div className="flex-1 truncate text-slate-300">{li.description}</div>
+                    <div className="text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                      {li.qty && li.qty !== 1 ? `${li.qty} × ` : ''}{li.unitPrice != null ? `$${Number(li.unitPrice).toFixed(2)}` : ''}
+                    </div>
+                    <div className="text-slate-200 shrink-0" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+                      {li.amount != null ? `$${Number(li.amount).toFixed(2)}` : '—'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {expense.notes && <ReadField label="NOTES" value={expense.notes} />}
+          <ReadField label="SUBMITTED BY" value={expense.authorName || '—'} />
+          {expense.exportedAt && (
+            <div className="mt-3 p-2 border border-violet-500/30 bg-violet-500/5">
+              <div className="text-[10px] tracking-widest text-violet-300 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+                EXPORT HISTORY
+              </div>
+              <div className="text-[11px] text-slate-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                Last exported {new Date(expense.exportedAt).toLocaleString()}
+                {expense.exportedBy && ` by ${expense.exportedBy}`}
+              </div>
+              {Array.isArray(expense.exportHistory) && expense.exportHistory.length > 1 && (
+                <details className="mt-1">
+                  <summary className="text-[10px] text-slate-500 cursor-pointer hover:text-slate-300">
+                    {expense.exportHistory.length} export{expense.exportHistory.length === 1 ? '' : 's'} total
+                  </summary>
+                  <ul className="mt-1 ml-3 space-y-0.5">
+                    {expense.exportHistory.map((h, i) => (
+                      <li key={i} className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                        · {new Date(h.ts).toLocaleString()} by {h.by} ({h.mode})
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Action buttons */}
+      <div className="mt-6 flex flex-wrap gap-2">
+        {canEdit && !editing && (
+          <button onClick={() => setEditing(true)} className="px-3 py-2 border border-slate-700 text-sm text-slate-200 hover:border-cyan-500/40">EDIT</button>
+        )}
+        {/* Submitter actions */}
+        {isOwner && (status === 'draft' || status === 'rejected') && !editing && (
+          <button
+            onClick={() => onSubmit(expense)}
+            disabled={!expense.vendor || !expense.totalAmount}
+            className="px-3 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+            style={{ fontFamily: 'DM Sans, sans-serif' }}
+          >
+            {status === 'rejected' ? 'RESUBMIT' : 'SUBMIT FOR APPROVAL'}
+          </button>
+        )}
+        {isOwner && status === 'needs_review' && !editing && (
+          <button
+            onClick={() => onSubmit(expense)}
+            disabled={!expense.vendor || !expense.totalAmount}
+            className="px-3 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+            style={{ fontFamily: 'DM Sans, sans-serif' }}
+            title="Resubmit after addressing the review question"
+          >
+            RESUBMIT FOR APPROVAL
+          </button>
+        )}
+
+        {/* Approver actions (accounting + admin) — Request Review form */}
+        {canApprove && status === 'pending' && !editing && showReviewPrompt && (
+          <div className="w-full p-3 border border-amber-500/40 bg-amber-500/5">
+            <div className="text-[10px] tracking-widest text-amber-300 mb-2" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+              REVIEW QUESTION (will be emailed to submitter)
+            </div>
+            <textarea
+              value={reviewQuestion}
+              onChange={(e) => setReviewQuestion(e.target.value)}
+              rows={3}
+              placeholder="e.g. Was this for the trip to Naples? Need a leg/trip number to allocate it."
+              className="w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-amber-400"
+              style={{ fontFamily: 'DM Sans, sans-serif' }}
+            />
+            <div className="flex gap-2 mt-2">
+              <button
+                onClick={async () => {
+                  await onRequestReview(expense, reviewQuestion);
+                  setReviewQuestion('');
+                  setShowReviewPrompt(false);
+                }}
+                disabled={!reviewQuestion.trim()}
+                className="px-3 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+                style={{ fontFamily: 'DM Sans, sans-serif' }}
+              >
+                SEND REVIEW REQUEST
+              </button>
+              <button
+                onClick={() => { setShowReviewPrompt(false); setReviewQuestion(''); }}
+                className="px-3 py-2 border border-slate-700 text-sm text-slate-300"
+              >
+                CANCEL
+              </button>
+            </div>
+          </div>
+        )}
+        {canApprove && status === 'pending' && !editing && !showReviewPrompt && (
+          <>
+            <button onClick={() => onApprove(expense)} className="px-3 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-sm font-medium" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+              APPROVE
+            </button>
+            <button
+              onClick={() => setShowReviewPrompt(true)}
+              className="px-3 py-2 border border-amber-500/40 text-amber-300 hover:bg-amber-500/10 text-sm"
+              style={{ fontFamily: 'DM Sans, sans-serif' }}
+              title="Ask the submitter a question before approving"
+            >
+              REQUEST REVIEW
+            </button>
+            <button
+              onClick={() => {
+                const reason = window.prompt('Rejection reason (optional):') || '';
+                onReject(expense, reason);
+              }}
+              className="px-3 py-2 border border-red-500/40 text-red-300 hover:bg-red-500/10 text-sm"
+              style={{ fontFamily: 'DM Sans, sans-serif' }}
+            >
+              REJECT
+            </button>
+          </>
+        )}
+        {/* On needs_review, approver can re-ask, approve directly, or reject */}
+        {canApprove && status === 'needs_review' && !editing && !showReviewPrompt && (
+          <>
+            <button onClick={() => onApprove(expense)} className="px-3 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-sm font-medium" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+              APPROVE NOW
+            </button>
+            <button
+              onClick={() => setShowReviewPrompt(true)}
+              className="px-3 py-2 border border-amber-500/40 text-amber-300 hover:bg-amber-500/10 text-sm"
+              style={{ fontFamily: 'DM Sans, sans-serif' }}
+            >
+              ASK ANOTHER QUESTION
+            </button>
+            <button
+              onClick={() => {
+                const reason = window.prompt('Rejection reason (optional):') || '';
+                onReject(expense, reason);
+              }}
+              className="px-3 py-2 border border-red-500/40 text-red-300 hover:bg-red-500/10 text-sm"
+              style={{ fontFamily: 'DM Sans, sans-serif' }}
+            >
+              REJECT
+            </button>
+          </>
+        )}
+        {canApprove && status === 'needs_review' && !editing && showReviewPrompt && (
+          <div className="w-full p-3 border border-amber-500/40 bg-amber-500/5">
+            <div className="text-[10px] tracking-widest text-amber-300 mb-2" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+              FOLLOW-UP QUESTION
+            </div>
+            <textarea
+              value={reviewQuestion}
+              onChange={(e) => setReviewQuestion(e.target.value)}
+              rows={3}
+              className="w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-amber-400"
+              style={{ fontFamily: 'DM Sans, sans-serif' }}
+            />
+            <div className="flex gap-2 mt-2">
+              <button
+                onClick={async () => {
+                  await onRequestReview(expense, reviewQuestion);
+                  setReviewQuestion('');
+                  setShowReviewPrompt(false);
+                }}
+                disabled={!reviewQuestion.trim()}
+                className="px-3 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+                style={{ fontFamily: 'DM Sans, sans-serif' }}
+              >
+                SEND
+              </button>
+              <button
+                onClick={() => { setShowReviewPrompt(false); setReviewQuestion(''); }}
+                className="px-3 py-2 border border-slate-700 text-sm text-slate-300"
+              >
+                CANCEL
+              </button>
+            </div>
+          </div>
+        )}
+        {canApprove && status === 'approved' && !editing && (
+          <button onClick={() => onReject(expense, 'Reverted from approved')} className="px-3 py-2 border border-slate-700 text-slate-400 hover:border-amber-500/40 hover:text-amber-300 text-sm">
+            REVERT
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FieldRow({ label, children }) {
+  return (
+    <label className="block">
+      <div className="text-[10px] tracking-widest text-slate-500 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{label}</div>
+      {children}
+    </label>
+  );
+}
+
+function ReadField({ label, value, highlight }) {
+  return (
+    <div className="flex items-baseline gap-3">
+      <div className="w-24 text-[10px] tracking-widest text-slate-500 shrink-0" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{label}</div>
+      <div className={`flex-1 text-sm ${highlight ? 'text-cyan-300 font-bold' : 'text-slate-200'}`} style={{ fontFamily: 'DM Sans, sans-serif' }}>
+        {value}
+      </div>
     </div>
   );
 }
@@ -5368,6 +6449,15 @@ export default function CharterOps() {
               )}
             </main>
           </div>
+        )}
+
+        {/* === EXPENSES SECTION === */}
+        {section === 'expenses' && (
+          <ExpensesScreen
+            currentUser={currentUser}
+            currentUserUid={currentUser?.uid || currentUser?.id}
+            currentUserDisplayName={userDisplayName}
+          />
         )}
 
         {/* === OPS DASHBOARD SECTION === */}
