@@ -311,10 +311,23 @@ function parseJetInsightTripSheet(text) {
   const tail = tailMatch ? tailMatch[1] : null;
 
   // Extract trip-level notes (apply to all legs, not per-leg).
-  // Stop at the next top-level section header so we don't bleed into other content.
+  // Stop at the next top-level section header AND at common company-header
+  // markers (so notes don't bleed into the operator's own address block which
+  // follows the notes section in JetInsight crew itineraries).
   const extractNote = (labelPattern) => {
     const re = new RegExp(
-      `${labelPattern}\\s*:\\s*([\\s\\S]*?)(?=(?:Trip notes \\(|Customer notes:|Special items:|Leg \\s*\\d+|Distance:|Client:|Planner:)|$)`,
+      `${labelPattern}\\s*:\\s*([\\s\\S]*?)(?=(?:` +
+        // section headers
+        `Trip notes \\(|Customer notes:|Special items:|Leg \\s*\\d+|Distance:|Client:|Planner:|` +
+        // company name (Skyway-specific — adjust if app is reused)
+        `Skyway Aviation|` +
+        // generic street address: 3-5 digit number + capitalized word + Blvd/St/Ave/Rd/Way/Dr/Ln/Pkwy
+        `\\d{3,5}\\s+[A-Z][a-z]+\\s+(?:Blvd|St|Ave|Rd|Way|Dr|Ln|Pkwy)|` +
+        // email address
+        `[A-Za-z0-9._-]+@[A-Za-z0-9.-]+\\.(?:com|net|org)|` +
+        // US-style phone (123-456-7890 / 123.456.7890 / 123 456 7890)
+        `\\d{3}[-.\\s]?\\d{3}[-.\\s]?\\d{4}` +
+      `)|$)`,
       'i'
     );
     const m = text.match(re);
