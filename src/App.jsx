@@ -3612,7 +3612,21 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
     console.log('[manifest] pre-populating', sorted.length, 'legs for', draft.tail, draft.date);
     (async () => {
       const m = await import('./firebase-manifests.js');
-      const newLegs = sorted.slice(0, 7).map(t => m.buildLegFromTrip(t, [], 'auto-prepopulate'));
+      const dataModule = await import('./firebase-data.js');
+      // Fetch preloadedPax for each trip in parallel
+      const paxByTripUid = {};
+      await Promise.all(sorted.map(async (t) => {
+        try {
+          const pax = await dataModule.fetchPreloadedPax(t.uid);
+          paxByTripUid[t.uid] = pax;
+        } catch (err) {
+          console.error('[manifest] fetchPreloadedPax failed for', t.uid, err);
+          paxByTripUid[t.uid] = [];
+        }
+      }));
+      const newLegs = sorted.slice(0, 7).map(t =>
+        m.buildLegFromTrip(t, paxByTripUid[t.uid] || [], 'auto-prepopulate')
+      );
       const next = { ...draft, legs: newLegs };
       setDraft(next);
       try { await m.saveManifest(next); }
@@ -3622,13 +3636,88 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
   // Reset the populated ref when the manifest ID changes (new manifest opened)
   useEffect(() => { populatedRef.current = false; }, [manifest?.id]);
 
+  // Live-sync pax names from trip-state for each leg that has a tripUid.
+  // When ops uploads a trip sheet or checks pax in/out, the leg's pax names
+  // auto-update on this manifest. Only updates pax names — never overwrites
+  // crew-edited W&B/CG/etc data on the leg.
+  useEffect(() => {
+    if (readOnly) return;
+    if (!draft || !Array.isArray(draft.legs)) return;
+    const tripUids = draft.legs.filter(l => l.tripUid).map(l => l.tripUid);
+    if (tripUids.length === 0) return;
+    console.log('[manifest] live-sync subscribing to', tripUids.length, 'trip-states:', tripUids);
+
+    let cancelled = false;
+    const unsubs = [];
+    (async () => {
+      const dataModule = await import('./firebase-data.js');
+      const manifestModule = await import('./firebase-manifests.js');
+      if (cancelled) return;
+      for (const tripUid of tripUids) {
+        const unsub = dataModule.subscribeToTripState(tripUid, async (state) => {
+          if (cancelled) return;
+          const incomingPax = Array.isArray(state.preloadedPax) ? state.preloadedPax : [];
+          const incomingNames = incomingPax
+            .filter(p => p.checkInStatus !== 'skipped')
+            .slice(0, 7)
+            .map(p => `${p.firstName || ''} ${p.lastName || ''}`.trim())
+            .filter(Boolean);
+          console.log('[manifest] live-sync got pax for', tripUid, '→', incomingNames.length, 'names');
+          // Update the matching leg's passengers, but only if the names array
+          // is genuinely different. Persist the change to Firestore too.
+          let changedManifest = null;
+          setDraft(d => {
+            if (!d || !Array.isArray(d.legs)) return d;
+            const idx = d.legs.findIndex(l => l.tripUid === tripUid);
+            if (idx < 0) return d;
+            const currentNames = d.legs[idx].passengers || [];
+            const sameLength = currentNames.length === incomingNames.length;
+            const sameContent = sameLength && currentNames.every((n, i) => n === incomingNames[i]);
+            if (sameContent) return d;
+            const legs = [...d.legs];
+            legs[idx] = { ...legs[idx], passengers: incomingNames };
+            const next = { ...d, legs };
+            changedManifest = next; // capture for the persist below
+            return next;
+          });
+          // Persist to Firestore so pax stays after refresh
+          if (changedManifest) {
+            try {
+              await manifestModule.saveManifest(changedManifest);
+              console.log('[manifest] persisted pax update for leg', tripUid);
+            } catch (err) {
+              console.error('[manifest] live-sync persist failed:', err);
+            }
+          }
+        });
+        unsubs.push(unsub);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      for (const u of unsubs) {
+        try { u(); } catch {}
+      }
+    };
+  }, [draft?.id, draft?.legs?.length, readOnly]);
+
   const acceptScheduleChanges = async () => {
     if (readOnly) return;
     const m = await import('./firebase-manifests.js');
+    const dataModule = await import('./firebase-data.js');
     let nextLegs = Array.isArray(draft.legs) ? [...draft.legs] : [];
+    // Fetch preloadedPax for each new trip in parallel
+    const paxByTripUid = {};
+    await Promise.all(scheduleDiff.newTrips.map(async (t) => {
+      try {
+        paxByTripUid[t.uid] = await dataModule.fetchPreloadedPax(t.uid);
+      } catch (err) {
+        paxByTripUid[t.uid] = [];
+      }
+    }));
     for (const t of scheduleDiff.newTrips) {
       if (nextLegs.length >= 7) break;
-      nextLegs.push(m.buildLegFromTrip(t, [], 'auto-merge'));
+      nextLegs.push(m.buildLegFromTrip(t, paxByTripUid[t.uid] || [], 'auto-merge'));
     }
     const next = { ...draft, legs: nextLegs };
     setDraft(next);
@@ -3937,13 +4026,56 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
             LEGS · {(draft.legs || []).length}/7
           </h3>
           {!readOnly && (
-            <button
-              onClick={addLeg}
-              className="text-[10px] px-2 py-1 border border-slate-700 text-slate-400 hover:border-cyan-500/40 hover:text-cyan-300 tracking-widest"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}
-            >
-              + ADD MANUAL LEG
-            </button>
+            <div className="flex gap-1">
+              <button
+                onClick={async () => {
+                  const dataModule = await import('./firebase-data.js');
+                  const manifestModule = await import('./firebase-manifests.js');
+                  const tripUids = (draft.legs || []).filter(l => l.tripUid).map(l => l.tripUid);
+                  if (tripUids.length === 0) {
+                    alert('No legs are linked to scheduled trips — nothing to refresh.');
+                    return;
+                  }
+                  console.log('[manifest] refresh pax — fetching for', tripUids.length, 'legs');
+                  const paxByTripUid = {};
+                  await Promise.all(tripUids.map(async (uid) => {
+                    paxByTripUid[uid] = await dataModule.fetchPreloadedPax(uid);
+                  }));
+                  const next = {
+                    ...draft,
+                    legs: (draft.legs || []).map(l => {
+                      if (!l.tripUid) return l;
+                      const pax = paxByTripUid[l.tripUid] || [];
+                      const names = pax
+                        .filter(p => p.checkInStatus !== 'skipped')
+                        .slice(0, 7)
+                        .map(p => `${p.firstName || ''} ${p.lastName || ''}`.trim())
+                        .filter(Boolean);
+                      return { ...l, passengers: names };
+                    }),
+                  };
+                  setDraft(next);
+                  try {
+                    await manifestModule.saveManifest(next);
+                    console.log('[manifest] refresh pax — saved');
+                  } catch (err) {
+                    console.error('[manifest] refresh pax save failed:', err);
+                  }
+                }}
+                className="text-[10px] px-2 py-1 border border-slate-700 text-slate-400 hover:border-amber-500/40 hover:text-amber-300 tracking-widest"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                title="Re-fetch passenger names from each leg's trip sheet"
+              >
+                ↻ REFRESH PAX
+              </button>
+              <button
+                onClick={addLeg}
+                className="text-[10px] px-2 py-1 border border-slate-700 text-slate-400 hover:border-cyan-500/40 hover:text-cyan-300 tracking-widest"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              >
+                + ADD MANUAL LEG
+              </button>
+            </div>
           )}
         </div>
         {(draft.legs || []).length === 0 ? (
