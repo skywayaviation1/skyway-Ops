@@ -77,28 +77,7 @@ export async function autoAddTripToManifest({ trip, preloadedPax, addedBy }) {
     return null;
   }
 
-  const newLeg = {
-    tripUid: trip.uid,
-    from: trip.info.from || '',
-    to: trip.info.to || '',
-    timeOut: '', timeIn: '', total: '',
-    airport: trip.info.from || '',
-    cycles: '', nightLdgs: '',
-    passengers: Array.isArray(preloadedPax)
-      ? preloadedPax
-          .filter(p => p.checkInStatus !== 'skipped')
-          .slice(0, 7)
-          .map(p => `${p.firstName || ''} ${p.lastName || ''}`.trim())
-          .filter(Boolean)
-      : [],
-    toWeight: '', maxAllowable: '', fwdCG: '', toCG: '', aftCG: '',
-    numPax: Array.isArray(preloadedPax)
-      ? preloadedPax.filter(p => p.checkInStatus !== 'skipped').length || ''
-      : '',
-    configuration: '',
-    addedAt: Date.now(),
-    addedBy: addedBy || 'auto',
-  };
+  const newLeg = buildLegFromTrip(trip, preloadedPax, addedBy);
 
   let next;
   if (!existing) {
@@ -124,4 +103,75 @@ export async function autoAddTripToManifest({ trip, preloadedPax, addedBy }) {
 
   await saveManifest(next);
   return id;
+}
+
+/**
+ * Build a manifest leg from a trip object. Auto-fills:
+ *   - All trips: from, to, airport (=destination), passengers (from preloadedPax)
+ *   - REPO legs: T/O weight = "91" (Part 91 indicator), Configuration = "A"
+ *   - REVENUE legs: just leaves W&B fields empty for crew to fill
+ */
+export function buildLegFromTrip(trip, preloadedPax, addedBy) {
+  const isRepo = trip?.info?.legType === 'REPO';
+  return {
+    tripUid: trip.uid,
+    from: trip.info.from || '',
+    to: trip.info.to || '',
+    timeOut: '', timeIn: '', total: '',
+    airport: trip.info.to || '', // Airport = destination on the form
+    cycles: '', nightLdgs: '',
+    passengers: Array.isArray(preloadedPax)
+      ? preloadedPax
+          .filter(p => p.checkInStatus !== 'skipped')
+          .slice(0, 7)
+          .map(p => `${p.firstName || ''} ${p.lastName || ''}`.trim())
+          .filter(Boolean)
+      : [],
+    // REPO legs: shorthand "91" in T/O weight + standard config "A"
+    // REVENUE legs: blank — crew fills with actual W&B numbers
+    toWeight: isRepo ? '91' : '',
+    maxAllowable: '',
+    fwdCG: '',
+    toCG: '',
+    aftCG: '',
+    numPax: isRepo ? '' : (
+      Array.isArray(preloadedPax)
+        ? preloadedPax.filter(p => p.checkInStatus !== 'skipped').length || ''
+        : ''
+    ),
+    configuration: isRepo ? 'A' : '',
+    legType: isRepo ? 'REPO' : 'REVENUE',
+    addedAt: Date.now(),
+    addedBy: addedBy || 'auto',
+  };
+}
+
+/**
+ * Sync a manifest with the current schedule for that date+tail.
+ * Compares stored manifest legs against currently-scheduled trips, returns:
+ *   { newLegs: [...], removedLegUids: [...], unchanged: bool }
+ *
+ * The caller decides whether to apply the changes (safe pattern — show banner,
+ * let user accept/reject).
+ */
+export function diffManifestVsSchedule(manifest, scheduledTrips) {
+  const existingLegs = Array.isArray(manifest.legs) ? manifest.legs : [];
+  const existingTripUids = new Set(existingLegs.filter(l => l.tripUid).map(l => l.tripUid));
+  const scheduledTripUids = new Set(scheduledTrips.map(t => t.uid));
+
+  // New legs: scheduled trips not yet on the manifest
+  const newTrips = scheduledTrips.filter(t => !existingTripUids.has(t.uid));
+
+  // Removed legs: legs on the manifest whose trip was cancelled/removed.
+  // Manual legs (no tripUid) are NEVER considered for removal — those are
+  // crew-added off-schedule entries.
+  const removedTripUids = existingLegs
+    .filter(l => l.tripUid && !scheduledTripUids.has(l.tripUid))
+    .map(l => l.tripUid);
+
+  return {
+    newTrips,
+    removedTripUids,
+    unchanged: newTrips.length === 0 && removedTripUids.length === 0,
+  };
 }

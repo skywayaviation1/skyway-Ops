@@ -3377,6 +3377,7 @@ function ManifestsScreen({ currentUser, allTrips }) {
           <ManifestDetail
             manifest={selected}
             currentUser={currentUser}
+            allTrips={allTrips}
             onBack={() => setSelectedId(null)}
           />
         ) : (
@@ -3519,7 +3520,7 @@ function NewManifestPicker({ currentUser, allTrips, todayStr, onCreate, onCancel
   );
 }
 
-function ManifestDetail({ manifest, currentUser, onBack }) {
+function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
   const [draft, setDraft] = useState(manifest);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
@@ -3528,14 +3529,81 @@ function ManifestDetail({ manifest, currentUser, onBack }) {
   const isCrew = currentUser?.role === 'crew';
   const isOps = currentUser?.role === 'ops';
   const isAdmin = currentUser?.role === 'admin';
-  // Crew (PIC + SIC) can sign. Admin can edit but cannot sign.
   const canSign = isCrew;
   const canEdit = isCrew || isOps || isAdmin;
 
   useEffect(() => { setDraft(manifest); }, [manifest.id, manifest.updatedAt]);
 
-  const isSubmitted = draft.status === 'submitted';
+  // Trips on the schedule that match this manifest's date+tail
+  const scheduledTrips = useMemo(() => {
+    if (!Array.isArray(allTrips) || !draft) return [];
+    return allTrips.filter(t => {
+      if (!t.info?.tail || !t.start) return false;
+      if (t.info.tail !== draft.tail) return false;
+      const d = t.start instanceof Date ? t.start : new Date(t.start);
+      const yyyy = d.getFullYear();
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      return `${yyyy}-${mm}-${dd}` === draft.date;
+    });
+  }, [allTrips, draft]);
+
+  // Schedule diff
+  const scheduleDiff = useMemo(() => {
+    if (!draft) return { newTrips: [], removedTripUids: [], unchanged: true };
+    const existingLegs = Array.isArray(draft.legs) ? draft.legs : [];
+    const existingTripUids = new Set(existingLegs.filter(l => l.tripUid).map(l => l.tripUid));
+    const scheduledTripUids = new Set(scheduledTrips.map(t => t.uid));
+    const newTrips = scheduledTrips.filter(t => !existingTripUids.has(t.uid));
+    const removedTripUids = existingLegs
+      .filter(l => l.tripUid && !scheduledTripUids.has(l.tripUid))
+      .map(l => l.tripUid);
+    return {
+      newTrips,
+      removedTripUids,
+      unchanged: newTrips.length === 0 && removedTripUids.length === 0,
+    };
+  }, [draft, scheduledTrips]);
+
+  const isSubmitted = draft?.status === 'submitted';
   const readOnly = isSubmitted || !canEdit;
+
+  // Pre-populate from schedule on first open if no legs exist yet
+  useEffect(() => {
+    if (readOnly) return;
+    if (!draft) return;
+    if ((draft.legs || []).length > 0) return;
+    if (scheduledTrips.length === 0) return;
+    const sorted = [...scheduledTrips].sort((a, b) => {
+      const ta = a.start instanceof Date ? a.start.getTime() : new Date(a.start).getTime();
+      const tb = b.start instanceof Date ? b.start.getTime() : new Date(b.start).getTime();
+      return ta - tb;
+    });
+    (async () => {
+      const m = await import('./firebase-manifests.js');
+      const newLegs = sorted.slice(0, 7).map(t => m.buildLegFromTrip(t, [], 'auto-prepopulate'));
+      const next = { ...draft, legs: newLegs };
+      setDraft(next);
+      try { await m.saveManifest(next); }
+      catch (err) { console.error('[manifest] pre-populate save failed:', err); }
+    })();
+  }, [draft?.id, scheduledTrips.length]); // eslint-disable-line
+
+  const acceptScheduleChanges = async () => {
+    if (readOnly) return;
+    const m = await import('./firebase-manifests.js');
+    let nextLegs = Array.isArray(draft.legs) ? [...draft.legs] : [];
+    for (const t of scheduleDiff.newTrips) {
+      if (nextLegs.length >= 7) break;
+      nextLegs.push(m.buildLegFromTrip(t, [], 'auto-merge'));
+    }
+    const next = { ...draft, legs: nextLegs };
+    setDraft(next);
+    try { await m.saveManifest(next); }
+    catch (err) { setError('Failed to save: ' + err.message); }
+  };
+
+  if (!draft) return null;
 
   const setField = (key) => (value) => {
     if (readOnly) return;
@@ -3573,6 +3641,7 @@ function ManifestDetail({ manifest, currentUser, onBack }) {
         airport: '', cycles: '', nightLdgs: '', passengers: [],
         toWeight: '', maxAllowable: '', fwdCG: '', toCG: '', aftCG: '',
         numPax: '', configuration: '',
+        legType: 'REVENUE',
         addedAt: Date.now(),
         addedBy: currentUser?.name || 'manual',
       }],
@@ -3615,7 +3684,6 @@ function ManifestDetail({ manifest, currentUser, onBack }) {
       currentUser.name || ''
     );
     if (!typedName || !typedName.trim()) return;
-
     const sig = {
       name: typedName.trim(),
       uid: currentUser.uid || currentUser.id,
@@ -3674,16 +3742,12 @@ function ManifestDetail({ manifest, currentUser, onBack }) {
       };
       await m.saveManifest(submitted);
       setDraft(submitted);
-
-      // Build the manifest payload for PDF generation. Map our day-level
-      // structure to the form's expected fields.
       const payload = {
         ...submitted,
         tail: submitted.tail,
         tripDate: submitted.date,
-        tripCode: '', // day-level manifest doesn't have a single trip code
+        tripCode: '',
       };
-
       const r = await fetch('/api/generate-manifest', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -3706,6 +3770,8 @@ function ManifestDetail({ manifest, currentUser, onBack }) {
       setSaving(false);
     }
   };
+
+  const showScheduleBanner = !readOnly && !scheduleDiff.unchanged;
 
   return (
     <div className="p-4 max-w-5xl mx-auto space-y-4">
@@ -3736,7 +3802,39 @@ function ManifestDetail({ manifest, currentUser, onBack }) {
       {error && <div className="border border-red-500/40 bg-red-500/5 p-3 text-xs text-red-300">{error}</div>}
       {submitInfo && <div className="border border-emerald-500/40 bg-emerald-500/5 p-3 text-xs text-emerald-300">{submitInfo}</div>}
 
-      {/* Top metadata */}
+      {showScheduleBanner && (
+        <div className="border border-amber-500/40 bg-amber-500/5 p-3">
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <div className="text-[10px] tracking-widest text-amber-300" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+              SCHEDULE CHANGED
+            </div>
+          </div>
+          <div className="text-xs text-slate-300 space-y-1" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+            {scheduleDiff.newTrips.length > 0 && (
+              <div>
+                <span className="text-emerald-300">+ {scheduleDiff.newTrips.length} new leg{scheduleDiff.newTrips.length === 1 ? '' : 's'}:</span>{' '}
+                {scheduleDiff.newTrips.map(t => `${t.info?.from || '?'}→${t.info?.to || '?'}${t.info?.legType === 'REPO' ? ' (91)' : ''}`).join(', ')}
+              </div>
+            )}
+            {scheduleDiff.removedTripUids.length > 0 && (
+              <div>
+                <span className="text-red-300">⚠ {scheduleDiff.removedTripUids.length} leg{scheduleDiff.removedTripUids.length === 1 ? '' : 's'} no longer on schedule</span>
+                <span className="text-slate-500"> — review and remove manually if cancelled</span>
+              </div>
+            )}
+          </div>
+          {scheduleDiff.newTrips.length > 0 && (
+            <button
+              onClick={acceptScheduleChanges}
+              className="mt-2 px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-medium tracking-widest"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              ADD NEW LEGS TO MANIFEST
+            </button>
+          )}
+        </div>
+      )}
+
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <ManifestField label="HOBBS OUT" value={draft.hobbsOut} onChange={setField('hobbsOut')} readOnly={readOnly} mono />
         <ManifestField label="HOBBS IN" value={draft.hobbsIn} onChange={setField('hobbsIn')} readOnly={readOnly} mono />
@@ -3749,7 +3847,6 @@ function ManifestDetail({ manifest, currentUser, onBack }) {
         <ManifestField label="DUTY TIME TOTAL" value={draft.dutyTimeTotal} onChange={setField('dutyTimeTotal')} readOnly={readOnly} mono />
       </div>
 
-      {/* Legs */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <h3 className="text-sm tracking-widest text-slate-300" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}>
@@ -3770,26 +3867,28 @@ function ManifestDetail({ manifest, currentUser, onBack }) {
             No legs yet. Legs auto-add when ops marks trips complete, or tap ADD MANUAL LEG.
           </div>
         ) : (
-          (draft.legs || []).map((leg, idx) => (
-            <ManifestLegCard
-              key={idx}
-              idx={idx}
-              leg={leg}
-              readOnly={readOnly}
-              onChange={(key) => setLegField(idx, key)}
-              onPaxChange={(paxIdx) => setPaxName(idx, paxIdx)}
-              onRemove={() => removeLeg(idx)}
-            />
-          ))
+          (draft.legs || []).map((leg, idx) => {
+            const isOrphan = leg.tripUid && scheduleDiff.removedTripUids.includes(leg.tripUid);
+            return (
+              <ManifestLegCard
+                key={idx}
+                idx={idx}
+                leg={leg}
+                isOrphan={isOrphan}
+                readOnly={readOnly}
+                onChange={(key) => setLegField(idx, key)}
+                onPaxChange={(paxIdx) => setPaxName(idx, paxIdx)}
+                onRemove={() => removeLeg(idx)}
+              />
+            );
+          })
         )}
       </div>
 
-      {/* Acceptance */}
       <div className="border border-slate-700 bg-slate-900/40 p-3 text-xs text-slate-400 italic" style={{ fontFamily: 'DM Sans, sans-serif' }}>
         Acceptance of Flight Release: I have completed a preflight inspection of the aircraft, checked the scale used for weight & balance purposes and completed all duties required by FAA regulations and Skyway Aviation's Operations Manual and hereby accept this aircraft for flight.
       </div>
 
-      {/* Signatures */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         <SigBlock role="pic" sig={draft.picSig} canSign={canSign && !isSubmitted} onSign={() => sign('pic')} onUnsign={() => unsign('pic')} />
         <SigBlock role="sic" sig={draft.sicSig} canSign={canSign && !isSubmitted} onSign={() => sign('sic')} onUnsign={() => unsign('sic')} />
@@ -3824,7 +3923,6 @@ function ManifestDetail({ manifest, currentUser, onBack }) {
   );
 }
 
-
 function ManifestField({ label, value, onChange, readOnly, mono }) {
   return (
     <label className="block">
@@ -3841,14 +3939,33 @@ function ManifestField({ label, value, onChange, readOnly, mono }) {
   );
 }
 
-function ManifestLegCard({ idx, leg, readOnly, onChange, onPaxChange, onRemove }) {
+function ManifestLegCard({ idx, leg, isOrphan, readOnly, onChange, onPaxChange, onRemove }) {
+  const isRepo = leg.legType === 'REPO';
+  const borderClass = isOrphan
+    ? 'border-red-500/40 bg-red-500/5'
+    : isRepo
+    ? 'border-violet-500/30 bg-violet-500/5'
+    : 'border-slate-700 bg-slate-900/40';
+
   return (
-    <div className="border border-slate-700 bg-slate-900/40 p-3 space-y-2">
-      <div className="flex items-center justify-between">
-        <div className="text-[10px] tracking-widest text-cyan-400" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
-          LEG {idx + 1}
+    <div className={`border ${borderClass} p-3 space-y-2`}>
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex items-center gap-2">
+          <div className="text-[10px] tracking-widest text-cyan-400" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+            LEG {idx + 1}
+          </div>
+          {isRepo && (
+            <span className="text-[9px] tracking-widest text-violet-300 px-1.5 py-0.5 border border-violet-500/40" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              REPO · 91
+            </span>
+          )}
+          {isOrphan && (
+            <span className="text-[9px] tracking-widest text-red-300 px-1.5 py-0.5 border border-red-500/40" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              ⚠ NOT ON SCHEDULE
+            </span>
+          )}
         </div>
-        {!readOnly && idx > 0 && (
+        {!readOnly && (
           <button
             onClick={onRemove}
             className="text-[10px] text-slate-500 hover:text-red-300 tracking-widest"
@@ -3872,35 +3989,46 @@ function ManifestLegCard({ idx, leg, readOnly, onChange, onPaxChange, onRemove }
         <ManifestField label="NIGHT LDGS" value={leg.nightLdgs} onChange={onChange('nightLdgs')} readOnly={readOnly} mono />
       </div>
 
-      <div>
-        <div className="text-[10px] tracking-widest text-slate-500 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>PASSENGERS (UP TO 7)</div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-          {[0,1,2,3,4,5,6].map(i => (
-            <input
-              key={i}
-              type="text"
-              value={(leg.passengers || [])[i] || ''}
-              onChange={(e) => onPaxChange(i)(e.target.value)}
-              readOnly={readOnly}
-              placeholder={`Pax ${i + 1}`}
-              className="bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400 disabled:opacity-50"
-              style={{ fontFamily: 'DM Sans, sans-serif' }}
-            />
-          ))}
+      {/* Repo legs: skip pax + W&B (just T/O weight = '91' and Configuration shown).
+          Revenue legs: show full pax + W&B fields. */}
+      {!isRepo && (
+        <div>
+          <div className="text-[10px] tracking-widest text-slate-500 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>PASSENGERS (UP TO 7)</div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            {[0,1,2,3,4,5,6].map(i => (
+              <input
+                key={i}
+                type="text"
+                value={(leg.passengers || [])[i] || ''}
+                onChange={(e) => onPaxChange(i)(e.target.value)}
+                readOnly={readOnly}
+                placeholder={`Pax ${i + 1}`}
+                className="bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400 disabled:opacity-50"
+                style={{ fontFamily: 'DM Sans, sans-serif' }}
+              />
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2 pt-2 border-t border-slate-800">
         <ManifestField label="T/O WEIGHT" value={leg.toWeight} onChange={onChange('toWeight')} readOnly={readOnly} mono />
-        <ManifestField label="MAX ALLOWABLE" value={leg.maxAllowable} onChange={onChange('maxAllowable')} readOnly={readOnly} mono />
-        <ManifestField label="FWD C.G. LIMIT" value={leg.fwdCG} onChange={onChange('fwdCG')} readOnly={readOnly} mono />
-        <ManifestField label="T/O C.G." value={leg.toCG} onChange={onChange('toCG')} readOnly={readOnly} mono />
+        {!isRepo && <ManifestField label="MAX ALLOWABLE" value={leg.maxAllowable} onChange={onChange('maxAllowable')} readOnly={readOnly} mono />}
+        {!isRepo && <ManifestField label="FWD C.G. LIMIT" value={leg.fwdCG} onChange={onChange('fwdCG')} readOnly={readOnly} mono />}
+        {!isRepo && <ManifestField label="T/O C.G." value={leg.toCG} onChange={onChange('toCG')} readOnly={readOnly} mono />}
       </div>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-        <ManifestField label="AFT C.G. LIMIT" value={leg.aftCG} onChange={onChange('aftCG')} readOnly={readOnly} mono />
-        <ManifestField label="# PASSENGERS" value={leg.numPax} onChange={onChange('numPax')} readOnly={readOnly} mono />
-        <ManifestField label="CONFIGURATION" value={leg.configuration} onChange={onChange('configuration')} readOnly={readOnly} />
-      </div>
+      {!isRepo && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+          <ManifestField label="AFT C.G. LIMIT" value={leg.aftCG} onChange={onChange('aftCG')} readOnly={readOnly} mono />
+          <ManifestField label="# PASSENGERS" value={leg.numPax} onChange={onChange('numPax')} readOnly={readOnly} mono />
+          <ManifestField label="CONFIGURATION" value={leg.configuration} onChange={onChange('configuration')} readOnly={readOnly} />
+        </div>
+      )}
+      {isRepo && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+          <ManifestField label="CONFIGURATION" value={leg.configuration} onChange={onChange('configuration')} readOnly={readOnly} />
+        </div>
+      )}
     </div>
   );
 }
