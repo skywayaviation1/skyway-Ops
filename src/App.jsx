@@ -2460,8 +2460,9 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
                   hasCatering,
                   paxOverride,
                 });
-                // Auto-add this completed leg to the daily manifest (best-effort)
-                if (next) {
+                // Auto-add this completed leg to the daily manifest, but only
+                // if it's an actual flying leg (skip CREW HOTEL, MX, HOLD).
+                if (next && trip.info?.isFlight) {
                   try {
                     const m = await import('./firebase-manifests.js');
                     const manifestIdResult = await m.autoAddTripToManifest({
@@ -2474,7 +2475,6 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
                     }
                   } catch (err) {
                     console.error('[manifest] auto-add failed:', err);
-                    // Don't block the completion — manifest can be manually edited later
                   }
                 }
               }}
@@ -3534,12 +3534,16 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
 
   useEffect(() => { setDraft(manifest); }, [manifest.id, manifest.updatedAt]);
 
-  // Trips on the schedule that match this manifest's date+tail
+  // Trips on the schedule that match this manifest's date+tail.
+  // ONLY actual flying legs — exclude CREW HOTEL, MAINTENANCE, TRAINING, HOLD.
+  // The `info.isFlight` flag is set during iCal parsing based on category.
   const scheduledTrips = useMemo(() => {
     if (!Array.isArray(allTrips) || !draft) return [];
     return allTrips.filter(t => {
       if (!t.info?.tail || !t.start) return false;
       if (t.info.tail !== draft.tail) return false;
+      // Skip non-flying entries (crew hotel, maintenance, hold, training)
+      if (!t.info.isFlight) return false;
       const d = t.start instanceof Date ? t.start : new Date(t.start);
       const yyyy = d.getFullYear();
       const mm = String(d.getMonth() + 1).padStart(2, '0');
@@ -3548,13 +3552,19 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
     });
   }, [allTrips, draft]);
 
-  // Schedule diff
+  // Schedule diff — what's new on the schedule that's NOT yet on the manifest,
+  // and what's no longer on the schedule but still on the manifest.
+  // Excludes trips the user has explicitly removed (dismissedTripUids).
   const scheduleDiff = useMemo(() => {
     if (!draft) return { newTrips: [], removedTripUids: [], unchanged: true };
     const existingLegs = Array.isArray(draft.legs) ? draft.legs : [];
     const existingTripUids = new Set(existingLegs.filter(l => l.tripUid).map(l => l.tripUid));
+    const dismissedTripUids = new Set(Array.isArray(draft.dismissedTripUids) ? draft.dismissedTripUids : []);
     const scheduledTripUids = new Set(scheduledTrips.map(t => t.uid));
-    const newTrips = scheduledTrips.filter(t => !existingTripUids.has(t.uid));
+    // New trips: on schedule, not on manifest, not previously dismissed
+    const newTrips = scheduledTrips.filter(t =>
+      !existingTripUids.has(t.uid) && !dismissedTripUids.has(t.uid)
+    );
     const removedTripUids = existingLegs
       .filter(l => l.tripUid && !scheduledTripUids.has(l.tripUid))
       .map(l => l.tripUid);
@@ -3670,10 +3680,31 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
       }],
     }));
   };
-  const removeLeg = (idx) => {
+  const removeLeg = async (idx) => {
     if (readOnly) return;
-    if (!window.confirm('Remove this leg from the manifest?')) return;
-    setDraft(d => ({ ...d, legs: (d.legs || []).filter((_, i) => i !== idx) }));
+    const leg = (draft.legs || [])[idx];
+    if (!leg) return;
+    const label = leg.from && leg.to ? `${leg.from} → ${leg.to}` : `Leg ${idx + 1}`;
+    if (!window.confirm(`Remove ${label} from this manifest?`)) return;
+    // If this leg came from a scheduled trip, track its tripUid so the
+    // SCHEDULE CHANGED banner doesn't re-suggest adding it back.
+    const dismissedTripUids = Array.isArray(draft.dismissedTripUids) ? [...draft.dismissedTripUids] : [];
+    if (leg.tripUid && !dismissedTripUids.includes(leg.tripUid)) {
+      dismissedTripUids.push(leg.tripUid);
+    }
+    const next = {
+      ...draft,
+      legs: (draft.legs || []).filter((_, i) => i !== idx),
+      dismissedTripUids,
+    };
+    setDraft(next);
+    // Auto-save so deletion sticks even if user navigates away
+    try {
+      const m = await import('./firebase-manifests.js');
+      await m.saveManifest(next);
+    } catch (err) {
+      console.error('[manifest] removeLeg save failed:', err);
+    }
   };
 
   const saveDraft = async () => {
