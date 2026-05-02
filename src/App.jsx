@@ -232,6 +232,11 @@ function parseAAMVA(rawText) {
    ============================================================ */
 const DEFAULT_ICAL_URL = 'https://portal.jetinsight.com/schedule/7a32dd47-6a5c-4c9c-b53b-864381bacebf/1243136b-b3ab-4dff-b0cf-edf264e20fbf.ics';
 
+// Hardcoded ops email — always CC'd on broker notifications. Cannot be
+// changed per-user (was previously a settings field, but ops policy is
+// that all status emails go to charters@flyskyway.com regardless of user).
+const OPS_EMAIL = 'charters@flyskyway.com';
+
 const CATEGORY_META = {
   REVENUE:  { label: 'REVENUE',     tone: 'cyan',    icon: 'Users' },
   REPO:     { label: 'REPO',        tone: 'violet',  icon: 'Plane' },
@@ -3392,12 +3397,11 @@ function PassengerRow({ passenger, onRemove, onToggleNoShow }) {
 function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, onLoadFromText, syncStatus }) {
   const [icalUrl, setIcalUrl] = useState(config.icalUrl || '');
   const [icalText, setIcalText] = useState('');
-  const [opsEmail, setOpsEmail] = useState(config.opsEmail || '');
   const [crewName, setCrewName] = useState(config.crewName || '');
   const [textMode, setTextMode] = useState(false);
 
   const save = async () => {
-    const next = { ...config, icalUrl, opsEmail, crewName };
+    const next = { ...config, icalUrl, crewName };
     await storage.set('settings:config', next);
     setConfig(next);
   };
@@ -3494,24 +3498,6 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
             >
               <Sparkles className="w-3.5 h-3.5" /> LOAD DEMO TRIPS
             </button>
-          </section>
-
-          <section>
-            <h3 className="text-xs tracking-widest text-cyan-400 mb-3" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
-              OPS NOTIFICATIONS
-            </h3>
-            <label className="block">
-              <span className="text-[10px] tracking-widest text-slate-500 uppercase" style={{ fontFamily: 'JetBrains Mono, monospace' }}>OPS EMAIL (default recipient)</span>
-              <input
-                type="email"
-                value={opsEmail}
-                onChange={e => setOpsEmail(e.target.value)}
-                placeholder="ops@charterco.com"
-                className="mt-1 w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
-                style={{ fontFamily: 'JetBrains Mono, monospace' }}
-              />
-              <span className="text-[11px] text-slate-500 mt-1 block">CC'd on all notification emails alongside the broker.</span>
-            </label>
           </section>
 
           <button
@@ -6324,7 +6310,7 @@ export default function CharterOps() {
                   currentUser={currentUser}
                   currentUserDisplayName={userDisplayName}
                   allTrips={allTrips}
-                  opsEmail={config.opsEmail}
+                  opsEmail={OPS_EMAIL}
                   onBack={() => setSelectedId(null)}
                 />
               ) : (
@@ -6429,7 +6415,7 @@ export default function CharterOps() {
                   currentUser={currentUser}
                   currentUserDisplayName={userDisplayName}
                   allTrips={allTrips}
-                  opsEmail={config.opsEmail}
+                  opsEmail={OPS_EMAIL}
                   onBack={() => setSelectedId(null)}
                 />
               ) : (
