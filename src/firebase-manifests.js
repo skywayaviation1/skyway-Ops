@@ -8,7 +8,7 @@
 
 import { db } from './firebase.js';
 import {
-  doc, setDoc, getDoc, collection, query, orderBy, onSnapshot,
+  doc, setDoc, getDoc, deleteDoc, collection, query, orderBy, onSnapshot,
 } from 'firebase/firestore';
 
 export function manifestId(date, tail) {
@@ -41,6 +41,15 @@ export async function fetchManifest(id) {
   const safeId = String(id).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 200);
   const snap = await getDoc(doc(db, 'manifests', safeId));
   return snap.exists() ? { ...snap.data(), id: snap.id } : null;
+}
+
+/**
+ * Hard-delete a manifest. Caller must verify admin role first.
+ */
+export async function deleteManifest(id) {
+  if (!id) throw new Error('Missing manifest id');
+  const safeId = String(id).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 200);
+  await deleteDoc(doc(db, 'manifests', safeId));
 }
 
 export function subscribeToAllManifests(onUpdate) {

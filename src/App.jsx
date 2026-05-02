@@ -3568,17 +3568,38 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
   const isSubmitted = draft?.status === 'submitted';
   const readOnly = isSubmitted || !canEdit;
 
-  // Pre-populate from schedule on first open if no legs exist yet
+  // Pre-populate from schedule on first open if no legs exist yet.
+  // Uses a ref-tracked "already attempted" flag so the effect doesn't loop
+  // when the save round-trips back through Firestore.
+  const populatedRef = useRef(false);
   useEffect(() => {
     if (readOnly) return;
     if (!draft) return;
-    if ((draft.legs || []).length > 0) return;
-    if (scheduledTrips.length === 0) return;
+    if (populatedRef.current) return; // already done for this manifest
+    if ((draft.legs || []).length > 0) {
+      // Has legs already — mark as done so we don't re-populate later
+      populatedRef.current = true;
+      return;
+    }
+    if (!Array.isArray(allTrips) || allTrips.length === 0) {
+      // Schedule still loading — wait for next render
+      return;
+    }
+    if (scheduledTrips.length === 0) {
+      // Schedule is loaded but no trips for this date+tail. Mark as attempted
+      // so we don't keep checking, but allow the SCHEDULE CHANGED banner to
+      // surface any future trips.
+      populatedRef.current = true;
+      console.log('[manifest] no scheduled trips for', draft.tail, draft.date);
+      return;
+    }
+    populatedRef.current = true;
     const sorted = [...scheduledTrips].sort((a, b) => {
       const ta = a.start instanceof Date ? a.start.getTime() : new Date(a.start).getTime();
       const tb = b.start instanceof Date ? b.start.getTime() : new Date(b.start).getTime();
       return ta - tb;
     });
+    console.log('[manifest] pre-populating', sorted.length, 'legs for', draft.tail, draft.date);
     (async () => {
       const m = await import('./firebase-manifests.js');
       const newLegs = sorted.slice(0, 7).map(t => m.buildLegFromTrip(t, [], 'auto-prepopulate'));
@@ -3587,7 +3608,9 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
       try { await m.saveManifest(next); }
       catch (err) { console.error('[manifest] pre-populate save failed:', err); }
     })();
-  }, [draft?.id, scheduledTrips.length]); // eslint-disable-line
+  }, [draft, allTrips, scheduledTrips, readOnly]);
+  // Reset the populated ref when the manifest ID changes (new manifest opened)
+  useEffect(() => { populatedRef.current = false; }, [manifest?.id]);
 
   const acceptScheduleChanges = async () => {
     if (readOnly) return;
@@ -3787,6 +3810,31 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
             S-5/R-37/10-30-23 · LOAD MANIFEST
           </div>
         </div>
+        {isAdmin && (
+          <button
+            onClick={async () => {
+              if (!window.confirm(
+                `Delete this manifest?\n\n` +
+                `${draft.tail} · ${formatDate(draft.date)}\n` +
+                `${(draft.legs || []).length} legs, ${draft.status}\n\n` +
+                `This is permanent and cannot be undone. Use only to remove test/duplicate manifests — not as a substitute for amendments.`
+              )) return;
+              try {
+                const m = await import('./firebase-manifests.js');
+                await m.deleteManifest(draft.id);
+                onBack();
+              } catch (err) {
+                console.error('[manifest] delete failed:', err);
+                alert('Delete failed: ' + err.message);
+              }
+            }}
+            className="text-[10px] px-2 py-1 border border-red-500/40 text-red-300 hover:bg-red-500/10 tracking-widest"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            title="Admin only — permanently delete this manifest"
+          >
+            DELETE
+          </button>
+        )}
       </div>
 
       {isSubmitted && (
@@ -3840,6 +3888,11 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
         <ManifestField label="HOBBS IN" value={draft.hobbsIn} onChange={setField('hobbsIn')} readOnly={readOnly} mono />
         <ManifestField label="HOBBS TOTAL" value={draft.hobbsTotal} onChange={setField('hobbsTotal')} readOnly={readOnly} mono />
         <ManifestField label="WAIT TIME" value={draft.waitTime} onChange={setField('waitTime')} readOnly={readOnly} mono />
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <ManifestField label="TIME OUT" value={draft.timeOut} onChange={setField('timeOut')} readOnly={readOnly} mono />
+        <ManifestField label="TIME IN" value={draft.timeIn} onChange={setField('timeIn')} readOnly={readOnly} mono />
+        <ManifestField label="TIME TOTAL" value={draft.timeTotal} onChange={setField('timeTotal')} readOnly={readOnly} mono />
       </div>
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <ManifestField label="DUTY TIME IN" value={draft.dutyTimeIn} onChange={setField('dutyTimeIn')} readOnly={readOnly} mono />
@@ -3976,15 +4029,12 @@ function ManifestLegCard({ idx, leg, isOrphan, readOnly, onChange, onPaxChange, 
         )}
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
         <ManifestField label="FROM" value={leg.from} onChange={onChange('from')} readOnly={readOnly} mono />
         <ManifestField label="TO" value={leg.to} onChange={onChange('to')} readOnly={readOnly} mono />
-        <ManifestField label="TIME OUT" value={leg.timeOut} onChange={onChange('timeOut')} readOnly={readOnly} mono />
-        <ManifestField label="TIME IN" value={leg.timeIn} onChange={onChange('timeIn')} readOnly={readOnly} mono />
-      </div>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-        <ManifestField label="TOTAL" value={leg.total} onChange={onChange('total')} readOnly={readOnly} mono />
         <ManifestField label="AIRPORT" value={leg.airport} onChange={onChange('airport')} readOnly={readOnly} mono />
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-2 gap-2">
         <ManifestField label="CYCLES" value={leg.cycles} onChange={onChange('cycles')} readOnly={readOnly} mono />
         <ManifestField label="NIGHT LDGS" value={leg.nightLdgs} onChange={onChange('nightLdgs')} readOnly={readOnly} mono />
       </div>
