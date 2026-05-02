@@ -2448,19 +2448,35 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
             <button
               onClick={async () => {
                 const next = !completed;
-                if (next && !window.confirm('Mark this trip as complete? It will move to ARCHIVE.')) return;
+                if (next && !window.confirm('Mark this trip as complete? It will move to ARCHIVE and add a leg to the daily Load Manifest.')) return;
                 if (!next && !window.confirm('Reopen this trip? It will return to the active schedule.')) return;
                 setCompleted(next);
                 await persist({
                   statuses, passengers, brokerEmail, autoNotify,
                   completed: next,
                   completedAt: next ? Date.now() : null,
-                  // Auto-archive on complete, unarchive on reopen.
                   archived: next,
                   archivedAt: next ? Date.now() : null,
                   hasCatering,
                   paxOverride,
                 });
+                // Auto-add this completed leg to the daily manifest (best-effort)
+                if (next) {
+                  try {
+                    const m = await import('./firebase-manifests.js');
+                    const manifestIdResult = await m.autoAddTripToManifest({
+                      trip,
+                      preloadedPax,
+                      addedBy: currentUser?.name || 'auto',
+                    });
+                    if (manifestIdResult) {
+                      console.log('[manifest] leg auto-added to', manifestIdResult);
+                    }
+                  } catch (err) {
+                    console.error('[manifest] auto-add failed:', err);
+                    // Don't block the completion — manifest can be manually edited later
+                  }
+                }
               }}
               className={`px-2 py-0.5 text-[10px] uppercase tracking-[0.15em] border ${
                 completed
@@ -2550,7 +2566,6 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
             { id: 'pax', label: 'PAX', icon: Users, badge: trip.info.pax === 0 ? null : `${totalVerified}/${totalExpected}`, hidden: trip.info.pax === 0 || !trip.info.isOps },
             { id: 'sheet', label: 'SHEET', icon: FileText, badge: tripSheetUrl ? '✓' : null, hidden: !showSheetTab },
             { id: 'notes', label: 'NOTES', icon: AlertCircle, hidden: !hasNotes },
-            { id: 'manifest', label: 'MANIFEST', icon: FileText, hidden: !['crew', 'ops', 'admin'].includes(currentUser?.role) },
             { id: 'chat', label: 'COMMS', icon: MessageSquare },
             { id: 'notify', label: 'NOTIFY', icon: Bell, hidden: !trip.info.isOps },
           ];
@@ -2731,12 +2746,6 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
           <div className="p-6 max-w-2xl space-y-4">
             <TripNotesPanel notes={tripSheetNotes} />
           </div>
-        ) : tab === 'manifest' ? (
-          <ManifestPanel
-            trip={trip}
-            currentUser={currentUser}
-            preloadedPax={preloadedPax}
-          />
         ) : tab === 'chat' ? (
           <ChatPanel tripId={trip.uid} currentUser={currentUserDisplayName || currentUser?.name || ''} />
         ) : tab === 'notify' ? (
@@ -3220,18 +3229,298 @@ function TripSheetPanel({
 // Display parsed notes from the trip sheet PDF.
 // Notes types: crew (action items, amber), customer (FYI, cyan), pax (luggage, neutral).
 // ============================================================
-//   Manifest panel — fillable Skyway S-5/R-37 Load Manifest
+// ============================================================
+//   MANIFESTS SECTION (top-level) — daily Load Manifests by tail
 // ============================================================
 //
-// Auto-fills only safe trip metadata: tail #, date, from/to per leg,
-// passenger names. Crew fills weight/balance/Hobbs/duty time manually.
-//
-// E-signatures are typed name + click 'I confirm' + audit log (UID, email,
-// timestamp). Saved drawn signatures from user profile auto-attach.
-// Submission is final (record locks); PDF emails to Loadmanifest@flyskyway.com.
-function ManifestPanel({ trip, currentUser, preloadedPax }) {
-  const [manifest, setManifest] = useState(null);
+// Data model: one manifest per (date, tail). PIC fills out at start of day,
+// adds legs throughout the day. Manifests auto-pick-up legs when ops marks
+// trips complete. Crew can also add manual legs (positioning, training).
+// E-signatures: typed name + saved drawn signature + audit log (UID, email,
+// timestamp). Submission is final (record locks); PDF emails to
+// Loadmanifest@flyskyway.com.
+
+function ManifestsScreen({ currentUser, allTrips }) {
+  const [manifests, setManifests] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [selectedId, setSelectedId] = useState(null);
+  const [showNewModal, setShowNewModal] = useState(false);
+
+  const isCrew = currentUser?.role === 'crew';
+  const isOps = currentUser?.role === 'ops';
+  const isAdmin = currentUser?.role === 'admin';
+
+  useEffect(() => {
+    let unsub = null;
+    let cancelled = false;
+    (async () => {
+      const m = await import('./firebase-manifests.js');
+      if (cancelled) return;
+      unsub = m.subscribeToAllManifests((list) => {
+        setManifests(list);
+        setLoading(false);
+      });
+    })();
+    return () => { cancelled = true; if (unsub) unsub(); };
+  }, []);
+
+  const todayStr = (() => {
+    const d = new Date();
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  })();
+
+  // Group by date — today first
+  const grouped = useMemo(() => {
+    const byDate = {};
+    for (const m of manifests) {
+      const date = m.date || 'unknown';
+      if (!byDate[date]) byDate[date] = [];
+      byDate[date].push(m);
+    }
+    const dates = Object.keys(byDate).sort().reverse();
+    return dates.map(date => ({ date, manifests: byDate[date] }));
+  }, [manifests]);
+
+  const selected = manifests.find(m => m.id === selectedId);
+
+  const createNewManifest = async ({ date, tail }) => {
+    const m = await import('./firebase-manifests.js');
+    const id = m.manifestId(date, tail);
+    const existing = await m.fetchManifest(id);
+    if (existing) {
+      setSelectedId(id);
+      setShowNewModal(false);
+      return;
+    }
+    await m.saveManifest({
+      id, date, tail,
+      hobbsOut: '', hobbsIn: '', hobbsTotal: '', waitTime: '',
+      dutyTimeIn: '', dutyTimeOut: '', dutyTimeTotal: '',
+      legs: [],
+      picSig: null, sicSig: null,
+      status: 'draft',
+      createdBy: currentUser?.name || '',
+    });
+    setSelectedId(id);
+    setShowNewModal(false);
+  };
+
+  return (
+    <div className="flex-1 overflow-hidden flex flex-col md:flex-row">
+      <aside className={`${selected ? 'hidden md:block' : 'block'} w-full md:w-96 md:border-r md:border-slate-800 overflow-y-auto scroll-area`}>
+        <div className="px-4 py-3 border-b border-slate-800 bg-slate-950 sticky top-0 z-10">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="text-xs tracking-[0.2em]" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}>
+              LOAD MANIFESTS
+            </h2>
+            <button
+              onClick={() => setShowNewModal(true)}
+              className="text-[10px] px-2 py-1 bg-cyan-500 hover:bg-cyan-400 text-slate-950 tracking-widest font-medium"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              + NEW
+            </button>
+          </div>
+          <p className="text-[10px] text-slate-500 mt-1">
+            One per day per tail. Legs auto-add when trips are marked complete.
+          </p>
+        </div>
+
+        {showNewModal && (
+          <NewManifestPicker
+            currentUser={currentUser}
+            allTrips={allTrips}
+            todayStr={todayStr}
+            onCreate={createNewManifest}
+            onCancel={() => setShowNewModal(false)}
+          />
+        )}
+
+        {loading ? (
+          <div className="p-8 text-center text-slate-500">
+            <Loader2 className="w-5 h-5 animate-spin mx-auto mb-2" /> Loading manifests...
+          </div>
+        ) : grouped.length === 0 ? (
+          <div className="p-12 text-center">
+            <FileText className="w-8 h-8 text-slate-700 mx-auto mb-2" />
+            <p className="text-sm text-slate-500">No manifests yet</p>
+            <p className="text-xs text-slate-600 mt-1">
+              Manifests are created automatically when ops marks a trip complete, or tap NEW to start one manually.
+            </p>
+          </div>
+        ) : (
+          <div>
+            {grouped.map(({ date, manifests: dayManifests }) => (
+              <div key={date}>
+                <div className="px-4 py-2 text-[10px] tracking-[0.2em] text-slate-600 bg-slate-900/40" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  {formatDate(date)}{date === todayStr ? ' · TODAY' : ''}
+                </div>
+                {dayManifests.map(m => (
+                  <ManifestRow
+                    key={m.id}
+                    manifest={m}
+                    selected={m.id === selectedId}
+                    onClick={() => setSelectedId(m.id)}
+                  />
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
+      </aside>
+
+      <main className={`flex-1 overflow-y-auto scroll-area ${selected ? 'block' : 'hidden md:block'}`}>
+        {selected ? (
+          <ManifestDetail
+            manifest={selected}
+            currentUser={currentUser}
+            onBack={() => setSelectedId(null)}
+          />
+        ) : (
+          <div className="h-full flex items-center justify-center p-8 grid-bg">
+            <div className="text-center max-w-md">
+              <div className="w-20 h-20 mx-auto mb-4 border border-slate-800 flex items-center justify-center">
+                <FileText className="w-10 h-10 text-slate-700" />
+              </div>
+              <h2 className="text-2xl tracking-wider mb-2" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
+                LOAD MANIFESTS
+              </h2>
+              <p className="text-sm text-slate-500">
+                Select a manifest to view, or tap NEW to create one.
+              </p>
+            </div>
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
+
+function formatDate(iso) {
+  // YYYY-MM-DD → "Saturday, May 2, 2026"
+  if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso;
+  const [y, mo, d] = iso.split('-').map(Number);
+  const dt = new Date(y, mo - 1, d);
+  return dt.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function ManifestRow({ manifest, selected, onClick }) {
+  const isSubmitted = manifest.status === 'submitted';
+  const legCount = (manifest.legs || []).length;
+  const hasPic = !!manifest.picSig;
+  const hasSic = !!manifest.sicSig;
+  return (
+    <button
+      onClick={onClick}
+      className={`block w-full text-left p-3 border-b border-slate-800 ${selected ? 'bg-slate-900/60' : 'hover:bg-slate-900/40'} transition-colors`}
+    >
+      <div className="flex items-center justify-between gap-2 mb-1">
+        <span className="text-sm text-slate-100" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
+          {manifest.tail}
+        </span>
+        <span className={`text-[10px] tracking-widest shrink-0 ${isSubmitted ? 'text-emerald-300' : 'text-amber-300'}`} style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+          {isSubmitted ? 'SUBMITTED' : 'DRAFT'}
+        </span>
+      </div>
+      <div className="flex items-center justify-between text-[11px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        <span>{legCount} leg{legCount === 1 ? '' : 's'}</span>
+        <span className="flex gap-1">
+          <span className={hasPic ? 'text-emerald-400' : 'text-slate-600'}>PIC</span>
+          <span>·</span>
+          <span className={hasSic ? 'text-emerald-400' : 'text-slate-600'}>SIC</span>
+        </span>
+      </div>
+    </button>
+  );
+}
+
+// New-manifest picker: choose date + tail
+function NewManifestPicker({ currentUser, allTrips, todayStr, onCreate, onCancel }) {
+  const [date, setDate] = useState(todayStr);
+  const [tail, setTail] = useState('');
+  // Suggest tails from today's trips
+  const suggestedTails = useMemo(() => {
+    if (!Array.isArray(allTrips)) return [];
+    const tails = new Set();
+    for (const t of allTrips) {
+      if (!t.info?.tail || !t.start) continue;
+      const d = t.start instanceof Date ? t.start : new Date(t.start);
+      const yyyy = d.getFullYear();
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      const dStr = `${yyyy}-${mm}-${dd}`;
+      if (dStr === date) tails.add(t.info.tail);
+    }
+    return Array.from(tails).sort();
+  }, [allTrips, date]);
+
+  return (
+    <div className="p-4 border-b border-slate-800 bg-slate-900/40 space-y-3">
+      <div className="text-xs tracking-widest text-cyan-300" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+        NEW MANIFEST
+      </div>
+      <label className="block">
+        <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>DATE</span>
+        <input
+          type="date"
+          value={date}
+          onChange={(e) => setDate(e.target.value)}
+          className="mt-1 w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        />
+      </label>
+      <label className="block">
+        <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>TAIL</span>
+        <input
+          type="text"
+          value={tail}
+          onChange={(e) => setTail(e.target.value.toUpperCase())}
+          placeholder="N123AB"
+          className="mt-1 w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        />
+      </label>
+      {suggestedTails.length > 0 && (
+        <div>
+          <div className="text-[10px] tracking-widest text-slate-500 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            FLYING THIS DAY
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {suggestedTails.map(t => (
+              <button
+                key={t}
+                onClick={() => setTail(t)}
+                className={`text-[10px] px-2 py-1 border ${tail === t ? 'border-cyan-400 text-cyan-300' : 'border-slate-700 text-slate-400 hover:border-cyan-500/40'} tracking-widest`}
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="flex gap-2 pt-2">
+        <button
+          onClick={() => onCreate({ date, tail })}
+          disabled={!date || !tail}
+          className="flex-1 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-sm font-medium disabled:opacity-40"
+          style={{ fontFamily: 'DM Sans, sans-serif' }}
+        >
+          CREATE
+        </button>
+        <button onClick={onCancel} className="px-4 py-2 border border-slate-700 text-sm text-slate-300">
+          CANCEL
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ManifestDetail({ manifest, currentUser, onBack }) {
+  const [draft, setDraft] = useState(manifest);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [submitInfo, setSubmitInfo] = useState(null);
@@ -3243,88 +3532,10 @@ function ManifestPanel({ trip, currentUser, preloadedPax }) {
   const canSign = isCrew;
   const canEdit = isCrew || isOps || isAdmin;
 
-  // Subscribe to manifests for this trip
-  useEffect(() => {
-    let unsub = null;
-    let cancelled = false;
-    (async () => {
-      const m = await import('./firebase-manifests.js');
-      if (cancelled) return;
-      unsub = m.subscribeToTripManifests(trip.uid, (list) => {
-        // Take the most recent (or null if none)
-        setManifest(list[0] || null);
-        setLoading(false);
-      });
-    })();
-    return () => { cancelled = true; if (unsub) unsub(); };
-  }, [trip.uid]);
-
-  // Build initial manifest from trip data — safe AI auto-fill only
-  const buildInitialManifest = () => {
-    // Get all legs of this trip (multi-leg trip support)
-    // The current trip.uid corresponds to ONE leg; for multi-leg, we look up
-    // sibling legs by tripId/code in the parent app — for simplicity here we
-    // just include the current leg.
-    const dateStr = trip.start instanceof Date ? trip.start.toLocaleDateString('en-US') : '';
-    const legs = [
-      {
-        from: trip.info.from || '',
-        to: trip.info.to || '',
-        airport: trip.info.from || '',
-        // Build passenger names from preloadedPax (trip sheet) — names only, no weights
-        passengers: preloadedPax
-          .filter(p => p.checkInStatus !== 'skipped')
-          .slice(0, 7)
-          .map(p => `${p.firstName} ${p.lastName}`.trim()),
-        // Numeric fields left empty for crew to fill
-        timeOut: '', timeIn: '', total: '',
-        cycles: '', nightLdgs: '',
-        toWeight: '', maxAllowable: '',
-        fwdCG: '', toCG: '', aftCG: '',
-        numPax: preloadedPax.filter(p => p.checkInStatus !== 'skipped').length || '',
-        configuration: '',
-      },
-    ];
-    return {
-      id: null, // will be assigned on first save
-      tripUid: trip.uid,
-      tripCode: trip.info.tripId || trip.info.summary || '',
-      tail: trip.info.tail || '',
-      tripDate: dateStr,
-      hobbsOut: '', hobbsIn: '', hobbsTotal: '',
-      waitTime: '',
-      legs,
-      dutyTimeIn: '', dutyTimeOut: '', dutyTimeTotal: '',
-      picSig: null,
-      sicSig: null,
-      status: 'draft',
-      createdBy: currentUser?.name || '',
-    };
-  };
-
-  // Local working copy (for in-progress edits)
-  const [draft, setDraft] = useState(null);
-  useEffect(() => {
-    if (loading) return;
-    if (manifest) {
-      setDraft(manifest);
-    } else {
-      setDraft(buildInitialManifest());
-    }
-  }, [manifest, loading]); // eslint-disable-line
-
-  if (loading) {
-    return (
-      <div className="p-12 text-center text-slate-500">
-        <Loader2 className="w-5 h-5 animate-spin mx-auto mb-2" /> Loading manifest...
-      </div>
-    );
-  }
-
-  if (!draft) return null;
+  useEffect(() => { setDraft(manifest); }, [manifest.id, manifest.updatedAt]);
 
   const isSubmitted = draft.status === 'submitted';
-  const readOnly = isSubmitted || (!canEdit);
+  const readOnly = isSubmitted || !canEdit;
 
   const setField = (key) => (value) => {
     if (readOnly) return;
@@ -3357,15 +3568,19 @@ function ManifestPanel({ trip, currentUser, preloadedPax }) {
     setDraft(d => ({
       ...d,
       legs: [...(d.legs || []), {
+        tripUid: null,
         from: '', to: '', timeOut: '', timeIn: '', total: '',
         airport: '', cycles: '', nightLdgs: '', passengers: [],
         toWeight: '', maxAllowable: '', fwdCG: '', toCG: '', aftCG: '',
         numPax: '', configuration: '',
+        addedAt: Date.now(),
+        addedBy: currentUser?.name || 'manual',
       }],
     }));
   };
   const removeLeg = (idx) => {
     if (readOnly) return;
+    if (!window.confirm('Remove this leg from the manifest?')) return;
     setDraft(d => ({ ...d, legs: (d.legs || []).filter((_, i) => i !== idx) }));
   };
 
@@ -3375,10 +3590,7 @@ function ManifestPanel({ trip, currentUser, preloadedPax }) {
     setError(null);
     try {
       const m = await import('./firebase-manifests.js');
-      const id = draft.id || m.newManifestId(trip.uid);
-      const next = { ...draft, id };
-      await m.saveManifest(next);
-      setDraft(next);
+      await m.saveManifest(draft);
     } catch (err) {
       console.error('[manifest] save failed:', err);
       setError(err.message || 'Save failed');
@@ -3387,7 +3599,7 @@ function ManifestPanel({ trip, currentUser, preloadedPax }) {
     }
   };
 
-  const sign = async (role /* 'pic' | 'sic' */) => {
+  const sign = async (role) => {
     if (!canSign) {
       alert('Only crew (PIC/SIC) can sign. Admin can edit but cannot sign.');
       return;
@@ -3413,15 +3625,12 @@ function ManifestPanel({ trip, currentUser, preloadedPax }) {
     };
     const next = { ...draft, [`${role}Sig`]: sig };
     setDraft(next);
-    // Auto-save after sign so we don't lose the signature
     try {
       const m = await import('./firebase-manifests.js');
-      const id = next.id || m.newManifestId(trip.uid);
-      await m.saveManifest({ ...next, id });
-      setDraft({ ...next, id });
+      await m.saveManifest(next);
     } catch (err) {
       console.error('[manifest] sign save failed:', err);
-      alert('Signature recorded locally but failed to save to server. Try again.');
+      alert('Signature recorded locally but failed to save. Try again.');
     }
   };
 
@@ -3432,7 +3641,7 @@ function ManifestPanel({ trip, currentUser, preloadedPax }) {
     setDraft(next);
     try {
       const m = await import('./firebase-manifests.js');
-      await m.saveManifest({ ...next, id: next.id });
+      await m.saveManifest(next);
     } catch (err) {
       console.error('[manifest] unsign failed:', err);
     }
@@ -3441,6 +3650,10 @@ function ManifestPanel({ trip, currentUser, preloadedPax }) {
   const submitManifest = async () => {
     if (!draft.picSig || !draft.sicSig) {
       alert('Both PIC and SIC must sign before submitting.');
+      return;
+    }
+    if (!(draft.legs || []).length) {
+      alert('Manifest has no legs. Add at least one leg before submitting.');
       return;
     }
     if (!window.confirm(
@@ -3453,33 +3666,38 @@ function ManifestPanel({ trip, currentUser, preloadedPax }) {
     setSubmitInfo(null);
     try {
       const m = await import('./firebase-manifests.js');
-      const id = draft.id || m.newManifestId(trip.uid);
       const submitted = {
         ...draft,
-        id,
         status: 'submitted',
         submittedAt: Date.now(),
         submittedBy: currentUser?.name || '',
       };
-      // Save with submitted status first (so we lock it even if email fails)
       await m.saveManifest(submitted);
       setDraft(submitted);
 
-      // Generate PDF + email
+      // Build the manifest payload for PDF generation. Map our day-level
+      // structure to the form's expected fields.
+      const payload = {
+        ...submitted,
+        tail: submitted.tail,
+        tripDate: submitted.date,
+        tripCode: '', // day-level manifest doesn't have a single trip code
+      };
+
       const r = await fetch('/api/generate-manifest', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ manifest: submitted }),
+        body: JSON.stringify({ manifest: payload }),
       });
       const data = await r.json().catch(() => ({}));
       if (!r.ok) {
-        setError(`Manifest submitted but email failed: ${data.error || r.status}. The submitted manifest is locked in the system.`);
+        setError(`Manifest submitted but email failed: ${data.error || r.status}.`);
         return;
       }
       if (data.emailError) {
         setError(`Manifest submitted, PDF generated, but email failed: ${data.emailError}`);
       } else {
-        setSubmitInfo(`Manifest submitted and emailed to Loadmanifest@flyskyway.com (id: ${data.emailId || 'sent'}).`);
+        setSubmitInfo(`Manifest submitted and emailed to Loadmanifest@flyskyway.com.`);
       }
     } catch (err) {
       console.error('[manifest] submit failed:', err);
@@ -3490,77 +3708,83 @@ function ManifestPanel({ trip, currentUser, preloadedPax }) {
   };
 
   return (
-    <div className="p-4 max-w-5xl space-y-4">
-      {/* Form header */}
-      <div className="border border-slate-700 bg-slate-900/40 p-3">
-        <div className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>SKYWAY AVIATION SERVICES, INC.</div>
-        <div className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>GENERAL OPERATIONS MANUAL · S-5/R-37/10-30-23</div>
-        <h2 className="text-2xl tracking-wider mt-1" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>LOAD MANIFEST</h2>
+    <div className="p-4 max-w-5xl mx-auto space-y-4">
+      <div className="flex items-center gap-2">
+        <button onClick={onBack} className="md:hidden text-slate-500 hover:text-cyan-400 p-1" aria-label="Back">
+          <ChevronLeft className="w-5 h-5" />
+        </button>
+        <div className="flex-1">
+          <h1 className="text-2xl tracking-wider" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
+            {draft.tail} · {formatDate(draft.date)}
+          </h1>
+          <div className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            S-5/R-37/10-30-23 · LOAD MANIFEST
+          </div>
+        </div>
       </div>
 
-      {/* Status banner */}
       {isSubmitted && (
         <div className="border border-emerald-500/40 bg-emerald-500/5 p-3">
-          <div className="text-[10px] tracking-widest text-emerald-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>SUBMITTED — RECORD LOCKED</div>
+          <div className="text-[10px] tracking-widest text-emerald-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            SUBMITTED — RECORD LOCKED
+          </div>
           <div className="text-sm text-slate-200 mt-1">
             Submitted by {draft.submittedBy} on {new Date(draft.submittedAt).toLocaleString()}
           </div>
         </div>
       )}
-      {!canSign && !isAdmin && !isOps && (
-        <div className="border border-amber-500/40 bg-amber-500/5 p-3 text-xs text-amber-200">
-          Only crew (PIC/SIC), ops, or admin can access this form.
-        </div>
-      )}
       {error && <div className="border border-red-500/40 bg-red-500/5 p-3 text-xs text-red-300">{error}</div>}
       {submitInfo && <div className="border border-emerald-500/40 bg-emerald-500/5 p-3 text-xs text-emerald-300">{submitInfo}</div>}
 
-      {/* Top metadata row */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-        <ManifestField label="N #" value={draft.tail} onChange={setField('tail')} readOnly={readOnly} mono />
-        <ManifestField label="DATE" value={draft.tripDate} onChange={setField('tripDate')} readOnly={readOnly} mono />
+      {/* Top metadata */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <ManifestField label="HOBBS OUT" value={draft.hobbsOut} onChange={setField('hobbsOut')} readOnly={readOnly} mono />
         <ManifestField label="HOBBS IN" value={draft.hobbsIn} onChange={setField('hobbsIn')} readOnly={readOnly} mono />
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
         <ManifestField label="HOBBS TOTAL" value={draft.hobbsTotal} onChange={setField('hobbsTotal')} readOnly={readOnly} mono />
         <ManifestField label="WAIT TIME" value={draft.waitTime} onChange={setField('waitTime')} readOnly={readOnly} mono />
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <ManifestField label="DUTY TIME IN" value={draft.dutyTimeIn} onChange={setField('dutyTimeIn')} readOnly={readOnly} mono />
         <ManifestField label="DUTY TIME OUT" value={draft.dutyTimeOut} onChange={setField('dutyTimeOut')} readOnly={readOnly} mono />
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
         <ManifestField label="DUTY TIME TOTAL" value={draft.dutyTimeTotal} onChange={setField('dutyTimeTotal')} readOnly={readOnly} mono />
       </div>
 
       {/* Legs */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <h3 className="text-sm tracking-widest text-slate-300" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}>LEGS</h3>
+          <h3 className="text-sm tracking-widest text-slate-300" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}>
+            LEGS · {(draft.legs || []).length}/7
+          </h3>
           {!readOnly && (
             <button
               onClick={addLeg}
               className="text-[10px] px-2 py-1 border border-slate-700 text-slate-400 hover:border-cyan-500/40 hover:text-cyan-300 tracking-widest"
               style={{ fontFamily: 'JetBrains Mono, monospace' }}
             >
-              + ADD LEG ({(draft.legs || []).length}/7)
+              + ADD MANUAL LEG
             </button>
           )}
         </div>
-
-        {(draft.legs || []).map((leg, idx) => (
-          <ManifestLegCard
-            key={idx}
-            idx={idx}
-            leg={leg}
-            readOnly={readOnly}
-            onChange={(key) => setLegField(idx, key)}
-            onPaxChange={(paxIdx) => setPaxName(idx, paxIdx)}
-            onRemove={() => removeLeg(idx)}
-          />
-        ))}
+        {(draft.legs || []).length === 0 ? (
+          <div className="border border-dashed border-slate-700 p-6 text-center text-sm text-slate-500">
+            No legs yet. Legs auto-add when ops marks trips complete, or tap ADD MANUAL LEG.
+          </div>
+        ) : (
+          (draft.legs || []).map((leg, idx) => (
+            <ManifestLegCard
+              key={idx}
+              idx={idx}
+              leg={leg}
+              readOnly={readOnly}
+              onChange={(key) => setLegField(idx, key)}
+              onPaxChange={(paxIdx) => setPaxName(idx, paxIdx)}
+              onRemove={() => removeLeg(idx)}
+            />
+          ))
+        )}
       </div>
 
-      {/* Acceptance text */}
+      {/* Acceptance */}
       <div className="border border-slate-700 bg-slate-900/40 p-3 text-xs text-slate-400 italic" style={{ fontFamily: 'DM Sans, sans-serif' }}>
         Acceptance of Flight Release: I have completed a preflight inspection of the aircraft, checked the scale used for weight & balance purposes and completed all duties required by FAA regulations and Skyway Aviation's Operations Manual and hereby accept this aircraft for flight.
       </div>
@@ -3571,7 +3795,6 @@ function ManifestPanel({ trip, currentUser, preloadedPax }) {
         <SigBlock role="sic" sig={draft.sicSig} canSign={canSign && !isSubmitted} onSign={() => sign('sic')} onUnsign={() => unsign('sic')} />
       </div>
 
-      {/* Action buttons */}
       {!isSubmitted && (
         <div className="flex flex-wrap gap-2 pt-3 border-t border-slate-800">
           {canEdit && (
@@ -3587,10 +3810,10 @@ function ManifestPanel({ trip, currentUser, preloadedPax }) {
           {canSign && (
             <button
               onClick={submitManifest}
-              disabled={saving || !draft.picSig || !draft.sicSig}
+              disabled={saving || !draft.picSig || !draft.sicSig || !(draft.legs || []).length}
               className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-sm font-medium tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
               style={{ fontFamily: 'DM Sans, sans-serif' }}
-              title={!draft.picSig || !draft.sicSig ? 'Both PIC and SIC must sign before submitting' : 'Submit final manifest'}
+              title={!draft.picSig || !draft.sicSig ? 'Both PIC and SIC must sign' : !(draft.legs || []).length ? 'Add at least one leg' : 'Submit final manifest'}
             >
               SUBMIT MANIFEST
             </button>
@@ -3600,6 +3823,7 @@ function ManifestPanel({ trip, currentUser, preloadedPax }) {
     </div>
   );
 }
+
 
 function ManifestField({ label, value, onChange, readOnly, mono }) {
   return (
@@ -4716,6 +4940,7 @@ function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, sync
     { id: 'schedule', label: 'SCHEDULE',  icon: Calendar, roles: ['crew', 'ops', 'admin'] },
     { id: 'archive',  label: 'ARCHIVE',   icon: Hash,     roles: ['crew', 'ops', 'admin'] },
     { id: 'expenses', label: 'EXPENSES',  icon: Mail,     roles: ['crew', 'sales', 'ops', 'accounting', 'admin'] },
+    { id: 'manifests',label: 'MANIFESTS', icon: FileText, roles: ['crew', 'ops', 'admin'] },
     { id: 'ops',      label: 'OPS',       icon: Zap,      roles: ['ops', 'admin'] },
     { id: 'users',    label: 'USERS',     icon: Users,    roles: ['ops', 'admin'] },
   ];
@@ -7238,6 +7463,14 @@ export default function CharterOps() {
             currentUser={currentUser}
             currentUserUid={currentUser?.uid || currentUser?.id}
             currentUserDisplayName={userDisplayName}
+          />
+        )}
+
+        {/* === MANIFESTS SECTION === */}
+        {section === 'manifests' && (
+          <ManifestsScreen
+            currentUser={currentUser}
+            allTrips={allTrips}
           />
         )}
 
