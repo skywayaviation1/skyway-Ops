@@ -46,11 +46,24 @@ export default async function handler(req, res) {
   }
   const manifest = body?.manifest;
   if (!manifest) return res.status(400).json({ error: 'Missing manifest' });
+  // previewOnly = generate the PDF but don't send email. Used for in-app preview.
+  const previewOnly = body?.previewOnly === true;
 
   try {
     // Build PDF in-memory
     const pdfBuffer = await buildManifestPdf(manifest);
     const pdfBase64 = pdfBuffer.toString('base64');
+
+    // If preview-only, return PDF without sending email
+    if (previewOnly) {
+      return res.status(200).json({
+        ok: true,
+        pdfBase64,
+        emailId: null,
+        emailError: null,
+        previewOnly: true,
+      });
+    }
 
     // Email to Loadmanifest@flyskyway.com
     const apiKey = process.env.RESEND_API_KEY;
