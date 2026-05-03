@@ -3811,31 +3811,34 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
     }
   };
 
-  const sign = async (role) => {
+  // Inline signing — replaces the saved-signature flow.
+  // Each signature is drawn fresh on the manifest itself. State holds
+  // which role is being signed (or null when not signing).
+  const [signingRole, setSigningRole] = useState(null);
+
+  const completeSign = async (role, typedName, signatureDataUrl) => {
     if (!canSign) {
       alert('Only crew (PIC/SIC) can sign. Admin can edit but cannot sign.');
       return;
     }
-    if (!currentUser?.savedSignature) {
-      alert('No saved signature on your profile. Tap your name in the top-right and draw a signature first.');
+    if (!typedName || !typedName.trim()) {
+      alert('Type your name before confirming.');
       return;
     }
-    const typedName = window.prompt(
-      `Type your full name to sign as ${role.toUpperCase()}.\n\n` +
-      `By typing your name and clicking OK, you electronically sign this load manifest. ` +
-      `Your name, email, timestamp, and saved signature image will be recorded.`,
-      currentUser.name || ''
-    );
-    if (!typedName || !typedName.trim()) return;
+    if (!signatureDataUrl) {
+      alert('Draw your signature before confirming.');
+      return;
+    }
     const sig = {
       name: typedName.trim(),
       uid: currentUser.uid || currentUser.id,
       email: currentUser.email,
-      signatureImg: currentUser.savedSignature,
+      signatureImg: signatureDataUrl,
       timestamp: Date.now(),
     };
     const next = { ...draft, [`${role}Sig`]: sig };
     setDraft(next);
+    setSigningRole(null);
     try {
       const m = await import('./firebase-manifests.js');
       await m.saveManifest(next);
@@ -3855,6 +3858,45 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
       await m.saveManifest(next);
     } catch (err) {
       console.error('[manifest] unsign failed:', err);
+    }
+  };
+
+  // Preview PDF state — base64 data URL of the generated PDF, shown in modal
+  const [previewPdfUrl, setPreviewPdfUrl] = useState(null);
+  const [generatingPreview, setGeneratingPreview] = useState(false);
+
+  const previewPdf = async () => {
+    if (!(draft.legs || []).length) {
+      alert('Manifest has no legs. Add at least one leg before previewing.');
+      return;
+    }
+    setGeneratingPreview(true);
+    setError(null);
+    try {
+      const payload = {
+        ...draft,
+        tail: draft.tail,
+        tripDate: draft.date,
+        tripCode: '',
+      };
+      const r = await fetch('/api/generate-manifest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ manifest: payload, previewOnly: true }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok || !data.pdfBase64) {
+        setError(`Preview failed: ${data.error || r.status}`);
+        return;
+      }
+      // Build a data URL the iframe can render
+      const url = `data:application/pdf;base64,${data.pdfBase64}`;
+      setPreviewPdfUrl(url);
+    } catch (err) {
+      console.error('[manifest] preview failed:', err);
+      setError('Preview failed: ' + err.message);
+    } finally {
+      setGeneratingPreview(false);
     }
   };
 
@@ -4106,8 +4148,28 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <SigBlock role="pic" sig={draft.picSig} canSign={canSign && !isSubmitted} onSign={() => sign('pic')} onUnsign={() => unsign('pic')} />
-        <SigBlock role="sic" sig={draft.sicSig} canSign={canSign && !isSubmitted} onSign={() => sign('sic')} onUnsign={() => unsign('sic')} />
+        <SigBlock
+          role="pic"
+          sig={draft.picSig}
+          canSign={canSign && !isSubmitted}
+          isActive={signingRole === 'pic'}
+          defaultName={currentUser?.name || ''}
+          onSignStart={() => setSigningRole('pic')}
+          onSignCancel={() => setSigningRole(null)}
+          onSignComplete={(name, dataUrl) => completeSign('pic', name, dataUrl)}
+          onUnsign={() => unsign('pic')}
+        />
+        <SigBlock
+          role="sic"
+          sig={draft.sicSig}
+          canSign={canSign && !isSubmitted}
+          isActive={signingRole === 'sic'}
+          defaultName={currentUser?.name || ''}
+          onSignStart={() => setSigningRole('sic')}
+          onSignCancel={() => setSigningRole(null)}
+          onSignComplete={(name, dataUrl) => completeSign('sic', name, dataUrl)}
+          onUnsign={() => unsign('sic')}
+        />
       </div>
 
       {!isSubmitted && (
@@ -4122,6 +4184,17 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
               {saving ? 'SAVING...' : 'SAVE DRAFT'}
             </button>
           )}
+          {canEdit && (
+            <button
+              onClick={previewPdf}
+              disabled={generatingPreview || !(draft.legs || []).length}
+              className="px-4 py-2 border border-violet-500/40 text-violet-300 hover:bg-violet-500/10 text-sm tracking-widest disabled:opacity-50"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              title="See the PDF before submitting"
+            >
+              {generatingPreview ? 'GENERATING...' : '↗ PREVIEW PDF'}
+            </button>
+          )}
           {canSign && (
             <button
               onClick={submitManifest}
@@ -4133,6 +4206,78 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
               SUBMIT MANIFEST
             </button>
           )}
+        </div>
+      )}
+
+      {/* PDF preview modal */}
+      {previewPdfUrl && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-950/90 flex items-center justify-center p-4"
+          onClick={() => setPreviewPdfUrl(null)}
+        >
+          <div
+            className="bg-slate-950 border border-slate-700 max-w-5xl w-full h-full max-h-[90vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-3 border-b border-slate-800 flex items-center justify-between gap-2">
+              <div>
+                <h2 className="text-lg tracking-wider" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
+                  PDF PREVIEW
+                </h2>
+                <div className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  {draft.tail} · {formatDate(draft.date)} · NOT YET SUBMITTED
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <a
+                  href={previewPdfUrl}
+                  download={`manifest-${(draft.tail || 'tail').replace(/[^A-Z0-9]/gi, '')}-${(draft.date || '').replace(/[^0-9]/g, '')}-PREVIEW.pdf`}
+                  className="text-[10px] px-2 py-1 border border-slate-700 text-slate-400 hover:border-cyan-500/40 hover:text-cyan-300 tracking-widest"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                >
+                  ↓ DOWNLOAD
+                </a>
+                <button
+                  onClick={() => setPreviewPdfUrl(null)}
+                  className="text-slate-500 hover:text-slate-300 p-1"
+                  aria-label="Close"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 overflow-hidden bg-slate-900">
+              <iframe
+                src={previewPdfUrl}
+                title="Manifest PDF preview"
+                className="w-full h-full border-0"
+              />
+            </div>
+            <div className="p-3 border-t border-slate-800 flex flex-wrap gap-2 items-center">
+              <div className="flex-1 min-w-0 text-[11px] text-slate-500" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                Review carefully. Once submitted, the manifest is locked and emailed to Loadmanifest@flyskyway.com.
+              </div>
+              {canSign && draft.picSig && draft.sicSig && (
+                <button
+                  onClick={async () => {
+                    setPreviewPdfUrl(null);
+                    await submitManifest();
+                  }}
+                  disabled={saving}
+                  className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-sm font-medium tracking-widest disabled:opacity-50"
+                  style={{ fontFamily: 'DM Sans, sans-serif' }}
+                >
+                  SUBMIT & EMAIL
+                </button>
+              )}
+              <button
+                onClick={() => setPreviewPdfUrl(null)}
+                className="px-4 py-2 border border-slate-700 text-sm text-slate-300"
+              >
+                CLOSE
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -4246,14 +4391,26 @@ function ManifestLegCard({ idx, leg, isOrphan, readOnly, onChange, onPaxChange, 
   );
 }
 
-function SigBlock({ role, sig, canSign, onSign, onUnsign }) {
+function SigBlock({ role, sig, canSign, isActive, defaultName, onSignStart, onSignCancel, onSignComplete, onUnsign }) {
   const label = role.toUpperCase();
+  const [typedName, setTypedName] = useState(defaultName || '');
+  const [drawnSig, setDrawnSig] = useState(null);
+
+  // Reset local state when activation changes
+  useEffect(() => {
+    if (isActive) {
+      setTypedName(defaultName || '');
+      setDrawnSig(null);
+    }
+  }, [isActive, defaultName]);
+
   return (
     <div className="border border-slate-700 bg-slate-900/40 p-3 space-y-2">
       <div className="text-[10px] tracking-widest text-cyan-400" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
         {label} SIGNATURE
       </div>
       {sig ? (
+        // Already signed — show the recorded signature
         <div className="space-y-2">
           <div className="border border-slate-600 bg-white p-2">
             {sig.signatureImg ? (
@@ -4281,9 +4438,73 @@ function SigBlock({ role, sig, canSign, onSign, onUnsign }) {
             </button>
           )}
         </div>
+      ) : isActive && canSign ? (
+        // Active signing flow — typed name + fresh signature pad inline
+        <div className="space-y-2">
+          <label className="block">
+            <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              TYPED NAME
+            </span>
+            <input
+              type="text"
+              value={typedName}
+              onChange={(e) => setTypedName(e.target.value)}
+              placeholder="Full legal name"
+              className="mt-1 w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
+              style={{ fontFamily: 'DM Sans, sans-serif' }}
+            />
+          </label>
+          <div>
+            <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              DRAW SIGNATURE
+            </span>
+            {drawnSig ? (
+              <div className="mt-1 space-y-1">
+                <div className="border border-slate-600 bg-white p-1">
+                  <img src={drawnSig} alt="Signature" className="w-full max-h-20 object-contain" />
+                </div>
+                <button
+                  onClick={() => setDrawnSig(null)}
+                  className="text-[10px] text-slate-500 hover:text-amber-300 tracking-widest"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                >
+                  REDRAW
+                </button>
+              </div>
+            ) : (
+              <div className="mt-1">
+                <SignaturePad
+                  height={120}
+                  onSave={(dataUrl) => setDrawnSig(dataUrl)}
+                  onCancel={() => {}}
+                />
+              </div>
+            )}
+          </div>
+          <p className="text-[10px] text-slate-500 italic">
+            By tapping CONFIRM, you electronically sign this manifest. Your name, email, drawn signature, and timestamp will be recorded.
+          </p>
+          <div className="flex gap-2">
+            <button
+              onClick={() => onSignComplete(typedName, drawnSig)}
+              disabled={!typedName.trim() || !drawnSig}
+              className="flex-1 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+              style={{ fontFamily: 'DM Sans, sans-serif' }}
+            >
+              CONFIRM SIGNATURE
+            </button>
+            <button
+              onClick={onSignCancel}
+              className="px-3 py-2 border border-slate-700 text-sm text-slate-400 hover:border-slate-500"
+            >
+              CANCEL
+            </button>
+          </div>
+        </div>
       ) : canSign ? (
+        // Inactive — show the SIGN button
         <button
-          onClick={onSign}
+          onClick={onSignStart}
           className="w-full py-3 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 text-sm tracking-widest"
           style={{ fontFamily: 'DM Sans, sans-serif' }}
         >
@@ -4521,8 +4742,6 @@ function MyProfileModal({ currentUser, onClose, onSave }) {
   const [name, setName] = useState(currentUser?.name || '');
   const [callsign, setCallsign] = useState(currentUser?.callsign || '');
   const [jetinsightName, setJetinsightName] = useState(currentUser?.jetinsightName || '');
-  const [savedSignature, setSavedSignature] = useState(currentUser?.savedSignature || null);
-  const [drawing, setDrawing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
 
@@ -4534,7 +4753,6 @@ function MyProfileModal({ currentUser, onClose, onSave }) {
         name: name.trim(),
         callsign: callsign.trim(),
         jetinsightName: jetinsightName.trim(),
-        savedSignature,
       });
       onClose();
     } catch (err) {
@@ -4569,50 +4787,6 @@ function MyProfileModal({ currentUser, onClose, onSave }) {
           <FieldInput label="FULL NAME" value={name} onChange={(e) => setName(e.target.value)} />
           <FieldInput label="CALLSIGN" value={callsign} onChange={(e) => setCallsign(e.target.value)} placeholder="e.g. Annalise" />
           <FieldInput label="NAME IN JETINSIGHT" value={jetinsightName} onChange={(e) => setJetinsightName(e.target.value)} placeholder="e.g. Annalise Marie Gonzales" />
-
-          {/* Saved signature */}
-          <div>
-            <div className="text-[10px] tracking-widest text-slate-500 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              SAVED SIGNATURE
-            </div>
-            <p className="text-[11px] text-slate-500 mb-2">
-              Draw your signature once. It auto-applies when you sign load manifests and other documents.
-            </p>
-            {drawing ? (
-              <SignaturePad
-                onSave={(dataUrl) => { setSavedSignature(dataUrl); setDrawing(false); }}
-                onCancel={() => setDrawing(false)}
-              />
-            ) : savedSignature ? (
-              <div className="space-y-2">
-                <div className="border border-slate-700 bg-white p-2">
-                  <img src={savedSignature} alt="Signature" className="w-full max-h-32 object-contain" />
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => setDrawing(true)}
-                    className="flex-1 py-2 border border-slate-700 text-sm text-slate-300 hover:border-cyan-500/40"
-                  >
-                    REDRAW
-                  </button>
-                  <button
-                    onClick={() => setSavedSignature(null)}
-                    className="px-4 py-2 border border-slate-700 text-sm text-slate-400 hover:border-red-500/40 hover:text-red-300"
-                  >
-                    CLEAR
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <button
-                onClick={() => setDrawing(true)}
-                className="w-full py-3 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 text-sm tracking-widest"
-                style={{ fontFamily: 'DM Sans, sans-serif' }}
-              >
-                + DRAW SIGNATURE
-              </button>
-            )}
-          </div>
 
           {error && (
             <div className="p-2 border border-red-500/30 bg-red-500/5 text-xs text-red-300">{error}</div>
