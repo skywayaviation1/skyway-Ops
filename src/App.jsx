@@ -627,6 +627,16 @@ function buildStatusEmail(step, trip, brokerEmail) {
           signature,
       };
 
+    case 'pax_arrived':
+      return {
+        subject: `Passengers Arrived — ${tail} ${route}`,
+        text:
+          `${greeting}\n\n` +
+          `Passengers have arrived at the FBO. We will notify you once IDs have been ` +
+          `verified and they have boarded the aircraft.` +
+          signature,
+      };
+
     case 'pax_boarded':
       return {
         subject: `Passengers Checked In — ${tail} ${route}`,
@@ -1080,6 +1090,7 @@ const STATUS_STEPS = [
   { id: 'crew_onsite', label: 'CREW ONSITE', sub: 'GPS lock at FBO', icon: MapPin, requiresGPS: true, applies: ['REPO', 'REVENUE'] },
   { id: 'aircraft_ready', label: 'AIRCRAFT READY', sub: 'Pre-flight complete', icon: CheckCircle2, applies: ['REPO', 'REVENUE'] },
   { id: 'catering_aboard', label: 'CATERING ON BOARD', sub: 'Galley loaded', icon: Coffee, applies: ['REVENUE'] },
+  { id: 'pax_arrived', label: 'PASSENGERS ARRIVED', sub: 'Pax on property', icon: Users, applies: ['REVENUE'] },
   { id: 'pax_boarded', label: 'PASSENGERS BOARDED', sub: 'All souls accounted', icon: Users, applies: ['REVENUE'] },
   { id: 'taxi_dep', label: 'TAXI FOR DEPARTURE', sub: 'Pushback / taxi clearance', icon: Plane, applies: ['REPO', 'REVENUE'] },
 ];
@@ -1881,6 +1892,227 @@ function DataRow({ label, value, tone }) {
 /* ============================================================
    Notify panel — broker + ops emails
    ============================================================ */
+// ============================================================
+//   Delay panel — crew reports delays to broker + ops
+// ============================================================
+//
+// Crew enters reason + duration + new ETD + requested pax arrival time.
+// Sends an email to broker(s) + ops, and logs a 'delay_reported' entry to
+// the trip's status timeline so it's visible alongside other status events.
+function DelayPanel({ trip, opsEmail, brokerEmail, currentUser, statuses, setStatuses, persist, passengers, autoNotify, completed, hasCatering, paxOverride }) {
+  const [reason, setReason] = useState('');
+  const [delayDuration, setDelayDuration] = useState('');
+  const [newEtd, setNewEtd] = useState('');
+  const [paxArrivalTime, setPaxArrivalTime] = useState('');
+  const [sending, setSending] = useState(false);
+  const [result, setResult] = useState(null);
+
+  const send = async () => {
+    if (!reason.trim()) {
+      alert('Reason for delay is required.');
+      return;
+    }
+    setSending(true);
+    setResult(null);
+
+    // Parse broker emails (supports comma-separated list)
+    const brokerEmails = (brokerEmail || '')
+      .split(/[,;\s]+/)
+      .map(e => e.trim())
+      .filter(e => e.length > 0 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
+    const recipients = [opsEmail, ...brokerEmails].filter(Boolean);
+    if (recipients.length === 0) {
+      setResult({ ok: false, msg: 'No valid recipients. Add a broker email in NOTIFY tab.' });
+      setSending(false);
+      return;
+    }
+
+    const tail = trip.info.tail || '';
+    const route = `${trip.info.from || ''}-${trip.info.to || ''}`;
+    const greeting = `Hi ${greetingFromEmail(brokerEmails[0] || '')},`;
+    const signature = '\n\n— Skyway Aviation\nPrivate Jet & Helicopter Charter Services';
+
+    const lines = [
+      `${greeting}`,
+      ``,
+      `We are writing to inform you of a delay for ${tail} ${route}.`,
+      ``,
+      `Reason: ${reason.trim()}`,
+    ];
+    if (delayDuration.trim()) lines.push(`Estimated delay: ${delayDuration.trim()}`);
+    if (newEtd.trim())        lines.push(`New estimated time of departure: ${newEtd.trim()}`);
+    if (paxArrivalTime.trim()) lines.push(`Requested passenger arrival time: ${paxArrivalTime.trim()}`);
+    lines.push(``);
+    lines.push(`We will keep you informed as the situation develops.`);
+    const body = lines.join('\n') + signature;
+
+    try {
+      const r = await fetch('/api/send-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to: recipients,
+          subject: `Flight Delay — ${tail} ${route}`,
+          text: body,
+        }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setResult({ ok: false, msg: `Send failed: ${data.error || r.status}` });
+        return;
+      }
+
+      // Log a delay event to the trip's status timeline
+      const delayEvent = {
+        timestamp: Date.now(),
+        coords: null,
+        author: currentUser?.name || 'Unknown',
+        notified: true,
+        reason: reason.trim(),
+        delayDuration: delayDuration.trim() || null,
+        newEtd: newEtd.trim() || null,
+        paxArrivalTime: paxArrivalTime.trim() || null,
+      };
+      // Stack multiple delays as delay_reported_<timestamp> so we don't
+      // overwrite previous delay events
+      const eventKey = `delay_reported_${delayEvent.timestamp}`;
+      const nextStatuses = { ...statuses, [eventKey]: delayEvent };
+      setStatuses(nextStatuses);
+      await persist({ statuses: nextStatuses, passengers, brokerEmail, autoNotify, completed, hasCatering, paxOverride });
+
+      setResult({ ok: true, msg: `Delay sent to ${recipients.length} recipient${recipients.length === 1 ? '' : 's'}.` });
+      // Clear form for next delay
+      setReason('');
+      setDelayDuration('');
+      setNewEtd('');
+      setPaxArrivalTime('');
+    } catch (err) {
+      console.error('[delay] send failed:', err);
+      setResult({ ok: false, msg: 'Network error: ' + err.message });
+    } finally {
+      setSending(false);
+    }
+  };
+
+  // List previous delays for this trip
+  const previousDelays = Object.entries(statuses || {})
+    .filter(([k]) => k.startsWith('delay_reported_'))
+    .map(([k, v]) => ({ key: k, ...v }))
+    .sort((a, b) => b.timestamp - a.timestamp);
+
+  return (
+    <div className="space-y-4">
+      <div className="border border-amber-500/30 bg-amber-500/5 p-3">
+        <h3 className="text-sm tracking-widest text-amber-300 mb-1" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}>
+          REPORT FLIGHT DELAY
+        </h3>
+        <p className="text-xs text-slate-400">
+          Sends an email to broker + ops with the delay information and logs it on this trip's timeline.
+        </p>
+      </div>
+
+      <label className="block">
+        <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          REASON FOR DELAY <span className="text-red-400">*</span>
+        </span>
+        <textarea
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          placeholder="e.g. Weather hold at departure, crew rest required, mechanical inspection..."
+          rows={3}
+          className="mt-1 w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-amber-400"
+          style={{ fontFamily: 'DM Sans, sans-serif' }}
+        />
+      </label>
+
+      <label className="block">
+        <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          ESTIMATED DELAY DURATION
+        </span>
+        <input
+          type="text"
+          value={delayDuration}
+          onChange={(e) => setDelayDuration(e.target.value)}
+          placeholder="e.g. 2 hours, 30 minutes"
+          className="mt-1 w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-amber-400"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        />
+      </label>
+
+      <label className="block">
+        <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          NEW ESTIMATED TIME OF DEPARTURE (ETD)
+        </span>
+        <input
+          type="text"
+          value={newEtd}
+          onChange={(e) => setNewEtd(e.target.value)}
+          placeholder="e.g. 14:30 local, 1430Z"
+          className="mt-1 w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-amber-400"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        />
+      </label>
+
+      <label className="block">
+        <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          REQUESTED PASSENGER ARRIVAL TIME
+        </span>
+        <input
+          type="text"
+          value={paxArrivalTime}
+          onChange={(e) => setPaxArrivalTime(e.target.value)}
+          placeholder="e.g. 14:00 local"
+          className="mt-1 w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-amber-400"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        />
+      </label>
+
+      {result && (
+        <div className={`p-3 border text-xs ${result.ok ? 'border-emerald-500/40 bg-emerald-500/5 text-emerald-300' : 'border-red-500/40 bg-red-500/5 text-red-300'}`}>
+          {result.msg}
+        </div>
+      )}
+
+      <button
+        onClick={send}
+        disabled={sending || !reason.trim()}
+        className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-slate-950 text-sm font-medium tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
+        style={{ fontFamily: 'DM Sans, sans-serif' }}
+      >
+        {sending ? 'SENDING...' : 'SEND DELAY NOTIFICATION'}
+      </button>
+
+      {/* Previous delays for this trip */}
+      {previousDelays.length > 0 && (
+        <div className="pt-4 border-t border-slate-800">
+          <h4 className="text-[10px] tracking-widest text-slate-500 mb-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            PREVIOUS DELAYS · {previousDelays.length}
+          </h4>
+          <div className="space-y-2">
+            {previousDelays.map(d => (
+              <div key={d.key} className="border border-slate-800 bg-slate-900/40 p-3 text-xs space-y-1">
+                <div className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  {new Date(d.timestamp).toLocaleString()} · by {d.author}
+                </div>
+                <div className="text-slate-200" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                  {d.reason}
+                </div>
+                {(d.delayDuration || d.newEtd || d.paxArrivalTime) && (
+                  <div className="text-[11px] text-slate-400 space-y-0.5">
+                    {d.delayDuration && <div>Duration: <span className="text-slate-200">{d.delayDuration}</span></div>}
+                    {d.newEtd && <div>New ETD: <span className="text-slate-200">{d.newEtd}</span></div>}
+                    {d.paxArrivalTime && <div>Pax arrival: <span className="text-slate-200">{d.paxArrivalTime}</span></div>}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function NotifyPanel({ trip, opsEmail, brokerEmail, setBrokerEmail, statuses, autoNotify, setAutoNotify, hasCatering, setHasCatering }) {
   const [customMsg, setCustomMsg] = useState('');
   const lastStatus = useMemo(() => {
@@ -2625,6 +2857,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
             { id: 'notes', label: 'NOTES', icon: AlertCircle, hidden: !hasNotes },
             { id: 'chat', label: 'COMMS', icon: MessageSquare },
             { id: 'notify', label: 'NOTIFY', icon: Bell, hidden: !trip.info.isOps },
+            { id: 'delay', label: 'DELAY', icon: AlertCircle, hidden: !trip.info.isOps },
           ];
         })().filter(t => !t.hidden).map(t => (
           <button
@@ -2818,6 +3051,23 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
               setAutoNotify={updateAutoNotify}
               hasCatering={hasCatering}
               setHasCatering={updateHasCatering}
+            />
+          </div>
+        ) : tab === 'delay' ? (
+          <div className="p-6 max-w-2xl">
+            <DelayPanel
+              trip={trip}
+              opsEmail={opsEmail}
+              brokerEmail={brokerEmail}
+              currentUser={currentUser}
+              statuses={statuses}
+              setStatuses={setStatuses}
+              persist={persist}
+              passengers={passengers}
+              autoNotify={autoNotify}
+              completed={completed}
+              hasCatering={hasCatering}
+              paxOverride={paxOverride}
             />
           </div>
         ) : null}
