@@ -564,14 +564,28 @@ function greetingFromEmail(email) {
 
 // Build the email subject + body for a given status update.
 // Returns { subject, text } or null if this status doesn't trigger an email.
+// REPO legs get repositioning-specific copy; revenue legs get the standard
+// passenger-flight wording.
 function buildStatusEmail(step, trip, brokerEmail) {
   const greeting = `Hi ${greetingFromEmail(brokerEmail)},`;
   const tail = trip.info.tail || '';
   const route = `${trip.info.from || ''}-${trip.info.to || ''}`;
   const signature = '\n\n— Skyway Aviation\nPrivate Jet & Helicopter Charter Services';
+  const isRepo = trip.info.legType === 'REPO';
 
   switch (step.id) {
     case 'crew_onsite':
+      if (isRepo) {
+        return {
+          subject: `Crew Preparing Aircraft for Repositioning — ${tail} ${route}`,
+          text:
+            `${greeting}\n\n` +
+            `Our crew has arrived at the FBO and is preparing the aircraft for the repositioning ` +
+            `flight from ${trip.info.from || ''} to ${trip.info.to || ''}. ` +
+            `We will notify you when the aircraft is ready and again when it begins taxi for departure.` +
+            signature,
+        };
+      }
       return {
         subject: `Crew Arrival Notification — ${tail} ${route}`,
         text:
@@ -583,6 +597,16 @@ function buildStatusEmail(step, trip, brokerEmail) {
       };
 
     case 'aircraft_ready':
+      if (isRepo) {
+        return {
+          subject: `Aircraft Ready for Repositioning — ${tail} ${route}`,
+          text:
+            `${greeting}\n\n` +
+            `${tail} is ready for the repositioning flight from ${trip.info.from || ''} to ${trip.info.to || ''}. ` +
+            `We will send a final notification once the aircraft begins taxi for departure.` +
+            signature,
+        };
+      }
       return {
         subject: `Aircraft Ready for Passengers — ${tail} ${route}`,
         text:
@@ -614,6 +638,16 @@ function buildStatusEmail(step, trip, brokerEmail) {
       };
 
     case 'taxi_dep':
+      if (isRepo) {
+        return {
+          subject: `Aircraft Taxiing for Repositioning — ${tail} ${route}`,
+          text:
+            `${greeting}\n\n` +
+            `${tail} is now taxiing for the repositioning flight from ${trip.info.from || ''} to ${trip.info.to || ''}. ` +
+            `We will provide the aircraft's ETA once it is airborne.` +
+            signature,
+        };
+      }
       return {
         subject: `Aircraft Taxiing for Departure — ${tail} ${route}`,
         text:
@@ -1049,6 +1083,25 @@ const STATUS_STEPS = [
   { id: 'pax_boarded', label: 'PASSENGERS BOARDED', sub: 'All souls accounted', icon: Users, applies: ['REVENUE'] },
   { id: 'taxi_dep', label: 'TAXI FOR DEPARTURE', sub: 'Pushback / taxi clearance', icon: Plane, applies: ['REPO', 'REVENUE'] },
 ];
+
+// REPO-leg labels override the generic ones above. The same step IDs are used,
+// but on a REPO leg the UI + email content reads "for Repositioning" instead
+// of generic flight language.
+const REPO_STEP_OVERRIDES = {
+  crew_onsite:    { label: 'CREW PREPARING FOR REPOSITIONING', sub: 'GPS lock at FBO' },
+  aircraft_ready: { label: 'AIRCRAFT READY FOR REPOSITIONING', sub: 'Pre-flight complete' },
+  taxi_dep:       { label: 'AIRCRAFT TAXIING FOR REPOSITIONING', sub: 'Pushback / taxi clearance' },
+};
+
+// Return the leg-type-aware step config (label + sub).
+// Use this everywhere a step label is rendered to crew/broker.
+function getStepDisplay(step, trip) {
+  const isRepo = trip?.info?.legType === 'REPO';
+  if (isRepo && REPO_STEP_OVERRIDES[step.id]) {
+    return { ...step, ...REPO_STEP_OVERRIDES[step.id] };
+  }
+  return step;
+}
 
 function StatusButton({ step, status, onTrigger, onUntrigger, locked, isNext, autoNotify }) {
   const Icon = step.icon;
@@ -2616,13 +2669,14 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
             {applicableSteps.map((step, idx) => {
               const previousComplete = idx === 0 || statuses[applicableSteps[idx - 1].id];
               const blocked = step.id === 'pax_boarded' && !paxComplete;
+              const displayStep = getStepDisplay(step, trip);
               return (
                 <StatusButton
                   key={step.id}
-                  step={step}
+                  step={displayStep}
                   status={statuses[step.id]}
-                  onTrigger={handleStatusTrigger}
-                  onUntrigger={handleStatusUntrigger}
+                  onTrigger={() => handleStatusTrigger(step)}
+                  onUntrigger={() => handleStatusUntrigger(step)}
                   locked={!previousComplete || blocked}
                   isNext={nextStep?.id === step.id && previousComplete && !blocked}
                   autoNotify={autoNotify}
