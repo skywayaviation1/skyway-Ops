@@ -2125,6 +2125,8 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
     setStatuses(nextStatuses);
     await persist({ statuses: nextStatuses, passengers, brokerEmail, autoNotify, completed, hasCatering, paxOverride });
 
+    console.log('[email] updateStatus fired for step:', step.id, '· legType:', trip.info?.legType, '· autoNotify:', autoNotify, '· sendNotif:', sendNotif);
+
     // Parse broker email field — supports comma-separated list of recipients
     // (e.g. "broker@x.com, ops@flightsupport.com")
     const brokerEmails = (brokerEmail || '')
@@ -2138,6 +2140,8 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
       .map(e => e.trim())
       .filter(e => e.length > 0);
 
+    console.log('[email] recipients:', recipients, '· opsEmail:', opsEmail, '· brokerEmails:', brokerEmails);
+
     if (recipients.length === 0) {
       console.warn('[email] Skipping send — no valid recipients. opsEmail:', opsEmail || '(empty)', 'brokerEmail:', brokerEmail || '(empty)');
       return;
@@ -2146,12 +2150,12 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
     // Use first broker email for the "Hi [Name]" greeting
     const emailContent = buildStatusEmail(step, trip, brokerEmails[0] || '');
     if (!emailContent) {
-      console.warn('[email] No email template for step:', step.id);
+      console.warn('[email] No email template for step:', step.id, '· legType:', trip.info?.legType);
       return;
     }
 
     try {
-      console.log('[email] Sending to:', recipients.join(', '), 'subject:', emailContent.subject);
+      console.log('[email] Sending to:', recipients.join(', '), '· subject:', emailContent.subject);
       const r = await fetch('/api/send-email', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2161,16 +2165,16 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
           text: emailContent.text,
         }),
       });
+      const respData = await r.json().catch(() => ({}));
       if (!r.ok) {
-        const data = await r.json().catch(() => ({}));
-        console.error('[email] Send failed:', r.status, data.error || '');
+        console.error('[email] Send failed:', r.status, respData.error || '', respData);
         return;
       }
       // Email sent successfully — mark notified=true now
       const updatedStatuses = { ...nextStatuses, [step.id]: { ...newStatus, notified: true } };
       setStatuses(updatedStatuses);
       await persist({ statuses: updatedStatuses, passengers, brokerEmail, autoNotify, completed, hasCatering, paxOverride });
-      console.log('[email] Sent successfully');
+      console.log('[email] Sent successfully · resend id:', respData.id || '(no id)');
     } catch (err) {
       console.error('[email] Network error:', err);
     }
