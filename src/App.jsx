@@ -1309,20 +1309,24 @@ function ChatPanel({ tripId, currentUser }) {
    ID Scanner (PDF417 + photo capture)
    ============================================================ */
 function IDScanner({ onComplete, onCancel }) {
-  const [phase, setPhase] = useState('intro'); // intro | scan | review | manual
+  const [phase, setPhase] = useState('intro'); // intro | scan | ai_processing | review | manual
   const [error, setError] = useState(null);
   const [parsed, setParsed] = useState(null);
   const [realIdConfirmed, setRealIdConfirmed] = useState(false);
   const [photoData, setPhotoData] = useState(null);
   const [scanning, setScanning] = useState(false);
-  const [scannerName, setScannerName] = useState(''); // 'BarcodeDetector' | 'ZXing'
+  const [scannerName, setScannerName] = useState(''); // 'BarcodeDetector' | 'ZXing' | 'AI'
   const [torchSupported, setTorchSupported] = useState(false);
   const [torchOn, setTorchOn] = useState(false);
+  const [aiCountdown, setAiCountdown] = useState(0); // seconds until AI fallback fires
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
   const detectorRef = useRef(null);
   const detectIntervalRef = useRef(null);
+  const aiFallbackTimerRef = useRef(null);
+  const aiCountdownIntervalRef = useRef(null);
+  const aiTriggeredRef = useRef(false); // prevent double-fire
 
   const stopCamera = useCallback(() => {
     if (streamRef.current) {
@@ -1332,6 +1336,14 @@ function IDScanner({ onComplete, onCancel }) {
     if (detectIntervalRef.current) {
       clearInterval(detectIntervalRef.current);
       detectIntervalRef.current = null;
+    }
+    if (aiFallbackTimerRef.current) {
+      clearTimeout(aiFallbackTimerRef.current);
+      aiFallbackTimerRef.current = null;
+    }
+    if (aiCountdownIntervalRef.current) {
+      clearInterval(aiCountdownIntervalRef.current);
+      aiCountdownIntervalRef.current = null;
     }
     // Clean up ZXing reader if it's running
     if (detectorRef.current && typeof detectorRef.current.reset === 'function') {
@@ -1373,6 +1385,7 @@ function IDScanner({ onComplete, onCancel }) {
 
   const startScan = async () => {
     setError(null);
+    aiTriggeredRef.current = false;
     setPhase('scan');
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -1445,9 +1458,112 @@ function IDScanner({ onComplete, onCancel }) {
         console.error('ZXing fallback failed:', e);
         setError('Could not start barcode scanner. Use manual entry.');
       }
+
+      // === AI FALLBACK TIMER ===
+      // After 3 seconds of barcode scanning with no success, automatically
+      // capture the current frame and send to Claude vision for extraction.
+      // This handles passports, international IDs, and damaged barcodes.
+      setAiCountdown(3);
+      aiCountdownIntervalRef.current = setInterval(() => {
+        setAiCountdown(n => {
+          if (n <= 1) {
+            clearInterval(aiCountdownIntervalRef.current);
+            return 0;
+          }
+          return n - 1;
+        });
+      }, 1000);
+      aiFallbackTimerRef.current = setTimeout(() => {
+        if (aiTriggeredRef.current) return;
+        aiTriggeredRef.current = true;
+        triggerAiFallback();
+      }, 3000);
     } catch (e) {
       setError(`Camera error: ${e.message}`);
       setPhase('intro');
+    }
+  };
+
+  // Capture the current frame, send to Claude vision, parse the response.
+  // Called automatically after 3s timeout, OR manually via "USE AI NOW" button.
+  const triggerAiFallback = async () => {
+    if (!videoRef.current) return;
+    aiTriggeredRef.current = true;
+    // Stop the barcode scanner — AI takes over
+    if (detectIntervalRef.current) {
+      clearInterval(detectIntervalRef.current);
+      detectIntervalRef.current = null;
+    }
+    if (detectorRef.current && typeof detectorRef.current.reset === 'function') {
+      try { detectorRef.current.reset(); } catch (e) { /* ignore */ }
+    }
+
+    // Capture the current frame as a JPEG. Resize to max 1280px wide to keep
+    // payload reasonable while preserving enough detail for OCR.
+    const v = videoRef.current;
+    const tmpCanvas = document.createElement('canvas');
+    const targetW = Math.min(1280, v.videoWidth);
+    const scale = targetW / v.videoWidth;
+    tmpCanvas.width = targetW;
+    tmpCanvas.height = Math.round(v.videoHeight * scale);
+    const ctx = tmpCanvas.getContext('2d');
+    ctx.drawImage(v, 0, 0, tmpCanvas.width, tmpCanvas.height);
+    const dataUrl = tmpCanvas.toDataURL('image/jpeg', 0.8);
+    setPhotoData(dataUrl); // store for the audit trail
+    stopCamera();
+    setScanning(false);
+    setPhase('ai_processing');
+    setScannerName('AI');
+
+    try {
+      const base64 = dataUrl.split(',')[1];
+      const r = await fetch('/api/parse-id', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageBase64: base64, mediaType: 'image/jpeg' }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok || !data.parsed) {
+        setError(`AI extraction failed: ${data.error || r.status}. Use manual entry.`);
+        setPhase('manual');
+        return;
+      }
+      // Map the AI parsed shape to the existing review-phase shape
+      const p = data.parsed;
+      const aiData = {
+        firstName: p.firstName || '',
+        middleName: p.middleName || '',
+        lastName: p.lastName || '',
+        dob: p.dob || '',
+        dobISO: p.dob || '',
+        documentNumber: p.documentNumber || '',
+        expiration: p.expiration || '',
+        expirationISO: p.expiration || '',
+        documentType: p.documentType || 'unknown',
+        issuingAuthority: p.issuingAuthority || '',
+        confidence: p.confidence || 'medium',
+        notes: p.notes || '',
+        source: 'ai',
+        raw: JSON.stringify(p),
+      };
+      // If AI says "unknown" — image isn't an ID
+      if (p.documentType === 'unknown') {
+        setError(p.notes || 'Image does not appear to be a government ID.');
+        setPhase('intro');
+        return;
+      }
+      // If we got at least a name, accept it
+      if (aiData.firstName || aiData.lastName) {
+        setParsed(aiData);
+        setPhase('review');
+      } else {
+        setError('AI could not extract a name from the image. Use manual entry.');
+        setPhase('manual');
+      }
+    } catch (err) {
+      console.error('[ai-id] fallback failed:', err);
+      setError('AI extraction error: ' + err.message + '. Use manual entry.');
+      setPhase('manual');
     }
   };
 
@@ -1475,16 +1591,23 @@ function IDScanner({ onComplete, onCancel }) {
       id: `pax-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       firstName: parsed.firstName || parsed.fullName?.split(',')[1]?.trim() || '',
       lastName: parsed.lastName || parsed.fullName?.split(',')[0]?.trim() || '',
+      middleName: parsed.middleName || '',
       dob: parsed.dobISO || parsed.dob || '',
       expiration: parsed.expirationISO || parsed.expiration || '',
-      licenseNumber: parsed.licenseNumber || '',
-      state: parsed.state || '',
+      licenseNumber: parsed.licenseNumber || parsed.documentNumber || '',
+      documentNumber: parsed.documentNumber || parsed.licenseNumber || '',
+      documentType: parsed.documentType || (parsed.raw && parsed.source === 'ai' ? 'unknown' : 'us_drivers_license'),
+      issuingAuthority: parsed.issuingAuthority || parsed.state || '',
+      state: parsed.state || parsed.issuingAuthority || '',
       realIdCompliant: realIdConfirmed,
       expired: !!expired,
       photo: photoData,
       scannedAt: Date.now(),
-      method: parsed.raw ? 'PDF417_SCAN' : 'MANUAL',
-      paxType: parsed.raw ? 'SCAN' : 'MANUAL',
+      method: parsed.source === 'ai'
+        ? 'AI_VISION'
+        : (parsed.raw ? 'PDF417_SCAN' : 'MANUAL'),
+      paxType: parsed.source === 'ai' ? 'AI_SCAN' : (parsed.raw ? 'SCAN' : 'MANUAL'),
+      aiConfidence: parsed.confidence || null,
       noShow: false,
     };
     onComplete(passenger);
@@ -1550,6 +1673,12 @@ function IDScanner({ onComplete, onCancel }) {
             <div className="absolute top-2 left-2 text-[10px] text-cyan-400 flex items-center gap-1.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
               <StatusDot tone="amber" pulse /> SCANNING {scannerName && `· ${scannerName.toUpperCase()}`}
             </div>
+            {/* AI fallback countdown */}
+            {aiCountdown > 0 && !aiTriggeredRef.current && (
+              <div className="absolute top-2 right-2 text-[10px] text-violet-300 flex items-center gap-1.5 px-2 py-1 bg-slate-900/80 border border-violet-500/40" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                AI IN {aiCountdown}s
+              </div>
+            )}
           </div>
           {torchSupported && (
             <button
@@ -1566,7 +1695,7 @@ function IDScanner({ onComplete, onCancel }) {
           )}
         </div>
         <p className="text-xs text-slate-500 text-center">
-          Scan the <span className="text-cyan-400 font-bold">BACK</span> of the license · Hold steady · Align barcode within the frame
+          Scan the <span className="text-cyan-400 font-bold">BACK</span> of a US license · OR hold the front of any ID/passport in frame · AI will read it after 3 seconds
           {torchSupported && ' · Tap 💡 for flashlight'}
         </p>
         {error && (
@@ -1574,7 +1703,16 @@ function IDScanner({ onComplete, onCancel }) {
             {error}
           </div>
         )}
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
+          <button
+            onClick={() => {
+              if (aiFallbackTimerRef.current) clearTimeout(aiFallbackTimerRef.current);
+              if (!aiTriggeredRef.current) triggerAiFallback();
+            }}
+            className="flex-1 py-2 border border-violet-500/40 text-sm text-violet-300 hover:bg-violet-500/10"
+          >
+            Read with AI Now
+          </button>
           <button
             onClick={() => { stopCamera(); setPhase('photoOnly'); }}
             className="flex-1 py-2 border border-amber-500/40 text-sm text-amber-300 hover:bg-amber-500/10"
@@ -1593,6 +1731,25 @@ function IDScanner({ onComplete, onCancel }) {
           >
             Cancel
           </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (phase === 'ai_processing') {
+    return (
+      <div className="space-y-3">
+        <div className="relative aspect-[4/3] bg-slate-900 border border-slate-700 flex items-center justify-center">
+          {photoData && (
+            <img src={photoData} alt="Captured ID" className="w-full h-full object-contain opacity-30" />
+          )}
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
+            <Loader2 className="w-12 h-12 text-violet-400 animate-spin" />
+            <div className="text-sm text-violet-300 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              AI READING ID
+            </div>
+            <div className="text-xs text-slate-400">Usually 3-5 seconds</div>
+          </div>
         </div>
       </div>
     );
