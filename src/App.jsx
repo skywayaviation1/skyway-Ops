@@ -4604,7 +4604,19 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
               <div className="flex items-center gap-2">
                 <a
                   href={previewPdfUrl}
-                  download={`manifest-${(draft.tail || 'tail').replace(/[^A-Z0-9]/gi, '')}-${(draft.date || '').replace(/[^0-9]/g, '')}-PREVIEW.pdf`}
+                  download={(() => {
+                    // Match the API filename format: "MM-DD-YYYY TAIL.pdf"
+                    // For preview, append " PREVIEW" so users don't confuse it with the submitted version.
+                    const tail = String(draft.tail || 'TAIL').toUpperCase().replace(/[^A-Z0-9]/g, '');
+                    const m = String(draft.date || '').match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+                    if (m) {
+                      const mm = m[2].padStart(2, '0');
+                      const dd = m[3].padStart(2, '0');
+                      const yyyy = m[1];
+                      return `${mm}-${dd}-${yyyy} ${tail} PREVIEW.pdf`;
+                    }
+                    return `Manifest ${tail} PREVIEW.pdf`;
+                  })()}
                   className="text-[10px] px-2 py-1 border border-slate-700 text-slate-400 hover:border-cyan-500/40 hover:text-cyan-300 tracking-widest"
                   style={{ fontFamily: 'JetBrains Mono, monospace' }}
                 >
