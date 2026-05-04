@@ -1904,6 +1904,11 @@ function DelayPanel({ trip, opsEmail, brokerEmail, currentUser, statuses, setSta
   const [delayDuration, setDelayDuration] = useState('');
   const [newEtd, setNewEtd] = useState('');
   const [paxArrivalTime, setPaxArrivalTime] = useState('');
+  // Toggle: when true, broker is included in the delay email. When false,
+  // only ops gets the notification. Default OFF so crew is conscious about
+  // including the broker — broker notifications during a delay sometimes
+  // need to be coordinated by sales first.
+  const [notifyBroker, setNotifyBroker] = useState(false);
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState(null);
 
@@ -1915,27 +1920,35 @@ function DelayPanel({ trip, opsEmail, brokerEmail, currentUser, statuses, setSta
     setSending(true);
     setResult(null);
 
-    // Parse broker emails (supports comma-separated list)
-    const brokerEmails = (brokerEmail || '')
-      .split(/[,;\s]+/)
-      .map(e => e.trim())
-      .filter(e => e.length > 0 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
+    // Build recipient list based on the toggle.
+    // Ops always gets it. Broker only when crew explicitly opts in.
+    const brokerEmails = notifyBroker
+      ? (brokerEmail || '')
+          .split(/[,;\s]+/)
+          .map(e => e.trim())
+          .filter(e => e.length > 0 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e))
+      : [];
     const recipients = [opsEmail, ...brokerEmails].filter(Boolean);
     if (recipients.length === 0) {
-      setResult({ ok: false, msg: 'No valid recipients. Add a broker email in NOTIFY tab.' });
+      setResult({ ok: false, msg: 'No valid recipients. Ops email is missing — contact admin.' });
       setSending(false);
       return;
     }
 
     const tail = trip.info.tail || '';
     const route = `${trip.info.from || ''}-${trip.info.to || ''}`;
-    const greeting = `Hi ${greetingFromEmail(brokerEmails[0] || '')},`;
+    // Greeting: when broker is notified, address them; when ops-only, keep it neutral
+    const greeting = notifyBroker && brokerEmails[0]
+      ? `Hi ${greetingFromEmail(brokerEmails[0])},`
+      : `Ops,`;
     const signature = '\n\n— Skyway Aviation\nPrivate Jet & Helicopter Charter Services';
 
     const lines = [
       `${greeting}`,
       ``,
-      `We are writing to inform you of a delay for ${tail} ${route}.`,
+      notifyBroker
+        ? `We are writing to inform you of a delay for ${tail} ${route}.`
+        : `Internal delay notification for ${tail} ${route}. Broker has NOT been notified.`,
       ``,
       `Reason: ${reason.trim()}`,
     ];
@@ -1943,7 +1956,9 @@ function DelayPanel({ trip, opsEmail, brokerEmail, currentUser, statuses, setSta
     if (newEtd.trim())        lines.push(`New estimated time of departure: ${newEtd.trim()}`);
     if (paxArrivalTime.trim()) lines.push(`Requested passenger arrival time: ${paxArrivalTime.trim()}`);
     lines.push(``);
-    lines.push(`We will keep you informed as the situation develops.`);
+    lines.push(notifyBroker
+      ? `We will keep you informed as the situation develops.`
+      : `Reported by ${currentUser?.name || 'crew'}. Coordinate broker comms separately.`);
     const body = lines.join('\n') + signature;
 
     try {
@@ -1952,7 +1967,9 @@ function DelayPanel({ trip, opsEmail, brokerEmail, currentUser, statuses, setSta
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           to: recipients,
-          subject: `Flight Delay — ${tail} ${route}`,
+          subject: notifyBroker
+            ? `Flight Delay — ${tail} ${route}`
+            : `[INTERNAL] Flight Delay — ${tail} ${route}`,
           text: body,
         }),
       });
@@ -1968,20 +1985,24 @@ function DelayPanel({ trip, opsEmail, brokerEmail, currentUser, statuses, setSta
         coords: null,
         author: currentUser?.name || 'Unknown',
         notified: true,
+        notifyBroker, // record whether broker was looped in
         reason: reason.trim(),
         delayDuration: delayDuration.trim() || null,
         newEtd: newEtd.trim() || null,
         paxArrivalTime: paxArrivalTime.trim() || null,
       };
-      // Stack multiple delays as delay_reported_<timestamp> so we don't
-      // overwrite previous delay events
       const eventKey = `delay_reported_${delayEvent.timestamp}`;
       const nextStatuses = { ...statuses, [eventKey]: delayEvent };
       setStatuses(nextStatuses);
       await persist({ statuses: nextStatuses, passengers, brokerEmail, autoNotify, completed, hasCatering, paxOverride });
 
-      setResult({ ok: true, msg: `Delay sent to ${recipients.length} recipient${recipients.length === 1 ? '' : 's'}.` });
-      // Clear form for next delay
+      const recipientCount = recipients.length;
+      setResult({
+        ok: true,
+        msg: notifyBroker
+          ? `Delay sent to ops + broker (${recipientCount} recipient${recipientCount === 1 ? '' : 's'}).`
+          : `Delay sent to ops only. Broker NOT notified.`,
+      });
       setReason('');
       setDelayDuration('');
       setNewEtd('');
@@ -2073,13 +2094,44 @@ function DelayPanel({ trip, opsEmail, brokerEmail, currentUser, statuses, setSta
         </div>
       )}
 
+      {/* Notify broker toggle */}
+      <div className="border border-slate-700 bg-slate-900/40 p-3">
+        <label className="flex items-start gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={notifyBroker}
+            onChange={(e) => setNotifyBroker(e.target.checked)}
+            className="mt-0.5 w-4 h-4 cursor-pointer accent-amber-500"
+          />
+          <div className="flex-1">
+            <div className="text-xs tracking-widest text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+              ALSO NOTIFY BROKER
+            </div>
+            <div className="text-[11px] text-slate-500 mt-0.5" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+              {notifyBroker
+                ? `Broker(s) will receive the delay email along with ops.`
+                : `Only ops will be notified. Useful when delay needs to be coordinated internally before broker is told.`}
+            </div>
+            {notifyBroker && !brokerEmail && (
+              <div className="text-[11px] text-amber-300 mt-1" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                ⚠ No broker email on file for this trip — toggle will only send to ops.
+              </div>
+            )}
+          </div>
+        </label>
+      </div>
+
       <button
         onClick={send}
         disabled={sending || !reason.trim()}
         className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-slate-950 text-sm font-medium tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
         style={{ fontFamily: 'DM Sans, sans-serif' }}
       >
-        {sending ? 'SENDING...' : 'SEND DELAY NOTIFICATION'}
+        {sending
+          ? 'SENDING...'
+          : notifyBroker
+            ? 'SEND DELAY → OPS + BROKER'
+            : 'SEND DELAY → OPS ONLY'}
       </button>
 
       {/* Previous delays for this trip */}
