@@ -72,7 +72,9 @@ export default async function handler(req, res) {
     if (apiKey) {
       try {
         const subject = `Load Manifest — ${manifest.tail || 'Unknown'} ${manifest.tripDate || ''} ${manifest.tripCode ? `[${manifest.tripCode}]` : ''}`.trim();
-        const filename = `manifest-${(manifest.tail || 'tail').replace(/[^A-Z0-9]/gi, '')}-${(manifest.tripDate || '').replace(/[^0-9]/g, '')}.pdf`;
+        // Filename format: "MM-DD-YYYY TAIL.pdf" (e.g. "05-04-2026 N20UF.pdf")
+        // Handles both ISO (YYYY-MM-DD) and US (M/D/YYYY) input dates.
+        const filename = buildManifestFilename(manifest.tripDate, manifest.tail);
         const text = [
           `Load Manifest submitted by ${manifest.submittedBy || 'crew'}.`,
           '',
@@ -136,6 +138,41 @@ export default async function handler(req, res) {
  * Build the manifest PDF using pdfkit. Layout mirrors the paper S-5/R-37 form.
  * Returns a Buffer.
  */
+/**
+ * Build a Skyway-standard manifest filename.
+ * Format: "MM-DD-YYYY TAIL.pdf" (e.g. "05-04-2026 N20UF.pdf")
+ *
+ * Accepts both ISO format (2026-05-04) and US format (5/4/2026) for the date.
+ * Falls back gracefully when fields are missing.
+ */
+function buildManifestFilename(tripDate, tail) {
+  const safeTail = String(tail || 'TAIL').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  let mm = '', dd = '', yyyy = '';
+  const dateStr = String(tripDate || '').trim();
+
+  // Try YYYY-MM-DD (ISO)
+  let m = dateStr.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (m) {
+    yyyy = m[1];
+    mm = m[2].padStart(2, '0');
+    dd = m[3].padStart(2, '0');
+  } else {
+    // Try M/D/YYYY (US)
+    m = dateStr.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+    if (m) {
+      mm = m[1].padStart(2, '0');
+      dd = m[2].padStart(2, '0');
+      yyyy = m[3].length === 2 ? `20${m[3]}` : m[3];
+    }
+  }
+
+  if (mm && dd && yyyy) {
+    return `${mm}-${dd}-${yyyy} ${safeTail}.pdf`;
+  }
+  // Fallback if date couldn't be parsed
+  return `Manifest ${safeTail}.pdf`;
+}
+
 async function buildManifestPdf(m) {
   const doc = new PDFDocument({ size: 'LETTER', margin: 36, layout: 'landscape' });
   const chunks = [];
