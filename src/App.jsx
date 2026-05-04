@@ -237,6 +237,14 @@ const DEFAULT_ICAL_URL = 'https://portal.jetinsight.com/schedule/7a32dd47-6a5c-4
 // that all status emails go to charters@flyskyway.com regardless of user).
 const OPS_EMAIL = 'charters@flyskyway.com';
 
+// All Skyway aircraft registrations. Used for the Malfunction/Incident Report
+// dropdown and any other place we need to enumerate the fleet.
+// Update this list when aircraft are added or retired.
+const SKYWAY_TAILS = [
+  'N20UF', 'N168ZZ', 'N286N', 'N444AM',
+  'N651TW', 'N551FP', 'N85AH', 'N525CR',
+];
+
 const CATEGORY_META = {
   REVENUE:  { label: 'REVENUE',     tone: 'cyan',    icon: 'Users' },
   REPO:     { label: 'REPO',        tone: 'violet',  icon: 'Plane' },
@@ -5103,6 +5111,687 @@ function PassengerRow({ passenger, onRemove, onToggleNoShow }) {
 /* ============================================================
    My Profile modal — current user edits own profile + signature
    ============================================================ */
+// ============================================================
+//   REPORTS SECTION — Malfunction/Incident Reports (14 CFR 135.65)
+// ============================================================
+//
+// Crew files Malfunction/Incident Reports per 14 CFR § 135.65 when there is
+// a mechanical irregularity or operational incident. The form mirrors the
+// paper Skyway Aviation Malfunction/Incident Report.
+//
+// On submit:
+//   - Saves to Firestore `reports` collection
+//   - Generates PDF server-side
+//   - Emails PDF to: jake@, zack@, jim@, mx@flyskyway.com
+//
+// Submitted reports are read-only. Admin can delete (test/duplicates only).
+
+function ReportsScreen({ currentUser }) {
+  const [reports, setReports] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showNew, setShowNew] = useState(false);
+  const [selectedId, setSelectedId] = useState(null);
+
+  const isAdmin = currentUser?.role === 'admin';
+
+  useEffect(() => {
+    let unsub = null;
+    let cancelled = false;
+    (async () => {
+      const m = await import('./firebase-reports.js');
+      if (cancelled) return;
+      unsub = m.subscribeToAllReports((list) => {
+        setReports(list);
+        setLoading(false);
+      });
+    })();
+    return () => { cancelled = true; if (unsub) unsub(); };
+  }, []);
+
+  const selected = reports.find(r => r.id === selectedId);
+
+  return (
+    <div className="flex-1 overflow-hidden flex flex-col md:flex-row">
+      <aside className={`${selected || showNew ? 'hidden md:block' : 'block'} w-full md:w-96 md:border-r md:border-slate-800 overflow-y-auto scroll-area`}>
+        <div className="px-4 py-3 border-b border-slate-800 bg-slate-950 sticky top-0 z-10">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="text-xs tracking-[0.2em]" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}>
+              MALFUNCTION REPORTS
+            </h2>
+            <button
+              onClick={() => { setShowNew(true); setSelectedId(null); }}
+              className="text-[10px] px-2 py-1 bg-red-500 hover:bg-red-400 text-white tracking-widest font-medium"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              + NEW
+            </button>
+          </div>
+          <p className="text-[10px] text-slate-500 mt-1">
+            14 CFR § 135.65 record. Auto-emails to jake, zack, jim, mx @flyskyway.com
+          </p>
+        </div>
+
+        {loading ? (
+          <div className="p-8 text-center text-slate-500">
+            <Loader2 className="w-5 h-5 animate-spin mx-auto mb-2" /> Loading reports...
+          </div>
+        ) : reports.length === 0 ? (
+          <div className="p-12 text-center">
+            <AlertCircle className="w-8 h-8 text-slate-700 mx-auto mb-2" />
+            <p className="text-sm text-slate-500">No reports filed yet</p>
+            <p className="text-xs text-slate-600 mt-1">
+              Tap NEW to file a Malfunction/Incident Report.
+            </p>
+          </div>
+        ) : (
+          <div>
+            {reports.map(r => (
+              <button
+                key={r.id}
+                onClick={() => { setSelectedId(r.id); setShowNew(false); }}
+                className={`block w-full text-left p-3 border-b border-slate-800 ${
+                  r.id === selectedId ? 'bg-slate-900/60' : 'hover:bg-slate-900/40'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <span className="text-sm text-slate-100" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
+                    {r.tail || '?'}
+                  </span>
+                  <span className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    {r.date || ''}
+                  </span>
+                </div>
+                <div className="text-xs text-slate-300 truncate" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                  {r.affectedSystem || '(no system)'} — {(r.textOfEvent || '').slice(0, 60)}{(r.textOfEvent || '').length > 60 ? '...' : ''}
+                </div>
+                <div className="flex gap-2 text-[10px] text-slate-500 mt-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  <span>{r.submittedByName}</span>
+                  {r.diversion && <span className="text-amber-300">DIV</span>}
+                  {r.emergencyDeclared && <span className="text-red-400">EMER</span>}
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </aside>
+
+      <main className={`flex-1 overflow-y-auto scroll-area ${selected || showNew ? 'block' : 'hidden md:block'}`}>
+        {showNew ? (
+          <NewReport
+            currentUser={currentUser}
+            onCancel={() => setShowNew(false)}
+            onSubmitted={(id) => { setShowNew(false); setSelectedId(id); }}
+          />
+        ) : selected ? (
+          <ReportDetail
+            report={selected}
+            currentUser={currentUser}
+            onBack={() => setSelectedId(null)}
+            isAdmin={isAdmin}
+          />
+        ) : (
+          <div className="h-full flex items-center justify-center p-8 grid-bg">
+            <div className="text-center max-w-md">
+              <div className="w-20 h-20 mx-auto mb-4 border border-slate-800 flex items-center justify-center">
+                <AlertCircle className="w-10 h-10 text-slate-700" />
+              </div>
+              <h2 className="text-2xl tracking-wider mb-2" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
+                MALFUNCTION REPORTS
+              </h2>
+              <p className="text-sm text-slate-500">
+                Select a report to view, or tap NEW to file one.
+              </p>
+            </div>
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
+
+function NewReport({ currentUser, onCancel, onSubmitted }) {
+  const today = (() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  })();
+
+  const [form, setForm] = useState({
+    date: today,
+    tail: '',
+    pic: '',
+    sic: '',
+    flightMode: '',
+    flightConditionIMC: false,  // false=VMC, true=IMC
+    flightConditionDay: true,   // true=Day, false=Night
+    departureId: '',
+    destinationId: '',
+    diversion: false,
+    divertedTo: '',
+    emergencyDeclared: false,
+    affectedSystem: '',
+    cautionWarningLight: '',
+    textOfEvent: '',
+    submittedByRole: 'PIC',
+    certificateNumber: '',
+  });
+  const [previewPdfUrl, setPreviewPdfUrl] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null);
+
+  const setField = (key) => (val) => setForm(f => ({ ...f, [key]: val }));
+
+  const buildPayload = () => ({
+    ...form,
+    submittedAt: Date.now(),
+    submittedByUid: currentUser?.uid || currentUser?.id,
+    submittedByName: currentUser?.name || '',
+    submittedByEmail: currentUser?.email || '',
+  });
+
+  const previewPdf = async () => {
+    setError(null);
+    try {
+      const r = await fetch('/api/generate-report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ report: buildPayload(), previewOnly: true }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok || !data.pdfBase64) {
+        setError(`Preview failed: ${data.error || r.status}`);
+        return;
+      }
+      setPreviewPdfUrl(`data:application/pdf;base64,${data.pdfBase64}`);
+    } catch (err) {
+      setError('Preview failed: ' + err.message);
+    }
+  };
+
+  const submit = async () => {
+    // Required-field validation
+    if (!form.tail) { alert('Aircraft Registration is required.'); return; }
+    if (!form.pic) { alert('PIC is required.'); return; }
+    if (!form.textOfEvent.trim()) { alert('Description of event is required.'); return; }
+    if (!form.affectedSystem.trim()) { alert('Affected System is required.'); return; }
+    if (!form.certificateNumber.trim()) { alert('Certificate # is required.'); return; }
+
+    if (!window.confirm(
+      'Submit this Malfunction/Incident Report?\n\n' +
+      'The report will be emailed to:\n' +
+      '  • jake@flyskyway.com\n' +
+      '  • zack@flyskyway.com\n' +
+      '  • jim@flyskyway.com\n' +
+      '  • mx@flyskyway.com\n\n' +
+      'Once submitted, this record cannot be edited.'
+    )) return;
+
+    setSubmitting(true);
+    setError(null);
+    try {
+      const m = await import('./firebase-reports.js');
+      const id = m.newReportId();
+      const payload = { id, type: 'malfunction', ...buildPayload() };
+      // Save to Firestore first (so we have the record even if email fails)
+      await m.saveReport(payload);
+
+      // Generate PDF + email
+      const r = await fetch('/api/generate-report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ report: payload }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setError(`Report saved but email failed: ${data.error || r.status}`);
+        // Still call onSubmitted so user can see the saved record
+        onSubmitted(id);
+        return;
+      }
+      // Update report with email status
+      await m.saveReport({
+        ...payload,
+        pdfEmailedTo: data.recipients || [],
+        emailId: data.emailId || null,
+        emailError: data.emailError || null,
+      });
+      onSubmitted(id);
+    } catch (err) {
+      console.error('[report] submit failed:', err);
+      setError(err.message || 'Submit failed');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="p-4 max-w-3xl mx-auto space-y-4">
+      <div className="flex items-center gap-2">
+        <button onClick={onCancel} className="md:hidden text-slate-500 hover:text-cyan-400 p-1" aria-label="Back">
+          <ChevronLeft className="w-5 h-5" />
+        </button>
+        <div className="flex-1">
+          <h1 className="text-2xl tracking-wider" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
+            NEW MALFUNCTION REPORT
+          </h1>
+          <div className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            14 CFR § 135.65 · MALFUNCTION / INCIDENT REPORT
+          </div>
+        </div>
+      </div>
+
+      {error && <div className="border border-red-500/40 bg-red-500/5 p-3 text-xs text-red-300">{error}</div>}
+
+      {/* DATE */}
+      <RField label="DATE">
+        <input
+          type="date"
+          value={form.date}
+          onChange={(e) => setField('date')(e.target.value)}
+          className="w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        />
+      </RField>
+
+      {/* AIRCRAFT */}
+      <RSection label="AIRCRAFT" />
+      <RField label="AIRCRAFT REGISTRATION & TYPE *">
+        <select
+          value={form.tail}
+          onChange={(e) => setField('tail')(e.target.value)}
+          className="w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        >
+          <option value="">— Select aircraft —</option>
+          {SKYWAY_TAILS.map(t => <option key={t} value={t}>{t}</option>)}
+        </select>
+      </RField>
+
+      {/* FLIGHT CREW */}
+      <RSection label="FLIGHT CREW" />
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <RField label="PIC *">
+          <input type="text" value={form.pic} onChange={(e) => setField('pic')(e.target.value)}
+            placeholder="Full name" className="w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100"
+            style={{ fontFamily: 'DM Sans, sans-serif' }} />
+        </RField>
+        <RField label="SIC">
+          <input type="text" value={form.sic} onChange={(e) => setField('sic')(e.target.value)}
+            placeholder="Full name (if applicable)" className="w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100"
+            style={{ fontFamily: 'DM Sans, sans-serif' }} />
+        </RField>
+      </div>
+
+      {/* EVENT */}
+      <RSection label="EVENT" />
+      <RField label="FLIGHT MODE">
+        <input type="text" value={form.flightMode} onChange={(e) => setField('flightMode')(e.target.value)}
+          placeholder="e.g., Cruise, Climb, Descent, Taxi" className="w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100"
+          style={{ fontFamily: 'DM Sans, sans-serif' }} />
+      </RField>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <RField label="FLIGHT CONDITION (IMC/VMC)">
+          <RToggle
+            options={[{ label: 'IMC', value: true }, { label: 'VMC', value: false }]}
+            value={form.flightConditionIMC}
+            onChange={(v) => setField('flightConditionIMC')(v)}
+          />
+        </RField>
+        <RField label="FLIGHT CONDITION (DAY/NIGHT)">
+          <RToggle
+            options={[{ label: 'DAY', value: true }, { label: 'NIGHT', value: false }]}
+            value={form.flightConditionDay}
+            onChange={(v) => setField('flightConditionDay')(v)}
+          />
+        </RField>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <RField label="DEPARTURE ID">
+          <input type="text" value={form.departureId} onChange={(e) => setField('departureId')(e.target.value.toUpperCase())}
+            placeholder="ICAO" className="w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }} />
+        </RField>
+        <RField label="DESTINATION ID">
+          <input type="text" value={form.destinationId} onChange={(e) => setField('destinationId')(e.target.value.toUpperCase())}
+            placeholder="ICAO" className="w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }} />
+        </RField>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <RField label="DIVERSION">
+          <RToggle
+            options={[{ label: 'YES', value: true }, { label: 'NO', value: false }]}
+            value={form.diversion}
+            onChange={(v) => setField('diversion')(v)}
+          />
+        </RField>
+        <RField label="EMERGENCY DECLARED">
+          <RToggle
+            options={[{ label: 'YES', value: true }, { label: 'NO', value: false }]}
+            value={form.emergencyDeclared}
+            onChange={(v) => setField('emergencyDeclared')(v)}
+          />
+        </RField>
+      </div>
+
+      {form.diversion && (
+        <RField label="IF YES, DIVERTED TO">
+          <input type="text" value={form.divertedTo} onChange={(e) => setField('divertedTo')(e.target.value.toUpperCase())}
+            placeholder="ICAO" className="w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }} />
+        </RField>
+      )}
+
+      {/* DESCRIPTION */}
+      <RSection label="DESCRIPTION OF EVENT" />
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <RField label="AFFECTED SYSTEM *">
+          <input type="text" value={form.affectedSystem} onChange={(e) => setField('affectedSystem')(e.target.value)}
+            placeholder="e.g., Hydraulics, Avionics, Electrical" className="w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100"
+            style={{ fontFamily: 'DM Sans, sans-serif' }} />
+        </RField>
+        <RField label="CAUTION/WARNING LIGHT">
+          <input type="text" value={form.cautionWarningLight} onChange={(e) => setField('cautionWarningLight')(e.target.value)}
+            placeholder="e.g., HYD PRESS LOW" className="w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100"
+            style={{ fontFamily: 'DM Sans, sans-serif' }} />
+        </RField>
+      </div>
+
+      <RField label="TEXT OF EVENT *">
+        <textarea
+          value={form.textOfEvent}
+          onChange={(e) => setField('textOfEvent')(e.target.value)}
+          rows={8}
+          placeholder="Describe what happened, when, how the crew responded, and any subsequent observations. Be specific and factual."
+          className="w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
+          style={{ fontFamily: 'DM Sans, sans-serif' }}
+        />
+      </RField>
+
+      {/* SUBMITTED BY */}
+      <RSection label="SUBMITTED BY" />
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <RField label="ROLE">
+          <RToggle
+            options={[{ label: 'PIC', value: 'PIC' }, { label: 'SIC', value: 'SIC' }]}
+            value={form.submittedByRole}
+            onChange={(v) => setField('submittedByRole')(v)}
+          />
+        </RField>
+        <RField label="CERTIFICATE # *">
+          <input type="text" value={form.certificateNumber} onChange={(e) => setField('certificateNumber')(e.target.value)}
+            placeholder="FAA cert number" className="w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }} />
+        </RField>
+      </div>
+
+      {/* Email recipients reminder */}
+      <div className="border border-amber-500/40 bg-amber-500/5 p-3 text-xs text-slate-300" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+        <div className="text-[10px] tracking-widest text-amber-300 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+          ON SUBMIT, PDF WILL BE EMAILED TO:
+        </div>
+        jake@flyskyway.com · zack@flyskyway.com · jim@flyskyway.com · mx@flyskyway.com
+      </div>
+
+      {/* Action buttons */}
+      <div className="flex flex-wrap gap-2 pt-3 border-t border-slate-800">
+        <button
+          onClick={previewPdf}
+          className="px-4 py-2 border border-violet-500/40 text-violet-300 hover:bg-violet-500/10 text-sm tracking-widest"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        >
+          PREVIEW PDF
+        </button>
+        <button
+          onClick={submit}
+          disabled={submitting}
+          className="px-4 py-2 bg-red-500 hover:bg-red-400 text-white text-sm font-medium tracking-widest disabled:opacity-40"
+          style={{ fontFamily: 'DM Sans, sans-serif' }}
+        >
+          {submitting ? 'SUBMITTING...' : 'SUBMIT & EMAIL'}
+        </button>
+        <button
+          onClick={onCancel}
+          className="px-4 py-2 border border-slate-700 text-sm text-slate-300"
+        >
+          CANCEL
+        </button>
+      </div>
+
+      {/* PDF preview modal */}
+      {previewPdfUrl && (
+        <div className="fixed inset-0 z-50 bg-slate-950/90 flex items-center justify-center p-4" onClick={() => setPreviewPdfUrl(null)}>
+          <div className="bg-slate-950 border border-slate-700 max-w-5xl w-full h-full max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="p-3 border-b border-slate-800 flex items-center justify-between gap-2">
+              <h2 className="text-lg tracking-wider" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>REPORT PREVIEW</h2>
+              <button onClick={() => setPreviewPdfUrl(null)} className="text-slate-500 hover:text-slate-300 p-1">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <iframe src={previewPdfUrl} title="Report PDF" className="flex-1 w-full border-0 bg-slate-900" />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ReportDetail({ report, currentUser, onBack, isAdmin }) {
+  const [previewPdfUrl, setPreviewPdfUrl] = useState(null);
+  const [generating, setGenerating] = useState(false);
+
+  const generatePdf = async () => {
+    setGenerating(true);
+    try {
+      const r = await fetch('/api/generate-report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ report, previewOnly: true }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok || !data.pdfBase64) {
+        alert('PDF generation failed: ' + (data.error || r.status));
+        return;
+      }
+      setPreviewPdfUrl(`data:application/pdf;base64,${data.pdfBase64}`);
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const deleteReport = async () => {
+    if (!isAdmin) return;
+    if (!window.confirm(
+      `Delete this Malfunction Report?\n\n${report.tail} · ${report.date}\n\n` +
+      `This is permanent and cannot be undone. Use only to remove test/duplicate reports.`
+    )) return;
+    try {
+      const m = await import('./firebase-reports.js');
+      await m.deleteReport(report.id);
+      onBack();
+    } catch (err) {
+      alert('Delete failed: ' + err.message);
+    }
+  };
+
+  return (
+    <div className="p-4 max-w-3xl mx-auto space-y-4">
+      <div className="flex items-center gap-2">
+        <button onClick={onBack} className="md:hidden text-slate-500 hover:text-cyan-400 p-1" aria-label="Back">
+          <ChevronLeft className="w-5 h-5" />
+        </button>
+        <div className="flex-1">
+          <h1 className="text-2xl tracking-wider" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
+            {report.tail} · {report.date}
+          </h1>
+          <div className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            MALFUNCTION REPORT · 14 CFR § 135.65
+          </div>
+        </div>
+        {isAdmin && (
+          <button
+            onClick={deleteReport}
+            className="text-[10px] px-2 py-1 border border-red-500/40 text-red-300 hover:bg-red-500/10 tracking-widest"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            DELETE
+          </button>
+        )}
+      </div>
+
+      {/* Status banner */}
+      <div className="border border-emerald-500/40 bg-emerald-500/5 p-3">
+        <div className="text-[10px] tracking-widest text-emerald-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          SUBMITTED — RECORD LOCKED
+        </div>
+        <div className="text-sm text-slate-200 mt-1">
+          Submitted by {report.submittedByName} on {new Date(report.submittedAt).toLocaleString()}
+        </div>
+        {report.pdfEmailedTo && report.pdfEmailedTo.length > 0 && (
+          <div className="text-[11px] text-slate-400 mt-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            Emailed to: {report.pdfEmailedTo.join(', ')}
+          </div>
+        )}
+        {report.emailError && (
+          <div className="text-[11px] text-red-300 mt-1">
+            Email error: {report.emailError}
+          </div>
+        )}
+      </div>
+
+      {/* Read-only display */}
+      <div className="space-y-3 text-sm" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+        <RDisplay label="Aircraft Registration & Type" value={report.tail} />
+        <div className="grid grid-cols-2 gap-3">
+          <RDisplay label="PIC" value={report.pic} />
+          <RDisplay label="SIC" value={report.sic || '—'} />
+        </div>
+        <RDisplay label="Flight Mode" value={report.flightMode || '—'} />
+        <div className="grid grid-cols-2 gap-3">
+          <RDisplay label="Flight Condition" value={report.flightConditionIMC ? 'IMC' : 'VMC'} />
+          <RDisplay label="Day/Night" value={report.flightConditionDay ? 'Day' : 'Night'} />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <RDisplay label="Departure" value={report.departureId || '—'} />
+          <RDisplay label="Destination" value={report.destinationId || '—'} />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <RDisplay label="Diversion" value={report.diversion ? `Yes — to ${report.divertedTo || '?'}` : 'No'} />
+          <RDisplay label="Emergency Declared" value={report.emergencyDeclared ? 'Yes' : 'No'} />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <RDisplay label="Affected System" value={report.affectedSystem} />
+          <RDisplay label="Caution/Warning Light" value={report.cautionWarningLight || '—'} />
+        </div>
+        <div>
+          <div className="text-[10px] tracking-widest text-slate-500 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            TEXT OF EVENT
+          </div>
+          <div className="border border-slate-700 bg-slate-900/40 p-3 text-sm text-slate-100 whitespace-pre-wrap">
+            {report.textOfEvent}
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <RDisplay label="Submitted By Role" value={report.submittedByRole} />
+          <RDisplay label="Certificate #" value={report.certificateNumber} />
+        </div>
+      </div>
+
+      <div className="flex flex-wrap gap-2 pt-3 border-t border-slate-800">
+        <button
+          onClick={generatePdf}
+          disabled={generating}
+          className="px-4 py-2 border border-violet-500/40 text-violet-300 hover:bg-violet-500/10 text-sm tracking-widest disabled:opacity-50"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        >
+          {generating ? 'GENERATING...' : 'VIEW PDF'}
+        </button>
+      </div>
+
+      {previewPdfUrl && (
+        <div className="fixed inset-0 z-50 bg-slate-950/90 flex items-center justify-center p-4" onClick={() => setPreviewPdfUrl(null)}>
+          <div className="bg-slate-950 border border-slate-700 max-w-5xl w-full h-full max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="p-3 border-b border-slate-800 flex items-center justify-between gap-2">
+              <h2 className="text-lg tracking-wider" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>REPORT PDF</h2>
+              <a
+                href={previewPdfUrl}
+                download={`malfunction-${(report.tail || '').replace(/[^A-Z0-9]/gi, '')}-${(report.date || '').replace(/[^0-9]/g, '')}.pdf`}
+                className="text-[10px] px-2 py-1 border border-slate-700 text-slate-400 hover:border-cyan-500/40 hover:text-cyan-300 tracking-widest"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              >
+                DOWNLOAD
+              </a>
+              <button onClick={() => setPreviewPdfUrl(null)} className="text-slate-500 hover:text-slate-300 p-1">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <iframe src={previewPdfUrl} title="Report PDF" className="flex-1 w-full border-0 bg-slate-900" />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Small UI helpers for the report form
+function RField({ label, children }) {
+  return (
+    <label className="block">
+      <span className="text-[10px] tracking-widest text-slate-500 uppercase" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        {label}
+      </span>
+      <div className="mt-1">{children}</div>
+    </label>
+  );
+}
+
+function RSection({ label }) {
+  return (
+    <div className="border-t border-slate-700 pt-3 mt-2">
+      <div className="text-xs tracking-[0.2em] text-cyan-400" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+        {label}
+      </div>
+    </div>
+  );
+}
+
+function RToggle({ options, value, onChange }) {
+  return (
+    <div className="flex gap-2">
+      {options.map(opt => (
+        <button
+          key={String(opt.value)}
+          type="button"
+          onClick={() => onChange(opt.value)}
+          className={`flex-1 py-2 px-3 border text-xs tracking-widest ${
+            value === opt.value
+              ? 'border-cyan-400 bg-cyan-500/10 text-cyan-300'
+              : 'border-slate-700 text-slate-400 hover:border-slate-500'
+          }`}
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function RDisplay({ label, value }) {
+  return (
+    <div>
+      <div className="text-[10px] tracking-widest text-slate-500 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        {label}
+      </div>
+      <div className="text-sm text-slate-100 px-3 py-2 border border-slate-800 bg-slate-900/40">
+        {value || '—'}
+      </div>
+    </div>
+  );
+}
+
 function MyProfileModal({ currentUser, onClose, onSave }) {
   const [name, setName] = useState(currentUser?.name || '');
   const [callsign, setCallsign] = useState(currentUser?.callsign || '');
@@ -5833,6 +6522,7 @@ function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, sync
     { id: 'archive',  label: 'ARCHIVE',   icon: Hash,     roles: ['crew', 'ops', 'admin'] },
     { id: 'expenses', label: 'EXPENSES',  icon: Mail,     roles: ['crew', 'sales', 'ops', 'accounting', 'admin'] },
     { id: 'manifests',label: 'MANIFESTS', icon: FileText, roles: ['crew', 'ops', 'admin'] },
+    { id: 'reports',  label: 'REPORT',    icon: AlertCircle, roles: ['crew', 'ops', 'admin'] },
     { id: 'ops',      label: 'OPS',       icon: Zap,      roles: ['ops', 'admin'] },
     { id: 'users',    label: 'USERS',     icon: Users,    roles: ['ops', 'admin'] },
   ];
@@ -8368,6 +9058,13 @@ export default function CharterOps() {
           <ManifestsScreen
             currentUser={currentUser}
             allTrips={allTrips}
+          />
+        )}
+
+        {/* === REPORTS SECTION === */}
+        {section === 'reports' && (
+          <ReportsScreen
+            currentUser={currentUser}
           />
         )}
 
