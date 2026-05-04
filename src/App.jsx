@@ -5546,7 +5546,7 @@ function LoginScreen({ initialMode = 'login' }) {
             <div className="text-[10px] tracking-widest text-slate-500 uppercase mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
               SIGN IN
             </div>
-            <FieldInput label="EMAIL" type="email" value={form.email} onChange={setField('email')} placeholder="you@skyway.com" autoComplete="email" />
+            <FieldInput label="EMAIL" type="email" value={form.email} onChange={setField('email')} placeholder="you@flyskyway.com" autoComplete="email" />
             <FieldInput label="PASSWORD" type="password" value={form.password} onChange={setField('password')} placeholder="••••••••" autoComplete="current-password" />
             <button
               onClick={handleLogin}
@@ -5573,7 +5573,7 @@ function LoginScreen({ initialMode = 'login' }) {
               CREATE ACCOUNT
             </div>
             <FieldInput label="FULL NAME *" value={form.name} onChange={setField('name')} placeholder="Captain John Smith" />
-            <FieldInput label="EMAIL *" type="email" value={form.email} onChange={setField('email')} placeholder="you@skyway.com" autoComplete="email" />
+            <FieldInput label="EMAIL *" type="email" value={form.email} onChange={setField('email')} placeholder="you@flyskyway.com" autoComplete="email" />
             <FieldInput label="PASSWORD * (min 8 chars)" type="password" value={form.password} onChange={setField('password')} placeholder="••••••••" autoComplete="new-password" />
             <FieldInput label="CONFIRM PASSWORD *" type="password" value={form.passwordConfirm} onChange={setField('passwordConfirm')} placeholder="••••••••" autoComplete="new-password" />
             <FieldInput label="CALLSIGN" value={form.callsign} onChange={setField('callsign')} placeholder="CAPT SMITH" />
@@ -5601,7 +5601,7 @@ function LoginScreen({ initialMode = 'login' }) {
               RESET PASSWORD
             </div>
             <p className="text-xs text-slate-400">Enter your email; we'll send you a link to set a new password.</p>
-            <FieldInput label="EMAIL" type="email" value={form.email} onChange={setField('email')} placeholder="you@skyway.com" autoComplete="email" />
+            <FieldInput label="EMAIL" type="email" value={form.email} onChange={setField('email')} placeholder="you@flyskyway.com" autoComplete="email" />
             <button
               onClick={handleReset}
               disabled={submitting}
