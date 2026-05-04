@@ -2904,7 +2904,12 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
               </div>
             )}
             {applicableSteps.map((step, idx) => {
-              const previousComplete = idx === 0 || statuses[applicableSteps[idx - 1].id];
+              // Steps can be tapped in ANY order — crew often handles things
+              // out-of-sequence in real ops (catering arrives while pax board,
+              // pax show up while crew is still doing pre-flight, etc).
+              // Only data-integrity constraint: PASSENGERS BOARDED requires
+              // all expected pax to be checked in (or marked no-show / skipped)
+              // because that status is a factual claim about pax accountability.
               const blocked = step.id === 'pax_boarded' && !paxComplete;
               const displayStep = getStepDisplay(step, trip);
               return (
@@ -2914,8 +2919,8 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
                   status={statuses[step.id]}
                   onTrigger={() => handleStatusTrigger(step)}
                   onUntrigger={() => handleStatusUntrigger(step)}
-                  locked={!previousComplete || blocked}
-                  isNext={nextStep?.id === step.id && previousComplete && !blocked}
+                  locked={blocked}
+                  isNext={nextStep?.id === step.id && !blocked}
                   autoNotify={autoNotify}
                 />
               );
