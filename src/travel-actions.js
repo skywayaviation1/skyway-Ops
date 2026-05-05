@@ -30,34 +30,67 @@ export function extractLastName(passengerName) {
  * Build a manage-trip URL for an airline. Returns the airline's correct
  * "find your trip" / "my trips" landing page. URLs verified May 2026.
  *
+ * Where the airline supports iOS Universal Links / Android App Links, we
+ * use the path declared in the airline's AASA / asset-links manifest.
+ * On a phone with the airline's app installed, tapping the URL opens
+ * the app directly to that screen. On phones without the app, or on
+ * desktop, it falls back to the web page. Same URL handles both.
+ *
  * Returns: { url, airline } or null when no airline match.
  */
 export function buildManageTripUrl(booking) {
   if (!booking) return null;
   const code = String(booking.airlineCode || '').toUpperCase();
   const name = String(booking.airline || '').toLowerCase();
+  const conf = String(booking.confirmationCode || '').trim().toUpperCase();
+  const lastName = extractLastName(booking.passengerName).toUpperCase();
 
   const isAirline = (aliases) => aliases.some(a => {
     const al = a.toLowerCase();
     return code === a.toUpperCase() || name.includes(al);
   });
 
-  // === US carriers — verified URLs ===
+  // === American Airlines ===
+  // AASA-listed Universal Link path. iOS opens the AA app if installed;
+  // otherwise loads the web page. Query params don't web-pre-fill but
+  // the AA app may use them; harmless if it doesn't.
   if (isAirline(['AA', 'american'])) {
+    const params = new URLSearchParams();
+    if (conf) params.set('recordLocator', conf);
+    if (lastName) params.set('lastName', lastName);
+    const qs = params.toString();
     return {
-      url: 'https://www.aa.com/reservation/viewReservationsAccess.do',
+      url: `https://www.aa.com/reservation/view/find-your-reservation${qs ? '?' + qs : ''}`,
       airline: 'American Airlines',
     };
   }
+
+  // === Delta ===
+  // Delta's iOS app declares fly.delta.com via Universal Links.
   if (isAirline(['DL', 'delta'])) {
-    return { url: 'https://www.delta.com/my-trips/trip-details', airline: 'Delta' };
+    return {
+      url: 'https://www.delta.com/my-trips/trip-details',
+      airline: 'Delta',
+    };
   }
+
+  // === United ===
   if (isAirline(['UA', 'united'])) {
-    return { url: 'https://www.united.com/en/us/manageres/mytrips', airline: 'United' };
+    return {
+      url: 'https://www.united.com/en/us/manageres/mytrips',
+      airline: 'United',
+    };
   }
+
+  // === Southwest ===
   if (isAirline(['WN', 'southwest'])) {
-    return { url: 'https://www.southwest.com/air/manage-reservation/index.html', airline: 'Southwest' };
+    return {
+      url: 'https://www.southwest.com/air/manage-reservation/index.html',
+      airline: 'Southwest',
+    };
   }
+
+  // === JetBlue ===
   if (isAirline(['B6', 'jetblue'])) {
     return { url: 'https://www.jetblue.com/manage-trips', airline: 'JetBlue' };
   }
