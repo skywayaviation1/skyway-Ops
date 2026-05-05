@@ -6679,22 +6679,48 @@ function FlightCard({ booking, canEdit }) {
           </div>
         )}
 
-        {/* CHECK IN button — opens airline manage-trip / check-in URL */}
+        {/* MANAGE TRIP button + COPY CONF — opens airline page; conf code copy is one tap */}
         {(() => {
           const ci = buildCheckInUrl(booking);
           if (!ci) return null;
+          const conf = String(booking.confirmationCode || '').trim();
           return (
-            <a
-              href={ci.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={(e) => e.stopPropagation()}
-              className="mt-3 block text-center py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold tracking-widest transition-colors"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}
-              title={ci.deepLink ? `Opens ${ci.airline} with conf code pre-filled` : `Opens ${ci.airline} manage-trip page`}
-            >
-              CHECK IN ↗
-            </a>
+            <div className="mt-3 flex gap-2">
+              <a
+                href={ci.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                className="flex-1 text-center py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold tracking-widest transition-colors"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                title={`Opens ${ci.airline} manage-trip page`}
+              >
+                MANAGE TRIP ↗
+              </a>
+              {conf && (
+                <button
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    try {
+                      await navigator.clipboard.writeText(conf);
+                      // Briefly indicate success via title; cards rerender often, fine to skip
+                      const target = e.currentTarget;
+                      const orig = target.textContent;
+                      target.textContent = 'COPIED ✓';
+                      setTimeout(() => { try { target.textContent = orig; } catch {} }, 1200);
+                    } catch (err) {
+                      console.error('Copy failed:', err);
+                    }
+                  }}
+                  className="px-3 py-2 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10 text-xs font-bold tracking-widest transition-colors"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                  title={`Copy ${conf} to clipboard`}
+                >
+                  COPY CONF
+                </button>
+              )}
+            </div>
           );
         })()}
       </div>
@@ -6908,27 +6934,70 @@ function BookingDetailModal({ booking, canEdit, onClose }) {
           {isFlight && (() => {
             const ci = buildCheckInUrl(booking);
             if (!ci) return null;
+            const conf = String(booking.confirmationCode || '').trim();
+            const lastName = (() => {
+              const t = String(booking.passengerName || '').trim();
+              if (t.includes(',')) return t.split(',')[0].trim();
+              const parts = t.split(/\s+/);
+              return parts[parts.length - 1] || '';
+            })();
             return (
-              <a
-                href={ci.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="block w-full text-center py-3 bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-base font-bold tracking-widest transition-colors"
-                style={{ fontFamily: 'JetBrains Mono, monospace' }}
-              >
-                CHECK IN ON {ci.airline.toUpperCase()} ↗
-              </a>
-            );
-          })()}
-          {isFlight && (() => {
-            const ci = buildCheckInUrl(booking);
-            if (!ci) return null;
-            return (
-              <p className="text-[10px] text-slate-500 text-center -mt-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                {ci.deepLink
-                  ? 'Conf code and last name pre-filled · Check-in opens 24hr before departure'
-                  : 'Opens manage-trip page — enter conf code manually'}
-              </p>
+              <>
+                <a
+                  href={ci.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="block w-full text-center py-3 bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-base font-bold tracking-widest transition-colors"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                >
+                  OPEN {ci.airline.toUpperCase()} MANAGE TRIP ↗
+                </a>
+                {(conf || lastName) && (
+                  <div className="grid grid-cols-2 gap-2">
+                    {conf && (
+                      <button
+                        onClick={async (e) => {
+                          try {
+                            await navigator.clipboard.writeText(conf);
+                            const target = e.currentTarget;
+                            const orig = target.textContent;
+                            target.textContent = 'CONF COPIED ✓';
+                            setTimeout(() => { try { target.textContent = orig; } catch {} }, 1500);
+                          } catch (err) {
+                            console.error('Copy failed:', err);
+                          }
+                        }}
+                        className="py-2 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10 text-sm font-bold tracking-widest"
+                        style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                      >
+                        COPY CONF · {conf}
+                      </button>
+                    )}
+                    {lastName && (
+                      <button
+                        onClick={async (e) => {
+                          try {
+                            await navigator.clipboard.writeText(lastName);
+                            const target = e.currentTarget;
+                            const orig = target.textContent;
+                            target.textContent = 'LAST NAME COPIED ✓';
+                            setTimeout(() => { try { target.textContent = orig; } catch {} }, 1500);
+                          } catch (err) {
+                            console.error('Copy failed:', err);
+                          }
+                        }}
+                        className="py-2 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10 text-sm font-bold tracking-widest"
+                        style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                      >
+                        COPY · {lastName.toUpperCase()}
+                      </button>
+                    )}
+                  </div>
+                )}
+                <p className="text-[10px] text-slate-500 text-center" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  Tap above to open the airline. Use COPY buttons to paste your conf code and last name into the airline's form. Online check-in opens 24 hours before departure.
+                </p>
+              </>
             );
           })()}
 
