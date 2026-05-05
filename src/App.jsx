@@ -5961,6 +5961,1122 @@ function RDisplay({ label, value }) {
   );
 }
 
+// ============================================================
+//   WALLET SECTION — Fleet cards + per-user travel bookings
+// ============================================================
+//
+// Two sub-tabs:
+//   1. CARDS — fleet credit/fuel cards. All users see these. Only ops + admin
+//      can add/edit/delete. Tap a card to reveal full number with audit log.
+//   2. TRAVEL — per-user hotel + commercial flight bookings. Each user sees
+//      their own. Ops + admin can view and edit any user's travel.
+
+const CARD_TYPES = [
+  { value: 'credit', label: 'Credit Card', defaultColor: '#1E40AF', icon: '💳' },
+  { value: 'multi-service', label: 'Multi Service Aviation', defaultColor: '#0891B2', icon: '⛽' },
+  { value: 'avfuel', label: 'AVfuel', defaultColor: '#15803D', icon: '⛽' },
+  { value: 'colt', label: 'Colt International', defaultColor: '#9333EA', icon: '⛽' },
+  { value: 'phillips66', label: 'Phillips 66', defaultColor: '#DC2626', icon: '⛽' },
+  { value: 'epic', label: 'Epic Card', defaultColor: '#EA580C', icon: '⛽' },
+  { value: 'shell', label: 'Shell', defaultColor: '#FCD34D', icon: '⛽' },
+  { value: 'fbo', label: 'FBO Card', defaultColor: '#475569', icon: '🏢' },
+  { value: 'other', label: 'Other', defaultColor: '#64748B', icon: '💳' },
+];
+
+function WalletScreen({ currentUser, users }) {
+  const [tab, setTab] = useState('cards'); // 'cards' | 'travel'
+  return (
+    <div className="flex-1 overflow-y-auto scroll-area">
+      <div className="max-w-5xl mx-auto p-4">
+        <div className="flex items-center gap-2 mb-4 border-b border-slate-800">
+          <button
+            onClick={() => setTab('cards')}
+            className={`px-4 py-2 text-sm tracking-widest border-b-2 transition-colors ${
+              tab === 'cards'
+                ? 'border-cyan-400 text-cyan-300'
+                : 'border-transparent text-slate-500 hover:text-slate-300'
+            }`}
+            style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}
+          >
+            CARDS
+          </button>
+          <button
+            onClick={() => setTab('travel')}
+            className={`px-4 py-2 text-sm tracking-widest border-b-2 transition-colors ${
+              tab === 'travel'
+                ? 'border-cyan-400 text-cyan-300'
+                : 'border-transparent text-slate-500 hover:text-slate-300'
+            }`}
+            style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}
+          >
+            TRAVEL
+          </button>
+        </div>
+
+        {tab === 'cards' && <CardsTab currentUser={currentUser} />}
+        {tab === 'travel' && <TravelTab currentUser={currentUser} users={users} />}
+      </div>
+    </div>
+  );
+}
+
+// === CARDS TAB =============================================
+
+function CardsTab({ currentUser }) {
+  const [cards, setCards] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showNew, setShowNew] = useState(false);
+  const [editingCard, setEditingCard] = useState(null);
+
+  const canEdit = ['ops', 'admin'].includes(currentUser?.role);
+
+  useEffect(() => {
+    let unsub = null;
+    let cancelled = false;
+    (async () => {
+      const m = await import('./firebase-wallet.js');
+      if (cancelled) return;
+      unsub = m.subscribeToAllCards((list) => {
+        setCards(list);
+        setLoading(false);
+      });
+    })();
+    return () => { cancelled = true; if (unsub) unsub(); };
+  }, []);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl tracking-wider" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>FLEET CARDS</h2>
+          <p className="text-xs text-slate-500 mt-1">
+            Visible to all crew. Tap a card to reveal the full number.
+          </p>
+        </div>
+        {canEdit && (
+          <button
+            onClick={() => { setShowNew(true); setEditingCard(null); }}
+            className="px-3 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-sm font-medium tracking-widest"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            + ADD CARD
+          </button>
+        )}
+      </div>
+
+      {loading ? (
+        <div className="p-8 text-center text-slate-500">
+          <Loader2 className="w-5 h-5 animate-spin mx-auto mb-2" /> Loading cards...
+        </div>
+      ) : cards.length === 0 && !showNew ? (
+        <div className="border border-dashed border-slate-700 p-12 text-center">
+          <Mail className="w-8 h-8 text-slate-700 mx-auto mb-2" />
+          <p className="text-sm text-slate-500">No cards yet</p>
+          {canEdit && (
+            <p className="text-xs text-slate-600 mt-1">
+              Tap + ADD CARD to add the first one.
+            </p>
+          )}
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {cards.map(card => (
+            <FleetCard
+              key={card.id}
+              card={card}
+              canEdit={canEdit}
+              onEdit={() => { setEditingCard(card); setShowNew(false); }}
+            />
+          ))}
+        </div>
+      )}
+
+      {(showNew || editingCard) && (
+        <CardEditModal
+          card={editingCard}
+          currentUser={currentUser}
+          onClose={() => { setShowNew(false); setEditingCard(null); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function FleetCard({ card, canEdit, onEdit }) {
+  const [revealed, setRevealed] = useState(false);
+  const typeMeta = CARD_TYPES.find(t => t.value === card.type) || CARD_TYPES[CARD_TYPES.length - 1];
+  const color = card.color || typeMeta.defaultColor;
+  const isExpired = (() => {
+    if (!card.expiration) return false;
+    // Expiration format: "MM/YY" or "MM/YYYY" or YYYY-MM
+    const parts = String(card.expiration).match(/(\d{1,2})[\/-](\d{2,4})/);
+    if (!parts) return false;
+    const month = parseInt(parts[1], 10);
+    let year = parseInt(parts[2], 10);
+    if (year < 100) year += 2000;
+    const expDate = new Date(year, month, 0); // last day of month
+    return expDate < new Date();
+  })();
+
+  const formattedNumber = (num) => {
+    if (!num) return '';
+    const clean = String(num).replace(/\s+/g, '');
+    return clean.replace(/(.{4})/g, '$1 ').trim();
+  };
+
+  const copyNumber = async () => {
+    try {
+      await navigator.clipboard.writeText(card.cardNumber || '');
+    } catch (err) {
+      console.error('Copy failed:', err);
+    }
+  };
+
+  return (
+    <div
+      className="relative aspect-[1.6/1] rounded-xl shadow-xl overflow-hidden cursor-pointer transition-transform hover:scale-[1.02]"
+      style={{
+        background: `linear-gradient(135deg, ${color} 0%, ${color}DD 60%, ${color}99 100%)`,
+      }}
+      onClick={() => setRevealed(r => !r)}
+    >
+      {/* Top — type and edit */}
+      <div className="absolute top-0 left-0 right-0 p-4 flex items-start justify-between">
+        <div>
+          <div className="text-[10px] tracking-widest text-white/70 uppercase" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {typeMeta.label}
+          </div>
+          <div className="text-sm font-bold text-white mt-0.5" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+            {card.nickname || '(unnamed)'}
+          </div>
+        </div>
+        <div className="text-2xl">{typeMeta.icon}</div>
+      </div>
+
+      {/* Center — number */}
+      <div className="absolute left-0 right-0 top-[55%] -translate-y-1/2 px-4">
+        <div className="font-mono text-base tracking-wider text-white" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {revealed && card.cardNumber
+            ? formattedNumber(card.cardNumber)
+            : `•••• •••• •••• ${card.last4 || '????'}`}
+        </div>
+      </div>
+
+      {/* Bottom — exp + actions */}
+      <div className="absolute bottom-0 left-0 right-0 p-4 flex items-end justify-between">
+        <div>
+          <div className="text-[9px] tracking-widest text-white/60 uppercase" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            VALID THRU
+          </div>
+          <div className={`text-xs ${isExpired ? 'text-red-200' : 'text-white'}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {card.expiration || '—'}{isExpired && ' (EXPIRED)'}
+          </div>
+        </div>
+        <div className="flex gap-2">
+          {revealed && (
+            <button
+              onClick={(e) => { e.stopPropagation(); copyNumber(); }}
+              className="text-[10px] px-2 py-1 bg-white/20 hover:bg-white/30 text-white tracking-widest backdrop-blur-sm"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              COPY
+            </button>
+          )}
+          {canEdit && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onEdit(); }}
+              className="text-[10px] px-2 py-1 bg-white/20 hover:bg-white/30 text-white tracking-widest backdrop-blur-sm"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              EDIT
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Reveal hint */}
+      {!revealed && (
+        <div className="absolute inset-x-0 bottom-12 text-center">
+          <div className="text-[10px] text-white/50 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            TAP TO REVEAL
+          </div>
+        </div>
+      )}
+
+      {/* Decorative chip */}
+      <div className="absolute top-1/2 left-4 w-9 h-7 -translate-y-1/2 rounded bg-yellow-300/30 border border-yellow-200/40" style={{ marginTop: '-32px' }} />
+    </div>
+  );
+}
+
+function CardEditModal({ card, currentUser, onClose }) {
+  const isNew = !card;
+  const [form, setForm] = useState(card || {
+    nickname: '',
+    type: 'credit',
+    cardNumber: '',
+    expiration: '',
+    billingZip: '',
+    pin: '',
+    notes: '',
+    color: '',
+    createdBy: currentUser?.name || '',
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+
+  const setField = (key) => (val) => setForm(f => ({ ...f, [key]: val }));
+
+  const save = async () => {
+    if (!form.nickname.trim()) { alert('Nickname is required.'); return; }
+    if (!form.cardNumber.trim()) { alert('Card number is required.'); return; }
+    setSaving(true);
+    setError(null);
+    try {
+      const m = await import('./firebase-wallet.js');
+      const id = card?.id || m.newCardId();
+      await m.saveCard({ ...form, id, createdBy: form.createdBy || currentUser?.name || '' });
+      onClose();
+    } catch (err) {
+      console.error('[wallet] save failed:', err);
+      setError(err.message || 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const remove = async () => {
+    if (!card) return;
+    if (!window.confirm(`Delete the "${card.nickname}" card permanently? This cannot be undone.`)) return;
+    setSaving(true);
+    try {
+      const m = await import('./firebase-wallet.js');
+      await m.deleteCard(card.id);
+      onClose();
+    } catch (err) {
+      setError(err.message || 'Delete failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const typeMeta = CARD_TYPES.find(t => t.value === form.type) || CARD_TYPES[0];
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-950/90 flex items-center justify-center p-4 overflow-y-auto" onClick={onClose}>
+      <div className="bg-slate-950 border border-slate-700 max-w-lg w-full" onClick={(e) => e.stopPropagation()}>
+        <div className="p-3 border-b border-slate-800 flex items-center justify-between gap-2">
+          <h2 className="text-lg tracking-wider" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
+            {isNew ? 'ADD CARD' : 'EDIT CARD'}
+          </h2>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-300 p-1">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="p-4 space-y-3">
+          {error && <div className="border border-red-500/40 bg-red-500/5 p-3 text-xs text-red-300">{error}</div>}
+
+          <div>
+            <label className="text-[10px] tracking-widest text-slate-500 uppercase" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              NICKNAME *
+            </label>
+            <input
+              type="text"
+              value={form.nickname}
+              onChange={(e) => setField('nickname')(e.target.value)}
+              placeholder="e.g., Multi Service Aviation"
+              className="mt-1 w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
+              style={{ fontFamily: 'DM Sans, sans-serif' }}
+            />
+          </div>
+
+          <div>
+            <label className="text-[10px] tracking-widest text-slate-500 uppercase" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              TYPE
+            </label>
+            <select
+              value={form.type}
+              onChange={(e) => setField('type')(e.target.value)}
+              className="mt-1 w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              {CARD_TYPES.map(t => (
+                <option key={t.value} value={t.value}>{t.icon} {t.label}</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="text-[10px] tracking-widest text-slate-500 uppercase" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              CARD NUMBER *
+            </label>
+            <input
+              type="text"
+              value={form.cardNumber}
+              onChange={(e) => setField('cardNumber')(e.target.value.replace(/\s+/g, ''))}
+              placeholder="1234567890123456"
+              className="mt-1 w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              autoComplete="off"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-[10px] tracking-widest text-slate-500 uppercase" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                EXPIRATION
+              </label>
+              <input
+                type="text"
+                value={form.expiration}
+                onChange={(e) => setField('expiration')(e.target.value)}
+                placeholder="MM/YY"
+                className="mt-1 w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                autoComplete="off"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] tracking-widest text-slate-500 uppercase" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                BILLING ZIP
+              </label>
+              <input
+                type="text"
+                value={form.billingZip}
+                onChange={(e) => setField('billingZip')(e.target.value)}
+                placeholder="33101"
+                className="mt-1 w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                autoComplete="off"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="text-[10px] tracking-widest text-slate-500 uppercase" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              PIN (OPTIONAL)
+            </label>
+            <input
+              type="text"
+              value={form.pin}
+              onChange={(e) => setField('pin')(e.target.value)}
+              placeholder="For fuel pumps"
+              className="mt-1 w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              autoComplete="off"
+            />
+          </div>
+
+          <div>
+            <label className="text-[10px] tracking-widest text-slate-500 uppercase" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              NOTES
+            </label>
+            <textarea
+              value={form.notes}
+              onChange={(e) => setField('notes')(e.target.value)}
+              rows={2}
+              placeholder="e.g., Call to authorize over $5K"
+              className="mt-1 w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100"
+              style={{ fontFamily: 'DM Sans, sans-serif' }}
+            />
+          </div>
+
+          <div>
+            <label className="text-[10px] tracking-widest text-slate-500 uppercase" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              CARD COLOR (OPTIONAL — DEFAULT: {typeMeta.defaultColor})
+            </label>
+            <input
+              type="color"
+              value={form.color || typeMeta.defaultColor}
+              onChange={(e) => setField('color')(e.target.value)}
+              className="mt-1 w-full h-10 bg-slate-900/60 border border-slate-700 cursor-pointer"
+            />
+          </div>
+        </div>
+
+        <div className="p-3 border-t border-slate-800 flex flex-wrap gap-2">
+          <button
+            onClick={save}
+            disabled={saving}
+            className="flex-1 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-sm font-medium disabled:opacity-50"
+            style={{ fontFamily: 'DM Sans, sans-serif' }}
+          >
+            {saving ? 'SAVING...' : 'SAVE CARD'}
+          </button>
+          {!isNew && (
+            <button
+              onClick={remove}
+              disabled={saving}
+              className="px-4 py-2 border border-red-500/40 text-red-300 hover:bg-red-500/10 text-sm tracking-widest"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              DELETE
+            </button>
+          )}
+          <button onClick={onClose} className="px-4 py-2 border border-slate-700 text-sm text-slate-300">
+            CANCEL
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// === TRAVEL TAB =============================================
+
+function TravelTab({ currentUser, users }) {
+  const isOpsOrAdmin = ['ops', 'admin'].includes(currentUser?.role);
+  // For non-ops/admin: always show your own. For ops/admin: pick a user.
+  const [selectedUserUid, setSelectedUserUid] = useState(currentUser?.uid || currentUser?.id);
+  const targetUser = users.find(u => u.uid === selectedUserUid) || currentUser;
+  const [bookings, setBookings] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showAdd, setShowAdd] = useState(false);
+
+  useEffect(() => {
+    let unsub = null;
+    let cancelled = false;
+    setLoading(true);
+    (async () => {
+      const m = await import('./firebase-travel.js');
+      if (cancelled) return;
+      unsub = m.subscribeToUserBookings(selectedUserUid, (list) => {
+        setBookings(list);
+        setLoading(false);
+      });
+    })();
+    return () => { cancelled = true; if (unsub) unsub(); };
+  }, [selectedUserUid]);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h2 className="text-2xl tracking-wider" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>TRAVEL</h2>
+          <p className="text-xs text-slate-500 mt-1">
+            Hotels and commercial flights for {targetUser?.name || 'this user'}.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {isOpsOrAdmin && (
+            <select
+              value={selectedUserUid}
+              onChange={(e) => setSelectedUserUid(e.target.value)}
+              className="bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              {[...users]
+                .filter(u => u.approved !== false)
+                .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+                .map(u => (
+                  <option key={u.uid} value={u.uid}>{u.name} ({u.role})</option>
+                ))}
+            </select>
+          )}
+          {isOpsOrAdmin && (
+            <button
+              onClick={() => setShowAdd(true)}
+              className="px-3 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-sm font-medium tracking-widest"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              + ADD
+            </button>
+          )}
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="p-8 text-center text-slate-500">
+          <Loader2 className="w-5 h-5 animate-spin mx-auto mb-2" /> Loading bookings...
+        </div>
+      ) : bookings.length === 0 ? (
+        <div className="border border-dashed border-slate-700 p-12 text-center">
+          <Plane className="w-8 h-8 text-slate-700 mx-auto mb-2" />
+          <p className="text-sm text-slate-500">No bookings yet</p>
+          {isOpsOrAdmin && (
+            <p className="text-xs text-slate-600 mt-1">
+              Tap + ADD to upload a confirmation.
+            </p>
+          )}
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {bookings.map(b => (
+            b.type === 'flight'
+              ? <FlightCard key={b.id} booking={b} canEdit={isOpsOrAdmin} />
+              : <HotelCard key={b.id} booking={b} canEdit={isOpsOrAdmin} />
+          ))}
+        </div>
+      )}
+
+      {showAdd && (
+        <AddBookingModal
+          targetUser={targetUser}
+          currentUser={currentUser}
+          onClose={() => setShowAdd(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function FlightCard({ booking, canEdit }) {
+  const [showDetail, setShowDetail] = useState(false);
+  const fmtTime = (t) => {
+    if (!t) return '';
+    // "15:25" -> "3:25 PM"
+    const [h, m] = String(t).split(':').map(Number);
+    if (isNaN(h)) return t;
+    const period = h >= 12 ? 'PM' : 'AM';
+    const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+    return `${h12}:${String(m || 0).padStart(2, '0')} ${period}`;
+  };
+  const fmtDate = (d) => {
+    if (!d) return '';
+    const dt = new Date(d + 'T00:00:00');
+    if (isNaN(dt.getTime())) return d;
+    return dt.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+  };
+
+  return (
+    <>
+      <div
+        onClick={() => setShowDetail(true)}
+        className="border-l-4 border-emerald-500 bg-slate-900/40 p-4 cursor-pointer hover:bg-slate-900/60 transition-colors"
+      >
+        <div className="flex items-start justify-between mb-2">
+          <div>
+            <div className="text-[10px] tracking-widest text-emerald-300" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+              ✈ {booking.airline || 'FLIGHT'}
+            </div>
+            <h3 className="text-xl mt-1" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
+              {booking.fromAirport || '?'} → {booking.toAirport || '?'}
+            </h3>
+            {(booking.fromCity || booking.toCity) && (
+              <p className="text-xs text-slate-500 mt-0.5">
+                {booking.fromCity || '?'} to {booking.toCity || '?'}
+              </p>
+            )}
+          </div>
+          <div className="text-right">
+            <div className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              CONF
+            </div>
+            <div className="text-sm font-mono text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+              {booking.confirmationCode || '—'}
+            </div>
+          </div>
+        </div>
+
+        <div className="border-t border-slate-800 pt-2 mt-2 flex items-center gap-3">
+          <div>
+            <div className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {fmtDate(booking.departureDate)}
+            </div>
+            <div className="text-sm text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {fmtTime(booking.departureTime)} → {fmtTime(booking.arrivalTime)}
+            </div>
+          </div>
+        </div>
+
+        {booking.passengerName && (
+          <div className="text-xs text-slate-400 mt-2">
+            <span className="text-slate-500">Passenger:</span> {booking.passengerName}
+            {booking.status && <span className="ml-2 text-emerald-400">• {booking.status}</span>}
+          </div>
+        )}
+      </div>
+
+      {showDetail && (
+        <BookingDetailModal
+          booking={booking}
+          canEdit={canEdit}
+          onClose={() => setShowDetail(false)}
+        />
+      )}
+    </>
+  );
+}
+
+function HotelCard({ booking, canEdit }) {
+  const [showDetail, setShowDetail] = useState(false);
+  const fmtDate = (d) => {
+    if (!d) return '';
+    const dt = new Date(d + 'T00:00:00');
+    if (isNaN(dt.getTime())) return d;
+    return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  };
+  const nights = (() => {
+    if (!booking.checkInDate || !booking.checkOutDate) return null;
+    const diff = (new Date(booking.checkOutDate) - new Date(booking.checkInDate)) / (1000 * 60 * 60 * 24);
+    return Math.round(diff);
+  })();
+
+  return (
+    <>
+      <div
+        onClick={() => setShowDetail(true)}
+        className="border-l-4 border-amber-500 bg-slate-900/40 p-4 cursor-pointer hover:bg-slate-900/60 transition-colors"
+      >
+        <div className="flex items-start justify-between mb-2">
+          <div>
+            <div className="text-[10px] tracking-widest text-amber-300" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+              🏨 {booking.hotelBrand || 'HOTEL'}
+            </div>
+            <h3 className="text-lg mt-1" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
+              {booking.hotelName || '(unnamed)'}
+            </h3>
+            {booking.city && (
+              <p className="text-xs text-slate-500 mt-0.5">
+                {booking.city}{booking.state ? `, ${booking.state}` : ''}
+              </p>
+            )}
+          </div>
+          <div className="text-right">
+            <div className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              CONF
+            </div>
+            <div className="text-sm font-mono text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+              {booking.confirmationCode || '—'}
+            </div>
+          </div>
+        </div>
+
+        <div className="border-t border-slate-800 pt-2 mt-2 flex items-center gap-3">
+          <div>
+            <div className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              CHECK-IN → CHECK-OUT
+            </div>
+            <div className="text-sm text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {fmtDate(booking.checkInDate)} → {fmtDate(booking.checkOutDate)}
+              {nights !== null && <span className="text-slate-500 text-xs ml-2">({nights} night{nights === 1 ? '' : 's'})</span>}
+            </div>
+          </div>
+        </div>
+
+        {booking.guestName && (
+          <div className="text-xs text-slate-400 mt-2">
+            <span className="text-slate-500">Guest:</span> {booking.guestName}
+          </div>
+        )}
+      </div>
+
+      {showDetail && (
+        <BookingDetailModal
+          booking={booking}
+          canEdit={canEdit}
+          onClose={() => setShowDetail(false)}
+        />
+      )}
+    </>
+  );
+}
+
+function BookingDetailModal({ booking, canEdit, onClose }) {
+  const [deleting, setDeleting] = useState(false);
+
+  const remove = async () => {
+    if (!window.confirm('Delete this booking permanently?')) return;
+    setDeleting(true);
+    try {
+      const m = await import('./firebase-travel.js');
+      await m.deleteBooking(booking.id);
+      onClose();
+    } catch (err) {
+      alert('Delete failed: ' + err.message);
+      setDeleting(false);
+    }
+  };
+
+  const isFlight = booking.type === 'flight';
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-950/90 flex items-center justify-center p-4 overflow-y-auto" onClick={onClose}>
+      <div className="bg-slate-950 border border-slate-700 max-w-lg w-full" onClick={(e) => e.stopPropagation()}>
+        <div className={`p-4 border-b border-slate-800 ${isFlight ? 'bg-emerald-500/10' : 'bg-amber-500/10'}`}>
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <div className="text-[10px] tracking-widest text-slate-300" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+                {isFlight ? `✈ ${booking.airline || 'FLIGHT'}` : `🏨 ${booking.hotelBrand || 'HOTEL'}`}
+              </div>
+              <h2 className="text-2xl tracking-wider mt-1" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
+                {isFlight
+                  ? `${booking.fromAirport || '?'} → ${booking.toAirport || '?'}`
+                  : booking.hotelName || '(unnamed)'}
+              </h2>
+            </div>
+            <button onClick={onClose} className="text-slate-500 hover:text-slate-300 p-1">
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+
+        <div className="p-4 space-y-3 text-sm">
+          {isFlight ? (
+            <>
+              <DetailRow label="Confirmation Code" value={booking.confirmationCode} mono />
+              <DetailRow label="Ticket Number" value={booking.ticketNumber} mono />
+              <DetailRow label="Flight Number" value={booking.flightNumber} mono />
+              <DetailRow label="Passenger" value={booking.passengerName} />
+              <DetailRow label="From" value={`${booking.fromCity || ''} (${booking.fromAirport || '?'})`} />
+              <DetailRow label="To" value={`${booking.toCity || ''} (${booking.toAirport || '?'})`} />
+              <DetailRow label="Departure" value={`${booking.departureDate || ''} at ${booking.departureTime || ''}`} mono />
+              <DetailRow label="Arrival" value={`${booking.arrivalDate || ''} at ${booking.arrivalTime || ''}`} mono />
+              <DetailRow label="Class" value={booking.class} />
+              <DetailRow label="Seat" value={booking.seat} mono />
+              <DetailRow label="Status" value={booking.status} />
+            </>
+          ) : (
+            <>
+              <DetailRow label="Confirmation Code" value={booking.confirmationCode} mono />
+              <DetailRow label="Guest" value={booking.guestName} />
+              <DetailRow label="Check-in" value={booking.checkInDate} mono />
+              <DetailRow label="Check-out" value={booking.checkOutDate} mono />
+              <DetailRow label="Address" value={booking.address} />
+              <DetailRow label="City" value={`${booking.city || ''}${booking.state ? ', ' + booking.state : ''}`} />
+              <DetailRow label="Phone" value={booking.phone} mono />
+              <DetailRow label="Room Type" value={booking.roomType} />
+              <DetailRow label="Rate" value={booking.rate} />
+              <DetailRow label="Total" value={booking.totalPrice} />
+            </>
+          )}
+          {booking.notes && (
+            <div className="border border-slate-700 bg-slate-900/40 p-3 text-xs text-slate-300" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+              <div className="text-[10px] tracking-widest text-slate-500 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                NOTES
+              </div>
+              {booking.notes}
+            </div>
+          )}
+        </div>
+
+        {canEdit && (
+          <div className="p-3 border-t border-slate-800 flex gap-2">
+            <button
+              onClick={remove}
+              disabled={deleting}
+              className="px-4 py-2 border border-red-500/40 text-red-300 hover:bg-red-500/10 text-sm tracking-widest disabled:opacity-50"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              {deleting ? 'DELETING...' : 'DELETE'}
+            </button>
+            <button onClick={onClose} className="flex-1 py-2 border border-slate-700 text-sm text-slate-300">
+              CLOSE
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DetailRow({ label, value, mono }) {
+  if (!value) return null;
+  return (
+    <div className="flex items-start justify-between gap-3 border-b border-slate-800 pb-2">
+      <span className="text-[10px] tracking-widest text-slate-500 uppercase shrink-0" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        {label}
+      </span>
+      <span className="text-sm text-slate-200 text-right" style={{ fontFamily: mono ? 'JetBrains Mono, monospace' : 'DM Sans, sans-serif' }}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function AddBookingModal({ targetUser, currentUser, onClose }) {
+  const [stage, setStage] = useState('upload'); // 'upload' | 'review'
+  const [bookingType, setBookingType] = useState('flight');
+  const [parsing, setParsing] = useState(false);
+  const [parsed, setParsed] = useState(null);
+  const [error, setError] = useState(null);
+
+  const handleFile = async (file) => {
+    if (!file) return;
+    setParsing(true);
+    setError(null);
+    try {
+      // Read file as base64
+      const base64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result.split(',')[1]);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+      });
+      const r = await fetch('/api/parse-travel-confirmation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          imageBase64: base64,
+          mediaType: file.type || 'image/jpeg',
+          expectedType: bookingType,
+        }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok || !data.parsed) {
+        setError(`AI extraction failed: ${data.error || r.status}`);
+        return;
+      }
+      if (data.parsed.type === 'unknown') {
+        setError(data.parsed.notes || 'Could not determine document type. Try entering manually.');
+        return;
+      }
+      setParsed(data.parsed);
+      setBookingType(data.parsed.type); // trust AI's type detection
+      setStage('review');
+    } catch (err) {
+      setError(err.message || 'Upload failed');
+    } finally {
+      setParsing(false);
+    }
+  };
+
+  const startManual = () => {
+    setParsed({
+      type: bookingType,
+      ...(bookingType === 'flight' ? {
+        airline: '', confirmationCode: '', passengerName: targetUser?.name || '',
+        fromAirport: '', toAirport: '', departureDate: '', departureTime: '',
+        arrivalDate: '', arrivalTime: '',
+      } : {
+        hotelName: '', confirmationCode: '', guestName: targetUser?.name || '',
+        checkInDate: '', checkOutDate: '', address: '', city: '', phone: '',
+      }),
+    });
+    setStage('review');
+  };
+
+  const save = async () => {
+    if (!parsed) return;
+    try {
+      const m = await import('./firebase-travel.js');
+      const id = m.newBookingId(parsed.type);
+      const startDate = parsed.type === 'flight' ? parsed.departureDate : parsed.checkInDate;
+      await m.saveBooking({
+        id,
+        userUid: targetUser.uid,
+        userName: targetUser.name || '',
+        startDate,
+        addedBy: currentUser?.name || '',
+        ...parsed,
+      });
+      onClose();
+    } catch (err) {
+      setError(err.message || 'Save failed');
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-950/90 flex items-center justify-center p-4 overflow-y-auto" onClick={onClose}>
+      <div className="bg-slate-950 border border-slate-700 max-w-2xl w-full" onClick={(e) => e.stopPropagation()}>
+        <div className="p-3 border-b border-slate-800 flex items-center justify-between gap-2">
+          <h2 className="text-lg tracking-wider" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
+            ADD BOOKING FOR {(targetUser?.name || '').toUpperCase()}
+          </h2>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-300 p-1">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="p-4 space-y-3">
+          {error && <div className="border border-red-500/40 bg-red-500/5 p-3 text-xs text-red-300">{error}</div>}
+
+          {stage === 'upload' && (
+            <>
+              <div>
+                <label className="text-[10px] tracking-widest text-slate-500 uppercase" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  BOOKING TYPE
+                </label>
+                <div className="mt-1 flex gap-2">
+                  <button
+                    onClick={() => setBookingType('flight')}
+                    className={`flex-1 py-3 border text-sm tracking-widest ${
+                      bookingType === 'flight'
+                        ? 'border-emerald-500 bg-emerald-500/10 text-emerald-300'
+                        : 'border-slate-700 text-slate-400'
+                    }`}
+                    style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                  >
+                    ✈ FLIGHT
+                  </button>
+                  <button
+                    onClick={() => setBookingType('hotel')}
+                    className={`flex-1 py-3 border text-sm tracking-widest ${
+                      bookingType === 'hotel'
+                        ? 'border-amber-500 bg-amber-500/10 text-amber-300'
+                        : 'border-slate-700 text-slate-400'
+                    }`}
+                    style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                  >
+                    🏨 HOTEL
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[10px] tracking-widest text-slate-500 uppercase" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  UPLOAD CONFIRMATION (PDF, IMAGE, OR SCREENSHOT)
+                </label>
+                <div className="mt-1 border-2 border-dashed border-slate-700 bg-slate-900/40 p-6 text-center hover:border-cyan-500/40 transition-colors">
+                  <input
+                    type="file"
+                    accept="image/*,application/pdf"
+                    onChange={(e) => handleFile(e.target.files?.[0])}
+                    className="hidden"
+                    id="booking-file-upload"
+                    disabled={parsing}
+                  />
+                  <label htmlFor="booking-file-upload" className="cursor-pointer block">
+                    {parsing ? (
+                      <>
+                        <Loader2 className="w-8 h-8 text-cyan-400 animate-spin mx-auto mb-2" />
+                        <div className="text-sm text-cyan-300">AI READING CONFIRMATION...</div>
+                        <div className="text-xs text-slate-500 mt-1">Usually 3-5 seconds</div>
+                      </>
+                    ) : (
+                      <>
+                        <FileText className="w-8 h-8 text-slate-600 mx-auto mb-2" />
+                        <div className="text-sm text-slate-300">CHOOSE FILE OR DRAG HERE</div>
+                        <div className="text-xs text-slate-500 mt-1">PDF, JPEG, or PNG of the confirmation</div>
+                      </>
+                    )}
+                  </label>
+                </div>
+              </div>
+
+              <div className="text-center">
+                <button
+                  onClick={startManual}
+                  className="text-xs text-slate-400 hover:text-cyan-300 tracking-widest"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                >
+                  — OR ENTER MANUALLY —
+                </button>
+              </div>
+            </>
+          )}
+
+          {stage === 'review' && parsed && (
+            <BookingReview
+              parsed={parsed}
+              setParsed={setParsed}
+              onSave={save}
+              onBack={() => setStage('upload')}
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BookingReview({ parsed, setParsed, onSave, onBack }) {
+  const setField = (key) => (val) => setParsed(p => ({ ...p, [key]: val }));
+  const isFlight = parsed.type === 'flight';
+
+  return (
+    <div className="space-y-3">
+      <div className="text-[10px] tracking-widest text-cyan-300 mb-2" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+        REVIEW & EDIT
+        {parsed.confidence && (
+          <span className={`ml-2 ${
+            parsed.confidence === 'high' ? 'text-emerald-300' :
+            parsed.confidence === 'medium' ? 'text-amber-300' : 'text-red-300'
+          }`}>
+            (AI confidence: {parsed.confidence})
+          </span>
+        )}
+      </div>
+
+      {isFlight ? (
+        <>
+          <div className="grid grid-cols-2 gap-3">
+            <ReviewField label="Airline" value={parsed.airline} onChange={setField('airline')} />
+            <ReviewField label="Confirmation Code" value={parsed.confirmationCode} onChange={setField('confirmationCode')} mono />
+          </div>
+          <ReviewField label="Passenger Name" value={parsed.passengerName} onChange={setField('passengerName')} />
+          <div className="grid grid-cols-2 gap-3">
+            <ReviewField label="From Airport" value={parsed.fromAirport} onChange={setField('fromAirport')} mono />
+            <ReviewField label="To Airport" value={parsed.toAirport} onChange={setField('toAirport')} mono />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <ReviewField label="From City" value={parsed.fromCity} onChange={setField('fromCity')} />
+            <ReviewField label="To City" value={parsed.toCity} onChange={setField('toCity')} />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <ReviewField label="Departure Date (YYYY-MM-DD)" value={parsed.departureDate} onChange={setField('departureDate')} mono />
+            <ReviewField label="Departure Time (HH:MM)" value={parsed.departureTime} onChange={setField('departureTime')} mono />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <ReviewField label="Arrival Date" value={parsed.arrivalDate} onChange={setField('arrivalDate')} mono />
+            <ReviewField label="Arrival Time" value={parsed.arrivalTime} onChange={setField('arrivalTime')} mono />
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <ReviewField label="Flight #" value={parsed.flightNumber} onChange={setField('flightNumber')} mono />
+            <ReviewField label="Seat" value={parsed.seat} onChange={setField('seat')} mono />
+            <ReviewField label="Class" value={parsed.class} onChange={setField('class')} />
+          </div>
+          <ReviewField label="Ticket Number" value={parsed.ticketNumber} onChange={setField('ticketNumber')} mono />
+        </>
+      ) : (
+        <>
+          <ReviewField label="Hotel Name" value={parsed.hotelName} onChange={setField('hotelName')} />
+          <div className="grid grid-cols-2 gap-3">
+            <ReviewField label="Brand (optional)" value={parsed.hotelBrand} onChange={setField('hotelBrand')} />
+            <ReviewField label="Confirmation Code" value={parsed.confirmationCode} onChange={setField('confirmationCode')} mono />
+          </div>
+          <ReviewField label="Guest Name" value={parsed.guestName} onChange={setField('guestName')} />
+          <div className="grid grid-cols-2 gap-3">
+            <ReviewField label="Check-in (YYYY-MM-DD)" value={parsed.checkInDate} onChange={setField('checkInDate')} mono />
+            <ReviewField label="Check-out (YYYY-MM-DD)" value={parsed.checkOutDate} onChange={setField('checkOutDate')} mono />
+          </div>
+          <ReviewField label="Address" value={parsed.address} onChange={setField('address')} />
+          <div className="grid grid-cols-2 gap-3">
+            <ReviewField label="City" value={parsed.city} onChange={setField('city')} />
+            <ReviewField label="State" value={parsed.state} onChange={setField('state')} mono />
+          </div>
+          <ReviewField label="Phone" value={parsed.phone} onChange={setField('phone')} mono />
+          <div className="grid grid-cols-2 gap-3">
+            <ReviewField label="Room Type" value={parsed.roomType} onChange={setField('roomType')} />
+            <ReviewField label="Rate" value={parsed.rate} onChange={setField('rate')} />
+          </div>
+        </>
+      )}
+
+      <div className="flex gap-2 pt-3 border-t border-slate-800">
+        <button
+          onClick={onSave}
+          className="flex-1 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-sm font-medium"
+          style={{ fontFamily: 'DM Sans, sans-serif' }}
+        >
+          SAVE BOOKING
+        </button>
+        <button onClick={onBack} className="px-4 py-2 border border-slate-700 text-sm text-slate-300">
+          BACK
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ReviewField({ label, value, onChange, mono }) {
+  return (
+    <label className="block">
+      <span className="text-[10px] tracking-widest text-slate-500 uppercase" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        {label}
+      </span>
+      <input
+        type="text"
+        value={value || ''}
+        onChange={(e) => onChange(e.target.value)}
+        className="mt-1 w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
+        style={{ fontFamily: mono ? 'JetBrains Mono, monospace' : 'DM Sans, sans-serif' }}
+      />
+    </label>
+  );
+}
+
 function MyProfileModal({ currentUser, onClose, onSave }) {
   const [name, setName] = useState(currentUser?.name || '');
   const [callsign, setCallsign] = useState(currentUser?.callsign || '');
@@ -6692,6 +7808,7 @@ function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, sync
     { id: 'expenses', label: 'EXPENSES',  icon: Mail,     roles: ['crew', 'sales', 'ops', 'accounting', 'admin'] },
     { id: 'manifests',label: 'MANIFESTS', icon: FileText, roles: ['crew', 'ops', 'admin'] },
     { id: 'reports',  label: 'REPORT',    icon: AlertCircle, roles: ['crew', 'ops', 'admin'] },
+    { id: 'wallet',   label: 'WALLET',    icon: Mail, roles: ['crew', 'sales', 'ops', 'accounting', 'admin'] },
     { id: 'ops',      label: 'OPS',       icon: Zap,      roles: ['ops', 'admin'] },
     { id: 'users',    label: 'USERS',     icon: Users,    roles: ['ops', 'admin'] },
   ];
@@ -9234,6 +10351,14 @@ export default function CharterOps() {
         {section === 'reports' && (
           <ReportsScreen
             currentUser={currentUser}
+          />
+        )}
+
+        {/* === WALLET SECTION === */}
+        {section === 'wallet' && (
+          <WalletScreen
+            currentUser={currentUser}
+            users={users}
           />
         )}
 
