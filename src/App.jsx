@@ -8,6 +8,10 @@ import {
   CheckCheck, UserCheck, Sparkles, Hash
 } from 'lucide-react';
 import { formatLocalTime, formatLocalDate } from './airports.js';
+import {
+  logoUrl, fuelCardDomain, cachedAirlineDomain, cachedHotelDomain,
+  detectCardBrand, LOGO_DEV_CONFIGURED,
+} from './provider-logos.js';
 
 /* ============================================================
    iCal parser — handles line folding & VEVENT extraction
@@ -5983,6 +5987,45 @@ const CARD_TYPES = [
   { value: 'other', label: 'Other', defaultColor: '#64748B', icon: '💳' },
 ];
 
+/**
+ * ProviderLogo — renders a brand logo from Logo.dev.
+ * Falls back gracefully to the provided emoji/text when:
+ *   - no domain resolved
+ *   - LOGO_DEV_TOKEN not configured
+ *   - the image fails to load
+ *
+ * Props:
+ *   domain      string — the brand domain (e.g. 'aa.com')
+ *   fallback    ReactNode — what to render when no logo is available
+ *   size        number — pixel dimensions (default 40)
+ *   theme       'light' | 'dark' (default 'light' — light backgrounds need dark logos)
+ *   className   string — extra classes for the wrapper
+ *   alt         string — accessible label
+ */
+function ProviderLogo({ domain, fallback, size = 40, theme = 'light', className = '', alt = '' }) {
+  const [errored, setErrored] = useState(false);
+  const url = logoUrl(domain, { size, theme });
+
+  if (!url || errored) {
+    return <span className={className}>{fallback}</span>;
+  }
+
+  return (
+    <img
+      src={url}
+      alt={alt || domain}
+      onError={() => setErrored(true)}
+      className={className}
+      style={{
+        width: size,
+        height: size,
+        objectFit: 'contain',
+      }}
+      loading="lazy"
+    />
+  );
+}
+
 function WalletScreen({ currentUser, users }) {
   const [tab, setTab] = useState('cards'); // 'cards' | 'travel'
   return (
@@ -6015,6 +6058,29 @@ function WalletScreen({ currentUser, users }) {
 
         {tab === 'cards' && <CardsTab currentUser={currentUser} />}
         {tab === 'travel' && <TravelTab currentUser={currentUser} users={users} />}
+
+        {/* Logo.dev configuration banner — only shown to admins when token is missing */}
+        {!LOGO_DEV_CONFIGURED && currentUser?.role === 'admin' && (
+          <div className="mt-6 p-3 border border-amber-500/40 bg-amber-500/5 text-xs text-slate-300">
+            <div className="text-[10px] tracking-widest text-amber-300 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+              LOGOS DISABLED
+            </div>
+            Logo.dev token not configured. To show provider logos automatically,
+            sign up at <a href="https://www.logo.dev" target="_blank" rel="noopener noreferrer" className="text-cyan-300 underline">logo.dev</a> for
+            a free publishable key, then set <code className="bg-slate-900 px-1">VITE_LOGO_DEV_TOKEN</code> in your Vercel environment variables.
+            Cards and bookings will still display correctly without it (using emoji fallbacks).
+          </div>
+        )}
+
+        {/* Logo.dev attribution — required for free tier */}
+        {LOGO_DEV_CONFIGURED && (
+          <div className="mt-6 text-center text-[10px] text-slate-600" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            Logos provided by{' '}
+            <a href="https://logo.dev" target="_blank" rel="noopener noreferrer" className="text-slate-500 hover:text-slate-400 underline">
+              Logo.dev
+            </a>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -6132,6 +6198,12 @@ function FleetCard({ card, canEdit, onEdit }) {
     }
   };
 
+  // Resolve a logo domain. For credit cards, detect brand from the BIN
+  // (first few digits). For fuel cards, look up from the type.
+  const ccBrand = card.type === 'credit' ? detectCardBrand(card.cardNumber) : null;
+  const logoDomain = ccBrand?.domain || fuelCardDomain(card.type);
+  const logoLabel = ccBrand?.name || typeMeta.label;
+
   return (
     <div
       className="relative aspect-[1.6/1] rounded-xl shadow-xl overflow-hidden cursor-pointer transition-transform hover:scale-[1.02]"
@@ -6140,17 +6212,24 @@ function FleetCard({ card, canEdit, onEdit }) {
       }}
       onClick={() => setRevealed(r => !r)}
     >
-      {/* Top — type and edit */}
+      {/* Top — type label, nickname, brand logo */}
       <div className="absolute top-0 left-0 right-0 p-4 flex items-start justify-between">
         <div>
           <div className="text-[10px] tracking-widest text-white/70 uppercase" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            {typeMeta.label}
+            {logoLabel}
           </div>
           <div className="text-sm font-bold text-white mt-0.5" style={{ fontFamily: 'DM Sans, sans-serif' }}>
             {card.nickname || '(unnamed)'}
           </div>
         </div>
-        <div className="text-2xl">{typeMeta.icon}</div>
+        <ProviderLogo
+          domain={logoDomain}
+          fallback={<span className="text-2xl">{typeMeta.icon}</span>}
+          size={40}
+          theme="dark"
+          alt={logoLabel}
+          className="bg-white/95 rounded p-1"
+        />
       </div>
 
       {/* Center — number */}
@@ -6545,21 +6624,31 @@ function FlightCard({ booking, canEdit }) {
         onClick={() => setShowDetail(true)}
         className="border-l-4 border-emerald-500 bg-slate-900/40 p-4 cursor-pointer hover:bg-slate-900/60 transition-colors"
       >
-        <div className="flex items-start justify-between mb-2">
-          <div>
-            <div className="text-[10px] tracking-widest text-emerald-300" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
-              ✈ {booking.airline || 'FLIGHT'}
+        <div className="flex items-start justify-between mb-2 gap-3">
+          <div className="flex items-start gap-3 min-w-0 flex-1">
+            <ProviderLogo
+              domain={cachedAirlineDomain(booking.airline || booking.airlineCode)}
+              fallback={<span className="text-3xl">✈</span>}
+              size={48}
+              theme="dark"
+              alt={booking.airline || 'Airline'}
+              className="bg-white rounded p-1 shrink-0"
+            />
+            <div className="min-w-0">
+              <div className="text-[10px] tracking-widest text-emerald-300" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+                {booking.airline || 'FLIGHT'}
+              </div>
+              <h3 className="text-xl mt-1" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
+                {booking.fromAirport || '?'} → {booking.toAirport || '?'}
+              </h3>
+              {(booking.fromCity || booking.toCity) && (
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {booking.fromCity || '?'} to {booking.toCity || '?'}
+                </p>
+              )}
             </div>
-            <h3 className="text-xl mt-1" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
-              {booking.fromAirport || '?'} → {booking.toAirport || '?'}
-            </h3>
-            {(booking.fromCity || booking.toCity) && (
-              <p className="text-xs text-slate-500 mt-0.5">
-                {booking.fromCity || '?'} to {booking.toCity || '?'}
-              </p>
-            )}
           </div>
-          <div className="text-right">
+          <div className="text-right shrink-0">
             <div className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
               CONF
             </div>
@@ -6619,21 +6708,31 @@ function HotelCard({ booking, canEdit }) {
         onClick={() => setShowDetail(true)}
         className="border-l-4 border-amber-500 bg-slate-900/40 p-4 cursor-pointer hover:bg-slate-900/60 transition-colors"
       >
-        <div className="flex items-start justify-between mb-2">
-          <div>
-            <div className="text-[10px] tracking-widest text-amber-300" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
-              🏨 {booking.hotelBrand || 'HOTEL'}
+        <div className="flex items-start justify-between mb-2 gap-3">
+          <div className="flex items-start gap-3 min-w-0 flex-1">
+            <ProviderLogo
+              domain={cachedHotelDomain(booking.hotelBrand || booking.hotelName)}
+              fallback={<span className="text-3xl">🏨</span>}
+              size={48}
+              theme="dark"
+              alt={booking.hotelBrand || booking.hotelName || 'Hotel'}
+              className="bg-white rounded p-1 shrink-0"
+            />
+            <div className="min-w-0">
+              <div className="text-[10px] tracking-widest text-amber-300" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+                {booking.hotelBrand || 'HOTEL'}
+              </div>
+              <h3 className="text-lg mt-1" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
+                {booking.hotelName || '(unnamed)'}
+              </h3>
+              {booking.city && (
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {booking.city}{booking.state ? `, ${booking.state}` : ''}
+                </p>
+              )}
             </div>
-            <h3 className="text-lg mt-1" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
-              {booking.hotelName || '(unnamed)'}
-            </h3>
-            {booking.city && (
-              <p className="text-xs text-slate-500 mt-0.5">
-                {booking.city}{booking.state ? `, ${booking.state}` : ''}
-              </p>
-            )}
           </div>
-          <div className="text-right">
+          <div className="text-right shrink-0">
             <div className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
               CONF
             </div>
