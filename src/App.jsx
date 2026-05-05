@@ -12,6 +12,9 @@ import {
   logoUrl, fuelCardDomain, cachedAirlineDomain, cachedHotelDomain,
   detectCardBrand, LOGO_DEV_CONFIGURED,
 } from './provider-logos.js';
+import {
+  buildCheckInUrl, buildHotelDirectionsUrl, buildHotelPhoneUrl,
+} from './travel-actions.js';
 
 /* ============================================================
    iCal parser — handles line folding & VEVENT extraction
@@ -6675,6 +6678,25 @@ function FlightCard({ booking, canEdit }) {
             {booking.status && <span className="ml-2 text-emerald-400">• {booking.status}</span>}
           </div>
         )}
+
+        {/* CHECK IN button — opens airline manage-trip / check-in URL */}
+        {(() => {
+          const ci = buildCheckInUrl(booking);
+          if (!ci) return null;
+          return (
+            <a
+              href={ci.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="mt-3 block text-center py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold tracking-widest transition-colors"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              title={ci.deepLink ? `Opens ${ci.airline} with conf code pre-filled` : `Opens ${ci.airline} manage-trip page`}
+            >
+              CHECK IN ↗
+            </a>
+          );
+        })()}
       </div>
 
       {showDetail && (
@@ -6759,6 +6781,39 @@ function HotelCard({ booking, canEdit }) {
             <span className="text-slate-500">Guest:</span> {booking.guestName}
           </div>
         )}
+
+        {/* Hotel actions: directions + phone */}
+        {(() => {
+          const directionsUrl = buildHotelDirectionsUrl(booking);
+          const phoneUrl = buildHotelPhoneUrl(booking);
+          if (!directionsUrl && !phoneUrl) return null;
+          return (
+            <div className="mt-3 flex gap-2">
+              {directionsUrl && (
+                <a
+                  href={directionsUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  className="flex-1 text-center py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold tracking-widest transition-colors"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                >
+                  DIRECTIONS ↗
+                </a>
+              )}
+              {phoneUrl && (
+                <a
+                  href={phoneUrl}
+                  onClick={(e) => e.stopPropagation()}
+                  className="flex-1 text-center py-2 border border-amber-500/40 text-amber-300 hover:bg-amber-500/10 text-xs font-bold tracking-widest transition-colors"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                >
+                  CALL HOTEL
+                </a>
+              )}
+            </div>
+          );
+        })()}
       </div>
 
       {showDetail && (
@@ -6848,6 +6903,64 @@ function BookingDetailModal({ booking, canEdit, onClose }) {
               {booking.notes}
             </div>
           )}
+
+          {/* Prominent action buttons — large versions of the card-level actions */}
+          {isFlight && (() => {
+            const ci = buildCheckInUrl(booking);
+            if (!ci) return null;
+            return (
+              <a
+                href={ci.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block w-full text-center py-3 bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-base font-bold tracking-widest transition-colors"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              >
+                CHECK IN ON {ci.airline.toUpperCase()} ↗
+              </a>
+            );
+          })()}
+          {isFlight && (() => {
+            const ci = buildCheckInUrl(booking);
+            if (!ci) return null;
+            return (
+              <p className="text-[10px] text-slate-500 text-center -mt-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                {ci.deepLink
+                  ? 'Conf code and last name pre-filled · Check-in opens 24hr before departure'
+                  : 'Opens manage-trip page — enter conf code manually'}
+              </p>
+            );
+          })()}
+
+          {!isFlight && (() => {
+            const directionsUrl = buildHotelDirectionsUrl(booking);
+            const phoneUrl = buildHotelPhoneUrl(booking);
+            if (!directionsUrl && !phoneUrl) return null;
+            return (
+              <div className="flex gap-2">
+                {directionsUrl && (
+                  <a
+                    href={directionsUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex-1 text-center py-3 bg-amber-500 hover:bg-amber-400 text-slate-950 text-base font-bold tracking-widest transition-colors"
+                    style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                  >
+                    DIRECTIONS ↗
+                  </a>
+                )}
+                {phoneUrl && (
+                  <a
+                    href={phoneUrl}
+                    className="flex-1 text-center py-3 border-2 border-amber-500/40 text-amber-300 hover:bg-amber-500/10 text-base font-bold tracking-widest transition-colors"
+                    style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                  >
+                    CALL HOTEL
+                  </a>
+                )}
+              </div>
+            );
+          })()}
         </div>
 
         {canEdit && (
