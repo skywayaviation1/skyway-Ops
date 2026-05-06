@@ -15,6 +15,7 @@ import {
 import {
   buildCheckInUrl, buildHotelDirectionsUrl, buildHotelPhoneUrl,
 } from './travel-actions.js';
+import { compareNames } from './name-matching.js';
 
 /* ============================================================
    iCal parser — handles line folding & VEVENT extraction
@@ -1315,24 +1316,21 @@ function ChatPanel({ tripId, currentUser }) {
 /* ============================================================
    ID Scanner (PDF417 + photo capture)
    ============================================================ */
-function IDScanner({ onComplete, onCancel }) {
+function IDScanner({ expectedPax, onComplete, onCancel }) {
   const [phase, setPhase] = useState('intro'); // intro | scan | ai_processing | review | manual
   const [error, setError] = useState(null);
   const [parsed, setParsed] = useState(null);
   const [realIdConfirmed, setRealIdConfirmed] = useState(false);
   const [photoData, setPhotoData] = useState(null);
   const [scanning, setScanning] = useState(false);
-  const [scannerName, setScannerName] = useState(''); // 'BarcodeDetector' | 'ZXing' | 'AI'
+  const [scannerName, setScannerName] = useState(''); // 'AI'
   const [torchSupported, setTorchSupported] = useState(false);
   const [torchOn, setTorchOn] = useState(false);
-  const [aiCountdown, setAiCountdown] = useState(0); // seconds until AI fallback fires
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
   const detectorRef = useRef(null);
   const detectIntervalRef = useRef(null);
-  const aiFallbackTimerRef = useRef(null);
-  const aiCountdownIntervalRef = useRef(null);
   const aiTriggeredRef = useRef(false); // prevent double-fire
 
   const stopCamera = useCallback(() => {
@@ -1343,18 +1341,6 @@ function IDScanner({ onComplete, onCancel }) {
     if (detectIntervalRef.current) {
       clearInterval(detectIntervalRef.current);
       detectIntervalRef.current = null;
-    }
-    if (aiFallbackTimerRef.current) {
-      clearTimeout(aiFallbackTimerRef.current);
-      aiFallbackTimerRef.current = null;
-    }
-    if (aiCountdownIntervalRef.current) {
-      clearInterval(aiCountdownIntervalRef.current);
-      aiCountdownIntervalRef.current = null;
-    }
-    // Clean up ZXing reader if it's running
-    if (detectorRef.current && typeof detectorRef.current.reset === 'function') {
-      try { detectorRef.current.reset(); } catch (e) { /* ignore */ }
     }
     detectorRef.current = null;
     setTorchOn(false);
@@ -1407,84 +1393,9 @@ function IDScanner({ onComplete, onCancel }) {
       }
       setScanning(true);
       checkTorchSupport();
-
-      // Try native BarcodeDetector first (Chrome, Edge, Android — fastest when available)
-      if ('BarcodeDetector' in window) {
-        try {
-          // eslint-disable-next-line no-undef
-          detectorRef.current = new BarcodeDetector({ formats: ['pdf417'] });
-          detectIntervalRef.current = setInterval(async () => {
-            if (!videoRef.current || !detectorRef.current) return;
-            try {
-              const codes = await detectorRef.current.detect(videoRef.current);
-              if (codes && codes.length > 0) {
-                const data = parseAAMVA(codes[0].rawValue);
-                if (data && (data.firstName || data.lastName || data.fullName)) {
-                  capturePhoto();
-                  setParsed(data);
-                  stopCamera();
-                  setScanning(false);
-                  setPhase('review');
-                }
-              }
-            } catch (e) { /* keep scanning */ }
-          }, 500);
-          setScannerName('BarcodeDetector');
-          return;
-        } catch (e) {
-          console.warn('Native BarcodeDetector init failed, falling back to ZXing', e);
-        }
-      }
-
-      // Fallback: ZXing-js (works on iOS Safari and any other browser without native BarcodeDetector)
-      try {
-        const zxing = await import('@zxing/browser');
-        const { BrowserMultiFormatReader } = zxing;
-        const reader = new BrowserMultiFormatReader();
-        detectorRef.current = reader;
-
-        await reader.decodeFromStream(
-          streamRef.current,
-          videoRef.current,
-          (result, err) => {
-            if (result) {
-              const text = result.getText ? result.getText() : (result.text || '');
-              const data = parseAAMVA(text);
-              if (data && (data.firstName || data.lastName || data.fullName)) {
-                capturePhoto();
-                setParsed(data);
-                stopCamera();
-                setScanning(false);
-                setPhase('review');
-              }
-            }
-          }
-        );
-        setScannerName('ZXing');
-      } catch (e) {
-        console.error('ZXing fallback failed:', e);
-        setError('Could not start barcode scanner. Use manual entry.');
-      }
-
-      // === AI FALLBACK TIMER ===
-      // After 3 seconds of barcode scanning with no success, automatically
-      // capture the current frame and send to Claude vision for extraction.
-      // This handles passports, international IDs, and damaged barcodes.
-      setAiCountdown(3);
-      aiCountdownIntervalRef.current = setInterval(() => {
-        setAiCountdown(n => {
-          if (n <= 1) {
-            clearInterval(aiCountdownIntervalRef.current);
-            return 0;
-          }
-          return n - 1;
-        });
-      }, 1000);
-      aiFallbackTimerRef.current = setTimeout(() => {
-        if (aiTriggeredRef.current) return;
-        aiTriggeredRef.current = true;
-        triggerAiFallback();
-      }, 3000);
+      setScannerName('AI');
+      // No barcode detection. The pilot frames the ID and taps CAPTURE
+      // (or we capture automatically on a single press of triggerAiFallback).
     } catch (e) {
       setError(`Camera error: ${e.message}`);
       setPhase('intro');
@@ -1594,27 +1505,38 @@ function IDScanner({ onComplete, onCancel }) {
     if (!parsed) return;
     const expDate = parsed.expirationISO ? new Date(parsed.expirationISO) : null;
     const expired = expDate && expDate < new Date();
+    // Compute final match info using whatever the pilot left in the form
+    const finalMatch = expectedPax
+      ? compareNames(
+          { firstName: parsed.firstName, lastName: parsed.lastName },
+          { firstName: expectedPax.firstName, lastName: expectedPax.lastName }
+        )
+      : null;
     const passenger = {
       id: `pax-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      firstName: parsed.firstName || parsed.fullName?.split(',')[1]?.trim() || '',
-      lastName: parsed.lastName || parsed.fullName?.split(',')[0]?.trim() || '',
+      firstName: parsed.firstName || '',
+      lastName: parsed.lastName || '',
       middleName: parsed.middleName || '',
       dob: parsed.dobISO || parsed.dob || '',
       expiration: parsed.expirationISO || parsed.expiration || '',
       licenseNumber: parsed.licenseNumber || parsed.documentNumber || '',
       documentNumber: parsed.documentNumber || parsed.licenseNumber || '',
-      documentType: parsed.documentType || (parsed.raw && parsed.source === 'ai' ? 'unknown' : 'us_drivers_license'),
+      documentType: parsed.documentType || 'unknown',
       issuingAuthority: parsed.issuingAuthority || parsed.state || '',
       state: parsed.state || parsed.issuingAuthority || '',
       realIdCompliant: realIdConfirmed,
       expired: !!expired,
       photo: photoData,
       scannedAt: Date.now(),
-      method: parsed.source === 'ai'
-        ? 'AI_VISION'
-        : (parsed.raw ? 'PDF417_SCAN' : 'MANUAL'),
-      paxType: parsed.source === 'ai' ? 'AI_SCAN' : (parsed.raw ? 'SCAN' : 'MANUAL'),
+      // method: 'AI_VISION' when AI extracted, 'MANUAL' when user typed everything in
+      method: parsed.source === 'ai' ? 'AI_VISION' : 'MANUAL',
+      paxType: parsed.source === 'ai' ? 'AI_SCAN' : 'MANUAL',
       aiConfidence: parsed.confidence || null,
+      // Audit trail of name matching against the expected pax
+      nameMatchLevel: finalMatch?.level || null,
+      nameMatchWarnings: finalMatch?.warnings || [],
+      expectedFirstName: expectedPax?.firstName || null,
+      expectedLastName: expectedPax?.lastName || null,
       noShow: false,
     };
     onComplete(passenger);
@@ -1629,7 +1551,7 @@ function IDScanner({ onComplete, onCancel }) {
           </div>
           <h3 className="text-base tracking-wider" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>SCAN PASSENGER ID</h3>
           <p className="text-xs text-slate-500 mt-1 max-w-xs mx-auto">
-            Position the back of the driver's license toward the rear camera. The PDF417 barcode will be auto-detected.
+            Hold up the front of any government ID — driver's license, state ID, or passport. AI reads the data and checks the name against the trip sheet.
           </p>
         </div>
         {error && (
@@ -1642,14 +1564,14 @@ function IDScanner({ onComplete, onCancel }) {
           className="w-full py-3 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-medium flex items-center justify-center gap-2"
           style={{ fontFamily: 'DM Sans, sans-serif' }}
         >
-          <Camera className="w-4 h-4" /> START CAMERA
+          <Camera className="w-4 h-4" /> OPEN CAMERA
         </button>
         <button
           onClick={() => setPhase('photoOnly')}
           className="w-full py-2 border border-amber-500/40 text-amber-300 hover:bg-amber-500/10 text-sm"
           style={{ fontFamily: 'DM Sans, sans-serif' }}
         >
-          PHOTO ONLY (BARCODE WON'T SCAN)
+          PHOTO ONLY (DON'T EXTRACT DATA)
         </button>
         <button
           onClick={() => setPhase('manual')}
@@ -1675,17 +1597,10 @@ function IDScanner({ onComplete, onCancel }) {
           <video ref={videoRef} className="w-full h-full object-cover" playsInline muted />
           <canvas ref={canvasRef} className="hidden" />
           <div className="absolute inset-0 pointer-events-none">
-            <div className="absolute top-1/2 left-4 right-4 h-px bg-cyan-400 animate-pulse" />
             <div className="absolute inset-8 border-2 border-cyan-400/40" />
             <div className="absolute top-2 left-2 text-[10px] text-cyan-400 flex items-center gap-1.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              <StatusDot tone="amber" pulse /> SCANNING {scannerName && `· ${scannerName.toUpperCase()}`}
+              <StatusDot tone="emerald" pulse /> CAMERA READY
             </div>
-            {/* AI fallback countdown */}
-            {aiCountdown > 0 && !aiTriggeredRef.current && (
-              <div className="absolute top-2 right-2 text-[10px] text-violet-300 flex items-center gap-1.5 px-2 py-1 bg-slate-900/80 border border-violet-500/40" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                AI IN {aiCountdown}s
-              </div>
-            )}
           </div>
           {torchSupported && (
             <button
@@ -1702,7 +1617,7 @@ function IDScanner({ onComplete, onCancel }) {
           )}
         </div>
         <p className="text-xs text-slate-500 text-center">
-          Scan the <span className="text-cyan-400 font-bold">BACK</span> of a US license · OR hold the front of any ID/passport in frame · AI will read it after 3 seconds
+          Frame the <span className="text-cyan-400 font-bold">FRONT</span> of any government ID — license, state ID, or passport. Hold steady, well-lit. Tap CAPTURE when ready.
           {torchSupported && ' · Tap 💡 for flashlight'}
         </p>
         {error && (
@@ -1710,16 +1625,16 @@ function IDScanner({ onComplete, onCancel }) {
             {error}
           </div>
         )}
-        <div className="flex gap-2 flex-wrap">
-          <button
-            onClick={() => {
-              if (aiFallbackTimerRef.current) clearTimeout(aiFallbackTimerRef.current);
-              if (!aiTriggeredRef.current) triggerAiFallback();
-            }}
-            className="flex-1 py-2 border border-violet-500/40 text-sm text-violet-300 hover:bg-violet-500/10"
-          >
-            Read with AI Now
-          </button>
+        <button
+          onClick={() => {
+            if (!aiTriggeredRef.current) triggerAiFallback();
+          }}
+          className="w-full py-3 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-base flex items-center justify-center gap-2"
+          style={{ fontFamily: 'DM Sans, sans-serif' }}
+        >
+          <Camera className="w-5 h-5" /> CAPTURE & READ
+        </button>
+        <div className="flex gap-2">
           <button
             onClick={() => { stopCamera(); setPhase('photoOnly'); }}
             className="flex-1 py-2 border border-amber-500/40 text-sm text-amber-300 hover:bg-amber-500/10"
@@ -1800,6 +1715,26 @@ function IDScanner({ onComplete, onCancel }) {
     const expired = expDate && expDate < new Date();
     const fullName = parsed.fullName || `${parsed.firstName || ''} ${parsed.lastName || ''}`.trim() || 'UNKNOWN';
 
+    // Compute name match against expected pax (when provided).
+    // Caller provides expectedPax with firstName + lastName; if not, no match displayed.
+    const matchInfo = expectedPax
+      ? compareNames(
+          { firstName: parsed.firstName, lastName: parsed.lastName },
+          { firstName: expectedPax.firstName, lastName: expectedPax.lastName }
+        )
+      : null;
+
+    const matchTone = {
+      'exact':    { bg: 'bg-emerald-500/10', border: 'border-emerald-500/40', text: 'text-emerald-300', label: 'NAME MATCHES' },
+      'close':    { bg: 'bg-emerald-500/10', border: 'border-emerald-500/40', text: 'text-emerald-300', label: 'CLOSE MATCH' },
+      'partial':  { bg: 'bg-amber-500/10',   border: 'border-amber-500/40',   text: 'text-amber-300',   label: 'PARTIAL MATCH — REVIEW' },
+      'mismatch': { bg: 'bg-red-500/10',     border: 'border-red-500/40',     text: 'text-red-300',     label: 'NAME MISMATCH' },
+      'no-data':  { bg: 'bg-slate-800/40',   border: 'border-slate-700',      text: 'text-slate-400',   label: 'NO MATCH AVAILABLE' },
+    }[matchInfo?.level || 'no-data'];
+
+    // Helper to update an extracted field (allows pilot to fix typos)
+    const updateField = (key) => (val) => setParsed(p => ({ ...p, [key]: val }));
+
     return (
       <div className="space-y-4">
         {photoData && (
@@ -1807,12 +1742,54 @@ function IDScanner({ onComplete, onCancel }) {
             <img src={photoData} alt="ID" className="w-full h-full object-cover" />
           </div>
         )}
-        <div className="space-y-2 p-4 border border-slate-700 bg-slate-900/40">
-          <DataRow label="NAME" value={fullName} />
-          <DataRow label="DOB" value={parsed.dobISO || parsed.dob || '—'} />
-          <DataRow label="LICENSE" value={parsed.licenseNumber || '—'} />
-          <DataRow label="STATE" value={parsed.state || '—'} />
-          <DataRow label="EXPIRES" value={parsed.expirationISO || parsed.expiration || '—'} tone={expired ? 'red' : undefined} />
+
+        {/* Name match banner */}
+        {matchInfo && (
+          <div className={`p-3 border ${matchTone.border} ${matchTone.bg}`}>
+            <div className={`text-[10px] tracking-widest ${matchTone.text}`} style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+              {matchTone.label}
+            </div>
+            <div className="text-sm text-slate-200 mt-1" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+              <span className="text-slate-500">Expected:</span> {expectedPax.firstName} {expectedPax.lastName}
+              <span className="mx-2 text-slate-600">·</span>
+              <span className="text-slate-500">On ID:</span> {parsed.firstName || '?'} {parsed.lastName || '?'}
+            </div>
+            {matchInfo.warnings.length > 0 && (
+              <ul className="text-[11px] text-slate-400 mt-1 list-disc list-inside">
+                {matchInfo.warnings.map((w, i) => <li key={i}>{w}</li>)}
+              </ul>
+            )}
+            {matchInfo.level === 'mismatch' && (
+              <p className="text-[11px] text-red-200 mt-2">
+                The PIC must verify identity in person before checking this passenger in. If the AI misread the ID, fix the fields below before tapping ADD PASSENGER.
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Editable extracted fields — pilot can fix typos before confirming */}
+        <div className="space-y-3 p-4 border border-slate-700 bg-slate-900/40">
+          <div className="grid grid-cols-2 gap-2">
+            <EditableField label="FIRST NAME" value={parsed.firstName || ''} onChange={updateField('firstName')} />
+            <EditableField label="LAST NAME" value={parsed.lastName || ''} onChange={updateField('lastName')} />
+          </div>
+          <EditableField label="MIDDLE NAME (OPTIONAL)" value={parsed.middleName || ''} onChange={updateField('middleName')} />
+          <div className="grid grid-cols-2 gap-2">
+            <EditableField label="DATE OF BIRTH" value={parsed.dobISO || parsed.dob || ''} onChange={(v) => { updateField('dob')(v); updateField('dobISO')(v); }} placeholder="YYYY-MM-DD" mono />
+            <EditableField label="EXPIRES" value={parsed.expirationISO || parsed.expiration || ''} onChange={(v) => { updateField('expiration')(v); updateField('expirationISO')(v); }} placeholder="YYYY-MM-DD" mono />
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <EditableField label="DOC NUMBER" value={parsed.documentNumber || parsed.licenseNumber || ''} onChange={updateField('documentNumber')} mono />
+            <EditableField label="ISSUING AUTH" value={parsed.issuingAuthority || parsed.state || ''} onChange={updateField('issuingAuthority')} mono />
+          </div>
+          {parsed.confidence && (
+            <div className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              AI CONFIDENCE: <span className={
+                parsed.confidence === 'high' ? 'text-emerald-400' :
+                parsed.confidence === 'medium' ? 'text-amber-400' : 'text-red-400'
+              }>{String(parsed.confidence).toUpperCase()}</span>
+            </div>
+          )}
         </div>
 
         {expired && (
@@ -2048,6 +2025,24 @@ function ManualEntryForm({ onSubmit, onCancel }) {
         </button>
       </div>
     </div>
+  );
+}
+
+function EditableField({ label, value, onChange, placeholder, mono }) {
+  return (
+    <label className="block">
+      <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        {label}
+      </span>
+      <input
+        type="text"
+        value={value || ''}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder || ''}
+        className="mt-1 w-full bg-slate-900/60 border border-slate-700 px-2 py-1.5 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
+        style={{ fontFamily: mono ? 'JetBrains Mono, monospace' : 'DM Sans, sans-serif' }}
+      />
+    </label>
   );
 }
 
@@ -3163,11 +3158,12 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
                       {pendingScanPax.firstName} {pendingScanPax.lastName}
                     </div>
                     <div className="text-[10px] text-slate-500 mt-0.5">
-                      Scan their ID — names will be compared. Use Photo Only if the barcode won't scan.
+                      Scan the front of any government ID — the AI will read it and check it matches.
                     </div>
                   </div>
                 )}
                 <IDScanner
+                  expectedPax={pendingScanPax}
                   onComplete={addPassenger}
                   onCancel={() => { setScanning(false); setPendingScanPax(null); }}
                 />
