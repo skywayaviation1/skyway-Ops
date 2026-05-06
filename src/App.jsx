@@ -1317,7 +1317,7 @@ function ChatPanel({ tripId, currentUser }) {
    ID Scanner (PDF417 + photo capture)
    ============================================================ */
 function IDScanner({ expectedPax, onComplete, onCancel }) {
-  const [phase, setPhase] = useState('intro'); // intro | scan | ai_processing | review | manual
+  const [phase, setPhase] = useState('intro'); // intro | scan | ai_processing | ai_failed | review | manual | photoOnly
   const [error, setError] = useState(null);
   const [parsed, setParsed] = useState(null);
   const [realIdConfirmed, setRealIdConfirmed] = useState(false);
@@ -1435,15 +1435,17 @@ function IDScanner({ expectedPax, onComplete, onCancel }) {
 
     try {
       const base64 = dataUrl.split(',')[1];
+      console.log('[ai-id] sending image for parsing, base64 length:', base64.length);
       const r = await fetch('/api/parse-id', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ imageBase64: base64, mediaType: 'image/jpeg' }),
       });
       const data = await r.json().catch(() => ({}));
+      console.log('[ai-id] response:', r.status, data);
       if (!r.ok || !data.parsed) {
-        setError(`AI extraction failed: ${data.error || r.status}. Use manual entry.`);
-        setPhase('manual');
+        setError(`AI extraction failed: ${data.error || `HTTP ${r.status}`}`);
+        setPhase('ai_failed');
         return;
       }
       // Map the AI parsed shape to the existing review-phase shape
@@ -1466,8 +1468,8 @@ function IDScanner({ expectedPax, onComplete, onCancel }) {
       };
       // If AI says "unknown" — image isn't an ID
       if (p.documentType === 'unknown') {
-        setError(p.notes || 'Image does not appear to be a government ID.');
-        setPhase('intro');
+        setError(p.notes || 'Image does not appear to be a government ID. Try a clearer photo of a license or passport.');
+        setPhase('ai_failed');
         return;
       }
       // If we got at least a name, accept it
@@ -1475,13 +1477,13 @@ function IDScanner({ expectedPax, onComplete, onCancel }) {
         setParsed(aiData);
         setPhase('review');
       } else {
-        setError('AI could not extract a name from the image. Use manual entry.');
-        setPhase('manual');
+        setError('AI processed the image but could not extract a name. Try a clearer photo, or enter manually.');
+        setPhase('ai_failed');
       }
     } catch (err) {
-      console.error('[ai-id] fallback failed:', err);
-      setError('AI extraction error: ' + err.message + '. Use manual entry.');
-      setPhase('manual');
+      console.error('[ai-id] fetch threw:', err);
+      setError('AI extraction error: ' + (err.message || 'unknown error'));
+      setPhase('ai_failed');
     }
   };
 
@@ -1673,6 +1675,48 @@ function IDScanner({ expectedPax, onComplete, onCancel }) {
             <div className="text-xs text-slate-400">Usually 3-5 seconds</div>
           </div>
         </div>
+      </div>
+    );
+  }
+
+  if (phase === 'ai_failed') {
+    return (
+      <div className="space-y-3">
+        {photoData && (
+          <div className="aspect-video bg-black overflow-hidden border border-slate-700">
+            <img src={photoData} alt="Captured ID" className="w-full h-full object-contain" />
+          </div>
+        )}
+        <div className="p-3 border border-red-500/40 bg-red-500/5 text-xs text-red-300 flex items-start gap-2">
+          <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <div className="font-bold mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>AI COULDN'T READ THIS ID</div>
+            <div>{error}</div>
+            <div className="mt-2 text-[11px] text-red-200/80">
+              Tips: hold the ID flat, fill the frame, avoid glare, and use the flashlight in low light.
+            </div>
+          </div>
+        </div>
+        <button
+          onClick={() => { setError(null); startScan(); }}
+          className="w-full py-3 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-medium flex items-center justify-center gap-2"
+          style={{ fontFamily: 'DM Sans, sans-serif' }}
+        >
+          <Camera className="w-4 h-4" /> RETAKE PHOTO
+        </button>
+        <button
+          onClick={() => { setError(null); setPhase('manual'); }}
+          className="w-full py-2 border border-amber-500/40 text-amber-300 hover:bg-amber-500/10 text-sm"
+          style={{ fontFamily: 'DM Sans, sans-serif' }}
+        >
+          ENTER MANUALLY (PHOTO WILL BE KEPT)
+        </button>
+        <button
+          onClick={() => { setError(null); setPhase('intro'); }}
+          className="w-full py-2 text-slate-500 hover:text-slate-300 text-sm"
+        >
+          Back
+        </button>
       </div>
     );
   }
