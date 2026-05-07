@@ -8152,7 +8152,18 @@ function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, sync
               className="h-8 w-auto block"
             />
             <div className="text-[10px] text-slate-500 tracking-widest mt-1 truncate" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              {fmtZulu(now)} · {fmtDateZ(now)}
+              {(() => {
+                // Show the user's device-local time. No airport context here —
+                // this is "current wall-clock time on your phone." Format:
+                //  "6:30 PM EDT · 07 MAY 2026"
+                const time = new Intl.DateTimeFormat('en-US', {
+                  hour: 'numeric', minute: '2-digit', hour12: true,
+                }).format(now);
+                const tzAbbr = new Intl.DateTimeFormat('en-US', {
+                  timeZoneName: 'short',
+                }).formatToParts(now).find(p => p.type === 'timeZoneName')?.value || '';
+                return `${time}${tzAbbr ? ' ' + tzAbbr : ''} · ${fmtDateZ(now)}`;
+              })()}
             </div>
           </div>
         </div>

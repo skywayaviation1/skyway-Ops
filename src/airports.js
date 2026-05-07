@@ -1,436 +1,1436 @@
 // Airport timezone database.
 // Maps IATA airport codes to IANA timezone identifiers.
-// Covers: continental US, Canada, Mexico, Caribbean, Central America, South America.
-// 
+//
+// Coverage: comprehensive US (1000+ airports including major commercial,
+// regional, and GA fields) + international charter destinations across
+// Canada, Mexico, Caribbean, Central/South America, and key European/
+// Middle East/Asia hubs.
+//
 // For airports not in this list, the app falls back to UTC (Zulu) time.
-// To add airports: append to this map. IANA timezone names from
-// https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
+// To add airports: append to the appropriate section. IANA timezone names
+// from https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
+//
+// Last comprehensive US revision: May 2026.
 
 const AIRPORT_TIMEZONES = {
-  // ===== CONTINENTAL US — Eastern Time =====
-  ATL: 'America/New_York',  // Atlanta
-  BDL: 'America/New_York',  // Hartford
-  BOS: 'America/New_York',  // Boston
-  BWI: 'America/New_York',  // Baltimore
-  BUF: 'America/New_York',  // Buffalo
-  CAE: 'America/New_York',  // Columbia SC
-  CHA: 'America/New_York',  // Chattanooga
-  CHS: 'America/New_York',  // Charleston
-  CLE: 'America/New_York',  // Cleveland
-  CLT: 'America/New_York',  // Charlotte
-  CMH: 'America/New_York',  // Columbus
-  CVG: 'America/New_York',  // Cincinnati
-  DAB: 'America/New_York',  // Daytona Beach
-  DAY: 'America/New_York',  // Dayton
-  DCA: 'America/New_York',  // Washington Reagan
-  DTW: 'America/New_York',  // Detroit
-  EWR: 'America/New_York',  // Newark
-  FLL: 'America/New_York',  // Fort Lauderdale
-  FXE: 'America/New_York',  // Fort Lauderdale Executive
-  FAY: 'America/New_York',  // Fayetteville
-  GSO: 'America/New_York',  // Greensboro
-  HEF: 'America/New_York',  // Manassas
-  HHH: 'America/New_York',  // Hilton Head
-  HPN: 'America/New_York',  // Westchester
-  HVN: 'America/New_York',  // Tweed New Haven
-  IAD: 'America/New_York',  // Dulles
-  IAG: 'America/New_York',  // Niagara Falls
-  ILM: 'America/New_York',  // Wilmington NC
-  IND: 'America/New_York',  // Indianapolis
-  ISP: 'America/New_York',  // Long Island
-  JAX: 'America/New_York',  // Jacksonville
-  JFK: 'America/New_York',  // JFK
-  LEX: 'America/New_York',  // Lexington
-  LGA: 'America/New_York',  // LaGuardia
-  MCO: 'America/New_York',  // Orlando
-  MMU: 'America/New_York',  // Morristown
-  MIA: 'America/New_York',  // Miami
-  MLB: 'America/New_York',  // Melbourne
-  MYR: 'America/New_York',  // Myrtle Beach
-  ORF: 'America/New_York',  // Norfolk
-  OPF: 'America/New_York',  // Opa-Locka
-  PBI: 'America/New_York',  // Palm Beach
-  PHL: 'America/New_York',  // Philadelphia
-  PIT: 'America/New_York',  // Pittsburgh
-  PNS: 'America/New_York',  // Pensacola
-  PWM: 'America/New_York',  // Portland ME
-  PVD: 'America/New_York',  // Providence
-  PVU: 'America/New_York',  // Provo
-  PWK: 'America/Chicago',   // Chicago Executive
-  RDU: 'America/New_York',  // Raleigh-Durham
-  RIC: 'America/New_York',  // Richmond
-  ROC: 'America/New_York',  // Rochester
-  RSW: 'America/New_York',  // Fort Myers
-  SAV: 'America/New_York',  // Savannah
-  SDF: 'America/New_York',  // Louisville
-  SFB: 'America/New_York',  // Sanford
-  SRQ: 'America/New_York',  // Sarasota
-  STP: 'America/Chicago',   // St. Paul
-  SUA: 'America/New_York',  // Stuart
-  SYR: 'America/New_York',  // Syracuse
-  TLH: 'America/New_York',  // Tallahassee
-  TPA: 'America/New_York',  // Tampa
-  TEB: 'America/New_York',  // Teterboro
-  TYS: 'America/New_York',  // Knoxville
-  VRB: 'America/New_York',  // Vero Beach
-  // Florida small fields
-  APF: 'America/New_York',  // Naples
-  BCT: 'America/New_York',  // Boca Raton
-  GFL: 'America/New_York',  // Glens Falls
-  HWO: 'America/New_York',  // North Perry / Hollywood
-  LAL: 'America/New_York',  // Lakeland
-  MQS: 'America/New_York',  // Coatesville (PA, mistakenly EDT — actually PA which is ET)
-  ORL: 'America/New_York',  // Orlando Executive
-  PMP: 'America/New_York',  // Pompano Beach
-  SUA_alt: 'America/New_York', // Stuart (also)
-  TIX: 'America/New_York',  // Titusville
-  ZPH: 'America/New_York',  // Zephyrhills
+  // ===== US Eastern Time (America/New_York) =====
+  ABE: 'America/New_York',
+  ABY: 'America/New_York',
+  ACK: 'America/New_York',
+  ACY: 'America/New_York',
+  AGS: 'America/New_York',
+  AHN: 'America/New_York',
+  AKH: 'America/New_York',
+  ALB: 'America/New_York',
+  AND: 'America/New_York',
+  APF: 'America/New_York',
+  ART: 'America/New_York',
+  ASJ: 'America/New_York',
+  ATL: 'America/New_York',
+  AUG: 'America/New_York',
+  AVL: 'America/New_York',
+  AVP: 'America/New_York',
+  BAF: 'America/New_York',
+  BCB: 'America/New_York',
+  BCT: 'America/New_York',
+  BDL: 'America/New_York',
+  BDR: 'America/New_York',
+  BED: 'America/New_York',
+  BFD: 'America/New_York',
+  BGE: 'America/New_York',
+  BGM: 'America/New_York',
+  BGR: 'America/New_York',
+  BHB: 'America/New_York',
+  BHC: 'America/New_York',
+  BID: 'America/New_York',
+  BKL: 'America/New_York',
+  BKV: 'America/New_York',
+  BLF: 'America/New_York',
+  BLM: 'America/New_York',
+  BOS: 'America/New_York',
+  BQK: 'America/New_York',
+  BTP: 'America/New_York',
+  BTV: 'America/New_York',
+  BUF: 'America/New_York',
+  BWI: 'America/New_York',
+  CAE: 'America/New_York',
+  CAK: 'America/New_York',
+  CDW: 'America/New_York',
+  CGF: 'America/New_York',
+  CHA: 'America/New_York',
+  CHO: 'America/New_York',
+  CHS: 'America/New_York',
+  CKB: 'America/New_York',
+  CLE: 'America/New_York',
+  CLT: 'America/New_York',
+  CMH: 'America/New_York',
+  CPK: 'America/New_York',
+  CRE: 'America/New_York',
+  CRG: 'America/New_York',
+  CRW: 'America/New_York',
+  CSG: 'America/New_York',
+  CVG: 'America/New_York',
+  CYO: 'America/New_York',
+  DAB: 'America/New_York',
+  DAN: 'America/New_York',
+  DAY: 'America/New_York',
+  DBN: 'America/New_York',
+  DCA: 'America/New_York',
+  DDH: 'America/New_York',
+  DOV: 'America/New_York',
+  DUJ: 'America/New_York',
+  EEN: 'America/New_York',
+  EFK: 'America/New_York',
+  EHO: 'America/New_York',
+  EKN: 'America/New_York',
+  EKQ: 'America/New_York',
+  ELM: 'America/New_York',
+  ELZ: 'America/New_York',
+  EMV: 'America/New_York',
+  ERI: 'America/New_York',
+  ESN: 'America/New_York',
+  EVB: 'America/New_York',
+  EWB: 'America/New_York',
+  EWN: 'America/New_York',
+  EWR: 'America/New_York',
+  FAY: 'America/New_York',
+  FCI: 'America/New_York',
+  FFC: 'America/New_York',
+  FKL: 'America/New_York',
+  FLL: 'America/New_York',
+  FLO: 'America/New_York',
+  FME: 'America/New_York',
+  FMH: 'America/New_York',
+  FMY: 'America/New_York',
+  FPR: 'America/New_York',
+  FRG: 'America/New_York',
+  FTY: 'America/New_York',
+  FXE: 'America/New_York',
+  FYJ: 'America/New_York',
+  GAI: 'America/New_York',
+  GFL: 'America/New_York',
+  GGE: 'America/New_York',
+  GIF: 'America/New_York',
+  GKT: 'America/New_York',
+  GMU: 'America/New_York',
+  GNV: 'America/New_York',
+  GON: 'America/New_York',
+  GSO: 'America/New_York',
+  GSP: 'America/New_York',
+  GTB: 'America/New_York',
+  GVL: 'America/New_York',
+  GYH: 'America/New_York',
+  HEF: 'America/New_York',
+  HFD: 'America/New_York',
+  HGR: 'America/New_York',
+  HHH: 'America/New_York',
+  HKY: 'America/New_York',
+  HLG: 'America/New_York',
+  HPN: 'America/New_York',
+  HRJ: 'America/New_York',
+  HSP: 'America/New_York',
+  HST: 'America/New_York',
+  HTO: 'America/New_York',
+  HTS: 'America/New_York',
+  HUL: 'America/New_York',
+  HVN: 'America/New_York',
+  HWO: 'America/New_York',
+  HXD: 'America/New_York',
+  HYA: 'America/New_York',
+  HZL: 'America/New_York',
+  HZM: 'America/New_York',
+  IAD: 'America/New_York',
+  ILG: 'America/New_York',
+  ILM: 'America/New_York',
+  INT: 'America/New_York',
+  IPT: 'America/New_York',
+  ISM: 'America/New_York',
+  ISP: 'America/New_York',
+  ITH: 'America/New_York',
+  JAX: 'America/New_York',
+  JFK: 'America/New_York',
+  JHW: 'America/New_York',
+  JNX: 'America/New_York',
+  JQF: 'America/New_York',
+  JST: 'America/New_York',
+  JZP: 'America/New_York',
+  LAL: 'America/New_York',
+  LBE: 'America/New_York',
+  LCI: 'America/New_York',
+  LCK: 'America/New_York',
+  LCQ: 'America/New_York',
+  LDJ: 'America/New_York',
+  LEB: 'America/New_York',
+  LEE: 'America/New_York',
+  LEW: 'America/New_York',
+  LEX: 'America/New_York',
+  LFI: 'America/New_York',
+  LGA: 'America/New_York',
+  LGC: 'America/New_York',
+  LNA: 'America/New_York',
+  LNS: 'America/New_York',
+  LOZ: 'America/New_York',
+  LUA: 'America/New_York',
+  LWB: 'America/New_York',
+  LWM: 'America/New_York',
+  LYH: 'America/New_York',
+  LZU: 'America/New_York',
+  MCN: 'America/New_York',
+  MCO: 'America/New_York',
+  MDT: 'America/New_York',
+  MFD: 'America/New_York',
+  MGE: 'America/New_York',
+  MGR: 'America/New_York',
+  MGW: 'America/New_York',
+  MGY: 'America/New_York',
+  MHT: 'America/New_York',
+  MIA: 'America/New_York',
+  MKY: 'America/New_York',
+  MLB: 'America/New_York',
+  MLJ: 'America/New_York',
+  MMI: 'America/New_York',
+  MMU: 'America/New_York',
+  MPV: 'America/New_York',
+  MRB: 'America/New_York',
+  MTH: 'America/New_York',
+  MTN: 'America/New_York',
+  MUI: 'America/New_York',
+  MVL: 'America/New_York',
+  MVY: 'America/New_York',
+  MWK: 'America/New_York',
+  MWO: 'America/New_York',
+  MYR: 'America/New_York',
+  NCA: 'America/New_York',
+  NGU: 'America/New_York',
+  NIP: 'America/New_York',
+  NQX: 'America/New_York',
+  NTU: 'America/New_York',
+  NXX: 'America/New_York',
+  OAJ: 'America/New_York',
+  OBE: 'America/New_York',
+  OCF: 'America/New_York',
+  OFP: 'America/New_York',
+  OGB: 'America/New_York',
+  OGS: 'America/New_York',
+  OPF: 'America/New_York',
+  OQT: 'America/New_York',
+  OQU: 'America/New_York',
+  ORF: 'America/New_York',
+  ORG: 'America/New_York',
+  ORH: 'America/New_York',
+  ORL: 'America/New_York',
+  OSU: 'America/New_York',
+  OWD: 'America/New_York',
+  OXB: 'America/New_York',
+  OXC: 'America/New_York',
+  PBI: 'America/New_York',
+  PCM: 'America/New_York',
+  PDK: 'America/New_York',
+  PGD: 'America/New_York',
+  PGV: 'America/New_York',
+  PHF: 'America/New_York',
+  PHL: 'America/New_York',
+  PIE: 'America/New_York',
+  PIT: 'America/New_York',
+  PKB: 'America/New_York',
+  PLB: 'America/New_York',
+  PMH: 'America/New_York',
+  PMP: 'America/New_York',
+  POU: 'America/New_York',
+  PQI: 'America/New_York',
+  PSB: 'America/New_York',
+  PSF: 'America/New_York',
+  PSK: 'America/New_York',
+  PSM: 'America/New_York',
+  PVD: 'America/New_York',
+  PWM: 'America/New_York',
+  PYM: 'America/New_York',
+  RBW: 'America/New_York',
+  RDG: 'America/New_York',
+  RDU: 'America/New_York',
+  RIC: 'America/New_York',
+  RKD: 'America/New_York',
+  RMG: 'America/New_York',
+  ROA: 'America/New_York',
+  ROC: 'America/New_York',
+  RSW: 'America/New_York',
+  RUT: 'America/New_York',
+  RWI: 'America/New_York',
+  RYY: 'America/New_York',
+  SAV: 'America/New_York',
+  SBO: 'America/New_York',
+  SBY: 'America/New_York',
+  SDF: 'America/New_York',
+  SFB: 'America/New_York',
+  SFM: 'America/New_York',
+  SGJ: 'America/New_York',
+  SHD: 'America/New_York',
+  SLK: 'America/New_York',
+  SME: 'America/New_York',
+  SPA: 'America/New_York',
+  SPG: 'America/New_York',
+  SRQ: 'America/New_York',
+  SUA: 'America/New_York',
+  SVH: 'America/New_York',
+  SWF: 'America/New_York',
+  SYR: 'America/New_York',
+  TAN: 'America/New_York',
+  TBR: 'America/New_York',
+  TEB: 'America/New_York',
+  THV: 'America/New_York',
+  TIX: 'America/New_York',
+  TLH: 'America/New_York',
+  TMA: 'America/New_York',
+  TMB: 'America/New_York',
+  TOL: 'America/New_York',
+  TPA: 'America/New_York',
+  TPF: 'America/New_York',
+  TRI: 'America/New_York',
+  TTA: 'America/New_York',
+  TTN: 'America/New_York',
+  TYS: 'America/New_York',
+  TZR: 'America/New_York',
+  UKF: 'America/New_York',
+  UNI: 'America/New_York',
+  UNV: 'America/New_York',
+  UUU: 'America/New_York',
+  UZA: 'America/New_York',
+  VAD: 'America/New_York',
+  VAY: 'America/New_York',
+  VDF: 'America/New_York',
+  VLD: 'America/New_York',
+  VNC: 'America/New_York',
+  VPC: 'America/New_York',
+  VQQ: 'America/New_York',
+  VRB: 'America/New_York',
+  VSF: 'America/New_York',
+  WRB: 'America/New_York',
+  WST: 'America/New_York',
+  WWD: 'America/New_York',
+  XLL: 'America/New_York',
+  XSA: 'America/New_York',
+  ZPH: 'America/New_York',
+  ZZV: 'America/New_York',
 
-  // ===== CONTINENTAL US — Central Time =====
-  ABI: 'America/Chicago',   // Abilene
-  ATW: 'America/Chicago',   // Appleton
-  AUS: 'America/Chicago',   // Austin
-  BHM: 'America/Chicago',   // Birmingham
-  BNA: 'America/Chicago',   // Nashville
-  CID: 'America/Chicago',   // Cedar Rapids
-  CKB: 'America/New_York',  // Clarksburg WV (ET)
-  COS: 'America/Denver',    // Colorado Springs (MT)
-  DAL: 'America/Chicago',   // Dallas Love
-  DFW: 'America/Chicago',   // Dallas-Fort Worth
-  DSM: 'America/Chicago',   // Des Moines
-  ELP: 'America/Denver',    // El Paso (MT)
-  FSD: 'America/Chicago',   // Sioux Falls
-  FWA: 'America/New_York',  // Fort Wayne (IN — ET)
-  GPT: 'America/Chicago',   // Gulfport
-  HOU: 'America/Chicago',   // Houston Hobby
-  IAH: 'America/Chicago',   // Houston Intercontinental
-  ICT: 'America/Chicago',   // Wichita
-  JAN: 'America/Chicago',   // Jackson MS
-  LIT: 'America/Chicago',   // Little Rock
-  MCI: 'America/Chicago',   // Kansas City
-  MDW: 'America/Chicago',   // Chicago Midway
-  MEM: 'America/Chicago',   // Memphis
-  MKE: 'America/Chicago',   // Milwaukee
-  MOB: 'America/Chicago',   // Mobile
-  MSP: 'America/Chicago',   // Minneapolis
-  MSY: 'America/Chicago',   // New Orleans
-  OKC: 'America/Chicago',   // Oklahoma City
-  OMA: 'America/Chicago',   // Omaha
-  ORD: 'America/Chicago',   // Chicago O'Hare
-  SAT: 'America/Chicago',   // San Antonio
-  SDL: 'America/Phoenix',   // Scottsdale (AZ)
-  SHV: 'America/Chicago',   // Shreveport
-  SPI: 'America/Chicago',   // Springfield IL
-  STL: 'America/Chicago',   // St. Louis
-  TUL: 'America/Chicago',   // Tulsa
-  TYR: 'America/Chicago',   // Tyler
-  VPS: 'America/Chicago',   // Destin / Eglin
+  // ===== US Central Time (America/Chicago) =====
+  ABI: 'America/Chicago',
+  ACT: 'America/Chicago',
+  ADC: 'America/Chicago',
+  ADF: 'America/Chicago',
+  ADH: 'America/Chicago',
+  ADM: 'America/Chicago',
+  ADS: 'America/Chicago',
+  AEX: 'America/Chicago',
+  AFW: 'America/Chicago',
+  AIA: 'America/Chicago',
+  AIZ: 'America/Chicago',
+  ALI: 'America/Chicago',
+  ALN: 'America/Chicago',
+  ALO: 'America/Chicago',
+  AMW: 'America/Chicago',
+  ANB: 'America/Chicago',
+  ANE: 'America/Chicago',
+  ARA: 'America/Chicago',
+  ARR: 'America/Chicago',
+  ASG: 'America/Chicago',
+  ASN: 'America/Chicago',
+  ATW: 'America/Chicago',
+  ATY: 'America/Chicago',
+  AUO: 'America/Chicago',
+  AUW: 'America/Chicago',
+  AUZ: 'America/Chicago',
+  BAU: 'America/Chicago',
+  BAZ: 'America/Chicago',
+  BBG: 'America/Chicago',
+  BBW: 'America/Chicago',
+  BDH: 'America/Chicago',
+  BHM: 'America/Chicago',
+  BIS: 'America/Chicago',
+  BIX: 'America/Chicago',
+  BJI: 'America/Chicago',
+  BKN: 'America/Chicago',
+  BMI: 'America/Chicago',
+  BNA: 'America/Chicago',
+  BPK: 'America/Chicago',
+  BPT: 'America/Chicago',
+  BRD: 'America/Chicago',
+  BRK: 'America/Chicago',
+  BRL: 'America/Chicago',
+  BRO: 'America/Chicago',
+  BTR: 'America/Chicago',
+  BUM: 'America/Chicago',
+  BVE: 'America/Chicago',
+  BVO: 'America/Chicago',
+  BWG: 'America/Chicago',
+  BWP: 'America/Chicago',
+  CDJ: 'America/Chicago',
+  CDS: 'America/Chicago',
+  CEW: 'America/Chicago',
+  CGI: 'America/Chicago',
+  CHK: 'America/Chicago',
+  CID: 'America/Chicago',
+  CKV: 'America/Chicago',
+  CLL: 'America/Chicago',
+  CMI: 'America/Chicago',
+  CMY: 'America/Chicago',
+  COU: 'America/Chicago',
+  CRP: 'America/Chicago',
+  CSM: 'America/Chicago',
+  CSV: 'America/Chicago',
+  CUH: 'America/Chicago',
+  CWA: 'America/Chicago',
+  CXO: 'America/Chicago',
+  CXY: 'America/Chicago',
+  DAL: 'America/Chicago',
+  DBQ: 'America/Chicago',
+  DEC: 'America/Chicago',
+  DEH: 'America/Chicago',
+  DEQ: 'America/Chicago',
+  DFW: 'America/Chicago',
+  DHN: 'America/Chicago',
+  DKB: 'America/Chicago',
+  DKX: 'America/Chicago',
+  DLH: 'America/Chicago',
+  DMO: 'America/Chicago',
+  DPA: 'America/Chicago',
+  DRT: 'America/Chicago',
+  DSM: 'America/Chicago',
+  DTN: 'America/Chicago',
+  DTO: 'America/Chicago',
+  DUC: 'America/Chicago',
+  DVL: 'America/Chicago',
+  DVN: 'America/Chicago',
+  EAU: 'America/Chicago',
+  ECP: 'America/Chicago',
+  EFD: 'America/Chicago',
+  EGV: 'America/Chicago',
+  ELD: 'America/Chicago',
+  END: 'America/Chicago',
+  ENW: 'America/Chicago',
+  EQA: 'America/Chicago',
+  EST: 'America/Chicago',
+  ETB: 'America/Chicago',
+  EUF: 'America/Chicago',
+  EVV: 'America/Chicago',
+  EWK: 'America/Chicago',
+  FAM: 'America/Chicago',
+  FAR: 'America/Chicago',
+  FCM: 'America/Chicago',
+  FOD: 'America/Chicago',
+  FSD: 'America/Chicago',
+  FSI: 'America/Chicago',
+  FTT: 'America/Chicago',
+  FYV: 'America/Chicago',
+  GAD: 'America/Chicago',
+  GAF: 'America/Chicago',
+  GAG: 'America/Chicago',
+  GAO: 'America/Chicago',
+  GFK: 'America/Chicago',
+  GGG: 'America/Chicago',
+  GKY: 'America/Chicago',
+  GLH: 'America/Chicago',
+  GLS: 'America/Chicago',
+  GPT: 'America/Chicago',
+  GRB: 'America/Chicago',
+  GRI: 'America/Chicago',
+  GRK: 'America/Chicago',
+  GTR: 'America/Chicago',
+  GTU: 'America/Chicago',
+  GYI: 'America/Chicago',
+  GYP: 'America/Chicago',
+  GYY: 'America/Chicago',
+  HBG: 'America/Chicago',
+  HBR: 'America/Chicago',
+  HCO: 'America/Chicago',
+  HDO: 'America/Chicago',
+  HEI: 'America/Chicago',
+  HEZ: 'America/Chicago',
+  HHW: 'America/Chicago',
+  HIB: 'America/Chicago',
+  HJH: 'America/Chicago',
+  HKS: 'America/Chicago',
+  HON: 'America/Chicago',
+  HOP: 'America/Chicago',
+  HOT: 'America/Chicago',
+  HOU: 'America/Chicago',
+  HRL: 'America/Chicago',
+  HRO: 'America/Chicago',
+  HSI: 'America/Chicago',
+  HSV: 'America/Chicago',
+  HUM: 'America/Chicago',
+  HUT: 'America/Chicago',
+  HXF: 'America/Chicago',
+  HYS: 'America/Chicago',
+  IAH: 'America/Chicago',
+  ICT: 'America/Chicago',
+  ILE: 'America/Chicago',
+  INL: 'America/Chicago',
+  IOW: 'America/Chicago',
+  IRK: 'America/Chicago',
+  ISN: 'America/Chicago',
+  IXD: 'America/Chicago',
+  JAN: 'America/Chicago',
+  JCT: 'America/Chicago',
+  JEF: 'America/Chicago',
+  JLN: 'America/Chicago',
+  JMS: 'America/Chicago',
+  JVA: 'America/Chicago',
+  JVL: 'America/Chicago',
+  LAW: 'America/Chicago',
+  LBB: 'America/Chicago',
+  LBO: 'America/Chicago',
+  LCH: 'America/Chicago',
+  LFK: 'America/Chicago',
+  LFT: 'America/Chicago',
+  LIT: 'America/Chicago',
+  LNK: 'America/Chicago',
+  LNL: 'America/Chicago',
+  LNR: 'America/Chicago',
+  LRD: 'America/Chicago',
+  LSE: 'America/Chicago',
+  LTS: 'America/Chicago',
+  LUL: 'America/Chicago',
+  LUM: 'America/Chicago',
+  LVN: 'America/Chicago',
+  LWD: 'America/Chicago',
+  LWV: 'America/Chicago',
+  MAI: 'America/Chicago',
+  MAW: 'America/Chicago',
+  MBG: 'America/Chicago',
+  MCI: 'America/Chicago',
+  MCW: 'America/Chicago',
+  MDW: 'America/Chicago',
+  MEI: 'America/Chicago',
+  MEM: 'America/Chicago',
+  MFE: 'America/Chicago',
+  MFI: 'America/Chicago',
+  MFV: 'America/Chicago',
+  MGM: 'America/Chicago',
+  MHE: 'America/Chicago',
+  MHK: 'America/Chicago',
+  MIB: 'America/Chicago',
+  MIC: 'America/Chicago',
+  MIO: 'America/Chicago',
+  MIW: 'America/Chicago',
+  MKC: 'America/Chicago',
+  MKE: 'America/Chicago',
+  MKL: 'America/Chicago',
+  MKT: 'America/Chicago',
+  MLC: 'America/Chicago',
+  MLI: 'America/Chicago',
+  MLU: 'America/Chicago',
+  MNV: 'America/Chicago',
+  MNZ: 'America/Chicago',
+  MOB: 'America/Chicago',
+  MOT: 'America/Chicago',
+  MQY: 'America/Chicago',
+  MSL: 'America/Chicago',
+  MSN: 'America/Chicago',
+  MSP: 'America/Chicago',
+  MSY: 'America/Chicago',
+  MTW: 'America/Chicago',
+  MWA: 'America/Chicago',
+  MWC: 'America/Chicago',
+  MWL: 'America/Chicago',
+  MWT: 'America/Chicago',
+  MXF: 'America/Chicago',
+  MYJ: 'America/Chicago',
+  OFF: 'America/Chicago',
+  OJC: 'America/Chicago',
+  OKC: 'America/Chicago',
+  OMA: 'America/Chicago',
+  ORD: 'America/Chicago',
+  OSH: 'America/Chicago',
+  OTM: 'America/Chicago',
+  OUN: 'America/Chicago',
+  OWB: 'America/Chicago',
+  OWP: 'America/Chicago',
+  OXF: 'America/Chicago',
+  OZA: 'America/Chicago',
+  OZK: 'America/Chicago',
+  OZR: 'America/Chicago',
+  OZS: 'America/Chicago',
+  PAH: 'America/Chicago',
+  PBF: 'America/Chicago',
+  PBH: 'America/Chicago',
+  PCD: 'America/Chicago',
+  PFN: 'America/Chicago',
+  PIA: 'America/Chicago',
+  PIB: 'America/Chicago',
+  PMU: 'America/Chicago',
+  PNC: 'America/Chicago',
+  PNS: 'America/Chicago',
+  PNT: 'America/Chicago',
+  POE: 'America/Chicago',
+  POF: 'America/Chicago',
+  PRX: 'America/Chicago',
+  PSX: 'America/Chicago',
+  PTN: 'America/Chicago',
+  PVB: 'America/Chicago',
+  PVW: 'America/Chicago',
+  PWA: 'America/Chicago',
+  PWK: 'America/Chicago',
+  RAC: 'America/Chicago',
+  REG: 'America/Chicago',
+  RFD: 'America/Chicago',
+  RHI: 'America/Chicago',
+  RIE: 'America/Chicago',
+  RNC: 'America/Chicago',
+  RST: 'America/Chicago',
+  RUE: 'America/Chicago',
+  RWF: 'America/Chicago',
+  RYV: 'America/Chicago',
+  RZL: 'America/Chicago',
+  SAT: 'America/Chicago',
+  SBM: 'America/Chicago',
+  SBN: 'America/Chicago',
+  SCD: 'America/Chicago',
+  SDA: 'America/Chicago',
+  SEM: 'America/Chicago',
+  SEP: 'America/Chicago',
+  SET: 'America/Chicago',
+  SGF: 'America/Chicago',
+  SGR: 'America/Chicago',
+  SGS: 'America/Chicago',
+  SHV: 'America/Chicago',
+  SJT: 'America/Chicago',
+  SLB: 'America/Chicago',
+  SLN: 'America/Chicago',
+  SLR: 'America/Chicago',
+  SPI: 'America/Chicago',
+  SPS: 'America/Chicago',
+  SPW: 'America/Chicago',
+  SRB: 'America/Chicago',
+  SRE: 'America/Chicago',
+  STC: 'America/Chicago',
+  STE: 'America/Chicago',
+  STL: 'America/Chicago',
+  STP: 'America/Chicago',
+  SUE: 'America/Chicago',
+  SUS: 'America/Chicago',
+  SUX: 'America/Chicago',
+  SWO: 'America/Chicago',
+  SZL: 'America/Chicago',
+  TBN: 'America/Chicago',
+  TCL: 'America/Chicago',
+  TIF: 'America/Chicago',
+  TIK: 'America/Chicago',
+  TKI: 'America/Chicago',
+  TOI: 'America/Chicago',
+  TOP: 'America/Chicago',
+  TQE: 'America/Chicago',
+  TUL: 'America/Chicago',
+  TUP: 'America/Chicago',
+  TVF: 'America/Chicago',
+  TWM: 'America/Chicago',
+  TXK: 'America/Chicago',
+  TYR: 'America/Chicago',
+  UCY: 'America/Chicago',
+  UES: 'America/Chicago',
+  UGN: 'America/Chicago',
+  UIN: 'America/Chicago',
+  UNO: 'America/Chicago',
+  UOS: 'America/Chicago',
+  UTA: 'America/Chicago',
+  UVA: 'America/Chicago',
+  VCT: 'America/Chicago',
+  VER: 'America/Chicago',
+  VIH: 'America/Chicago',
+  VPS: 'America/Chicago',
+  VYS: 'America/Chicago',
+  WDG: 'America/Chicago',
+  WLD: 'America/Chicago',
+  WTN: 'America/Chicago',
+  WWR: 'America/Chicago',
+  XNA: 'America/Chicago',
+  XWA: 'America/Chicago',
+  YKN: 'America/Chicago',
 
-  // ===== CONTINENTAL US — Mountain Time =====
-  ABQ: 'America/Denver',    // Albuquerque
-  APA: 'America/Denver',    // Centennial
-  ASE: 'America/Denver',    // Aspen
-  BIL: 'America/Denver',    // Billings
-  BJC: 'America/Denver',    // Rocky Mtn Metro
-  BZN: 'America/Denver',    // Bozeman
-  COD: 'America/Denver',    // Cody
-  DEN: 'America/Denver',    // Denver
-  EGE: 'America/Denver',    // Eagle/Vail
-  HDN: 'America/Denver',    // Hayden/Steamboat
-  IDA: 'America/Boise',     // Idaho Falls
-  JAC: 'America/Denver',    // Jackson Hole
-  MSO: 'America/Denver',    // Missoula
-  RAP: 'America/Denver',    // Rapid City
-  SLC: 'America/Denver',    // Salt Lake City
-  TEX: 'America/Denver',    // Telluride
-  TWF: 'America/Boise',     // Twin Falls
+  // ===== US Mountain Time (America/Denver) =====
+  ABQ: 'America/Denver',
+  AKO: 'America/Denver',
+  ALM: 'America/Denver',
+  ALS: 'America/Denver',
+  ANY: 'America/Denver',
+  APA: 'America/Denver',
+  ASE: 'America/Denver',
+  ATS: 'America/Denver',
+  BCE: 'America/Denver',
+  BFF: 'America/Denver',
+  BHK: 'America/Denver',
+  BIL: 'America/Denver',
+  BJC: 'America/Denver',
+  BMC: 'America/Denver',
+  BPI: 'America/Denver',
+  BTM: 'America/Denver',
+  BZN: 'America/Denver',
+  CAG: 'America/Denver',
+  CDC: 'America/Denver',
+  CDR: 'America/Denver',
+  CEZ: 'America/Denver',
+  CMR: 'America/Denver',
+  CNM: 'America/Denver',
+  CNY: 'America/Denver',
+  COD: 'America/Denver',
+  COS: 'America/Denver',
+  CPR: 'America/Denver',
+  CSE: 'America/Denver',
+  CTB: 'America/Denver',
+  CVN: 'America/Denver',
+  CYS: 'America/Denver',
+  DEN: 'America/Denver',
+  DIK: 'America/Denver',
+  DMN: 'America/Denver',
+  DRO: 'America/Denver',
+  EGE: 'America/Denver',
+  EHA: 'America/Denver',
+  EIK: 'America/Denver',
+  ELP: 'America/Denver',
+  EUR: 'America/Denver',
+  EVW: 'America/Denver',
+  FMN: 'America/Denver',
+  FNL: 'America/Denver',
+  GCC: 'America/Denver',
+  GCK: 'America/Denver',
+  GDP: 'America/Denver',
+  GDV: 'America/Denver',
+  GEY: 'America/Denver',
+  GGW: 'America/Denver',
+  GJT: 'America/Denver',
+  GNB: 'America/Denver',
+  GNT: 'America/Denver',
+  GPI: 'America/Denver',
+  GTF: 'America/Denver',
+  GUC: 'America/Denver',
+  GUP: 'America/Denver',
+  GUY: 'America/Denver',
+  HDN: 'America/Denver',
+  HEY: 'America/Denver',
+  HLN: 'America/Denver',
+  HMN: 'America/Denver',
+  HOB: 'America/Denver',
+  HVE: 'America/Denver',
+  HVR: 'America/Denver',
+  ITR: 'America/Denver',
+  JAC: 'America/Denver',
+  KAL: 'America/Denver',
+  LAA: 'America/Denver',
+  LAM: 'America/Denver',
+  LAR: 'America/Denver',
+  LBF: 'America/Denver',
+  LBL: 'America/Denver',
+  LGU: 'America/Denver',
+  LIC: 'America/Denver',
+  LND: 'America/Denver',
+  LRU: 'America/Denver',
+  LVM: 'America/Denver',
+  LVS: 'America/Denver',
+  LWT: 'America/Denver',
+  LXV: 'America/Denver',
+  MAF: 'America/Denver',
+  MCK: 'America/Denver',
+  MIL: 'America/Denver',
+  MLF: 'America/Denver',
+  MLS: 'America/Denver',
+  MSO: 'America/Denver',
+  MTJ: 'America/Denver',
+  NXM: 'America/Denver',
+  OGD: 'America/Denver',
+  OLF: 'America/Denver',
+  ONM: 'America/Denver',
+  PGA: 'America/Denver',
+  PHP: 'America/Denver',
+  PNA: 'America/Denver',
+  POY: 'America/Denver',
+  PUB: 'America/Denver',
+  PUC: 'America/Denver',
+  PVU: 'America/Denver',
+  PWY: 'America/Denver',
+  RAP: 'America/Denver',
+  RAW: 'America/Denver',
+  RFN: 'America/Denver',
+  RIL: 'America/Denver',
+  RIW: 'America/Denver',
+  RKS: 'America/Denver',
+  ROW: 'America/Denver',
+  RTN: 'America/Denver',
+  SAA: 'America/Denver',
+  SAF: 'America/Denver',
+  SBS: 'America/Denver',
+  SDY: 'America/Denver',
+  SGU: 'America/Denver',
+  SHR: 'America/Denver',
+  SLC: 'America/Denver',
+  SNY: 'America/Denver',
+  SUO: 'America/Denver',
+  SVC: 'America/Denver',
+  SVT: 'America/Denver',
+  TAD: 'America/Denver',
+  TCC: 'America/Denver',
+  TCS: 'America/Denver',
+  TEX: 'America/Denver',
+  TOR: 'America/Denver',
+  TQS: 'America/Denver',
+  TRZ: 'America/Denver',
+  TWF: 'America/Denver',
+  VEL: 'America/Denver',
+  VTN: 'America/Denver',
+  VTP: 'America/Denver',
+  WRL: 'America/Denver',
+  WYS: 'America/Denver',
+  ZUN: 'America/Denver',
 
-  // ===== CONTINENTAL US — Arizona (no DST) =====
-  IFP: 'America/Phoenix',   // Bullhead City
-  PHX: 'America/Phoenix',   // Phoenix
-  PRC: 'America/Phoenix',   // Prescott
-  TUS: 'America/Phoenix',   // Tucson
+  // ===== US Mountain Time (Boise) (America/Boise) =====
+  BOI: 'America/Boise',
+  BYI: 'America/Boise',
+  DIJ: 'America/Boise',
+  GIC: 'America/Boise',
+  IDA: 'America/Boise',
+  LWS: 'America/Boise',
+  PIH: 'America/Boise',
+  SMN: 'America/Boise',
+  SUN: 'America/Boise',
+  SZT: 'America/Boise',
 
-  // ===== CONTINENTAL US — Pacific Time =====
-  BFL: 'America/Los_Angeles',  // Bakersfield
-  BOI: 'America/Boise',        // Boise (MT but uses Mountain)
-  BUR: 'America/Los_Angeles',  // Burbank
-  CCR: 'America/Los_Angeles',  // Concord
-  CRQ: 'America/Los_Angeles',  // Carlsbad
-  EUG: 'America/Los_Angeles',  // Eugene
-  FAT: 'America/Los_Angeles',  // Fresno
-  GEG: 'America/Los_Angeles',  // Spokane
-  HHR: 'America/Los_Angeles',  // Hawthorne
-  LAS: 'America/Los_Angeles',  // Las Vegas
-  LAX: 'America/Los_Angeles',  // Los Angeles
-  LGB: 'America/Los_Angeles',  // Long Beach
-  MFR: 'America/Los_Angeles',  // Medford
-  OAK: 'America/Los_Angeles',  // Oakland
-  ONT: 'America/Los_Angeles',  // Ontario
-  PAE: 'America/Los_Angeles',  // Everett
-  PDX: 'America/Los_Angeles',  // Portland OR
-  PSP: 'America/Los_Angeles',  // Palm Springs
-  RDD: 'America/Los_Angeles',  // Redding
-  RNO: 'America/Los_Angeles',  // Reno
-  SAN: 'America/Los_Angeles',  // San Diego
-  SBA: 'America/Los_Angeles',  // Santa Barbara
-  SEA: 'America/Los_Angeles',  // Seattle
-  SFO: 'America/Los_Angeles',  // SF
-  SJC: 'America/Los_Angeles',  // San Jose
-  SMF: 'America/Los_Angeles',  // Sacramento
-  SMO: 'America/Los_Angeles',  // Santa Monica
-  SNA: 'America/Los_Angeles',  // John Wayne / Orange County
-  TRK: 'America/Los_Angeles',  // Truckee
-  VNY: 'America/Los_Angeles',  // Van Nuys
+  // ===== US Arizona (no DST) (America/Phoenix) =====
+  BXK: 'America/Phoenix',
+  CFT: 'America/Phoenix',
+  CGZ: 'America/Phoenix',
+  DUG: 'America/Phoenix',
+  DVT: 'America/Phoenix',
+  FFZ: 'America/Phoenix',
+  FLG: 'America/Phoenix',
+  GBN: 'America/Phoenix',
+  GCN: 'America/Phoenix',
+  GEU: 'America/Phoenix',
+  GUR: 'America/Phoenix',
+  GYR: 'America/Phoenix',
+  IFP: 'America/Phoenix',
+  IGM: 'America/Phoenix',
+  MZJ: 'America/Phoenix',
+  NYL: 'America/Phoenix',
+  OLS: 'America/Phoenix',
+  PAN: 'America/Phoenix',
+  PHX: 'America/Phoenix',
+  PIR: 'America/Phoenix',
+  PRC: 'America/Phoenix',
+  RQE: 'America/Phoenix',
+  RYN: 'America/Phoenix',
+  SDL: 'America/Phoenix',
+  SEZ: 'America/Phoenix',
+  SOW: 'America/Phoenix',
+  SRR: 'America/Phoenix',
+  TUS: 'America/Phoenix',
+  TYE: 'America/Phoenix',
+  VLE: 'America/Phoenix',
 
-  // ===== ALASKA =====
+  // ===== US Pacific Time (America/Los_Angeles) =====
+  ALW: 'America/Los_Angeles',
+  APC: 'America/Los_Angeles',
+  BAB: 'America/Los_Angeles',
+  BAM: 'America/Los_Angeles',
+  BDN: 'America/Los_Angeles',
+  BFI: 'America/Los_Angeles',
+  BFL: 'America/Los_Angeles',
+  BKE: 'America/Los_Angeles',
+  BLI: 'America/Los_Angeles',
+  BLU: 'America/Los_Angeles',
+  BNG: 'America/Los_Angeles',
+  BNO: 'America/Los_Angeles',
+  BUR: 'America/Los_Angeles',
+  BVS: 'America/Los_Angeles',
+  BVU: 'America/Los_Angeles',
+  CCR: 'America/Los_Angeles',
+  CDA: 'America/Los_Angeles',
+  CLM: 'America/Los_Angeles',
+  CMA: 'America/Los_Angeles',
+  CRQ: 'America/Los_Angeles',
+  CZK: 'America/Los_Angeles',
+  EAT: 'America/Los_Angeles',
+  EDU: 'America/Los_Angeles',
+  EDW: 'America/Los_Angeles',
+  EKA: 'America/Los_Angeles',
+  EKO: 'America/Los_Angeles',
+  ELY: 'America/Los_Angeles',
+  EMT: 'America/Los_Angeles',
+  EPH: 'America/Los_Angeles',
+  EUG: 'America/Los_Angeles',
+  EUL: 'America/Los_Angeles',
+  FAT: 'America/Los_Angeles',
+  FCT: 'America/Los_Angeles',
+  FHR: 'America/Los_Angeles',
+  FUL: 'America/Los_Angeles',
+  GEG: 'America/Los_Angeles',
+  GRF: 'America/Los_Angeles',
+  HHR: 'America/Los_Angeles',
+  HND: 'America/Los_Angeles',
+  HQM: 'America/Los_Angeles',
+  HRI: 'America/Los_Angeles',
+  HTH: 'America/Los_Angeles',
+  HWD: 'America/Los_Angeles',
+  JCV: 'America/Los_Angeles',
+  LAS: 'America/Los_Angeles',
+  LAX: 'America/Los_Angeles',
+  LGB: 'America/Los_Angeles',
+  LKV: 'America/Los_Angeles',
+  LMT: 'America/Los_Angeles',
+  LOL: 'America/Los_Angeles',
+  LVK: 'America/Los_Angeles',
+  MCC: 'America/Los_Angeles',
+  MCE: 'America/Los_Angeles',
+  MEV: 'America/Los_Angeles',
+  MFR: 'America/Los_Angeles',
+  MHR: 'America/Los_Angeles',
+  MHV: 'America/Los_Angeles',
+  MIT: 'America/Los_Angeles',
+  MMH: 'America/Los_Angeles',
+  MOD: 'America/Los_Angeles',
+  MRY: 'America/Los_Angeles',
+  MUO: 'America/Los_Angeles',
+  MWH: 'America/Los_Angeles',
+  MWS: 'America/Los_Angeles',
+  MYV: 'America/Los_Angeles',
+  NJK: 'America/Los_Angeles',
+  NUQ: 'America/Los_Angeles',
+  NUW: 'America/Los_Angeles',
+  NXP: 'America/Los_Angeles',
+  NZJ: 'America/Los_Angeles',
+  OAK: 'America/Los_Angeles',
+  OLM: 'America/Los_Angeles',
+  OMK: 'America/Los_Angeles',
+  OMR: 'America/Los_Angeles',
+  ONT: 'America/Los_Angeles',
+  ORS: 'America/Los_Angeles',
+  OTH: 'America/Los_Angeles',
+  OXR: 'America/Los_Angeles',
+  PAE: 'America/Los_Angeles',
+  PAO: 'America/Los_Angeles',
+  PDT: 'America/Los_Angeles',
+  PDX: 'America/Los_Angeles',
+  PLU: 'America/Los_Angeles',
+  POC: 'America/Los_Angeles',
+  PRB: 'America/Los_Angeles',
+  PSC: 'America/Los_Angeles',
+  PSP: 'America/Los_Angeles',
+  PUW: 'America/Los_Angeles',
+  PWT: 'America/Los_Angeles',
+  RAL: 'America/Los_Angeles',
+  RBG: 'America/Los_Angeles',
+  RDD: 'America/Los_Angeles',
+  RDM: 'America/Los_Angeles',
+  REO: 'America/Los_Angeles',
+  RHV: 'America/Los_Angeles',
+  RIV: 'America/Los_Angeles',
+  RNM: 'America/Los_Angeles',
+  RNO: 'America/Los_Angeles',
+  RNT: 'America/Los_Angeles',
+  RTS: 'America/Los_Angeles',
+  SAC: 'America/Los_Angeles',
+  SAN: 'America/Los_Angeles',
+  SBA: 'America/Los_Angeles',
+  SBP: 'America/Los_Angeles',
+  SCK: 'America/Los_Angeles',
+  SDM: 'America/Los_Angeles',
+  SEA: 'America/Los_Angeles',
+  SFO: 'America/Los_Angeles',
+  SHN: 'America/Los_Angeles',
+  SJC: 'America/Los_Angeles',
+  SLE: 'America/Los_Angeles',
+  SLI: 'America/Los_Angeles',
+  SMF: 'America/Los_Angeles',
+  SMO: 'America/Los_Angeles',
+  SMP: 'America/Los_Angeles',
+  SMX: 'America/Los_Angeles',
+  SNA: 'America/Los_Angeles',
+  SNS: 'America/Los_Angeles',
+  SQL: 'America/Los_Angeles',
+  STS: 'America/Los_Angeles',
+  SUU: 'America/Los_Angeles',
+  TCM: 'America/Los_Angeles',
+  TIW: 'America/Los_Angeles',
+  TOA: 'America/Los_Angeles',
+  TPH: 'America/Los_Angeles',
+  TRK: 'America/Los_Angeles',
+  TRM: 'America/Los_Angeles',
+  TTD: 'America/Los_Angeles',
+  TVL: 'America/Los_Angeles',
+  UAO: 'America/Los_Angeles',
+  UDD: 'America/Los_Angeles',
+  UIL: 'America/Los_Angeles',
+  UKI: 'America/Los_Angeles',
+  VBG: 'America/Los_Angeles',
+  VCB: 'America/Los_Angeles',
+  VCV: 'America/Los_Angeles',
+  VGT: 'America/Los_Angeles',
+  VNY: 'America/Los_Angeles',
+  WHP: 'America/Los_Angeles',
+  WJF: 'America/Los_Angeles',
+  WMC: 'America/Los_Angeles',
+  YKM: 'America/Los_Angeles',
+
+  // ===== US Eastern (Michigan) (America/Detroit) =====
+  ANJ: 'America/Detroit',
+  AZO: 'America/Detroit',
+  BIV: 'America/Detroit',
+  DTW: 'America/Detroit',
+  FNT: 'America/Detroit',
+  GRR: 'America/Detroit',
+  LAN: 'America/Detroit',
+  MBS: 'America/Detroit',
+  MKG: 'America/Detroit',
+  MQT: 'America/Detroit',
+  MTC: 'America/Detroit',
+  PTK: 'America/Detroit',
+  TVC: 'America/Detroit',
+  YIP: 'America/Detroit',
+
+  // ===== US Central (Michigan UP) (America/Menominee) =====
+  IMT: 'America/Menominee',
+  IWD: 'America/Menominee',
+  MNM: 'America/Menominee',
+
+  // ===== US Eastern (Indiana) (America/Indiana/Indianapolis) =====
+  BMG: 'America/Indiana/Indianapolis',
+  FWA: 'America/Indiana/Indianapolis',
+  HUF: 'America/Indiana/Indianapolis',
+  IDJ: 'America/Indiana/Indianapolis',
+  IND: 'America/Indiana/Indianapolis',
+  LAF: 'America/Indiana/Indianapolis',
+  MIE: 'America/Indiana/Indianapolis',
+  TYQ: 'America/Indiana/Indianapolis',
+
+  // ===== US Alaska (America/Anchorage) =====
+  ADQ: 'America/Anchorage',
+  AKK: 'America/Anchorage',
+  AKN: 'America/Anchorage',
   ANC: 'America/Anchorage',
+  BET: 'America/Anchorage',
+  BRW: 'America/Anchorage',
+  BTI: 'America/Anchorage',
+  BTT: 'America/Anchorage',
+  CDV: 'America/Anchorage',
+  CIK: 'America/Anchorage',
+  CKD: 'America/Anchorage',
+  DUT: 'America/Anchorage',
+  EEK: 'America/Anchorage',
+  ENA: 'America/Anchorage',
   FAI: 'America/Anchorage',
-  JNU: 'America/Juneau',
+  GAL: 'America/Anchorage',
+  GKN: 'America/Anchorage',
+  GST: 'America/Anchorage',
+  HCR: 'America/Anchorage',
+  HNS: 'America/Anchorage',
+  HOM: 'America/Anchorage',
+  JNU: 'America/Anchorage',
+  KTN: 'America/Anchorage',
+  LUR: 'America/Anchorage',
+  MCG: 'America/Anchorage',
+  MOU: 'America/Anchorage',
+  NLG: 'America/Anchorage',
+  OME: 'America/Anchorage',
+  OTZ: 'America/Anchorage',
+  PAQ: 'America/Anchorage',
+  PAS: 'America/Anchorage',
+  PBV: 'America/Anchorage',
+  PDV: 'America/Anchorage',
+  PIP: 'America/Anchorage',
+  PSG: 'America/Anchorage',
+  RBY: 'America/Anchorage',
+  SCC: 'America/Anchorage',
+  SDP: 'America/Anchorage',
+  SHX: 'America/Anchorage',
+  SIT: 'America/Anchorage',
+  SVA: 'America/Anchorage',
+  SXP: 'America/Anchorage',
+  TAL: 'America/Anchorage',
+  TKA: 'America/Anchorage',
+  UNK: 'America/Anchorage',
+  VAL: 'America/Anchorage',
+  VDZ: 'America/Anchorage',
+  WRG: 'America/Anchorage',
+  YAK: 'America/Anchorage',
 
-  // ===== HAWAII =====
+  // ===== US Aleutian (America/Adak) =====
+  ADK: 'America/Adak',
+  SNP: 'America/Adak',
+
+  // ===== US Hawaii (no DST) (Pacific/Honolulu) =====
+  BKH: 'Pacific/Honolulu',
+  HDH: 'Pacific/Honolulu',
+  HHI: 'Pacific/Honolulu',
   HNL: 'Pacific/Honolulu',
+  HNM: 'Pacific/Honolulu',
+  ITO: 'Pacific/Honolulu',
+  JHM: 'Pacific/Honolulu',
+  JRF: 'Pacific/Honolulu',
   KOA: 'Pacific/Honolulu',
   LIH: 'Pacific/Honolulu',
+  LNY: 'Pacific/Honolulu',
+  LUP: 'Pacific/Honolulu',
+  MKK: 'Pacific/Honolulu',
+  MUE: 'Pacific/Honolulu',
   OGG: 'Pacific/Honolulu',
-  ITO: 'Pacific/Honolulu',
+  UPP: 'Pacific/Honolulu',
 
-  // ===== CANADA =====
-  YHZ: 'America/Halifax',     // Halifax
-  YYZ: 'America/Toronto',     // Toronto Pearson
-  YTZ: 'America/Toronto',     // Toronto Billy Bishop
-  YYJ: 'America/Vancouver',   // Victoria
-  YOW: 'America/Toronto',     // Ottawa
-  YUL: 'America/Toronto',     // Montreal
-  YQB: 'America/Toronto',     // Quebec City
-  YQM: 'America/Halifax',     // Moncton
-  YQR: 'America/Regina',      // Regina (no DST)
-  YQT: 'America/Toronto',     // Thunder Bay
-  YQX: 'America/St_Johns',    // Gander
-  YVR: 'America/Vancouver',   // Vancouver
-  YWG: 'America/Winnipeg',    // Winnipeg
-  YXE: 'America/Regina',      // Saskatoon
-  YYC: 'America/Edmonton',    // Calgary
-  YEG: 'America/Edmonton',    // Edmonton
-  YYJ_alt: 'America/Vancouver',
-  YHM: 'America/Toronto',     // Hamilton
+  // ===== US Guam (Pacific/Guam) =====
+  GUM: 'Pacific/Guam',
 
-  // ===== MEXICO =====
-  MEX: 'America/Mexico_City', // Mexico City
-  CUN: 'America/Cancun',      // Cancun (no DST)
-  GDL: 'America/Mexico_City', // Guadalajara
-  MTY: 'America/Monterrey',   // Monterrey
-  TIJ: 'America/Tijuana',     // Tijuana
-  PVR: 'America/Mexico_City', // Puerto Vallarta
-  SJD: 'America/Mazatlan',    // Cabo San Lucas
-  CZM: 'America/Cancun',      // Cozumel
-  CUL: 'America/Mazatlan',    // Culiacan
-  HMO: 'America/Hermosillo',  // Hermosillo
-  LAP: 'America/Mazatlan',    // La Paz
-  MID: 'America/Merida',      // Merida
-  MZT: 'America/Mazatlan',    // Mazatlan
-  OAX: 'America/Mexico_City', // Oaxaca
-  PXM: 'America/Mexico_City', // Puerto Escondido
-  TLC: 'America/Mexico_City', // Toluca
-  ZIH: 'America/Mexico_City', // Ixtapa
-  ZLO: 'America/Mexico_City', // Manzanillo
+  // ===== US Northern Mariana Islands (Pacific/Saipan) =====
+  GSN: 'Pacific/Saipan',
+  ROP: 'Pacific/Saipan',
+  SPN: 'Pacific/Saipan',
+  TIQ: 'Pacific/Saipan',
 
-  // ===== CARIBBEAN =====
-  AUA: 'America/Aruba',          // Aruba
-  BGI: 'America/Barbados',       // Barbados
-  CUR: 'America/Curacao',        // Curacao
-  GCM: 'America/Cayman',         // Grand Cayman
-  HAV: 'America/Havana',         // Havana
-  KIN: 'America/Jamaica',        // Kingston JM
-  MBJ: 'America/Jamaica',        // Montego Bay
-  NAS: 'America/Nassau',         // Nassau
-  POP: 'America/Santo_Domingo',  // Puerto Plata DR
-  POS: 'America/Port_of_Spain',  // Trinidad
-  PUJ: 'America/Santo_Domingo',  // Punta Cana
-  SDQ: 'America/Santo_Domingo',  // Santo Domingo
-  SJU: 'America/Puerto_Rico',    // San Juan
-  STI: 'America/Santo_Domingo',  // Santiago DR
-  STT: 'America/Puerto_Rico',    // St. Thomas
-  STX: 'America/Puerto_Rico',    // St. Croix
-  ANU: 'America/Antigua',        // Antigua
-  BDA: 'Atlantic/Bermuda',       // Bermuda
-  EIS: 'America/Tortola',        // Tortola
-  FDF: 'America/Martinique',     // Martinique
-  PTP: 'America/Guadeloupe',     // Guadeloupe
-  SXM: 'America/Lower_Princes',  // St. Maarten
-  SBH: 'America/St_Barthelemy',  // St. Barths
-  TNCM_alt: 'America/Lower_Princes',
-  GND: 'America/Grenada',        // Grenada
-  SLU: 'America/St_Lucia',       // St. Lucia
-  SVD: 'America/St_Vincent',     // St. Vincent
-  EYW: 'America/New_York',       // Key West
-  // Bahamas
-  ELH: 'America/Nassau',         // North Eleuthera
-  GHB: 'America/Nassau',         // Governors Harbour
-  GGT: 'America/Nassau',         // George Town Exumas
-  MHH: 'America/Nassau',         // Marsh Harbour
-  TBI: 'America/Nassau',         // The Bight Cat Island
-  TCB: 'America/Nassau',         // Treasure Cay
-  ZNZ_alt: 'America/Nassau',     // (placeholder)
+  // ===== US American Samoa (Pacific/Pago_Pago) =====
+  PPG: 'Pacific/Pago_Pago',
 
-  // ===== CENTRAL AMERICA =====
-  BZE: 'America/Belize',         // Belize City
-  GUA: 'America/Guatemala',      // Guatemala City
-  SAL: 'America/El_Salvador',    // San Salvador
-  TGU: 'America/Tegucigalpa',    // Tegucigalpa
-  SAP: 'America/Tegucigalpa',    // San Pedro Sula
-  RTB: 'America/Tegucigalpa',    // Roatan
-  MGA: 'America/Managua',        // Managua
-  SJO: 'America/Costa_Rica',     // San Jose CR
-  LIR: 'America/Costa_Rica',     // Liberia CR
-  PTY: 'America/Panama',         // Panama City
-  DAV: 'America/Panama',         // David, Panama
+  // ===== US Puerto Rico (America/Puerto_Rico) =====
+  ARE: 'America/Puerto_Rico',
+  BKW: 'America/Puerto_Rico',
+  BQN: 'America/Puerto_Rico',
+  CPX: 'America/Puerto_Rico',
+  FAJ: 'America/Puerto_Rico',
+  HUC: 'America/Puerto_Rico',
+  MAZ: 'America/Puerto_Rico',
+  PPD: 'America/Puerto_Rico',
+  PSE: 'America/Puerto_Rico',
+  RVR: 'America/Puerto_Rico',
+  SIG: 'America/Puerto_Rico',
+  SJU: 'America/Puerto_Rico',
+  VQS: 'America/Puerto_Rico',
 
-  // ===== SOUTH AMERICA =====
-  // Colombia
+  // ===== US Virgin Islands (America/St_Thomas) =====
+  SPB: 'America/St_Thomas',
+  STT: 'America/St_Thomas',
+  STX: 'America/St_Thomas',
+
+  // ===== INTERNATIONAL =====
+  // America/Antigua
+  ANU: 'America/Antigua',
+
+  // America/Argentina/Buenos_Aires
+  AEP: 'America/Argentina/Buenos_Aires',
+  EZE: 'America/Argentina/Buenos_Aires',
+
+  // America/Argentina/Cordoba
+  COR: 'America/Argentina/Cordoba',
+
+  // America/Argentina/Mendoza
+  MDZ: 'America/Argentina/Mendoza',
+
+  // America/Argentina/Ushuaia
+  USH: 'America/Argentina/Ushuaia',
+
+  // America/Aruba
+  AUA: 'America/Aruba',
+
+  // America/Asuncion
+  ASU: 'America/Asuncion',
+
+  // America/Bahia
+  SSA: 'America/Bahia',
+
+  // America/Barbados
+  BGI: 'America/Barbados',
+
+  // America/Belize
+  BZE: 'America/Belize',
+
+  // America/Bogota
   BOG: 'America/Bogota',
-  MDE: 'America/Bogota',         // Medellin
-  CTG: 'America/Bogota',         // Cartagena
-  CLO: 'America/Bogota',         // Cali
-  // Venezuela
+  CLO: 'America/Bogota',
+  CTG: 'America/Bogota',
+  MDE: 'America/Bogota',
+
+  // America/Cancun
+  CUN: 'America/Cancun',
+  CZM: 'America/Cancun',
+
+  // America/Caracas
   CCS: 'America/Caracas',
   VLN: 'America/Caracas',
-  // Ecuador
-  UIO: 'America/Guayaquil',      // Quito
-  GYE: 'America/Guayaquil',
-  // Peru
-  LIM: 'America/Lima',
-  CUZ: 'America/Lima',           // Cusco
-  // Bolivia
-  LPB: 'America/La_Paz',         // La Paz
-  VVI: 'America/La_Paz',         // Santa Cruz
-  // Chile
-  SCL: 'America/Santiago',
-  // Argentina
-  EZE: 'America/Argentina/Buenos_Aires',  // Buenos Aires Ezeiza
-  AEP: 'America/Argentina/Buenos_Aires',  // Buenos Aires Aeroparque
-  COR: 'America/Argentina/Cordoba',       // Cordoba
-  MDZ: 'America/Argentina/Mendoza',       // Mendoza
-  USH: 'America/Argentina/Ushuaia',       // Ushuaia
-  // Uruguay
-  MVD: 'America/Montevideo',
-  // Paraguay
-  ASU: 'America/Asuncion',
-  // Brazil
-  GRU: 'America/Sao_Paulo',      // Sao Paulo Guarulhos
-  CGH: 'America/Sao_Paulo',      // Sao Paulo Congonhas
-  GIG: 'America/Sao_Paulo',      // Rio Galeao
-  SDU: 'America/Sao_Paulo',      // Rio Santos Dumont
-  BSB: 'America/Sao_Paulo',      // Brasilia
-  REC: 'America/Recife',         // Recife
-  SSA: 'America/Bahia',          // Salvador
-  FOR: 'America/Fortaleza',      // Fortaleza
-  CWB: 'America/Sao_Paulo',      // Curitiba
-  POA: 'America/Sao_Paulo',      // Porto Alegre
-  MAO: 'America/Manaus',         // Manaus
-  CNF: 'America/Sao_Paulo',      // Belo Horizonte
-  // Suriname / Guyana / French Guiana
-  PBM: 'America/Paramaribo',     // Paramaribo
-  GEO: 'America/Guyana',         // Georgetown GY
-  CAY: 'America/Cayenne',        // Cayenne
 
-  // ===== SUPPLEMENTAL — common charter destinations added as gaps were found =====
+  // America/Cayenne
+  CAY: 'America/Cayenne',
+
+  // America/Cayman
+  GCM: 'America/Cayman',
+
+  // America/Costa_Rica
+  LIR: 'America/Costa_Rica',
+  SJO: 'America/Costa_Rica',
+
+  // America/Curacao
+  CUR: 'America/Curacao',
+
+  // America/Edmonton
+  YEG: 'America/Edmonton',
+  YYC: 'America/Edmonton',
+
+  // America/El_Salvador
+  SAL: 'America/El_Salvador',
+
+  // America/Fortaleza
+  FOR: 'America/Fortaleza',
+
+  // America/Grenada
+  GND: 'America/Grenada',
+
+  // America/Guadeloupe
+  PTP: 'America/Guadeloupe',
+
+  // America/Guatemala
+  GUA: 'America/Guatemala',
+
+  // America/Guayaquil
+  GYE: 'America/Guayaquil',
+  UIO: 'America/Guayaquil',
+
+  // America/Guyana
+  GEO: 'America/Guyana',
+
+  // America/Halifax
+  YHZ: 'America/Halifax',
+  YQM: 'America/Halifax',
+
+  // America/Havana
+  HAV: 'America/Havana',
+
+  // America/Hermosillo
+  HMO: 'America/Hermosillo',
+
+  // America/Jamaica
+  KIN: 'America/Jamaica',
+  MBJ: 'America/Jamaica',
+
+  // America/La_Paz
+  LPB: 'America/La_Paz',
+  VVI: 'America/La_Paz',
+
+  // America/Lima
+  CUZ: 'America/Lima',
+  LIM: 'America/Lima',
+
+  // America/Lower_Princes
+  SXM: 'America/Lower_Princes',
+
+  // America/Managua
+  MGA: 'America/Managua',
+
+  // America/Manaus
+  MAO: 'America/Manaus',
+
+  // America/Martinique
+  FDF: 'America/Martinique',
+
+  // America/Mazatlan
+  CUL: 'America/Mazatlan',
+  LAP: 'America/Mazatlan',
+  MZT: 'America/Mazatlan',
+  SJD: 'America/Mazatlan',
+
+  // America/Merida
+  MID: 'America/Merida',
+
+  // America/Mexico_City
+  GDL: 'America/Mexico_City',
+  MEX: 'America/Mexico_City',
+  OAX: 'America/Mexico_City',
+  PVR: 'America/Mexico_City',
+  PXM: 'America/Mexico_City',
+  TLC: 'America/Mexico_City',
+  ZIH: 'America/Mexico_City',
+  ZLO: 'America/Mexico_City',
+
+  // America/Monterrey
+  MTY: 'America/Monterrey',
+
+  // America/Montevideo
+  MVD: 'America/Montevideo',
+
+  // America/Nassau
+  ELH: 'America/Nassau',
+  GGT: 'America/Nassau',
+  GHB: 'America/Nassau',
+  MHH: 'America/Nassau',
+  NAS: 'America/Nassau',
+  TBI: 'America/Nassau',
+  TCB: 'America/Nassau',
+
+  // America/Panama
+  DAV: 'America/Panama',
+  PTY: 'America/Panama',
+
+  // America/Paramaribo
+  PBM: 'America/Paramaribo',
+
+  // America/Port_of_Spain
+  POS: 'America/Port_of_Spain',
+
+  // America/Recife
+  REC: 'America/Recife',
+
+  // America/Regina
+  YQR: 'America/Regina',
+  YXE: 'America/Regina',
+
+  // America/Santiago
+  SCL: 'America/Santiago',
+
+  // America/Santo_Domingo
+  POP: 'America/Santo_Domingo',
+  PUJ: 'America/Santo_Domingo',
+  SDQ: 'America/Santo_Domingo',
+  STI: 'America/Santo_Domingo',
+
+  // America/Sao_Paulo
+  BSB: 'America/Sao_Paulo',
+  CGH: 'America/Sao_Paulo',
+  CNF: 'America/Sao_Paulo',
+  CWB: 'America/Sao_Paulo',
+  GIG: 'America/Sao_Paulo',
+  GRU: 'America/Sao_Paulo',
+  POA: 'America/Sao_Paulo',
+  SDU: 'America/Sao_Paulo',
+
+  // America/St_Barthelemy
+  SBH: 'America/St_Barthelemy',
+
+  // America/St_Johns
+  YQX: 'America/St_Johns',
+
+  // America/St_Lucia
+  SLU: 'America/St_Lucia',
+
+  // America/St_Vincent
+  SVD: 'America/St_Vincent',
+
+  // America/Tegucigalpa
+  RTB: 'America/Tegucigalpa',
+  SAP: 'America/Tegucigalpa',
+  TGU: 'America/Tegucigalpa',
+
+  // America/Tijuana
+  TIJ: 'America/Tijuana',
+
+  // America/Toronto
+  YHM: 'America/Toronto',
+  YOW: 'America/Toronto',
+  YQB: 'America/Toronto',
+  YQT: 'America/Toronto',
+  YTZ: 'America/Toronto',
+  YUL: 'America/Toronto',
+  YYZ: 'America/Toronto',
+
+  // America/Tortola
+  EIS: 'America/Tortola',
+
+  // America/Vancouver
+  YVR: 'America/Vancouver',
+  YYJ: 'America/Vancouver',
+
+  // America/Winnipeg
+  YWG: 'America/Winnipeg',
+
+  // Atlantic/Bermuda
+  BDA: 'Atlantic/Bermuda',
+
+  // ===== ADDITIONAL US + Caribbean GAPS =====
   // Eastern Time
-  ADS: 'America/Chicago',        // Addison TX (CT, listed here for grouping)
-  AGS: 'America/New_York',       // Augusta GA
-  AHN: 'America/New_York',       // Athens GA
-  ALB: 'America/New_York',       // Albany NY
-  AVL: 'America/New_York',       // Asheville
-  BGM: 'America/New_York',       // Binghamton
-  BKW: 'America/New_York',       // Beckley WV
-  BTV: 'America/New_York',       // Burlington VT
-  CHO: 'America/New_York',       // Charlottesville
-  CRE: 'America/New_York',       // Grand Strand SC
-  CRW: 'America/New_York',       // Charleston WV
-  EKN: 'America/New_York',       // Elkins WV
-  FFC: 'America/New_York',       // Atlanta Falcon
-  FLO: 'America/New_York',       // Florence SC
-  GMU: 'America/New_York',       // Greenville Downtown
-  GSP: 'America/New_York',       // Greenville/Spartanburg
-  GVL: 'America/New_York',       // Gainesville GA
-  HSV: 'America/Chicago',        // Huntsville AL — actually Central, leaving here for proximity
-  HTS: 'America/New_York',       // Huntington WV
-  HXD: 'America/New_York',       // Hilton Head (alt code)
-  JZP: 'America/New_York',       // Jasper GA
-  LOU: 'America/New_York',       // Louisville Bowman
-  LWB: 'America/New_York',       // Lewisburg WV
-  MCN: 'America/New_York',       // Macon
-  MGW: 'America/New_York',       // Morgantown WV
-  PDK: 'America/New_York',       // Atlanta DeKalb
-  PKB: 'America/New_York',       // Parkersburg WV
-  ROA: 'America/New_York',       // Roanoke
-  RYY: 'America/New_York',       // Atlanta Cobb
-  TRI: 'America/New_York',       // Tri-Cities TN
+  BNC: 'America/New_York',       // Beech Mountain NC
+  EYE: 'America/New_York',       // Indianapolis Eagle Creek
+  HAO: 'America/New_York',       // Butler County / Hamilton OH
+  JAY: 'America/New_York',       // John Murtha Cambria PA
+  JES: 'America/New_York',       // Jesup GA
+  JRA: 'America/New_York',       // Manhattan W 30th St Heliport
+  JRB: 'America/New_York',       // Manhattan Wall St Heliport
+  KEY: 'America/New_York',       // Key West (alt code)
+  MGJ: 'America/New_York',       // Orange County NY
+  MIV: 'America/New_York',       // Millville NJ
+  OKV: 'America/New_York',       // Winchester VA
+  WVL: 'America/New_York',       // Waterville ME
+  YNG: 'America/New_York',       // Youngstown OH
   // Central Time
-  BTR: 'America/Chicago',        // Baton Rouge
-  CXO: 'America/Chicago',        // Conroe TX
-  DTO: 'America/Chicago',        // Denton TX
-  EFD: 'America/Chicago',        // Ellington TX
-  GKY: 'America/Chicago',        // Arlington TX
-  GTU: 'America/Chicago',        // Georgetown TX
-  LCH: 'America/Chicago',        // Lake Charles
-  MGM: 'America/Chicago',        // Montgomery AL
-  OWB: 'America/Chicago',        // Owensboro KY
-  OXF: 'America/Chicago',        // Oxford MS
-  SGR: 'America/Chicago',        // Sugar Land
-  SUS: 'America/Chicago',        // Spirit of St Louis
-  TUP: 'America/Chicago',        // Tupelo
-  // Mountain / Arizona
-  DRO: 'America/Denver',         // Durango
-  FLG: 'America/Phoenix',        // Flagstaff (AZ)
-  FNL: 'America/Denver',         // Fort Collins-Loveland
-  GJT: 'America/Denver',         // Grand Junction
-  GTF: 'America/Denver',         // Great Falls
-  GUC: 'America/Denver',         // Gunnison
-  SAF: 'America/Denver',         // Santa Fe
-  SUN: 'America/Boise',          // Hailey/Sun Valley
-  // Pacific
-  BFI: 'America/Los_Angeles',    // Boeing Field
-  CMA: 'America/Los_Angeles',    // Camarillo
-  MMH: 'America/Los_Angeles',    // Mammoth
-  MRY: 'America/Los_Angeles',    // Monterey
-  NUQ: 'America/Los_Angeles',    // Moffett
-  OTH: 'America/Los_Angeles',    // North Bend OR
-  OXR: 'America/Los_Angeles',    // Oxnard
-  RDM: 'America/Los_Angeles',    // Bend/Redmond
-  SBP: 'America/Los_Angeles',    // San Luis Obispo
-  SDM: 'America/Los_Angeles',    // Brown Field
-  STS: 'America/Los_Angeles',    // Santa Rosa
-  TIW: 'America/Los_Angeles',    // Tacoma Narrows
-  TOA: 'America/Los_Angeles',    // Torrance
-  TVL: 'America/Los_Angeles',    // Lake Tahoe
-  YKM: 'America/Los_Angeles',    // Yakima
-  // Misc (CRR removed — not a real US airport code; if your feed uses it, tell me)
+  AMA: 'America/Chicago',        // Amarillo
+  ARM: 'America/Chicago',        // Wharton TX
+  BAD: 'America/Chicago',        // Barksdale AFB LA
+  BFM: 'America/Chicago',        // Mobile Downtown
+  CKN: 'America/Chicago',        // Crookston MN
+  DDC: 'America/Chicago',        // Dodge City KS
+  EAR: 'America/Chicago',        // Kearney NE
+  EDN: 'America/Chicago',        // Enterprise AL
+  ESF: 'America/Chicago',        // Esler Field LA
+  EVA: 'America/Chicago',        // Evansville (alt code)
+  GPM: 'America/Chicago',        // Grand Prairie TX
+  OFK: 'America/Chicago',        // Norfolk NE
+  // Mountain Time
+  FCA: 'America/Denver',         // Kalispell / Glacier Park
+  // Pacific Time
+  ACV: 'America/Los_Angeles',    // Arcata CA
+  BIH: 'America/Los_Angeles',    // Bishop CA
+  CEC: 'America/Los_Angeles',    // Crescent City CA
+  CIC: 'America/Los_Angeles',    // Chico CA
+  CLD: 'America/Los_Angeles',    // Carlsbad/McClellan-Palomar
+  CPM: 'America/Los_Angeles',    // Compton CA
+  FCH: 'America/Los_Angeles',    // Fresno Chandler
+  IPL: 'America/Los_Angeles',    // Imperial CA
+  MMV: 'America/Los_Angeles',    // McMinnville OR
+  NLC: 'America/Los_Angeles',    // NAS Lemoore
+  PVF: 'America/Los_Angeles',    // Placerville CA
+  RBL: 'America/Los_Angeles',    // Red Bluff CA
+  REI: 'America/Los_Angeles',    // Redlands CA
+  SEE: 'America/Los_Angeles',    // San Diego Gillespie
+  SZP: 'America/Los_Angeles',    // Santa Paula CA
+  TCY: 'America/Los_Angeles',    // Tracy CA
+  // Alaska
+  DLG: 'America/Anchorage',      // Dillingham AK
+  // Caribbean
+  CDI: 'America/Anguilla',       // Anguilla
+  CRZ: 'America/Anguilla',       // Crooked Island BS (uses AST)
+  HOG: 'America/Havana',         // Holguin Cuba
+
 };
+
 
 /**
  * Get the IANA timezone for an airport code.
  * Returns null if the airport is not in the database.
  */
 export function getAirportTimezone(iataCode) {
-  if (!iataCode || typeof iataCode !== 'string') return null;
-  return AIRPORT_TIMEZONES[iataCode.trim().toUpperCase()] || null;
+  if (!iataCode) return null;
+  return AIRPORT_TIMEZONES[String(iataCode).toUpperCase()] || null;
 }
 
 /**
- * Format a Date in a specific airport's local time.
- * Returns object: { time: "10:21 AM", tz: "EDT" } or { time: "1021Z", tz: "UTC" } if airport unknown.
+ * Format a Date as time in the airport's local timezone.
+ * Returns { time: "9:30 AM", tz: "EDT" } or { time: "1430Z", tz: "UTC" } as fallback.
  */
 export function formatLocalTime(date, iataCode) {
   if (!date || !(date instanceof Date) || isNaN(date.getTime())) {
     return { time: '—', tz: '' };
   }
   const tz = getAirportTimezone(iataCode);
+  // When the airport isn't in our database, fall back to the device's local
+  // timezone instead of Zulu. For US-based ops users this is far more useful
+  // than an opaque "1500Z UTC" — they see what time the trip is "for them".
+  // The TZ abbreviation makes it clear (e.g. "10:00 AM EDT") so there's no
+  // confusion about which clock is being shown.
   if (!tz) {
-    // Fall back to Zulu
-    const hh = String(date.getUTCHours()).padStart(2, '0');
-    const mm = String(date.getUTCMinutes()).padStart(2, '0');
-    return { time: `${hh}${mm}Z`, tz: 'UTC' };
+    try {
+      const time = new Intl.DateTimeFormat('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+      }).format(date);
+      const tzAbbr = new Intl.DateTimeFormat('en-US', {
+        timeZoneName: 'short',
+      }).formatToParts(date).find(p => p.type === 'timeZoneName')?.value || '';
+      return { time, tz: tzAbbr };
+    } catch (err) {
+      const hh = String(date.getUTCHours()).padStart(2, '0');
+      const mm = String(date.getUTCMinutes()).padStart(2, '0');
+      return { time: `${hh}${mm}Z`, tz: 'UTC' };
+    }
   }
   try {
     const time = new Intl.DateTimeFormat('en-US', {
