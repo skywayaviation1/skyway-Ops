@@ -333,6 +333,79 @@ const AIRPORT_TIMEZONES = {
   PBM: 'America/Paramaribo',     // Paramaribo
   GEO: 'America/Guyana',         // Georgetown GY
   CAY: 'America/Cayenne',        // Cayenne
+
+  // ===== SUPPLEMENTAL — common charter destinations added as gaps were found =====
+  // Eastern Time
+  ADS: 'America/Chicago',        // Addison TX (CT, listed here for grouping)
+  AGS: 'America/New_York',       // Augusta GA
+  AHN: 'America/New_York',       // Athens GA
+  ALB: 'America/New_York',       // Albany NY
+  AVL: 'America/New_York',       // Asheville
+  BGM: 'America/New_York',       // Binghamton
+  BKW: 'America/New_York',       // Beckley WV
+  BTV: 'America/New_York',       // Burlington VT
+  CHO: 'America/New_York',       // Charlottesville
+  CRE: 'America/New_York',       // Grand Strand SC
+  CRW: 'America/New_York',       // Charleston WV
+  EKN: 'America/New_York',       // Elkins WV
+  FFC: 'America/New_York',       // Atlanta Falcon
+  FLO: 'America/New_York',       // Florence SC
+  GMU: 'America/New_York',       // Greenville Downtown
+  GSP: 'America/New_York',       // Greenville/Spartanburg
+  GVL: 'America/New_York',       // Gainesville GA
+  HSV: 'America/Chicago',        // Huntsville AL — actually Central, leaving here for proximity
+  HTS: 'America/New_York',       // Huntington WV
+  HXD: 'America/New_York',       // Hilton Head (alt code)
+  JZP: 'America/New_York',       // Jasper GA
+  LOU: 'America/New_York',       // Louisville Bowman
+  LWB: 'America/New_York',       // Lewisburg WV
+  MCN: 'America/New_York',       // Macon
+  MGW: 'America/New_York',       // Morgantown WV
+  PDK: 'America/New_York',       // Atlanta DeKalb
+  PKB: 'America/New_York',       // Parkersburg WV
+  ROA: 'America/New_York',       // Roanoke
+  RYY: 'America/New_York',       // Atlanta Cobb
+  TRI: 'America/New_York',       // Tri-Cities TN
+  // Central Time
+  BTR: 'America/Chicago',        // Baton Rouge
+  CXO: 'America/Chicago',        // Conroe TX
+  DTO: 'America/Chicago',        // Denton TX
+  EFD: 'America/Chicago',        // Ellington TX
+  GKY: 'America/Chicago',        // Arlington TX
+  GTU: 'America/Chicago',        // Georgetown TX
+  LCH: 'America/Chicago',        // Lake Charles
+  MGM: 'America/Chicago',        // Montgomery AL
+  OWB: 'America/Chicago',        // Owensboro KY
+  OXF: 'America/Chicago',        // Oxford MS
+  SGR: 'America/Chicago',        // Sugar Land
+  SUS: 'America/Chicago',        // Spirit of St Louis
+  TUP: 'America/Chicago',        // Tupelo
+  // Mountain / Arizona
+  DRO: 'America/Denver',         // Durango
+  FLG: 'America/Phoenix',        // Flagstaff (AZ)
+  FNL: 'America/Denver',         // Fort Collins-Loveland
+  GJT: 'America/Denver',         // Grand Junction
+  GTF: 'America/Denver',         // Great Falls
+  GUC: 'America/Denver',         // Gunnison
+  SAF: 'America/Denver',         // Santa Fe
+  SUN: 'America/Boise',          // Hailey/Sun Valley
+  // Pacific
+  BFI: 'America/Los_Angeles',    // Boeing Field
+  CMA: 'America/Los_Angeles',    // Camarillo
+  MMH: 'America/Los_Angeles',    // Mammoth
+  MRY: 'America/Los_Angeles',    // Monterey
+  NUQ: 'America/Los_Angeles',    // Moffett
+  OTH: 'America/Los_Angeles',    // North Bend OR
+  OXR: 'America/Los_Angeles',    // Oxnard
+  RDM: 'America/Los_Angeles',    // Bend/Redmond
+  SBP: 'America/Los_Angeles',    // San Luis Obispo
+  SDM: 'America/Los_Angeles',    // Brown Field
+  STS: 'America/Los_Angeles',    // Santa Rosa
+  TIW: 'America/Los_Angeles',    // Tacoma Narrows
+  TOA: 'America/Los_Angeles',    // Torrance
+  TVL: 'America/Los_Angeles',    // Lake Tahoe
+  YKM: 'America/Los_Angeles',    // Yakima
+  // Misc (CRR removed — not a real US airport code; if your feed uses it, tell me)
 };
 
 /**

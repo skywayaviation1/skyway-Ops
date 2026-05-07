@@ -1063,7 +1063,12 @@ function TripCard({ trip, selected, onClick, statusCount, hasUpdate, onArchive }
           {trip.info.tail}
         </span>
         <span className="text-[10px] text-slate-500 uppercase tracking-widest">
-          {fmtZulu(dep)} · {fmtDateZ(dep).slice(0, 6)}
+          {(() => {
+            // Show departure-airport local time. Falls back to Zulu when the
+            // airport isn't in the timezone database (formatLocalTime handles this).
+            const t = formatLocalTime(dep, trip.info.from);
+            return `${t.time}${t.tz ? ' ' + t.tz : ''} · ${fmtDateZ(dep).slice(0, 6)}`;
+          })()}
         </span>
       </div>
 
