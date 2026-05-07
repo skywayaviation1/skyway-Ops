@@ -9773,6 +9773,19 @@ export default function CharterOps() {
   const [showArchived, setShowArchived] = useState(false);
   const [now, setNow] = useState(new Date());
   const [showAllCategories, setShowAllCategories] = useState(false);
+  // Tail filter — single-select. Empty string means "ALL". Persists in
+  // localStorage so ops doesn't have to re-filter every page load. Visible
+  // only to ops + admin (gated in render below).
+  const [tailFilter, setTailFilter] = useState(() => {
+    try { return localStorage.getItem('skyway-tail-filter') || ''; }
+    catch { return ''; }
+  });
+  useEffect(() => {
+    try {
+      if (tailFilter) localStorage.setItem('skyway-tail-filter', tailFilter);
+      else localStorage.removeItem('skyway-tail-filter');
+    } catch { /* ignore quota errors */ }
+  }, [tailFilter]);
   const [section, setSection] = useState('schedule');
 
   // Load lastSeen from localStorage on mount
@@ -10280,7 +10293,13 @@ export default function CharterOps() {
 
   const groupedTrips = useMemo(() => {
     const groups = { past: [], today: [], tomorrow: [], later: [], archived: [] };
-    const filtered = showAllCategories ? allTrips : allTrips.filter(t => t.info.isFlight);
+    let filtered = showAllCategories ? allTrips : allTrips.filter(t => t.info.isFlight);
+    // Apply tail filter (single-select). Empty = ALL.
+    // Trips without a tail are hidden when a specific tail is active.
+    if (tailFilter) {
+      const tf = tailFilter.toUpperCase();
+      filtered = filtered.filter(t => (t.info.tail || '').toUpperCase() === tf);
+    }
     for (const t of filtered) {
       if (!t.start) continue;
       // Hidden (>15 days archived) — skip entirely, never show
@@ -10298,7 +10317,7 @@ export default function CharterOps() {
     groups.past.reverse(); // newest past first
     groups.archived.sort((a, b) => (b.start?.getTime?.() || 0) - (a.start?.getTime?.() || 0)); // newest archived first
     return groups;
-  }, [allTrips, today, tomorrow, showAllCategories, isTripArchived, isTripHidden]);
+  }, [allTrips, today, tomorrow, showAllCategories, tailFilter, isTripArchived, isTripHidden]);
 
   const feedStats = useMemo(() => {
     if (allTrips.length === 0) return null;
@@ -10419,6 +10438,45 @@ export default function CharterOps() {
                   </button>
                 </div>
               </div>
+
+              {/* Tail filter — ops + admin only. Single-select chip row,
+                  sticky to the top of the scroll area. ALL chip clears the filter. */}
+              {['ops', 'admin'].includes(currentUser?.role) && (
+                <div className="sticky top-0 z-10 bg-slate-950/95 backdrop-blur border-b border-slate-800 px-3 py-2">
+                  <div className="flex items-center gap-1.5 overflow-x-auto scroll-area pb-1">
+                    <button
+                      onClick={() => setTailFilter('')}
+                      className={`shrink-0 text-[10px] tracking-widest px-2.5 py-1 border transition-colors ${
+                        tailFilter === ''
+                          ? 'border-cyan-400 bg-cyan-500/10 text-cyan-300'
+                          : 'border-slate-700 text-slate-400 hover:border-slate-500 hover:text-slate-200'
+                      }`}
+                      style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}
+                    >
+                      ALL
+                    </button>
+                    {SKYWAY_TAILS.map(tail => (
+                      <button
+                        key={tail}
+                        onClick={() => setTailFilter(tail)}
+                        className={`shrink-0 text-[10px] tracking-widest px-2.5 py-1 border transition-colors ${
+                          tailFilter === tail
+                            ? 'border-cyan-400 bg-cyan-500/10 text-cyan-300'
+                            : 'border-slate-700 text-slate-400 hover:border-slate-500 hover:text-slate-200'
+                        }`}
+                        style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}
+                      >
+                        {tail}
+                      </button>
+                    ))}
+                  </div>
+                  {tailFilter && (
+                    <div className="text-[10px] text-slate-500 mt-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                      Showing only <span className="text-cyan-300">{tailFilter}</span> · Tap ALL to clear
+                    </div>
+                  )}
+                </div>
+              )}
 
               {loading ? (
                 <div className="p-8 text-center text-slate-500">
