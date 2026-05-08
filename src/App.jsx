@@ -8365,6 +8365,23 @@ const EXPENSE_CATEGORIES = [
   'Crew Meals', 'Crew Lodging', 'Supplies', 'Maintenance', 'Office', 'Other',
 ];
 
+// QuickBooks-relevant payment methods. These values are stored on each
+// expense and later used to route the QBO push:
+//   'capital_one' | 'amex' → match to bank-feed transaction in QBO
+//   'personal'             → push as a Bill payable to the submitter
+// Stored as the `value`; UI shows the `label`.
+const PAID_WITH_OPTIONS = [
+  { value: 'capital_one', label: 'Capital One' },
+  { value: 'amex',        label: 'Amex' },
+  { value: 'personal',    label: 'Personal card (reimburse me)' },
+];
+
+function paidWithLabel(value) {
+  if (!value) return null;
+  const opt = PAID_WITH_OPTIONS.find(o => o.value === value);
+  return opt ? opt.label : value;
+}
+
 function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName }) {
   const [expenses, setExpenses] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -9051,8 +9068,19 @@ function ExpenseRow({ expense, selected, onClick }) {
           {expense.totalAmount != null ? `$${Number(expense.totalAmount).toFixed(2)}` : '—'}
         </span>
       </div>
-      <div className="text-[10px] text-slate-600 mt-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-        {expense.authorName || 'Unknown'}
+      <div className="flex items-center justify-between gap-2 mt-0.5">
+        <div className="text-[10px] text-slate-600 truncate" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {expense.authorName || 'Unknown'}
+        </div>
+        {expense.paidWith ? (
+          <span className="text-[9px] tracking-widest text-cyan-400 shrink-0" style={{ fontFamily: 'JetBrains Mono, monospace' }} title="Card tagged">
+            {paidWithLabel(expense.paidWith).toUpperCase()}
+          </span>
+        ) : expense.status !== 'draft' && (
+          <span className="text-[9px] tracking-widest text-amber-400 shrink-0" style={{ fontFamily: 'JetBrains Mono, monospace' }} title="No card tagged — required to push to QuickBooks">
+            ⚠ TAG CARD
+          </span>
+        )}
       </div>
     </button>
   );
@@ -9085,6 +9113,7 @@ function ExpenseDetail({ expense, currentUser, canApprove, isAccounting, onBack,
       tax: draft.tax != null && draft.tax !== '' ? Number(draft.tax) : null,
       tip: draft.tip != null && draft.tip !== '' ? Number(draft.tip) : null,
       category: draft.category,
+      paidWith: draft.paidWith || null,
       notes: draft.notes,
     });
     setEditing(false);
@@ -9199,6 +9228,12 @@ function ExpenseDetail({ expense, currentUser, canApprove, isAccounting, onBack,
               {EXPENSE_CATEGORIES.map(c => <option key={c}>{c}</option>)}
             </select>
           </FieldRow>
+          <FieldRow label="PAID WITH">
+            <select value={draft.paidWith || ''} onChange={(e) => set('paidWith')(e.target.value)} className="w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400">
+              <option value="">— Select card —</option>
+              {PAID_WITH_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </FieldRow>
           <div className="grid grid-cols-3 gap-2">
             <FieldRow label="SUBTOTAL"><input type="number" step="0.01" value={draft.subtotal ?? ''} onChange={(e) => set('subtotal')(e.target.value)} className="w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400" /></FieldRow>
             <FieldRow label="TAX"><input type="number" step="0.01" value={draft.tax ?? ''} onChange={(e) => set('tax')(e.target.value)} className="w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400" /></FieldRow>
@@ -9217,9 +9252,18 @@ function ExpenseDetail({ expense, currentUser, canApprove, isAccounting, onBack,
         </div>
       ) : (
         <div className="space-y-2">
+          {!expense.paidWith && expense.status !== 'draft' && (
+            <div className="p-2 border border-amber-500/40 bg-amber-500/5 text-[11px] text-amber-200 flex items-start gap-2 mb-2" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+              <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+              <span>
+                <strong>No card tagged.</strong> Tap EDIT and select which card paid for this — required to push to QuickBooks.
+              </span>
+            </div>
+          )}
           <ReadField label="VENDOR" value={expense.vendor || '—'} />
           <ReadField label="DATE" value={expense.transactionDate || '—'} />
           <ReadField label="CATEGORY" value={expense.category || '—'} />
+          <ReadField label="PAID WITH" value={paidWithLabel(expense.paidWith) || '— not tagged —'} />
           <div className="grid grid-cols-3 gap-2">
             <ReadField label="SUBTOTAL" value={expense.subtotal != null ? `$${Number(expense.subtotal).toFixed(2)}` : '—'} />
             <ReadField label="TAX" value={expense.tax != null ? `$${Number(expense.tax).toFixed(2)}` : '—'} />
