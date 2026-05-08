@@ -152,90 +152,6 @@ function extractTripInfo(event) {
 }
 
 /* ============================================================
-   AAMVA PDF417 parser for US driver's licenses
-   ============================================================ */
-const AAMVA_FIELDS = {
-  DAA: 'fullName', DAB: 'lastName', DAC: 'firstName', DAD: 'middleName',
-  DCS: 'lastName', DCT: 'firstName', DBA: 'expiration', DBB: 'dob',
-  DBC: 'sex', DAQ: 'licenseNumber', DAJ: 'state', DAK: 'zip',
-  DAG: 'address', DAI: 'city', DAU: 'height', DAY: 'eyeColor',
-  DCF: 'documentDiscriminator', DCG: 'country', DCK: 'inventoryControl',
-  DDB: 'cardRevisionDate', DDE: 'lastNameTrunc', DDF: 'firstNameTrunc',
-};
-
-function parseAAMVA(rawText) {
-  if (!rawText) return null;
-  const result = { raw: rawText };
-  
-  // AAMVA barcodes use various formats. Most common:
-  // - Multi-line: each field on its own line starting with 3-letter code
-  // - Single string: fields separated by ANSI control chars or newlines
-  // - Some include @, ANSI, header bytes before data
-  // We normalize by splitting on common delimiters and looking for AAMVA codes.
-  
-  // First, try multi-line split
-  let segments = rawText.split(/[\r\n\x1e\x1d\x1f]+/);
-  
-  // If that didn't yield enough segments, try splitting by codes (3 uppercase letters)
-  if (segments.length < 5) {
-    // Split before any 3-uppercase-letter pattern
-    segments = rawText.split(/(?=[A-Z]{3}[A-Z0-9])/);
-  }
-  
-  for (const seg of segments) {
-    const trimmed = seg.trim();
-    if (trimmed.length < 4) continue;
-    // Match leading 3-letter code followed by value
-    const m = trimmed.match(/^([A-Z]{3})(.+?)(?:\s*$)/);
-    if (!m) continue;
-    const [, code, value] = m;
-    const key = AAMVA_FIELDS[code];
-    if (key) {
-      // Don't overwrite if we already have a value (DCS may appear before DAB; prefer first)
-      if (!result[key]) result[key] = value.trim();
-    }
-  }
-  
-  // If we found nothing structured, try a regex sweep over the whole string
-  if (!result.firstName && !result.lastName && !result.fullName) {
-    for (const [code, key] of Object.entries(AAMVA_FIELDS)) {
-      if (result[key]) continue;
-      const re = new RegExp(`${code}([^\\n\\r\\x1e\\x1d\\x1f]+)`);
-      const m = rawText.match(re);
-      if (m) result[key] = m[1].trim();
-    }
-  }
-  
-  // Format dates: AAMVA format is MMDDCCYY (US) or CCYYMMDD (some states/Canada)
-  const parseDate = (s) => {
-    if (!s) return null;
-    // MMDDCCYY (most common US format)
-    let m = s.match(/^(\d{2})(\d{2})(\d{4})$/);
-    if (m) {
-      const [, mm, dd, yyyy] = m;
-      // Sanity check: month 01-12, day 01-31
-      if (parseInt(mm) >= 1 && parseInt(mm) <= 12 && parseInt(dd) >= 1 && parseInt(dd) <= 31) {
-        return `${yyyy}-${mm}-${dd}`;
-      }
-    }
-    // CCYYMMDD format
-    m = s.match(/^(\d{4})(\d{2})(\d{2})$/);
-    if (m) {
-      const [, yyyy, mm, dd] = m;
-      if (parseInt(mm) >= 1 && parseInt(mm) <= 12 && parseInt(dd) >= 1 && parseInt(dd) <= 31) {
-        return `${yyyy}-${mm}-${dd}`;
-      }
-    }
-    return s;
-  };
-  
-  if (result.dob) result.dobISO = parseDate(result.dob);
-  if (result.expiration) result.expirationISO = parseDate(result.expiration);
-  
-  return result;
-}
-
-/* ============================================================
    Storage helpers — wrap window.storage with safe defaults
    ============================================================ */
 const DEFAULT_ICAL_URL = 'https://portal.jetinsight.com/schedule/7a32dd47-6a5c-4c9c-b53b-864381bacebf/1243136b-b3ab-4dff-b0cf-edf264e20fbf.ics';
@@ -515,10 +431,6 @@ function findMatchingTrips(parsedLeg, tail, allTrips) {
   });
 }
 
-function sanitizeKey(s) {
-  return String(s).replace(/[\s\/\\'"]/g, '_').slice(0, 180);
-}
-
 const storage = {
   // Backed by browser localStorage. Keys prefixed by `shared` flag retained for
   // API compatibility with the artifact version, but on a single-device deploy
@@ -714,7 +626,6 @@ function buildDemoICal() {
   const now = new Date();
   const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
   const fmt = (d) => d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
-  const pad = (n) => String(n).padStart(2, '0');
   const mkDate = (dayOffset, h, m) => {
     const d = new Date(today);
     d.setUTCDate(d.getUTCDate() + dayOffset);
@@ -1328,14 +1239,11 @@ function IDScanner({ expectedPax, onComplete, onCancel }) {
   const [realIdConfirmed, setRealIdConfirmed] = useState(false);
   const [photoData, setPhotoData] = useState(null);
   const [scanning, setScanning] = useState(false);
-  const [scannerName, setScannerName] = useState(''); // 'AI'
   const [torchSupported, setTorchSupported] = useState(false);
   const [torchOn, setTorchOn] = useState(false);
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
-  const detectorRef = useRef(null);
-  const detectIntervalRef = useRef(null);
   const aiTriggeredRef = useRef(false); // prevent double-fire
 
   const stopCamera = useCallback(() => {
@@ -1343,11 +1251,6 @@ function IDScanner({ expectedPax, onComplete, onCancel }) {
       streamRef.current.getTracks().forEach(t => t.stop());
       streamRef.current = null;
     }
-    if (detectIntervalRef.current) {
-      clearInterval(detectIntervalRef.current);
-      detectIntervalRef.current = null;
-    }
-    detectorRef.current = null;
     setTorchOn(false);
     setTorchSupported(false);
   }, []);
@@ -1398,9 +1301,7 @@ function IDScanner({ expectedPax, onComplete, onCancel }) {
       }
       setScanning(true);
       checkTorchSupport();
-      setScannerName('AI');
-      // No barcode detection. The pilot frames the ID and taps CAPTURE
-      // (or we capture automatically on a single press of triggerAiFallback).
+      // The pilot frames the ID and taps CAPTURE & READ.
     } catch (e) {
       setError(`Camera error: ${e.message}`);
       setPhase('intro');
@@ -1412,14 +1313,6 @@ function IDScanner({ expectedPax, onComplete, onCancel }) {
   const triggerAiFallback = async () => {
     if (!videoRef.current) return;
     aiTriggeredRef.current = true;
-    // Stop the barcode scanner — AI takes over
-    if (detectIntervalRef.current) {
-      clearInterval(detectIntervalRef.current);
-      detectIntervalRef.current = null;
-    }
-    if (detectorRef.current && typeof detectorRef.current.reset === 'function') {
-      try { detectorRef.current.reset(); } catch (e) { /* ignore */ }
-    }
 
     // Capture the current frame as a JPEG. Resize to max 1280px wide to keep
     // payload reasonable while preserving enough detail for OCR.
@@ -1436,7 +1329,6 @@ function IDScanner({ expectedPax, onComplete, onCancel }) {
     stopCamera();
     setScanning(false);
     setPhase('ai_processing');
-    setScannerName('AI');
 
     try {
       const base64 = dataUrl.split(',')[1];
@@ -1490,17 +1382,6 @@ function IDScanner({ expectedPax, onComplete, onCancel }) {
       setError('AI extraction error: ' + (err.message || 'unknown error'));
       setPhase('ai_failed');
     }
-  };
-
-  const capturePhoto = () => {
-    if (!videoRef.current || !canvasRef.current) return;
-    const v = videoRef.current;
-    const c = canvasRef.current;
-    c.width = v.videoWidth;
-    c.height = v.videoHeight;
-    const ctx = c.getContext('2d');
-    ctx.drawImage(v, 0, 0);
-    setPhotoData(c.toDataURL('image/jpeg', 0.7));
   };
 
   const handleManualSubmit = (data) => {
@@ -1762,7 +1643,6 @@ function IDScanner({ expectedPax, onComplete, onCancel }) {
   if (phase === 'review' && parsed) {
     const expDate = parsed.expirationISO ? new Date(parsed.expirationISO) : null;
     const expired = expDate && expDate < new Date();
-    const fullName = parsed.fullName || `${parsed.firstName || ''} ${parsed.lastName || ''}`.trim() || 'UNKNOWN';
 
     // Compute name match against expected pax (when provided).
     // Caller provides expectedPax with firstName + lastName; if not, no match displayed.
@@ -2092,16 +1972,6 @@ function EditableField({ label, value, onChange, placeholder, mono }) {
         style={{ fontFamily: mono ? 'JetBrains Mono, monospace' : 'DM Sans, sans-serif' }}
       />
     </label>
-  );
-}
-
-function DataRow({ label, value, tone }) {
-  const colors = { red: 'text-red-300', green: 'text-emerald-300' };
-  return (
-    <div className="flex items-baseline justify-between gap-3">
-      <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{label}</span>
-      <span className={`text-sm ${colors[tone] || 'text-slate-100'}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>{value}</span>
-    </div>
   );
 }
 
@@ -8923,22 +8793,39 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
               NEW RECEIPT
             </div>
             <p className="text-[10px] text-slate-500 mb-3">
-              Take a photo or pick a file. AI will extract vendor, date, amount, and category.
+              Take a photo or pick from your camera roll. AI will extract vendor, date, amount, and category.
             </p>
-            <label className="block w-full text-center py-2 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 cursor-pointer text-sm" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-              <Camera className="w-4 h-4 inline mr-2" /> CAMERA / FILE
-              <input
-                type="file"
-                accept="image/*,application/pdf"
-                capture="environment"
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) handleUpload(f);
-                  e.target.value = '';
-                }}
-                className="hidden"
-              />
-            </label>
+            <div className="grid grid-cols-2 gap-2">
+              {/* TAKE PHOTO — forces the camera on mobile */}
+              <label className="block text-center py-2 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 cursor-pointer text-sm" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                <Camera className="w-4 h-4 inline mr-1" /> CAMERA
+                <input
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) handleUpload(f);
+                    e.target.value = '';
+                  }}
+                  className="hidden"
+                />
+              </label>
+              {/* CHOOSE FILE — opens photo picker / file browser, never forces camera */}
+              <label className="block text-center py-2 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 cursor-pointer text-sm" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                <FileText className="w-4 h-4 inline mr-1" /> CAMERA ROLL
+                <input
+                  type="file"
+                  accept="image/*,application/pdf"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) handleUpload(f);
+                    e.target.value = '';
+                  }}
+                  className="hidden"
+                />
+              </label>
+            </div>
             <button
               onClick={() => setShowUploader(false)}
               className="mt-2 w-full py-1 text-[10px] text-slate-500 hover:text-slate-300 tracking-widest"
