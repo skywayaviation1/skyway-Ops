@@ -7464,7 +7464,185 @@ function SignaturePad({ onSave, onCancel, height = 160 }) {
 /* ============================================================
    Settings modal
    ============================================================ */
-function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, onLoadFromText, syncStatus }) {
+function QuickBooksConnectionPanel({ currentUser }) {
+  const [connection, setConnection] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [info, setInfo] = useState(null);
+
+  const isAdmin = currentUser?.role === 'admin';
+
+  // Subscribe to connection state. Non-admin still sees the panel but it's
+  // read-only and the Connect/Disconnect buttons are hidden.
+  useEffect(() => {
+    let unsub = null;
+    let cancelled = false;
+    (async () => {
+      try {
+        const m = await import('./firebase-quickbooks.js');
+        if (cancelled) return;
+        unsub = m.subscribeToQuickBooksConnection((conn) => {
+          setConnection(conn);
+          setLoading(false);
+        });
+      } catch (err) {
+        console.error('[qbo-panel] subscribe failed:', err);
+        setError(err.message || 'Failed to load connection state');
+        setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; if (unsub) unsub(); };
+  }, []);
+
+  // After OAuth roundtrip, Intuit's redirect adds ?qbo=connected (or =error)
+  // to the URL. Surface a one-time toast and clean the params.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const qboParam = params.get('qbo');
+    const msg = params.get('msg');
+    if (qboParam === 'connected') {
+      setInfo(msg ? `Connected to ${msg}` : 'Connected to QuickBooks.');
+    } else if (qboParam === 'error') {
+      setError(msg || 'QuickBooks connection failed.');
+    }
+    if (qboParam) {
+      // Strip the params + hash so refreshing the page doesn't re-show the toast
+      params.delete('qbo');
+      params.delete('msg');
+      const cleanUrl = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
+      window.history.replaceState({}, '', cleanUrl);
+    }
+  }, []);
+
+  const handleConnect = async () => {
+    setBusy(true);
+    setError(null);
+    setInfo(null);
+    try {
+      const m = await import('./firebase-quickbooks.js');
+      const url = await m.buildOAuthStartUrl();
+      // Hard redirect — Intuit's auth page replaces the current tab
+      window.location.href = url;
+    } catch (err) {
+      console.error('[qbo-panel] connect failed:', err);
+      setError(err.message || 'Failed to start OAuth flow');
+      setBusy(false);
+    }
+  };
+
+  const handleDisconnect = async () => {
+    if (!window.confirm(
+      'Disconnect QuickBooks?\n\n' +
+      'This revokes the access token at Intuit and removes the connection ' +
+      'from Skyway. You\'ll need to re-authorize to push expenses again. ' +
+      'Existing pushed expenses are unaffected.'
+    )) return;
+    setBusy(true);
+    setError(null);
+    setInfo(null);
+    try {
+      const m = await import('./firebase-quickbooks.js');
+      const result = await m.disconnectQuickBooks();
+      setInfo(result.message || 'Disconnected.');
+    } catch (err) {
+      console.error('[qbo-panel] disconnect failed:', err);
+      setError(err.message || 'Disconnect failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section>
+      <h3 className="text-xs tracking-widest text-cyan-400 mb-3" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
+        QUICKBOOKS ONLINE
+      </h3>
+
+      {info && (
+        <div className="mb-3 p-2 border border-emerald-500/40 bg-emerald-500/5 text-xs text-emerald-300">
+          {info}
+        </div>
+      )}
+      {error && (
+        <div className="mb-3 p-2 border border-red-500/40 bg-red-500/5 text-xs text-red-300">
+          {error}
+        </div>
+      )}
+
+      {loading ? (
+        <div className="text-xs text-slate-500 flex items-center gap-2">
+          <Loader2 className="w-3.5 h-3.5 animate-spin" /> Checking connection...
+        </div>
+      ) : connection?.connected ? (
+        <div className="space-y-2">
+          <div className="p-3 border border-emerald-500/40 bg-emerald-500/5">
+            <div className="flex items-center gap-2 mb-1">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+              <span className="text-sm text-slate-100" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
+                {connection.companyName || 'Connected'}
+              </span>
+              <Pill tone={connection.environment === 'production' ? 'green' : 'amber'}>
+                {(connection.environment || 'sandbox').toUpperCase()}
+              </Pill>
+            </div>
+            <div className="text-[10px] text-slate-500 space-y-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {connection.realmId && <div>Realm ID: {connection.realmId}</div>}
+              {connection.connectedByName && <div>Connected by: {connection.connectedByName}</div>}
+              {connection.connectedAt && <div>Connected: {new Date(connection.connectedAt).toLocaleString()}</div>}
+              {connection.refreshTokenExpiresAt && (() => {
+                const days = Math.floor((connection.refreshTokenExpiresAt - Date.now()) / (24 * 3600 * 1000));
+                const label = days <= 0
+                  ? 'EXPIRED — reconnect required'
+                  : days < 7
+                  ? `Expires in ${days} day${days === 1 ? '' : 's'} — reconnect soon`
+                  : `Refresh token valid for ${days} more day${days === 1 ? '' : 's'}`;
+                const colorClass = days <= 0 ? 'text-red-300' : days < 7 ? 'text-amber-300' : 'text-slate-500';
+                return <div className={colorClass}>{label}</div>;
+              })()}
+            </div>
+          </div>
+          {isAdmin && (
+            <button
+              onClick={handleDisconnect}
+              disabled={busy}
+              className="w-full py-2 border border-red-500/40 text-red-300 hover:bg-red-500/10 text-xs tracking-widest disabled:opacity-50"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              {busy ? 'WORKING...' : 'DISCONNECT'}
+            </button>
+          )}
+          <p className="text-[10px] text-slate-500" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+            Approved expenses can be pushed to QuickBooks from the EXPENSES tab. The push attempts to match each receipt against an existing bank-feed transaction in QBO; reimbursements are pushed as Bills payable to the submitter.
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <p className="text-xs text-slate-400" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+            Connect a QuickBooks Online company to push approved expenses directly. The connection is shared by all users — only one company at a time.
+          </p>
+          {isAdmin ? (
+            <button
+              onClick={handleConnect}
+              disabled={busy}
+              className="w-full py-3 bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-800 disabled:text-slate-600 text-slate-950 font-medium tracking-widest"
+              style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}
+            >
+              {busy ? 'OPENING INTUIT...' : 'CONNECT QUICKBOOKS'}
+            </button>
+          ) : (
+            <div className="p-2 border border-slate-700 bg-slate-900/40 text-[11px] text-slate-500">
+              Only admins can connect or disconnect QuickBooks. Ask an admin to set this up.
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, onLoadFromText, syncStatus, currentUser }) {
   const [icalUrl, setIcalUrl] = useState(config.icalUrl || '');
   const [icalText, setIcalText] = useState('');
   const [crewName, setCrewName] = useState(config.crewName || '');
@@ -7569,6 +7747,8 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
               <Sparkles className="w-3.5 h-3.5" /> LOAD DEMO TRIPS
             </button>
           </section>
+
+          <QuickBooksConnectionPanel currentUser={currentUser} />
 
           <button
             onClick={async () => { await save(); onClose(); }}
@@ -9707,7 +9887,14 @@ export default function CharterOps() {
   const [manualTrips, setManualTrips] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [showSettings, setShowSettings] = useState(false);
+  const [showSettings, setShowSettings] = useState(() => {
+    // Auto-open Settings on return from QBO OAuth so the user sees the result
+    if (typeof window !== 'undefined') {
+      const p = new URLSearchParams(window.location.search);
+      if (p.get('qbo') === 'connected' || p.get('qbo') === 'error') return true;
+    }
+    return false;
+  });
   const [showProfile, setShowProfile] = useState(false);
   const [syncStatus, setSyncStatus] = useState({ status: 'idle', message: '' });
   const [syncLog, setSyncLog] = useState([]);
@@ -10728,6 +10915,7 @@ export default function CharterOps() {
           config={config}
           setConfig={setConfig}
           syncStatus={syncStatus}
+          currentUser={currentUser}
           onClose={() => setShowSettings(false)}
           onLoadDemo={loadDemo}
           onLoadFromUrl={loadFromUrl}
