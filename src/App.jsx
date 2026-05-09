@@ -169,6 +169,140 @@ const SKYWAY_TAILS = [
   'N651TW', 'N551FP', 'N85AH', 'N525CR',
 ];
 
+// ICAO ↔ IATA airport-code map for international airports Skyway flies to.
+// Used by findMatchingTrips to match trip-sheet legs (which JetInsight tends
+// to publish in ICAO) against iCal feed legs (which can use either format).
+//
+// US airports are NOT in this table because the K-prefix stripping rule
+// handles them generically (KTPA ↔ TPA, KSAV ↔ SAV, etc).
+//
+// Add new airports as Skyway expands — both entries (ICAO→IATA and IATA→ICAO)
+// are auto-derived from a single source list, so just add to the AIRPORT_PAIRS
+// array and both lookups update.
+const AIRPORT_PAIRS = [
+  // Caribbean
+  ['MWCR', 'GCM'],  // Owen Roberts Intl, Grand Cayman
+  ['MWCB', 'CYB'],  // Charles Kirkconnell Intl, Cayman Brac
+  ['MYNN', 'NAS'],  // Lynden Pindling Intl, Nassau, Bahamas
+  ['MYGF', 'FPO'],  // Grand Bahama Intl, Freeport
+  ['MYEH', 'ELH'],  // North Eleuthera Intl
+  ['MYAM', 'MHH'],  // Marsh Harbour Intl, Abacos
+  ['MYEM', 'GHB'],  // Governors Harbour
+  ['MYAT', 'TCB'],  // Treasure Cay
+  ['MYBS', 'TBI'],  // South Bimini
+  ['MYEX', 'GGT'],  // Exuma Intl
+  ['MYSM', 'ZSA'],  // San Salvador Intl
+  // Dominican Republic
+  ['MDSD', 'SDQ'],  // Las Americas Intl, Santo Domingo
+  ['MDPC', 'PUJ'],  // Punta Cana Intl
+  ['MDPP', 'POP'],  // Puerto Plata
+  ['MDST', 'STI'],  // Santiago de los Caballeros
+  ['MDLR', 'LRM'],  // La Romana
+  ['MDSB', 'AZS'],  // Samana El Catey
+  // Cuba
+  ['MUHA', 'HAV'],  // Jose Marti Intl, Havana
+  ['MUVR', 'VRA'],  // Juan Gualberto Gomez, Varadero
+  ['MUCC', 'COB'],  // Cayo Coco
+  ['MUSC', 'SNU'],  // Abel Santamaria Intl, Santa Clara
+  // Jamaica
+  ['MKJP', 'KIN'],  // Norman Manley Intl, Kingston
+  ['MKJS', 'MBJ'],  // Sangster Intl, Montego Bay
+  // Puerto Rico / USVI
+  ['TJSJ', 'SJU'],  // Luis Munoz Marin Intl, San Juan
+  ['TIST', 'STT'],  // Cyril E. King, St. Thomas
+  ['TISX', 'STX'],  // Henry E. Rohlsen, St. Croix
+  // Lesser Antilles
+  ['TNCM', 'SXM'],  // Princess Juliana Intl, St. Maarten
+  ['TNCA', 'AUA'],  // Reina Beatrix Intl, Aruba
+  ['TNCB', 'BON'],  // Flamingo Intl, Bonaire
+  ['TNCC', 'CUR'],  // Hato Intl, Curacao
+  ['TKPK', 'SKB'],  // Robert L. Bradshaw, St. Kitts
+  ['TKPN', 'NEV'],  // Vance W. Amory, Nevis
+  ['TUPJ', 'EIS'],  // Terrance B. Lettsome, Tortola, BVI
+  ['TBPB', 'BGI'],  // Grantley Adams Intl, Barbados
+  ['TGPY', 'GND'],  // Maurice Bishop Intl, Grenada
+  ['TLPL', 'SLU'],  // George FL Charles, St. Lucia
+  ['TLPC', 'UVF'],  // Hewanorra Intl, St. Lucia
+  ['TFFF', 'FDF'],  // Martinique Aime Cesaire Intl
+  ['TFFR', 'PTP'],  // Pointe-a-Pitre Intl, Guadeloupe
+  ['TTPP', 'POS'],  // Piarco Intl, Trinidad
+  ['TQPF', 'AXA'],  // Anguilla (alt code)
+  ['TVSA', 'AXA'],  // Anguilla
+  // Mexico
+  ['MMUN', 'CUN'],  // Cancun Intl
+  ['MMSD', 'SJD'],  // Los Cabos Intl
+  ['MMPR', 'PVR'],  // Puerto Vallarta
+  ['MMTO', 'TLC'],  // Toluca
+  ['MMMX', 'MEX'],  // Benito Juarez, Mexico City
+  // Central America
+  ['MROC', 'SJO'],  // Juan Santamaria Intl, San Jose, Costa Rica
+  ['MRLB', 'LIR'],  // Daniel Oduber Quiros, Liberia, Costa Rica
+  ['MPTO', 'PTY'],  // Tocumen Intl, Panama City
+  ['MGGT', 'GUA'],  // La Aurora, Guatemala City
+  ['MHTG', 'TGU'],  // Toncontin, Tegucigalpa
+  ['MNMG', 'MGA'],  // Managua Intl, Nicaragua
+  ['MZBZ', 'BZE'],  // Philip S.W. Goldson Intl, Belize
+];
+
+// Build bidirectional lookup tables. ICAO_TO_IATA is many→one (an ICAO can
+// have only one canonical IATA); IATA_TO_ICAO is one→many because some IATA
+// codes correspond to multiple ICAO entries (e.g. AXA above). For matching
+// we only need to know if any link exists, so both tables map to a Set.
+const ICAO_TO_IATA = new Map();
+const IATA_TO_ICAO = new Map();
+for (const [icao, iata] of AIRPORT_PAIRS) {
+  if (!ICAO_TO_IATA.has(icao)) ICAO_TO_IATA.set(icao, new Set());
+  ICAO_TO_IATA.get(icao).add(iata);
+  if (!IATA_TO_ICAO.has(iata)) IATA_TO_ICAO.set(iata, new Set());
+  IATA_TO_ICAO.get(iata).add(icao);
+}
+
+// Generate the canonical normalization candidates for an airport code. Any
+// pair of codes whose candidate sets share at least one element are
+// considered the same airport.
+//
+// Examples:
+//   'MWCR'  →  {'MWCR', 'GCM'}
+//   'GCM'   →  {'GCM', 'MWCR'}
+//   'KTPA'  →  {'KTPA', 'TPA'}                 (US: K-prefix stripped)
+//   'TPA'   →  {'TPA', 'KTPA'}                 (US: K-prefix added)
+//   'SAV'   →  {'SAV', 'KSAV'}
+//   'AXA'   →  {'AXA', 'TQPF', 'TVSA'}         (multiple ICAO for one IATA)
+function airportCodeCandidates(code) {
+  if (!code) return new Set();
+  const upper = String(code).toUpperCase().trim();
+  const cands = new Set([upper]);
+
+  // ICAO → IATA from the table
+  const iataFromIcao = ICAO_TO_IATA.get(upper);
+  if (iataFromIcao) for (const c of iataFromIcao) cands.add(c);
+
+  // IATA → ICAO from the table
+  const icaoFromIata = IATA_TO_ICAO.get(upper);
+  if (icaoFromIata) for (const c of icaoFromIata) cands.add(c);
+
+  // US convention: ICAO 'K' + IATA. If 4 letters starting with K, the last 3
+  // are likely the IATA. Conversely if 3 letters, prepend K to get the ICAO.
+  // This is a heuristic that's safe in practice because the table above
+  // handles every non-K airport we care about.
+  if (upper.length === 4 && upper.startsWith('K')) {
+    cands.add(upper.slice(1));
+  } else if (upper.length === 3) {
+    cands.add('K' + upper);
+  }
+
+  return cands;
+}
+
+// True if two airport codes can be normalized to refer to the same airport.
+function airportCodesMatch(a, b) {
+  if (!a || !b) return false;
+  const ca = airportCodeCandidates(a);
+  const cb = airportCodeCandidates(b);
+  for (const x of ca) if (cb.has(x)) return true;
+  return false;
+}
+
 const CATEGORY_META = {
   REVENUE:  { label: 'REVENUE',     tone: 'cyan',    icon: 'Users' },
   REPO:     { label: 'REPO',        tone: 'violet',  icon: 'Plane' },
@@ -412,14 +546,14 @@ function findMatchingTrips(parsedLeg, tail, allTrips) {
   const yyyy = dateMatch[3];
   const targetDateStr = `${yyyy}-${mm}-${dd}`;
 
-  // Match against each trip in the schedule
-  return allTrips.filter(trip => {
+  // Inner predicate: returns true if `trip` matches `parsedLeg` on
+  // route + date. Tail comparison is separate so we can do a strict-then-lax
+  // two-pass match.
+  const dateAndRouteMatches = (trip) => {
     if (!trip || !trip.info) return false;
-    if ((trip.info.tail || '').toUpperCase() !== tail.toUpperCase()) return false;
-    const fromMatch = (trip.info.from || '').toUpperCase().slice(-3) === parsedLeg.from.slice(-3);
-    if (!fromMatch) return false;
-    const toMatch = (trip.info.to || '').toUpperCase().slice(-3) === parsedLeg.to.slice(-3);
-    if (!toMatch) return false;
+    // Use ICAO↔IATA-aware matching (handles MWCR↔GCM, KTPA↔TPA, etc).
+    if (!airportCodesMatch(trip.info.from, parsedLeg.from)) return false;
+    if (!airportCodesMatch(trip.info.to, parsedLeg.to)) return false;
     // Compare date in BOTH UTC and local — JetInsight publishes local times,
     // iCal could be either depending on timezone. Accept match if either lines up.
     if (!trip.start) return false;
@@ -428,7 +562,27 @@ function findMatchingTrips(parsedLeg, tail, allTrips) {
     const utcStr = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
     const locStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     return utcStr === targetDateStr || locStr === targetDateStr;
-  });
+  };
+
+  // First pass: strict — require tail match. This is the common case.
+  const strict = allTrips
+    .filter(trip => trip && trip.info && (trip.info.tail || '').toUpperCase() === tail.toUpperCase())
+    .filter(dateAndRouteMatches)
+    .map(trip => ({ ...trip, _tailMismatch: false }));
+
+  if (strict.length > 0) return strict;
+
+  // Second pass: lax — same date+route, any tail. Useful when an aircraft
+  // swap happened in JetInsight after the iCal feed last synced. UI surfaces
+  // _tailMismatch so the user can confirm before attaching.
+  const lax = allTrips
+    .filter(dateAndRouteMatches)
+    .map(trip => ({
+      ...trip,
+      _tailMismatch: (trip.info.tail || '').toUpperCase() !== tail.toUpperCase(),
+    }));
+
+  return lax;
 }
 
 const storage = {
@@ -3542,9 +3696,15 @@ function TripSheetPanel({
                     <span className="text-slate-500 ml-2">({m.leg.depDate})</span>
                   </div>
                   {matched ? (
-                    <span className="text-[10px] text-emerald-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                      → MATCHED ({m.leg.pax.length} pax)
-                    </span>
+                    matched._tailMismatch ? (
+                      <span className="text-[10px] text-amber-300" style={{ fontFamily: 'JetBrains Mono, monospace' }} title={`Schedule has tail ${matched.info.tail}, trip sheet has ${matchPreview.tail}`}>
+                        → MATCHED · TAIL MISMATCH ({matched.info.tail})
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-emerald-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                        → MATCHED ({m.leg.pax.length} pax)
+                      </span>
+                    )
                   ) : (
                     <span className="text-[10px] text-amber-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
                       → NO MATCH IN SCHEDULE
