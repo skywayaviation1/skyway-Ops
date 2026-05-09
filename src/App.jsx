@@ -341,21 +341,6 @@ function nameMatchesPilot(jetinsightName, pilotName) {
 // from scanned ID). Returns 'exact' | 'fuzzy' | 'no_match'.
 // 'fuzzy' = first AND last token both appear; OK with crew confirmation.
 // 'no_match' = either first or last is missing; show a warning.
-function comparePaxNames(preloaded, scanned) {
-  const norm = (s) => (s || '').toLowerCase().replace(/[^a-z\s]/g, '').trim();
-  const a = norm(preloaded);
-  const b = norm(scanned);
-  if (!a || !b) return 'no_match';
-  if (a === b) return 'exact';
-  const aTokens = a.split(/\s+/).filter(Boolean);
-  const bTokens = b.split(/\s+/).filter(Boolean);
-  if (aTokens.length < 2 || bTokens.length < 2) return 'no_match';
-  const aFirst = aTokens[0], aLast = aTokens[aTokens.length - 1];
-  const bHasFirst = bTokens.some(t => t === aFirst);
-  const bHasLast = bTokens.some(t => t === aLast);
-  if (bHasFirst && bHasLast) return aTokens.length === bTokens.length ? 'exact' : 'fuzzy';
-  return 'no_match';
-}
 
 /**
  * Parse a JetInsight crew-itinerary PDF text dump into a structured object.
@@ -1384,21 +1369,50 @@ function ChatPanel({ tripId, currentUser }) {
 }
 
 /* ============================================================
-   ID Scanner (PDF417 + photo capture)
+   ID Check-In Panel — photo + checkbox verification
    ============================================================ */
-function IDScanner({ expectedPax, onComplete, onCancel }) {
-  const [phase, setPhase] = useState('intro'); // intro | scan | ai_processing | ai_failed | review | manual | photoOnly
+
+// Document types crew can capture during check-in.
+const DOCUMENT_TYPES = [
+  { value: 'ID',       label: 'ID',       icon: '\u{1F4C4}' },
+  { value: 'PASSPORT', label: 'Passport', icon: '\u{1F4D8}' },
+];
+
+/**
+ * IDCheckInPanel - single component used for BOTH preloaded check-in and
+ * walk-up entry. Crew picks document type, takes a photo, ticks a checkbox,
+ * then taps Check In.
+ *
+ * Props:
+ *   - mode: 'preloaded' | 'walkup'
+ *   - expectedPax (only when mode === 'preloaded') - { firstName, lastName, dob, weight, gender, ... }
+ *   - onComplete(paxData) - called with the assembled pax record
+ *   - onCancel() - close the panel
+ */
+function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel }) {
+  const isWalkup = mode === 'walkup';
+
+  // Walk-up name fields (preloaded uses expectedPax)
+  const [firstName, setFirstName] = useState('');
+  const [lastName,  setLastName]  = useState('');
+
+  // Document type toggle
+  const [documentType, setDocumentType] = useState('ID');
+
+  // Camera state
+  const [phase, setPhase] = useState('intro'); // intro | capturing | review
+  const [photo, setPhoto] = useState(null);    // dataURL once captured
   const [error, setError] = useState(null);
-  const [parsed, setParsed] = useState(null);
-  const [realIdConfirmed, setRealIdConfirmed] = useState(false);
-  const [photoData, setPhotoData] = useState(null);
-  const [scanning, setScanning] = useState(false);
   const [torchSupported, setTorchSupported] = useState(false);
   const [torchOn, setTorchOn] = useState(false);
+
+  // Verification checkbox
+  const [idVerified, setIdVerified] = useState(false);
+
+  // Camera refs
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
-  const aiTriggeredRef = useRef(false); // prevent double-fire
 
   const stopCamera = useCallback(() => {
     if (streamRef.current) {
@@ -1411,516 +1425,242 @@ function IDScanner({ expectedPax, onComplete, onCancel }) {
 
   useEffect(() => () => stopCamera(), [stopCamera]);
 
-  // Toggle torch/flashlight on the active video track
-  const toggleTorch = async () => {
-    if (!streamRef.current) return;
-    const track = streamRef.current.getVideoTracks()[0];
-    if (!track) return;
-    try {
-      const next = !torchOn;
-      await track.applyConstraints({ advanced: [{ torch: next }] });
-      setTorchOn(next);
-    } catch (e) {
-      console.warn('Torch toggle failed:', e);
-    }
-  };
-
-  // Detect torch capability after stream starts
-  const checkTorchSupport = useCallback(() => {
-    if (!streamRef.current) return;
-    const track = streamRef.current.getVideoTracks()[0];
-    if (!track) return;
-    try {
-      const capabilities = track.getCapabilities?.() || {};
-      setTorchSupported(capabilities.torch === true);
-    } catch (e) {
-      setTorchSupported(false);
-    }
-  }, []);
-
-  const startScan = async () => {
+  const startCamera = async () => {
     setError(null);
-    aiTriggeredRef.current = false;
-    setPhase('scan');
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
+        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
         audio: false,
       });
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        videoRef.current.setAttribute('playsinline', 'true');
-        await videoRef.current.play();
+        await videoRef.current.play().catch(() => {});
       }
-      setScanning(true);
-      checkTorchSupport();
-      // The pilot frames the ID and taps CAPTURE & READ.
+      const track = stream.getVideoTracks()[0];
+      const capabilities = track.getCapabilities ? track.getCapabilities() : {};
+      if (capabilities.torch) setTorchSupported(true);
+      setPhase('capturing');
     } catch (e) {
       setError(`Camera error: ${e.message}`);
-      setPhase('intro');
     }
   };
 
-  // Capture the current frame, send to Claude vision, parse the response.
-  // Called automatically after 3s timeout, OR manually via "USE AI NOW" button.
-  const triggerAiFallback = async () => {
-    if (!videoRef.current) return;
-    aiTriggeredRef.current = true;
-
-    // Capture the current frame as a JPEG. Resize to max 1280px wide to keep
-    // payload reasonable while preserving enough detail for OCR.
-    const v = videoRef.current;
-    const tmpCanvas = document.createElement('canvas');
-    const targetW = Math.min(1280, v.videoWidth);
-    const scale = targetW / v.videoWidth;
-    tmpCanvas.width = targetW;
-    tmpCanvas.height = Math.round(v.videoHeight * scale);
-    const ctx = tmpCanvas.getContext('2d');
-    ctx.drawImage(v, 0, 0, tmpCanvas.width, tmpCanvas.height);
-    const dataUrl = tmpCanvas.toDataURL('image/jpeg', 0.8);
-    setPhotoData(dataUrl); // store for the audit trail
-    stopCamera();
-    setScanning(false);
-    setPhase('ai_processing');
-
+  const toggleTorch = async () => {
+    if (!streamRef.current) return;
+    const track = streamRef.current.getVideoTracks()[0];
     try {
-      const base64 = dataUrl.split(',')[1];
-      console.log('[ai-id] sending image for parsing, base64 length:', base64.length);
-      const r = await fetch('/api/parse-id', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ imageBase64: base64, mediaType: 'image/jpeg' }),
-      });
-      const data = await r.json().catch(() => ({}));
-      console.log('[ai-id] response:', r.status, data);
-      if (!r.ok || !data.parsed) {
-        setError(`AI extraction failed: ${data.error || `HTTP ${r.status}`}`);
-        setPhase('ai_failed');
-        return;
-      }
-      // Map the AI parsed shape to the existing review-phase shape
-      const p = data.parsed;
-      const aiData = {
-        firstName: p.firstName || '',
-        middleName: p.middleName || '',
-        lastName: p.lastName || '',
-        dob: p.dob || '',
-        dobISO: p.dob || '',
-        documentNumber: p.documentNumber || '',
-        expiration: p.expiration || '',
-        expirationISO: p.expiration || '',
-        documentType: p.documentType || 'unknown',
-        issuingAuthority: p.issuingAuthority || '',
-        confidence: p.confidence || 'medium',
-        notes: p.notes || '',
-        source: 'ai',
-        raw: JSON.stringify(p),
-      };
-      // If AI says "unknown" — image isn't an ID
-      if (p.documentType === 'unknown') {
-        setError(p.notes || 'Image does not appear to be a government ID. Try a clearer photo of a license or passport.');
-        setPhase('ai_failed');
-        return;
-      }
-      // If we got at least a name, accept it
-      if (aiData.firstName || aiData.lastName) {
-        setParsed(aiData);
-        setPhase('review');
-      } else {
-        setError('AI processed the image but could not extract a name. Try a clearer photo, or enter manually.');
-        setPhase('ai_failed');
-      }
-    } catch (err) {
-      console.error('[ai-id] fetch threw:', err);
-      setError('AI extraction error: ' + (err.message || 'unknown error'));
-      setPhase('ai_failed');
-    }
+      await track.applyConstraints({ advanced: [{ torch: !torchOn }] });
+      setTorchOn(!torchOn);
+    } catch (e) { /* ignore */ }
   };
 
-  const handleManualSubmit = (data) => {
-    setParsed(data);
+  const capturePhoto = () => {
+    if (!videoRef.current || !canvasRef.current) return;
+    const v = videoRef.current;
+    const c = canvasRef.current;
+    const maxW = 1280;
+    const scale = Math.min(1, maxW / v.videoWidth);
+    c.width = Math.round(v.videoWidth * scale);
+    c.height = Math.round(v.videoHeight * scale);
+    const ctx = c.getContext('2d');
+    ctx.drawImage(v, 0, 0, c.width, c.height);
+    const dataUrl = c.toDataURL('image/jpeg', 0.75);
+    setPhoto(dataUrl);
+    stopCamera();
     setPhase('review');
   };
 
-  const finalize = () => {
-    if (!parsed) return;
-    const expDate = parsed.expirationISO ? new Date(parsed.expirationISO) : null;
-    const expired = expDate && expDate < new Date();
-    // Compute final match info using whatever the pilot left in the form
-    const finalMatch = expectedPax
-      ? compareNames(
-          { firstName: parsed.firstName, lastName: parsed.lastName },
-          { firstName: expectedPax.firstName, lastName: expectedPax.lastName }
-        )
-      : null;
-    const passenger = {
-      id: `pax-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      firstName: parsed.firstName || '',
-      lastName: parsed.lastName || '',
-      middleName: parsed.middleName || '',
-      dob: parsed.dobISO || parsed.dob || '',
-      expiration: parsed.expirationISO || parsed.expiration || '',
-      licenseNumber: parsed.licenseNumber || parsed.documentNumber || '',
-      documentNumber: parsed.documentNumber || parsed.licenseNumber || '',
-      documentType: parsed.documentType || 'unknown',
-      issuingAuthority: parsed.issuingAuthority || parsed.state || '',
-      state: parsed.state || parsed.issuingAuthority || '',
-      realIdCompliant: realIdConfirmed,
-      expired: !!expired,
-      photo: photoData,
-      scannedAt: Date.now(),
-      // method: 'AI_VISION' when AI extracted, 'MANUAL' when user typed everything in
-      method: parsed.source === 'ai' ? 'AI_VISION' : 'MANUAL',
-      paxType: parsed.source === 'ai' ? 'AI_SCAN' : 'MANUAL',
-      aiConfidence: parsed.confidence || null,
-      // Audit trail of name matching against the expected pax
-      nameMatchLevel: finalMatch?.level || null,
-      nameMatchWarnings: finalMatch?.warnings || [],
-      expectedFirstName: expectedPax?.firstName || null,
-      expectedLastName: expectedPax?.lastName || null,
-      noShow: false,
-    };
-    onComplete(passenger);
+  const retake = () => {
+    setPhoto(null);
+    startCamera();
   };
 
-  if (phase === 'intro') {
-    return (
-      <div className="space-y-4">
-        <div className="text-center py-6">
-          <div className="w-16 h-16 mx-auto mb-3 border border-slate-700 flex items-center justify-center">
-            <ScanLine className="w-8 h-8 text-cyan-400" />
-          </div>
-          <h3 className="text-base tracking-wider" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>SCAN PASSENGER ID</h3>
-          <p className="text-xs text-slate-500 mt-1 max-w-xs mx-auto">
-            Hold up the front of any government ID — driver's license, state ID, or passport. AI reads the data and checks the name against the trip sheet.
-          </p>
-        </div>
-        {error && (
-          <div className="p-3 border border-red-500/30 bg-red-500/5 text-xs text-red-300 flex items-start gap-2">
-            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" /> {error}
-          </div>
-        )}
-        <button
-          onClick={startScan}
-          className="w-full py-3 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-medium flex items-center justify-center gap-2"
-          style={{ fontFamily: 'DM Sans, sans-serif' }}
-        >
-          <Camera className="w-4 h-4" /> OPEN CAMERA
-        </button>
-        <button
-          onClick={() => setPhase('photoOnly')}
-          className="w-full py-2 border border-amber-500/40 text-amber-300 hover:bg-amber-500/10 text-sm"
-          style={{ fontFamily: 'DM Sans, sans-serif' }}
-        >
-          PHOTO ONLY (DON'T EXTRACT DATA)
-        </button>
-        <button
-          onClick={() => setPhase('manual')}
-          className="w-full py-2 border border-slate-700 hover:border-slate-500 text-slate-300 text-sm"
-          style={{ fontFamily: 'DM Sans, sans-serif' }}
-        >
-          ENTER MANUALLY
-        </button>
-        <button
-          onClick={onCancel}
-          className="w-full py-2 text-slate-500 hover:text-slate-300 text-sm"
-        >
-          Cancel
-        </button>
-      </div>
-    );
-  }
+  const walkupNamesValid = isWalkup
+    ? firstName.trim().length > 0 && lastName.trim().length > 0
+    : true;
 
-  if (phase === 'scan') {
-    return (
-      <div className="space-y-3">
-        <div className="relative aspect-[4/3] bg-black overflow-hidden border border-slate-700">
-          <video ref={videoRef} className="w-full h-full object-cover" playsInline muted />
-          <canvas ref={canvasRef} className="hidden" />
-          <div className="absolute inset-0 pointer-events-none">
-            <div className="absolute inset-8 border-2 border-cyan-400/40" />
-            <div className="absolute top-2 left-2 text-[10px] text-cyan-400 flex items-center gap-1.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              <StatusDot tone="emerald" pulse /> CAMERA READY
-            </div>
+  const canSubmit = walkupNamesValid && photo && idVerified;
+
+  const handleSubmit = () => {
+    if (!canSubmit) return;
+    const paxData = isWalkup
+      ? {
+          firstName: firstName.trim(),
+          lastName: lastName.trim(),
+          documentType,
+          photo,
+          idVerified: true,
+          method: 'PHOTO_VERIFY_WALKUP',
+        }
+      : {
+          ...expectedPax,
+          documentType,
+          photo,
+          idVerified: true,
+          method: 'PHOTO_VERIFY',
+        };
+    onComplete(paxData);
+  };
+
+  return (
+    <div className="space-y-3">
+      {error && (
+        <div className="p-2 border border-red-500/40 bg-red-500/5 text-xs text-red-300">
+          {error}
+        </div>
+      )}
+
+      {/* Trip-sheet details (preloaded only) */}
+      {!isWalkup && expectedPax && (
+        <div className="p-2.5 border border-slate-700 bg-slate-900/40">
+          <div className="text-[10px] tracking-widest text-slate-500 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            VERIFY THIS PASSENGER
           </div>
-          {torchSupported && (
+          <div className="text-base text-slate-100" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
+            {expectedPax.firstName} {expectedPax.lastName}
+          </div>
+          <div className="text-[11px] text-slate-400 mt-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {[
+              expectedPax.dob && `DOB ${expectedPax.dob}`,
+              expectedPax.weight && `${expectedPax.weight} lbs`,
+              expectedPax.gender,
+            ].filter(Boolean).join(' \u00B7 ')}
+          </div>
+        </div>
+      )}
+
+      {/* Walk-up name fields */}
+      {isWalkup && (
+        <div className="space-y-2">
+          <FieldInput label="FIRST NAME" value={firstName} onChange={(e) => setFirstName(e.target.value)} placeholder="John" />
+          <FieldInput label="LAST NAME" value={lastName} onChange={(e) => setLastName(e.target.value)} placeholder="Smith" />
+        </div>
+      )}
+
+      {/* Document type toggle */}
+      <div>
+        <div className="text-[10px] tracking-widest text-slate-500 mb-1.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          DOCUMENT TYPE
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          {DOCUMENT_TYPES.map(d => (
             <button
-              onClick={toggleTorch}
-              className={`absolute bottom-3 right-3 pointer-events-auto w-12 h-12 rounded-full border-2 flex items-center justify-center text-xl transition-all ${
-                torchOn
-                  ? 'bg-cyan-400 border-cyan-300 text-slate-950'
-                  : 'bg-slate-900/80 border-slate-600 text-slate-300 hover:border-cyan-400'
+              key={d.value}
+              type="button"
+              onClick={() => setDocumentType(d.value)}
+              className={`py-2 border text-sm transition ${
+                documentType === d.value
+                  ? 'border-cyan-400 bg-cyan-500/10 text-cyan-200'
+                  : 'border-slate-700 bg-slate-900/40 text-slate-400 hover:border-slate-600'
               }`}
-              title={torchOn ? 'Turn flashlight off' : 'Turn flashlight on'}
+              style={{ fontFamily: 'DM Sans, sans-serif' }}
             >
-              {torchOn ? '🔦' : '💡'}
+              <span className="mr-2">{d.icon}</span>{d.label}
             </button>
-          )}
-        </div>
-        <p className="text-xs text-slate-500 text-center">
-          Frame the <span className="text-cyan-400 font-bold">FRONT</span> of any government ID — license, state ID, or passport. Hold steady, well-lit. Tap CAPTURE when ready.
-          {torchSupported && ' · Tap 💡 for flashlight'}
-        </p>
-        {error && (
-          <div className="p-2 border border-red-500/30 bg-red-500/5 text-xs text-red-300">
-            {error}
-          </div>
-        )}
-        <button
-          onClick={() => {
-            if (!aiTriggeredRef.current) triggerAiFallback();
-          }}
-          className="w-full py-3 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-base flex items-center justify-center gap-2"
-          style={{ fontFamily: 'DM Sans, sans-serif' }}
-        >
-          <Camera className="w-5 h-5" /> CAPTURE & READ
-        </button>
-        <div className="flex gap-2">
-          <button
-            onClick={() => { stopCamera(); setPhase('photoOnly'); }}
-            className="flex-1 py-2 border border-amber-500/40 text-sm text-amber-300 hover:bg-amber-500/10"
-          >
-            Photo Only
-          </button>
-          <button
-            onClick={() => { stopCamera(); setPhase('manual'); }}
-            className="flex-1 py-2 border border-slate-700 text-sm text-slate-300"
-          >
-            Manual Entry
-          </button>
-          <button
-            onClick={() => { stopCamera(); setScanning(false); onCancel(); }}
-            className="flex-1 py-2 border border-slate-700 text-sm text-slate-300"
-          >
-            Cancel
-          </button>
+          ))}
         </div>
       </div>
-    );
-  }
 
-  if (phase === 'ai_processing') {
-    return (
-      <div className="space-y-3">
-        <div className="relative aspect-[4/3] bg-slate-900 border border-slate-700 flex items-center justify-center">
-          {photoData && (
-            <img src={photoData} alt="Captured ID" className="w-full h-full object-contain opacity-30" />
-          )}
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
-            <Loader2 className="w-12 h-12 text-violet-400 animate-spin" />
-            <div className="text-sm text-violet-300 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              AI READING ID
-            </div>
-            <div className="text-xs text-slate-400">Usually 3-5 seconds</div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (phase === 'ai_failed') {
-    return (
-      <div className="space-y-3">
-        {photoData && (
-          <div className="aspect-video bg-black overflow-hidden border border-slate-700">
-            <img src={photoData} alt="Captured ID" className="w-full h-full object-contain" />
-          </div>
-        )}
-        <div className="p-3 border border-red-500/40 bg-red-500/5 text-xs text-red-300 flex items-start gap-2">
-          <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-          <div className="flex-1">
-            <div className="font-bold mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>AI COULDN'T READ THIS ID</div>
-            <div>{error}</div>
-            <div className="mt-2 text-[11px] text-red-200/80">
-              Tips: hold the ID flat, fill the frame, avoid glare, and use the flashlight in low light.
-            </div>
-          </div>
-        </div>
+      {/* Camera area */}
+      {phase === 'intro' && !photo && (
         <button
-          onClick={() => { setError(null); startScan(); }}
-          className="w-full py-3 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-medium flex items-center justify-center gap-2"
-          style={{ fontFamily: 'DM Sans, sans-serif' }}
+          onClick={startCamera}
+          className="w-full py-3 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-medium tracking-widest flex items-center justify-center gap-2"
+          style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}
         >
-          <Camera className="w-4 h-4" /> RETAKE PHOTO
+          <Camera className="w-4 h-4" /> TAKE PHOTO OF {documentType === 'PASSPORT' ? 'PASSPORT' : 'ID'}
         </button>
-        <button
-          onClick={() => { setError(null); setPhase('manual'); }}
-          className="w-full py-2 border border-amber-500/40 text-amber-300 hover:bg-amber-500/10 text-sm"
-          style={{ fontFamily: 'DM Sans, sans-serif' }}
-        >
-          ENTER MANUALLY (PHOTO WILL BE KEPT)
-        </button>
-        <button
-          onClick={() => { setError(null); setPhase('intro'); }}
-          className="w-full py-2 text-slate-500 hover:text-slate-300 text-sm"
-        >
-          Back
-        </button>
-      </div>
-    );
-  }
+      )}
 
-  if (phase === 'photoOnly') {
-    return (
-      <PhotoOnlyCapture
-        onComplete={(photo) => {
-          // Build a minimal passenger record — photo only, crew confirmed.
-          // No name/DOB/expiration — user spec was "photo only, no fields"
-          const passenger = {
-            id: `pax-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-            firstName: '',
-            lastName: '',
-            dob: '',
-            expiration: '',
-            licenseNumber: '',
-            state: '',
-            realIdCompliant: false,
-            expired: false,
-            photo,
-            scannedAt: Date.now(),
-            method: 'MANUAL_CAPTURE',
-            paxType: 'MANUAL_CAPTURE',
-            noShow: false,
-          };
-          onComplete(passenger);
-        }}
-        onCancel={() => setPhase('intro')}
-      />
-    );
-  }
-
-  if (phase === 'manual') {
-    return <ManualEntryForm onSubmit={handleManualSubmit} onCancel={onCancel} />;
-  }
-
-  if (phase === 'review' && parsed) {
-    const expDate = parsed.expirationISO ? new Date(parsed.expirationISO) : null;
-    const expired = expDate && expDate < new Date();
-
-    // Compute name match against expected pax (when provided).
-    // Caller provides expectedPax with firstName + lastName; if not, no match displayed.
-    const matchInfo = expectedPax
-      ? compareNames(
-          { firstName: parsed.firstName, lastName: parsed.lastName },
-          { firstName: expectedPax.firstName, lastName: expectedPax.lastName }
-        )
-      : null;
-
-    const matchTone = {
-      'exact':    { bg: 'bg-emerald-500/10', border: 'border-emerald-500/40', text: 'text-emerald-300', label: 'NAME MATCHES' },
-      'close':    { bg: 'bg-emerald-500/10', border: 'border-emerald-500/40', text: 'text-emerald-300', label: 'CLOSE MATCH' },
-      'partial':  { bg: 'bg-amber-500/10',   border: 'border-amber-500/40',   text: 'text-amber-300',   label: 'PARTIAL MATCH — REVIEW' },
-      'mismatch': { bg: 'bg-red-500/10',     border: 'border-red-500/40',     text: 'text-red-300',     label: 'NAME MISMATCH' },
-      'no-data':  { bg: 'bg-slate-800/40',   border: 'border-slate-700',      text: 'text-slate-400',   label: 'NO MATCH AVAILABLE' },
-    }[matchInfo?.level || 'no-data'];
-
-    // Helper to update an extracted field (allows pilot to fix typos)
-    const updateField = (key) => (val) => setParsed(p => ({ ...p, [key]: val }));
-
-    return (
-      <div className="space-y-4">
-        {photoData && (
-          <div className="aspect-video bg-black overflow-hidden border border-slate-700">
-            <img src={photoData} alt="ID" className="w-full h-full object-cover" />
-          </div>
-        )}
-
-        {/* Name match banner */}
-        {matchInfo && (
-          <div className={`p-3 border ${matchTone.border} ${matchTone.bg}`}>
-            <div className={`text-[10px] tracking-widest ${matchTone.text}`} style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
-              {matchTone.label}
-            </div>
-            <div className="text-sm text-slate-200 mt-1" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-              <span className="text-slate-500">Expected:</span> {expectedPax.firstName} {expectedPax.lastName}
-              <span className="mx-2 text-slate-600">·</span>
-              <span className="text-slate-500">On ID:</span> {parsed.firstName || '?'} {parsed.lastName || '?'}
-            </div>
-            {matchInfo.warnings.length > 0 && (
-              <ul className="text-[11px] text-slate-400 mt-1 list-disc list-inside">
-                {matchInfo.warnings.map((w, i) => <li key={i}>{w}</li>)}
-              </ul>
-            )}
-            {matchInfo.level === 'mismatch' && (
-              <p className="text-[11px] text-red-200 mt-2">
-                The PIC must verify identity in person before checking this passenger in. If the AI misread the ID, fix the fields below before tapping ADD PASSENGER.
-              </p>
+      {phase === 'capturing' && (
+        <div className="space-y-2">
+          <div className="relative bg-black aspect-[4/3] overflow-hidden border border-cyan-500/30">
+            <video ref={videoRef} className="w-full h-full object-cover" autoPlay playsInline muted />
+            <canvas ref={canvasRef} className="hidden" />
+            {torchSupported && (
+              <button
+                onClick={toggleTorch}
+                className={`absolute top-2 right-2 px-2 py-1 text-[10px] tracking-widest border ${
+                  torchOn
+                    ? 'border-amber-400 bg-amber-400/20 text-amber-200'
+                    : 'border-slate-600 bg-slate-900/70 text-slate-300'
+                }`}
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              >
+                {torchOn ? 'TORCH ON' : 'TORCH OFF'}
+              </button>
             )}
           </div>
-        )}
-
-        {/* Editable extracted fields — pilot can fix typos before confirming */}
-        <div className="space-y-3 p-4 border border-slate-700 bg-slate-900/40">
           <div className="grid grid-cols-2 gap-2">
-            <EditableField label="FIRST NAME" value={parsed.firstName || ''} onChange={updateField('firstName')} />
-            <EditableField label="LAST NAME" value={parsed.lastName || ''} onChange={updateField('lastName')} />
+            <button
+              onClick={() => { stopCamera(); setPhase('intro'); }}
+              className="py-2 border border-slate-700 text-slate-400 hover:bg-slate-800 text-xs tracking-widest"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              CANCEL
+            </button>
+            <button
+              onClick={capturePhoto}
+              className="py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs font-medium tracking-widest flex items-center justify-center gap-2"
+              style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}
+            >
+              <Camera className="w-4 h-4" /> CAPTURE
+            </button>
           </div>
-          <EditableField label="MIDDLE NAME (OPTIONAL)" value={parsed.middleName || ''} onChange={updateField('middleName')} />
-          <div className="grid grid-cols-2 gap-2">
-            <EditableField label="DATE OF BIRTH" value={parsed.dobISO || parsed.dob || ''} onChange={(v) => { updateField('dob')(v); updateField('dobISO')(v); }} placeholder="YYYY-MM-DD" mono />
-            <EditableField label="EXPIRES" value={parsed.expirationISO || parsed.expiration || ''} onChange={(v) => { updateField('expiration')(v); updateField('expirationISO')(v); }} placeholder="YYYY-MM-DD" mono />
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <EditableField label="DOC NUMBER" value={parsed.documentNumber || parsed.licenseNumber || ''} onChange={updateField('documentNumber')} mono />
-            <EditableField label="ISSUING AUTH" value={parsed.issuingAuthority || parsed.state || ''} onChange={updateField('issuingAuthority')} mono />
-          </div>
-          {parsed.confidence && (
-            <div className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              AI CONFIDENCE: <span className={
-                parsed.confidence === 'high' ? 'text-emerald-400' :
-                parsed.confidence === 'medium' ? 'text-amber-400' : 'text-red-400'
-              }>{String(parsed.confidence).toUpperCase()}</span>
-            </div>
-          )}
         </div>
+      )}
 
-        {expired && (
-          <div className="p-3 border border-red-500/40 bg-red-500/5 text-xs text-red-300 flex items-start gap-2">
-            <AlertTriangle className="w-4 h-4 shrink-0" />
-            <span>This ID is <strong>EXPIRED</strong>. Cannot be used for compliant verification.</span>
+      {phase === 'review' && photo && (
+        <div className="space-y-2">
+          <div className="border border-emerald-500/30 bg-slate-950 overflow-hidden">
+            <img src={photo} alt={`${documentType} captured`} className="w-full h-auto" />
           </div>
-        )}
+          <button
+            onClick={retake}
+            className="w-full py-1.5 border border-slate-700 text-slate-400 hover:bg-slate-800 text-xs tracking-widest"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            RETAKE PHOTO
+          </button>
+        </div>
+      )}
 
-        <label className="flex items-start gap-3 p-3 border border-slate-700 bg-slate-900/40 cursor-pointer hover:border-cyan-500/40">
+      {/* Verification checkbox */}
+      {photo && (
+        <label className="flex items-start gap-2 p-2.5 border border-slate-700 bg-slate-900/40 cursor-pointer hover:bg-slate-900/70">
           <input
             type="checkbox"
-            checked={realIdConfirmed}
-            onChange={e => setRealIdConfirmed(e.target.checked)}
+            checked={idVerified}
+            onChange={(e) => setIdVerified(e.target.checked)}
             className="mt-0.5 accent-cyan-400"
           />
-          <div className="flex-1">
-            <div className="flex items-center gap-2">
-              <Shield className="w-4 h-4 text-cyan-400" />
-              <span className="text-sm text-slate-100" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>REAL ID VERIFIED</span>
-            </div>
-            <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
-              I confirm a gold/black star indicator is visible on the front of the physical ID, consistent with REAL ID Act compliance. Required for domestic flights.
-            </p>
-          </div>
+          <span className="text-sm text-slate-200" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+            <strong>ID Verified.</strong> I have visually inspected the {documentType === 'PASSPORT' ? 'passport' : 'ID'} and confirm it matches the passenger.
+          </span>
         </label>
+      )}
 
-        <div className="flex gap-2">
-          <button
-            onClick={onCancel}
-            className="flex-1 py-2.5 border border-slate-700 hover:border-slate-500 text-sm text-slate-300"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={finalize}
-            disabled={expired}
-            className="flex-1 py-2.5 bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-800 disabled:text-slate-600 text-slate-950 font-medium"
-            style={{ fontFamily: 'DM Sans, sans-serif' }}
-          >
-            ADD PASSENGER
-          </button>
-        </div>
+      {/* Action buttons */}
+      <div className="grid grid-cols-2 gap-2">
+        <button
+          onClick={() => { stopCamera(); onCancel(); }}
+          className="py-2.5 border border-slate-700 text-slate-300 hover:bg-slate-800 text-xs tracking-widest"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        >
+          CANCEL
+        </button>
+        <button
+          onClick={handleSubmit}
+          disabled={!canSubmit}
+          className="py-2.5 bg-emerald-500 hover:bg-emerald-400 disabled:bg-slate-800 disabled:text-slate-600 text-slate-950 text-xs font-medium tracking-widest flex items-center justify-center gap-1.5"
+          style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}
+        >
+          <CheckCircle2 className="w-3.5 h-3.5" /> CHECK IN PASSENGER
+        </button>
       </div>
-    );
-  }
-
-  return null;
+    </div>
+  );
 }
 
 function FieldInput({ label, value, onChange, type = 'text', placeholder = '', autoComplete }) {
@@ -1935,195 +1675,6 @@ function FieldInput({ label, value, onChange, type = 'text', placeholder = '', a
         autoComplete={autoComplete}
         className="mt-1 w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
         style={{ fontFamily: 'DM Sans, sans-serif' }}
-      />
-    </label>
-  );
-}
-
-function PhotoOnlyCapture({ onComplete, onCancel }) {
-  const [phase, setPhase] = useState('camera'); // 'camera' | 'review'
-  const [photo, setPhoto] = useState(null);
-  const [error, setError] = useState(null);
-  const videoRef = useRef(null);
-  const canvasRef = useRef(null);
-  const streamRef = useRef(null);
-
-  const stopCamera = useCallback(() => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(t => t.stop());
-      streamRef.current = null;
-    }
-  }, []);
-
-  useEffect(() => () => stopCamera(), [stopCamera]);
-
-  // Start camera when entering camera phase
-  useEffect(() => {
-    if (phase !== 'camera') return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: 'environment' } },
-          audio: false,
-        });
-        if (cancelled) {
-          stream.getTracks().forEach(t => t.stop());
-          return;
-        }
-        streamRef.current = stream;
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          await videoRef.current.play();
-        }
-      } catch (e) {
-        setError(e.message || 'Camera not available');
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [phase]);
-
-  const snap = () => {
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    if (!video || !canvas) return;
-    const w = video.videoWidth;
-    const h = video.videoHeight;
-    if (!w || !h) {
-      setError('Camera not ready yet — try again');
-      return;
-    }
-    canvas.width = w;
-    canvas.height = h;
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(video, 0, 0, w, h);
-    // JPEG at 0.7 quality keeps the file small enough for Firestore (<1MB)
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
-    setPhoto(dataUrl);
-    stopCamera();
-    setPhase('review');
-  };
-
-  if (phase === 'review' && photo) {
-    return (
-      <div className="space-y-3">
-        <div className="text-center">
-          <h3 className="text-base tracking-wider" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>PHOTO CAPTURED</h3>
-          <p className="text-xs text-slate-500 mt-1">No data parsed — only the image is saved.</p>
-        </div>
-        <div className="aspect-video bg-black overflow-hidden border border-amber-500/40">
-          <img src={photo} alt="ID" className="w-full h-full object-contain" />
-        </div>
-        <div className="flex gap-2">
-          <button
-            onClick={() => { setPhoto(null); setPhase('camera'); }}
-            className="flex-1 py-2 border border-slate-700 text-sm text-slate-300"
-          >
-            Retake
-          </button>
-          <button
-            onClick={() => onComplete(photo)}
-            className="flex-1 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-medium text-sm"
-            style={{ fontFamily: 'DM Sans, sans-serif' }}
-          >
-            Save Pax
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-3">
-      <div className="text-center">
-        <h3 className="text-base tracking-wider" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>PHOTO ONLY MODE</h3>
-        <p className="text-xs text-slate-500 mt-1 max-w-xs mx-auto">
-          Take a photo of the ID. No data will be parsed — the passenger is added with image only.
-        </p>
-      </div>
-      <div className="relative aspect-[4/3] bg-black overflow-hidden border border-amber-500/40">
-        <video ref={videoRef} className="w-full h-full object-cover" playsInline muted />
-        <canvas ref={canvasRef} className="hidden" />
-        <div className="absolute top-2 left-2 text-[10px] text-amber-300 flex items-center gap-1.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-          <StatusDot tone="amber" pulse /> PHOTO ONLY
-        </div>
-      </div>
-      {error && (
-        <div className="p-2 border border-red-500/30 bg-red-500/5 text-xs text-red-300">
-          {error}
-        </div>
-      )}
-      <div className="flex gap-2">
-        <button
-          onClick={snap}
-          className="flex-1 py-3 bg-amber-500 hover:bg-amber-400 text-slate-950 font-medium flex items-center justify-center gap-2"
-          style={{ fontFamily: 'DM Sans, sans-serif' }}
-        >
-          <Camera className="w-4 h-4" /> CAPTURE
-        </button>
-        <button
-          onClick={() => { stopCamera(); onCancel(); }}
-          className="px-4 py-3 border border-slate-700 text-sm text-slate-300"
-        >
-          Cancel
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function ManualEntryForm({ onSubmit, onCancel }) {
-  const [form, setForm] = useState({
-    firstName: '', lastName: '', dob: '', expiration: '', licenseNumber: '', state: '',
-  });
-  const valid = form.firstName && form.lastName && form.dob && form.expiration;
-  const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
-  return (
-    <div className="space-y-3">
-      <h3 className="text-sm tracking-wider" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>MANUAL ID ENTRY</h3>
-      <div className="grid grid-cols-2 gap-3">
-        <FieldInput label="FIRST NAME" value={form.firstName} onChange={set('firstName')} />
-        <FieldInput label="LAST NAME" value={form.lastName} onChange={set('lastName')} />
-        <FieldInput label="DATE OF BIRTH" value={form.dob} onChange={set('dob')} type="date" />
-        <FieldInput label="ID EXPIRATION" value={form.expiration} onChange={set('expiration')} type="date" />
-        <FieldInput label="LICENSE #" value={form.licenseNumber} onChange={set('licenseNumber')} />
-        <FieldInput label="STATE" value={form.state} onChange={set('state')} placeholder="FL" />
-      </div>
-      <div className="flex gap-2 pt-2">
-        <button onClick={onCancel} className="flex-1 py-2.5 border border-slate-700 text-sm text-slate-300">Cancel</button>
-        <button
-          disabled={!valid}
-          onClick={() => onSubmit({
-            firstName: form.firstName,
-            lastName: form.lastName,
-            dobISO: form.dob,
-            expirationISO: form.expiration,
-            licenseNumber: form.licenseNumber,
-            state: form.state.toUpperCase(),
-          })}
-          className="flex-1 py-2.5 bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-800 disabled:text-slate-600 text-slate-950 font-medium"
-          style={{ fontFamily: 'DM Sans, sans-serif' }}
-        >
-          CONTINUE
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function EditableField({ label, value, onChange, placeholder, mono }) {
-  return (
-    <label className="block">
-      <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-        {label}
-      </span>
-      <input
-        type="text"
-        value={value || ''}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder || ''}
-        className="mt-1 w-full bg-slate-900/60 border border-slate-700 px-2 py-1.5 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
-        style={{ fontFamily: mono ? 'JetBrains Mono, monospace' : 'DM Sans, sans-serif' }}
       />
     </label>
   );
@@ -2731,50 +2282,24 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
 
   const addPassenger = async (pax) => {
     setScanning(false);
-    // If we were checking in a pre-loaded pax, run name match logic
+    // Pre-loaded check-in: pax was confirmed by photo + crew checkbox in the
+    // panel. The trip-sheet name carries through (no AI parsing, no name
+    // comparison). Stamp audit fields and link to the preloaded entry.
     if (pendingScanPax) {
       const target = pendingScanPax;
       setPendingScanPax(null);
-      // Skip match logic for photo-only / no-name pax — just attach the photo
-      // to the preloaded entry as 'manual_override' so the row still flips.
-      if (pax.paxType === 'MANUAL_CAPTURE' || (!pax.firstName && !pax.lastName)) {
-        const newPax = { ...pax, id: pax.id || `pax-${Date.now()}` };
-        const nextPassengers = [...passengers, newPax];
-        const nextPreloaded = preloadedPax.map(p =>
-          p.id === target.id
-            ? { ...p, scannedPaxId: newPax.id, checkInStatus: 'manual_override' }
-            : p
-        );
-        setPassengers(nextPassengers);
-        setPreloadedPax(nextPreloaded);
-        await persist({
-          statuses, passengers: nextPassengers, brokerEmail, autoNotify, completed,
-          hasCatering, paxOverride, preloadedPax: nextPreloaded,
-        });
-        return;
-      }
-      // Compare scanned name against preloaded name
-      const preloadedName = `${target.firstName} ${target.lastName}`.trim();
-      const scannedName = `${pax.firstName} ${pax.lastName}`.trim();
-      const cmp = comparePaxNames(preloadedName, scannedName);
-
-      if (cmp === 'no_match') {
-        const proceed = window.confirm(
-          `NAME MISMATCH:\n\n` +
-          `Trip sheet: ${preloadedName}\n` +
-          `Scanned ID: ${scannedName}\n\n` +
-          `Press OK to check in this pax under the trip-sheet name (override),\n` +
-          `or Cancel to discard the scan.`
-        );
-        if (!proceed) return;
-      }
-
-      const checkInStatus = cmp === 'no_match' ? 'mismatch' : (cmp === 'fuzzy' ? 'manual_override' : 'matched');
-      const newPax = { ...pax, id: pax.id || `pax-${Date.now()}`, preloadedRefId: target.id };
+      const newPax = {
+        ...pax,
+        id: pax.id || `pax-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        preloadedRefId: target.id,
+        verifiedBy: currentUser?.name || currentUser?.email || 'unknown',
+        verifiedAt: Date.now(),
+        scannedAt: Date.now(),
+      };
       const nextPassengers = [...passengers, newPax];
       const nextPreloaded = preloadedPax.map(p =>
         p.id === target.id
-          ? { ...p, scannedPaxId: newPax.id, checkInStatus }
+          ? { ...p, scannedPaxId: newPax.id, checkInStatus: 'matched' }
           : p
       );
       setPassengers(nextPassengers);
@@ -2786,8 +2311,15 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
       return;
     }
 
-    // No preloaded target — just add normally
-    const next = [...passengers, pax];
+    // Walk-up: not on the trip sheet. Stamp audit fields and add.
+    const newPax = {
+      ...pax,
+      id: pax.id || `pax-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      verifiedBy: currentUser?.name || currentUser?.email || 'unknown',
+      verifiedAt: Date.now(),
+      scannedAt: Date.now(),
+    };
+    const next = [...passengers, newPax];
     setPassengers(next);
     await persist({ statuses, passengers: next, brokerEmail, autoNotify, completed, hasCatering, paxOverride });
   };
@@ -3221,26 +2753,12 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
         ) : tab === 'pax' ? (
           <div className="p-6 space-y-3 max-w-2xl">
             {scanning ? (
-              <>
-                {pendingScanPax && (
-                  <div className="p-3 border border-cyan-500/40 bg-cyan-500/10 mb-2">
-                    <div className="text-[10px] tracking-widest text-cyan-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                      CHECKING IN
-                    </div>
-                    <div className="text-sm text-slate-100" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
-                      {pendingScanPax.firstName} {pendingScanPax.lastName}
-                    </div>
-                    <div className="text-[10px] text-slate-500 mt-0.5">
-                      Scan the front of any government ID — the AI will read it and check it matches.
-                    </div>
-                  </div>
-                )}
-                <IDScanner
-                  expectedPax={pendingScanPax}
-                  onComplete={addPassenger}
-                  onCancel={() => { setScanning(false); setPendingScanPax(null); }}
-                />
-              </>
+              <IDCheckInPanel
+                mode={pendingScanPax ? 'preloaded' : 'walkup'}
+                expectedPax={pendingScanPax}
+                onComplete={addPassenger}
+                onCancel={() => { setScanning(false); setPendingScanPax(null); }}
+              />
             ) : (
               <>
                 <div className="flex items-start justify-between gap-2 flex-wrap">
@@ -3263,7 +2781,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
                     className="flex items-center gap-2 px-3 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-sm font-medium"
                     style={{ fontFamily: 'DM Sans, sans-serif' }}
                   >
-                    <ScanLine className="w-4 h-4" /> SCAN ID
+                    <UserCheck className="w-4 h-4" /> ADD WALK-UP
                   </button>
                 </div>
 
@@ -3375,7 +2893,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
 }
 
 function QuickAddPax({ onAdd }) {
-  const [open, setOpen] = useState(null); // null | 'CHILD' | 'PASSPORT'
+  const [open, setOpen] = useState(null); // null | 'CHILD'
   const [first, setFirst] = useState('');
   const [last, setLast] = useState('');
 
@@ -3388,9 +2906,8 @@ function QuickAddPax({ onAdd }) {
   };
 
   if (open) {
-    const isChild = open === 'CHILD';
     return (
-      <div className={`p-3 border ${isChild ? 'border-violet-500/40 bg-violet-500/5' : 'border-blue-500/40 bg-blue-500/5'}`}>
+      <div className="p-3 border border-violet-500/40 bg-violet-500/5">
         <div className="flex items-center justify-between mb-2">
           <span className="text-xs tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
             ADD {open}
@@ -3422,9 +2939,8 @@ function QuickAddPax({ onAdd }) {
         <button
           onClick={submit}
           disabled={!first.trim() || !last.trim()}
-          className={`mt-2 w-full py-2 text-sm font-medium ${
-            isChild ? 'bg-violet-500 hover:bg-violet-400' : 'bg-blue-500 hover:bg-blue-400'
-          } text-slate-950 disabled:opacity-40 disabled:cursor-not-allowed`}
+          className="mt-2 w-full py-2 text-sm font-medium bg-violet-500 hover:bg-violet-400 text-slate-950 disabled:opacity-40 disabled:cursor-not-allowed"
+
           style={{ fontFamily: 'DM Sans, sans-serif' }}
         >
           Add to Manifest
@@ -3434,20 +2950,13 @@ function QuickAddPax({ onAdd }) {
   }
 
   return (
-    <div className="grid grid-cols-2 gap-2">
+    <div>
       <button
         onClick={() => setOpen('CHILD')}
-        className="flex items-center justify-center gap-2 py-2 border border-violet-500/40 text-violet-300 hover:bg-violet-500/10 text-sm tracking-wider"
+        className="w-full flex items-center justify-center gap-2 py-2 border border-violet-500/40 text-violet-300 hover:bg-violet-500/10 text-sm tracking-wider"
         style={{ fontFamily: 'DM Sans, sans-serif' }}
       >
-        <Users className="w-4 h-4" /> ADD CHILD
-      </button>
-      <button
-        onClick={() => setOpen('PASSPORT')}
-        className="flex items-center justify-center gap-2 py-2 border border-blue-500/40 text-blue-300 hover:bg-blue-500/10 text-sm tracking-wider"
-        style={{ fontFamily: 'DM Sans, sans-serif' }}
-      >
-        <Shield className="w-4 h-4" /> ADD PASSPORT
+        <Users className="w-4 h-4" /> ADD CHILD (NO ID)
       </button>
     </div>
   );
@@ -5278,8 +4787,11 @@ function PassengerRow({ passenger, onRemove, onToggleNoShow }) {
   const expDate = passenger.expiration ? new Date(passenger.expiration) : null;
   const expired = expDate && expDate < new Date();
   const compliant = passenger.realIdCompliant && !expired;
+  // Backwards-compat: legacy paxType plus the new documentType field
   const isChild = passenger.paxType === 'CHILD';
-  const isPassport = passenger.paxType === 'PASSPORT';
+  const isLegacyPassport = passenger.paxType === 'PASSPORT';
+  const isPassport = isLegacyPassport || passenger.documentType === 'PASSPORT';
+  const isPhotoVerified = passenger.idVerified === true;
   const isManualCapture = passenger.paxType === 'MANUAL_CAPTURE';
   const isNoShow = passenger.noShow === true;
   const displayName = (passenger.firstName || passenger.lastName)
@@ -5313,8 +4825,12 @@ function PassengerRow({ passenger, onRemove, onToggleNoShow }) {
             <Pill tone="neutral">NO SHOW</Pill>
           ) : isChild ? (
             <Pill tone="amber"><Users className="w-2.5 h-2.5" /> CHILD</Pill>
+          ) : isPassport && isPhotoVerified ? (
+            <Pill tone="green"><Shield className="w-2.5 h-2.5" /> PASSPORT VERIFIED</Pill>
           ) : isPassport ? (
             <Pill tone="cyan"><Shield className="w-2.5 h-2.5" /> PASSPORT</Pill>
+          ) : isPhotoVerified ? (
+            <Pill tone="green"><CheckCircle2 className="w-2.5 h-2.5" /> ID VERIFIED</Pill>
           ) : isManualCapture ? (
             <Pill tone="amber"><Camera className="w-2.5 h-2.5" /> PHOTO</Pill>
           ) : compliant ? (
