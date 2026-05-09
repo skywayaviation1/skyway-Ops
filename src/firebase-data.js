@@ -103,34 +103,48 @@ export function subscribeToTripState(tripId, onUpdate) {
 }
 
 /**
- * Save the entire trip state. Overwrites the document — required so deleted
- * status keys actually disappear (merge:true would leave them).
+ * Save trip state. Performs a per-field merge: only fields explicitly present
+ * in `state` get written; existing fields are preserved.
+ *
+ * IMPORTANT: For maps that need delete semantics (e.g. statuses where removing
+ * a key must actually remove it from Firestore), the caller must pass the
+ * complete map object — we write whatever was provided, including {}. We do
+ * NOT use Firestore's `{ merge: true }` because that's deep-merge, which
+ * leaves stale keys in nested maps.
+ *
+ * The reason this used to overwrite the whole document was the `statuses`
+ * delete-key concern. We now solve that by always treating `statuses` (and
+ * other map-shaped fields) as full-replace WHEN PROVIDED, and skipping them
+ * entirely when the caller didn't pass them. This way calling
+ * `saveTripState(uid, { archived: true })` doesn't blow away passengers,
+ * statuses, or anything else.
  */
 export async function saveTripState(tripId, state) {
   const safeId = sanitizeKey(tripId);
-  await setDoc(
-    doc(db, 'trip-state', safeId),
-    {
-      statuses: state.statuses || {},
-      passengers: state.passengers || [],
-      brokerEmail: state.brokerEmail || '',
-      autoNotify: state.autoNotify === true,
-      completed: state.completed === true,
-      completedAt: state.completedAt || null,
-      archived: state.archived === true,
-      archivedAt: state.archivedAt || null,
-      hasCatering: state.hasCatering !== false,
-      paxOverride: typeof state.paxOverride === 'number' ? state.paxOverride : null,
-      tripSheetUrl: state.tripSheetUrl || null,
-      tripSheetPath: state.tripSheetPath || null,
-      tripSheetUploadedAt: state.tripSheetUploadedAt || null,
-      tripSheetUploadedBy: state.tripSheetUploadedBy || null,
-      tripSheetFilename: state.tripSheetFilename || null,
-      preloadedPax: Array.isArray(state.preloadedPax) ? state.preloadedPax : [],
-      tripSheetNotes: state.tripSheetNotes || null,
-      updatedAt: Date.now(),
-    }
-  );
+  // Build the patch — only include fields the caller explicitly passed.
+  // `hasOwnProperty` distinguishes "not passed" from "passed as undefined/null".
+  const patch = { updatedAt: Date.now() };
+  const has = (k) => Object.prototype.hasOwnProperty.call(state, k);
+
+  if (has('statuses'))             patch.statuses = state.statuses || {};
+  if (has('passengers'))           patch.passengers = state.passengers || [];
+  if (has('brokerEmail'))          patch.brokerEmail = state.brokerEmail || '';
+  if (has('autoNotify'))           patch.autoNotify = state.autoNotify === true;
+  if (has('completed'))            patch.completed = state.completed === true;
+  if (has('completedAt'))          patch.completedAt = state.completedAt || null;
+  if (has('archived'))             patch.archived = state.archived === true;
+  if (has('archivedAt'))           patch.archivedAt = state.archivedAt || null;
+  if (has('hasCatering'))          patch.hasCatering = state.hasCatering !== false;
+  if (has('paxOverride'))          patch.paxOverride = typeof state.paxOverride === 'number' ? state.paxOverride : null;
+  if (has('tripSheetUrl'))         patch.tripSheetUrl = state.tripSheetUrl || null;
+  if (has('tripSheetPath'))        patch.tripSheetPath = state.tripSheetPath || null;
+  if (has('tripSheetUploadedAt'))  patch.tripSheetUploadedAt = state.tripSheetUploadedAt || null;
+  if (has('tripSheetUploadedBy'))  patch.tripSheetUploadedBy = state.tripSheetUploadedBy || null;
+  if (has('tripSheetFilename'))    patch.tripSheetFilename = state.tripSheetFilename || null;
+  if (has('preloadedPax'))         patch.preloadedPax = Array.isArray(state.preloadedPax) ? state.preloadedPax : [];
+  if (has('tripSheetNotes'))       patch.tripSheetNotes = state.tripSheetNotes || null;
+
+  await setDoc(doc(db, 'trip-state', safeId), patch, { merge: true });
 }
 
 /**
