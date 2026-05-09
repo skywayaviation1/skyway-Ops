@@ -2125,7 +2125,7 @@ function NotifyPanel({ trip, opsEmail, brokerEmail, setBrokerEmail, statuses, au
 /* ============================================================
    Trip detail view
    ============================================================ */
-function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEmail, onBack }) {
+function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEmail, onBack, onArchive }) {
   const [tab, setTab] = useState(trip.info.isOps ? 'status' : 'chat');
   const [statuses, setStatuses] = useState({});
   const [passengers, setPassengers] = useState([]);
@@ -2601,6 +2601,13 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
                   hasCatering,
                   paxOverride,
                 });
+                // Optimistically update the parent's tripArchived state so the
+                // schedule re-categorizes this trip immediately (otherwise we'd
+                // wait for the next polling cycle to pick up archived=true).
+                if (onArchive) onArchive(trip.uid, next);
+                // When marking complete, drop back to the list so the user
+                // doesn't sit on a now-archived trip detail.
+                if (next && onBack) onBack();
                 // Auto-add this completed leg to the daily manifest, but only
                 // if it's an actual flying leg (skip CREW HOTEL, MX, HOLD).
                 if (next && trip.info?.isFlight) {
@@ -9928,12 +9935,17 @@ export default function CharterOps() {
       try {
         const { getDoc, doc, collection, query, orderBy, limit, getDocs } = await import('firebase/firestore');
         const { db } = await import('./firebase.js');
-        // Only poll the trips currently visible on the schedule (today + future, max 50)
+        // Poll trips in a window from 14 days ago through the future. The
+        // backwards window is needed so trips marked complete in the recent
+        // past keep their archived flag in local state across refreshes —
+        // otherwise the next poll wouldn't read their archived=true and they'd
+        // pop back into the active schedule.
         const startOfToday = new Date();
         startOfToday.setHours(0, 0, 0, 0);
+        const fourteenDaysAgo = startOfToday.getTime() - (14 * 24 * 3600 * 1000);
         const visibleTrips = allTrips
-          .filter(t => t.start && t.start >= startOfToday.getTime())
-          .slice(0, 50);
+          .filter(t => t.start && t.start >= fourteenDaysAgo)
+          .slice(0, 100);
 
         const counts = {};
         const updates = {};
@@ -9948,7 +9960,13 @@ export default function CharterOps() {
             const state = snap.exists() ? snap.data() : {};
             const stat = state.statuses || {};
             counts[t.uid] = Object.keys(stat).length;
-            if (state.archived === true) archived[t.uid] = state.archivedAt || true;
+            // A trip is treated as archived if EITHER:
+            // - state.archived === true (manual archive or marked complete)
+            // - state.completed === true (defensive: covers cases where archived
+            //   wasn't written for some reason, or older records)
+            if (state.archived === true || state.completed === true) {
+              archived[t.uid] = state.archivedAt || state.completedAt || true;
+            }
             const sTs = state.updatedAt || 0;
             if (sTs > 0) stateTs[t.uid] = sTs;
             let latest = sTs;
@@ -10422,6 +10440,7 @@ export default function CharterOps() {
                   allTrips={allTrips}
                   opsEmail={OPS_EMAIL}
                   onBack={() => setSelectedId(null)}
+                  onArchive={(uid, archived) => archived ? archiveTrip(uid) : unarchiveTrip(uid)}
                 />
               ) : (
                 <div className="h-full flex items-center justify-center p-8 grid-bg">
@@ -10527,6 +10546,7 @@ export default function CharterOps() {
                   allTrips={allTrips}
                   opsEmail={OPS_EMAIL}
                   onBack={() => setSelectedId(null)}
+                  onArchive={(uid, archived) => archived ? archiveTrip(uid) : unarchiveTrip(uid)}
                 />
               ) : (
                 <div className="h-full flex items-center justify-center p-8 grid-bg">
