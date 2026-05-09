@@ -1433,18 +1433,39 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel }) {
         audio: false,
       });
       streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play().catch(() => {});
-      }
       const track = stream.getVideoTracks()[0];
       const capabilities = track.getCapabilities ? track.getCapabilities() : {};
       if (capabilities.torch) setTorchSupported(true);
+      // Switch phase first so the <video> element renders. The stream gets
+      // attached by the useEffect below once videoRef.current is populated.
+      // (iPhone Safari + PWA mode requires the element be in the DOM before
+      // assigning srcObject — otherwise the video stays black.)
       setPhase('capturing');
     } catch (e) {
       setError(`Camera error: ${e.message}`);
     }
   };
+
+  // Attach the stream once both (1) the stream exists and (2) the <video>
+  // element is mounted (phase === 'capturing'). This is the iPhone-safe
+  // ordering — set state first, attach in an effect after render.
+  useEffect(() => {
+    if (phase !== 'capturing') return;
+    if (!videoRef.current || !streamRef.current) return;
+    const v = videoRef.current;
+    v.srcObject = streamRef.current;
+    // iOS Safari needs these attributes set before play() — the JSX has
+    // them but assigning srcObject sometimes resets state. Re-affirm.
+    v.setAttribute('playsinline', 'true');
+    v.setAttribute('webkit-playsinline', 'true');
+    v.muted = true;
+    const playPromise = v.play();
+    if (playPromise && typeof playPromise.catch === 'function') {
+      playPromise.catch(err => {
+        console.warn('[IDCheckInPanel] video.play() failed:', err);
+      });
+    }
+  }, [phase]);
 
   const toggleTorch = async () => {
     if (!streamRef.current) return;
@@ -1576,7 +1597,14 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel }) {
       {phase === 'capturing' && (
         <div className="space-y-2">
           <div className="relative bg-black aspect-[4/3] overflow-hidden border border-cyan-500/30">
-            <video ref={videoRef} className="w-full h-full object-cover" autoPlay playsInline muted />
+            <video
+              ref={videoRef}
+              className="w-full h-full object-cover"
+              autoPlay
+              playsInline
+              webkit-playsinline="true"
+              muted
+            />
             <canvas ref={canvasRef} className="hidden" />
             {torchSupported && (
               <button
