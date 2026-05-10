@@ -35,6 +35,11 @@ export const db = initializeFirestore(
   app,
   {
     experimentalForceLongPolling: true,
+    // Disable the auto-detect probe that fires before forceLongPolling kicks
+    // in. Without this, the SDK still sends 1-2 WebChannel handshake
+    // attempts on connection startup, which throw "access control checks"
+    // errors in Safari before falling back to long-polling.
+    experimentalAutoDetectLongPolling: false,
     useFetchStreams: false,
   },
   'appusers',
