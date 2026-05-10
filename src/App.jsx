@@ -1185,7 +1185,7 @@ function getStepDisplay(step, trip) {
   return step;
 }
 
-function StatusButton({ step, status, onTrigger, onUntrigger, locked, isNext, autoNotify }) {
+function StatusButton({ step, status, onTrigger, onUntrigger, locked, isNext, autoNotify, airportCode }) {
   const Icon = step.icon;
   const completed = !!status;
   const pulsing = isNext && !completed && !locked;
@@ -1230,7 +1230,14 @@ function StatusButton({ step, status, onTrigger, onUntrigger, locked, isNext, au
             </h4>
             {completed && (
               <span className="text-[10px] text-emerald-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                {fmtZulu(new Date(status.timestamp))}
+                {(() => {
+                  const d = new Date(status.timestamp);
+                  if (airportCode) {
+                    const t = formatLocalTime(d, airportCode);
+                    return `${t.time}${t.tz ? ' ' + t.tz : ''}`;
+                  }
+                  return fmtZulu(d);
+                })()}
               </span>
             )}
           </div>
@@ -2781,6 +2788,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
                   locked={blocked}
                   isNext={nextStep?.id === step.id && !blocked}
                   autoNotify={autoNotify}
+                  airportCode={trip.info.from}
                 />
               );
             })}
