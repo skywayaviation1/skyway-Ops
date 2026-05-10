@@ -1396,7 +1396,7 @@ const DOCUMENT_TYPES = [
  *   - onComplete(paxData) - called with the assembled pax record
  *   - onCancel() - close the panel
  */
-function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel }) {
+function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }) {
   const isWalkup = mode === 'walkup';
 
   // Walk-up name fields (preloaded uses expectedPax)
@@ -1510,25 +1510,68 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel }) {
 
   const canSubmit = walkupNamesValid && photo && idVerified;
 
-  const handleSubmit = () => {
-    if (!canSubmit) return;
-    const paxData = isWalkup
-      ? {
-          firstName: firstName.trim(),
-          lastName: lastName.trim(),
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState(null);
+
+  const handleSubmit = async () => {
+    if (!canSubmit || uploading) return;
+    setUploading(true);
+    setUploadError(null);
+    try {
+      // Generate the pax id up-front so we can use it as the Storage filename.
+      // This same id is then attached to the pax record below.
+      const paxId = `pax-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+      // Upload the photo to Firebase Storage. We get back a download URL that
+      // we store on the pax record — the inline dataURL is NOT persisted to
+      // Firestore (it's hundreds of KB and would blow past the 1 MB doc limit
+      // after a few pax). The Storage bucket has a lifecycle rule that
+      // auto-deletes pax-ids/ objects after 5 days.
+      const { getStorage, ref, uploadString, getDownloadURL } = await import('firebase/storage');
+      // Storage uses the default Firebase app (initialized by firebase.js).
+      // Unlike Firestore which uses a NAMED database ('appusers'), Storage
+      // attaches to the default storageBucket from firebaseConfig.
+      const storage = getStorage();
+      const path = `pax-ids/${tripContext.tripUid}/${paxId}.jpg`;
+      const fileRef = ref(storage, path);
+      // `uploadString` accepts a data URL directly with format 'data_url'
+      const snap = await uploadString(fileRef, photo, 'data_url', {
+        contentType: 'image/jpeg',
+        // Custom metadata helps audit who uploaded what
+        customMetadata: {
+          tripUid: String(tripContext.tripUid || ''),
+          verifiedBy: String(tripContext.verifiedBy || ''),
           documentType,
-          photo,
-          idVerified: true,
-          method: 'PHOTO_VERIFY_WALKUP',
-        }
-      : {
-          ...expectedPax,
-          documentType,
-          photo,
-          idVerified: true,
-          method: 'PHOTO_VERIFY',
-        };
-    onComplete(paxData);
+        },
+      });
+      const photoUrl = await getDownloadURL(snap.ref);
+
+      const paxData = isWalkup
+        ? {
+            id: paxId,
+            firstName: firstName.trim(),
+            lastName: lastName.trim(),
+            documentType,
+            photoUrl,           // ← URL instead of inline dataURL
+            photoPath: path,    // for future delete-on-trip-removal
+            idVerified: true,
+            method: 'PHOTO_VERIFY_WALKUP',
+          }
+        : {
+            ...expectedPax,
+            id: paxId,
+            documentType,
+            photoUrl,
+            photoPath: path,
+            idVerified: true,
+            method: 'PHOTO_VERIFY',
+          };
+      onComplete(paxData);
+    } catch (err) {
+      console.error('[IDCheckInPanel] photo upload failed:', err);
+      setUploadError(`Photo upload failed: ${err.message || err}. Please try again.`);
+      setUploading(false);
+    }
   };
 
   return (
@@ -1536,6 +1579,11 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel }) {
       {error && (
         <div className="p-2 border border-red-500/40 bg-red-500/5 text-xs text-red-300">
           {error}
+        </div>
+      )}
+      {uploadError && (
+        <div className="p-2 border border-red-500/40 bg-red-500/5 text-xs text-red-300">
+          {uploadError}
         </div>
       )}
 
@@ -1687,11 +1735,19 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel }) {
         </button>
         <button
           onClick={handleSubmit}
-          disabled={!canSubmit}
+          disabled={!canSubmit || uploading}
           className="py-2.5 bg-emerald-500 hover:bg-emerald-400 disabled:bg-slate-800 disabled:text-slate-600 text-slate-950 text-xs font-medium tracking-widest flex items-center justify-center gap-1.5"
           style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}
         >
-          <CheckCircle2 className="w-3.5 h-3.5" /> CHECK IN PASSENGER
+          {uploading ? (
+            <>
+              <Loader2 className="w-3.5 h-3.5 animate-spin" /> UPLOADING...
+            </>
+          ) : (
+            <>
+              <CheckCircle2 className="w-3.5 h-3.5" /> CHECK IN PASSENGER
+            </>
+          )}
         </button>
       </div>
     </div>
@@ -2325,7 +2381,9 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
       setPendingScanPax(null);
       const newPax = {
         ...pax,
-        id: pax.id || `pax-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        // pax.id was already set by IDCheckInPanel so the Storage path
+        // matches the pax record. Keep that id.
+        id: pax.id,
         preloadedRefId: target.id,
         verifiedBy: currentUser?.name || currentUser?.email || 'unknown',
         verifiedAt: Date.now(),
@@ -2349,7 +2407,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
     // Walk-up: not on the trip sheet. Stamp audit fields and add.
     const newPax = {
       ...pax,
-      id: pax.id || `pax-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: pax.id,
       verifiedBy: currentUser?.name || currentUser?.email || 'unknown',
       verifiedAt: Date.now(),
       scannedAt: Date.now(),
@@ -2799,6 +2857,10 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
               <IDCheckInPanel
                 mode={pendingScanPax ? 'preloaded' : 'walkup'}
                 expectedPax={pendingScanPax}
+                tripContext={{
+                  tripUid: trip.uid,
+                  verifiedBy: currentUser?.name || currentUser?.email || 'unknown',
+                }}
                 onComplete={addPassenger}
                 onCancel={() => { setScanning(false); setPendingScanPax(null); }}
               />
@@ -4852,8 +4914,8 @@ function PassengerRow({ passenger, onRemove, onToggleNoShow }) {
 
   return (
     <div className={`p-3 border ${borderClass} flex items-start gap-3`}>
-      {passenger.photo ? (
-        <img src={passenger.photo} alt="" className="w-12 h-12 object-cover border border-slate-700" />
+      {(passenger.photoUrl || passenger.photo) ? (
+        <img src={passenger.photoUrl || passenger.photo} alt="" className="w-12 h-12 object-cover border border-slate-700" />
       ) : (
         <div className="w-12 h-12 border border-slate-700 bg-slate-900 flex items-center justify-center">
           <UserCheck className="w-5 h-5 text-slate-600" />
