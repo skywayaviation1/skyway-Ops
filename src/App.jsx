@@ -406,7 +406,7 @@ function parseJetInsightTripSheet(text) {
   // we parse departure and arrival info SEPARATELY, then pair them up by leg number.
   const legSummaries = [];
   // First pass: find "Leg N: Pax: M FROM date - time tz (zulu Z)" — the departure half
-  const depRe = /Leg\s+(\d+)\s*:\s*Pax\s*:\s*(\d+)\s+([A-Z]{3,4})\s+(\d{1,2}\/\d{1,2}\/\d{4})\s*-\s*(\d{1,2}:\d{2})\s+([A-Z]{2,4})\s*\((\d{1,2}:\d{2})\s*Z\)/gi;
+  const depRe = /Leg\s+(\d+)\s*:\s*Pax\s*:\s*(\d+)\s+([A-Z0-9]{3,4})\s+(\d{1,2}\/\d{1,2}\/\d{4})\s*-\s*(\d{1,2}:\d{2})\s+([A-Z]{2,4})\s*\((\d{1,2}:\d{2})\s*Z\)/gi;
   const departures = [];
   let dm;
   while ((dm = depRe.exec(text)) !== null) {
@@ -423,7 +423,7 @@ function parseJetInsightTripSheet(text) {
   }
   // Second pass: find arrival "TO date - time tz (zulu Z)" — extract the destination
   // airport. We look for these AFTER each departure end index.
-  const arrRe = /([A-Z]{3,4})\s+(\d{1,2}\/\d{1,2}\/\d{4})\s*-\s*(\d{1,2}:\d{2})\s+[A-Z]{2,4}\s*\((\d{1,2}:\d{2})\s*Z\)/g;
+  const arrRe = /([A-Z0-9]{3,4})\s+(\d{1,2}\/\d{1,2}\/\d{4})\s*-\s*(\d{1,2}:\d{2})\s+[A-Z]{2,4}\s*\((\d{1,2}:\d{2})\s*Z\)/g;
   for (const dep of departures) {
     arrRe.lastIndex = dep.depEndIdx;
     const am = arrRe.exec(text);
