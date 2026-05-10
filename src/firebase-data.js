@@ -11,6 +11,7 @@ import { db } from './firebase.js';
 import {
   doc,
   setDoc,
+  updateDoc,
   getDoc,
   deleteDoc,
   collection,
@@ -104,20 +105,22 @@ export function subscribeToTripState(tripId, onUpdate) {
 
 /**
  * Save trip state. Performs a per-field merge: only fields explicitly present
- * in `state` get written; existing fields are preserved.
+ * in `state` get written; existing fields on the document are preserved.
  *
- * IMPORTANT: For maps that need delete semantics (e.g. statuses where removing
- * a key must actually remove it from Firestore), the caller must pass the
- * complete map object — we write whatever was provided, including {}. We do
- * NOT use Firestore's `{ merge: true }` because that's deep-merge, which
- * leaves stale keys in nested maps.
+ * Critical subtlety with map-shaped fields like `statuses`:
+ *   - We want PATCH semantics for top-level fields (don't blow away passengers
+ *     when only archived changes)
+ *   - We want REPLACE semantics for the map's contents (when crew removes a
+ *     status, that key must actually disappear from Firestore)
  *
- * The reason this used to overwrite the whole document was the `statuses`
- * delete-key concern. We now solve that by always treating `statuses` (and
- * other map-shaped fields) as full-replace WHEN PROVIDED, and skipping them
- * entirely when the caller didn't pass them. This way calling
- * `saveTripState(uid, { archived: true })` doesn't blow away passengers,
- * statuses, or anything else.
+ * `setDoc({merge: true})` does deep-merge, which RETAINS stale keys inside
+ * maps — exactly what we don't want for status undo.
+ * `updateDoc()` does shallow-merge: top-level fields you don't pass are kept,
+ * and top-level fields you DO pass replace the prior value entirely. That's
+ * the behavior we want.
+ *
+ * `updateDoc` requires the doc to exist. For first writes we fall back to
+ * `setDoc` with no merge flag (the patch IS the whole doc).
  */
 export async function saveTripState(tripId, state) {
   const safeId = sanitizeKey(tripId);
@@ -144,7 +147,21 @@ export async function saveTripState(tripId, state) {
   if (has('preloadedPax'))         patch.preloadedPax = Array.isArray(state.preloadedPax) ? state.preloadedPax : [];
   if (has('tripSheetNotes'))       patch.tripSheetNotes = state.tripSheetNotes || null;
 
-  await setDoc(doc(db, 'trip-state', safeId), patch, { merge: true });
+  const ref = doc(db, 'trip-state', safeId);
+
+  // Try updateDoc first — it does shallow-merge (replaces top-level fields you
+  // pass, leaves the rest). That's the behavior we need for `statuses` undo.
+  try {
+    await updateDoc(ref, patch);
+  } catch (err) {
+    // updateDoc throws "not-found" when the doc doesn't exist yet. First-write
+    // case — fall back to setDoc with the patch as the whole doc.
+    if (err && (err.code === 'not-found' || /No document to update/i.test(String(err.message || '')))) {
+      await setDoc(ref, patch);
+    } else {
+      throw err;
+    }
+  }
 }
 
 /**
