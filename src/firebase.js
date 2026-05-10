@@ -1,6 +1,6 @@
 // Firebase initialization. Public client config - safe to commit.
 import { initializeApp } from 'firebase/app';
-import { getFirestore } from 'firebase/firestore';
+import { initializeFirestore } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
 
 const firebaseConfig = {
@@ -13,5 +13,31 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, 'appusers');
+
+// Force long-polling instead of WebChannel streaming.
+//
+// Why: iOS Safari's Intelligent Tracking Prevention treats firestore.googleapis.com
+// as a third-party origin and breaks the streaming WebChannel that Firestore
+// uses by default. The SDK auto-detects this and falls back to long-polling
+// anyway, but the detection itself throws "access control checks" errors to
+// the console and adds 5-10 seconds of failed-handshake delay on every
+// reconnect (which on a PWA happens every time the user switches apps and
+// comes back).
+//
+// Setting experimentalForceLongPolling: true skips the auto-detect and uses
+// long-polling from the start. Trade-off: very slightly higher latency on
+// browsers where the streaming channel would have worked (Chrome desktop,
+// Android Chrome). Saves real-world latency + eliminates noisy errors on
+// every iPhone our pilots use.
+//
+// We use the named 'appusers' database, not the default — passed in settings.
+export const db = initializeFirestore(
+  app,
+  {
+    experimentalForceLongPolling: true,
+    useFetchStreams: false,
+  },
+  'appusers',
+);
+
 export const auth = getAuth(app);
