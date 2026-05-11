@@ -70,14 +70,6 @@ function getDb() {
   return _db;
 }
 
-// IMPORTANT: this app uses a NAMED Firestore database called 'appusers'.
-// Default Firestore() returns the (default) database, which doesn't exist
-// in this project. We must explicitly point at the named database.
-function getFirestore() {
-  getAdmin();
-  return getDb();
-}
-
 export default async function handler(req, res) {
   // FlightAware uses POST. Anything else is wrong.
   if (req.method !== 'POST') {
