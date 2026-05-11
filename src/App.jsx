@@ -8739,6 +8739,87 @@ function formatLocalTimeFromIso(iso) {
   }
 }
 
+
+// Airport coordinates lookup for ground-aircraft rendering.
+// Used by the TRACKING tab to position parked aircraft on the map when
+// FlightAware's flight response doesn't include destination lat/lon.
+// Add airports your fleet visits regularly. ICAO or IATA both work.
+const AIRPORT_COORDS = {
+  // Skyway home base + Florida
+  'KTPA': [27.9755, -82.5332], 'TPA': [27.9755, -82.5332],
+  'KMCO': [28.4294, -81.3089], 'MCO': [28.4294, -81.3089],
+  'KFLL': [26.0742, -80.1506], 'FLL': [26.0742, -80.1506],
+  'KMIA': [25.7959, -80.2870], 'MIA': [25.7959, -80.2870],
+  'KPBI': [26.6832, -80.0956], 'PBI': [26.6832, -80.0956],
+  'KJAX': [30.4941, -81.6879], 'JAX': [30.4941, -81.6879],
+  'KSRQ': [27.3954, -82.5544], 'SRQ': [27.3954, -82.5544],
+  'KAPF': [26.1525, -81.7752], 'APF': [26.1525, -81.7752],
+  'KOPF': [25.9072, -80.2786], 'OPF': [25.9072, -80.2786],
+  // Northeast
+  'KMMU': [40.7995, -74.4148], 'MMU': [40.7995, -74.4148],
+  'KTEB': [40.8501, -74.0608], 'TEB': [40.8501, -74.0608],
+  'KHPN': [41.0670, -73.7076], 'HPN': [41.0670, -73.7076],
+  'KEWR': [40.6925, -74.1687], 'EWR': [40.6925, -74.1687],
+  'KJFK': [40.6398, -73.7787], 'JFK': [40.6398, -73.7787],
+  'KLGA': [40.7773, -73.8726], 'LGA': [40.7773, -73.8726],
+  'KBOS': [42.3656, -71.0096], 'BOS': [42.3656, -71.0096],
+  'KPSM': [43.0779, -70.8233], 'PSM': [43.0779, -70.8233],
+  'KBED': [42.4700, -71.2890], 'BED': [42.4700, -71.2890],
+  'KCAK': [40.9161, -81.4422], 'CAK': [40.9161, -81.4422],
+  'KPIT': [40.4915, -80.2329], 'PIT': [40.4915, -80.2329],
+  // Southeast
+  'KCLT': [35.2140, -80.9431], 'CLT': [35.2140, -80.9431],
+  'KATL': [33.6407, -84.4277], 'ATL': [33.6407, -84.4277],
+  'KBNA': [36.1245, -86.6782], 'BNA': [36.1245, -86.6782],
+  'KCHS': [32.8986, -80.0405], 'CHS': [32.8986, -80.0405],
+  'KSAV': [32.1276, -81.2021], 'SAV': [32.1276, -81.2021],
+  'KMSY': [29.9934, -90.2580], 'MSY': [29.9934, -90.2580],
+  'KMEM': [35.0424, -89.9767], 'MEM': [35.0424, -89.9767],
+  'KINT': [36.1337, -80.2221], 'INT': [36.1337, -80.2221],
+  // Texas / Central
+  'KDAL': [32.8471, -96.8518], 'DAL': [32.8471, -96.8518],
+  'KDFW': [32.8998, -97.0403], 'DFW': [32.8998, -97.0403],
+  'KHOU': [29.6454, -95.2789], 'HOU': [29.6454, -95.2789],
+  'KIAH': [29.9844, -95.3414], 'IAH': [29.9844, -95.3414],
+  'KAUS': [30.1945, -97.6699], 'AUS': [30.1945, -97.6699],
+  'KSAT': [29.5337, -98.4698], 'SAT': [29.5337, -98.4698],
+  // Midwest
+  'KORD': [41.9786, -87.9048], 'ORD': [41.9786, -87.9048],
+  'KMDW': [41.7857, -87.7522], 'MDW': [41.7857, -87.7522],
+  'KDTW': [42.2124, -83.3534], 'DTW': [42.2124, -83.3534],
+  'KCLE': [41.4117, -81.8498], 'CLE': [41.4117, -81.8498],
+  'KCVG': [39.0488, -84.6678], 'CVG': [39.0488, -84.6678],
+  'KSDF': [38.1744, -85.7361], 'SDF': [38.1744, -85.7361],
+  'KIND': [39.7173, -86.2944], 'IND': [39.7173, -86.2944],
+  'KSTL': [38.7487, -90.3700], 'STL': [38.7487, -90.3700],
+  'KMSP': [44.8848, -93.2223], 'MSP': [44.8848, -93.2223],
+  // West
+  'KLAX': [33.9425, -118.4081], 'LAX': [33.9425, -118.4081],
+  'KSAN': [32.7336, -117.1897], 'SAN': [32.7336, -117.1897],
+  'KSFO': [37.6188, -122.3756], 'SFO': [37.6188, -122.3756],
+  'KOAK': [37.7213, -122.2207], 'OAK': [37.7213, -122.2207],
+  'KSJC': [37.3626, -121.9290], 'SJC': [37.3626, -121.9290],
+  'KLAS': [36.0840, -115.1537], 'LAS': [36.0840, -115.1537],
+  'KPHX': [33.4343, -112.0116], 'PHX': [33.4343, -112.0116],
+  'KSEA': [47.4502, -122.3088], 'SEA': [47.4502, -122.3088],
+  'KPDX': [45.5887, -122.5975], 'PDX': [45.5887, -122.5975],
+  'KDEN': [39.8617, -104.6731], 'DEN': [39.8617, -104.6731],
+  'KSLC': [40.7884, -111.9777], 'SLC': [40.7884, -111.9777],
+  // Caribbean / int'l common for charter
+  'MWCR': [19.2961, -81.3577], // Grand Cayman
+  'MYNN': [25.0390, -77.4661], // Nassau
+  'MUHA': [22.9892, -82.4091], // Havana
+  'TJSJ': [18.4393, -66.0018], // San Juan PR
+  // Private airstrips Skyway visits
+  'FA54': [26.7625, -82.2569], // Coral Creek, FL
+  // Add more as needed — fleet hits new airports rarely
+};
+function airportCoords(code) {
+  if (!code) return null;
+  const c = String(code).toUpperCase();
+  return AIRPORT_COORDS[c] || null;
+}
+
 function TrackingScreen({ currentUser, allTrips, trackingEnabled }) {
   const [positions, setPositions] = useState([]);     // [{ ident, airborne, latitude, ... }]
   const [fetchedAt, setFetchedAt] = useState(null);
@@ -9052,11 +9133,20 @@ function TrackingScreen({ currentUser, allTrips, trackingEnabled }) {
     }
 
     // === 3. Ground markers: gray plane icon at last-known parking airport ===
-    // Only render for tails with valid grounded coords. Tails without
-    // groundedLat/Lon (never flown, brand new, etc) are hidden — per spec.
-    const grounded = positions.filter(
-      p => !p.airborne && p.groundedLat != null && p.groundedLon != null
-    );
+    // First try FlightAware-provided coords; fall back to AIRPORT_COORDS
+    // lookup by airport code. Tails with neither stay hidden.
+    const grounded = positions
+      .filter(p => !p.airborne)
+      .map(p => {
+        let lat = p.groundedLat;
+        let lon = p.groundedLon;
+        if ((lat == null || lon == null) && p.groundedAt) {
+          const coords = airportCoords(p.groundedAt);
+          if (coords) { lat = coords[0]; lon = coords[1]; }
+        }
+        return (lat != null && lon != null) ? { ...p, groundedLat: lat, groundedLon: lon } : null;
+      })
+      .filter(Boolean);
     const groundedSet = new Set(grounded.map(p => p.ident));
 
     // Clean up ground markers for tails no longer grounded (e.g. just took off)
