@@ -88,14 +88,38 @@ async function fetchPositionForTail(ident, apiKey) {
     }
     const data = await r.json();
     const flights = Array.isArray(data.flights) ? data.flights : [];
-    if (flights.length === 0) {
-      return { ident, airborne: false };
-    }
 
     // Find the currently-airborne flight: has actual_off but no actual_on
     const active = flights.find(f => f.actual_off && !f.actual_on);
+
+    // If no active flight, look for the most recent COMPLETED flight to
+    // get the last-known parking airport. We sort by actual_on descending
+    // to find the most recent landing.
     if (!active) {
-      return { ident, airborne: false };
+      const completed = flights
+        .filter(f => f.actual_on)
+        .sort((a, b) => new Date(b.actual_on) - new Date(a.actual_on));
+      const lastLanded = completed[0];
+      if (!lastLanded) {
+        return { ident, airborne: false };
+      }
+      const dest = lastLanded.destination || {};
+      const destLat = dest.latitude ?? null;
+      const destLon = dest.longitude ?? null;
+      const destCode = dest.code_icao || dest.code || dest.code_iata || null;
+      // Only return ground location if we have coordinates AND an airport code
+      if (destLat == null || destLon == null || !destCode) {
+        return { ident, airborne: false };
+      }
+      return {
+        ident,
+        airborne: false,
+        groundedAt: destCode,
+        groundedLat: destLat,
+        groundedLon: destLon,
+        groundedSince: lastLanded.actual_on,
+        groundedCity: dest.city || null,
+      };
     }
 
     // Now fetch position via /flights/{fa_flight_id}/position for richer data
@@ -204,9 +228,44 @@ export default async function handler(req, res) {
       return;
     }
 
-    // Fetch all positions in parallel
+    const db = getDb();
+    const CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+    const now = Date.now();
+
+    // Try cache first for each tail. Cache only applies to GROUNDED aircraft —
+    // airborne queries are always fresh (positions change rapidly).
     const positions = await Promise.all(
-      idents.map(ident => fetchPositionForTail(String(ident).toUpperCase(), apiKey))
+      idents.map(async (rawIdent) => {
+        const ident = String(rawIdent).toUpperCase();
+        // Check cache
+        try {
+          const cached = await db.collection('flightaware-cache').doc(ident).get();
+          if (cached.exists) {
+            const d = cached.data();
+            if (d.cachedAt && (now - d.cachedAt) < CACHE_TTL_MS && d.airborne === false) {
+              // Cache is fresh AND was grounded. Return cached without API call.
+              return d.payload;
+            }
+          }
+        } catch (e) {
+          // Cache miss / failure is non-fatal; fall through to fresh fetch
+        }
+
+        const fresh = await fetchPositionForTail(ident, apiKey);
+
+        // Write to cache (only useful for grounded — but write all for now)
+        try {
+          await db.collection('flightaware-cache').doc(ident).set({
+            cachedAt: now,
+            airborne: fresh.airborne,
+            payload: fresh,
+          });
+        } catch (e) {
+          // Cache write failure is non-fatal
+        }
+
+        return fresh;
+      })
     );
 
     res.status(200).json({ ok: true, positions, fetchedAt: Date.now() });
