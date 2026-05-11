@@ -643,6 +643,9 @@ async function sendEmailViaApi({ to, subject, text }) {
     const { auth } = await import('./firebase.js');
     if (auth.currentUser) {
       idToken = await auth.currentUser.getIdToken();
+      console.log('[sendEmailViaApi] got idToken (len:', idToken?.length, ') for uid:', auth.currentUser.uid);
+    } else {
+      console.warn('[sendEmailViaApi] no auth.currentUser');
     }
   } catch (e) {
     console.warn('[sendEmailViaApi] could not get idToken:', e.message);
