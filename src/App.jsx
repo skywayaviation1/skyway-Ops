@@ -2261,6 +2261,19 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
     setTab(trip.info.isOps ? 'status' : 'chat');
   }, [trip.uid, trip.info.isOps]);
 
+  // Clear the UPDATE ETA result banner when switching trips so the message
+  // doesn't leak across trip cards. Also auto-dismiss after 10s.
+  useEffect(() => {
+    setEtaResult(null);
+    setUpdatingEta(false);
+  }, [trip.uid]);
+
+  useEffect(() => {
+    if (!etaResult) return;
+    const t = setTimeout(() => setEtaResult(null), 10000);
+    return () => clearTimeout(t);
+  }, [etaResult]);
+
   // Subscribe to trip state in Firebase — real-time updates from all users
   useEffect(() => {
     setLoading(true);
