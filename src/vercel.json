@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/flightaware-cron-poll",
+      "schedule": "*/2 * * * *"
+    }
+  ]
+}
