@@ -7245,6 +7245,81 @@ function SignaturePad({ onSave, onCancel, height = 160 }) {
 /* ============================================================
    Settings modal
    ============================================================ */
+function TrackingToggle() {
+  const [enabled, setEnabled] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  // Subscribe to current state
+  useEffect(() => {
+    let cancelled = false;
+    let unsub = null;
+    (async () => {
+      try {
+        const { db } = await import('./firebase.js');
+        const { doc, onSnapshot } = await import('firebase/firestore');
+        if (cancelled) return;
+        unsub = onSnapshot(doc(db, 'flightaware', 'config'), (snap) => {
+          if (cancelled) return;
+          if (snap.exists()) {
+            const d = snap.data();
+            setEnabled(d.trackingEnabled !== false);
+          }
+        });
+      } catch (e) {
+        if (!cancelled) setError(e.message);
+      }
+    })();
+    return () => { cancelled = true; if (unsub) unsub(); };
+  }, []);
+
+  const toggle = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const { db } = await import('./firebase.js');
+      const { doc, setDoc } = await import('firebase/firestore');
+      const newValue = !enabled;
+      await setDoc(doc(db, 'flightaware', 'config'), {
+        trackingEnabled: newValue,
+        trackingToggledAt: Date.now(),
+      }, { merge: true });
+      // Optimistic; the subscription will confirm
+      setEnabled(newValue);
+    } catch (e) {
+      setError(e.message || 'Failed to toggle');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mb-3 p-3 border border-slate-700 bg-slate-900/40 flex items-center justify-between gap-3">
+      <div className="flex-1 min-w-0">
+        <div className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          LIVE TRACKING
+        </div>
+        <div className="text-[11px] text-slate-300 mt-1" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+          {enabled
+            ? 'Position queries to FlightAware are enabled. Charged per query when tracking tab is viewed.'
+            : 'Position queries DISABLED. Map will show offline message.'}
+        </div>
+        {error && (
+          <div className="mt-2 text-[10px] text-red-300">{error}</div>
+        )}
+      </div>
+      <button
+        onClick={toggle}
+        disabled={busy}
+        className={`px-3 py-1.5 text-[10px] tracking-widest border flex-shrink-0 ${enabled ? 'border-emerald-500/40 text-emerald-300 bg-emerald-500/5' : 'border-slate-700 text-slate-500'} disabled:opacity-50`}
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}
+      >
+        {busy ? '...' : (enabled ? 'ON' : 'OFF')}
+      </button>
+    </div>
+  );
+}
+
 function FlightAwarePanel({ currentUser }) {
   const isAdmin = currentUser?.role === 'admin';
 
@@ -7411,6 +7486,9 @@ function FlightAwarePanel({ currentUser }) {
 
       {isAdmin && (
         <>
+          {/* Live tracking kill switch */}
+          <TrackingToggle />
+
           {/* Endpoint registration */}
           <div className="mb-3 p-3 border border-slate-700 bg-slate-900/40">
             <div className="flex items-start justify-between gap-2 mb-2">
@@ -8214,6 +8292,7 @@ function NoProfileScreen({ user, onSignOut }) {
 function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, syncStatus, now, tripCount, onOpenSettings, onOpenProfile }) {
   const sections = [
     { id: 'schedule', label: 'SCHEDULE',  icon: Calendar, roles: ['crew', 'ops', 'admin'] },
+    { id: 'tracking', label: 'TRACKING',  icon: Plane,    roles: ['ops', 'admin'] },
     { id: 'archive',  label: 'ARCHIVE',   icon: Hash,     roles: ['crew', 'ops', 'admin'] },
     { id: 'expenses', label: 'EXPENSES',  icon: Mail,     roles: ['crew', 'sales', 'ops', 'accounting', 'admin'] },
     { id: 'manifests',label: 'MANIFESTS', icon: FileText, roles: ['crew', 'ops', 'admin'] },
@@ -8594,6 +8673,414 @@ function paidWithLabel(value) {
   if (!value) return null;
   const opt = PAID_WITH_OPTIONS.find(o => o.value === value);
   return opt ? opt.label : value;
+}
+
+/* ============================================================
+   TRACKING SCREEN — live fleet map (ops/admin only)
+   ============================================================ */
+
+/**
+ * Load Mapbox GL JS from CDN. Caches the load promise so multiple mounts
+ * don't repeatedly load the script.
+ */
+let _mapboxLoadPromise = null;
+function loadMapboxGL() {
+  if (_mapboxLoadPromise) return _mapboxLoadPromise;
+  if (typeof window === 'undefined') return Promise.reject(new Error('Not in browser'));
+  if (window.mapboxgl) return Promise.resolve(window.mapboxgl);
+
+  _mapboxLoadPromise = new Promise((resolve, reject) => {
+    // CSS first
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = 'https://api.mapbox.com/mapbox-gl-js/v3.6.0/mapbox-gl.css';
+    document.head.appendChild(link);
+
+    // Then JS
+    const script = document.createElement('script');
+    script.src = 'https://api.mapbox.com/mapbox-gl-js/v3.6.0/mapbox-gl.js';
+    script.async = true;
+    script.onload = () => {
+      if (window.mapboxgl) {
+        resolve(window.mapboxgl);
+      } else {
+        reject(new Error('Mapbox GL JS failed to load'));
+      }
+    };
+    script.onerror = () => reject(new Error('Failed to load Mapbox GL JS'));
+    document.head.appendChild(script);
+  });
+  return _mapboxLoadPromise;
+}
+
+/** Convert FlightAware altitude (hundreds of feet) to "FL340" style string. */
+function formatAltitude(ft) {
+  if (!ft || ft < 18000) return ft ? `${ft.toLocaleString()} ft` : '—';
+  const fl = Math.round(ft / 100);
+  return `FL${fl}`;
+}
+
+function formatHeading(deg) {
+  if (deg == null) return '—';
+  return `${Math.round(deg).toString().padStart(3, '0')}°`;
+}
+
+function formatGroundspeed(kts) {
+  return kts ? `${Math.round(kts)} kts` : '—';
+}
+
+/** Local-time HH:MM from ISO string. */
+function formatLocalTimeFromIso(iso) {
+  if (!iso) return '—';
+  try {
+    return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+  } catch {
+    return '—';
+  }
+}
+
+function TrackingScreen({ currentUser, allTrips, trackingEnabled }) {
+  const [positions, setPositions] = useState([]);     // [{ ident, airborne, latitude, ... }]
+  const [fetchedAt, setFetchedAt] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [selectedIdent, setSelectedIdent] = useState(null);
+  const [mapReady, setMapReady] = useState(false);
+
+  const mapContainerRef = useRef(null);
+  const mapRef = useRef(null);
+  const markersRef = useRef({}); // { tail: mapboxMarker }
+  const pollTimerRef = useRef(null);
+  const aliveRef = useRef(true);
+
+  // Fetch position data for all fleet tails. Only airborne aircraft come back
+  // with full position; grounded ones come back as { airborne: false }.
+  const fetchPositions = useCallback(async () => {
+    if (!trackingEnabled) {
+      setLoading(false);
+      return;
+    }
+    try {
+      const { auth } = await import('./firebase.js');
+      const idToken = await auth.currentUser.getIdToken();
+      const r = await fetch('/api/flightaware-positions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken, idents: SKYWAY_TAILS }),
+      });
+      const data = await r.json();
+      if (!aliveRef.current) return;
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      setPositions(Array.isArray(data.positions) ? data.positions : []);
+      setFetchedAt(data.fetchedAt || Date.now());
+      setError(null);
+    } catch (err) {
+      if (!aliveRef.current) return;
+      setError(err.message || 'Failed to fetch positions');
+    } finally {
+      if (aliveRef.current) setLoading(false);
+    }
+  }, [trackingEnabled]);
+
+  // Mount: fetch immediately + start 2-min foreground polling
+  useEffect(() => {
+    aliveRef.current = true;
+    fetchPositions();
+    pollTimerRef.current = setInterval(fetchPositions, 2 * 60 * 1000); // 2 min
+    return () => {
+      aliveRef.current = false;
+      if (pollTimerRef.current) {
+        clearInterval(pollTimerRef.current);
+        pollTimerRef.current = null;
+      }
+    };
+  }, [fetchPositions]);
+
+  // Initialize map once container is mounted
+  useEffect(() => {
+    if (!mapContainerRef.current) return;
+    if (mapRef.current) return; // already initialized
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const mapboxgl = await loadMapboxGL();
+        if (cancelled) return;
+
+        const token = import.meta.env.VITE_MAPBOX_TOKEN;
+        if (!token) {
+          setError('VITE_MAPBOX_TOKEN not configured — map cannot load');
+          return;
+        }
+        mapboxgl.accessToken = token;
+
+        const map = new mapboxgl.Map({
+          container: mapContainerRef.current,
+          style: 'mapbox://styles/mapbox/dark-v11',
+          center: [-95.7, 37.0],   // approx center of CONUS
+          zoom: 3.5,
+          attributionControl: false,
+        });
+        map.addControl(new mapboxgl.NavigationControl({ showCompass: false }), 'top-right');
+        map.on('load', () => {
+          if (!cancelled) setMapReady(true);
+        });
+        mapRef.current = map;
+      } catch (err) {
+        if (!cancelled) setError(`Map load failed: ${err.message}`);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Render / update markers when positions change OR map becomes ready
+  useEffect(() => {
+    if (!mapReady || !mapRef.current) return;
+    const map = mapRef.current;
+    const mapboxgl = window.mapboxgl;
+    if (!mapboxgl) return;
+
+    const airborne = positions.filter(p => p.airborne && p.latitude != null && p.longitude != null);
+    const stillPresent = new Set(airborne.map(p => p.ident));
+
+    // Remove markers for aircraft no longer airborne
+    for (const ident of Object.keys(markersRef.current)) {
+      if (!stillPresent.has(ident)) {
+        markersRef.current[ident].remove();
+        delete markersRef.current[ident];
+      }
+    }
+
+    // Add or update markers
+    for (const p of airborne) {
+      let marker = markersRef.current[p.ident];
+      if (!marker) {
+        const el = document.createElement('div');
+        el.className = 'fleet-aircraft-marker';
+        el.style.cssText = `
+          width: 32px; height: 32px;
+          background: #06b6d4;
+          clip-path: polygon(50% 0%, 60% 50%, 100% 50%, 60% 60%, 50% 100%, 40% 60%, 0% 50%, 40% 50%);
+          cursor: pointer;
+          transform-origin: center;
+          transition: transform 0.5s linear;
+        `;
+        el.title = p.ident;
+        el.addEventListener('click', () => setSelectedIdent(p.ident));
+        marker = new mapboxgl.Marker({ element: el, rotationAlignment: 'map' })
+          .setLngLat([p.longitude, p.latitude])
+          .addTo(map);
+        markersRef.current[p.ident] = marker;
+
+        // Label
+        const label = document.createElement('div');
+        label.textContent = p.ident;
+        label.style.cssText = `
+          position: absolute; top: 32px; left: 50%; transform: translateX(-50%);
+          background: rgba(15, 23, 42, 0.9); color: #06b6d4;
+          font-family: 'JetBrains Mono', monospace; font-size: 10px;
+          padding: 2px 6px; border-radius: 2px; white-space: nowrap;
+          pointer-events: none;
+        `;
+        el.appendChild(label);
+      } else {
+        marker.setLngLat([p.longitude, p.latitude]);
+      }
+      // Rotate the icon (NOT the label) by manipulating the inner element
+      if (p.heading != null) {
+        marker.setRotation(p.heading);
+      }
+    }
+  }, [positions, mapReady]);
+
+  // === Find trip context for a given tail (matches by tail to current/upcoming trip)
+  const findTripForTail = (tail) => {
+    if (!Array.isArray(allTrips)) return null;
+    const now = Date.now();
+    // Look for a trip with this tail that's started but not ended
+    const active = allTrips.find(t =>
+      t?.info?.tail === tail
+      && t.start && t.end
+      && (t.start.getTime?.() || t.start) <= now
+      && (t.end.getTime?.() || t.end) > now - 6 * 3600 * 1000  // within 6h past
+    );
+    return active || null;
+  };
+
+  // === If tracking is disabled, show the kill-switch message ===
+  if (!trackingEnabled) {
+    return (
+      <div className="flex-1 flex items-center justify-center p-8">
+        <div className="max-w-md text-center">
+          <Plane className="w-12 h-12 mx-auto mb-4 text-slate-700" />
+          <h2 className="text-sm tracking-widest text-slate-300 mb-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            LIVE TRACKING DISABLED
+          </h2>
+          <p className="text-xs text-slate-500" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+            An admin has turned off live tracking to control FlightAware costs. Enable it in Settings → FlightAware Alerts.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const selectedPosition = positions.find(p => p.ident === selectedIdent);
+  const selectedTrip = selectedIdent ? findTripForTail(selectedIdent) : null;
+
+  return (
+    <div className="flex-1 overflow-hidden flex flex-col">
+      {/* Status bar */}
+      <div className="px-4 py-2 border-b border-slate-800 bg-slate-950 flex items-center justify-between gap-3 text-[10px]" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        <div className="flex items-center gap-3 text-slate-500">
+          <span className="tracking-widest text-cyan-400">LIVE FLEET TRACKING</span>
+          {fetchedAt && (
+            <span>UPDATED {new Date(fetchedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}</span>
+          )}
+        </div>
+        <div className="flex items-center gap-3 text-slate-500">
+          <span>{positions.filter(p => p.airborne).length} AIRBORNE / {SKYWAY_TAILS.length} TOTAL</span>
+          {loading && <Loader2 className="w-3 h-3 animate-spin" />}
+        </div>
+      </div>
+
+      {error && (
+        <div className="px-4 py-2 border-b border-red-500/40 bg-red-500/5 text-xs text-red-300">
+          {error}
+        </div>
+      )}
+
+      {/* Map (top half) + list (bottom half) on mobile; side-by-side on desktop */}
+      <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
+        {/* MAP */}
+        <div className="relative flex-1 md:w-3/5 min-h-[300px] md:min-h-0 border-b md:border-b-0 md:border-r border-slate-800">
+          <div ref={mapContainerRef} className="absolute inset-0" />
+          {!mapReady && !error && (
+            <div className="absolute inset-0 flex items-center justify-center bg-slate-950/80">
+              <div className="text-xs text-slate-500 flex items-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin" /> Loading map...
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* LIST + DETAIL */}
+        <aside className="md:w-2/5 overflow-y-auto scroll-area bg-slate-950">
+          {selectedPosition && selectedPosition.airborne ? (
+            // === Aircraft detail panel ===
+            <div className="p-4">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-lg" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, color: '#06b6d4' }}>
+                  {selectedPosition.ident}
+                </h3>
+                <button
+                  onClick={() => setSelectedIdent(null)}
+                  className="text-[10px] text-slate-500 hover:text-slate-300 tracking-widest"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                >
+                  CLEAR
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 text-xs">
+                <div>
+                  <div className="text-[9px] tracking-widest text-slate-500 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>FROM</div>
+                  <div className="text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{selectedPosition.origin || '—'}</div>
+                </div>
+                <div>
+                  <div className="text-[9px] tracking-widest text-slate-500 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>TO</div>
+                  <div className="text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{selectedPosition.destination || '—'}</div>
+                </div>
+                <div>
+                  <div className="text-[9px] tracking-widest text-slate-500 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>ALTITUDE</div>
+                  <div className="text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{formatAltitude(selectedPosition.altitude)}</div>
+                </div>
+                <div>
+                  <div className="text-[9px] tracking-widest text-slate-500 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>GROUND SPEED</div>
+                  <div className="text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{formatGroundspeed(selectedPosition.groundspeed)}</div>
+                </div>
+                <div>
+                  <div className="text-[9px] tracking-widest text-slate-500 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>HEADING</div>
+                  <div className="text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{formatHeading(selectedPosition.heading)}</div>
+                </div>
+                <div>
+                  <div className="text-[9px] tracking-widest text-slate-500 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>ETA</div>
+                  <div className="text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{formatLocalTimeFromIso(selectedPosition.estimatedOn)}</div>
+                </div>
+                <div className="col-span-2">
+                  <div className="text-[9px] tracking-widest text-slate-500 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>DEPARTED</div>
+                  <div className="text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{formatLocalTimeFromIso(selectedPosition.actualOff)}</div>
+                </div>
+                {selectedPosition.progressPercent != null && (
+                  <div className="col-span-2">
+                    <div className="text-[9px] tracking-widest text-slate-500 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>PROGRESS</div>
+                    <div className="h-2 bg-slate-800 rounded overflow-hidden">
+                      <div className="h-full bg-cyan-500" style={{ width: `${selectedPosition.progressPercent}%` }} />
+                    </div>
+                    <div className="text-[10px] text-slate-500 mt-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                      {Math.round(selectedPosition.progressPercent)}%
+                    </div>
+                  </div>
+                )}
+                {selectedTrip && (
+                  <div className="col-span-2 mt-2 pt-3 border-t border-slate-800">
+                    <div className="text-[9px] tracking-widest text-slate-500 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>SKYWAY TRIP</div>
+                    <div className="text-xs text-slate-300" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                      {selectedTrip.info?.broker || selectedTrip.info?.client || '(unknown broker)'}
+                    </div>
+                    <div className="text-[10px] text-slate-500 mt-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                      {selectedTrip.info?.from} → {selectedTrip.info?.to}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            // === List of all tails ===
+            <div className="p-2">
+              <div className="text-[10px] tracking-widest text-slate-500 px-2 py-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                FLEET STATUS
+              </div>
+              {SKYWAY_TAILS.map(tail => {
+                const p = positions.find(x => x.ident === tail);
+                const airborne = p?.airborne === true;
+                return (
+                  <button
+                    key={tail}
+                    onClick={() => airborne ? setSelectedIdent(tail) : null}
+                    disabled={!airborne}
+                    className={`w-full text-left p-2 border-b border-slate-800 flex items-center justify-between gap-2 ${airborne ? 'hover:bg-slate-900/50 cursor-pointer' : 'opacity-50 cursor-default'}`}
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span
+                        className={`w-2 h-2 rounded-full flex-shrink-0 ${airborne ? 'bg-emerald-400 animate-pulse' : 'bg-slate-700'}`}
+                      />
+                      <span className="text-sm flex-shrink-0" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600, color: airborne ? '#e2e8f0' : '#64748b' }}>
+                        {tail}
+                      </span>
+                      <span className="text-[10px] text-slate-500 truncate" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                        {airborne
+                          ? `${p.origin || '???'} → ${p.destination || '???'}`
+                          : 'On the ground'}
+                      </span>
+                    </div>
+                    {airborne && (
+                      <div className="flex items-center gap-2 text-[10px] text-slate-400 flex-shrink-0" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                        <span>{formatAltitude(p.altitude)}</span>
+                        <span>{formatGroundspeed(p.groundspeed)}</span>
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </aside>
+      </div>
+    </div>
+  );
 }
 
 function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName }) {
@@ -9955,6 +10442,36 @@ export default function CharterOps() {
     } catch { /* ignore quota errors */ }
   }, [tailFilter]);
   const [section, setSection] = useState('schedule');
+  // FlightAware live tracking kill switch — synced from Firestore so admin can
+  // disable it cluster-wide if costs spike. Default: enabled.
+  const [trackingEnabled, setTrackingEnabled] = useState(true);
+
+  // Subscribe to FlightAware tracking config — admin kill switch
+  useEffect(() => {
+    let unsub = null;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { db } = await import('./firebase.js');
+        const { doc, onSnapshot } = await import('firebase/firestore');
+        if (cancelled) return;
+        unsub = onSnapshot(doc(db, 'flightaware', 'config'), (snap) => {
+          if (cancelled) return;
+          if (snap.exists()) {
+            const data = snap.data();
+            // Default to true if field missing; only false explicitly disables
+            setTrackingEnabled(data.trackingEnabled !== false);
+          }
+        });
+      } catch (err) {
+        console.warn('[tracking] config subscribe failed:', err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (unsub) unsub();
+    };
+  }, []);
 
   // Load lastSeen from localStorage on mount
   useEffect(() => {
@@ -10894,6 +11411,15 @@ export default function CharterOps() {
               )}
             </main>
           </div>
+        )}
+
+        {/* === TRACKING SECTION === */}
+        {section === 'tracking' && (
+          <TrackingScreen
+            currentUser={currentUser}
+            allTrips={allTrips}
+            trackingEnabled={trackingEnabled}
+          />
         )}
 
         {/* === EXPENSES SECTION === */}
