@@ -116,6 +116,29 @@ async function fetchPositionForTail(ident, apiKey) {
       }
     }
 
+    // Fetch the actual flight track (path flown). Each track point is
+    // {timestamp, latitude, longitude, altitude, groundspeed, ...}
+    let track = [];
+    if (active.fa_flight_id) {
+      try {
+        const tr = await fetch(`${FA_API_BASE}/flights/${encodeURIComponent(active.fa_flight_id)}/track`, {
+          headers: { 'x-apikey': apiKey, Accept: 'application/json' },
+        });
+        if (tr.ok) {
+          const td = await tr.json();
+          if (Array.isArray(td.positions)) {
+            // Downsample to ~50 points to keep payload small
+            const pts = td.positions;
+            const step = Math.max(1, Math.floor(pts.length / 50));
+            track = pts.filter((_, i) => i % step === 0)
+              .map(p => [p.longitude, p.latitude]); // GeoJSON order: lng, lat
+          }
+        }
+      } catch (e) {
+        // Non-fatal — track is optional
+      }
+    }
+
     return {
       ident,
       airborne: true,
@@ -123,14 +146,19 @@ async function fetchPositionForTail(ident, apiKey) {
       latitude: position?.latitude ?? null,
       longitude: position?.longitude ?? null,
       heading: position?.heading ?? null,
-      altitude: position?.altitude ? position.altitude * 100 : null, // FA reports altitude in hundreds of feet (FL340 = 340)
+      altitude: position?.altitude ? position.altitude * 100 : null,
       groundspeed: position?.groundspeed ?? null,
       origin: active.origin?.code_icao || active.origin?.code || null,
+      originLat: active.origin?.latitude ?? null,
+      originLon: active.origin?.longitude ?? null,
       destination: active.destination?.code_icao || active.destination?.code || null,
+      destinationLat: active.destination?.latitude ?? null,
+      destinationLon: active.destination?.longitude ?? null,
       destinationCity: active.destination?.city || null,
       actualOff: active.actual_off || null,
       estimatedOn: active.estimated_on || null,
       progressPercent: active.progress_percent ?? null,
+      track,
     };
   } catch (err) {
     console.error(`[fa-positions] error for ${ident}:`, err);
