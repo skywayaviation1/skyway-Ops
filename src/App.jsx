@@ -8878,7 +8878,7 @@ function TrackingScreen({ currentUser, allTrips, trackingEnabled }) {
     };
   }, []);
 
-  // Render / update markers when positions change OR map becomes ready
+  // === Render / update markers + track lines + airport pins when positions change ===
   useEffect(() => {
     if (!mapReady || !mapRef.current) return;
     const map = mapRef.current;
@@ -8888,52 +8888,162 @@ function TrackingScreen({ currentUser, allTrips, trackingEnabled }) {
     const airborne = positions.filter(p => p.airborne && p.latitude != null && p.longitude != null);
     const stillPresent = new Set(airborne.map(p => p.ident));
 
-    // Remove markers for aircraft no longer airborne
+    // === 1. Clean up airborne aircraft markers, labels, airport pins, track layers
+    // for tails no longer airborne ===
     for (const ident of Object.keys(markersRef.current)) {
       if (!stillPresent.has(ident)) {
-        markersRef.current[ident].remove();
+        const bundle = markersRef.current[ident];
+        // bundle: { aircraft, originPin, destPin, sourceId, layerIds }
+        try { bundle.aircraft?.remove(); } catch {}
+        try { bundle.originPin?.remove(); } catch {}
+        try { bundle.destPin?.remove(); } catch {}
+        if (bundle.layerIds) {
+          for (const layerId of bundle.layerIds) {
+            if (map.getLayer(layerId)) {
+              try { map.removeLayer(layerId); } catch {}
+            }
+          }
+        }
+        if (bundle.sourceId && map.getSource(bundle.sourceId)) {
+          try { map.removeSource(bundle.sourceId); } catch {}
+        }
         delete markersRef.current[ident];
       }
     }
 
-    // Add or update markers
+    // === 2. For each airborne aircraft: ensure aircraft icon, airport pins, track line ===
     for (const p of airborne) {
-      let marker = markersRef.current[p.ident];
-      if (!marker) {
-        const el = document.createElement('div');
-        el.className = 'fleet-aircraft-marker';
-        el.style.cssText = `
-          width: 32px; height: 32px;
-          background: #06b6d4;
-          clip-path: polygon(50% 0%, 60% 50%, 100% 50%, 60% 60%, 50% 100%, 40% 60%, 0% 50%, 40% 50%);
-          cursor: pointer;
-          transform-origin: center;
-          transition: transform 0.5s linear;
-        `;
-        el.title = p.ident;
-        el.addEventListener('click', () => setSelectedIdent(p.ident));
-        marker = new mapboxgl.Marker({ element: el, rotationAlignment: 'map' })
-          .setLngLat([p.longitude, p.latitude])
-          .addTo(map);
-        markersRef.current[p.ident] = marker;
+      const sourceId = `track-${p.ident}`;
+      const trackLayerId = `track-line-${p.ident}`;
 
-        // Label
+      let bundle = markersRef.current[p.ident];
+      if (!bundle) {
+        // ----- Aircraft icon (SVG airplane silhouette, sleek cyan) -----
+        const wrap = document.createElement('div');
+        wrap.style.cssText = 'position: relative; cursor: pointer; pointer-events: auto;';
+
+        const planeEl = document.createElement('div');
+        planeEl.style.cssText = `
+          width: 36px; height: 36px;
+          transform-origin: center;
+          transition: transform 0.6s linear;
+          filter: drop-shadow(0 0 4px rgba(6, 182, 212, 0.6));
+        `;
+        // Top-down airplane silhouette, points "up" by default (heading 0)
+        planeEl.innerHTML = `
+          <svg viewBox="0 0 24 24" width="36" height="36" fill="#06b6d4" stroke="#0f172a" stroke-width="0.5" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 2 L13 3 L13 9 L22 14 L22 16 L13 14 L13 19 L15 20 L15 22 L12 21 L9 22 L9 20 L11 19 L11 14 L2 16 L2 14 L11 9 L11 3 Z"/>
+          </svg>
+        `;
+        wrap.appendChild(planeEl);
+
         const label = document.createElement('div');
         label.textContent = p.ident;
         label.style.cssText = `
-          position: absolute; top: 32px; left: 50%; transform: translateX(-50%);
-          background: rgba(15, 23, 42, 0.9); color: #06b6d4;
-          font-family: 'JetBrains Mono', monospace; font-size: 10px;
+          position: absolute; top: 38px; left: 50%; transform: translateX(-50%);
+          background: rgba(15, 23, 42, 0.92); color: #06b6d4;
+          font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 600;
           padding: 2px 6px; border-radius: 2px; white-space: nowrap;
           pointer-events: none;
         `;
-        el.appendChild(label);
+        wrap.appendChild(label);
+
+        wrap.addEventListener('click', (e) => {
+          e.stopPropagation();
+          setSelectedIdent(p.ident);
+        });
+
+        const aircraft = new mapboxgl.Marker({ element: wrap, anchor: 'center' })
+          .setLngLat([p.longitude, p.latitude])
+          .addTo(map);
+
+        bundle = { aircraft, planeEl, sourceId, layerIds: [trackLayerId] };
+        markersRef.current[p.ident] = bundle;
       } else {
-        marker.setLngLat([p.longitude, p.latitude]);
+        // Move existing
+        bundle.aircraft.setLngLat([p.longitude, p.latitude]);
       }
-      // Rotate the icon (NOT the label) by manipulating the inner element
-      if (p.heading != null) {
-        marker.setRotation(p.heading);
+
+      // Rotate the SVG (NOT the wrapping marker, which would skew the label)
+      if (p.heading != null && bundle.planeEl) {
+        bundle.planeEl.style.transform = `rotate(${p.heading}deg)`;
+      }
+
+      // ----- Origin airport pin (red) -----
+      if (p.originLat != null && p.originLon != null) {
+        if (!bundle.originPin) {
+          const el = document.createElement('div');
+          el.style.cssText = `position: relative; pointer-events: none;`;
+          el.innerHTML = `
+            <div style="
+              width: 14px; height: 14px; border-radius: 50%;
+              background: #dc2626; border: 2px solid #fff;
+              box-shadow: 0 0 4px rgba(0,0,0,0.5);
+            "></div>
+            <div style="
+              position: absolute; top: 16px; left: 50%; transform: translateX(-50%);
+              background: rgba(15, 23, 42, 0.92); color: #f87171;
+              font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 600;
+              padding: 2px 5px; border-radius: 2px; white-space: nowrap;
+            ">${p.origin || 'ORIG'}</div>
+          `;
+          bundle.originPin = new mapboxgl.Marker({ element: el, anchor: 'center' })
+            .setLngLat([p.originLon, p.originLat])
+            .addTo(map);
+        } else {
+          bundle.originPin.setLngLat([p.originLon, p.originLat]);
+        }
+      }
+
+      // ----- Destination airport pin (red) -----
+      if (p.destinationLat != null && p.destinationLon != null) {
+        if (!bundle.destPin) {
+          const el = document.createElement('div');
+          el.style.cssText = `position: relative; pointer-events: none;`;
+          el.innerHTML = `
+            <div style="
+              width: 14px; height: 14px; border-radius: 50%;
+              background: #dc2626; border: 2px solid #fff;
+              box-shadow: 0 0 4px rgba(0,0,0,0.5);
+            "></div>
+            <div style="
+              position: absolute; top: 16px; left: 50%; transform: translateX(-50%);
+              background: rgba(15, 23, 42, 0.92); color: #f87171;
+              font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 600;
+              padding: 2px 5px; border-radius: 2px; white-space: nowrap;
+            ">${p.destination || 'DEST'}</div>
+          `;
+          bundle.destPin = new mapboxgl.Marker({ element: el, anchor: 'center' })
+            .setLngLat([p.destinationLon, p.destinationLat])
+            .addTo(map);
+        } else {
+          bundle.destPin.setLngLat([p.destinationLon, p.destinationLat]);
+        }
+      }
+
+      // ----- Track line (red, actual path flown so far) -----
+      const trackCoords = Array.isArray(p.track) && p.track.length > 1 ? p.track : null;
+      if (trackCoords) {
+        const geojson = {
+          type: 'Feature',
+          geometry: { type: 'LineString', coordinates: trackCoords },
+        };
+        if (map.getSource(sourceId)) {
+          map.getSource(sourceId).setData(geojson);
+        } else {
+          map.addSource(sourceId, { type: 'geojson', data: geojson });
+          map.addLayer({
+            id: trackLayerId,
+            type: 'line',
+            source: sourceId,
+            layout: { 'line-join': 'round', 'line-cap': 'round' },
+            paint: {
+              'line-color': '#dc2626',
+              'line-width': 3,
+              'line-opacity': 0.85,
+            },
+          });
+        }
       }
     }
   }, [positions, mapReady]);
