@@ -163,8 +163,12 @@ async function sendEmail(req, to, subject, text) {
     const proto = host.includes('localhost') ? 'http' : 'https';
     const url = `${proto}://${host}/api/send-email`;
     const headers = { 'Content-Type': 'application/json' };
-    // Vercel Deployment Protection blocks internal serverless-to-serverless
-    // calls with a 401 SSO redirect. Bypass via Protection Bypass for Automation.
+    // Authenticate to send-email via shared internal secret
+    const internalSecret = process.env.INTERNAL_API_SECRET;
+    if (internalSecret) {
+      headers['x-internal-secret'] = internalSecret;
+    }
+    // Also include Vercel bypass token for Deployment Protection (if enabled)
     const bypassSecret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
     if (bypassSecret) {
       headers['x-vercel-protection-bypass'] = bypassSecret;

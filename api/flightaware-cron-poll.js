@@ -203,11 +203,14 @@ async function sendEmail(host, to, subject, text) {
     const proto = host.includes('localhost') ? 'http' : 'https';
     const url = `${proto}://${host}/api/send-email`;
     const headers = { 'Content-Type': 'application/json' };
-    // Vercel Deployment Protection blocks internal serverless-to-serverless
-    // calls with a 401 SSO redirect. The Protection Bypass for Automation
-    // mechanism lets us through by including the secret in this header.
-    // Set VERCEL_AUTOMATION_BYPASS_SECRET in Vercel env vars (it's auto-populated
-    // if you've enabled Protection Bypass for Automation in project settings).
+    // Authenticate to send-email via shared internal secret. This is how
+    // server-side endpoints (cron, webhook) call send-email without needing
+    // a user's Firebase idToken. send-email accepts either.
+    const internalSecret = process.env.INTERNAL_API_SECRET;
+    if (internalSecret) {
+      headers['x-internal-secret'] = internalSecret;
+    }
+    // Also include Vercel bypass token for Deployment Protection (if enabled)
     const bypassSecret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
     if (bypassSecret) {
       headers['x-vercel-protection-bypass'] = bypassSecret;

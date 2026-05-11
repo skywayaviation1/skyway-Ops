@@ -1,25 +1,42 @@
 // Vercel serverless function: send transactional email via Resend.
 //
-// Called by the frontend whenever a status button fires. The Resend API key
-// lives only on the server — never exposed to the browser.
+// Called by:
+//   - Frontend (with Firebase idToken) — for status notifications, ETA updates, etc.
+//   - Backend webhook handler (with INTERNAL_API_SECRET) — for FA auto-fire emails
+//   - Backend cron poll (with INTERNAL_API_SECRET) — for FA auto-fire emails
+//
+// Auth: requires EITHER a valid Firebase idToken (frontend) OR the
+// INTERNAL_API_SECRET header (server-to-server). Without one of these,
+// returns 401. This prevents abuse of the Resend account by random callers.
 //
 // Body shape:
-//   { to: ['ops@example.com', 'broker@example.com'], subject: '...', text: '...' }
-//
-// Returns { ok: true, id: 'resend-message-id' } on success, error otherwise.
-//
-// Runtime note: uses Node serverless (not Edge). Edge runtime had intermittent
-// "RESEND_API_KEY not configured" errors where env vars would propagate to
-// some invocations but not others depending on Edge region cold-start state.
-// Node serverless reads env vars reliably. Email is not latency-critical.
+//   { to: ['ops@example.com', 'broker@example.com'], subject: '...', text: '...',
+//     idToken?: '...' (frontend), }
+// Header:
+//   x-internal-secret: <INTERNAL_API_SECRET> (server-to-server)
+
+import admin from 'firebase-admin';
 
 export const config = { runtime: 'nodejs' };
 
+let adminApp = null;
+function getAdmin() {
+  if (adminApp) return adminApp;
+  if (!process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+    throw new Error('FIREBASE_SERVICE_ACCOUNT_JSON not configured');
+  }
+  const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+  adminApp = admin.apps.length
+    ? admin.app()
+    : admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+  return adminApp;
+}
+
 export default async function handler(req, res) {
-  // CORS
+  // CORS — needed for the frontend to call us from skyway-ops.vercel.app
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-internal-secret');
   res.setHeader('Cache-Control', 'no-store');
 
   if (req.method === 'OPTIONS') {
@@ -36,8 +53,6 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'RESEND_API_KEY not configured on server' });
   }
 
-  // Body parsing — Vercel Node runtime auto-parses JSON when Content-Type is application/json
-  // but be defensive in case it's already a string
   let body = req.body;
   if (typeof body === 'string') {
     try {
@@ -50,12 +65,32 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Invalid request body' });
   }
 
+  // === Auth check — accept EITHER a valid Firebase idToken OR the internal secret ===
+  const internalSecret = process.env.INTERNAL_API_SECRET;
+  const providedInternal = req.headers['x-internal-secret'];
+  const isInternalCall = internalSecret && providedInternal === internalSecret;
+
+  let isAuthorized = isInternalCall;
+  if (!isAuthorized && body.idToken) {
+    try {
+      const auth = admin.auth(getAdmin());
+      await auth.verifyIdToken(body.idToken);
+      isAuthorized = true;
+    } catch (e) {
+      console.warn('[send-email] invalid idToken:', e.message);
+    }
+  }
+
+  if (!isAuthorized) {
+    console.warn('[send-email] unauthorized request — missing valid idToken or internal secret');
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
   const { to, subject, text } = body;
   if (!Array.isArray(to) || to.length === 0 || !subject || !text) {
     return res.status(400).json({ error: 'Missing required fields: to, subject, text' });
   }
 
-  // Validate recipient email format (basic check)
   const validRecipients = to.filter(
     (e) => typeof e === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e.trim())
   );
