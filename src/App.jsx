@@ -2250,6 +2250,10 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
   const [tripSheetNotes, setTripSheetNotes] = useState(null);
   const [pendingScanPax, setPendingScanPax] = useState(null); // pre-loaded pax being checked in
   const [loading, setLoading] = useState(true);
+  // UPDATE ETA flow: tracks whether we're mid-call so we can disable the button
+  // and show a small spinner. Result message shows briefly after success/fail.
+  const [updatingEta, setUpdatingEta] = useState(false);
+  const [etaResult, setEtaResult] = useState(null); // { ok: bool, msg: string }
   const geo = useGeolocation();
 
   // Reset tab when switching trips
@@ -2397,6 +2401,110 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
       console.log('[email] Sent successfully · resend id:', respData.id || '(no id)');
     } catch (err) {
       console.error('[email] Network error:', err);
+    }
+  };
+
+  // === Update ETA flow ===
+  // Fetches the current FlightAware position for this trip's tail and emails
+  // all broker emails with the latest estimated arrival time. Ops/admin only.
+  // Always sends the email regardless of whether ETA differs from scheduled.
+  const handleUpdateEta = async () => {
+    if (updatingEta) return;
+    const tail = (trip.info?.tail || '').toUpperCase();
+    if (!tail) {
+      setEtaResult({ ok: false, msg: 'No tail number on this trip.' });
+      return;
+    }
+    const brokerEmails = (brokerEmail || '')
+      .split(/[,;\s]+/)
+      .map(e => e.trim())
+      .filter(e => e.length > 0 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
+    if (brokerEmails.length === 0) {
+      setEtaResult({ ok: false, msg: 'No broker email on this trip.' });
+      return;
+    }
+
+    setUpdatingEta(true);
+    setEtaResult(null);
+
+    try {
+      // 1. Get a fresh idToken for the position endpoint
+      const { auth } = await import('./firebase.js');
+      const idToken = await auth.currentUser.getIdToken();
+
+      // 2. Fetch current position for this single tail
+      const r = await fetch('/api/flightaware-positions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken, idents: [tail] }),
+      });
+      if (!r.ok) {
+        const t = await r.text().catch(() => '');
+        throw new Error(`Position fetch failed (${r.status}): ${t.slice(0, 200)}`);
+      }
+      const data = await r.json();
+      const pos = Array.isArray(data.positions) ? data.positions.find(p => p.ident === tail) : null;
+      if (!pos) {
+        throw new Error(`No FlightAware data returned for ${tail}.`);
+      }
+      if (!pos.airborne) {
+        setEtaResult({ ok: false, msg: `${tail} is not currently airborne — no live ETA available.` });
+        setUpdatingEta(false);
+        return;
+      }
+
+      // 3. Format the times
+      const etaIso = pos.estimatedOn || null;
+      if (!etaIso) {
+        throw new Error(`FlightAware has no ETA yet for ${tail}.`);
+      }
+      const etaDate = new Date(etaIso);
+      const schedDate = trip.arr instanceof Date ? trip.arr : (trip.arr ? new Date(trip.arr) : null);
+      const fmt = (d) => {
+        try {
+          return d.toLocaleString('en-US', {
+            hour: '2-digit', minute: '2-digit', timeZoneName: 'short',
+          });
+        } catch { return d.toISOString(); }
+      };
+      const etaStr = fmt(etaDate);
+      const schedStr = schedDate ? fmt(schedDate) : null;
+
+      // 4. Build and send email
+      const tailLabel = tail;
+      const dest = (trip.info?.to || pos.destination || '').toUpperCase();
+      const fromAirport = (trip.info?.from || pos.origin || '').toUpperCase();
+      const greetingName = brokerEmails[0].split('@')[0].split('.')[0];
+      const greeting = greetingName ? `Hi ${greetingName.charAt(0).toUpperCase() + greetingName.slice(1)},` : 'Hello,';
+      const signature = '\n\n— Skyway Aviation\nPrivate Jet & Helicopter Charter Services';
+      const subject = `Updated ETA — ${tailLabel} ${fromAirport}-${dest}`;
+      const bodyLines = [
+        greeting,
+        '',
+        `The estimated arrival time for ${tailLabel} at ${dest} has been updated based on the latest flight tracking.`,
+        '',
+        `New ETA: ${etaStr}`,
+      ];
+      if (schedStr) bodyLines.push(`Originally scheduled: ${schedStr}`);
+      bodyLines.push('');
+      bodyLines.push('We will continue to keep you informed.');
+      const text = bodyLines.join('\n') + signature;
+
+      const sendR = await fetch('/api/send-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to: brokerEmails, subject, text }),
+      });
+      const sendData = await sendR.json().catch(() => ({}));
+      if (!sendR.ok) {
+        throw new Error(`Email send failed: ${sendData.error || sendR.status}`);
+      }
+      setEtaResult({ ok: true, msg: `ETA emailed to ${brokerEmails.join(', ')} — New ETA ${etaStr}` });
+    } catch (err) {
+      console.error('[update-eta] error:', err);
+      setEtaResult({ ok: false, msg: err.message || 'Failed to update ETA.' });
+    } finally {
+      setUpdatingEta(false);
     }
   };
 
@@ -2705,6 +2813,28 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
                 JETINSIGHT ↗
               </a>
             )}
+            {/* UPDATE ETA — ops/admin only. Fetches current FlightAware ETA
+                and emails it to all broker emails on the trip. Shows result
+                inline. Works only when aircraft is actually airborne (the
+                handler validates and shows a message otherwise). */}
+            {(currentUser?.role === 'ops' || currentUser?.role === 'admin') && trip.info?.tail && brokerEmail && (
+              <button
+                onClick={handleUpdateEta}
+                disabled={updatingEta}
+                className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] uppercase tracking-[0.15em] border border-slate-700 text-slate-400 hover:text-cyan-300 hover:border-cyan-500/40 disabled:opacity-50 disabled:cursor-not-allowed"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                title={`Send current ETA to broker via FlightAware`}
+              >
+                {updatingEta ? (
+                  <>
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    SENDING...
+                  </>
+                ) : (
+                  <>UPDATE ETA</>
+                )}
+              </button>
+            )}
             <button
               onClick={async () => {
                 const next = !completed;
@@ -2756,6 +2886,25 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
             </button>
           </div>
         </div>
+
+        {/* Result banner for UPDATE ETA action. Shown briefly after success/fail. */}
+        {etaResult && (
+          <div
+            className={`mb-2 px-3 py-2 text-xs border ${etaResult.ok ? 'border-emerald-500/40 text-emerald-300 bg-emerald-500/5' : 'border-amber-500/40 text-amber-300 bg-amber-500/5'}`}
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <span>{etaResult.msg}</span>
+              <button
+                onClick={() => setEtaResult(null)}
+                className="text-slate-500 hover:text-slate-300"
+                aria-label="Dismiss"
+              >
+                ×
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="flex items-baseline gap-4 flex-wrap">
           <h1
