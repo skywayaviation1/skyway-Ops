@@ -633,6 +633,27 @@ function greetingFromEmail(email) {
 // Returns { subject, text } or null if this status doesn't trigger an email.
 // REPO legs get repositioning-specific copy; revenue legs get the standard
 // passenger-flight wording.
+// === sendEmail helper ===
+// All send-email calls from the frontend now include the user's Firebase
+// idToken so the server can authorize them. send-email.js rejects calls
+// that don't have either a valid idToken or the internal server secret.
+async function sendEmailViaApi({ to, subject, text }) {
+  let idToken = null;
+  try {
+    const { auth } = await import('./firebase.js');
+    if (auth.currentUser) {
+      idToken = await auth.currentUser.getIdToken();
+    }
+  } catch (e) {
+    console.warn('[sendEmailViaApi] could not get idToken:', e.message);
+  }
+  return fetch('/api/send-email', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ to, subject, text, idToken }),
+  });
+}
+
 function buildStatusEmail(step, trip, brokerEmail) {
   const greeting = `Hi ${greetingFromEmail(brokerEmail)},`;
   const tail = trip.info.tail || '';
@@ -1887,16 +1908,12 @@ function DelayPanel({ trip, opsEmail, brokerEmail, currentUser, statuses, setSta
     const body = lines.join('\n') + signature;
 
     try {
-      const r = await fetch('/api/send-email', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          to: recipients,
-          subject: notifyBroker
-            ? `Flight Delay — ${tail} ${route}`
-            : `[INTERNAL] Flight Delay — ${tail} ${route}`,
-          text: body,
-        }),
+      const r = await sendEmailViaApi({
+        to: recipients,
+        subject: notifyBroker
+          ? `Flight Delay — ${tail} ${route}`
+          : `[INTERNAL] Flight Delay — ${tail} ${route}`,
+        text: body,
       });
       const data = await r.json().catch(() => ({}));
       if (!r.ok) {
@@ -2393,14 +2410,10 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
 
     try {
       console.log('[email] Sending to:', recipients.join(', '), '· subject:', emailContent.subject);
-      const r = await fetch('/api/send-email', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          to: recipients,
-          subject: emailContent.subject,
-          text: emailContent.text,
-        }),
+      const r = await sendEmailViaApi({
+        to: recipients,
+        subject: emailContent.subject,
+        text: emailContent.text,
       });
       const respData = await r.json().catch(() => ({}));
       if (!r.ok) {
@@ -2503,11 +2516,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
       bodyLines.push('We will continue to keep you informed.');
       const text = bodyLines.join('\n') + signature;
 
-      const sendR = await fetch('/api/send-email', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to: brokerEmails, subject, text }),
-      });
+      const sendR = await sendEmailViaApi({ to: brokerEmails, subject, text });
       const sendData = await sendR.json().catch(() => ({}));
       if (!sendR.ok) {
         throw new Error(`Email send failed: ${sendData.error || sendR.status}`);
@@ -9950,14 +9959,10 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
         '',
         '— Skyway Aviation',
       ];
-      const r = await fetch('/api/send-email', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          to: [recipient, ...(reviewerEmail ? [reviewerEmail] : [])], // CC the reviewer so they have a record
-          subject,
-          text: lines.join('\n'),
-        }),
+      const r = await sendEmailViaApi({
+        to: [recipient, ...(reviewerEmail ? [reviewerEmail] : [])], // CC the reviewer so they have a record
+        subject,
+        text: lines.join('\n'),
       });
       if (!r.ok) {
         const data = await r.json().catch(() => ({}));
