@@ -2295,6 +2295,16 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
   const persist = useCallback(async (next) => {
     try {
       const { saveTripState } = await import('./firebase-data.js');
+      // tripMeta is what the FlightAware webhook uses to match incoming events
+      // to this specific trip-state doc. Without it, auto-fire/auto-email can't
+      // work — trip-state UIDs are opaque hashes that contain no route info.
+      const tripMeta = {
+        tail: (trip.info?.tail || '').toUpperCase(),
+        from: (trip.info?.from || '').toUpperCase(),
+        to: (trip.info?.to || '').toUpperCase(),
+        start: trip.start instanceof Date ? trip.start.toISOString() : (trip.start || null),
+        legType: trip.info?.legType || 'REVENUE',
+      };
       // Merge in trip-sheet fields and preloadedPax unless caller passed them explicitly
       const merged = {
         tripSheetUrl,
@@ -2304,6 +2314,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
         tripSheetUploadedBy,
         preloadedPax,
         tripSheetNotes,
+        tripMeta,
         ...next,
       };
       await saveTripState(trip.uid, merged);
@@ -2311,7 +2322,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
       console.error('Failed to save trip state:', err);
       alert('Failed to save — check your connection');
     }
-  }, [trip.uid, tripSheetUrl, tripSheetPath, tripSheetFilename, tripSheetUploadedAt, tripSheetUploadedBy, preloadedPax, tripSheetNotes]);
+  }, [trip.uid, trip.info?.tail, trip.info?.from, trip.info?.to, trip.start, trip.info?.legType, tripSheetUrl, tripSheetPath, tripSheetFilename, tripSheetUploadedAt, tripSheetUploadedBy, preloadedPax, tripSheetNotes]);
 
   const openMailto = (url) => {
     const a = document.createElement('a');

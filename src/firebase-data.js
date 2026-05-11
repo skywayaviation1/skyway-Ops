@@ -146,6 +146,9 @@ export async function saveTripState(tripId, state) {
   if (has('tripSheetFilename'))    patch.tripSheetFilename = state.tripSheetFilename || null;
   if (has('preloadedPax'))         patch.preloadedPax = Array.isArray(state.preloadedPax) ? state.preloadedPax : [];
   if (has('tripSheetNotes'))       patch.tripSheetNotes = state.tripSheetNotes || null;
+  // tripMeta — route/tail/start info, used by the FlightAware webhook to match
+  // incoming events to this trip. See PR 2c.
+  if (has('tripMeta'))             patch.tripMeta = state.tripMeta || null;
 
   const ref = doc(db, 'trip-state', safeId);
 
