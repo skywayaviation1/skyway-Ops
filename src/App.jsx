@@ -8829,17 +8829,31 @@ function TrackingScreen({ currentUser, allTrips, trackingEnabled }) {
         mapboxgl.accessToken = token;
 
         console.log('[tracking] initializing map, container:', mapContainerRef.current);
+        console.log('[tracking] mapbox token first 12 chars:', token.substring(0, 12));
         const map = new mapboxgl.Map({
           container: mapContainerRef.current,
-          style: 'mapbox://styles/mapbox/dark-v11',
+          // streets-v12 is one of Mapbox's default-included styles; works with
+          // any public token. dark-v11 sometimes returns 401 on tokens that
+          // weren't created with explicit style permissions even though it's
+          // also a default style. streets-v12 has not been observed to fail.
+          style: 'mapbox://styles/mapbox/streets-v12',
           center: [-95.7, 37.0],
           zoom: 3.5,
           attributionControl: false,
         });
+        // Log the style load explicitly so we can see if it errors
+        map.on('styledata', () => console.log('[tracking] style loaded'));
+        map.on('styledataloading', () => console.log('[tracking] style loading...'));
         map.addControl(new mapboxgl.NavigationControl({ showCompass: false }), 'top-right');
         map.on('load', () => {
           console.log('[tracking] map loaded');
-          if (!cancelled) setMapReady(true);
+          if (!cancelled) {
+            setMapReady(true);
+            // Force a resize in case the container was sized after mount
+            setTimeout(() => {
+              try { map.resize(); console.log('[tracking] map resized'); } catch {}
+            }, 100);
+          }
         });
         map.on('error', (e) => {
           console.error('[tracking] map error:', e);
@@ -8981,10 +8995,13 @@ function TrackingScreen({ currentUser, allTrips, trackingEnabled }) {
       )}
 
       {/* Map (top half) + list (bottom half) on mobile; side-by-side on desktop */}
-      <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
-        {/* MAP */}
-        <div className="relative flex-1 md:w-3/5 min-h-[300px] md:min-h-0 border-b md:border-b-0 md:border-r border-slate-800">
-          <div ref={mapContainerRef} className="absolute inset-0" />
+      <div className="flex-1 flex flex-col md:flex-row overflow-hidden" style={{ minHeight: 0 }}>
+        {/* MAP — explicit height since Mapbox needs a sized parent */}
+        <div
+          className="relative md:w-3/5 border-b md:border-b-0 md:border-r border-slate-800 flex-1"
+          style={{ minHeight: '60vh' }}
+        >
+          <div ref={mapContainerRef} style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }} />
           {!mapReady && !error && (
             <div className="absolute inset-0 flex items-center justify-center bg-slate-950/80">
               <div className="text-xs text-slate-500 flex items-center gap-2">
