@@ -9745,7 +9745,7 @@ export default function CharterOps() {
   const tripArchiveState = useCallback((trip) => {
     if (!trip) return 'active';
     const FIFTEEN_DAYS_MS = 15 * 24 * 3600 * 1000;
-    const ONE_DAY_MS = 24 * 3600 * 1000;
+    const TWO_HOURS_MS = 2 * 3600 * 1000;
 
     // 1. Manually archived OR completed (Firestore-backed)
     const manualArchivedAt = tripArchived[trip.uid];
@@ -9755,12 +9755,18 @@ export default function CharterOps() {
       return 'archived';
     }
 
-    // 2. Auto-archive 24+ hours past arrival
+    // 2. Auto-archive 2+ hours past scheduled arrival. This catches trips
+    // that crew forgot to Mark Complete. Conservative window: 2 hours is
+    // long enough that a real delay doesn't bump a trip off the active
+    // schedule prematurely, but short enough that yesterday's flights
+    // aren't cluttering the view. When ADS-B integration lands, real
+    // arrival events will move the trip to archived earlier than this
+    // fallback would.
     if (trip.end) {
       const arrivalMs = trip.end instanceof Date ? trip.end.getTime() : trip.end;
       const ageMs = Date.now() - arrivalMs;
       if (ageMs > FIFTEEN_DAYS_MS) return 'hidden';
-      if (ageMs > ONE_DAY_MS) return 'archived';
+      if (ageMs > TWO_HOURS_MS) return 'archived';
     }
     return 'active';
   }, [tripArchived]);
