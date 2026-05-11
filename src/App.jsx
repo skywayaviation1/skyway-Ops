@@ -1164,6 +1164,8 @@ const STATUS_STEPS = [
   { id: 'pax_arrived', label: 'PASSENGERS ARRIVED', sub: 'Pax on property', icon: Users, applies: ['REVENUE'] },
   { id: 'pax_boarded', label: 'PASSENGERS BOARDED', sub: 'All souls accounted', icon: Users, applies: ['REVENUE'] },
   { id: 'taxi_dep', label: 'TAXI FOR DEPARTURE', sub: 'Pushback / taxi clearance', icon: Plane, applies: ['REPO', 'REVENUE'] },
+  { id: 'wheels_up', label: 'WHEELS UP', sub: 'Airborne — auto-detected', icon: Plane, applies: ['REPO', 'REVENUE'] },
+  { id: 'landed', label: 'LANDED', sub: 'On the ground — auto-detected', icon: CheckCircle2, applies: ['REPO', 'REVENUE'] },
 ];
 
 // REPO-leg labels override the generic ones above. The same step IDs are used,
@@ -1173,6 +1175,8 @@ const REPO_STEP_OVERRIDES = {
   crew_onsite:    { label: 'CREW PREPARING FOR REPOSITIONING', sub: 'GPS lock at FBO' },
   aircraft_ready: { label: 'AIRCRAFT READY FOR REPOSITIONING', sub: 'Pre-flight complete' },
   taxi_dep:       { label: 'AIRCRAFT TAXIING FOR REPOSITIONING', sub: 'Pushback / taxi clearance' },
+  wheels_up:      { label: 'REPOSITIONING — WHEELS UP', sub: 'Airborne — auto-detected' },
+  landed:         { label: 'REPOSITIONING — LANDED', sub: 'On the ground — auto-detected' },
 };
 
 // Return the leg-type-aware step config (label + sub).
