@@ -7536,7 +7536,7 @@ function TrackingToggle() {
   );
 }
 
-function FlightAwarePanel({ currentUser }) {
+function FlightAwarePanel({ currentUser, allTrips }) {
   const isAdmin = currentUser?.role === 'admin';
 
   const [endpointStatus, setEndpointStatus] = useState('unknown'); // unknown | registered | error
@@ -7546,6 +7546,9 @@ function FlightAwarePanel({ currentUser }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [info, setInfo] = useState(null);
+  // Backfill state — tripMeta migration for existing trip-state docs
+  const [backfillBusy, setBackfillBusy] = useState(false);
+  const [backfillResult, setBackfillResult] = useState(null);
 
   // Load existing alerts when panel mounts
   const loadAlerts = useCallback(async () => {
@@ -7567,6 +7570,65 @@ function FlightAwarePanel({ currentUser }) {
   }, [isAdmin]);
 
   useEffect(() => { loadAlerts(); }, [loadAlerts]);
+
+  // === Backfill tripMeta on all existing trip-state docs ===
+  // For each iCal-loaded trip, write tripMeta (tail/from/to/start/legType) to
+  // the corresponding trip-state Firestore doc. This is what the FlightAware
+  // webhook reads to match incoming events to a trip.
+  //
+  // Trips that exist in iCal but have no trip-state doc yet: a stub doc gets
+  // created with just tripMeta + defaults, so future FA events can match it
+  // before any crew member opens the trip.
+  const handleBackfillTripMeta = useCallback(async () => {
+    if (backfillBusy) return;
+    if (!Array.isArray(allTrips) || allTrips.length === 0) {
+      setBackfillResult({ ok: false, msg: 'No trips loaded — sync iCal first.' });
+      return;
+    }
+    setBackfillBusy(true);
+    setBackfillResult(null);
+    try {
+      const { auth } = await import('./firebase.js');
+      const idToken = await auth.currentUser.getIdToken();
+
+      // Shape the trips array for the backfill endpoint. Send only the fields
+      // the endpoint needs — keeps the payload small for large fleets.
+      const trips = allTrips
+        .filter(t => t?.uid && t?.info?.tail && t?.info?.from)
+        .map(t => ({
+          uid: t.uid,
+          tail: t.info.tail,
+          from: t.info.from,
+          to: t.info.to || '',
+          start: t.start instanceof Date ? t.start.toISOString() : (t.start || null),
+          legType: t.info.legType || 'REVENUE',
+        }));
+
+      if (trips.length === 0) {
+        setBackfillResult({ ok: false, msg: 'No trips with tail+from to migrate.' });
+        setBackfillBusy(false);
+        return;
+      }
+
+      const r = await fetch('/api/flightaware-backfill-tripmeta', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken, trips }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        throw new Error(data.error || `HTTP ${r.status}`);
+      }
+      const msg = `${data.updated || 0} updated, ${data.created || 0} created, ${data.skipped || 0} skipped`
+        + (data.errors?.length ? `, ${data.errors.length} errors` : '');
+      setBackfillResult({ ok: true, msg });
+    } catch (err) {
+      setBackfillResult({ ok: false, msg: err.message || 'Backfill failed.' });
+    } finally {
+      setBackfillBusy(false);
+    }
+  }, [allTrips, backfillBusy]);
+
 
   // Check endpoint registration status
   useEffect(() => {
@@ -7731,6 +7793,35 @@ function FlightAwarePanel({ currentUser }) {
             <p className="text-[10px] text-slate-500 mt-2" style={{ fontFamily: 'DM Sans, sans-serif' }}>
               Tells FlightAware where to POST flight events. Do this once before subscribing tails.
             </p>
+          </div>
+
+          {/* Backfill tripMeta — writes routing info to all existing trips so
+              the FA webhook can match events to them. One-click migration tool. */}
+          <div className="border border-slate-800 p-3 mb-4">
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                TRIP METADATA
+              </div>
+            </div>
+            <button
+              onClick={handleBackfillTripMeta}
+              disabled={backfillBusy}
+              className="w-full py-2 border border-amber-500/40 text-amber-300 hover:bg-amber-500/10 text-xs tracking-widest disabled:opacity-50"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              {backfillBusy ? 'WORKING...' : 'BACKFILL TRIP META'}
+            </button>
+            <p className="text-[10px] text-slate-500 mt-2" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+              Writes route/tail/start info to every active trip so FlightAware events can auto-fire status updates and emails. Run this once after deploying.
+            </p>
+            {backfillResult && (
+              <div
+                className={`mt-2 px-2 py-1 text-[10px] border ${backfillResult.ok ? 'border-emerald-500/40 text-emerald-300 bg-emerald-500/5' : 'border-amber-500/40 text-amber-300 bg-amber-500/5'}`}
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              >
+                {backfillResult.msg}
+              </div>
+            )}
           </div>
 
           {/* Per-tail alert subscriptions */}
@@ -7968,7 +8059,7 @@ function QuickBooksConnectionPanel({ currentUser }) {
   );
 }
 
-function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, onLoadFromText, syncStatus, currentUser }) {
+function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, onLoadFromText, syncStatus, currentUser, allTrips }) {
   const [icalUrl, setIcalUrl] = useState(config.icalUrl || '');
   const [icalText, setIcalText] = useState('');
   const [crewName, setCrewName] = useState(config.crewName || '');
@@ -8074,7 +8165,7 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
             </button>
           </section>
 
-          <FlightAwarePanel currentUser={currentUser} />
+          <FlightAwarePanel currentUser={currentUser} allTrips={allTrips} />
 
           <QuickBooksConnectionPanel currentUser={currentUser} />
 
@@ -12024,6 +12115,7 @@ export default function CharterOps() {
           setConfig={setConfig}
           syncStatus={syncStatus}
           currentUser={currentUser}
+          allTrips={allTrips}
           onClose={() => setShowSettings(false)}
           onLoadDemo={loadDemo}
           onLoadFromUrl={loadFromUrl}
