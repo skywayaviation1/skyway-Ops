@@ -734,6 +734,45 @@ function buildStatusEmail(step, trip, brokerEmail) {
           signature,
       };
 
+    case 'wheels_up':
+      if (isRepo) {
+        return {
+          subject: `Wheels Up (Repositioning) — ${tail} ${route}`,
+          text:
+            `${greeting}\n\n` +
+            `${tail} is wheels up from ${trip.info.from || ''} and en route to ${trip.info.to || ''} ` +
+            `for the repositioning flight. We will notify you upon landing.` +
+            signature,
+        };
+      }
+      return {
+        subject: `Wheels Up — ${tail} ${route}`,
+        text:
+          `${greeting}\n\n` +
+          `${tail} is wheels up from ${trip.info.from || ''} and en route to ${trip.info.to || ''}. ` +
+          `We will notify you upon landing.` +
+          signature,
+      };
+
+    case 'landed':
+      if (isRepo) {
+        return {
+          subject: `Landed (Repositioning) — ${tail} ${route}`,
+          text:
+            `${greeting}\n\n` +
+            `${tail} has landed at ${trip.info.to || ''}. The repositioning flight is complete.` +
+            signature,
+        };
+      }
+      return {
+        subject: `Landed — ${tail} ${route}`,
+        text:
+          `${greeting}\n\n` +
+          `${tail} has landed at ${trip.info.to || ''}. Thank you for choosing Skyway Aviation. ` +
+          `We look forward to serving you again.` +
+          signature,
+      };
+
     default:
       // Unknown status — don't send an email
       return null;
