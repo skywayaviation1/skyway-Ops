@@ -36,6 +36,8 @@ function getDb() {
 const FA_API_BASE = 'https://aeroapi.flightaware.com/aeroapi';
 
 async function verifyAdmin(idToken) {
+  // Defensive: ensure admin SDK initialized even if caller forgot to do so
+  getAdmin();
   const decoded = await admin.auth().verifyIdToken(idToken);
   const db = getDb();
   const profile = await db.collection('users').doc(decoded.uid).get();
