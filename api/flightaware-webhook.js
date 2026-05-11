@@ -96,6 +96,10 @@ function fmtTime(iso) {
 
 // Find a Skyway trip that matches a FlightAware event.
 // Strict: tail + origin airport + ±4h window around trip start.
+//
+// Trip-state docs use opaque hash UIDs that contain no route info, so we
+// read tripMeta (written by App.jsx persist()) which has the routing data:
+//   { tail, from, to, start (ISO), legType }
 async function findMatchingTrip(db, ident, originCode, eventTimeMs) {
   if (!ident) return null;
 
@@ -103,10 +107,6 @@ async function findMatchingTrip(db, ident, originCode, eventTimeMs) {
   const windowStart = eventTimeMs - FOUR_HOURS_MS;
   const windowEnd = eventTimeMs + FOUR_HOURS_MS;
 
-  // Scan trip-state docs. We extract tail/from/scheduled-time from the UID.
-  // UID formats:
-  //   ical-{tail}-{from}-{to}-{YYYYMMDDTHHmmssZ}-{hash}
-  //   manual-{epoch}-{...}
   const snap = await db.collection('trip-state').get();
   const candidates = [];
 
@@ -114,33 +114,25 @@ async function findMatchingTrip(db, ident, originCode, eventTimeMs) {
     const data = doc.data();
     if (data.archived === true) continue;
 
-    const uid = doc.id;
+    const meta = data.tripMeta;
+    if (!meta || !meta.tail || !meta.from || !meta.start) {
+      // Trip doesn't yet have routing metadata — was saved before PR 2c.
+      // Skip — auto-fire only applies to trips persisted with tripMeta.
+      continue;
+    }
 
-    // Extract tail
-    const tailMatch = uid.match(/-([NX][0-9A-Z]+)-/);
-    if (!tailMatch) continue;
-    const tail = tailMatch[1];
-    if (tail.toUpperCase() !== ident.toUpperCase()) continue;
-
-    // Parse from + tStamp
-    const parts = uid.split('-');
-    const tailIdx = parts.findIndex(p => p === tail);
-    if (tailIdx < 0 || tailIdx + 3 >= parts.length) continue;
-    const from = parts[tailIdx + 1];
-    const tStamp = parts[tailIdx + 3];
-    if (!from || !tStamp) continue;
+    // Tail must match exactly
+    if (String(meta.tail).toUpperCase() !== ident.toUpperCase()) continue;
 
     // Origin must match
-    if (originCode && !airportsMatch(from, originCode)) continue;
+    if (originCode && !airportsMatch(meta.from, originCode)) continue;
 
-    // Parse tStamp into Date
-    const m = tStamp.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/);
-    if (!m) continue;
-    const startMs = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
-
+    // Scheduled start must fall within ±4h of the event
+    const startMs = new Date(meta.start).getTime();
+    if (isNaN(startMs)) continue;
     if (startMs < windowStart || startMs > windowEnd) continue;
 
-    candidates.push({ uid, data, startMs });
+    candidates.push({ uid: doc.id, data, startMs });
   }
 
   if (candidates.length === 0) return null;
