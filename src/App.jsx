@@ -8749,7 +8749,8 @@ function TrackingScreen({ currentUser, allTrips, trackingEnabled }) {
 
   const mapContainerRef = useRef(null);
   const mapRef = useRef(null);
-  const markersRef = useRef({}); // { tail: mapboxMarker }
+  const markersRef = useRef({}); // { tail: { aircraft, originPin, destPin, sourceId, layerIds } }
+  const groundMarkersRef = useRef({}); // { tail: mapboxgl.Marker } — parked-aircraft pins
   const pollTimerRef = useRef(null);
   const aliveRef = useRef(true);
 
@@ -9049,6 +9050,68 @@ function TrackingScreen({ currentUser, allTrips, trackingEnabled }) {
         }
       }
     }
+
+    // === 3. Ground markers: gray plane icon at last-known parking airport ===
+    // Only render for tails with valid grounded coords. Tails without
+    // groundedLat/Lon (never flown, brand new, etc) are hidden — per spec.
+    const grounded = positions.filter(
+      p => !p.airborne && p.groundedLat != null && p.groundedLon != null
+    );
+    const groundedSet = new Set(grounded.map(p => p.ident));
+
+    // Clean up ground markers for tails no longer grounded (e.g. just took off)
+    for (const ident of Object.keys(groundMarkersRef.current)) {
+      if (!groundedSet.has(ident)) {
+        try { groundMarkersRef.current[ident].remove(); } catch {}
+        delete groundMarkersRef.current[ident];
+      }
+    }
+
+    // Add or update grounded-aircraft pins
+    for (const p of grounded) {
+      let marker = groundMarkersRef.current[p.ident];
+      if (!marker) {
+        const wrap = document.createElement('div');
+        wrap.style.cssText = 'position: relative; cursor: pointer; pointer-events: auto; width: 30px; height: 30px;';
+
+        const planeEl = document.createElement('div');
+        planeEl.style.cssText = `
+          width: 30px; height: 30px;
+          filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.7));
+          opacity: 0.85;
+        `;
+        // Gray top-down airplane silhouette to distinguish from airborne (cyan)
+        planeEl.innerHTML = `
+          <svg viewBox="0 0 24 24" width="30" height="30" fill="#94a3b8" stroke="#0f172a" stroke-width="0.5" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 2 L13 3 L13 9 L22 14 L22 16 L13 14 L13 19 L15 20 L15 22 L12 21 L9 22 L9 20 L11 19 L11 14 L2 16 L2 14 L11 9 L11 3 Z"/>
+          </svg>
+        `;
+        wrap.appendChild(planeEl);
+
+        const label = document.createElement('div');
+        label.textContent = `${p.ident} · ${p.groundedAt || ''}`;
+        label.style.cssText = `
+          position: absolute; top: 32px; left: 50%; transform: translateX(-50%);
+          background: rgba(15, 23, 42, 0.92); color: #94a3b8;
+          font-family: 'JetBrains Mono', monospace; font-size: 9px; font-weight: 500;
+          padding: 2px 5px; border-radius: 2px; white-space: nowrap;
+          pointer-events: none;
+        `;
+        wrap.appendChild(label);
+
+        wrap.addEventListener('click', (e) => {
+          e.stopPropagation();
+          setSelectedIdent(p.ident);
+        });
+
+        marker = new window.mapboxgl.Marker({ element: wrap, anchor: 'center' })
+          .setLngLat([p.groundedLon, p.groundedLat])
+          .addTo(map);
+        groundMarkersRef.current[p.ident] = marker;
+      } else {
+        marker.setLngLat([p.groundedLon, p.groundedLat]);
+      }
+    }
   }, [positions, mapReady]);
 
   // === Find trip context for a given tail (matches by tail to current/upcoming trip)
@@ -9221,7 +9284,9 @@ function TrackingScreen({ currentUser, allTrips, trackingEnabled }) {
                       <span className="text-[10px] text-slate-500 truncate" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
                         {airborne
                           ? `${p.origin || '???'} → ${p.destination || '???'}`
-                          : 'On the ground'}
+                          : (p?.groundedAt
+                              ? `On the ground · ${p.groundedAt}`
+                              : 'On the ground')}
                       </span>
                     </div>
                     {airborne && (
