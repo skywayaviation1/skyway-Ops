@@ -65,19 +65,26 @@ const EVENT_LABELS = {
 
 function normCode(code) {
   if (!code) return '';
-  const c = String(code).toUpperCase().trim();
-  // US ICAO codes start with K. If 3 chars (likely IATA), prepend K.
-  if (c.length === 3 && /^[A-Z]{3}$/.test(c)) return 'K' + c;
-  return c;
+  return String(code).toUpperCase().trim();
 }
 
+// Compare two airport codes, treating IATA/ICAO/local forms as equal.
+// Examples that should match:
+//   KTPA   === TPA       (US ICAO + IATA)
+//   K07FA  === 07FA      (US ICAO prefix + local 4-char strip)
+//   KMMU   === MMU
+//   FA54   === FA54
+// To match, strip an optional leading K from each and compare the remainder.
+// Only valid for non-empty remainders.
 function airportsMatch(a, b) {
   const A = normCode(a);
   const B = normCode(b);
+  if (!A || !B) return false;
   if (A === B) return true;
-  const A3 = A.replace(/^K/, '');
-  const B3 = B.replace(/^K/, '');
-  return A3 === B3 && A3.length === 3;
+  const A_noK = A.replace(/^K/, '');
+  const B_noK = B.replace(/^K/, '');
+  if (A_noK && A_noK === B_noK) return true;
+  return false;
 }
 
 // Format an ISO timestamp as UTC HH:MM. Brokers will know which timezone
