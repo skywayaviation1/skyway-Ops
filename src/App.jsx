@@ -8796,16 +8796,30 @@ function TrackingScreen({ currentUser, allTrips, trackingEnabled }) {
     };
   }, [fetchPositions]);
 
-  // Initialize map once container is mounted
+  // Initialize map once container is mounted. The container ref attaches
+  // on the React render, but the Mapbox CDN load is async — there's a race
+  // where the script resolves with no container, or the effect fires with
+  // no script. Solution: poll for both, then initialize. This effect runs
+  // exactly once (empty deps); the inner poll handles timing.
   useEffect(() => {
-    if (!mapContainerRef.current) return;
-    if (mapRef.current) return; // already initialized
-
     let cancelled = false;
-    (async () => {
+    let pollHandle = null;
+
+    const tryInit = async () => {
+      if (cancelled || mapRef.current) return;
+      // Container not mounted yet — retry in 100ms
+      if (!mapContainerRef.current) {
+        pollHandle = setTimeout(tryInit, 100);
+        return;
+      }
       try {
         const mapboxgl = await loadMapboxGL();
-        if (cancelled) return;
+        if (cancelled || mapRef.current) return;
+        // Re-check container after the await
+        if (!mapContainerRef.current) {
+          pollHandle = setTimeout(tryInit, 100);
+          return;
+        }
 
         const token = import.meta.env.VITE_MAPBOX_TOKEN;
         if (!token) {
@@ -8814,25 +8828,39 @@ function TrackingScreen({ currentUser, allTrips, trackingEnabled }) {
         }
         mapboxgl.accessToken = token;
 
+        console.log('[tracking] initializing map, container:', mapContainerRef.current);
         const map = new mapboxgl.Map({
           container: mapContainerRef.current,
           style: 'mapbox://styles/mapbox/dark-v11',
-          center: [-95.7, 37.0],   // approx center of CONUS
+          center: [-95.7, 37.0],
           zoom: 3.5,
           attributionControl: false,
         });
         map.addControl(new mapboxgl.NavigationControl({ showCompass: false }), 'top-right');
         map.on('load', () => {
+          console.log('[tracking] map loaded');
           if (!cancelled) setMapReady(true);
+        });
+        map.on('error', (e) => {
+          console.error('[tracking] map error:', e);
+          if (!cancelled) setError(`Map error: ${e.error?.message || 'unknown'}`);
         });
         mapRef.current = map;
       } catch (err) {
+        console.error('[tracking] init failed:', err);
         if (!cancelled) setError(`Map load failed: ${err.message}`);
       }
-    })();
+    };
+
+    tryInit();
 
     return () => {
       cancelled = true;
+      if (pollHandle) clearTimeout(pollHandle);
+      if (mapRef.current) {
+        try { mapRef.current.remove(); } catch {}
+        mapRef.current = null;
+      }
     };
   }, []);
 
