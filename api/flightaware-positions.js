@@ -96,19 +96,23 @@ async function fetchPositionForTail(ident, apiKey) {
     // get the last-known parking airport. We sort by actual_on descending
     // to find the most recent landing.
     if (!active) {
+      console.log(`[fa-positions] ${ident} no active flight, ${flights.length} historical flights in response`);
       const completed = flights
         .filter(f => f.actual_on)
         .sort((a, b) => new Date(b.actual_on) - new Date(a.actual_on));
       const lastLanded = completed[0];
       if (!lastLanded) {
+        console.log(`[fa-positions] ${ident} no completed flights found`);
         return { ident, airborne: false };
       }
       const dest = lastLanded.destination || {};
       const destLat = dest.latitude ?? null;
       const destLon = dest.longitude ?? null;
       const destCode = dest.code_icao || dest.code || dest.code_iata || null;
+      console.log(`[fa-positions] ${ident} last landed at ${destCode || '?'} (lat: ${destLat}, lon: ${destLon}). dest keys: ${Object.keys(dest).join(',')}`);
       // Only return ground location if we have coordinates AND an airport code
       if (destLat == null || destLon == null || !destCode) {
+        console.log(`[fa-positions] ${ident} missing lat/lon/code in dest, skipping ground render`);
         return { ident, airborne: false };
       }
       return {
