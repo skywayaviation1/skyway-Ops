@@ -71,19 +71,29 @@ export default async function handler(req, res) {
   const isInternalCall = internalSecret && providedInternal === internalSecret;
 
   let isAuthorized = isInternalCall;
-  if (!isAuthorized && body.idToken) {
-    try {
-      const auth = admin.auth(getAdmin());
-      await auth.verifyIdToken(body.idToken);
-      isAuthorized = true;
-    } catch (e) {
-      console.warn('[send-email] invalid idToken:', e.message);
+  let authFailReason = '';
+
+  if (!isAuthorized) {
+    if (!body.idToken) {
+      authFailReason = 'no idToken in body and no internal secret in headers';
+    } else {
+      try {
+        const auth = admin.auth(getAdmin());
+        await auth.verifyIdToken(body.idToken);
+        isAuthorized = true;
+      } catch (e) {
+        authFailReason = `idToken verify failed: ${e.code || ''} ${e.message || e}`;
+      }
     }
   }
 
   if (!isAuthorized) {
-    console.warn('[send-email] unauthorized request — missing valid idToken or internal secret');
-    return res.status(401).json({ error: 'Unauthorized' });
+    console.warn('[send-email] unauthorized:', authFailReason,
+      '· hasInternalSecret:', !!providedInternal,
+      '· hasIdToken:', !!body.idToken,
+      '· hasFirebaseEnv:', !!process.env.FIREBASE_SERVICE_ACCOUNT_JSON,
+      '· hasInternalSecretEnv:', !!process.env.INTERNAL_API_SECRET);
+    return res.status(401).json({ error: 'Unauthorized', reason: authFailReason });
   }
 
   const { to, subject, text } = body;
