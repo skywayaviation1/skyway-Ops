@@ -41,8 +41,10 @@
 //   }
 
 import admin from 'firebase-admin';
+import { getFirestore } from 'firebase-admin/firestore';
 
 let adminApp = null;
+let _db = null;
 function getAdmin() {
   if (adminApp) return adminApp;
   if (!process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
@@ -57,12 +59,23 @@ function getAdmin() {
   return adminApp;
 }
 
+// Returns Firestore client connected to the NAMED 'appusers' database.
+// The default admin.firestore() points to '(default)' which doesn't exist
+// in this project. Must use modular getFirestore() with the explicit
+// database ID per firebase-admin docs.
+function getDb() {
+  if (_db) return _db;
+  const app = getAdmin();
+  _db = getFirestore(app, 'appusers');
+  return _db;
+}
+
 // IMPORTANT: this app uses a NAMED Firestore database called 'appusers'.
 // Default Firestore() returns the (default) database, which doesn't exist
 // in this project. We must explicitly point at the named database.
 function getFirestore() {
   getAdmin();
-  return admin.firestore(admin.app(), 'appusers');
+  return getDb();
 }
 
 export default async function handler(req, res) {
@@ -138,7 +151,7 @@ export default async function handler(req, res) {
     const estimatedIn = flight.estimated_in || null;
 
     // === 4. Persist to flight-events collection ===
-    const db = getFirestore();
+    const db = getDb();
     const docRef = db.collection('flight-events').doc();
     await docRef.set({
       receivedAt: admin.firestore.FieldValue.serverTimestamp(),

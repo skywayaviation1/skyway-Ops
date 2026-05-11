@@ -11,8 +11,10 @@
 // All three return JSON. The admin UI in App.jsx calls this.
 
 import admin from 'firebase-admin';
+import { getFirestore } from 'firebase-admin/firestore';
 
 let adminApp = null;
+let _db = null;
 function getAdmin() {
   if (adminApp) return adminApp;
   if (!process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
@@ -24,12 +26,18 @@ function getAdmin() {
     : admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
   return adminApp;
 }
+function getDb() {
+  if (_db) return _db;
+  const app = getAdmin();
+  _db = getFirestore(app, 'appusers');
+  return _db;
+}
 
 const FA_API_BASE = 'https://aeroapi.flightaware.com/aeroapi';
 
 async function verifyAdmin(idToken) {
   const decoded = await admin.auth().verifyIdToken(idToken);
-  const db = admin.firestore(admin.app(), 'appusers');
+  const db = getDb();
   const profile = await db.collection('users').doc(decoded.uid).get();
   if (!profile.exists || profile.data().role !== 'admin') {
     const err = new Error('Admin role required');

@@ -12,8 +12,10 @@
 // Called from the admin Settings panel via fetch. Admin-only.
 
 import admin from 'firebase-admin';
+import { getFirestore } from 'firebase-admin/firestore';
 
 let adminApp = null;
+let _db = null;
 function getAdmin() {
   if (adminApp) return adminApp;
   if (!process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
@@ -24,6 +26,12 @@ function getAdmin() {
     ? admin.app()
     : admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
   return adminApp;
+}
+function getDb() {
+  if (_db) return _db;
+  const app = getAdmin();
+  _db = getFirestore(app, 'appusers');
+  return _db;
 }
 
 const FA_API_BASE = 'https://aeroapi.flightaware.com/aeroapi';
@@ -53,7 +61,7 @@ export default async function handler(req, res) {
     }
 
     // Look up profile in the named 'appusers' database
-    const db = admin.firestore(admin.app(), 'appusers');
+    const db = getDb();
     const profileSnap = await db.collection('users').doc(decoded.uid).get();
     if (!profileSnap.exists || profileSnap.data().role !== 'admin') {
       res.status(403).json({ error: 'Admin role required' });
