@@ -151,8 +151,13 @@ async function findMatchingTrip(db, ident, originCode, eventTimeMs) {
   const windowStart = eventTimeMs - FOUR_HOURS_MS;
   const windowEnd = eventTimeMs + FOUR_HOURS_MS;
 
+  console.log(`[matcher] looking for ${ident} from=${originCode} eventAt=${new Date(eventTimeMs).toISOString()}`);
+
   const snap = await db.collection('trip-state').get();
   const candidates = [];
+  let tailMatchCount = 0;
+  let originRejectCount = 0;
+  let timeRejectCount = 0;
 
   for (const doc of snap.docs) {
     const data = doc.data();
@@ -162,19 +167,33 @@ async function findMatchingTrip(db, ident, originCode, eventTimeMs) {
     if (!meta || !meta.tail || !meta.from || !meta.start) continue;
 
     if (String(meta.tail).toUpperCase() !== ident.toUpperCase()) continue;
-    if (originCode && !airportsMatch(meta.from, originCode)) continue;
+    tailMatchCount++;
+
+    if (originCode && !airportsMatch(meta.from, originCode)) {
+      console.log(`[matcher]   rejecting ${doc.id}: meta.from=${meta.from} vs origin=${originCode}`);
+      originRejectCount++;
+      continue;
+    }
 
     const startMs = new Date(meta.start).getTime();
     if (isNaN(startMs)) continue;
-    if (startMs < windowStart || startMs > windowEnd) continue;
+    if (startMs < windowStart || startMs > windowEnd) {
+      console.log(`[matcher]   rejecting ${doc.id}: start=${meta.start} outside window`);
+      timeRejectCount++;
+      continue;
+    }
 
+    console.log(`[matcher]   candidate: ${doc.id} from=${meta.from} start=${meta.start} diff=${Math.abs(startMs - eventTimeMs)}ms`);
     candidates.push({ uid: doc.id, data, startMs });
   }
+
+  console.log(`[matcher] tailMatches=${tailMatchCount} originRejected=${originRejectCount} timeRejected=${timeRejectCount} candidates=${candidates.length}`);
 
   if (candidates.length === 0) return null;
   candidates.sort((a, b) =>
     Math.abs(a.startMs - eventTimeMs) - Math.abs(b.startMs - eventTimeMs)
   );
+  console.log(`[matcher] PICKED ${candidates[0].uid} (closest in time)`);
   return candidates[0];
 }
 
@@ -183,16 +202,27 @@ async function sendEmail(host, to, subject, text) {
   try {
     const proto = host.includes('localhost') ? 'http' : 'https';
     const url = `${proto}://${host}/api/send-email`;
+    const headers = { 'Content-Type': 'application/json' };
+    // Vercel Deployment Protection blocks internal serverless-to-serverless
+    // calls with a 401 SSO redirect. The Protection Bypass for Automation
+    // mechanism lets us through by including the secret in this header.
+    // Set VERCEL_AUTOMATION_BYPASS_SECRET in Vercel env vars (it's auto-populated
+    // if you've enabled Protection Bypass for Automation in project settings).
+    const bypassSecret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
+    if (bypassSecret) {
+      headers['x-vercel-protection-bypass'] = bypassSecret;
+    }
     const r = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ to, subject, text }),
     });
     if (!r.ok) {
       const t = await r.text().catch(() => '');
-      console.error('[cron-poll] send-email failed:', r.status, t);
+      console.error('[cron-poll] send-email failed:', r.status, t.slice(0, 200));
       return false;
     }
+    console.log('[cron-poll] send-email OK to', Array.isArray(to) ? to.join(',') : to);
     return true;
   } catch (err) {
     console.error('[cron-poll] send-email exception:', err.message);

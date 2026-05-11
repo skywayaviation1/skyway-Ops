@@ -114,40 +114,45 @@ async function findMatchingTrip(db, ident, originCode, eventTimeMs) {
   const windowStart = eventTimeMs - FOUR_HOURS_MS;
   const windowEnd = eventTimeMs + FOUR_HOURS_MS;
 
+  console.log(`[matcher] looking for ${ident} from=${originCode} eventAt=${new Date(eventTimeMs).toISOString()}`);
+
   const snap = await db.collection('trip-state').get();
   const candidates = [];
+  let tailMatchCount = 0;
 
   for (const doc of snap.docs) {
     const data = doc.data();
     if (data.archived === true) continue;
 
     const meta = data.tripMeta;
-    if (!meta || !meta.tail || !meta.from || !meta.start) {
-      // Trip doesn't yet have routing metadata — was saved before PR 2c.
-      // Skip — auto-fire only applies to trips persisted with tripMeta.
+    if (!meta || !meta.tail || !meta.from || !meta.start) continue;
+
+    if (String(meta.tail).toUpperCase() !== ident.toUpperCase()) continue;
+    tailMatchCount++;
+
+    if (originCode && !airportsMatch(meta.from, originCode)) {
+      console.log(`[matcher]   rejecting ${doc.id}: meta.from=${meta.from} vs origin=${originCode}`);
       continue;
     }
 
-    // Tail must match exactly
-    if (String(meta.tail).toUpperCase() !== ident.toUpperCase()) continue;
-
-    // Origin must match
-    if (originCode && !airportsMatch(meta.from, originCode)) continue;
-
-    // Scheduled start must fall within ±4h of the event
     const startMs = new Date(meta.start).getTime();
     if (isNaN(startMs)) continue;
-    if (startMs < windowStart || startMs > windowEnd) continue;
+    if (startMs < windowStart || startMs > windowEnd) {
+      console.log(`[matcher]   rejecting ${doc.id}: start=${meta.start} outside window`);
+      continue;
+    }
 
+    console.log(`[matcher]   candidate: ${doc.id} from=${meta.from} start=${meta.start} diff=${Math.abs(startMs - eventTimeMs)}ms`);
     candidates.push({ uid: doc.id, data, startMs });
   }
 
-  if (candidates.length === 0) return null;
+  console.log(`[matcher] tailMatches=${tailMatchCount} candidates=${candidates.length}`);
 
-  // Pick the candidate closest to the event time
+  if (candidates.length === 0) return null;
   candidates.sort((a, b) =>
     Math.abs(a.startMs - eventTimeMs) - Math.abs(b.startMs - eventTimeMs)
   );
+  console.log(`[matcher] PICKED ${candidates[0].uid}`);
   return candidates[0];
 }
 
@@ -157,16 +162,24 @@ async function sendEmail(req, to, subject, text) {
     const host = req.headers.host || 'skyway-ops.vercel.app';
     const proto = host.includes('localhost') ? 'http' : 'https';
     const url = `${proto}://${host}/api/send-email`;
+    const headers = { 'Content-Type': 'application/json' };
+    // Vercel Deployment Protection blocks internal serverless-to-serverless
+    // calls with a 401 SSO redirect. Bypass via Protection Bypass for Automation.
+    const bypassSecret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
+    if (bypassSecret) {
+      headers['x-vercel-protection-bypass'] = bypassSecret;
+    }
     const r = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ to, subject, text }),
     });
     if (!r.ok) {
       const errText = await r.text().catch(() => '');
-      console.error('[fa-webhook] send-email failed:', r.status, errText);
+      console.error('[fa-webhook] send-email failed:', r.status, errText.slice(0, 200));
       return false;
     }
+    console.log('[fa-webhook] send-email OK to', Array.isArray(to) ? to.join(',') : to);
     return true;
   } catch (err) {
     console.error('[fa-webhook] send-email exception:', err.message);
