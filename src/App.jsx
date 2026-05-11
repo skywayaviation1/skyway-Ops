@@ -8919,8 +8919,11 @@ function TrackingScreen({ currentUser, allTrips, trackingEnabled }) {
       let bundle = markersRef.current[p.ident];
       if (!bundle) {
         // ----- Aircraft icon (SVG airplane silhouette, sleek cyan) -----
+        // Explicit width MUST be set or the wrapper div stretches to fill its
+        // parent, which causes the SVG (left-aligned by default) to render far
+        // from the actual lat/lon point.
         const wrap = document.createElement('div');
-        wrap.style.cssText = 'position: relative; cursor: pointer; pointer-events: auto;';
+        wrap.style.cssText = 'position: relative; cursor: pointer; pointer-events: auto; width: 36px; height: 36px;';
 
         const planeEl = document.createElement('div');
         planeEl.style.cssText = `
