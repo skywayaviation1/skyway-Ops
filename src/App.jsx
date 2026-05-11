@@ -7245,6 +7245,257 @@ function SignaturePad({ onSave, onCancel, height = 160 }) {
 /* ============================================================
    Settings modal
    ============================================================ */
+function FlightAwarePanel({ currentUser }) {
+  const isAdmin = currentUser?.role === 'admin';
+
+  const [endpointStatus, setEndpointStatus] = useState('unknown'); // unknown | registered | error
+  const [endpointUrl, setEndpointUrl] = useState(null);
+  const [alerts, setAlerts] = useState([]);
+  const [loadingAlerts, setLoadingAlerts] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [info, setInfo] = useState(null);
+
+  // Load existing alerts when panel mounts
+  const loadAlerts = useCallback(async () => {
+    if (!isAdmin) return;
+    setLoadingAlerts(true);
+    setError(null);
+    try {
+      const { auth } = await import('./firebase.js');
+      const idToken = await auth.currentUser.getIdToken();
+      const r = await fetch(`/api/flightaware-alerts?action=list&idToken=${encodeURIComponent(idToken)}`);
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      setAlerts(Array.isArray(data.alerts) ? data.alerts : []);
+    } catch (err) {
+      setError(err.message || 'Failed to load alerts');
+    } finally {
+      setLoadingAlerts(false);
+    }
+  }, [isAdmin]);
+
+  useEffect(() => { loadAlerts(); }, [loadAlerts]);
+
+  // Check endpoint registration status
+  useEffect(() => {
+    if (!isAdmin) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { db } = await import('./firebase.js');
+        const { doc, getDoc } = await import('firebase/firestore');
+        const snap = await getDoc(doc(db, 'flightaware', 'config'));
+        if (cancelled) return;
+        if (snap.exists()) {
+          const data = snap.data();
+          setEndpointStatus('registered');
+          setEndpointUrl(data.endpointUrl || null);
+        } else {
+          setEndpointStatus('unknown');
+        }
+      } catch (err) {
+        if (!cancelled) setEndpointStatus('error');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [isAdmin]);
+
+  const handleRegisterEndpoint = async () => {
+    if (!isAdmin) return;
+    setBusy(true);
+    setError(null);
+    setInfo(null);
+    try {
+      const { auth } = await import('./firebase.js');
+      const idToken = await auth.currentUser.getIdToken();
+      const r = await fetch('/api/flightaware-set-endpoint', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      setEndpointStatus('registered');
+      setEndpointUrl(data.webhookUrl);
+      setInfo(`Webhook registered: ${data.webhookUrl}`);
+    } catch (err) {
+      setError(err.message || 'Failed to register endpoint');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleCreateAlert = async (ident) => {
+    if (!isAdmin) return;
+    setBusy(true);
+    setError(null);
+    setInfo(null);
+    try {
+      const { auth } = await import('./firebase.js');
+      const idToken = await auth.currentUser.getIdToken();
+      const r = await fetch('/api/flightaware-alerts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          idToken,
+          action: 'create',
+          ident,
+          events: { out: true, off: true, on: true, in: false },
+        }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      setInfo(`Alert created for ${ident}`);
+      await loadAlerts();
+    } catch (err) {
+      setError(err.message || `Failed to create alert for ${ident}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDeleteAlert = async (alertId, ident) => {
+    if (!isAdmin) return;
+    if (!window.confirm(`Delete FlightAware alert for ${ident || 'this aircraft'}? You will no longer receive events for it.`)) return;
+    setBusy(true);
+    setError(null);
+    setInfo(null);
+    try {
+      const { auth } = await import('./firebase.js');
+      const idToken = await auth.currentUser.getIdToken();
+      const r = await fetch('/api/flightaware-alerts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken, action: 'delete', alertId }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      setInfo('Alert deleted');
+      await loadAlerts();
+    } catch (err) {
+      setError(err.message || 'Failed to delete alert');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Map tail → registered alert (so we can show subscribe/unsubscribe per tail)
+  const alertByIdent = {};
+  for (const a of alerts) {
+    if (a.ident) alertByIdent[String(a.ident).toUpperCase()] = a;
+  }
+
+  return (
+    <section>
+      <h3 className="text-xs tracking-widest text-cyan-400 mb-3" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
+        FLIGHTAWARE ALERTS
+      </h3>
+
+      {info && (
+        <div className="mb-3 p-2 border border-emerald-500/40 bg-emerald-500/5 text-xs text-emerald-300">
+          {info}
+        </div>
+      )}
+      {error && (
+        <div className="mb-3 p-2 border border-red-500/40 bg-red-500/5 text-xs text-red-300">
+          {error}
+        </div>
+      )}
+
+      {!isAdmin && (
+        <div className="p-2 border border-slate-700 bg-slate-900/40 text-[11px] text-slate-500">
+          Only admins can configure FlightAware alerts.
+        </div>
+      )}
+
+      {isAdmin && (
+        <>
+          {/* Endpoint registration */}
+          <div className="mb-3 p-3 border border-slate-700 bg-slate-900/40">
+            <div className="flex items-start justify-between gap-2 mb-2">
+              <div>
+                <div className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  WEBHOOK ENDPOINT
+                </div>
+                <div className="text-[11px] text-slate-300 mt-1 break-all" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  {endpointUrl || 'Not registered yet'}
+                </div>
+              </div>
+              <Pill tone={endpointStatus === 'registered' ? 'green' : 'amber'}>
+                {endpointStatus === 'registered' ? 'REGISTERED' : 'NOT REGISTERED'}
+              </Pill>
+            </div>
+            <button
+              onClick={handleRegisterEndpoint}
+              disabled={busy}
+              className="w-full py-2 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 text-xs tracking-widest disabled:opacity-50"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              {busy ? 'WORKING...' : endpointStatus === 'registered' ? 'RE-REGISTER ENDPOINT' : 'REGISTER ENDPOINT'}
+            </button>
+            <p className="text-[10px] text-slate-500 mt-2" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+              Tells FlightAware where to POST flight events. Do this once before subscribing tails.
+            </p>
+          </div>
+
+          {/* Per-tail alert subscriptions */}
+          <div className="mb-2 text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            FLEET SUBSCRIPTIONS
+          </div>
+          {loadingAlerts ? (
+            <div className="text-xs text-slate-500 flex items-center gap-2 py-2">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading alerts...
+            </div>
+          ) : (
+            <div className="space-y-1.5">
+              {SKYWAY_TAILS.map(tail => {
+                const alert = alertByIdent[tail.toUpperCase()];
+                return (
+                  <div key={tail} className="flex items-center justify-between gap-2 p-2 border border-slate-800 bg-slate-900/30">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-slate-100" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+                        {tail}
+                      </span>
+                      {alert && (
+                        <Pill tone="green">SUBSCRIBED</Pill>
+                      )}
+                    </div>
+                    {alert ? (
+                      <button
+                        onClick={() => handleDeleteAlert(alert.id, tail)}
+                        disabled={busy}
+                        className="text-[10px] tracking-widest text-red-400 hover:text-red-300 disabled:opacity-50"
+                        style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                      >
+                        UNSUBSCRIBE
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => handleCreateAlert(tail)}
+                        disabled={busy || endpointStatus !== 'registered'}
+                        className="text-[10px] tracking-widest text-cyan-400 hover:text-cyan-300 disabled:opacity-30"
+                        style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                        title={endpointStatus !== 'registered' ? 'Register endpoint first' : 'Subscribe to alerts for this tail'}
+                      >
+                        SUBSCRIBE
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <p className="text-[10px] text-slate-500 mt-3" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+            Subscribed tails will trigger flight-events for block-out, wheels-up, and wheels-down. Events accumulate at <code className="text-slate-400">flight-events</code> in Firestore. Auto-status and broker email wiring ship in the next release.
+          </p>
+        </>
+      )}
+    </section>
+  );
+}
+
 function QuickBooksConnectionPanel({ currentUser }) {
   const [connection, setConnection] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -7528,6 +7779,8 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
               <Sparkles className="w-3.5 h-3.5" /> LOAD DEMO TRIPS
             </button>
           </section>
+
+          <FlightAwarePanel currentUser={currentUser} />
 
           <QuickBooksConnectionPanel currentUser={currentUser} />
 
