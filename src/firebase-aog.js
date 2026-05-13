@@ -278,3 +278,79 @@ export async function updateLogbookEntryPdf(eventId, entryId, pdfDownloadUrl, pd
   );
   await updateDoc(ref, { logbookEntries: updated, updatedAt: Date.now() });
 }
+
+/**
+ * Delete a logbook entry from an AOG.
+ *
+ * Hard-delete: removes the entry from the AOG's logbookEntries array AND
+ * removes the associated PDF from Firebase Storage. Writes an audit record
+ * to the deleted-logbook-entries collection capturing the entry's contents
+ * at the moment of deletion plus who performed it.
+ *
+ * Only the original signer or an admin should call this — caller must enforce
+ * that check at the UI layer (also enforced via Firestore rules on the
+ * deleted-logbook-entries collection).
+ *
+ * @param {string} aogId
+ * @param {string} entryId
+ * @param {{ uid, displayName, email, role }} deleter
+ * @param {string} [reason]  — optional, recorded if provided
+ */
+export async function deleteLogbookEntry(aogId, entryId, deleter, reason = '') {
+  if (!aogId || !entryId) throw new Error('aogId and entryId required');
+  if (!deleter || !deleter.uid) throw new Error('deleter required');
+
+  const ref = doc(db, 'aog-events', aogId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error(`AOG event ${aogId} not found`);
+
+  const current = snap.data();
+  const entries = Array.isArray(current.logbookEntries) ? current.logbookEntries : [];
+  const target = entries.find(e => e.id === entryId);
+  if (!target) throw new Error(`Logbook entry ${entryId} not found in AOG ${aogId}`);
+
+  // Write the audit record FIRST so the entry is preserved even if storage
+  // delete fails later.
+  const auditRecord = {
+    deletedEntryId: entryId,
+    aogId,
+    aogTail: current.tail || '',
+    aogLocation: current.location || '',
+    originalEntry: target,
+    deletedAt: Date.now(),
+    deletedBy: {
+      uid: deleter.uid,
+      displayName: String(deleter.displayName || '').trim(),
+      email: String(deleter.email || '').trim(),
+      role: String(deleter.role || '').trim(),
+    },
+    reason: String(reason || '').trim(),
+  };
+  await setDoc(doc(db, 'deleted-logbook-entries', entryId), auditRecord);
+
+  // Remove entry from AOG, append activity log line
+  const activityLog = Array.isArray(current.logEntries) ? current.logEntries : [];
+  const newEntries = entries.filter(e => e.id !== entryId);
+  await updateDoc(ref, {
+    logbookEntries: newEntries,
+    logEntries: [...activityLog, {
+      timestamp: Date.now(),
+      author: deleter.displayName || 'Admin',
+      message: `Logbook entry deleted: ${target.workPerformed ? target.workPerformed.slice(0, 60) + (target.workPerformed.length > 60 ? '...' : '') : '(no description)'}${target.rtsApproved ? ' [was RTS approved]' : ''}`,
+    }],
+    updatedAt: Date.now(),
+  });
+
+  // Delete PDF from Storage (best effort — non-fatal if it fails)
+  if (target.pdfStoragePath) {
+    try {
+      const { getStorage, ref: storageRef, deleteObject } = await import('firebase/storage');
+      const storage = getStorage();
+      await deleteObject(storageRef(storage, target.pdfStoragePath));
+    } catch (e) {
+      console.warn('[firebase-aog] PDF delete failed (entry already removed from AOG):', e.message);
+    }
+  }
+
+  return { ok: true, auditRecordId: entryId };
+}

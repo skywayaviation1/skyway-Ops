@@ -9223,6 +9223,7 @@ function AogDetail({ aog, currentUser, onBack }) {
           <ViewLogbookEntryModal
             aog={aog}
             entry={entry}
+            currentUser={currentUser}
             onClose={() => setViewingEntryId(null)}
           />
         );
@@ -10234,7 +10235,37 @@ function AddLogbookEntryModal({ aog, currentUser, onClose }) {
 /* ============================================================
    VIEW LOGBOOK ENTRY MODAL — read-only view of a past entry
    ============================================================ */
-function ViewLogbookEntryModal({ aog, entry, onClose }) {
+function ViewLogbookEntryModal({ aog, entry, currentUser, onClose }) {
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
+  const isAdmin = currentUser?.role === 'admin';
+  const isOriginalSigner = currentUser?.uid && entry?.signedBy?.uid && currentUser.uid === entry.signedBy.uid;
+  const canDelete = isAdmin || isOriginalSigner;
+
+  async function handleDelete() {
+    const confirmMsg = entry.rtsApproved
+      ? `Delete this RTS-APPROVED logbook entry for ${aog.tail}?\n\nThis action is permanent. An audit record will be kept of who deleted what and when.\n\nProceed?`
+      : `Delete this logbook entry for ${aog.tail}?\n\nThis action is permanent. An audit record will be kept.\n\nProceed?`;
+    if (!window.confirm(confirmMsg)) return;
+
+    setDeleting(true);
+    setDeleteError('');
+    try {
+      const aogMod = await import('./firebase-aog.js');
+      await aogMod.deleteLogbookEntry(aog.id, entry.id, {
+        uid: currentUser?.uid || currentUser?.id,
+        displayName: currentUser?.displayName || currentUser?.name || currentUser?.email,
+        email: currentUser?.email,
+        role: currentUser?.role,
+      });
+      onClose();
+    } catch (err) {
+      console.error('[aog-logbook] delete failed:', err);
+      setDeleteError(err.message || 'Delete failed');
+      setDeleting(false);
+    }
+  }
+
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur flex items-start justify-center overflow-y-auto p-4" onClick={onClose}>
       <div className="bg-slate-950 border border-slate-700 max-w-2xl w-full my-8" onClick={e => e.stopPropagation()}>
@@ -10316,12 +10347,36 @@ function ViewLogbookEntryModal({ aog, entry, onClose }) {
             </div>
           </div>
 
-          {entry.pdfDownloadUrl && (
-            <a href={entry.pdfDownloadUrl} target="_blank" rel="noopener noreferrer"
-              className="inline-flex items-center gap-2 px-3 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs tracking-widest font-medium"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              <Download className="w-3 h-3" /> DOWNLOAD PDF
-            </a>
+          <div className="flex flex-wrap items-center gap-2 pt-3 border-t border-slate-800">
+            {entry.pdfDownloadUrl && (
+              <a href={entry.pdfDownloadUrl} target="_blank" rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 px-3 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs tracking-widest font-medium"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                <Download className="w-3 h-3" /> DOWNLOAD PDF
+              </a>
+            )}
+            {canDelete && (
+              <button
+                onClick={handleDelete}
+                disabled={deleting}
+                className="ml-auto inline-flex items-center gap-2 px-3 py-2 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-300 text-xs tracking-widest font-medium disabled:opacity-50"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              >
+                <Trash2 className="w-3 h-3" /> {deleting ? 'DELETING...' : 'DELETE ENTRY'}
+              </button>
+            )}
+          </div>
+
+          {deleteError && (
+            <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-xs p-2">
+              {deleteError}
+            </div>
+          )}
+
+          {canDelete && (
+            <div className="text-[10px] text-slate-600 italic">
+              Deletion is permanent. An audit record (who, what, when) is kept regardless. {isAdmin ? 'You have admin privileges.' : 'You are the original signer of this entry.'}
+            </div>
           )}
         </div>
       </div>
