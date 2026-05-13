@@ -198,3 +198,83 @@ export async function deleteAog(eventId) {
   if (!eventId) throw new Error('deleteAog: eventId required');
   await deleteDoc(doc(db, 'aog-events', eventId));
 }
+
+/**
+ * Append a formal maintenance log entry (compliant record).
+ * Auto-locked once added — entries are immutable after creation to maintain
+ * audit integrity. Each entry includes tech name, cert info, work performed,
+ * signature, RTS approval, and a PDF copy stored in Firebase Storage.
+ *
+ * Returns the entry id.
+ */
+export async function addLogbookEntry(eventId, entry) {
+  if (!eventId) throw new Error('addLogbookEntry: eventId required');
+  if (!entry || typeof entry !== 'object') throw new Error('entry required');
+  const ref = doc(db, 'aog-events', eventId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error(`AOG event ${eventId} not found`);
+  const current = snap.data();
+
+  const entryId = `entry-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  const newEntry = {
+    id: entryId,
+    timestamp: Date.now(),
+    workPerformed:        String(entry.workPerformed || '').trim(),
+    partsReplaced:        Array.isArray(entry.partsReplaced) ? entry.partsReplaced : [],
+    inspectionPerformed:  String(entry.inspectionPerformed || '').trim(),
+    aircraftTotalTime:    String(entry.aircraftTotalTime || '').trim(),
+    aircraftCycles:       String(entry.aircraftCycles || '').trim(),
+    technicianName:       String(entry.technicianName || '').trim(),
+    technicianCertType:   String(entry.technicianCertType || '').trim(),
+    technicianCertNumber: String(entry.technicianCertNumber || '').trim(),
+    signatureDataUrl:     entry.signatureDataUrl || null,
+    rtsApproved:          entry.rtsApproved === true,
+    signedAt:             Date.now(),
+    signedBy: {
+      uid:         entry.signedBy?.uid || null,
+      displayName: String(entry.signedBy?.displayName || '').trim(),
+      email:       String(entry.signedBy?.email || '').trim(),
+    },
+    pdfDownloadUrl:       entry.pdfDownloadUrl || null,
+    pdfStoragePath:       entry.pdfStoragePath || null,
+  };
+
+  const existing = Array.isArray(current.logbookEntries) ? current.logbookEntries : [];
+
+  // Also append a brief log line to the activity log
+  const activityLog = Array.isArray(current.logEntries) ? current.logEntries : [];
+
+  await updateDoc(ref, {
+    logbookEntries: [...existing, newEntry],
+    logEntries: [...activityLog, {
+      timestamp: Date.now(),
+      author: newEntry.technicianName || newEntry.signedBy.displayName || 'Tech',
+      message: newEntry.rtsApproved
+        ? `RTS logbook entry added: ${newEntry.workPerformed.slice(0, 80)}${newEntry.workPerformed.length > 80 ? '...' : ''}`
+        : `Logbook entry added: ${newEntry.workPerformed.slice(0, 80)}${newEntry.workPerformed.length > 80 ? '...' : ''}`,
+    }],
+    updatedAt: Date.now(),
+  });
+
+  return entryId;
+}
+
+/**
+ * Update the pdfDownloadUrl on an existing logbook entry. Used when the PDF
+ * is uploaded to Storage AFTER the entry is created (so the entry has a
+ * Firestore record we can reference for the storage path).
+ */
+export async function updateLogbookEntryPdf(eventId, entryId, pdfDownloadUrl, pdfStoragePath) {
+  if (!eventId || !entryId) throw new Error('eventId and entryId required');
+  const ref = doc(db, 'aog-events', eventId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error('event not found');
+  const current = snap.data();
+  const entries = Array.isArray(current.logbookEntries) ? current.logbookEntries : [];
+  const updated = entries.map(e =>
+    e.id === entryId
+      ? { ...e, pdfDownloadUrl: pdfDownloadUrl || null, pdfStoragePath: pdfStoragePath || null }
+      : e
+  );
+  await updateDoc(ref, { logbookEntries: updated, updatedAt: Date.now() });
+}

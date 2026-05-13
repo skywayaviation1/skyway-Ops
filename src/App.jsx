@@ -7287,8 +7287,12 @@ function MyProfileModal({ currentUser, onClose, onSave }) {
   const [name, setName] = useState(currentUser?.name || '');
   const [callsign, setCallsign] = useState(currentUser?.callsign || '');
   const [jetinsightName, setJetinsightName] = useState(currentUser?.jetinsightName || '');
+  const [certType, setCertType] = useState(currentUser?.certType || '');
+  const [certNumber, setCertNumber] = useState(currentUser?.certNumber || '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
+
+  const isMaintenanceRole = ['maint', 'admin', 'ops'].includes(currentUser?.role);
 
   const handleSave = async () => {
     setSaving(true);
@@ -7298,6 +7302,8 @@ function MyProfileModal({ currentUser, onClose, onSave }) {
         name: name.trim(),
         callsign: callsign.trim(),
         jetinsightName: jetinsightName.trim(),
+        certType: certType.trim(),
+        certNumber: certNumber.trim(),
       });
       onClose();
     } catch (err) {
@@ -7332,6 +7338,29 @@ function MyProfileModal({ currentUser, onClose, onSave }) {
           <FieldInput label="FULL NAME" value={name} onChange={(e) => setName(e.target.value)} />
           <FieldInput label="CALLSIGN" value={callsign} onChange={(e) => setCallsign(e.target.value)} placeholder="e.g. Annalise" />
           <FieldInput label="NAME IN JETINSIGHT" value={jetinsightName} onChange={(e) => setJetinsightName(e.target.value)} placeholder="e.g. Annalise Marie Gonzales" />
+
+          {isMaintenanceRole && (
+            <>
+              <div className="pt-2 border-t border-slate-800">
+                <div className="text-[10px] tracking-widest text-cyan-400 mb-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  MAINTENANCE CREDENTIALS (used to pre-fill logbook entries)
+                </div>
+              </div>
+              <div className="flex items-baseline gap-3">
+                <div className="w-24 text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>CERT TYPE</div>
+                <select value={certType} onChange={(e) => setCertType(e.target.value)}
+                  className="flex-1 bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none">
+                  <option value="">(none)</option>
+                  <option>A&P</option>
+                  <option>IA</option>
+                  <option>A&P/IA</option>
+                  <option>Repairman</option>
+                  <option>Other</option>
+                </select>
+              </div>
+              <FieldInput label="CERT #" value={certNumber} onChange={(e) => setCertNumber(e.target.value)} placeholder="e.g. 3458291" />
+            </>
+          )}
 
           {error && (
             <div className="p-2 border border-red-500/30 bg-red-500/5 text-xs text-red-300">{error}</div>
@@ -8828,6 +8857,8 @@ function AogDetail({ aog, currentUser, onBack }) {
   const [editing, setEditing] = useState(false);
   const [sending, setSending] = useState(false);
   const [sendStatus, setSendStatus] = useState('');
+  const [addingLogbook, setAddingLogbook] = useState(false);
+  const [viewingEntryId, setViewingEntryId] = useState(null);
 
   const canEdit = ['admin', 'ops', 'maint'].includes(currentUser?.role);
   const isResolved = aog.status === 'resolved';
@@ -9073,6 +9104,54 @@ function AogDetail({ aog, currentUser, onBack }) {
               )}
             </Section>
 
+            {/* Maintenance Logbook Entries (compliant records) */}
+            <Section label={`Maintenance Logbook Entries (${(aog.logbookEntries || []).length})`}>
+              {(!aog.logbookEntries || aog.logbookEntries.length === 0) ? (
+                <p className="text-xs text-slate-500">No logbook entries yet. Use ADD LOGBOOK ENTRY below to record work performed.</p>
+              ) : (
+                <div className="space-y-2">
+                  {aog.logbookEntries.map((e) => (
+                    <button
+                      key={e.id}
+                      onClick={() => setViewingEntryId(e.id)}
+                      className="w-full text-left bg-slate-900 border border-slate-800 hover:border-slate-700 p-3"
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <div className="flex items-center gap-2">
+                          {e.rtsApproved && (
+                            <span className="text-[10px] px-1.5 py-0.5 bg-green-500/20 text-green-300 tracking-widest font-medium" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                              RTS APPROVED
+                            </span>
+                          )}
+                          <span className="text-sm text-slate-200">{e.technicianName || 'Tech'}</span>
+                          <span className="text-[10px] text-slate-500">{e.technicianCertType}: {e.technicianCertNumber}</span>
+                        </div>
+                        <span className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                          {new Date(e.timestamp).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-400 line-clamp-2">{e.workPerformed}</p>
+                      {e.pdfDownloadUrl && (
+                        <a href={e.pdfDownloadUrl} target="_blank" rel="noopener noreferrer" onClick={ev => ev.stopPropagation()}
+                          className="text-[10px] text-cyan-400 hover:text-cyan-300 mt-1 inline-flex items-center gap-1">
+                          <Download className="w-3 h-3" /> Download PDF
+                        </a>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {canEdit && !isResolved && (
+                <button
+                  onClick={() => setAddingLogbook(true)}
+                  className="mt-3 flex items-center gap-2 px-3 py-2 bg-slate-900 hover:bg-slate-800 border border-cyan-500/30 text-cyan-300 text-xs tracking-widest font-medium"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                >
+                  <Plus className="w-3 h-3" /> ADD LOGBOOK ENTRY
+                </button>
+              )}
+            </Section>
+
             {/* Log */}
             {aog.logEntries && aog.logEntries.length > 0 && (
               <Section label="Activity Log">
@@ -9129,6 +9208,25 @@ function AogDetail({ aog, currentUser, onBack }) {
           </div>
         </div>
       </div>
+
+      {addingLogbook && (
+        <AddLogbookEntryModal
+          aog={aog}
+          currentUser={currentUser}
+          onClose={() => setAddingLogbook(false)}
+        />
+      )}
+      {viewingEntryId && (() => {
+        const entry = (aog.logbookEntries || []).find(e => e.id === viewingEntryId);
+        if (!entry) return null;
+        return (
+          <ViewLogbookEntryModal
+            aog={aog}
+            entry={entry}
+            onClose={() => setViewingEntryId(null)}
+          />
+        );
+      })()}
     </div>
   );
 }
@@ -9690,6 +9788,437 @@ function AogEditModal({ aog, currentUser, onClose }) {
               CANCEL
             </button>
           </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   ADD LOGBOOK ENTRY MODAL — compliant maintenance record entry
+   ============================================================ */
+function AddLogbookEntryModal({ aog, currentUser, onClose }) {
+  const [workPerformed, setWorkPerformed] = useState('');
+  const [inspectionPerformed, setInspectionPerformed] = useState('');
+  const [aircraftTotalTime, setAircraftTotalTime] = useState('');
+  const [aircraftCycles, setAircraftCycles] = useState('');
+  const [partsReplaced, setPartsReplaced] = useState([]);
+  const [technicianName, setTechnicianName] = useState(currentUser?.name || currentUser?.displayName || '');
+  const [technicianCertType, setTechnicianCertType] = useState(currentUser?.certType || 'A&P');
+  const [technicianCertNumber, setTechnicianCertNumber] = useState(currentUser?.certNumber || '');
+  const [rtsApproved, setRtsApproved] = useState(false);
+  const [signatureDataUrl, setSignatureDataUrl] = useState(null);
+  const [showSignaturePad, setShowSignaturePad] = useState(false);
+  const [acknowledged, setAcknowledged] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState('');
+  const [error, setError] = useState('');
+
+  function addPart() {
+    setPartsReplaced(prev => [...prev, { partNumber: '', description: '', serialOff: '', serialOn: '' }]);
+  }
+  function updatePart(idx, field, val) {
+    setPartsReplaced(prev => prev.map((p, i) => i === idx ? { ...p, [field]: val } : p));
+  }
+  function removePart(idx) {
+    setPartsReplaced(prev => prev.filter((_, i) => i !== idx));
+  }
+
+  async function handleSubmit() {
+    setError('');
+
+    if (!workPerformed.trim()) { setError('Work performed is required'); return; }
+    if (!technicianName.trim()) { setError('Technician name is required'); return; }
+    if (!technicianCertNumber.trim()) { setError('Certificate number is required'); return; }
+    if (!signatureDataUrl) { setError('Signature is required — tap SIGN HERE to capture your signature'); return; }
+    if (!acknowledged) { setError('Please acknowledge the certification statement before signing'); return; }
+
+    setSaving(true);
+    setStatus('Saving entry...');
+
+    try {
+      const entry = {
+        workPerformed: workPerformed.trim(),
+        inspectionPerformed: inspectionPerformed.trim(),
+        aircraftTotalTime: aircraftTotalTime.trim(),
+        aircraftCycles: aircraftCycles.trim(),
+        partsReplaced: partsReplaced.filter(p => p.partNumber || p.description),
+        technicianName: technicianName.trim(),
+        technicianCertType: technicianCertType.trim(),
+        technicianCertNumber: technicianCertNumber.trim(),
+        signatureDataUrl,
+        rtsApproved,
+        signedBy: {
+          uid: currentUser?.uid || currentUser?.id,
+          displayName: currentUser?.displayName || currentUser?.name || currentUser?.email,
+          email: currentUser?.email,
+        },
+      };
+
+      const aogMod = await import('./firebase-aog.js');
+      const entryId = await aogMod.addLogbookEntry(aog.id, entry);
+      const fullEntry = { ...entry, id: entryId, timestamp: Date.now(), signedAt: Date.now() };
+
+      setStatus('Generating PDF...');
+      const pdfMod = await import('./aog-logbook-pdf.js');
+      const { blob, base64, filename } = await pdfMod.generateLogbookEntryPdf(aog, fullEntry);
+
+      setStatus('Storing record...');
+      let pdfDownloadUrl = null;
+      let pdfStoragePath = null;
+      try {
+        const { getStorage, ref, uploadBytes, getDownloadURL } = await import('firebase/storage');
+        const storage = getStorage();
+        pdfStoragePath = `aog-logbook/${aog.id}/${filename}`;
+        const fileRef = ref(storage, pdfStoragePath);
+        await uploadBytes(fileRef, blob, { contentType: 'application/pdf' });
+        pdfDownloadUrl = await getDownloadURL(fileRef);
+        await aogMod.updateLogbookEntryPdf(aog.id, entryId, pdfDownloadUrl, pdfStoragePath);
+      } catch (storageErr) {
+        console.warn('[aog-logbook] storage upload failed (non-fatal):', storageErr);
+      }
+
+      setStatus('Sending email...');
+      try {
+        const { auth } = await import('./firebase.js');
+        let idToken = null;
+        if (auth.currentUser) idToken = await auth.currentUser.getIdToken();
+        const r = await fetch('/api/send-aog-logbook-email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            aog,
+            entry: fullEntry,
+            pdfBase64: base64,
+            pdfFilename: filename,
+            idToken,
+          }),
+        });
+        if (!r.ok) {
+          const errText = await r.text().catch(() => '');
+          throw new Error(`HTTP ${r.status}: ${errText.slice(0, 200)}`);
+        }
+        setStatus('Sent successfully');
+      } catch (emailErr) {
+        console.error('[aog-logbook] email failed:', emailErr);
+        setError(`Entry saved but email failed: ${emailErr.message}`);
+        setSaving(false);
+        return;
+      }
+
+      setTimeout(() => onClose(), 1200);
+    } catch (err) {
+      console.error('[aog-logbook] save failed:', err);
+      setError(err.message || 'Save failed');
+      setSaving(false);
+    }
+  }
+
+  if (showSignaturePad) {
+    return (
+      <div className="fixed inset-0 z-50 bg-slate-950/95 flex items-center justify-center p-4">
+        <div className="bg-slate-950 border border-cyan-500/40 max-w-lg w-full p-5">
+          <h3 className="text-sm tracking-widest text-cyan-300 mb-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            SIGNATURE
+          </h3>
+          <p className="text-xs text-slate-400 mb-3">
+            Sign below using your finger, stylus, or mouse. This signature will be embedded in the official record.
+          </p>
+          <SignaturePad
+            onSave={(dataUrl) => {
+              setSignatureDataUrl(dataUrl);
+              setShowSignaturePad(false);
+            }}
+            onCancel={() => setShowSignaturePad(false)}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur flex items-start justify-center overflow-y-auto p-4">
+      <div className="bg-slate-950 border border-cyan-500/40 max-w-3xl w-full my-8">
+        <div className="bg-cyan-500/10 px-5 py-3 flex items-center justify-between border-b border-cyan-500/30 sticky top-0 z-10">
+          <h3 className="text-sm tracking-widest text-cyan-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            <FileText className="w-4 h-4 inline mr-2" />ADD MAINTENANCE LOGBOOK ENTRY — {aog.tail}
+          </h3>
+          <button onClick={onClose} disabled={saving} className="text-cyan-300 hover:text-white disabled:opacity-50">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-5">
+          <div className="bg-slate-900 border border-slate-800 p-3 text-xs">
+            <div className="grid grid-cols-2 gap-2">
+              <div><span className="text-slate-500">Aircraft:</span> <span className="text-slate-200 font-medium">{aog.tail}</span></div>
+              <div><span className="text-slate-500">Location:</span> <span className="text-slate-200">{aog.location}{aog.fboName ? ' / ' + aog.fboName : ''}</span></div>
+              <div className="col-span-2"><span className="text-slate-500">Discrepancy:</span> <span className="text-slate-300">{aog.issueDescription || '—'}</span></div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <EditField label="AIRCRAFT TOTAL TIME (HRS)" value={aircraftTotalTime} onChange={setAircraftTotalTime} placeholder="e.g. 4,238.6" />
+            <EditField label="AIRCRAFT CYCLES" value={aircraftCycles} onChange={setAircraftCycles} placeholder="e.g. 3,021" />
+          </div>
+
+          <EditTextarea
+            label="WORK PERFORMED *"
+            value={workPerformed}
+            onChange={setWorkPerformed}
+            rows={5}
+            placeholder="Describe in detail the work performed. Include: corrective action, components touched, references to maintenance manual sections, run-up/leak check results, etc."
+          />
+
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>PARTS REPLACED</div>
+              <button onClick={addPart} className="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1">
+                <Plus className="w-3 h-3" /> Add part
+              </button>
+            </div>
+            {partsReplaced.length === 0 ? (
+              <p className="text-xs text-slate-500">No parts replaced for this entry.</p>
+            ) : (
+              <div className="space-y-2">
+                {partsReplaced.map((p, idx) => (
+                  <div key={idx} className="grid grid-cols-12 gap-2 items-center bg-slate-900 border border-slate-800 p-2">
+                    <input type="text" placeholder="Part #" value={p.partNumber} onChange={e => updatePart(idx, 'partNumber', e.target.value)}
+                      className="col-span-3 bg-slate-950 border border-slate-700 px-2 py-1 text-xs text-slate-200 focus:border-cyan-400 outline-none" />
+                    <input type="text" placeholder="Description" value={p.description} onChange={e => updatePart(idx, 'description', e.target.value)}
+                      className="col-span-4 bg-slate-950 border border-slate-700 px-2 py-1 text-xs text-slate-200 focus:border-cyan-400 outline-none" />
+                    <input type="text" placeholder="S/N OFF" value={p.serialOff} onChange={e => updatePart(idx, 'serialOff', e.target.value)}
+                      className="col-span-2 bg-slate-950 border border-slate-700 px-2 py-1 text-xs text-slate-200 focus:border-cyan-400 outline-none" />
+                    <input type="text" placeholder="S/N ON" value={p.serialOn} onChange={e => updatePart(idx, 'serialOn', e.target.value)}
+                      className="col-span-2 bg-slate-950 border border-slate-700 px-2 py-1 text-xs text-slate-200 focus:border-cyan-400 outline-none" />
+                    <button onClick={() => removePart(idx)} className="col-span-1 text-slate-500 hover:text-red-400 flex justify-center">
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <EditTextarea
+            label="INSPECTION PERFORMED (if applicable)"
+            value={inspectionPerformed}
+            onChange={setInspectionPerformed}
+            rows={2}
+            placeholder="e.g. Operational check satisfactory. Engine run-up to idle, normal indications observed."
+          />
+
+          <div>
+            <div className="text-[10px] text-slate-500 tracking-widest mb-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>TECHNICIAN</div>
+            <div className="grid grid-cols-12 gap-3">
+              <div className="col-span-6">
+                <label className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>NAME *</label>
+                <input type="text" value={technicianName} onChange={e => setTechnicianName(e.target.value)}
+                  className="w-full mt-1 bg-slate-900 border border-slate-700 px-3 py-1.5 text-sm text-slate-200 focus:border-cyan-400 outline-none" />
+              </div>
+              <div className="col-span-3">
+                <label className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>CERT TYPE *</label>
+                <select value={technicianCertType} onChange={e => setTechnicianCertType(e.target.value)}
+                  className="w-full mt-1 bg-slate-900 border border-slate-700 px-3 py-1.5 text-sm text-slate-200 focus:border-cyan-400 outline-none">
+                  <option>A&P</option>
+                  <option>IA</option>
+                  <option>A&P/IA</option>
+                  <option>Repairman</option>
+                  <option>Other</option>
+                </select>
+              </div>
+              <div className="col-span-3">
+                <label className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>CERT # *</label>
+                <input type="text" value={technicianCertNumber} onChange={e => setTechnicianCertNumber(e.target.value)} placeholder="e.g. 3458291"
+                  className="w-full mt-1 bg-slate-900 border border-slate-700 px-3 py-1.5 text-sm text-slate-200 focus:border-cyan-400 outline-none"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }} />
+              </div>
+            </div>
+          </div>
+
+          <div className="border border-slate-700 bg-slate-900 p-3">
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input type="checkbox" checked={rtsApproved} onChange={e => setRtsApproved(e.target.checked)}
+                className="mt-1 w-4 h-4 accent-green-500" />
+              <div>
+                <div className="text-sm font-medium text-slate-200">
+                  APPROVE FOR RETURN TO SERVICE
+                </div>
+                <div className="text-xs text-slate-400 mt-1 leading-relaxed">
+                  By checking this box, you certify the following per 14 CFR § 43.9(a)(4):
+                </div>
+                <div className="text-xs text-slate-300 italic mt-2 leading-relaxed">
+                  "I certify that this aircraft has been inspected/repaired and is approved for return to service with respect to the work performed."
+                </div>
+              </div>
+            </label>
+          </div>
+
+          <div>
+            <div className="text-[10px] text-slate-500 tracking-widest mb-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>SIGNATURE *</div>
+            {signatureDataUrl ? (
+              <div className="bg-white border border-slate-700 p-2 inline-block">
+                <img src={signatureDataUrl} alt="Signature" style={{ height: '60px' }} />
+                <div className="mt-2 flex gap-2">
+                  <button onClick={() => setShowSignaturePad(true)} className="text-[10px] text-cyan-400 hover:text-cyan-300">
+                    Re-sign
+                  </button>
+                  <button onClick={() => setSignatureDataUrl(null)} className="text-[10px] text-red-400 hover:text-red-300">
+                    Clear
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button onClick={() => setShowSignaturePad(true)}
+                className="px-4 py-3 border-2 border-dashed border-slate-700 hover:border-cyan-500/50 text-slate-400 hover:text-cyan-300 text-xs tracking-widest"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                SIGN HERE
+              </button>
+            )}
+          </div>
+
+          <div className="bg-amber-500/5 border border-amber-500/30 p-3">
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input type="checkbox" checked={acknowledged} onChange={e => setAcknowledged(e.target.checked)}
+                className="mt-1 w-4 h-4 accent-amber-500" />
+              <div className="text-xs text-amber-200 leading-relaxed">
+                I acknowledge that this entry is an attestation of the work I performed.
+                I confirm my technician name and certificate number above are accurate.
+                I understand this record will be retained in Skyway Aviation's maintenance coordination system
+                and that the official Part 43/91/135 maintenance record will be made in Skyway's primary
+                maintenance tracking system per OpSpecs.
+              </div>
+            </label>
+          </div>
+
+          {error && (
+            <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-xs p-2">
+              {error}
+            </div>
+          )}
+          {status && !error && (
+            <div className="bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 text-xs p-2 flex items-center gap-2">
+              {saving && <Loader2 className="w-3 h-3 animate-spin" />}
+              {status}
+            </div>
+          )}
+
+          <div className="flex gap-2 pt-3 border-t border-slate-800">
+            <button
+              onClick={handleSubmit}
+              disabled={saving}
+              className="flex-1 px-4 py-2 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 text-xs tracking-widest font-medium"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              {saving ? 'PROCESSING...' : 'SUBMIT ENTRY & EMAIL'}
+            </button>
+            <button
+              onClick={onClose}
+              disabled={saving}
+              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs tracking-widest font-medium"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              CANCEL
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   VIEW LOGBOOK ENTRY MODAL — read-only view of a past entry
+   ============================================================ */
+function ViewLogbookEntryModal({ aog, entry, onClose }) {
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur flex items-start justify-center overflow-y-auto p-4" onClick={onClose}>
+      <div className="bg-slate-950 border border-slate-700 max-w-2xl w-full my-8" onClick={e => e.stopPropagation()}>
+        <div className="bg-slate-900 px-5 py-3 flex items-center justify-between border-b border-slate-700 sticky top-0 z-10">
+          <h3 className="text-sm tracking-widest text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            LOGBOOK ENTRY — {aog.tail}
+          </h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-white">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          <div className="flex items-center gap-2 flex-wrap">
+            {entry.rtsApproved && (
+              <span className="text-[10px] px-2 py-0.5 bg-green-500/20 text-green-300 tracking-widest font-medium" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                RTS APPROVED
+              </span>
+            )}
+            <span className="text-xs text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {new Date(entry.timestamp).toLocaleString()}
+            </span>
+            <span className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {entry.id}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 text-xs">
+            <Field label="Aircraft Total Time" value={entry.aircraftTotalTime} />
+            <Field label="Cycles" value={entry.aircraftCycles} />
+          </div>
+
+          <Section label="Work Performed">
+            <p className="text-sm text-slate-300 whitespace-pre-wrap">{entry.workPerformed}</p>
+          </Section>
+
+          {entry.partsReplaced && entry.partsReplaced.length > 0 && (
+            <Section label="Parts Replaced">
+              <ul className="text-xs text-slate-300 list-disc pl-4 space-y-1">
+                {entry.partsReplaced.map((p, i) => (
+                  <li key={i}>
+                    <strong>{p.partNumber || '—'}</strong> — {p.description}
+                    {p.serialOff && <> · S/N off: <span style={{ fontFamily: 'JetBrains Mono, monospace' }}>{p.serialOff}</span></>}
+                    {p.serialOn && <> · S/N on: <span style={{ fontFamily: 'JetBrains Mono, monospace' }}>{p.serialOn}</span></>}
+                  </li>
+                ))}
+              </ul>
+            </Section>
+          )}
+
+          {entry.inspectionPerformed && (
+            <Section label="Inspection Performed">
+              <p className="text-sm text-slate-300 whitespace-pre-wrap">{entry.inspectionPerformed}</p>
+            </Section>
+          )}
+
+          {entry.rtsApproved && (
+            <div className="border border-green-500/30 bg-green-500/5 p-3">
+              <div className="text-[10px] text-green-400 tracking-widest mb-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>APPROVAL FOR RETURN TO SERVICE</div>
+              <p className="text-xs text-green-200 italic leading-relaxed">
+                "I certify that this aircraft has been inspected/repaired and is approved for return to service with respect to the work performed."
+              </p>
+            </div>
+          )}
+
+          <div className="border-t border-slate-800 pt-3">
+            <div className="text-[10px] text-slate-500 tracking-widest mb-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>TECHNICIAN</div>
+            {entry.signatureDataUrl && (
+              <div className="bg-white border border-slate-700 p-2 inline-block mb-2">
+                <img src={entry.signatureDataUrl} alt="Signature" style={{ height: '50px' }} />
+              </div>
+            )}
+            <div className="text-sm text-slate-200">{entry.technicianName}</div>
+            <div className="text-xs text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {entry.technicianCertType}: {entry.technicianCertNumber}
+            </div>
+            <div className="text-[10px] text-slate-600 mt-1">
+              Signed: {new Date(entry.signedAt).toLocaleString()}
+            </div>
+          </div>
+
+          {entry.pdfDownloadUrl && (
+            <a href={entry.pdfDownloadUrl} target="_blank" rel="noopener noreferrer"
+              className="inline-flex items-center gap-2 px-3 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs tracking-widest font-medium"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              <Download className="w-3 h-3" /> DOWNLOAD PDF
+            </a>
+          )}
         </div>
       </div>
     </div>
