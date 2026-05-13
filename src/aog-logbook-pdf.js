@@ -275,7 +275,7 @@ export async function generateLogbookEntryPdf(aog, entry) {
     margin, footerY - 2
   );
   doc.text(
-    'Official Part 43 / 91 / 135 maintenance records are maintained in Skyway Aviation\\'s primary maintenance tracking system per OpSpecs.',
+    "Official Part 43 / 91 / 135 maintenance records are maintained in Skyway Aviation's primary maintenance tracking system per OpSpecs.",
     margin, footerY + 8
   );
 
