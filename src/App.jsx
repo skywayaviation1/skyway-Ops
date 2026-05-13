@@ -318,6 +318,7 @@ const USER_ROLES = {
   crew:       { label: 'CREW',       tone: 'cyan',   description: 'Pilots, SIC, flight attendants' },
   sales:      { label: 'SALES',      tone: 'green',  description: 'Sales team — trip creation, broker contact' },
   ops:        { label: 'OPS',        tone: 'amber',  description: 'Dispatch, scheduling, ground ops' },
+  maint:      { label: 'MAINT',      tone: 'red',    description: 'Maintenance — AOG events and aircraft status' },
   accounting: { label: 'ACCOUNTING', tone: 'violet', description: 'Read-only access to all expenses + CSV export' },
   admin:      { label: 'ADMIN',      tone: 'violet', description: 'Full access — manage users & system' },
 };
@@ -8608,6 +8609,1129 @@ function NoProfileScreen({ user, onSignOut }) {
 /* ============================================================
    Top navigation (post-login chrome)
    ============================================================ */
+/* ============================================================
+   AOG — Shipment tracking helpers
+   ============================================================ */
+function detectCarrier(trackingNumber) {
+  if (!trackingNumber) return null;
+  const clean = String(trackingNumber).replace(/[\s-]/g, '').toUpperCase();
+  if (/^1Z[A-Z0-9]{16}$/.test(clean)) return 'UPS';
+  // FedEx: 12, 14, 15, 20, or 22 digits (all numeric)
+  if (/^\d{12}$/.test(clean)) return 'FedEx';
+  if (/^\d{14}$/.test(clean)) return 'FedEx';
+  if (/^\d{15}$/.test(clean)) return 'FedEx';
+  if (/^\d{20}$/.test(clean)) return 'FedEx';
+  if (/^\d{22}$/.test(clean)) return 'FedEx';
+  return null;
+}
+
+function buildTrackingUrl(carrier, trackingNumber) {
+  if (!carrier || !trackingNumber) return null;
+  const clean = String(trackingNumber).replace(/[\s-]/g, '');
+  if (carrier === 'UPS') {
+    return `https://www.ups.com/track?tracknum=${encodeURIComponent(clean)}`;
+  }
+  if (carrier === 'FedEx') {
+    return `https://www.fedex.com/fedextrack/?trknbr=${encodeURIComponent(clean)}`;
+  }
+  return null;
+}
+
+function CarrierBadge({ carrier }) {
+  if (!carrier) return null;
+  const colors = carrier === 'FedEx'
+    ? 'bg-purple-500/20 text-purple-300'
+    : 'bg-amber-500/20 text-amber-300';
+  return (
+    <span className={`text-[10px] px-1.5 py-0.5 ${colors} tracking-widest font-medium`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+      {carrier.toUpperCase()}
+    </span>
+  );
+}
+
+/* ============================================================
+   MAINT SCREEN — AOG (Aircraft On Ground) event management
+   ============================================================ */
+function MaintScreen({ currentUser, fleetTails }) {
+  const [events, setEvents] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showNew, setShowNew] = useState(false);
+  const [selectedId, setSelectedId] = useState(null);
+  const [tab, setTab] = useState('active'); // active | resolved
+
+  useEffect(() => {
+    let unsub = null;
+    let cancelled = false;
+    (async () => {
+      const m = await import('./firebase-aog.js');
+      if (cancelled) return;
+      unsub = m.subscribeToAogEvents((list) => {
+        setEvents(list);
+        setLoading(false);
+      });
+    })();
+    return () => { cancelled = true; if (unsub) unsub(); };
+  }, []);
+
+  const activeCount = events.filter(e => e.status === 'active').length;
+  const resolvedCount = events.filter(e => e.status === 'resolved').length;
+  const filtered = events.filter(e => e.status === tab);
+  const selected = events.find(e => e.id === selectedId);
+
+  if (selected) {
+    return (
+      <AogDetail
+        aog={selected}
+        currentUser={currentUser}
+        onBack={() => setSelectedId(null)}
+      />
+    );
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto scroll-area">
+      <div className="max-w-5xl mx-auto px-4 md:px-6 py-4 md:py-6">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-lg tracking-wide text-slate-200" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
+              MAINTENANCE
+            </h2>
+            <p className="text-xs text-slate-500 mt-1">
+              {activeCount} active AOG · {resolvedCount} resolved
+            </p>
+          </div>
+          <button
+            onClick={() => setShowNew(true)}
+            className="flex items-center gap-2 px-3 py-2 bg-red-500 hover:bg-red-400 text-white text-xs tracking-widest font-medium"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            <AlertTriangle className="w-4 h-4" /> DECLARE AOG
+          </button>
+        </div>
+
+        <div className="flex gap-2 mb-4">
+          <button
+            onClick={() => setTab('active')}
+            className={`text-xs px-3 py-1.5 tracking-widest ${
+              tab === 'active'
+                ? 'bg-red-500/20 text-red-300 border border-red-500/40'
+                : 'bg-slate-900 text-slate-500 border border-slate-800 hover:text-slate-300'
+            }`}
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            ACTIVE ({activeCount})
+          </button>
+          <button
+            onClick={() => setTab('resolved')}
+            className={`text-xs px-3 py-1.5 tracking-widest ${
+              tab === 'resolved'
+                ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
+                : 'bg-slate-900 text-slate-500 border border-slate-800 hover:text-slate-300'
+            }`}
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            RESOLVED ({resolvedCount})
+          </button>
+        </div>
+
+        {loading ? (
+          <div className="p-12 text-center text-slate-500">
+            <Loader2 className="w-5 h-5 animate-spin mx-auto mb-2" /> Loading...
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="p-12 text-center border border-slate-800 bg-slate-950">
+            <AlertTriangle className="w-8 h-8 text-slate-700 mx-auto mb-2" />
+            <p className="text-sm text-slate-500">
+              {tab === 'active' ? 'No active AOG events' : 'No resolved events yet'}
+            </p>
+            {tab === 'active' && (
+              <p className="text-xs text-slate-600 mt-1">
+                All fleet aircraft operational.
+              </p>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {filtered.map(ev => (
+              <AogCard key={ev.id} aog={ev} onClick={() => setSelectedId(ev.id)} />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {showNew && (
+        <NewAogModal
+          currentUser={currentUser}
+          fleetTails={fleetTails}
+          onClose={() => setShowNew(false)}
+          onCreated={(id) => { setShowNew(false); setSelectedId(id); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function AogCard({ aog, onClick }) {
+  const ago = (() => {
+    const ms = Date.now() - (aog.reportedAt || Date.now());
+    const hrs = Math.floor(ms / 3600000);
+    const mins = Math.floor((ms % 3600000) / 60000);
+    if (hrs > 24) return `${Math.floor(hrs/24)}d ${hrs%24}h ago`;
+    if (hrs > 0) return `${hrs}h ${mins}m ago`;
+    return `${mins}m ago`;
+  })();
+
+  const isResolved = aog.status === 'resolved';
+  const borderColor = isResolved ? 'border-l-cyan-500' : 'border-l-red-500';
+  const headerBg = isResolved ? 'bg-cyan-500/10' : 'bg-red-500/10';
+  const headerText = isResolved ? 'text-cyan-300' : 'text-red-300';
+  const badgeBg = isResolved ? 'bg-cyan-500' : 'bg-red-500';
+
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full text-left bg-slate-950 border border-slate-800 border-l-4 ${borderColor} hover:border-slate-700 transition-colors`}
+    >
+      <div className={`${headerBg} px-4 py-2 flex items-center justify-between`}>
+        <div className="flex items-center gap-3">
+          <span className={`${badgeBg} text-white text-[10px] px-2 py-0.5 tracking-widest font-medium`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {isResolved ? 'RTS' : 'AOG'}
+          </span>
+          <span className={`text-base font-medium ${headerText}`}>{aog.tail}</span>
+          <span className={`text-xs ${headerText} opacity-75`}>
+            at {aog.location}{aog.fboName ? ` · ${aog.fboName}` : ''}
+          </span>
+        </div>
+        <span className={`text-[10px] ${headerText} opacity-75`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {ago}
+        </span>
+      </div>
+      <div className="p-4">
+        <p className="text-sm text-slate-300 line-clamp-2 mb-2">{aog.issueDescription || '(no description)'}</p>
+        <div className="flex items-center gap-4 text-xs text-slate-500">
+          {aog.rtsEstimate && (
+            <span>RTS: <span className="text-amber-400">{aog.rtsEstimate}</span></span>
+          )}
+          {aog.coordination?.maintLead && (
+            <span>Lead: <span className="text-slate-300">{aog.coordination.maintLead}</span></span>
+          )}
+          {aog.parts && aog.parts.length > 0 && (
+            <span>{aog.parts.length} part{aog.parts.length === 1 ? '' : 's'}</span>
+          )}
+        </div>
+      </div>
+    </button>
+  );
+}
+
+function AogDetail({ aog, currentUser, onBack }) {
+  const [editing, setEditing] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [sendStatus, setSendStatus] = useState('');
+
+  const canEdit = ['admin', 'ops', 'maint'].includes(currentUser?.role);
+  const isResolved = aog.status === 'resolved';
+
+  const reporter = {
+    uid: currentUser?.uid || currentUser?.id,
+    displayName: currentUser?.displayName || currentUser?.name || currentUser?.email || 'Unknown',
+  };
+
+  async function handleSendUpdate() {
+    if (!Array.isArray(aog.recipients) || aog.recipients.length === 0) {
+      setSendStatus('No recipients configured. Edit to add team email addresses.');
+      return;
+    }
+    setSending(true);
+    setSendStatus('');
+    try {
+      const { auth } = await import('./firebase.js');
+      let idToken = null;
+      if (auth.currentUser) idToken = await auth.currentUser.getIdToken();
+      const r = await fetch('/api/send-aog-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ aog, eventType: 'manual_update', idToken }),
+      });
+      if (!r.ok) {
+        const txt = await r.text().catch(() => '');
+        throw new Error(`HTTP ${r.status}: ${txt}`);
+      }
+      const data = await r.json();
+      setSendStatus(`Sent to ${aog.recipients.length} recipient${aog.recipients.length === 1 ? '' : 's'}`);
+      // Append log entry
+      const aogMod = await import('./firebase-aog.js');
+      await aogMod.appendAogLogEntry(aog.id, reporter.displayName, 'Update email sent to team');
+      setTimeout(() => setSendStatus(''), 8000);
+    } catch (err) {
+      console.error('[aog] send email failed:', err);
+      setSendStatus('Send failed: ' + err.message);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function handleResolve() {
+    if (!window.confirm(`Mark ${aog.tail} as Returned to Service?`)) return;
+    try {
+      const aogMod = await import('./firebase-aog.js');
+      await aogMod.resolveAog(aog.id, reporter);
+      // Send resolved email (best effort)
+      const updatedAog = { ...aog, status: 'resolved', resolvedAt: Date.now(), resolvedBy: reporter };
+      const { auth } = await import('./firebase.js');
+      let idToken = null;
+      if (auth.currentUser) idToken = await auth.currentUser.getIdToken();
+      await fetch('/api/send-aog-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ aog: updatedAog, eventType: 'resolved', idToken }),
+      }).catch(e => console.warn('resolved email failed:', e));
+    } catch (err) {
+      alert('Failed to resolve: ' + err.message);
+    }
+  }
+
+  if (editing) {
+    return (
+      <AogEditModal
+        aog={aog}
+        currentUser={currentUser}
+        onClose={() => setEditing(false)}
+      />
+    );
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto scroll-area">
+      <div className="max-w-5xl mx-auto px-4 md:px-6 py-4 md:py-6">
+        <button
+          onClick={onBack}
+          className="flex items-center gap-1 text-xs text-slate-400 hover:text-slate-200 mb-4"
+        >
+          <ChevronLeft className="w-3 h-3" /> Back to maintenance
+        </button>
+
+        <div className={`bg-slate-950 border border-slate-800 border-l-4 ${isResolved ? 'border-l-cyan-500' : 'border-l-red-500'}`}>
+          {/* Header */}
+          <div className={`${isResolved ? 'bg-cyan-500/10' : 'bg-red-500/10'} px-5 py-3 flex items-center justify-between`}>
+            <div className="flex items-center gap-3">
+              <span className={`${isResolved ? 'bg-cyan-500' : 'bg-red-500'} text-white text-[10px] px-2 py-0.5 tracking-widest font-medium`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                {isResolved ? 'RTS' : 'AOG'}
+              </span>
+              <span className={`text-lg font-medium ${isResolved ? 'text-cyan-300' : 'text-red-300'}`}>{aog.tail}</span>
+              <span className={`text-xs ${isResolved ? 'text-cyan-300' : 'text-red-300'} opacity-75`}>
+                at {aog.location}{aog.fboName ? ` · ${aog.fboName}` : ''}
+              </span>
+            </div>
+            <div className={`text-[10px] ${isResolved ? 'text-cyan-300' : 'text-red-300'} opacity-75`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              Reported {fmtRelativeTime(aog.reportedAt)}
+            </div>
+          </div>
+
+          <div className="p-5 space-y-5">
+            {/* Issue */}
+            <Section label="Issue Reported">
+              <p className="text-sm text-slate-300">{aog.issueDescription || '(none)'}</p>
+            </Section>
+
+            {/* Coordination team */}
+            <Section label="Coordination Team">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                <Field label="Maintenance Lead" value={aog.coordination?.maintLead} />
+                <Field label="Technician" value={aog.coordination?.technician} />
+                <Field label="Vendor / OEM" value={aog.coordination?.vendor} />
+                <Field label="Ops Contact" value={aog.coordination?.opsContact} />
+              </div>
+            </Section>
+
+            {/* Diagnostics */}
+            <Section label="Initial Diagnostics">
+              <div className="space-y-2">
+                <DiagRow label="Pilot Discrepancy" value={aog.diagnostics?.pilotDiscrepancy} />
+                <DiagRow label="Troubleshooting" value={aog.diagnostics?.troubleshooting} />
+                <DiagRow label="OEM Recommendation" value={aog.diagnostics?.oemRecommendation} />
+              </div>
+            </Section>
+
+            {/* Parts */}
+            <Section label={`Parts Status (${(aog.parts || []).length})`}>
+              {!aog.parts || aog.parts.length === 0 ? (
+                <p className="text-xs text-slate-500">No parts recorded yet.</p>
+              ) : (
+                <div className="bg-slate-900 border border-slate-800">
+                  <table className="w-full text-xs">
+                    <thead className="bg-slate-900 border-b border-slate-800">
+                      <tr className="text-slate-500 text-left">
+                        <th className="px-3 py-2 font-normal">Part #</th>
+                        <th className="px-3 py-2 font-normal">Description</th>
+                        <th className="px-3 py-2 font-normal">Status</th>
+                        <th className="px-3 py-2 font-normal">ETA</th>
+                        <th className="px-3 py-2 font-normal">Ship method</th>
+                        <th className="px-3 py-2 font-normal">Tracking</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {aog.parts.map((p, idx) => {
+                        const carrier = detectCarrier(p.trackingNumber);
+                        const trackUrl = buildTrackingUrl(carrier, p.trackingNumber);
+                        return (
+                        <tr key={idx} className="border-b border-slate-800 last:border-b-0">
+                          <td className="px-3 py-2 text-slate-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{p.partNumber || '—'}</td>
+                          <td className="px-3 py-2 text-slate-300">{p.description || '—'}</td>
+                          <td className="px-3 py-2"><PartStatusBadge status={p.status} /></td>
+                          <td className="px-3 py-2 text-slate-300">{p.eta || '—'}</td>
+                          <td className="px-3 py-2 text-slate-300">{p.shipMethod || '—'}</td>
+                          <td className="px-3 py-2">
+                            {p.trackingNumber ? (
+                              trackUrl ? (
+                                <a
+                                  href={trackUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1.5 text-cyan-400 hover:text-cyan-300 underline decoration-cyan-500/30 hover:decoration-cyan-400"
+                                  style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '11px' }}
+                                >
+                                  <CarrierBadge carrier={carrier} />
+                                  <span>{p.trackingNumber}</span>
+                                </a>
+                              ) : (
+                                <span className="text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '11px' }}>
+                                  {p.trackingNumber}
+                                </span>
+                              )
+                            ) : (
+                              <span className="text-slate-600">—</span>
+                            )}
+                          </td>
+                        </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              {(aog.shipTo?.address || aog.shipTo?.fboName) && (
+                <p className="text-xs text-slate-500 mt-2">
+                  Ship to: {aog.shipTo?.fboName || aog.fboName}{aog.shipTo?.address ? ', ' + aog.shipTo.address : ''}{aog.shipTo?.attn ? ' · ATTN ' + aog.shipTo.attn : ''}
+                </p>
+              )}
+            </Section>
+
+            {/* Personnel + RTS side by side */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="bg-slate-900 border border-slate-800 p-3">
+                <div className="text-[10px] text-slate-500 tracking-widest mb-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>PERSONNEL</div>
+                <div className="text-xs text-slate-300 space-y-1">
+                  <div><span className="text-slate-500">Tech departure:</span> {aog.personnel?.techDeparture || '—'}</div>
+                  <div><span className="text-slate-500">Tech arrival ETA:</span> {aog.personnel?.techArrivalEta || '—'}</div>
+                  <div><span className="text-slate-500">Transport:</span> {aog.personnel?.transport || '—'}</div>
+                </div>
+              </div>
+              <div className={`${isResolved ? 'bg-cyan-500/10 border-cyan-500/30' : 'bg-amber-500/10 border-amber-500/30'} border p-3`}>
+                <div className={`text-[10px] tracking-widest mb-2 ${isResolved ? 'text-cyan-400' : 'text-amber-400'}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  {isResolved ? 'RESOLVED AT' : 'ESTIMATED RETURN TO SERVICE'}
+                </div>
+                <div className={`text-lg font-medium ${isResolved ? 'text-cyan-200' : 'text-amber-200'}`}>
+                  {isResolved ? fmtRelativeTime(aog.resolvedAt) : (aog.rtsEstimate || 'TBD')}
+                </div>
+              </div>
+            </div>
+
+            {/* Current status */}
+            <Section label="Current Status">
+              <div className="bg-slate-900 border border-slate-800 p-3">
+                <p className="text-sm text-slate-300">{aog.currentStatus || '(no status recorded yet)'}</p>
+              </div>
+            </Section>
+
+            {/* Open items + next update */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <Section label="Open Items">
+                {!aog.openItems || aog.openItems.length === 0 ? (
+                  <p className="text-xs text-slate-500">No open items.</p>
+                ) : (
+                  <ul className="text-xs text-slate-300 list-disc pl-4 space-y-1">
+                    {aog.openItems.map((item, i) => <li key={i}>{item}</li>)}
+                  </ul>
+                )}
+              </Section>
+              <Section label="Next Update Due">
+                <p className="text-sm text-slate-300">{aog.nextUpdateDue || 'TBD'}</p>
+              </Section>
+            </div>
+
+            {/* Recipients */}
+            <Section label="Update Recipients">
+              {!aog.recipients || aog.recipients.length === 0 ? (
+                <p className="text-xs text-slate-500">No recipients configured. Add via Edit.</p>
+              ) : (
+                <div className="flex flex-wrap gap-1.5">
+                  {aog.recipients.map((r, i) => (
+                    <span key={i} className="text-xs bg-slate-900 border border-slate-800 px-2 py-0.5 text-slate-300">{r}</span>
+                  ))}
+                </div>
+              )}
+            </Section>
+
+            {/* Log */}
+            {aog.logEntries && aog.logEntries.length > 0 && (
+              <Section label="Activity Log">
+                <div className="space-y-1 max-h-40 overflow-y-auto scroll-area">
+                  {[...aog.logEntries].reverse().map((entry, i) => (
+                    <div key={i} className="text-xs text-slate-400 flex gap-2">
+                      <span className="text-slate-600 shrink-0" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                        {new Date(entry.timestamp).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                      </span>
+                      <span className="text-slate-500 shrink-0">{entry.author}:</span>
+                      <span>{entry.message}</span>
+                    </div>
+                  ))}
+                </div>
+              </Section>
+            )}
+
+            {/* Actions */}
+            {canEdit && (
+              <div className="flex flex-wrap gap-2 pt-3 border-t border-slate-800">
+                <button
+                  onClick={handleSendUpdate}
+                  disabled={sending}
+                  className="flex items-center gap-2 px-3 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs tracking-widest font-medium disabled:opacity-50"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                >
+                  <Mail className="w-3 h-3" /> {sending ? 'SENDING...' : 'SEND UPDATE EMAIL'}
+                </button>
+                {!isResolved && (
+                  <>
+                    <button
+                      onClick={() => setEditing(true)}
+                      className="flex items-center gap-2 px-3 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 text-xs tracking-widest font-medium"
+                      style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                    >
+                      EDIT DETAILS
+                    </button>
+                    <button
+                      onClick={handleResolve}
+                      className="flex items-center gap-2 px-3 py-2 bg-green-600 hover:bg-green-500 text-white text-xs tracking-widest font-medium ml-auto"
+                      style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                    >
+                      <CheckCircle2 className="w-3 h-3" /> MARK RESOLVED (RTS)
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+            {sendStatus && (
+              <div className={`text-xs ${sendStatus.startsWith('Sent') ? 'text-green-400' : 'text-amber-400'}`}>
+                {sendStatus}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Section({ label, children }) {
+  return (
+    <div>
+      <div className="text-[10px] text-slate-500 tracking-widest mb-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        {label}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function Field({ label, value }) {
+  return (
+    <div className="bg-slate-900 border border-slate-800 px-3 py-2">
+      <div className="text-[10px] text-slate-500">{label}</div>
+      <div className="text-xs text-slate-200 mt-0.5">{value || '—'}</div>
+    </div>
+  );
+}
+
+function DiagRow({ label, value }) {
+  return (
+    <div className="flex gap-3 text-xs">
+      <div className="text-slate-500 shrink-0 w-36">{label}</div>
+      <div className="text-slate-300 flex-1">{value || '—'}</div>
+    </div>
+  );
+}
+
+function PartStatusBadge({ status }) {
+  const s = String(status || '').toLowerCase();
+  let bg = 'bg-slate-800 text-slate-400';
+  if (s === 'delivered') bg = 'bg-green-500/20 text-green-300';
+  else if (s === 'in transit' || s === 'in-transit') bg = 'bg-amber-500/20 text-amber-300';
+  else if (s === 'ordered') bg = 'bg-blue-500/20 text-blue-300';
+  else if (s === 'installed') bg = 'bg-cyan-500/20 text-cyan-300';
+  return (
+    <span className={`text-[10px] px-2 py-0.5 ${bg} tracking-widest font-medium`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+      {(status || '—').toUpperCase()}
+    </span>
+  );
+}
+
+function fmtRelativeTime(ts) {
+  if (!ts) return '—';
+  const ms = Date.now() - ts;
+  const hrs = Math.floor(ms / 3600000);
+  const mins = Math.floor((ms % 3600000) / 60000);
+  if (hrs > 48) {
+    return new Date(ts).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  }
+  if (hrs > 24) return `${Math.floor(hrs/24)}d ${hrs%24}h ago`;
+  if (hrs > 0) return `${hrs}h ${mins}m ago`;
+  return `${mins}m ago`;
+}
+
+function NewAogModal({ currentUser, fleetTails, onClose, onCreated }) {
+  const [tail, setTail] = useState('');
+  const [location, setLocation] = useState('');
+  const [fboName, setFboName] = useState('');
+  const [issueDescription, setIssueDescription] = useState('');
+  const [recipientsText, setRecipientsText] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+
+  const reporter = {
+    uid: currentUser?.uid || currentUser?.id,
+    displayName: currentUser?.displayName || currentUser?.name || currentUser?.email || 'Unknown',
+  };
+
+  async function handleSubmit() {
+    setError('');
+    if (!tail.trim()) { setError('Tail number is required'); return; }
+    if (!location.trim()) { setError('Location is required'); return; }
+    if (!issueDescription.trim()) { setError('Issue description is required'); return; }
+    const recipients = recipientsText.split(/[,;\s]+/).map(e => e.trim()).filter(e => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
+
+    setSubmitting(true);
+    try {
+      const aogMod = await import('./firebase-aog.js');
+      const id = await aogMod.declareAog({
+        tail, location, fboName, issueDescription, recipients, reporter,
+      });
+
+      // Fire declared email (best effort)
+      if (recipients.length > 0) {
+        try {
+          const { auth } = await import('./firebase.js');
+          let idToken = null;
+          if (auth.currentUser) idToken = await auth.currentUser.getIdToken();
+          const aogStub = {
+            id, tail: tail.toUpperCase().trim(), location: location.toUpperCase().trim(),
+            fboName, issueDescription, status: 'active',
+            reportedAt: Date.now(), reportedBy: reporter,
+            coordination: {}, diagnostics: {}, parts: [],
+            shipTo: { fboName, address: '', attn: '' },
+            personnel: {}, rtsEstimate: '', currentStatus: '',
+            openItems: [], nextUpdateDue: '', recipients,
+          };
+          await fetch('/api/send-aog-email', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ aog: aogStub, eventType: 'declared', idToken }),
+          });
+        } catch (e) {
+          console.warn('declared email failed:', e);
+        }
+      }
+      onCreated(id);
+    } catch (err) {
+      setError(err.message);
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur flex items-start justify-center overflow-y-auto p-4">
+      <div className="bg-slate-950 border border-red-500/40 max-w-2xl w-full my-8">
+        <div className="bg-red-500/10 px-5 py-3 flex items-center justify-between border-b border-red-500/30">
+          <h3 className="text-sm tracking-widest text-red-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            <AlertTriangle className="w-4 h-4 inline mr-2" />DECLARE AOG EVENT
+          </h3>
+          <button onClick={onClose} className="text-red-300 hover:text-white">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                TAIL *
+              </label>
+              {Array.isArray(fleetTails) && fleetTails.length > 0 ? (
+                <select
+                  value={tail}
+                  onChange={e => setTail(e.target.value)}
+                  className="w-full mt-1 bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none"
+                >
+                  <option value="">Select tail...</option>
+                  {fleetTails.map(t => <option key={t} value={t}>{t}</option>)}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  value={tail}
+                  onChange={e => setTail(e.target.value.toUpperCase())}
+                  placeholder="N444AM"
+                  className="w-full mt-1 bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none"
+                />
+              )}
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                LOCATION (AIRPORT) *
+              </label>
+              <input
+                type="text"
+                value={location}
+                onChange={e => setLocation(e.target.value.toUpperCase())}
+                placeholder="KJQF"
+                className="w-full mt-1 bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              FBO / SERVICE PROVIDER
+            </label>
+            <input
+              type="text"
+              value={fboName}
+              onChange={e => setFboName(e.target.value)}
+              placeholder="Atlantic Aviation"
+              className="w-full mt-1 bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none"
+            />
+          </div>
+
+          <div>
+            <label className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              ISSUE DESCRIPTION *
+            </label>
+            <textarea
+              value={issueDescription}
+              onChange={e => setIssueDescription(e.target.value)}
+              placeholder="Describe what happened, when, and any pilot-reported symptoms..."
+              rows={4}
+              className="w-full mt-1 bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none resize-none"
+            />
+          </div>
+
+          <div>
+            <label className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              UPDATE EMAIL RECIPIENTS (comma-separated)
+            </label>
+            <textarea
+              value={recipientsText}
+              onChange={e => setRecipientsText(e.target.value)}
+              placeholder="jake@flyskyway.com, mx@flyskyway.com, ops@flyskyway.com"
+              rows={2}
+              className="w-full mt-1 bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none resize-none"
+            />
+            <p className="text-[10px] text-slate-500 mt-1">
+              These addresses will receive an initial declaration email and any future status updates.
+            </p>
+          </div>
+
+          {error && (
+            <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-xs p-2">
+              {error}
+            </div>
+          )}
+
+          <div className="flex gap-2 pt-3 border-t border-slate-800">
+            <button
+              onClick={handleSubmit}
+              disabled={submitting}
+              className="flex-1 px-4 py-2 bg-red-500 hover:bg-red-400 disabled:opacity-50 text-white text-xs tracking-widest font-medium"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              {submitting ? 'DECLARING...' : 'DECLARE AOG'}
+            </button>
+            <button
+              onClick={onClose}
+              disabled={submitting}
+              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs tracking-widest font-medium"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              CANCEL
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AogEditModal({ aog, currentUser, onClose }) {
+  const [draft, setDraft] = useState(() => JSON.parse(JSON.stringify(aog)));
+  const [recipientsText, setRecipientsText] = useState(
+    Array.isArray(aog.recipients) ? aog.recipients.join(', ') : ''
+  );
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const reporter = {
+    uid: currentUser?.uid || currentUser?.id,
+    displayName: currentUser?.displayName || currentUser?.name || currentUser?.email || 'Unknown',
+  };
+
+  function updateField(path, value) {
+    setDraft(d => {
+      const next = { ...d };
+      const keys = path.split('.');
+      let cur = next;
+      for (let i = 0; i < keys.length - 1; i++) {
+        cur[keys[i]] = { ...(cur[keys[i]] || {}) };
+        cur = cur[keys[i]];
+      }
+      cur[keys[keys.length - 1]] = value;
+      return next;
+    });
+  }
+
+  function updatePart(idx, field, value) {
+    setDraft(d => {
+      const parts = Array.isArray(d.parts) ? [...d.parts] : [];
+      parts[idx] = { ...parts[idx], [field]: value };
+      return { ...d, parts };
+    });
+  }
+
+  function addPart() {
+    setDraft(d => ({
+      ...d,
+      parts: [...(d.parts || []), { partNumber: '', description: '', status: 'Ordered', eta: '', shipMethod: '', trackingNumber: '' }],
+    }));
+  }
+
+  function removePart(idx) {
+    setDraft(d => ({
+      ...d,
+      parts: (d.parts || []).filter((_, i) => i !== idx),
+    }));
+  }
+
+  function updateOpenItem(idx, value) {
+    setDraft(d => {
+      const items = Array.isArray(d.openItems) ? [...d.openItems] : [];
+      items[idx] = value;
+      return { ...d, openItems: items };
+    });
+  }
+
+  function addOpenItem() {
+    setDraft(d => ({ ...d, openItems: [...(d.openItems || []), ''] }));
+  }
+
+  function removeOpenItem(idx) {
+    setDraft(d => ({ ...d, openItems: (d.openItems || []).filter((_, i) => i !== idx) }));
+  }
+
+  async function handleSave() {
+    setError('');
+    setSaving(true);
+    try {
+      const recipients = recipientsText
+        .split(/[,;\s]+/).map(e => e.trim())
+        .filter(e => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
+
+      const patch = {
+        location: String(draft.location || '').toUpperCase().trim(),
+        fboName: draft.fboName || '',
+        issueDescription: draft.issueDescription || '',
+        coordination: draft.coordination || {},
+        diagnostics: draft.diagnostics || {},
+        parts: (draft.parts || []).filter(p => p.partNumber || p.description),
+        shipTo: draft.shipTo || {},
+        personnel: draft.personnel || {},
+        rtsEstimate: draft.rtsEstimate || '',
+        currentStatus: draft.currentStatus || '',
+        openItems: (draft.openItems || []).filter(i => i && i.trim()),
+        nextUpdateDue: draft.nextUpdateDue || '',
+        recipients,
+      };
+
+      // Detect RTS estimate change for email trigger
+      const rtsChanged = (aog.rtsEstimate || '') !== (draft.rtsEstimate || '') && draft.rtsEstimate;
+      if (rtsChanged) {
+        patch.rtsEstimatePrevious = aog.rtsEstimate || '';
+      }
+
+      const logMsg = rtsChanged
+        ? `RTS estimate updated: ${aog.rtsEstimate || 'TBD'} → ${draft.rtsEstimate}`
+        : 'Details updated';
+
+      const aogMod = await import('./firebase-aog.js');
+      await aogMod.updateAog(aog.id, patch, { author: reporter.displayName, message: logMsg });
+
+      // Fire status-change email if RTS changed
+      if (rtsChanged && recipients.length > 0) {
+        try {
+          const { auth } = await import('./firebase.js');
+          let idToken = null;
+          if (auth.currentUser) idToken = await auth.currentUser.getIdToken();
+          const updatedAog = { ...aog, ...patch };
+          await fetch('/api/send-aog-email', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ aog: updatedAog, eventType: 'rts_changed', idToken }),
+          });
+        } catch (e) {
+          console.warn('rts_changed email failed:', e);
+        }
+      }
+      onClose();
+    } catch (err) {
+      setError(err.message);
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur flex items-start justify-center overflow-y-auto p-4">
+      <div className="bg-slate-950 border border-slate-700 max-w-3xl w-full my-8">
+        <div className="bg-slate-900 px-5 py-3 flex items-center justify-between border-b border-slate-700 sticky top-0 z-10">
+          <h3 className="text-sm tracking-widest text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            EDIT AOG — {aog.tail}
+          </h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-white">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-5">
+          {/* Location / FBO */}
+          <div className="grid grid-cols-2 gap-3">
+            <EditField label="LOCATION" value={draft.location} onChange={v => updateField('location', v.toUpperCase())} />
+            <EditField label="FBO" value={draft.fboName} onChange={v => updateField('fboName', v)} />
+          </div>
+
+          {/* Issue */}
+          <EditTextarea label="ISSUE DESCRIPTION" value={draft.issueDescription} onChange={v => updateField('issueDescription', v)} rows={3} />
+
+          {/* Coordination */}
+          <div>
+            <div className="text-[10px] text-slate-500 tracking-widest mb-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>COORDINATION TEAM</div>
+            <div className="grid grid-cols-2 gap-3">
+              <EditField label="Maintenance Lead" value={draft.coordination?.maintLead} onChange={v => updateField('coordination.maintLead', v)} />
+              <EditField label="Technician" value={draft.coordination?.technician} onChange={v => updateField('coordination.technician', v)} />
+              <EditField label="Vendor / OEM" value={draft.coordination?.vendor} onChange={v => updateField('coordination.vendor', v)} />
+              <EditField label="Ops Contact" value={draft.coordination?.opsContact} onChange={v => updateField('coordination.opsContact', v)} />
+            </div>
+          </div>
+
+          {/* Diagnostics */}
+          <div>
+            <div className="text-[10px] text-slate-500 tracking-widest mb-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>DIAGNOSTICS</div>
+            <div className="space-y-2">
+              <EditTextarea label="Pilot Discrepancy" value={draft.diagnostics?.pilotDiscrepancy} onChange={v => updateField('diagnostics.pilotDiscrepancy', v)} rows={2} />
+              <EditTextarea label="Troubleshooting Completed" value={draft.diagnostics?.troubleshooting} onChange={v => updateField('diagnostics.troubleshooting', v)} rows={2} />
+              <EditTextarea label="OEM Recommendation" value={draft.diagnostics?.oemRecommendation} onChange={v => updateField('diagnostics.oemRecommendation', v)} rows={2} />
+            </div>
+          </div>
+
+          {/* Parts */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>PARTS</div>
+              <button onClick={addPart} className="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1">
+                <Plus className="w-3 h-3" /> Add part
+              </button>
+            </div>
+            {(draft.parts || []).length === 0 ? (
+              <p className="text-xs text-slate-500">No parts yet. Click "Add part" to track one.</p>
+            ) : (
+              <div className="space-y-2">
+                {(draft.parts || []).map((p, idx) => {
+                  const detectedCarrier = detectCarrier(p.trackingNumber);
+                  return (
+                  <div key={idx} className="bg-slate-900 border border-slate-800 p-2 space-y-2">
+                    <div className="grid grid-cols-12 gap-2 items-center">
+                      <input type="text" placeholder="Part #" value={p.partNumber || ''} onChange={e => updatePart(idx, 'partNumber', e.target.value)}
+                        className="col-span-2 bg-slate-950 border border-slate-700 px-2 py-1 text-xs text-slate-200 focus:border-cyan-400 outline-none" />
+                      <input type="text" placeholder="Description" value={p.description || ''} onChange={e => updatePart(idx, 'description', e.target.value)}
+                        className="col-span-3 bg-slate-950 border border-slate-700 px-2 py-1 text-xs text-slate-200 focus:border-cyan-400 outline-none" />
+                      <select value={p.status || 'Ordered'} onChange={e => updatePart(idx, 'status', e.target.value)}
+                        className="col-span-2 bg-slate-950 border border-slate-700 px-2 py-1 text-xs text-slate-200 focus:border-cyan-400 outline-none">
+                        <option>Ordered</option>
+                        <option>In Transit</option>
+                        <option>Delivered</option>
+                        <option>Installed</option>
+                      </select>
+                      <input type="text" placeholder="ETA" value={p.eta || ''} onChange={e => updatePart(idx, 'eta', e.target.value)}
+                        className="col-span-2 bg-slate-950 border border-slate-700 px-2 py-1 text-xs text-slate-200 focus:border-cyan-400 outline-none" />
+                      <input type="text" placeholder="Ship" value={p.shipMethod || ''} onChange={e => updatePart(idx, 'shipMethod', e.target.value)}
+                        className="col-span-2 bg-slate-950 border border-slate-700 px-2 py-1 text-xs text-slate-200 focus:border-cyan-400 outline-none" />
+                      <button onClick={() => removePart(idx)} className="col-span-1 text-slate-500 hover:text-red-400 flex justify-center">
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input type="text" placeholder="Tracking # (FedEx or UPS)" value={p.trackingNumber || ''} onChange={e => updatePart(idx, 'trackingNumber', e.target.value)}
+                        className="flex-1 bg-slate-950 border border-slate-700 px-2 py-1 text-xs text-slate-200 focus:border-cyan-400 outline-none"
+                        style={{ fontFamily: 'JetBrains Mono, monospace' }} />
+                      {detectedCarrier ? (
+                        <CarrierBadge carrier={detectedCarrier} />
+                      ) : p.trackingNumber ? (
+                        <span className="text-[10px] text-amber-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>UNKNOWN</span>
+                      ) : null}
+                    </div>
+                  </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Ship to */}
+          <div>
+            <div className="text-[10px] text-slate-500 tracking-widest mb-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>PARTS SHIPPING ADDRESS</div>
+            <div className="space-y-2">
+              <EditField label="FBO/Recipient" value={draft.shipTo?.fboName} onChange={v => updateField('shipTo.fboName', v)} />
+              <EditField label="Street address" value={draft.shipTo?.address} onChange={v => updateField('shipTo.address', v)} />
+              <EditField label="ATTN / Hangar" value={draft.shipTo?.attn} onChange={v => updateField('shipTo.attn', v)} />
+            </div>
+          </div>
+
+          {/* Personnel */}
+          <div>
+            <div className="text-[10px] text-slate-500 tracking-widest mb-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>PERSONNEL LOGISTICS</div>
+            <div className="grid grid-cols-2 gap-3">
+              <EditField label="Tech Departure Time" value={draft.personnel?.techDeparture} onChange={v => updateField('personnel.techDeparture', v)} />
+              <EditField label="Tech Arrival ETA" value={draft.personnel?.techArrivalEta} onChange={v => updateField('personnel.techArrivalEta', v)} />
+            </div>
+            <div className="mt-2">
+              <EditField label="Transportation Arranged" value={draft.personnel?.transport} onChange={v => updateField('personnel.transport', v)} placeholder="e.g. Hertz rental booked" />
+            </div>
+          </div>
+
+          {/* RTS */}
+          <div className="bg-amber-500/5 border border-amber-500/30 p-3">
+            <EditField label="ESTIMATED RETURN TO SERVICE (RTS)" value={draft.rtsEstimate} onChange={v => updateField('rtsEstimate', v)} placeholder="e.g. 12 May 14:00 EDT" highlight />
+            <p className="text-[10px] text-amber-400 mt-1">
+              Changes to this field auto-fire an "RTS UPDATE" email to recipients.
+            </p>
+          </div>
+
+          {/* Current status */}
+          <EditTextarea label="CURRENT STATUS UPDATE" value={draft.currentStatus} onChange={v => updateField('currentStatus', v)} rows={3} />
+
+          {/* Open items */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>OPEN ITEMS</div>
+              <button onClick={addOpenItem} className="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1">
+                <Plus className="w-3 h-3" /> Add item
+              </button>
+            </div>
+            {(draft.openItems || []).length === 0 ? (
+              <p className="text-xs text-slate-500">No open items.</p>
+            ) : (
+              <div className="space-y-1">
+                {(draft.openItems || []).map((item, idx) => (
+                  <div key={idx} className="flex gap-2 items-center">
+                    <input type="text" value={item} onChange={e => updateOpenItem(idx, e.target.value)} placeholder="Describe item..."
+                      className="flex-1 bg-slate-900 border border-slate-700 px-2 py-1 text-xs text-slate-200 focus:border-cyan-400 outline-none" />
+                    <button onClick={() => removeOpenItem(idx)} className="text-slate-500 hover:text-red-400">
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Next update */}
+          <EditField label="NEXT UPDATE EXPECTED" value={draft.nextUpdateDue} onChange={v => updateField('nextUpdateDue', v)} placeholder="e.g. 12 May 06:30 EDT" />
+
+          {/* Recipients */}
+          <div>
+            <label className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              UPDATE EMAIL RECIPIENTS (comma-separated)
+            </label>
+            <textarea
+              value={recipientsText}
+              onChange={e => setRecipientsText(e.target.value)}
+              rows={2}
+              className="w-full mt-1 bg-slate-900 border border-slate-700 px-3 py-2 text-xs text-slate-200 focus:border-cyan-400 outline-none resize-none"
+            />
+          </div>
+
+          {error && (
+            <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-xs p-2">
+              {error}
+            </div>
+          )}
+
+          <div className="flex gap-2 pt-3 border-t border-slate-800 sticky bottom-0 bg-slate-950 -mx-5 -mb-5 px-5 pb-5">
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="flex-1 px-4 py-2 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 text-xs tracking-widest font-medium"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              {saving ? 'SAVING...' : 'SAVE CHANGES'}
+            </button>
+            <button
+              onClick={onClose}
+              disabled={saving}
+              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs tracking-widest font-medium"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              CANCEL
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EditField({ label, value, onChange, placeholder, highlight }) {
+  return (
+    <div>
+      <label className={`text-[10px] tracking-widest ${highlight ? 'text-amber-400' : 'text-slate-500'}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        {label}
+      </label>
+      <input
+        type="text"
+        value={value || ''}
+        onChange={e => onChange(e.target.value)}
+        placeholder={placeholder || ''}
+        className="w-full mt-1 bg-slate-900 border border-slate-700 px-3 py-1.5 text-sm text-slate-200 focus:border-cyan-400 outline-none"
+      />
+    </div>
+  );
+}
+
+function EditTextarea({ label, value, onChange, rows, placeholder }) {
+  return (
+    <div>
+      <label className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        {label}
+      </label>
+      <textarea
+        value={value || ''}
+        onChange={e => onChange(e.target.value)}
+        placeholder={placeholder || ''}
+        rows={rows || 3}
+        className="w-full mt-1 bg-slate-900 border border-slate-700 px-3 py-1.5 text-sm text-slate-200 focus:border-cyan-400 outline-none resize-none"
+      />
+    </div>
+  );
+}
+
+
+
 function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, syncStatus, now, tripCount, onOpenSettings, onOpenProfile }) {
   const sections = [
     { id: 'schedule', label: 'SCHEDULE',  icon: Calendar, roles: ['crew', 'ops', 'admin'] },
@@ -8618,6 +9742,7 @@ function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, sync
     { id: 'reports',  label: 'REPORT',    icon: AlertCircle, roles: ['crew', 'ops', 'admin'] },
     { id: 'wallet',   label: 'WALLET',    icon: Mail, roles: ['crew', 'sales', 'ops', 'accounting', 'admin'] },
     { id: 'ops',      label: 'OPS',       icon: Zap,      roles: ['ops', 'admin'] },
+    { id: 'maint',    label: 'MAINT',     icon: AlertTriangle, roles: ['maint', 'ops', 'admin'] },
     { id: 'users',    label: 'USERS',     icon: Users,    roles: ['ops', 'admin'] },
   ];
   const allowed = sections.filter(s => s.roles.includes(currentUser.role));
@@ -12099,6 +13224,14 @@ export default function CharterOps() {
               onOpenPaste={() => setShowSettings(true)}
             />
           </div>
+        )}
+
+        {/* === MAINT SECTION === */}
+        {section === 'maint' && (
+          <MaintScreen
+            currentUser={currentUser}
+            fleetTails={Array.isArray(config?.fleetTails) ? config.fleetTails : ['N20UF', 'N168ZZ', 'N286N', 'N444AM', 'N651TW', 'N551FP', 'N85AH', 'N525CR']}
+          />
         )}
 
         {/* === USERS SECTION === */}
