@@ -9802,7 +9802,26 @@ function AddLogbookEntryModal({ aog, currentUser, onClose }) {
   const [inspectionPerformed, setInspectionPerformed] = useState('');
   const [aircraftTotalTime, setAircraftTotalTime] = useState('');
   const [aircraftCycles, setAircraftCycles] = useState('');
-  const [partsReplaced, setPartsReplaced] = useState([]);
+  // Pre-populate from the AOG record's parts list. Each AOG part becomes
+  // a togglable row; defaults to "used" only if status was Delivered (or anything
+  // already at Installed — though that'd be unusual). Techs can toggle OFF anything
+  // that was ordered but didn't end up being used.
+  // Extra parts (not in the original AOG record) can be added below.
+  const [aogPartsUsed, setAogPartsUsed] = useState(() => {
+    const aogParts = Array.isArray(aog.parts) ? aog.parts : [];
+    return aogParts.map((p, idx) => ({
+      sourceIdx: idx,
+      partNumber: p.partNumber || '',
+      description: p.description || '',
+      status: p.status || '',
+      used: String(p.status || '').toLowerCase() === 'delivered'
+         || String(p.status || '').toLowerCase() === 'installed',
+      serialOff: '',
+      serialOn: '',
+    }));
+  });
+  // Extra ad-hoc parts beyond what was in the AOG record
+  const [extraParts, setExtraParts] = useState([]);
   const [technicianName, setTechnicianName] = useState(currentUser?.name || currentUser?.displayName || '');
   const [technicianCertType, setTechnicianCertType] = useState(currentUser?.certType || 'A&P');
   const [technicianCertNumber, setTechnicianCertNumber] = useState(currentUser?.certNumber || '');
@@ -9814,14 +9833,22 @@ function AddLogbookEntryModal({ aog, currentUser, onClose }) {
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
 
-  function addPart() {
-    setPartsReplaced(prev => [...prev, { partNumber: '', description: '', serialOff: '', serialOn: '' }]);
+  // Toggle whether an AOG-source part was actually used in this repair
+  function toggleAogPart(idx) {
+    setAogPartsUsed(prev => prev.map((p, i) => i === idx ? { ...p, used: !p.used } : p));
   }
-  function updatePart(idx, field, val) {
-    setPartsReplaced(prev => prev.map((p, i) => i === idx ? { ...p, [field]: val } : p));
+  function updateAogPart(idx, field, val) {
+    setAogPartsUsed(prev => prev.map((p, i) => i === idx ? { ...p, [field]: val } : p));
   }
-  function removePart(idx) {
-    setPartsReplaced(prev => prev.filter((_, i) => i !== idx));
+  // Extra ad-hoc parts (not on the AOG record)
+  function addExtraPart() {
+    setExtraParts(prev => [...prev, { partNumber: '', description: '', serialOff: '', serialOn: '' }]);
+  }
+  function updateExtraPart(idx, field, val) {
+    setExtraParts(prev => prev.map((p, i) => i === idx ? { ...p, [field]: val } : p));
+  }
+  function removeExtraPart(idx) {
+    setExtraParts(prev => prev.filter((_, i) => i !== idx));
   }
 
   async function handleSubmit() {
@@ -9842,7 +9869,19 @@ function AddLogbookEntryModal({ aog, currentUser, onClose }) {
         inspectionPerformed: inspectionPerformed.trim(),
         aircraftTotalTime: aircraftTotalTime.trim(),
         aircraftCycles: aircraftCycles.trim(),
-        partsReplaced: partsReplaced.filter(p => p.partNumber || p.description),
+        partsReplaced: [
+          ...aogPartsUsed.filter(p => p.used).map(p => ({
+            partNumber: p.partNumber,
+            description: p.description,
+            serialOff: p.serialOff,
+            serialOn: p.serialOn,
+            fromAogOrder: true,
+          })),
+          ...extraParts.filter(p => p.partNumber || p.description).map(p => ({
+            ...p,
+            fromAogOrder: false,
+          })),
+        ],
         technicianName: technicianName.trim(),
         technicianCertType: technicianCertType.trim(),
         technicianCertNumber: technicianCertNumber.trim(),
@@ -9971,27 +10010,92 @@ function AddLogbookEntryModal({ aog, currentUser, onClose }) {
           />
 
           <div>
+            <div className="text-[10px] text-slate-500 tracking-widest mb-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>PARTS REPLACED</div>
+
+            {/* AOG record parts — toggle to indicate which were actually used */}
+            {aogPartsUsed.length > 0 && (
+              <div className="space-y-1.5 mb-3">
+                <p className="text-[10px] text-slate-500 italic">From this AOG record. Toggle off any part that was ordered but not used in the final repair.</p>
+                {aogPartsUsed.map((p, idx) => (
+                  <div key={idx} className={`border ${p.used ? 'border-cyan-500/30 bg-cyan-500/5' : 'border-slate-800 bg-slate-900'}`}>
+                    <label className="flex items-center gap-3 p-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={p.used}
+                        onChange={() => toggleAogPart(idx)}
+                        className="w-4 h-4 accent-cyan-500 shrink-0"
+                      />
+                      <div className="flex-1 flex items-center gap-3 min-w-0">
+                        <span className={`text-xs ${p.used ? 'text-slate-200' : 'text-slate-500 line-through'} truncate`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                          {p.partNumber || '—'}
+                        </span>
+                        <span className={`text-xs ${p.used ? 'text-slate-300' : 'text-slate-600'} truncate`}>
+                          {p.description || '(no description)'}
+                        </span>
+                        {p.status && (
+                          <span className="ml-auto shrink-0">
+                            <PartStatusBadge status={p.status} />
+                          </span>
+                        )}
+                      </div>
+                    </label>
+                    {p.used && (
+                      <div className="px-2 pb-2 pt-1 border-t border-cyan-500/20 grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>S/N OFF</label>
+                          <input
+                            type="text"
+                            value={p.serialOff}
+                            onChange={e => updateAogPart(idx, 'serialOff', e.target.value)}
+                            placeholder="Serial removed"
+                            className="w-full mt-0.5 bg-slate-950 border border-slate-700 px-2 py-1 text-xs text-slate-200 focus:border-cyan-400 outline-none"
+                            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>S/N ON</label>
+                          <input
+                            type="text"
+                            value={p.serialOn}
+                            onChange={e => updateAogPart(idx, 'serialOn', e.target.value)}
+                            placeholder="Serial installed"
+                            className="w-full mt-0.5 bg-slate-950 border border-slate-700 px-2 py-1 text-xs text-slate-200 focus:border-cyan-400 outline-none"
+                            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Extra ad-hoc parts (not in AOG record) */}
             <div className="flex items-center justify-between mb-2">
-              <div className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>PARTS REPLACED</div>
-              <button onClick={addPart} className="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1">
+              <div className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                {aogPartsUsed.length > 0 ? 'OTHER PARTS USED (not in AOG record)' : 'PARTS USED'}
+              </div>
+              <button onClick={addExtraPart} className="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1">
                 <Plus className="w-3 h-3" /> Add part
               </button>
             </div>
-            {partsReplaced.length === 0 ? (
-              <p className="text-xs text-slate-500">No parts replaced for this entry.</p>
+            {extraParts.length === 0 ? (
+              aogPartsUsed.length === 0 ? (
+                <p className="text-xs text-slate-500">No parts replaced for this entry. Click "Add part" if a part was used.</p>
+              ) : null
             ) : (
               <div className="space-y-2">
-                {partsReplaced.map((p, idx) => (
+                {extraParts.map((p, idx) => (
                   <div key={idx} className="grid grid-cols-12 gap-2 items-center bg-slate-900 border border-slate-800 p-2">
-                    <input type="text" placeholder="Part #" value={p.partNumber} onChange={e => updatePart(idx, 'partNumber', e.target.value)}
+                    <input type="text" placeholder="Part #" value={p.partNumber} onChange={e => updateExtraPart(idx, 'partNumber', e.target.value)}
                       className="col-span-3 bg-slate-950 border border-slate-700 px-2 py-1 text-xs text-slate-200 focus:border-cyan-400 outline-none" />
-                    <input type="text" placeholder="Description" value={p.description} onChange={e => updatePart(idx, 'description', e.target.value)}
+                    <input type="text" placeholder="Description" value={p.description} onChange={e => updateExtraPart(idx, 'description', e.target.value)}
                       className="col-span-4 bg-slate-950 border border-slate-700 px-2 py-1 text-xs text-slate-200 focus:border-cyan-400 outline-none" />
-                    <input type="text" placeholder="S/N OFF" value={p.serialOff} onChange={e => updatePart(idx, 'serialOff', e.target.value)}
+                    <input type="text" placeholder="S/N OFF" value={p.serialOff} onChange={e => updateExtraPart(idx, 'serialOff', e.target.value)}
                       className="col-span-2 bg-slate-950 border border-slate-700 px-2 py-1 text-xs text-slate-200 focus:border-cyan-400 outline-none" />
-                    <input type="text" placeholder="S/N ON" value={p.serialOn} onChange={e => updatePart(idx, 'serialOn', e.target.value)}
+                    <input type="text" placeholder="S/N ON" value={p.serialOn} onChange={e => updateExtraPart(idx, 'serialOn', e.target.value)}
                       className="col-span-2 bg-slate-950 border border-slate-700 px-2 py-1 text-xs text-slate-200 focus:border-cyan-400 outline-none" />
-                    <button onClick={() => removePart(idx)} className="col-span-1 text-slate-500 hover:text-red-400 flex justify-center">
+                    <button onClick={() => removeExtraPart(idx)} className="col-span-1 text-slate-500 hover:text-red-400 flex justify-center">
                       <Trash2 className="w-3 h-3" />
                     </button>
                   </div>
