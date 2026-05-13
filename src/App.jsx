@@ -8681,7 +8681,53 @@ function CarrierBadge({ carrier }) {
 /* ============================================================
    MAINT SCREEN — AOG (Aircraft On Ground) event management
    ============================================================ */
-function MaintScreen({ currentUser, fleetTails }) {
+function MaintScreen({ currentUser, users, fleetTails }) {
+  const [mainTab, setMainTab] = useState('aog'); // aog | projects
+
+  return (
+    <div className="flex-1 overflow-y-auto scroll-area">
+      <div className="max-w-5xl mx-auto px-4 md:px-6 py-4 md:py-6">
+        <div className="mb-4">
+          <h2 className="text-lg tracking-wide text-slate-200" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
+            MAINTENANCE
+          </h2>
+        </div>
+        <div className="flex gap-1 mb-4 border-b border-slate-800">
+          <button
+            onClick={() => setMainTab('aog')}
+            className={`text-xs px-4 py-2 tracking-widest ${
+              mainTab === 'aog'
+                ? 'text-red-300 border-b-2 border-red-500'
+                : 'text-slate-500 hover:text-slate-300 border-b-2 border-transparent'
+            }`}
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            <AlertTriangle className="w-3 h-3 inline mr-1" /> AOG EVENTS
+          </button>
+          <button
+            onClick={() => setMainTab('projects')}
+            className={`text-xs px-4 py-2 tracking-widest ${
+              mainTab === 'projects'
+                ? 'text-cyan-300 border-b-2 border-cyan-500'
+                : 'text-slate-500 hover:text-slate-300 border-b-2 border-transparent'
+            }`}
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            <FileText className="w-3 h-3 inline mr-1" /> PROJECTS
+          </button>
+        </div>
+        {mainTab === 'aog' && (
+          <AogEventsTab currentUser={currentUser} fleetTails={fleetTails} />
+        )}
+        {mainTab === 'projects' && (
+          <MxProjectsTab currentUser={currentUser} users={users} fleetTails={fleetTails} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AogEventsTab({ currentUser, fleetTails }) {
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showNew, setShowNew] = useState(false);
@@ -8718,75 +8764,70 @@ function MaintScreen({ currentUser, fleetTails }) {
   }
 
   return (
-    <div className="flex-1 overflow-y-auto scroll-area">
-      <div className="max-w-5xl mx-auto px-4 md:px-6 py-4 md:py-6">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h2 className="text-lg tracking-wide text-slate-200" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
-              MAINTENANCE
-            </h2>
-            <p className="text-xs text-slate-500 mt-1">
-              {activeCount} active AOG · {resolvedCount} resolved
-            </p>
-          </div>
-          <button
-            onClick={() => setShowNew(true)}
-            className="flex items-center gap-2 px-3 py-2 bg-red-500 hover:bg-red-400 text-white text-xs tracking-widest font-medium"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}
-          >
-            <AlertTriangle className="w-4 h-4" /> DECLARE AOG
-          </button>
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <p className="text-xs text-slate-500">
+            {activeCount} active · {resolvedCount} resolved
+          </p>
         </div>
-
-        <div className="flex gap-2 mb-4">
-          <button
-            onClick={() => setTab('active')}
-            className={`text-xs px-3 py-1.5 tracking-widest ${
-              tab === 'active'
-                ? 'bg-red-500/20 text-red-300 border border-red-500/40'
-                : 'bg-slate-900 text-slate-500 border border-slate-800 hover:text-slate-300'
-            }`}
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}
-          >
-            ACTIVE ({activeCount})
-          </button>
-          <button
-            onClick={() => setTab('resolved')}
-            className={`text-xs px-3 py-1.5 tracking-widest ${
-              tab === 'resolved'
-                ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
-                : 'bg-slate-900 text-slate-500 border border-slate-800 hover:text-slate-300'
-            }`}
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}
-          >
-            RESOLVED ({resolvedCount})
-          </button>
-        </div>
-
-        {loading ? (
-          <div className="p-12 text-center text-slate-500">
-            <Loader2 className="w-5 h-5 animate-spin mx-auto mb-2" /> Loading...
-          </div>
-        ) : filtered.length === 0 ? (
-          <div className="p-12 text-center border border-slate-800 bg-slate-950">
-            <AlertTriangle className="w-8 h-8 text-slate-700 mx-auto mb-2" />
-            <p className="text-sm text-slate-500">
-              {tab === 'active' ? 'No active AOG events' : 'No resolved events yet'}
-            </p>
-            {tab === 'active' && (
-              <p className="text-xs text-slate-600 mt-1">
-                All fleet aircraft operational.
-              </p>
-            )}
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {filtered.map(ev => (
-              <AogCard key={ev.id} aog={ev} onClick={() => setSelectedId(ev.id)} />
-            ))}
-          </div>
-        )}
+        <button
+          onClick={() => setShowNew(true)}
+          className="flex items-center gap-2 px-3 py-2 bg-red-500 hover:bg-red-400 text-white text-xs tracking-widest font-medium"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        >
+          <AlertTriangle className="w-4 h-4" /> DECLARE AOG
+        </button>
       </div>
+
+      <div className="flex gap-2 mb-4">
+        <button
+          onClick={() => setTab('active')}
+          className={`text-xs px-3 py-1.5 tracking-widest ${
+            tab === 'active'
+              ? 'bg-red-500/20 text-red-300 border border-red-500/40'
+              : 'bg-slate-900 text-slate-500 border border-slate-800 hover:text-slate-300'
+          }`}
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        >
+          ACTIVE ({activeCount})
+        </button>
+        <button
+          onClick={() => setTab('resolved')}
+          className={`text-xs px-3 py-1.5 tracking-widest ${
+            tab === 'resolved'
+              ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
+              : 'bg-slate-900 text-slate-500 border border-slate-800 hover:text-slate-300'
+          }`}
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        >
+          RESOLVED ({resolvedCount})
+        </button>
+      </div>
+
+      {loading ? (
+        <div className="p-12 text-center text-slate-500">
+          <Loader2 className="w-5 h-5 animate-spin mx-auto mb-2" /> Loading...
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="p-12 text-center border border-slate-800 bg-slate-950">
+          <AlertTriangle className="w-8 h-8 text-slate-700 mx-auto mb-2" />
+          <p className="text-sm text-slate-500">
+            {tab === 'active' ? 'No active AOG events' : 'No resolved events yet'}
+          </p>
+          {tab === 'active' && (
+            <p className="text-xs text-slate-600 mt-1">
+              All fleet aircraft operational.
+            </p>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {filtered.map(ev => (
+            <AogCard key={ev.id} aog={ev} onClick={() => setSelectedId(ev.id)} />
+          ))}
+        </div>
+      )}
 
       {showNew && (
         <NewAogModal
@@ -8933,18 +8974,17 @@ function AogDetail({ aog, currentUser, onBack }) {
   }
 
   return (
-    <div className="flex-1 overflow-y-auto scroll-area">
-      <div className="max-w-5xl mx-auto px-4 md:px-6 py-4 md:py-6">
-        <button
-          onClick={onBack}
-          className="flex items-center gap-1 text-xs text-slate-400 hover:text-slate-200 mb-4"
-        >
-          <ChevronLeft className="w-3 h-3" /> Back to maintenance
-        </button>
+    <div>
+      <button
+        onClick={onBack}
+        className="flex items-center gap-1 text-xs text-slate-400 hover:text-slate-200 mb-4"
+      >
+        <ChevronLeft className="w-3 h-3" /> Back to maintenance
+      </button>
 
-        <div className={`bg-slate-950 border border-slate-800 border-l-4 ${isResolved ? 'border-l-cyan-500' : 'border-l-red-500'}`}>
-          {/* Header */}
-          <div className={`${isResolved ? 'bg-cyan-500/10' : 'bg-red-500/10'} px-5 py-3 flex items-center justify-between`}>
+      <div className={`bg-slate-950 border border-slate-800 border-l-4 ${isResolved ? 'border-l-cyan-500' : 'border-l-red-500'}`}>
+        {/* Header */}
+        <div className={`${isResolved ? 'bg-cyan-500/10' : 'bg-red-500/10'} px-5 py-3 flex items-center justify-between`}>
             <div className="flex items-center gap-3">
               <span className={`${isResolved ? 'bg-cyan-500' : 'bg-red-500'} text-white text-[10px] px-2 py-0.5 tracking-widest font-medium`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
                 {isResolved ? 'RTS' : 'AOG'}
@@ -9207,7 +9247,6 @@ function AogDetail({ aog, currentUser, onBack }) {
             )}
           </div>
         </div>
-      </div>
 
       {addingLogbook && (
         <AddLogbookEntryModal
@@ -10414,6 +10453,1256 @@ function EditTextarea({ label, value, onChange, rows, placeholder }) {
         rows={rows || 3}
         className="w-full mt-1 bg-slate-900 border border-slate-700 px-3 py-1.5 text-sm text-slate-200 focus:border-cyan-400 outline-none resize-none"
       />
+    </div>
+  );
+}
+
+
+
+/* ============================================================
+   MX PROJECTS — list + detail + modals
+   ============================================================ */
+function MxProjectsTab({ currentUser, users, fleetTails }) {
+  const [projects, setProjects] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedId, setSelectedId] = useState(null);
+  const [showNew, setShowNew] = useState(false);
+  const [statusFilter, setStatusFilter] = useState('all');
+
+  useEffect(() => {
+    let unsub = null;
+    let cancelled = false;
+    (async () => {
+      const m = await import('./firebase-mx.js');
+      if (cancelled) return;
+      unsub = m.subscribeToMxProjects((list) => {
+        setProjects(list);
+        setLoading(false);
+      });
+    })();
+    return () => { cancelled = true; if (unsub) unsub(); };
+  }, []);
+
+  const selected = projects.find(p => p.id === selectedId);
+
+  if (selected) {
+    return (
+      <MxProjectDetail
+        project={selected}
+        currentUser={currentUser}
+        users={users}
+        onBack={() => setSelectedId(null)}
+      />
+    );
+  }
+
+  const filtered = statusFilter === 'all'
+    ? projects.filter(p => p.status !== 'complete')
+    : projects.filter(p => p.status === statusFilter);
+  const counts = {
+    all: projects.filter(p => p.status !== 'complete').length,
+    planned: projects.filter(p => p.status === 'planned').length,
+    in_work: projects.filter(p => p.status === 'in_work').length,
+    pending_parts: projects.filter(p => p.status === 'pending_parts').length,
+    inspection: projects.filter(p => p.status === 'inspection').length,
+  };
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-4 flex-wrap">
+        {[
+          { id: 'all', label: 'ALL' },
+          { id: 'planned', label: 'PLANNED' },
+          { id: 'in_work', label: 'IN WORK' },
+          { id: 'pending_parts', label: 'PENDING PARTS' },
+          { id: 'inspection', label: 'INSPECTION' },
+        ].map(f => (
+          <button
+            key={f.id}
+            onClick={() => setStatusFilter(f.id)}
+            className={`text-xs px-2.5 py-1 tracking-widest border ${
+              statusFilter === f.id
+                ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
+                : 'bg-slate-900 text-slate-500 border-slate-800 hover:text-slate-300'
+            }`}
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            {f.label} ({counts[f.id]})
+          </button>
+        ))}
+        <button
+          onClick={() => setShowNew(true)}
+          className="ml-auto flex items-center gap-2 px-3 py-1.5 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs tracking-widest font-medium"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        >
+          <Plus className="w-3 h-3" /> NEW PROJECT
+        </button>
+      </div>
+
+      {loading ? (
+        <div className="p-12 text-center text-slate-500">
+          <Loader2 className="w-5 h-5 animate-spin mx-auto mb-2" /> Loading...
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="p-12 text-center border border-slate-800 bg-slate-950">
+          <FileText className="w-8 h-8 text-slate-700 mx-auto mb-2" />
+          <p className="text-sm text-slate-500">
+            {statusFilter === 'all' ? 'No active MX projects' : `No projects in ${PROJECT_STATUS_LABELS_LOCAL[statusFilter] || statusFilter}`}
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {filtered.map(p => (
+            <MxProjectCard key={p.id} project={p} onClick={() => setSelectedId(p.id)} />
+          ))}
+        </div>
+      )}
+
+      {showNew && (
+        <NewMxProjectModal
+          currentUser={currentUser}
+          users={users}
+          fleetTails={fleetTails}
+          onClose={() => setShowNew(false)}
+          onCreated={(id) => { setShowNew(false); setSelectedId(id); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// Local copy of labels to avoid import dance — these don't change often
+const PROJECT_STATUS_LABELS_LOCAL = {
+  planned: 'Planned',
+  in_work: 'In Work',
+  pending_parts: 'Pending Parts',
+  inspection: 'Inspection',
+  complete: 'Complete',
+};
+const PROJECT_TYPE_LABELS_LOCAL = {
+  inspection: 'Inspection',
+  sb: 'Service Bulletin',
+  ad: 'AD Compliance',
+  squawk: 'Squawk',
+  other: 'Other',
+};
+
+function statusBadgeColors(status) {
+  switch (status) {
+    case 'planned':       return 'bg-slate-700 text-slate-300';
+    case 'in_work':       return 'bg-cyan-500/20 text-cyan-300';
+    case 'pending_parts': return 'bg-amber-500/20 text-amber-300';
+    case 'inspection':    return 'bg-purple-500/20 text-purple-300';
+    case 'complete':      return 'bg-green-500/20 text-green-300';
+    default:              return 'bg-slate-800 text-slate-400';
+  }
+}
+function progressBarColor(status) {
+  switch (status) {
+    case 'pending_parts': return 'bg-amber-500';
+    case 'inspection':    return 'bg-purple-500';
+    case 'complete':      return 'bg-green-500';
+    case 'planned':       return 'bg-slate-500';
+    default:              return 'bg-cyan-500';
+  }
+}
+
+function MxProjectCard({ project, onClick }) {
+  const tasks = Array.isArray(project.tasks) ? project.tasks : [];
+  const doneTasks = tasks.filter(t => t.status === 'complete').length;
+  const totalTasks = tasks.length;
+  const progress = totalTasks > 0 ? Math.round((doneTasks / totalTasks) * 100) : 0;
+  const parts = Array.isArray(project.parts) ? project.parts : [];
+  const pendingParts = parts.filter(p => p.status === 'pending').length;
+  const techCount = Array.isArray(project.assignedTechs) ? project.assignedTechs.length : 0;
+
+  return (
+    <button
+      onClick={onClick}
+      className="w-full text-left bg-slate-950 border border-slate-800 hover:border-slate-700 p-3 transition-colors"
+    >
+      <div className="flex items-center gap-2 mb-2 flex-wrap">
+        <span className={`text-[10px] px-2 py-0.5 tracking-widest font-medium ${statusBadgeColors(project.status)}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {(PROJECT_STATUS_LABELS_LOCAL[project.status] || project.status).toUpperCase()}
+        </span>
+        <span className="text-[10px] px-2 py-0.5 bg-slate-800 text-slate-400">
+          {PROJECT_TYPE_LABELS_LOCAL[project.projectType] || project.projectType}
+        </span>
+        <span className="text-sm font-medium text-slate-100">{project.tail}</span>
+        <span className="text-xs text-slate-400 truncate">{project.title}</span>
+        {project.location && (
+          <span className="ml-auto text-[10px] text-slate-500">{project.locationDetail || project.location}</span>
+        )}
+      </div>
+      <div className="flex items-center gap-4 text-[10px] text-slate-500 mb-2">
+        {project.dueDate && <span>Due {project.dueDate}</span>}
+        <span>{techCount} tech{techCount === 1 ? '' : 's'}</span>
+        <span>{doneTasks} of {totalTasks} tasks</span>
+        {pendingParts > 0 && (
+          <span className="text-amber-400">{pendingParts} part{pendingParts === 1 ? '' : 's'} pending</span>
+        )}
+      </div>
+      <div className="h-1 bg-slate-900 overflow-hidden">
+        <div className={`h-full ${progressBarColor(project.status)}`} style={{ width: `${progress}%` }} />
+      </div>
+    </button>
+  );
+}
+
+function MxProjectDetail({ project, currentUser, users, onBack }) {
+  const isAdmin = currentUser?.role === 'admin';
+  const isLead = currentUser?.uid && project.leadUid === currentUser.uid;
+  const isAssignedTech = Array.isArray(project.assignedTechs) && project.assignedTechs.some(t => t.uid === currentUser?.uid);
+  const canEdit = isAdmin || isLead || isAssignedTech;
+  const canManage = isAdmin || isLead;
+  const canApproveParts = isAdmin || currentUser?.canApproveParts === true;
+  const isComplete = project.status === 'complete';
+
+  const actor = {
+    uid: currentUser?.uid || currentUser?.id,
+    displayName: currentUser?.displayName || currentUser?.name || currentUser?.email,
+  };
+
+  const [showAddTask, setShowAddTask] = useState(false);
+  const [showRequestPart, setShowRequestPart] = useState(false);
+  const [showAddChecklist, setShowAddChecklist] = useState(false);
+  const [showCompleteConfirm, setShowCompleteConfirm] = useState(false);
+  const [showLogbookFromComplete, setShowLogbookFromComplete] = useState(false);
+
+  const tasks = Array.isArray(project.tasks) ? project.tasks : [];
+  const parts = Array.isArray(project.parts) ? project.parts : [];
+  const checklist = Array.isArray(project.checklist) ? project.checklist : [];
+  const tasksDone = tasks.filter(t => t.status === 'complete').length;
+  const progress = tasks.length > 0 ? Math.round((tasksDone / tasks.length) * 100) : 0;
+
+  async function handleCompleteProject() {
+    if (!window.confirm(`Mark ${project.tail} ${project.title} as Complete?\n\nThis will move the project to Complete and prompt you to add a logbook entry for the work.`)) return;
+    try {
+      const mxMod = await import('./firebase-mx.js');
+      await mxMod.setProjectStatus(project.id, 'complete', actor, 'Marked complete by lead');
+      setShowLogbookFromComplete(true);
+    } catch (err) {
+      alert('Failed to complete: ' + err.message);
+    }
+  }
+
+  return (
+    <div>
+      <button
+        onClick={onBack}
+        className="flex items-center gap-1 text-xs text-slate-400 hover:text-slate-200 mb-4"
+      >
+        <ChevronLeft className="w-3 h-3" /> Back to projects
+      </button>
+
+      {/* Header card */}
+      <div className="bg-slate-950 border border-slate-800 mb-4">
+        <div className={`px-5 py-3 ${
+          project.status === 'pending_parts' ? 'bg-amber-500/10' :
+          project.status === 'in_work' ? 'bg-cyan-500/10' :
+          project.status === 'inspection' ? 'bg-purple-500/10' :
+          project.status === 'complete' ? 'bg-green-500/10' : 'bg-slate-900'
+        }`}>
+          <div className="flex items-center gap-2 flex-wrap mb-1">
+            <span className={`text-[10px] px-2 py-0.5 tracking-widest font-medium ${statusBadgeColors(project.status)}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {(PROJECT_STATUS_LABELS_LOCAL[project.status] || project.status).toUpperCase()}
+            </span>
+            <span className="text-[10px] px-2 py-0.5 bg-slate-800 text-slate-400">
+              {PROJECT_TYPE_LABELS_LOCAL[project.projectType] || project.projectType}
+            </span>
+            <span className="text-lg font-medium text-slate-100">{project.tail}</span>
+            <span className="text-sm text-slate-400">· {project.title}</span>
+          </div>
+          {project.dueDate && (
+            <div className="text-[11px] text-slate-500">Due {project.dueDate} · {progress}% complete</div>
+          )}
+        </div>
+
+        <div className="p-4">
+          {project.description && (
+            <p className="text-sm text-slate-300 mb-4">{project.description}</p>
+          )}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+            <FieldSmall label="LOCATION" value={project.locationDetail || project.location} />
+            <FieldSmall label="LEAD" value={project.leadName} />
+            <FieldSmall label="STARTED" value={project.startedAt ? new Date(project.startedAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '—'} />
+            <FieldSmall label="TOTAL TIME" value={project.aircraftTotalTime || '—'} />
+          </div>
+          {Array.isArray(project.assignedTechs) && project.assignedTechs.length > 0 && (
+            <div className="mt-3 flex items-center gap-2 flex-wrap">
+              <span className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>TECHS:</span>
+              {project.assignedTechs.map(t => (
+                <span key={t.uid} className="text-xs px-2 py-0.5 bg-slate-900 border border-slate-800 text-slate-300">{t.name}</span>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Tasks */}
+      <TasksSection
+        project={project}
+        currentUser={currentUser}
+        users={users}
+        canEdit={canEdit}
+        canManage={canManage}
+        actor={actor}
+        onAddClick={() => setShowAddTask(true)}
+      />
+
+      {/* Parts */}
+      <PartsSection
+        project={project}
+        currentUser={currentUser}
+        canApproveParts={canApproveParts}
+        canEdit={canEdit}
+        actor={actor}
+        onRequestClick={() => setShowRequestPart(true)}
+      />
+
+      {/* Inspection criteria */}
+      <InspectionSection
+        project={project}
+        currentUser={currentUser}
+        canEdit={canEdit}
+        canManage={canManage}
+        actor={actor}
+        onAddChecklistClick={() => setShowAddChecklist(true)}
+      />
+
+      {/* Activity log */}
+      {project.logEntries && project.logEntries.length > 0 && (
+        <div className="bg-slate-950 border border-slate-800 p-4 mb-4">
+          <div className="text-[10px] text-slate-500 tracking-widest mb-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            ACTIVITY LOG
+          </div>
+          <div className="space-y-1 max-h-40 overflow-y-auto scroll-area">
+            {[...project.logEntries].reverse().map((entry, i) => (
+              <div key={i} className="text-xs text-slate-400 flex gap-2">
+                <span className="text-slate-600 shrink-0" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  {new Date(entry.timestamp).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                </span>
+                <span className="text-slate-500 shrink-0">{entry.author}:</span>
+                <span>{entry.message}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Complete action */}
+      {canManage && !isComplete && (
+        <div className="flex justify-end">
+          <button
+            onClick={handleCompleteProject}
+            className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-500 text-white text-xs tracking-widest font-medium"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            <CheckCircle2 className="w-3 h-3" /> MARK PROJECT COMPLETE
+          </button>
+        </div>
+      )}
+
+      {showAddTask && (
+        <AddTaskModal
+          project={project}
+          users={users}
+          actor={actor}
+          onClose={() => setShowAddTask(false)}
+        />
+      )}
+      {showRequestPart && (
+        <RequestPartModal
+          project={project}
+          actor={actor}
+          onClose={() => setShowRequestPart(false)}
+        />
+      )}
+      {showAddChecklist && (
+        <AddChecklistModal
+          project={project}
+          actor={actor}
+          onClose={() => setShowAddChecklist(false)}
+        />
+      )}
+      {showLogbookFromComplete && (
+        <AddLogbookEntryModal
+          aog={{
+            id: project.id,
+            tail: project.tail,
+            location: project.location,
+            fboName: project.locationDetail,
+            issueDescription: `${PROJECT_TYPE_LABELS_LOCAL[project.projectType] || project.projectType}: ${project.title}`,
+            reportedAt: project.createdAt,
+            recipients: [],
+          }}
+          currentUser={currentUser}
+          onClose={() => setShowLogbookFromComplete(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function FieldSmall({ label, value }) {
+  return (
+    <div className="bg-slate-900 border border-slate-800 px-3 py-2">
+      <div className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{label}</div>
+      <div className="text-xs text-slate-200 mt-0.5">{value || '—'}</div>
+    </div>
+  );
+}
+
+/* ============================================================
+   TASKS SECTION
+   ============================================================ */
+function TasksSection({ project, currentUser, users, canEdit, canManage, actor, onAddClick }) {
+  const tasks = Array.isArray(project.tasks) ? project.tasks : [];
+  const tasksDone = tasks.filter(t => t.status === 'complete').length;
+
+  async function handleToggle(task) {
+    if (!canEdit) return;
+    // Only assigned tech, lead, or admin can toggle
+    const isMine = task.assignedUid === currentUser?.uid;
+    if (!isMine && currentUser?.role !== 'admin' && project.leadUid !== currentUser?.uid) return;
+    try {
+      const mxMod = await import('./firebase-mx.js');
+      if (task.status === 'complete') {
+        await mxMod.uncompleteTask(project.id, task.id, actor);
+      } else {
+        if (task.status === 'blocked_parts') {
+          alert('This task is blocked on parts. Resolve the part request first.');
+          return;
+        }
+        await mxMod.completeTask(project.id, task.id, actor);
+      }
+      await mxMod.maybeApplyAutoStatus(project.id, actor);
+    } catch (err) {
+      alert('Update failed: ' + err.message);
+    }
+  }
+
+  async function handleDelete(task) {
+    if (!canManage) return;
+    if (!window.confirm(`Delete task "${task.title}"?`)) return;
+    try {
+      const mxMod = await import('./firebase-mx.js');
+      await mxMod.deleteTask(project.id, task.id, actor);
+      await mxMod.maybeApplyAutoStatus(project.id, actor);
+    } catch (err) {
+      alert('Delete failed: ' + err.message);
+    }
+  }
+
+  return (
+    <div className="bg-slate-950 border border-slate-800 p-4 mb-4">
+      <div className="flex items-center justify-between mb-3">
+        <div className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          TASKS · {tasksDone} OF {tasks.length}
+        </div>
+        {canManage && (
+          <button
+            onClick={onAddClick}
+            className="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1"
+          >
+            <Plus className="w-3 h-3" /> Add task
+          </button>
+        )}
+      </div>
+
+      {tasks.length === 0 ? (
+        <p className="text-xs text-slate-500">No tasks yet.</p>
+      ) : (
+        <div>
+          {tasks.map(task => {
+            const isComplete = task.status === 'complete';
+            const isBlocked = task.status === 'blocked_parts';
+            const isMine = task.assignedUid === currentUser?.uid;
+            const canToggle = canEdit && (isMine || currentUser?.role === 'admin' || project.leadUid === currentUser?.uid);
+            return (
+              <div key={task.id} className="flex items-start gap-3 py-2 border-b border-slate-800 last:border-b-0">
+                <button
+                  onClick={() => handleToggle(task)}
+                  disabled={!canToggle}
+                  className={`mt-0.5 ${canToggle ? 'cursor-pointer' : 'cursor-default'}`}
+                >
+                  {isComplete ? (
+                    <CheckCircle2 className="w-4 h-4 text-green-400" />
+                  ) : (
+                    <Circle className={`w-4 h-4 ${canToggle ? 'text-slate-500 hover:text-cyan-400' : 'text-slate-700'}`} />
+                  )}
+                </button>
+                <div className="flex-1 min-w-0">
+                  <div className={`text-sm ${isComplete ? 'text-slate-500 line-through' : 'text-slate-200'}`}>
+                    {task.title}
+                  </div>
+                  <div className="text-[10px] text-slate-500 mt-0.5">
+                    {task.assignedName ? `${task.assignedName} · ` : 'Unassigned · '}
+                    {isComplete ? `completed ${new Date(task.completedAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` :
+                      isBlocked ? 'blocked on parts' :
+                      task.status === 'in_progress' ? 'in progress' :
+                      'open'}
+                  </div>
+                </div>
+                {isBlocked && (
+                  <span className="text-[10px] px-2 py-0.5 bg-amber-500/20 text-amber-300 tracking-widest font-medium shrink-0" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    BLOCKED
+                  </span>
+                )}
+                {!isComplete && !isBlocked && task.status === 'in_progress' && (
+                  <span className="text-[10px] px-2 py-0.5 bg-cyan-500/20 text-cyan-300 tracking-widest font-medium shrink-0" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    IN PROGRESS
+                  </span>
+                )}
+                {canManage && (
+                  <button onClick={() => handleDelete(task)} className="text-slate-600 hover:text-red-400 shrink-0 mt-0.5">
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   PARTS SECTION
+   ============================================================ */
+function PartsSection({ project, currentUser, canApproveParts, canEdit, actor, onRequestClick }) {
+  const parts = Array.isArray(project.parts) ? project.parts : [];
+
+  async function handleApprove(part) {
+    try {
+      const mxMod = await import('./firebase-mx.js');
+      await mxMod.approvePart(project.id, part.id, actor);
+    } catch (err) {
+      alert('Approve failed: ' + err.message);
+    }
+  }
+  async function handleDeny(part) {
+    const reason = window.prompt('Reason for denial (optional):') || '';
+    try {
+      const mxMod = await import('./firebase-mx.js');
+      await mxMod.denyPart(project.id, part.id, actor, reason);
+      await mxMod.maybeApplyAutoStatus(project.id, actor);
+    } catch (err) {
+      alert('Deny failed: ' + err.message);
+    }
+  }
+  async function handleMarkOrdered(part) {
+    const trackingNumber = window.prompt('Tracking number (FedEx or UPS):') || '';
+    const shipMethod = window.prompt('Ship method (e.g. "FedEx Priority"):') || '';
+    try {
+      const mxMod = await import('./firebase-mx.js');
+      await mxMod.updatePartStatus(project.id, part.id, 'ordered', { trackingNumber, shipMethod }, actor);
+    } catch (err) {
+      alert('Failed: ' + err.message);
+    }
+  }
+  async function handleMarkDelivered(part) {
+    if (!window.confirm(`Mark "${part.partNumber}" as delivered? This will unblock any tasks waiting on it.`)) return;
+    try {
+      const mxMod = await import('./firebase-mx.js');
+      await mxMod.updatePartStatus(project.id, part.id, 'delivered', {}, actor);
+      await mxMod.maybeApplyAutoStatus(project.id, actor);
+    } catch (err) {
+      alert('Failed: ' + err.message);
+    }
+  }
+
+  function partStatusColors(s) {
+    switch (s) {
+      case 'pending':    return 'bg-amber-500/20 text-amber-300';
+      case 'approved':   return 'bg-cyan-500/20 text-cyan-300';
+      case 'ordered':    return 'bg-cyan-500/20 text-cyan-300';
+      case 'in_transit': return 'bg-cyan-500/20 text-cyan-300';
+      case 'delivered':  return 'bg-green-500/20 text-green-300';
+      case 'denied':     return 'bg-red-500/20 text-red-300';
+      default:           return 'bg-slate-800 text-slate-400';
+    }
+  }
+  function partStatusLabel(s) {
+    return ({
+      pending: 'PENDING APPROVAL',
+      approved: 'APPROVED',
+      ordered: 'ORDERED',
+      in_transit: 'IN TRANSIT',
+      delivered: 'DELIVERED',
+      denied: 'DENIED',
+    })[s] || s.toUpperCase();
+  }
+
+  return (
+    <div className="bg-slate-950 border border-slate-800 p-4 mb-4">
+      <div className="flex items-center justify-between mb-3">
+        <div className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          PARTS REQUESTS · {parts.length} ITEM{parts.length === 1 ? '' : 'S'}
+        </div>
+        {canEdit && (
+          <button
+            onClick={onRequestClick}
+            className="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1"
+          >
+            <Plus className="w-3 h-3" /> Request part
+          </button>
+        )}
+      </div>
+
+      {parts.length === 0 ? (
+        <p className="text-xs text-slate-500">No parts requested yet.</p>
+      ) : (
+        <div className="space-y-2">
+          {parts.map(part => {
+            const carrier = part.trackingNumber ? detectCarrier(part.trackingNumber) : null;
+            const trackUrl = part.trackingNumber ? buildTrackingUrl(carrier, part.trackingNumber) : null;
+            return (
+              <div key={part.id} className="bg-slate-900 border border-slate-800 p-3">
+                <div className="flex items-start gap-2 flex-wrap mb-1">
+                  <span className={`text-[10px] px-2 py-0.5 tracking-widest font-medium ${partStatusColors(part.status)}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    {partStatusLabel(part.status)}
+                  </span>
+                  <span className="text-sm text-slate-100 font-medium" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{part.partNumber}</span>
+                  <span className="text-sm text-slate-400">· {part.description}</span>
+                  {part.quantity > 1 && <span className="text-xs text-slate-500">· qty {part.quantity}</span>}
+                  {part.estimatedCost != null && (
+                    <span className="text-xs text-slate-500">· est ${Number(part.estimatedCost).toFixed(2)}</span>
+                  )}
+                </div>
+                <div className="text-[10px] text-slate-500 mb-2">
+                  Requested by {part.requestedByName} · {new Date(part.requestedAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                  {part.approvedByName && ` · approved by ${part.approvedByName}`}
+                  {part.deniedReason && ` · denied: ${part.deniedReason}`}
+                </div>
+                {trackUrl && (
+                  <a href={trackUrl} target="_blank" rel="noopener noreferrer" className="text-[11px] text-cyan-400 hover:text-cyan-300 inline-flex items-center gap-1 mb-2">
+                    <CarrierBadge carrier={carrier} /> {part.trackingNumber}
+                  </a>
+                )}
+                <div className="flex flex-wrap gap-2">
+                  {part.status === 'pending' && canApproveParts && (
+                    <>
+                      <button onClick={() => handleApprove(part)} className="text-[10px] px-2 py-1 bg-green-600 hover:bg-green-500 text-white tracking-widest font-medium" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                        APPROVE
+                      </button>
+                      <button onClick={() => handleDeny(part)} className="text-[10px] px-2 py-1 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                        DENY
+                      </button>
+                    </>
+                  )}
+                  {part.status === 'approved' && canEdit && (
+                    <button onClick={() => handleMarkOrdered(part)} className="text-[10px] px-2 py-1 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-cyan-300 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                      MARK ORDERED + ADD TRACKING
+                    </button>
+                  )}
+                  {['ordered', 'in_transit'].includes(part.status) && canEdit && (
+                    <button onClick={() => handleMarkDelivered(part)} className="text-[10px] px-2 py-1 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-green-300 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                      MARK DELIVERED
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   INSPECTION SECTION
+   ============================================================ */
+function InspectionSection({ project, currentUser, canEdit, canManage, actor, onAddChecklistClick }) {
+  const checklist = Array.isArray(project.checklist) ? project.checklist : [];
+  const checkedCount = checklist.filter(c => c.checked).length;
+  const fileInputRef = useRef(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState('');
+
+  async function handleFileUpload(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.type !== 'application/pdf') {
+      setUploadError('Only PDF files are accepted');
+      return;
+    }
+    if (file.size > 25 * 1024 * 1024) {
+      setUploadError('PDF must be under 25 MB');
+      return;
+    }
+    setUploadError('');
+    setUploading(true);
+    try {
+      const { getStorage, ref, uploadBytes, getDownloadURL } = await import('firebase/storage');
+      const storage = getStorage();
+      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const path = `mx-inspections/${project.id}/${Date.now()}_${safeName}`;
+      const r = ref(storage, path);
+      await uploadBytes(r, file, { contentType: 'application/pdf' });
+      const url = await getDownloadURL(r);
+      const mxMod = await import('./firebase-mx.js');
+      await mxMod.setInspectionPdf(project.id, { url, path, filename: file.name }, actor);
+    } catch (err) {
+      console.error('[mx] upload failed:', err);
+      setUploadError(err.message || 'Upload failed');
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  }
+
+  async function handleToggleItem(item) {
+    if (!canEdit) return;
+    try {
+      const mxMod = await import('./firebase-mx.js');
+      await mxMod.toggleChecklistItem(project.id, item.id, actor);
+      await mxMod.maybeApplyAutoStatus(project.id, actor);
+    } catch (err) {
+      alert('Toggle failed: ' + err.message);
+    }
+  }
+
+  async function handleDeleteItem(item) {
+    if (!canManage) return;
+    if (!window.confirm(`Delete checklist item "${item.item}"?`)) return;
+    try {
+      const mxMod = await import('./firebase-mx.js');
+      await mxMod.deleteChecklistItem(project.id, item.id);
+    } catch (err) {
+      alert('Delete failed: ' + err.message);
+    }
+  }
+
+  return (
+    <div className="bg-slate-950 border border-slate-800 p-4 mb-4">
+      <div className="flex items-center justify-between mb-3">
+        <div className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          INSPECTION CRITERIA
+        </div>
+        {canManage && (
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploading}
+            className="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1 disabled:opacity-50"
+          >
+            <Plus className="w-3 h-3" /> {uploading ? 'Uploading...' : 'Upload PDF'}
+          </button>
+        )}
+        <input ref={fileInputRef} type="file" accept="application/pdf" onChange={handleFileUpload} className="hidden" />
+      </div>
+
+      {uploadError && (
+        <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-xs p-2 mb-3">
+          {uploadError}
+        </div>
+      )}
+
+      {project.inspectionPdfUrl && (
+        <div className="bg-slate-900 border border-slate-800 p-3 mb-3 flex items-center gap-3">
+          <FileText className="w-5 h-5 text-cyan-400 shrink-0" />
+          <div className="flex-1 min-w-0">
+            <div className="text-sm text-slate-200 truncate">{project.inspectionPdfFilename || 'Inspection PDF'}</div>
+            {project.inspectionPdfUploadedAt && (
+              <div className="text-[10px] text-slate-500">
+                Uploaded {new Date(project.inspectionPdfUploadedAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                {project.inspectionPdfUploadedBy?.displayName && ` by ${project.inspectionPdfUploadedBy.displayName}`}
+              </div>
+            )}
+          </div>
+          <a href={project.inspectionPdfUrl} target="_blank" rel="noopener noreferrer"
+            className="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1">
+            <Download className="w-3 h-3" /> View
+          </a>
+        </div>
+      )}
+
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          CHECKLIST ITEMS ({checkedCount} of {checklist.length} complete)
+        </div>
+        {canManage && (
+          <button onClick={onAddChecklistClick} className="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1">
+            <Plus className="w-3 h-3" /> Add item
+          </button>
+        )}
+      </div>
+
+      {checklist.length === 0 ? (
+        <p className="text-xs text-slate-500">No checklist items yet.</p>
+      ) : (
+        <div>
+          {checklist.map(item => (
+            <div key={item.id} className="flex items-start gap-3 py-1.5 border-b border-slate-800 last:border-b-0">
+              <button onClick={() => handleToggleItem(item)} disabled={!canEdit} className="mt-0.5">
+                {item.checked ? (
+                  <CheckCircle2 className="w-4 h-4 text-green-400" />
+                ) : (
+                  <Circle className={`w-4 h-4 ${canEdit ? 'text-slate-500 hover:text-cyan-400' : 'text-slate-700'}`} />
+                )}
+              </button>
+              <div className="flex-1 min-w-0">
+                <div className={`text-xs ${item.checked ? 'text-slate-500 line-through' : 'text-slate-200'}`}>
+                  {item.item}
+                </div>
+                {item.checked && item.checkedByName && (
+                  <div className="text-[10px] text-slate-600">
+                    {item.checkedByName} · {item.checkedAt && new Date(item.checkedAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                  </div>
+                )}
+              </div>
+              {canManage && (
+                <button onClick={() => handleDeleteItem(item)} className="text-slate-600 hover:text-red-400 shrink-0 mt-0.5">
+                  <Trash2 className="w-3 h-3" />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   MODALS — new project, add task, request part, add checklist
+   ============================================================ */
+function NewMxProjectModal({ currentUser, users, fleetTails, onClose, onCreated }) {
+  const [title, setTitle] = useState('');
+  const [projectType, setProjectType] = useState('inspection');
+  const [tail, setTail] = useState('');
+  const [location, setLocation] = useState('hangar');
+  const [locationDetail, setLocationDetail] = useState('');
+  const [description, setDescription] = useState('');
+  const [dueDate, setDueDate] = useState('');
+  const [leadUid, setLeadUid] = useState('');
+  const [assignedTechUids, setAssignedTechUids] = useState([]);
+  const [aircraftTotalTime, setAircraftTotalTime] = useState('');
+  const [aircraftCycles, setAircraftCycles] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const maintUsers = (users || []).filter(u =>
+    ['admin', 'ops', 'maint'].includes(u.role) && u.approved !== false
+  );
+
+  function toggleTech(uid) {
+    setAssignedTechUids(prev => prev.includes(uid) ? prev.filter(u => u !== uid) : [...prev, uid]);
+  }
+
+  async function handleSubmit() {
+    setError('');
+    if (!title.trim()) { setError('Title required'); return; }
+    if (!tail.trim()) { setError('Tail required'); return; }
+    setSaving(true);
+    try {
+      const lead = maintUsers.find(u => (u.uid || u.id) === leadUid);
+      const techs = maintUsers
+        .filter(u => assignedTechUids.includes(u.uid || u.id))
+        .map(u => ({ uid: u.uid || u.id, name: u.name || u.displayName || u.email }));
+
+      const mxMod = await import('./firebase-mx.js');
+      const id = await mxMod.createMxProject({
+        title,
+        projectType,
+        tail,
+        location,
+        locationDetail,
+        description,
+        dueDate,
+        leadUid: lead ? (lead.uid || lead.id) : null,
+        leadName: lead ? (lead.name || lead.displayName || lead.email) : '',
+        assignedTechs: techs,
+        aircraftTotalTime,
+        aircraftCycles,
+        creator: {
+          uid: currentUser?.uid || currentUser?.id,
+          displayName: currentUser?.displayName || currentUser?.name || currentUser?.email,
+        },
+      });
+      onCreated(id);
+    } catch (err) {
+      setError(err.message);
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur flex items-start justify-center overflow-y-auto p-4">
+      <div className="bg-slate-950 border border-cyan-500/40 max-w-2xl w-full my-8">
+        <div className="bg-cyan-500/10 px-5 py-3 flex items-center justify-between border-b border-cyan-500/30 sticky top-0 z-10">
+          <h3 className="text-sm tracking-widest text-cyan-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            NEW MX PROJECT
+          </h3>
+          <button onClick={onClose} disabled={saving} className="text-cyan-300 hover:text-white">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>TAIL *</label>
+              {Array.isArray(fleetTails) && fleetTails.length > 0 ? (
+                <select value={tail} onChange={e => setTail(e.target.value)}
+                  className="w-full mt-1 bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none">
+                  <option value="">Select...</option>
+                  {fleetTails.map(t => <option key={t} value={t}>{t}</option>)}
+                </select>
+              ) : (
+                <input value={tail} onChange={e => setTail(e.target.value.toUpperCase())}
+                  className="w-full mt-1 bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none" />
+              )}
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>TYPE</label>
+              <select value={projectType} onChange={e => setProjectType(e.target.value)}
+                className="w-full mt-1 bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none">
+                <option value="inspection">Inspection</option>
+                <option value="sb">Service Bulletin</option>
+                <option value="ad">AD Compliance</option>
+                <option value="squawk">Squawk</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>TITLE *</label>
+            <input value={title} onChange={e => setTitle(e.target.value)} placeholder="e.g. 100-hr inspection"
+              className="w-full mt-1 bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none" />
+          </div>
+
+          <div>
+            <label className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>DESCRIPTION</label>
+            <textarea value={description} onChange={e => setDescription(e.target.value)} rows={3}
+              placeholder="Additional details, references, scope..."
+              className="w-full mt-1 bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none resize-none" />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>LOCATION</label>
+              <select value={location} onChange={e => setLocation(e.target.value)}
+                className="w-full mt-1 bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none">
+                <option value="hangar">In-hangar</option>
+                <option value="field">On-line / Field</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>LOCATION DETAIL</label>
+              <input value={locationDetail} onChange={e => setLocationDetail(e.target.value)} placeholder="Hangar A, Tampa / KMMU"
+                className="w-full mt-1 bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none" />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>DUE DATE</label>
+              <input value={dueDate} onChange={e => setDueDate(e.target.value)} placeholder="14 May 2026"
+                className="w-full mt-1 bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none" />
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>TOTAL TIME</label>
+              <input value={aircraftTotalTime} onChange={e => setAircraftTotalTime(e.target.value)} placeholder="4238.6"
+                className="w-full mt-1 bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none" />
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>CYCLES</label>
+              <input value={aircraftCycles} onChange={e => setAircraftCycles(e.target.value)} placeholder="3021"
+                className="w-full mt-1 bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none" />
+            </div>
+          </div>
+
+          <div>
+            <label className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>MX LEAD</label>
+            <select value={leadUid} onChange={e => setLeadUid(e.target.value)}
+              className="w-full mt-1 bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none">
+              <option value="">No lead assigned</option>
+              {maintUsers.map(u => (
+                <option key={u.uid || u.id} value={u.uid || u.id}>{u.name || u.displayName || u.email}</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>ASSIGNED TECHS</label>
+            <div className="flex flex-wrap gap-2 mt-1">
+              {maintUsers.length === 0 ? (
+                <p className="text-xs text-slate-500">No maint users available. Assign 'maint' role to users in the Users tab first.</p>
+              ) : maintUsers.map(u => {
+                const uid = u.uid || u.id;
+                const sel = assignedTechUids.includes(uid);
+                return (
+                  <button key={uid} onClick={() => toggleTech(uid)}
+                    className={`text-xs px-2 py-1 border ${sel ? 'bg-cyan-500/20 border-cyan-500/40 text-cyan-300' : 'bg-slate-900 border-slate-800 text-slate-400'}`}
+                    style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    {u.name || u.displayName || u.email}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {error && (
+            <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-xs p-2">
+              {error}
+            </div>
+          )}
+
+          <div className="flex gap-2 pt-3 border-t border-slate-800">
+            <button onClick={handleSubmit} disabled={saving}
+              className="flex-1 px-4 py-2 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 text-xs tracking-widest font-medium"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {saving ? 'CREATING...' : 'CREATE PROJECT'}
+            </button>
+            <button onClick={onClose} disabled={saving}
+              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs tracking-widest font-medium"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              CANCEL
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AddTaskModal({ project, users, actor, onClose }) {
+  const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
+  const [assignedUid, setAssignedUid] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  // Limit to project's assigned techs + lead + admin/ops users
+  const assignableTechs = Array.isArray(project.assignedTechs) ? project.assignedTechs : [];
+
+  async function handleSubmit() {
+    setError('');
+    if (!title.trim()) { setError('Task title required'); return; }
+    setSaving(true);
+    try {
+      const tech = assignableTechs.find(t => t.uid === assignedUid);
+      const mxMod = await import('./firebase-mx.js');
+      await mxMod.addTask(project.id, {
+        title,
+        description,
+        assignedUid: tech ? tech.uid : null,
+        assignedName: tech ? tech.name : '',
+      }, actor);
+      onClose();
+    } catch (err) {
+      setError(err.message);
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur flex items-start justify-center overflow-y-auto p-4">
+      <div className="bg-slate-950 border border-slate-700 max-w-lg w-full my-8">
+        <div className="bg-slate-900 px-5 py-3 flex items-center justify-between border-b border-slate-700">
+          <h3 className="text-sm tracking-widest text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            ADD TASK
+          </h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-white"><X className="w-4 h-4" /></button>
+        </div>
+        <div className="p-5 space-y-4">
+          <div>
+            <label className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>TASK TITLE *</label>
+            <input value={title} onChange={e => setTitle(e.target.value)} placeholder="e.g. Replace No. 2 hydraulic filter"
+              className="w-full mt-1 bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none" />
+          </div>
+          <div>
+            <label className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>DESCRIPTION</label>
+            <textarea value={description} onChange={e => setDescription(e.target.value)} rows={2}
+              className="w-full mt-1 bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none resize-none" />
+          </div>
+          <div>
+            <label className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>ASSIGN TO</label>
+            <select value={assignedUid} onChange={e => setAssignedUid(e.target.value)}
+              className="w-full mt-1 bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none">
+              <option value="">Unassigned</option>
+              {assignableTechs.map(t => (
+                <option key={t.uid} value={t.uid}>{t.name}</option>
+              ))}
+            </select>
+            {assignableTechs.length === 0 && (
+              <p className="text-[10px] text-slate-500 mt-1">No techs assigned to this project. Add some via project settings first.</p>
+            )}
+          </div>
+          {error && <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-xs p-2">{error}</div>}
+          <div className="flex gap-2 pt-3 border-t border-slate-800">
+            <button onClick={handleSubmit} disabled={saving}
+              className="flex-1 px-4 py-2 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 text-xs tracking-widest font-medium"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {saving ? 'ADDING...' : 'ADD TASK'}
+            </button>
+            <button onClick={onClose} disabled={saving}
+              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs tracking-widest font-medium"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              CANCEL
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RequestPartModal({ project, actor, onClose }) {
+  const [partNumber, setPartNumber] = useState('');
+  const [description, setDescription] = useState('');
+  const [quantity, setQuantity] = useState('1');
+  const [estimatedCost, setEstimatedCost] = useState('');
+  const [relatedTaskId, setRelatedTaskId] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const incompleteTasks = (Array.isArray(project.tasks) ? project.tasks : []).filter(t => t.status !== 'complete');
+
+  async function handleSubmit() {
+    setError('');
+    if (!partNumber.trim()) { setError('Part number required'); return; }
+    if (!description.trim()) { setError('Description required'); return; }
+    setSaving(true);
+    try {
+      const mxMod = await import('./firebase-mx.js');
+      await mxMod.requestPart(project.id, {
+        partNumber,
+        description,
+        quantity: parseInt(quantity, 10) || 1,
+        estimatedCost: estimatedCost ? parseFloat(estimatedCost) : null,
+        relatedTaskId: relatedTaskId || null,
+      }, actor);
+      await mxMod.maybeApplyAutoStatus(project.id, actor);
+      onClose();
+    } catch (err) {
+      setError(err.message);
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur flex items-start justify-center overflow-y-auto p-4">
+      <div className="bg-slate-950 border border-slate-700 max-w-lg w-full my-8">
+        <div className="bg-slate-900 px-5 py-3 flex items-center justify-between border-b border-slate-700">
+          <h3 className="text-sm tracking-widest text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            REQUEST PART
+          </h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-white"><X className="w-4 h-4" /></button>
+        </div>
+        <div className="p-5 space-y-4">
+          <div>
+            <label className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>PART NUMBER *</label>
+            <input value={partNumber} onChange={e => setPartNumber(e.target.value)} placeholder="PW-2210-A"
+              className="w-full mt-1 bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }} />
+          </div>
+          <div>
+            <label className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>DESCRIPTION *</label>
+            <input value={description} onChange={e => setDescription(e.target.value)} placeholder="Hydraulic filter element"
+              className="w-full mt-1 bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none" />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>QTY</label>
+              <input type="number" min="1" value={quantity} onChange={e => setQuantity(e.target.value)}
+                className="w-full mt-1 bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none" />
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>EST. COST ($)</label>
+              <input type="number" step="0.01" value={estimatedCost} onChange={e => setEstimatedCost(e.target.value)} placeholder="340.00"
+                className="w-full mt-1 bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none" />
+            </div>
+          </div>
+          {incompleteTasks.length > 0 && (
+            <div>
+              <label className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>RELATED TASK (will block this task until part arrives)</label>
+              <select value={relatedTaskId} onChange={e => setRelatedTaskId(e.target.value)}
+                className="w-full mt-1 bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none">
+                <option value="">None</option>
+                {incompleteTasks.map(t => (
+                  <option key={t.id} value={t.id}>{t.title}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          {error && <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-xs p-2">{error}</div>}
+          <div className="flex gap-2 pt-3 border-t border-slate-800">
+            <button onClick={handleSubmit} disabled={saving}
+              className="flex-1 px-4 py-2 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 text-xs tracking-widest font-medium"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {saving ? 'REQUESTING...' : 'REQUEST PART'}
+            </button>
+            <button onClick={onClose} disabled={saving}
+              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs tracking-widest font-medium"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              CANCEL
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AddChecklistModal({ project, actor, onClose }) {
+  const [items, setItems] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  async function handleSubmit() {
+    setError('');
+    const lines = items.split('\n').map(s => s.trim()).filter(Boolean);
+    if (lines.length === 0) { setError('Enter at least one checklist item'); return; }
+    setSaving(true);
+    try {
+      const mxMod = await import('./firebase-mx.js');
+      for (const line of lines) {
+        await mxMod.addChecklistItem(project.id, line, actor);
+      }
+      onClose();
+    } catch (err) {
+      setError(err.message);
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur flex items-start justify-center overflow-y-auto p-4">
+      <div className="bg-slate-950 border border-slate-700 max-w-lg w-full my-8">
+        <div className="bg-slate-900 px-5 py-3 flex items-center justify-between border-b border-slate-700">
+          <h3 className="text-sm tracking-widest text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            ADD CHECKLIST ITEMS
+          </h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-white"><X className="w-4 h-4" /></button>
+        </div>
+        <div className="p-5 space-y-4">
+          <div>
+            <label className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>CHECKLIST ITEMS (one per line)</label>
+            <textarea value={items} onChange={e => setItems(e.target.value)} rows={8}
+              placeholder="External walkaround: no obvious damage&#10;Engine compartments inspected for leaks&#10;Avionics functional check per MM 31-30-00"
+              className="w-full mt-1 bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none resize-none" />
+            <p className="text-[10px] text-slate-500 mt-1">Each line will be added as a separate item.</p>
+          </div>
+          {error && <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-xs p-2">{error}</div>}
+          <div className="flex gap-2 pt-3 border-t border-slate-800">
+            <button onClick={handleSubmit} disabled={saving}
+              className="flex-1 px-4 py-2 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 text-xs tracking-widest font-medium"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {saving ? 'ADDING...' : 'ADD ITEMS'}
+            </button>
+            <button onClick={onClose} disabled={saving}
+              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs tracking-widest font-medium"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              CANCEL
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -12798,8 +14087,11 @@ function UserEditPanel({ user, onSave, onCancel }) {
     callsign: user.callsign || '',
     jetinsightName: user.jetinsightName || '',
     role: user.role || 'crew',
+    canApproveParts: user.canApproveParts === true,
   });
   const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
+
+  const showApprovalToggle = ['maint', 'ops', 'admin'].includes(form.role);
 
   return (
     <div className="w-full mt-3 pt-3 border-t border-slate-800 space-y-3">
@@ -12821,6 +14113,26 @@ function UserEditPanel({ user, onSave, onCancel }) {
           ))}
         </div>
       </div>
+      {showApprovalToggle && (
+        <div className="pt-2 border-t border-slate-800">
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={form.canApproveParts}
+              onChange={(e) => setForm(f => ({ ...f, canApproveParts: e.target.checked }))}
+              className="mt-1 w-4 h-4 accent-cyan-500"
+            />
+            <div>
+              <div className="text-xs text-slate-200 font-medium">
+                CAN APPROVE PARTS REQUESTS
+              </div>
+              <div className="text-[10px] text-slate-500 mt-0.5">
+                MX leads can approve/deny parts requests on MX projects. Admin always has approval power regardless of this toggle.
+              </div>
+            </div>
+          </label>
+        </div>
+      )}
       <div className="flex gap-2">
         <button onClick={onCancel} className="flex-1 py-2 border border-slate-700 text-sm text-slate-300">Cancel</button>
         <button
@@ -13918,6 +15230,7 @@ export default function CharterOps() {
         {section === 'maint' && (
           <MaintScreen
             currentUser={currentUser}
+            users={users}
             fleetTails={Array.isArray(config?.fleetTails) ? config.fleetTails : ['N20UF', 'N168ZZ', 'N286N', 'N444AM', 'N651TW', 'N551FP', 'N85AH', 'N525CR']}
           />
         )}
