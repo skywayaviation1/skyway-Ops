@@ -12478,6 +12478,14 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
     let cancelled = false;
     let timer = null;
 
+    // CRITICAL: clear the previous aircraft's data immediately. Without this,
+    // when you click N168ZZ, the renderer briefly draws N168ZZ as "selected"
+    // but still uses the previous aircraft's origin/destination data because
+    // setSelectedDetail() hasn't completed for the new tail yet. The marker
+    // render effect would draw wrong airports until the new fetch finishes.
+    setSelectedDetail(null);
+    setSelectedTrack(null);
+
     async function fetchSelected() {
       try {
         const { auth } = await import('./firebase.js');
@@ -12492,6 +12500,15 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
         const det = detR.ok ? await detR.json() : null;
         const trk = trkR.ok ? await trkR.json() : null;
         if (cancelled) return;
+
+        // Verify the response is FOR THE CURRENTLY SELECTED TAIL. If the user
+        // clicked rapidly through tails, an earlier in-flight request might
+        // resolve AFTER we've already moved on — don't accept stale data.
+        if (det?.flight && det.flight.ident && det.flight.ident.toUpperCase() !== selectedTail.toUpperCase()) {
+          console.warn('[fleet-map] discarding stale detail response — for', det.flight.ident, 'not', selectedTail);
+          return;
+        }
+
         setSelectedDetail(det?.flight || null);
         setSelectedTrack(Array.isArray(trk?.points) ? trk.points : []);
       } catch (_) { /* non-fatal */ }
