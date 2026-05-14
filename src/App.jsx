@@ -12422,6 +12422,7 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
         const map = new mapboxgl.Map({
           container: containerRef.current,
           style: 'mapbox://styles/mapbox/dark-v11',
+          projection: 'mercator',
           center: [-95, 38],
           zoom: 3.3,
           attributionControl: false,
