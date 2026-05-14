@@ -12362,22 +12362,361 @@ function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
         )}
       </div>
 
-      {/* RIGHT: detail panel for selected tail */}
-      <div className="flex-1 overflow-y-auto scroll-area">
-        {selectedTail ? (
-          <TrackingDetailPanel
-            key={selectedTail}
-            tail={selectedTail}
-            initialState={tailStates[selectedTail]}
-            trips={trips}
-            tripStates={tripStates}
+      {/* RIGHT: map on top (60%), detail panel below (40%) */}
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="shrink-0" style={{ height: '60%', minHeight: '320px' }}>
+          <FleetLiveMap
+            fleetTails={fleetTails}
+            tailStates={tailStates}
+            selectedTail={selectedTail}
+            onSelectTail={setSelectedTail}
           />
-        ) : (
-          <div className="flex items-center justify-center h-full text-slate-500">
-            Select an aircraft from the list
-          </div>
-        )}
+        </div>
+        <div className="flex-1 overflow-y-auto scroll-area border-t border-slate-800">
+          {selectedTail ? (
+            <TrackingDetailPanel
+              key={selectedTail}
+              tail={selectedTail}
+              initialState={tailStates[selectedTail]}
+              trips={trips}
+              tripStates={tripStates}
+            />
+          ) : (
+            <div className="flex items-center justify-center h-full text-slate-500 text-xs">
+              Select an aircraft from the list
+            </div>
+          )}
+        </div>
       </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   FLEET LIVE MAP — shows all aircraft on one Mapbox map
+   ============================================================ */
+function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
+  const containerRef = useRef(null);
+  const mapRef = useRef(null);
+  const tailMarkersRef = useRef({});      // { tail: { marker, isAirborne } }
+  const trackOverlayRef = useRef({ origin: null, dest: null });
+  const [mapReady, setMapReady] = useState(false);
+  const [mapError, setMapError] = useState(null);
+
+  // Selected tail detail (for showing the track polyline + airport markers)
+  const [selectedDetail, setSelectedDetail] = useState(null);
+  const [selectedTrack, setSelectedTrack] = useState(null);
+
+  // ====== Init map once ======
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const mapboxgl = await loadMapboxGL();
+        if (cancelled || !containerRef.current) return;
+        const token = import.meta.env.VITE_MAPBOX_TOKEN;
+        if (!token) { setMapError('VITE_MAPBOX_TOKEN not configured'); return; }
+        mapboxgl.accessToken = token;
+
+        const map = new mapboxgl.Map({
+          container: containerRef.current,
+          style: 'mapbox://styles/mapbox/dark-v11',
+          center: [-95, 38],
+          zoom: 3.3,
+          attributionControl: false,
+          dragRotate: false,
+          pitchWithRotate: false,
+        });
+        map.addControl(new mapboxgl.NavigationControl({ showCompass: false }), 'top-right');
+
+        map.on('load', () => {
+          map.addSource('selected-flown', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+          map.addLayer({
+            id: 'selected-flown-line',
+            type: 'line',
+            source: 'selected-flown',
+            paint: { 'line-color': '#22c55e', 'line-width': 2.5 },
+          });
+          map.addSource('selected-projected', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+          map.addLayer({
+            id: 'selected-projected-line',
+            type: 'line',
+            source: 'selected-projected',
+            paint: { 'line-color': '#22c55e', 'line-width': 2, 'line-opacity': 0.45, 'line-dasharray': [2, 2] },
+          });
+          mapRef.current = map;
+          if (!cancelled) setMapReady(true);
+        });
+      } catch (e) {
+        if (!cancelled) setMapError(e.message || 'Map failed to load');
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      Object.values(tailMarkersRef.current).forEach(o => { try { o?.marker?.remove(); } catch (_) {} });
+      tailMarkersRef.current = {};
+      if (trackOverlayRef.current.origin) { try { trackOverlayRef.current.origin.remove(); } catch (_) {} }
+      if (trackOverlayRef.current.dest) { try { trackOverlayRef.current.dest.remove(); } catch (_) {} }
+      trackOverlayRef.current = { origin: null, dest: null };
+      if (mapRef.current) {
+        try { mapRef.current.remove(); } catch (_) {}
+        mapRef.current = null;
+      }
+    };
+  }, []);
+
+  // ====== Fetch selected tail's detail + track log (for track polyline + airport markers) ======
+  useEffect(() => {
+    if (!selectedTail) { setSelectedDetail(null); setSelectedTrack(null); return; }
+    let cancelled = false;
+    let timer = null;
+
+    async function fetchSelected() {
+      try {
+        const { auth } = await import('./firebase.js');
+        const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : null;
+        if (!idToken) return;
+        const authH = { 'Authorization': `Bearer ${idToken}` };
+
+        const [detR, trkR] = await Promise.all([
+          fetch(`/api/flightaware-flight-detail?ident=${encodeURIComponent(selectedTail)}`, { headers: authH }),
+          fetch(`/api/flightaware-track-log?ident=${encodeURIComponent(selectedTail)}`, { headers: authH }),
+        ]);
+        const det = detR.ok ? await detR.json() : null;
+        const trk = trkR.ok ? await trkR.json() : null;
+        if (cancelled) return;
+        setSelectedDetail(det?.flight || null);
+        setSelectedTrack(Array.isArray(trk?.points) ? trk.points : []);
+      } catch (_) { /* non-fatal */ }
+    }
+
+    fetchSelected();
+    timer = setInterval(fetchSelected, 30000);
+    return () => { cancelled = true; if (timer) clearInterval(timer); };
+  }, [selectedTail]);
+
+  // ====== Render/update fleet markers + selected overlay ======
+  useEffect(() => {
+    const mapboxgl = window.mapboxgl;
+    const map = mapRef.current;
+    if (!mapReady || !mapboxgl || !map) return;
+
+    // ----- Fleet markers (one per tail) -----
+    fleetTails.forEach(tail => {
+      const state = tailStates[tail];
+      const airborne = state?.airborne === true;
+      const lat = airborne ? state?.latitude : null;
+      const lon = airborne ? state?.longitude : null;
+      const heading = state?.heading ?? 0;
+      const isSelected = tail === selectedTail;
+
+      let entry = tailMarkersRef.current[tail];
+
+      // If no position data and no existing marker, skip (we'll never place
+      // ground-based tails unless we have last-known position from earlier).
+      if (lat == null || lon == null) {
+        // Could remove a stale marker if the aircraft just landed and lat/lon dropped
+        if (entry) {
+          try { entry.marker.remove(); } catch (_) {}
+          delete tailMarkersRef.current[tail];
+        }
+        return;
+      }
+
+      if (!entry) {
+        // Create marker
+        const wrap = document.createElement('div');
+        wrap.style.cssText = `
+          position: relative; cursor: pointer;
+          width: 32px; height: 32px; display: flex; align-items: center; justify-content: center;
+        `;
+        const ring = document.createElement('div');
+        ring.className = 'fleet-marker-ring';
+        ring.style.cssText = `
+          position: absolute; inset: 0; border-radius: 50%;
+          background: rgba(34,211,238,0.18);
+          transition: background 0.2s, box-shadow 0.2s, transform 0.2s;
+        `;
+        const inner = document.createElement('div');
+        inner.className = 'fleet-marker-icon';
+        inner.style.cssText = `
+          width: 18px; height: 18px; display: flex; align-items: center; justify-content: center;
+          color: #22d3ee; transform: rotate(${heading}deg);
+        `;
+        inner.innerHTML = `<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+          <path d="M12 2 L14 9 L22 11 L22 13 L14 14 L13 22 L11 22 L10 14 L2 13 L2 11 L10 9 Z"/>
+        </svg>`;
+        const label = document.createElement('div');
+        label.className = 'fleet-marker-label';
+        label.textContent = tail;
+        label.style.cssText = `
+          position: absolute; left: 36px; top: 50%; transform: translateY(-50%);
+          font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 500;
+          color: #cbd5e1; background: rgba(11,15,23,0.78); padding: 2px 6px;
+          border-radius: 2px; white-space: nowrap; pointer-events: none;
+          text-shadow: 0 0 4px rgba(0,0,0,0.9);
+        `;
+        wrap.appendChild(ring);
+        wrap.appendChild(inner);
+        wrap.appendChild(label);
+        wrap.addEventListener('click', (e) => { e.stopPropagation(); onSelectTail(tail); });
+
+        const marker = new mapboxgl.Marker({ element: wrap, anchor: 'center' })
+          .setLngLat([lon, lat])
+          .addTo(map);
+        entry = { marker, wrap, ring, inner, label };
+        tailMarkersRef.current[tail] = entry;
+      } else {
+        // Update existing
+        entry.marker.setLngLat([lon, lat]);
+        if (entry.inner) entry.inner.style.transform = `rotate(${heading}deg)`;
+      }
+
+      // Selection styling
+      if (isSelected) {
+        entry.ring.style.background = 'rgba(34,211,238,0.32)';
+        entry.ring.style.boxShadow = '0 0 0 2px #22d3ee, 0 0 14px rgba(34,211,238,0.5)';
+        entry.ring.style.transform = 'scale(1.1)';
+        entry.label.style.color = '#22d3ee';
+        entry.label.style.fontWeight = '600';
+      } else {
+        entry.ring.style.background = 'rgba(34,211,238,0.18)';
+        entry.ring.style.boxShadow = 'none';
+        entry.ring.style.transform = 'scale(1)';
+        entry.label.style.color = '#cbd5e1';
+        entry.label.style.fontWeight = '500';
+      }
+    });
+
+    // ----- Selected tail track polyline + airport markers -----
+    const o = selectedDetail?.origin || {};
+    const d = selectedDetail?.destination || {};
+    const oLat = o.latitude, oLon = o.longitude;
+    const dLat = d.latitude, dLon = d.longitude;
+    const pts = Array.isArray(selectedTrack) ? selectedTrack.filter(p => p.lat != null && p.lon != null) : [];
+
+    // Origin marker
+    if (oLat != null && oLon != null) {
+      if (!trackOverlayRef.current.origin) {
+        const wrap = document.createElement('div');
+        wrap.style.cssText = 'position: relative;';
+        const dot = document.createElement('div');
+        dot.style.cssText = `width: 12px; height: 12px; border-radius: 50%; background: #22c55e; border: 2px solid #0b0f17; box-shadow: 0 0 0 1.5px rgba(34,197,94,0.5);`;
+        const lab = document.createElement('div');
+        lab.textContent = o.code || '';
+        lab.style.cssText = `position: absolute; left: 16px; top: -2px; color: #86efac; font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 500; white-space: nowrap; text-shadow: 0 0 4px rgba(0,0,0,0.9);`;
+        wrap.appendChild(dot); wrap.appendChild(lab);
+        trackOverlayRef.current.origin = new mapboxgl.Marker({ element: wrap, anchor: 'center' })
+          .setLngLat([oLon, oLat]).addTo(map);
+      } else {
+        trackOverlayRef.current.origin.setLngLat([oLon, oLat]);
+        const lab = trackOverlayRef.current.origin.getElement().querySelector('div:nth-child(2)');
+        if (lab) lab.textContent = o.code || '';
+      }
+    } else if (trackOverlayRef.current.origin) {
+      try { trackOverlayRef.current.origin.remove(); } catch (_) {}
+      trackOverlayRef.current.origin = null;
+    }
+
+    // Destination marker
+    if (dLat != null && dLon != null) {
+      if (!trackOverlayRef.current.dest) {
+        const wrap = document.createElement('div');
+        wrap.style.cssText = 'position: relative;';
+        const dot = document.createElement('div');
+        dot.style.cssText = `width: 12px; height: 12px; border-radius: 50%; background: #94a3b8; border: 2px solid #0b0f17;`;
+        const lab = document.createElement('div');
+        lab.textContent = d.code || '';
+        lab.style.cssText = `position: absolute; left: 16px; top: -2px; color: #cbd5e1; font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 500; white-space: nowrap; text-shadow: 0 0 4px rgba(0,0,0,0.9);`;
+        wrap.appendChild(dot); wrap.appendChild(lab);
+        trackOverlayRef.current.dest = new mapboxgl.Marker({ element: wrap, anchor: 'center' })
+          .setLngLat([dLon, dLat]).addTo(map);
+      } else {
+        trackOverlayRef.current.dest.setLngLat([dLon, dLat]);
+        const lab = trackOverlayRef.current.dest.getElement().querySelector('div:nth-child(2)');
+        if (lab) lab.textContent = d.code || '';
+      }
+    } else if (trackOverlayRef.current.dest) {
+      try { trackOverlayRef.current.dest.remove(); } catch (_) {}
+      trackOverlayRef.current.dest = null;
+    }
+
+    // Flown track polyline
+    if (map.getSource('selected-flown')) {
+      if (pts.length >= 2) {
+        map.getSource('selected-flown').setData({
+          type: 'FeatureCollection',
+          features: [{
+            type: 'Feature',
+            geometry: { type: 'LineString', coordinates: pts.map(p => [p.lon, p.lat]) },
+          }],
+        });
+      } else {
+        map.getSource('selected-flown').setData({ type: 'FeatureCollection', features: [] });
+      }
+    }
+    // Projected line (current pos → destination)
+    const last = pts.length > 0 ? pts[pts.length - 1] : null;
+    if (map.getSource('selected-projected')) {
+      if (last && dLat != null && dLon != null) {
+        map.getSource('selected-projected').setData({
+          type: 'FeatureCollection',
+          features: [{
+            type: 'Feature',
+            geometry: { type: 'LineString', coordinates: [[last.lon, last.lat], [dLon, dLat]] },
+          }],
+        });
+      } else {
+        map.getSource('selected-projected').setData({ type: 'FeatureCollection', features: [] });
+      }
+    }
+  }, [fleetTails, tailStates, selectedTail, selectedDetail, selectedTrack, mapReady, onSelectTail]);
+
+  // ====== Fit map to selected aircraft's bounds when selection changes ======
+  useEffect(() => {
+    const map = mapRef.current;
+    const mapboxgl = window.mapboxgl;
+    if (!mapReady || !map || !mapboxgl || !selectedTail) return;
+
+    const state = tailStates[selectedTail];
+    const airborne = state?.airborne === true && state?.latitude != null && state?.longitude != null;
+    const o = selectedDetail?.origin || {};
+    const d = selectedDetail?.destination || {};
+    const pts = Array.isArray(selectedTrack) ? selectedTrack.filter(p => p.lat != null && p.lon != null) : [];
+
+    const coords = [
+      ...(airborne ? [[state.longitude, state.latitude]] : []),
+      ...(o.latitude != null && o.longitude != null ? [[o.longitude, o.latitude]] : []),
+      ...(d.latitude != null && d.longitude != null ? [[d.longitude, d.latitude]] : []),
+      ...pts.map(p => [p.lon, p.lat]),
+    ];
+    if (coords.length >= 2) {
+      const bounds = new mapboxgl.LngLatBounds();
+      coords.forEach(c => bounds.extend(c));
+      map.fitBounds(bounds, { padding: 80, duration: 700, maxZoom: 8 });
+    } else if (coords.length === 1) {
+      map.flyTo({ center: coords[0], zoom: 7, duration: 700 });
+    }
+  }, [selectedTail, selectedDetail, mapReady]);
+
+  if (mapError) {
+    return (
+      <div className="h-full flex items-center justify-center text-slate-500 text-xs bg-slate-950">
+        Map error: {mapError}
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative w-full h-full bg-slate-950">
+      <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+      {!mapReady && (
+        <div className="absolute inset-0 flex items-center justify-center text-slate-600 text-xs pointer-events-none">
+          <Loader2 className="w-4 h-4 animate-spin mr-2" /> Loading map…
+        </div>
+      )}
     </div>
   );
 }
@@ -12532,7 +12871,6 @@ function TrackingDetailPanel({ tail, initialState, trips, tripStates }) {
   return (
     <div>
       <DetailHero tail={tail} detail={detail} />
-      <DetailMap tail={tail} detail={detail} trackLog={trackLog} />
       <DetailRouteTimeline detail={detail} />
       {matchingTrip && (
         <DetailStatusSteps trip={matchingTrip} tripState={tripStates?.[matchingTrip.id || matchingTrip.uid]} detail={detail} />
