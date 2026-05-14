@@ -638,19 +638,51 @@ function greetingFromEmail(email) {
 // All send-email calls from the frontend now include the user's Firebase
 // idToken so the server can authorize them. send-email.js rejects calls
 // that don't have either a valid idToken or the internal server secret.
-async function sendEmailViaApi({ to, subject, text }) {
+async function sendEmailViaApi({ to, subject, text, source, tripId, statusKey }) {
+  // Reliable delivery: writes to the email-queue collection. The
+  // /api/email-queue-drain cron picks it up within ~60s and delivers via
+  // Resend, retrying failures with backoff. Returns a faux Response object
+  // so existing callers that check .ok keep working.
   let idToken = null;
   try {
     const { auth } = await import('./firebase.js');
     if (auth.currentUser) {
       idToken = await auth.currentUser.getIdToken();
-      console.log('[sendEmailViaApi] got idToken (len:', idToken?.length, ') for uid:', auth.currentUser.uid);
-    } else {
-      console.warn('[sendEmailViaApi] no auth.currentUser');
     }
   } catch (e) {
     console.warn('[sendEmailViaApi] could not get idToken:', e.message);
   }
+  try {
+    const r = await fetch('/api/email-enqueue', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        to, subject, text, idToken,
+        source: source || 'app',
+        tripId: tripId || null,
+        statusKey: statusKey || null,
+      }),
+    });
+    if (r.ok) {
+      const data = await r.json().catch(() => ({}));
+      console.log('[sendEmailViaApi] queued', data.queueId || '(no id)', '→', (to || []).join(','));
+      // Return a Response-like shim so existing .ok checks pass.
+      // Important: callers that previously did `await r.json()` for a Resend id
+      // will now get a queueId instead. That's fine — none of our existing call
+      // sites use the returned id for anything other than logging.
+      return new Response(JSON.stringify({ ok: true, queueId: data.queueId, queued: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    // If the queue endpoint returns non-OK, fall through to legacy send-email
+    // so we never get worse reliability than before. Log loudly.
+    const errText = await r.text().catch(() => '');
+    console.warn('[sendEmailViaApi] queue endpoint returned', r.status, errText, '— falling back to direct send');
+  } catch (e) {
+    console.warn('[sendEmailViaApi] queue endpoint unreachable, falling back to direct send:', e.message);
+  }
+  // Legacy direct-send fallback (preserves prior behavior)
   return fetch('/api/send-email', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
