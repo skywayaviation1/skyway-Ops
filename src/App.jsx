@@ -16870,11 +16870,14 @@ export default function CharterOps() {
       else localStorage.removeItem('skyway-tail-filter');
     } catch { /* ignore quota errors */ }
   }, [tailFilter]);
-  // Default landing screen: 'home' for crew (their personalized view),
-  // 'schedule' for everyone else (ops/admin/sales workflow).
-  const [section, setSection] = useState(
-    currentUser?.role === 'crew' ? 'home' : 'schedule'
-  );
+  // Default landing screen: starts as 'schedule' so the initial render never
+  // touches `currentUser` (which is declared further down — see TDZ note).
+  // A useEffect later in this function switches to 'home' for crew on first
+  // load once currentUser is available.
+  const [section, setSection] = useState('schedule');
+  // Track whether we've already applied the role-based default so we don't
+  // fight the user when they navigate.
+  const sectionInitRef = useRef(false);
   // FlightAware live tracking kill switch — synced from Firestore so admin can
   // disable it cluster-wide if costs spike. Default: enabled.
   const [trackingEnabled, setTrackingEnabled] = useState(true);
@@ -17068,6 +17071,18 @@ export default function CharterOps() {
     }
     return realUser;
   }, [profile, impersonateUid, users]);
+
+  // Apply the role-based default landing screen ONCE, after currentUser
+  // resolves. This used to live in the useState initializer above, but doing
+  // it there caused a Temporal Dead Zone error in production minified builds
+  // because `currentUser` is declared further down. Running it as a useEffect
+  // is safe because the effect fires after the component body finishes.
+  useEffect(() => {
+    if (sectionInitRef.current) return;
+    if (!currentUser) return;
+    sectionInitRef.current = true;
+    if (currentUser.role === 'crew') setSection('home');
+  }, [currentUser]);
 
   // Tick clock
   useEffect(() => {
