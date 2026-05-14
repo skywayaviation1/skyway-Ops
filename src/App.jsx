@@ -2655,6 +2655,803 @@ function TripWeatherSection({ trip }) {
 
 
 /* ============================================================
+   Pilot Home Screen — "my view" for crew. Aggregates everything
+   that's relevant to the logged-in user right now: current trip,
+   upcoming assignments, open items.
+   ============================================================ */
+
+/**
+ * Return true if the trip's PIC or SIC matches the current user.
+ * Uses fuzzy name matching (first + last token) so "Adrian Stitts"
+ * matches "ADRIAN J STITTS" etc.
+ */
+function tripIsAssignedToUser(trip, user) {
+  if (!trip?.info) return false;
+  if (!user) return false;
+  const userName = user.jetinsightName || user.name || '';
+  if (!userName) return false;
+  return nameMatchesPilot(trip.info.pic || '', userName)
+      || nameMatchesPilot(trip.info.sic || '', userName);
+}
+
+/**
+ * Classify trip relative to "now":
+ *   'active'   = in progress (start <= now <= end)
+ *   'imminent' = starts within next 12 hours
+ *   'upcoming' = future, beyond 12 hours
+ *   'past'     = already ended
+ */
+function classifyTripTiming(trip, now = Date.now()) {
+  const start = trip.start ? new Date(trip.start).getTime() : null;
+  const end = trip.end ? new Date(trip.end).getTime() : null;
+  if (!start) return 'upcoming';
+  if (end && end < now) return 'past';
+  if (start <= now && (end == null || end >= now)) return 'active';
+  if (start <= now + 12 * 60 * 60 * 1000) return 'imminent';
+  return 'upcoming';
+}
+
+/** Get a friendly greeting based on time of day. */
+function timeBasedGreeting() {
+  const h = new Date().getHours();
+  if (h < 5) return 'Late night';
+  if (h < 12) return 'Good morning';
+  if (h < 17) return 'Good afternoon';
+  if (h < 21) return 'Good evening';
+  return 'Late night';
+}
+
+/** Compact time-until string: "in 3h 24m" / "in 2 days" / "now" / "1h ago" */
+function timeUntil(iso) {
+  if (!iso) return '';
+  const now = Date.now();
+  const t = new Date(iso).getTime();
+  const diffMs = t - now;
+  const future = diffMs >= 0;
+  const abs = Math.abs(diffMs);
+  const mins = Math.floor(abs / 60000);
+  const hrs = Math.floor(mins / 60);
+  const days = Math.floor(hrs / 24);
+  if (abs < 60000) return 'now';
+  if (days >= 1) return future ? `in ${days}d ${hrs % 24}h` : `${days}d ${hrs % 24}h ago`;
+  if (hrs >= 1) return future ? `in ${hrs}h ${mins % 60}m` : `${hrs}h ${mins % 60}m ago`;
+  return future ? `in ${mins}m` : `${mins}m ago`;
+}
+
+/* ============================================================
+   Duty Tracker — Part 135.267 rest/duty/flight-time tracking
+   ============================================================ */
+
+function formatDuration(ms) {
+  if (ms == null || !isFinite(ms)) return '—';
+  const totalSec = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(totalSec / 3600);
+  const mins = Math.floor((totalSec % 3600) / 60);
+  return `${hours}h ${String(mins).padStart(2, '0')}m`;
+}
+
+function formatTime12(date) {
+  if (!date) return '—';
+  try {
+    return new Date(date).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  } catch { return '—'; }
+}
+
+// Convert a Firestore Timestamp (object with toMillis) or ISO/ms input to a Date
+function asDate(v) {
+  if (!v) return null;
+  if (typeof v === 'object' && typeof v.toMillis === 'function') return new Date(v.toMillis());
+  if (typeof v === 'object' && typeof v._seconds === 'number') return new Date(v._seconds * 1000);
+  return new Date(v);
+}
+function asMs(v) {
+  const d = asDate(v);
+  return d ? d.getTime() : null;
+}
+
+const TEN_H = 10 * 3600 * 1000;
+const FOURTEEN_H = 14 * 3600 * 1000;
+const ONE_H = 3600 * 1000;
+
+function DutyTracker({ currentUser, onDutyStateChange }) {
+  const [dutyInfo, setDutyInfo] = useState(null);  // { state, flightMinutes, nextScheduledFlight }
+  const [loading, setLoading] = useState(true);
+  const [actioning, setActioning] = useState(false);
+  const [error, setError] = useState(null);
+  const [nowTick, setNowTick] = useState(Date.now());
+  const [confirmModal, setConfirmModal] = useState(null);  // { type, message, action }
+
+  // Refresh duty info from the API
+  const refreshDuty = useCallback(async () => {
+    try {
+      const { auth } = await import('./firebase.js');
+      const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : null;
+      if (!idToken) return;
+      const r = await fetch('/api/duty-state', {
+        headers: { 'Authorization': `Bearer ${idToken}` },
+      });
+      if (!r.ok) {
+        setError('Could not load duty state');
+        setLoading(false);
+        return;
+      }
+      const data = await r.json();
+      setDutyInfo(data);
+      setLoading(false);
+      setError(null);
+      if (onDutyStateChange) onDutyStateChange(data);
+    } catch (e) {
+      setError(e.message || 'Network error');
+      setLoading(false);
+    }
+  }, [onDutyStateChange]);
+
+  useEffect(() => { refreshDuty(); }, [refreshDuty]);
+
+  // Live tick (every 30s) for the timers
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(Date.now()), 30000);
+    return () => clearInterval(id);
+  }, []);
+
+  async function callApi(action, extra = {}) {
+    setActioning(true);
+    setError(null);
+    try {
+      const { auth } = await import('./firebase.js');
+      const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : null;
+      if (!idToken) { setError('Not signed in'); setActioning(false); return; }
+      const r = await fetch('/api/duty-state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken}` },
+        body: JSON.stringify({ action, ...extra }),
+      });
+      const data = await r.json();
+      if (!r.ok) {
+        // Specific 409 conflicts: rest_insufficient / too_early / duty_exceeds_14h
+        if (data.error === 'rest_insufficient') {
+          setConfirmModal({
+            type: 'rest',
+            title: 'Less than 10 hours of rest',
+            message: `You've had ${formatDuration(data.restMs)} of rest. Part 135.267 requires 10 hours. You're ${formatDuration(data.shortByMs)} short.`,
+            confirmText: 'Override and go on duty',
+            action: () => callApi('duty-on', { overrideRest: true }),
+          });
+        } else if (data.error === 'too_early') {
+          setConfirmModal({
+            type: 'window',
+            title: 'Too early to go on duty',
+            message: `Your next scheduled flight is ${formatDuration(data.timeUntilFlightMs)} away. Duty-on is normally allowed within 1 hour of departure. Override only if you're working pre-flight.`,
+            confirmText: 'Override and go on duty',
+            action: () => callApi('duty-on', { overrideWindow: true }),
+          });
+        } else if (data.error === 'duty_exceeds_14h') {
+          setConfirmModal({
+            type: 'over14',
+            title: 'Duty exceeds 14 hours',
+            message: `You've been on duty for ${formatDuration(data.dutyDurationMs)}. Per 135.267 this is over the 14-hour limit. An admin must close this duty period.`,
+            confirmText: 'OK',
+            action: null,
+          });
+        } else {
+          setError(data.error || 'Action failed');
+        }
+        setActioning(false);
+        return;
+      }
+      setConfirmModal(null);
+      await refreshDuty();
+    } catch (e) {
+      setError(e.message || 'Network error');
+    } finally {
+      setActioning(false);
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="border border-slate-800 bg-slate-900/40 p-4 flex items-center gap-2 text-slate-500 text-xs">
+        <Loader2 className="w-3 h-3 animate-spin" /> Loading duty state…
+      </div>
+    );
+  }
+
+  if (!dutyInfo) {
+    return null;
+  }
+
+  const state = dutyInfo.state || {};
+  const onAt = asMs(state.dutyOnAt);
+  const offAt = asMs(state.dutyOffAt);
+  const isOnDuty = state.status === 'on';
+  const now = nowTick;
+
+  // Derived metrics
+  const onDuty_durationMs = isOnDuty && onAt ? now - onAt : 0;
+  const offDuty_restMs = !isOnDuty && offAt ? now - offAt : null;
+  const hasRested = offDuty_restMs == null ? true : offDuty_restMs >= TEN_H;
+  const restRemainingMs = offDuty_restMs == null ? 0 : Math.max(0, TEN_H - offDuty_restMs);
+
+  const flightMs = (dutyInfo.flightMinutes || 0) * 60000;
+
+  // Color zones
+  const dutyPctOf14 = Math.min(100, (onDuty_durationMs / FOURTEEN_H) * 100);
+  const flightPctOf10 = Math.min(100, (flightMs / TEN_H) * 100);
+  const dutyWarning = onDuty_durationMs >= 12 * 3600 * 1000;
+  const dutyCritical = onDuty_durationMs >= 13 * 3600 * 1000;
+  const flightWarning = flightMs >= 8 * 3600 * 1000;
+  const flightCritical = flightMs >= 9 * 3600 * 1000;
+
+  const isAdminOps = currentUser?.role === 'admin' || currentUser?.role === 'ops';
+
+  return (
+    <>
+      <div className={`border ${isOnDuty ? 'border-cyan-500/40 bg-cyan-500/5' : hasRested ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-slate-700 bg-slate-900/40'} p-4 space-y-3`}>
+
+        {/* Status header */}
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <span className={`inline-block w-2.5 h-2.5 rounded-full ${isOnDuty ? 'bg-cyan-400 animate-pulse' : hasRested ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+            <span className="text-xs tracking-[0.2em]"
+              style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+              {isOnDuty ? 'ON DUTY' : hasRested ? 'RESTED · READY' : 'IN REST'}
+            </span>
+          </div>
+          {!isOnDuty && offAt && (
+            <span className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              OFF AT {formatTime12(offAt)}
+            </span>
+          )}
+          {isOnDuty && onAt && (
+            <span className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              ON AT {formatTime12(onAt)}
+            </span>
+          )}
+        </div>
+
+        {/* Primary big counter */}
+        {isOnDuty ? (
+          <div className="space-y-2.5">
+            {/* Duty time */}
+            <div>
+              <div className="flex items-baseline justify-between mb-1">
+                <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>DUTY TIME</span>
+                <span className={`text-[10px] ${dutyCritical ? 'text-red-400' : dutyWarning ? 'text-amber-400' : 'text-slate-500'}`}
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  {formatDuration(FOURTEEN_H - onDuty_durationMs)} until 14h cap
+                </span>
+              </div>
+              <div className="flex items-baseline gap-2">
+                <span className="text-2xl text-slate-100" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
+                  {formatDuration(onDuty_durationMs)}
+                </span>
+                <span className="text-xs text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>/ 14h</span>
+              </div>
+              <div className="mt-1.5 h-1.5 bg-slate-800 rounded-sm overflow-hidden">
+                <div className={`h-full transition-all ${dutyCritical ? 'bg-red-400' : dutyWarning ? 'bg-amber-400' : 'bg-cyan-400'}`}
+                  style={{ width: `${dutyPctOf14}%` }} />
+              </div>
+            </div>
+
+            {/* Flight time */}
+            <div>
+              <div className="flex items-baseline justify-between mb-1">
+                <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>FLIGHT TIME</span>
+                <span className={`text-[10px] ${flightCritical ? 'text-red-400' : flightWarning ? 'text-amber-400' : 'text-slate-500'}`}
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  {formatDuration(TEN_H - flightMs)} until 10h cap
+                </span>
+              </div>
+              <div className="flex items-baseline gap-2">
+                <span className="text-xl text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+                  {formatDuration(flightMs)}
+                </span>
+                <span className="text-xs text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>/ 10h flown</span>
+              </div>
+              <div className="mt-1.5 h-1.5 bg-slate-800 rounded-sm overflow-hidden">
+                <div className={`h-full transition-all ${flightCritical ? 'bg-red-400' : flightWarning ? 'bg-amber-400' : 'bg-emerald-400'}`}
+                  style={{ width: `${flightPctOf10}%` }} />
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div>
+            <div className="flex items-baseline justify-between mb-1">
+              <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>REST PERIOD</span>
+              {offDuty_restMs != null && (
+                <span className={`text-[10px] ${hasRested ? 'text-emerald-400' : 'text-amber-400'}`}
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  {hasRested ? '✓ 10h MIN MET' : `${formatDuration(restRemainingMs)} to 10h`}
+                </span>
+              )}
+            </div>
+            <div className="flex items-baseline gap-2">
+              <span className="text-2xl text-slate-100" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
+                {offDuty_restMs != null ? formatDuration(offDuty_restMs) : '—'}
+              </span>
+              <span className="text-xs text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                {offDuty_restMs != null ? 'since duty off' : 'no previous duty recorded'}
+              </span>
+            </div>
+            {offDuty_restMs != null && (
+              <div className="mt-1.5 h-1.5 bg-slate-800 rounded-sm overflow-hidden">
+                <div className={`h-full transition-all ${hasRested ? 'bg-emerald-400' : 'bg-amber-400'}`}
+                  style={{ width: `${Math.min(100, (offDuty_restMs / TEN_H) * 100)}%` }} />
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Action button */}
+        {isOnDuty ? (
+          <button
+            onClick={() => callApi('duty-off')}
+            disabled={actioning}
+            className="w-full py-2.5 text-sm tracking-widest border border-slate-600 text-slate-200 hover:bg-slate-800 transition-colors disabled:opacity-50"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            {actioning ? '...' : 'GO OFF DUTY'}
+          </button>
+        ) : (
+          <button
+            onClick={() => callApi('duty-on')}
+            disabled={actioning}
+            className="w-full py-2.5 text-sm tracking-widest border border-cyan-500/50 text-cyan-300 bg-cyan-500/10 hover:bg-cyan-500/20 transition-colors disabled:opacity-50"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            {actioning ? '...' : 'GO ON DUTY'}
+          </button>
+        )}
+
+        {error && (
+          <div className="text-[11px] text-red-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {error}
+          </div>
+        )}
+
+        {/* Disclaimer */}
+        <div className="pt-2 border-t border-slate-800/50 text-[10px] text-slate-600 leading-relaxed" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+          For awareness only. Maintain your own duty record per 14 CFR 135.267. Skyway Ops is not a legal duty log.
+        </div>
+      </div>
+
+      {/* Confirmation modal */}
+      {confirmModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="bg-slate-950 border border-amber-500/50 max-w-md w-full p-5 space-y-4">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+              <div>
+                <h3 className="text-sm tracking-widest text-amber-300 mb-1"
+                  style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
+                  {confirmModal.title}
+                </h3>
+                <p className="text-[11px] text-slate-300 leading-relaxed" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                  {confirmModal.message}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 justify-end">
+              <button
+                onClick={() => setConfirmModal(null)}
+                className="px-3 py-2 text-[11px] tracking-widest text-slate-400 hover:text-slate-200"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              >
+                CANCEL
+              </button>
+              {confirmModal.action && (
+                <button
+                  onClick={confirmModal.action}
+                  disabled={actioning}
+                  className="px-3 py-2 text-[11px] tracking-widest text-amber-300 border border-amber-500/50 bg-amber-500/10 hover:bg-amber-500/20 disabled:opacity-50"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                >
+                  {actioning ? '...' : confirmModal.confirmText}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+
+function PilotHomeScreen({ currentUser, trips, tripStates, config, onSelectTrip, onSwitchSection }) {
+  // Filter to MY trips (PIC/SIC match)
+  const myTrips = useMemo(() => {
+    if (!Array.isArray(trips)) return [];
+    return trips
+      .filter(t => tripIsAssignedToUser(t, currentUser))
+      .sort((a, b) => new Date(a.start || 0) - new Date(b.start || 0));
+  }, [trips, currentUser]);
+
+  const now = Date.now();
+
+  // Bucket trips
+  const buckets = useMemo(() => {
+    const active = [];
+    const imminent = [];
+    const upcoming = [];
+    const recent = [];
+    for (const t of myTrips) {
+      const k = classifyTripTiming(t, now);
+      if (k === 'active') active.push(t);
+      else if (k === 'imminent') imminent.push(t);
+      else if (k === 'upcoming') upcoming.push(t);
+      else if (k === 'past') {
+        // Only include recent past (within 24h)
+        const end = t.end ? new Date(t.end).getTime() : 0;
+        if (now - end < 24 * 60 * 60 * 1000) recent.push(t);
+      }
+    }
+    return { active, imminent, upcoming, recent };
+  }, [myTrips, now]);
+
+  // "Current focus" trip — the one most relevant right now.
+  // Priority: active > imminent > next upcoming.
+  const focusTrip = buckets.active[0] || buckets.imminent[0] || buckets.upcoming[0] || null;
+
+  const userName = currentUser?.callsign || currentUser?.name?.split(' ')[0] || 'Pilot';
+  const greeting = timeBasedGreeting();
+  const role = USER_ROLES[currentUser?.role]?.label || '';
+
+  return (
+    <div className="flex-1 overflow-y-auto scroll-area bg-slate-950">
+      <div className="max-w-4xl mx-auto p-4 md:p-6 space-y-5">
+        {/* Header strip */}
+        <div className="flex items-baseline gap-3 flex-wrap">
+          <h1 className="text-3xl md:text-4xl tracking-wide text-slate-100"
+            style={{ fontFamily: 'Bebas Neue, sans-serif', letterSpacing: '0.05em' }}>
+            {greeting}, {userName}
+          </h1>
+          {role && (
+            <span className="text-[10px] tracking-widest text-slate-500"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              · {role}
+            </span>
+          )}
+        </div>
+
+        {/* Today's stats strip */}
+        <div className="grid grid-cols-3 gap-3">
+          <StatCard label="ACTIVE" value={buckets.active.length} tone={buckets.active.length > 0 ? 'cyan' : 'muted'} />
+          <StatCard label="NEXT 12H" value={buckets.imminent.length} tone={buckets.imminent.length > 0 ? 'amber' : 'muted'} />
+          <StatCard label="UPCOMING" value={buckets.upcoming.length} tone="muted" />
+        </div>
+
+        {/* Duty tracker — Part 135 rest/duty/flight time. Only for crew + admin/ops viewing their own. */}
+        {['crew', 'admin', 'ops'].includes(currentUser?.role) && (
+          <DutyTracker currentUser={currentUser} />
+        )}
+
+        {/* Focus card — the most relevant trip right now */}
+        {focusTrip ? (
+          <PilotFocusCard
+            trip={focusTrip}
+            tripState={tripStates?.[focusTrip.uid]}
+            currentUser={currentUser}
+            isActive={buckets.active.includes(focusTrip)}
+            isImminent={buckets.imminent.includes(focusTrip)}
+            onSelectTrip={onSelectTrip}
+          />
+        ) : (
+          <EmptyFocusCard />
+        )}
+
+        {/* Upcoming list */}
+        {(buckets.imminent.length > 0 || buckets.upcoming.length > 0) && (
+          <div>
+            <div className="flex items-baseline justify-between mb-2">
+              <h2 className="text-xs tracking-[0.2em] text-slate-300"
+                style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}>
+                MY UPCOMING
+              </h2>
+              <span className="text-[10px] text-slate-500"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                {buckets.imminent.length + buckets.upcoming.length} trip{(buckets.imminent.length + buckets.upcoming.length) === 1 ? '' : 's'}
+              </span>
+            </div>
+            <div className="space-y-2">
+              {/* Skip the focus trip itself in the list, since it's already shown above */}
+              {[...buckets.imminent, ...buckets.upcoming]
+                .filter(t => t.uid !== focusTrip?.uid)
+                .slice(0, 5)
+                .map(t => (
+                  <PilotUpcomingRow
+                    key={t.uid}
+                    trip={t}
+                    currentUser={currentUser}
+                    onClick={() => onSelectTrip(t.uid)}
+                  />
+                ))}
+            </div>
+          </div>
+        )}
+
+        {/* Recent (just-completed) */}
+        {buckets.recent.length > 0 && (
+          <div>
+            <h2 className="text-xs tracking-[0.2em] text-slate-500 mb-2"
+              style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}>
+              RECENTLY COMPLETED
+            </h2>
+            <div className="space-y-2">
+              {buckets.recent.slice(0, 3).map(t => (
+                <PilotUpcomingRow
+                  key={t.uid}
+                  trip={t}
+                  currentUser={currentUser}
+                  onClick={() => onSelectTrip(t.uid)}
+                  muted
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Quick actions */}
+        <div>
+          <h2 className="text-xs tracking-[0.2em] text-slate-500 mb-2"
+            style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}>
+            QUICK ACTIONS
+          </h2>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+            <QuickActionButton
+              icon={Calendar}
+              label="ALL TRIPS"
+              onClick={() => onSwitchSection?.('schedule')}
+            />
+            <QuickActionButton
+              icon={FileText}
+              label="MANIFESTS"
+              onClick={() => onSwitchSection?.('manifests')}
+            />
+            <QuickActionButton
+              icon={Mail}
+              label="EXPENSES"
+              onClick={() => onSwitchSection?.('expenses')}
+            />
+            <QuickActionButton
+              icon={AlertCircle}
+              label="REPORT"
+              onClick={() => onSwitchSection?.('reports')}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StatCard({ label, value, tone = 'muted' }) {
+  const toneStyles = {
+    cyan:  'border-cyan-500/40 bg-cyan-500/5 text-cyan-300',
+    amber: 'border-amber-500/40 bg-amber-500/5 text-amber-300',
+    muted: 'border-slate-800 bg-slate-900/40 text-slate-300',
+  };
+  return (
+    <div className={`p-3 border ${toneStyles[tone]}`}>
+      <div className="text-[9px] tracking-widest text-slate-500 mb-1"
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        {label}
+      </div>
+      <div className="text-2xl md:text-3xl"
+        style={{ fontFamily: 'Bebas Neue, sans-serif', letterSpacing: '0.05em' }}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function PilotFocusCard({ trip, tripState, currentUser, isActive, isImminent, onSelectTrip }) {
+  const startMs = trip.start ? new Date(trip.start).getTime() : null;
+  const now = Date.now();
+  const headerLabel = isActive ? 'IN PROGRESS' : isImminent ? 'NEXT UP' : 'UPCOMING';
+  const headerTone = isActive ? 'cyan' : isImminent ? 'amber' : 'slate';
+  const headerStyles = {
+    cyan:  'border-cyan-500/40 bg-cyan-500/10 text-cyan-300',
+    amber: 'border-amber-500/40 bg-amber-500/10 text-amber-300',
+    slate: 'border-slate-700 bg-slate-800/40 text-slate-300',
+  };
+  // Show-time = 60 min before scheduled departure for domestic, 90 min for international
+  const isInternational = String(trip.info?.from || '').match(/^[CMK]/) ? false : true;
+  const showOffsetMin = isInternational ? 90 : 60;
+  const showTime = startMs ? new Date(startMs - showOffsetMin * 60000) : null;
+
+  return (
+    <div className="border border-slate-800 bg-slate-900/40">
+      <div className={`px-3 py-2 border-b flex items-center justify-between ${headerStyles[headerTone]}`}>
+        <span className="text-[10px] tracking-widest"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {headerLabel}
+        </span>
+        {startMs && (
+          <span className="text-[10px]"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {timeUntil(trip.start)}
+          </span>
+        )}
+      </div>
+
+      <div className="p-4 space-y-3">
+        {/* Tail + route */}
+        <div className="flex items-baseline gap-4 flex-wrap">
+          <h2 className="text-3xl tracking-wide text-slate-100"
+            style={{ fontFamily: 'Bebas Neue, sans-serif', letterSpacing: '0.05em' }}>
+            {trip.info.tail}
+          </h2>
+          <div className="flex items-center gap-2 text-xl text-slate-300"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            <div className="flex items-center gap-1.5">
+              <span>{trip.info.from}</span>
+              {trip.info.from && <AirportWxBadge icao={trip.info.from} compact />}
+            </div>
+            <ArrowRight className="w-5 h-5 text-cyan-400" />
+            <div className="flex items-center gap-1.5">
+              <span>{trip.info.to}</span>
+              {trip.info.to && <AirportWxBadge icao={trip.info.to} compact />}
+            </div>
+          </div>
+        </div>
+
+        {/* Customer */}
+        {trip.info.customer && (
+          <div className="text-sm text-slate-400" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+            {trip.info.customer}
+          </div>
+        )}
+
+        {/* Time + show-time + pax + crew */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-[11px]"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          <FocusField label="DEP" value={startMs ? (() => {
+            const t = formatLocalTime(trip.start, trip.info.from);
+            return `${t.time} ${t.tz}`;
+          })() : '—'} />
+          <FocusField label="SHOW" value={showTime ? (() => {
+            const t = formatLocalTime(showTime.toISOString(), trip.info.from);
+            return `${t.time} ${t.tz}`;
+          })() : '—'} accent={isImminent || isActive} />
+          <FocusField label="PAX" value={`${trip.info.pax || 0}`} />
+          <FocusField label="DATE" value={formatLocalDate(trip.start, trip.info.from) || '—'} />
+        </div>
+
+        {/* Crew assignment */}
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px]">
+          {trip.info.pic && (
+            <span className="flex items-center gap-1.5">
+              <span className="text-[10px] tracking-widest text-slate-500"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}>PIC</span>
+              <span className={`${nameMatchesPilot(trip.info.pic, currentUser?.jetinsightName || currentUser?.name) ? 'text-cyan-300' : 'text-slate-300'}`}
+                style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                {trip.info.pic}
+                {nameMatchesPilot(trip.info.pic, currentUser?.jetinsightName || currentUser?.name) && ' (you)'}
+              </span>
+            </span>
+          )}
+          {trip.info.sic && (
+            <span className="flex items-center gap-1.5">
+              <span className="text-[10px] tracking-widest text-slate-500"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}>SIC</span>
+              <span className={`${nameMatchesPilot(trip.info.sic, currentUser?.jetinsightName || currentUser?.name) ? 'text-cyan-300' : 'text-slate-300'}`}
+                style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                {trip.info.sic}
+                {nameMatchesPilot(trip.info.sic, currentUser?.jetinsightName || currentUser?.name) && ' (you)'}
+              </span>
+            </span>
+          )}
+        </div>
+
+        {/* Notes if any */}
+        {trip.info.notes && (
+          <div className="text-[11px] text-cyan-300/80 bg-cyan-500/5 border border-cyan-500/20 px-2 py-1.5"
+            style={{ fontFamily: 'DM Sans, sans-serif' }}>
+            {trip.info.notes}
+          </div>
+        )}
+
+        {/* Open trip button */}
+        <button
+          onClick={() => onSelectTrip(trip.uid)}
+          className="w-full mt-2 py-2.5 text-xs tracking-widest bg-cyan-500/10 border border-cyan-400 text-cyan-300 hover:bg-cyan-500/20 transition-colors"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        >
+          OPEN TRIP →
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function FocusField({ label, value, accent }) {
+  return (
+    <div>
+      <div className="text-[9px] tracking-widest text-slate-500 mb-0.5">{label}</div>
+      <div className={accent ? 'text-cyan-300' : 'text-slate-200'}>{value}</div>
+    </div>
+  );
+}
+
+function EmptyFocusCard() {
+  return (
+    <div className="border border-slate-800 bg-slate-900/40 p-6 text-center">
+      <Plane className="w-8 h-8 text-slate-700 mx-auto mb-3" />
+      <div className="text-sm text-slate-400 mb-1"
+        style={{ fontFamily: 'DM Sans, sans-serif' }}>
+        No active trips
+      </div>
+      <div className="text-[11px] text-slate-500"
+        style={{ fontFamily: 'DM Sans, sans-serif' }}>
+        You're not currently assigned to any active or imminent flights.
+      </div>
+    </div>
+  );
+}
+
+function PilotUpcomingRow({ trip, currentUser, onClick, muted }) {
+  const startMs = trip.start ? new Date(trip.start).getTime() : null;
+  const isPic = nameMatchesPilot(trip.info?.pic || '', currentUser?.jetinsightName || currentUser?.name);
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full text-left p-3 border transition-colors ${muted ? 'border-slate-900 bg-slate-900/20 hover:bg-slate-900/40 opacity-60' : 'border-slate-800 bg-slate-900/40 hover:border-slate-700 hover:bg-slate-900/60'}`}
+    >
+      <div className="flex items-baseline justify-between gap-3 flex-wrap">
+        <div className="flex items-baseline gap-3 flex-wrap">
+          <span className="text-base text-slate-100"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {trip.info.tail}
+          </span>
+          <span className="text-sm text-slate-300"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {trip.info.from} → {trip.info.to}
+          </span>
+          <span className="text-[10px] tracking-wider px-1.5 py-0.5 border border-slate-700 text-slate-400"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {isPic ? 'PIC' : 'SIC'}
+          </span>
+        </div>
+        <span className="text-[10px] text-slate-500"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {startMs ? timeUntil(trip.start) : '—'}
+        </span>
+      </div>
+      <div className="mt-1 flex items-center gap-3 text-[10px] text-slate-500"
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        <span>{formatLocalDate(trip.start, trip.info.from) || '—'}</span>
+        {startMs && (
+          <span>
+            DEP {(() => {
+              const t = formatLocalTime(trip.start, trip.info.from);
+              return `${t.time} ${t.tz}`;
+            })()}
+          </span>
+        )}
+        {trip.info.customer && <span className="truncate">{trip.info.customer}</span>}
+      </div>
+    </button>
+  );
+}
+
+function QuickActionButton({ icon: Icon, label, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      className="p-3 border border-slate-800 bg-slate-900/40 hover:border-slate-700 hover:bg-slate-900/60 transition-colors flex flex-col items-center gap-2"
+    >
+      <Icon className="w-4 h-4 text-slate-400" />
+      <span className="text-[10px] tracking-widest text-slate-400"
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        {label}
+      </span>
+    </button>
+  );
+}
+
+
+/* ============================================================
    ForeFlight handoff — pre-fill ForeFlight Mobile with trip data
    so pilots can review and file from the certified app they use.
    We never touch the FAA filing system directly.
@@ -12476,6 +13273,7 @@ function AddChecklistModal({ project, actor, onClose }) {
 
 function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, syncStatus, now, tripCount, onOpenSettings, onOpenProfile }) {
   const sections = [
+    { id: 'home',     label: 'HOME',      icon: Sparkles, roles: ['crew', 'sales', 'ops', 'admin'] },
     { id: 'schedule', label: 'SCHEDULE',  icon: Calendar, roles: ['crew', 'ops', 'admin'] },
     { id: 'tracking', label: 'TRACKING',  icon: Plane,    roles: ['ops', 'admin'] },
     { id: 'archive',  label: 'ARCHIVE',   icon: Hash,     roles: ['crew', 'ops', 'admin'] },
@@ -16392,7 +17190,11 @@ export default function CharterOps() {
       else localStorage.removeItem('skyway-tail-filter');
     } catch { /* ignore quota errors */ }
   }, [tailFilter]);
-  const [section, setSection] = useState('schedule');
+  // Default landing screen: 'home' for crew (their personalized view),
+  // 'schedule' for everyone else (ops/admin/sales workflow).
+  const [section, setSection] = useState(
+    currentUser?.role === 'crew' ? 'home' : 'schedule'
+  );
   // FlightAware live tracking kill switch — synced from Firestore so admin can
   // disable it cluster-wide if costs spike. Default: enabled.
   const [trackingEnabled, setTrackingEnabled] = useState(true);
@@ -17063,6 +17865,18 @@ export default function CharterOps() {
           onOpenSettings={() => setShowSettings(true)}
           onOpenProfile={() => setShowProfile(true)}
         />
+
+        {/* === HOME SECTION (pilot's personalized view) === */}
+        {section === 'home' && (
+          <PilotHomeScreen
+            currentUser={currentUser}
+            trips={allTrips}
+            tripStates={null}
+            config={config}
+            onSelectTrip={(uid) => { setSelectedId(uid); setSection('schedule'); }}
+            onSwitchSection={(id) => setSection(id)}
+          />
+        )}
 
         {/* === SCHEDULE SECTION (existing trip view) === */}
         {section === 'schedule' && (
