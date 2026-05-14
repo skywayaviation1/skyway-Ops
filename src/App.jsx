@@ -12372,58 +12372,169 @@ function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
     return () => { cancelled = true; if (timer) clearInterval(timer); };
   }, [fleetTails.join(',')]);
 
+  // Mobile tab state: 'list' | 'map' | 'detail'
+  const [mobileTab, setMobileTab] = useState('list');
+  // Reliable mobile detection (works regardless of Tailwind config / viewport meta)
+  const [isMobile, setIsMobile] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.innerWidth < 768;
+  });
+  useEffect(() => {
+    function check() { setIsMobile(window.innerWidth < 768); }
+    window.addEventListener('resize', check);
+    window.addEventListener('orientationchange', check);
+    check();
+    return () => {
+      window.removeEventListener('resize', check);
+      window.removeEventListener('orientationchange', check);
+    };
+  }, []);
+  // Selecting a tail on mobile auto-advances to the map tab
+  const handleSelectTail = useCallback((tail) => {
+    setSelectedTail(tail);
+    if (window.innerWidth < 768) {
+      setMobileTab(prev => prev === 'list' ? 'map' : prev === 'map' ? 'detail' : 'detail');
+    }
+  }, []);
+
+  // When map tab becomes visible on mobile, tell Leaflet to recalculate size.
+  // Without this, tiles render at the wrong dimensions because the map was
+  // initialized in a hidden container.
+  const mapInvalidateNonceRef = useRef(0);
+  useEffect(() => {
+    if (mobileTab === 'map') {
+      mapInvalidateNonceRef.current += 1;
+      // Trigger a custom event the map listens for
+      window.dispatchEvent(new CustomEvent('skyway-map-invalidate'));
+    }
+  }, [mobileTab]);
+
+  const listPanel = (
+    <div className="h-full overflow-y-auto scroll-area bg-slate-950">
+      <div className="px-4 py-3 border-b border-slate-800 sticky top-0 bg-slate-950 z-10">
+        <div className="text-[10px] tracking-widest text-slate-500"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>FLEET · {fleetTails.length}</div>
+        <h3 className="text-sm text-slate-200 mt-1">Tracking</h3>
+      </div>
+      {loadingFleet ? (
+        <div className="p-6 text-center text-slate-500 text-xs">
+          <Loader2 className="w-4 h-4 animate-spin mx-auto mb-1" /> Loading positions…
+        </div>
+      ) : (
+        fleetTails.map(tail => (
+          <FleetListItem
+            key={tail}
+            tail={tail}
+            state={tailStates[tail]}
+            trips={trips}
+            tripStates={tripStates}
+            isSelected={tail === selectedTail}
+            onClick={() => handleSelectTail(tail)}
+          />
+        ))
+      )}
+    </div>
+  );
+
+  const mapPanel = (
+    <FleetLiveMap
+      fleetTails={fleetTails}
+      tailStates={tailStates}
+      selectedTail={selectedTail}
+      onSelectTail={handleSelectTail}
+    />
+  );
+
+  const detailPanel = (
+    <div className="h-full overflow-y-auto scroll-area bg-slate-950">
+      {selectedTail ? (
+        <TrackingDetailPanel
+          key={selectedTail}
+          tail={selectedTail}
+          initialState={tailStates[selectedTail]}
+          trips={trips}
+          tripStates={tripStates}
+        />
+      ) : (
+        <div className="flex items-center justify-center h-full text-slate-500 text-xs">
+          Select an aircraft from the list
+        </div>
+      )}
+    </div>
+  );
+
+  // === MOBILE LAYOUT (under 768px) — tab switcher ===
+  if (isMobile) {
+    return (
+      <div className="flex-1 overflow-hidden flex flex-col">
+        {/* Tab bar */}
+        <div className="shrink-0 flex border-b border-slate-800 bg-slate-950">
+          <button
+            onClick={() => setMobileTab('list')}
+            className={`flex-1 py-2.5 text-[11px] tracking-widest border-b-2 transition-colors ${
+              mobileTab === 'list'
+                ? 'text-cyan-400 border-cyan-400'
+                : 'text-slate-500 border-transparent'
+            }`}
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            FLEET · {fleetTails.length}
+          </button>
+          <button
+            onClick={() => setMobileTab('map')}
+            className={`flex-1 py-2.5 text-[11px] tracking-widest border-b-2 transition-colors ${
+              mobileTab === 'map'
+                ? 'text-cyan-400 border-cyan-400'
+                : 'text-slate-500 border-transparent'
+            }`}
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            MAP
+          </button>
+          <button
+            onClick={() => setMobileTab('detail')}
+            disabled={!selectedTail}
+            className={`flex-1 py-2.5 text-[11px] tracking-widest border-b-2 transition-colors ${
+              mobileTab === 'detail'
+                ? 'text-cyan-400 border-cyan-400'
+                : !selectedTail
+                  ? 'text-slate-700 border-transparent'
+                  : 'text-slate-500 border-transparent'
+            }`}
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            {selectedTail ? selectedTail : 'DETAIL'}
+          </button>
+        </div>
+
+        {/* Active tab content. Use display:none so the map stays mounted across tab switches. */}
+        <div className="flex-1 overflow-hidden relative">
+          <div style={{ display: mobileTab === 'list' ? 'block' : 'none' }} className="absolute inset-0">
+            {listPanel}
+          </div>
+          <div style={{ display: mobileTab === 'map' ? 'block' : 'none' }} className="absolute inset-0">
+            {mapPanel}
+          </div>
+          <div style={{ display: mobileTab === 'detail' ? 'block' : 'none' }} className="absolute inset-0">
+            {detailPanel}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // === DESKTOP LAYOUT (768px and up) ===
   return (
     <div className="flex-1 overflow-hidden flex">
-      {/* LEFT: fleet list */}
-      <div className="w-80 shrink-0 border-r border-slate-800 bg-slate-950 overflow-y-auto scroll-area">
-        <div className="px-4 py-3 border-b border-slate-800 sticky top-0 bg-slate-950 z-10">
-          <div className="text-[10px] tracking-widest text-slate-500"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}>FLEET · {fleetTails.length}</div>
-          <h3 className="text-sm text-slate-200 mt-1">Tracking</h3>
-        </div>
-        {loadingFleet ? (
-          <div className="p-6 text-center text-slate-500 text-xs">
-            <Loader2 className="w-4 h-4 animate-spin mx-auto mb-1" /> Loading positions…
-          </div>
-        ) : (
-          fleetTails.map(tail => (
-            <FleetListItem
-              key={tail}
-              tail={tail}
-              state={tailStates[tail]}
-              trips={trips}
-              tripStates={tripStates}
-              isSelected={tail === selectedTail}
-              onClick={() => setSelectedTail(tail)}
-            />
-          ))
-        )}
+      <div className="w-80 shrink-0 border-r border-slate-800">
+        {listPanel}
       </div>
-
-      {/* RIGHT: map on top (60%), detail panel below (40%) */}
       <div className="flex-1 flex flex-col overflow-hidden">
         <div className="shrink-0" style={{ height: '60%', minHeight: '320px' }}>
-          <FleetLiveMap
-            fleetTails={fleetTails}
-            tailStates={tailStates}
-            selectedTail={selectedTail}
-            onSelectTail={setSelectedTail}
-          />
+          {mapPanel}
         </div>
-        <div className="flex-1 overflow-y-auto scroll-area border-t border-slate-800">
-          {selectedTail ? (
-            <TrackingDetailPanel
-              key={selectedTail}
-              tail={selectedTail}
-              initialState={tailStates[selectedTail]}
-              trips={trips}
-              tripStates={tripStates}
-            />
-          ) : (
-            <div className="flex items-center justify-center h-full text-slate-500 text-xs">
-              Select an aircraft from the list
-            </div>
-          )}
+        <div className="flex-1 overflow-hidden border-t border-slate-800">
+          {detailPanel}
         </div>
       </div>
     </div>
@@ -12506,6 +12617,31 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
     };
   }, []);
 
+  // ====== Handle container resize (window resize, mobile tab switch, etc) ======
+  // When the map's container changes size, Leaflet needs an explicit
+  // invalidateSize() call to redraw tiles at the correct dimensions.
+  useEffect(() => {
+    if (!mapReady || !containerRef.current || !mapRef.current) return;
+    const map = mapRef.current;
+
+    // Watch for container size changes
+    const ro = new ResizeObserver(() => {
+      try { map.invalidateSize(false); } catch (_) {}
+    });
+    ro.observe(containerRef.current);
+
+    // Also listen for the custom invalidate event (mobile tab switch)
+    const onInvalidate = () => {
+      setTimeout(() => { try { map.invalidateSize(false); } catch (_) {} }, 50);
+    };
+    window.addEventListener('skyway-map-invalidate', onInvalidate);
+
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('skyway-map-invalidate', onInvalidate);
+    };
+  }, [mapReady]);
+
   // ====== Fetch selected tail's detail + track log ======
   useEffect(() => {
     if (!selectedTail) { setSelectedDetail(null); setSelectedTrack(null); return; }
@@ -12559,6 +12695,41 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
     grp.clearLayers();
 
     const airborneTails = fleetTails.filter(t => tailStates[t]?.airborne === true);
+    const groundedTails = fleetTails.filter(t => {
+      const s = tailStates[t];
+      return s?.airborne === false && s?.groundedLat != null && s?.groundedLon != null;
+    });
+
+    // ----- Grounded aircraft (dim slate dots at last known airport) -----
+    groundedTails.forEach(tail => {
+      const state = tailStates[tail];
+      const lat = state.groundedLat;
+      const lon = state.groundedLon;
+      const isSelected = tail === selectedTail;
+      const dotSize = isSelected ? 14 : 10;
+      const ringStyle = isSelected
+        ? `border: 2px solid #94a3b8; box-shadow: 0 0 0 2px rgba(148,163,184,0.35);`
+        : `border: 1.5px solid #475569;`;
+      const labelColor = isSelected ? '#cbd5e1' : '#64748b';
+      const labelWeight = isSelected ? 700 : 500;
+
+      const html = `
+        <div style="position: relative; cursor: pointer;">
+          <div style="width: ${dotSize}px; height: ${dotSize}px; border-radius: 50%; background: #1e293b; ${ringStyle}"></div>
+          <div style="position: absolute; left: ${dotSize + 6}px; top: 50%; transform: translateY(-50%); font-family: 'JetBrains Mono', monospace; font-size: 9px; font-weight: ${labelWeight}; color: ${labelColor}; background: rgba(11,15,23,0.78); padding: 2px 5px; border-radius: 2px; white-space: nowrap; pointer-events: none;">${tail}</div>
+        </div>
+      `;
+
+      const icon = L.divIcon({
+        html,
+        className: 'fleet-grounded-marker',
+        iconSize: [dotSize, dotSize],
+        iconAnchor: [dotSize / 2, dotSize / 2],
+      });
+
+      const marker = L.marker([lat, lon], { icon, zIndexOffset: isSelected ? 800 : 50 }).addTo(grp);
+      marker.on('click', () => onSelectTail(tail));
+    });
 
     // ----- All airborne aircraft icons -----
     airborneTails.forEach(tail => {
@@ -12671,12 +12842,14 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
     const map = mapRef.current;
     const state = tailStates[selectedTail];
     const airborne = state?.airborne === true && state?.latitude != null && state?.longitude != null;
+    const grounded = state?.airborne === false && state?.groundedLat != null && state?.groundedLon != null;
     const o = selectedDetail?.origin || {};
     const d = selectedDetail?.destination || {};
     const pts = Array.isArray(selectedTrack) ? selectedTrack.filter(p => p.lat != null && p.lon != null) : [];
 
     const points = [
       ...(airborne ? [[state.latitude, state.longitude]] : []),
+      ...(grounded ? [[state.groundedLat, state.groundedLon]] : []),
       ...(o.latitude != null && o.longitude != null ? [[o.latitude, o.longitude]] : []),
       ...(d.latitude != null && d.longitude != null ? [[d.latitude, d.longitude]] : []),
       ...pts.map(p => [p.lat, p.lon]),
@@ -12684,9 +12857,9 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
 
     if (points.length >= 2) {
       const bounds = L.latLngBounds(points);
-      map.fitBounds(bounds, { padding: [60, 60], maxZoom: 8, animate: true, duration: 0.7 });
+      map.fitBounds(bounds, { padding: [60, 60], maxZoom: 9, animate: true, duration: 0.7 });
     } else if (points.length === 1) {
-      map.setView(points[0], 7, { animate: true });
+      map.setView(points[0], 10, { animate: true });
     }
   }, [selectedTail, selectedDetail, selectedTrack, mapReady, tailStates]);
 
