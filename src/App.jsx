@@ -665,12 +665,16 @@ async function sendEmailViaApi({ to, subject, text, source, tripId, statusKey })
     });
     if (r.ok) {
       const data = await r.json().catch(() => ({}));
-      console.log('[sendEmailViaApi] queued', data.queueId || '(no id)', '→', (to || []).join(','));
+      if (data.delivery === 'inline') {
+        console.log('[sendEmailViaApi] sent inline', data.resendId || '(no resend id)', '→', (to || []).join(','));
+      } else {
+        console.log('[sendEmailViaApi] queued (Resend failed, will retry)', data.queueId || '(no id)', 'reason:', data.reason || '?', '→', (to || []).join(','));
+      }
       // Return a Response-like shim so existing .ok checks pass.
       // Important: callers that previously did `await r.json()` for a Resend id
       // will now get a queueId instead. That's fine — none of our existing call
       // sites use the returned id for anything other than logging.
-      return new Response(JSON.stringify({ ok: true, queueId: data.queueId, queued: true }), {
+      return new Response(JSON.stringify({ ok: true, ...data }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       });
