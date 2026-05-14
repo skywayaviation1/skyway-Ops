@@ -3,6 +3,10 @@
     {
       "path": "/api/flightaware-cron-poll",
       "schedule": "*/2 * * * *"
+    },
+    {
+      "path": "/api/email-queue-drain",
+      "schedule": "* * * * *"
     }
   ]
 }
