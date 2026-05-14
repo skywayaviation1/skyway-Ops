@@ -197,38 +197,49 @@ async function findMatchingTrip(db, ident, originCode, eventTimeMs) {
   return candidates[0];
 }
 
-// === Send email via internal /api/send-email endpoint ===
-async function sendEmail(host, to, subject, text) {
+// === Send email via internal /api/email-enqueue (reliable queue) ===
+// Falls back to /api/send-email if the queue endpoint is unavailable.
+async function sendEmail(host, to, subject, text, meta) {
   try {
     const proto = host.includes('localhost') ? 'http' : 'https';
-    const url = `${proto}://${host}/api/send-email`;
     const headers = { 'Content-Type': 'application/json' };
-    // Authenticate to send-email via shared internal secret. This is how
-    // server-side endpoints (cron, webhook) call send-email without needing
-    // a user's Firebase idToken. send-email accepts either.
     const internalSecret = process.env.INTERNAL_API_SECRET;
-    if (internalSecret) {
-      headers['x-internal-secret'] = internalSecret;
-    }
-    // Also include Vercel bypass token for Deployment Protection (if enabled)
+    if (internalSecret) headers['x-internal-secret'] = internalSecret;
     const bypassSecret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
-    if (bypassSecret) {
-      headers['x-vercel-protection-bypass'] = bypassSecret;
+    if (bypassSecret) headers['x-vercel-protection-bypass'] = bypassSecret;
+
+    const body = JSON.stringify({
+      to, subject, text,
+      source: meta?.source || 'fa-cron',
+      tripId: meta?.tripId || null,
+      statusKey: meta?.statusKey || null,
+    });
+
+    // Try queue first
+    const r = await fetch(`${proto}://${host}/api/email-enqueue`, {
+      method: 'POST', headers, body,
+    });
+    if (r.ok) {
+      console.log('[cron-poll] email queued to', Array.isArray(to) ? to.join(',') : to);
+      return true;
     }
-    const r = await fetch(url, {
-      method: 'POST',
-      headers,
+    const t = await r.text().catch(() => '');
+    console.warn('[cron-poll] queue endpoint returned', r.status, t.slice(0, 200), '— falling back to direct send');
+
+    // Fallback: direct send-email
+    const r2 = await fetch(`${proto}://${host}/api/send-email`, {
+      method: 'POST', headers,
       body: JSON.stringify({ to, subject, text }),
     });
-    if (!r.ok) {
-      const t = await r.text().catch(() => '');
-      console.error('[cron-poll] send-email failed:', r.status, t.slice(0, 200));
+    if (!r2.ok) {
+      const t2 = await r2.text().catch(() => '');
+      console.error('[cron-poll] fallback send-email failed:', r2.status, t2.slice(0, 200));
       return false;
     }
-    console.log('[cron-poll] send-email OK to', Array.isArray(to) ? to.join(',') : to);
+    console.log('[cron-poll] fallback send-email OK to', Array.isArray(to) ? to.join(',') : to);
     return true;
   } catch (err) {
-    console.error('[cron-poll] send-email exception:', err.message);
+    console.error('[cron-poll] sendEmail exception:', err.message);
     return false;
   }
 }

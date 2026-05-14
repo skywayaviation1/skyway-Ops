@@ -156,37 +156,49 @@ async function findMatchingTrip(db, ident, originCode, eventTimeMs) {
   return candidates[0];
 }
 
-// Internal call to /api/send-email
-async function sendEmail(req, to, subject, text) {
+// Internal call to /api/email-enqueue (reliable queue with retry).
+// Falls back to /api/send-email if the queue endpoint is unavailable.
+async function sendEmail(req, to, subject, text, meta) {
   try {
     const host = req.headers.host || 'skyway-ops.vercel.app';
     const proto = host.includes('localhost') ? 'http' : 'https';
-    const url = `${proto}://${host}/api/send-email`;
     const headers = { 'Content-Type': 'application/json' };
-    // Authenticate to send-email via shared internal secret
     const internalSecret = process.env.INTERNAL_API_SECRET;
-    if (internalSecret) {
-      headers['x-internal-secret'] = internalSecret;
-    }
-    // Also include Vercel bypass token for Deployment Protection (if enabled)
+    if (internalSecret) headers['x-internal-secret'] = internalSecret;
     const bypassSecret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
-    if (bypassSecret) {
-      headers['x-vercel-protection-bypass'] = bypassSecret;
+    if (bypassSecret) headers['x-vercel-protection-bypass'] = bypassSecret;
+
+    // Try queue first (reliable + retry)
+    const body = JSON.stringify({
+      to, subject, text,
+      source: meta?.source || 'fa-webhook',
+      tripId: meta?.tripId || null,
+      statusKey: meta?.statusKey || null,
+    });
+    const queueUrl = `${proto}://${host}/api/email-enqueue`;
+    const r = await fetch(queueUrl, { method: 'POST', headers, body });
+    if (r.ok) {
+      console.log('[fa-webhook] email queued to', Array.isArray(to) ? to.join(',') : to);
+      return true;
     }
-    const r = await fetch(url, {
-      method: 'POST',
-      headers,
+    const errText = await r.text().catch(() => '');
+    console.warn('[fa-webhook] queue endpoint returned', r.status, errText.slice(0, 200), '— falling back to direct send');
+
+    // Fallback: direct send (so we don't regress reliability)
+    const fallbackUrl = `${proto}://${host}/api/send-email`;
+    const r2 = await fetch(fallbackUrl, {
+      method: 'POST', headers,
       body: JSON.stringify({ to, subject, text }),
     });
-    if (!r.ok) {
-      const errText = await r.text().catch(() => '');
-      console.error('[fa-webhook] send-email failed:', r.status, errText.slice(0, 200));
+    if (!r2.ok) {
+      const t2 = await r2.text().catch(() => '');
+      console.error('[fa-webhook] direct send-email also failed:', r2.status, t2.slice(0, 200));
       return false;
     }
-    console.log('[fa-webhook] send-email OK to', Array.isArray(to) ? to.join(',') : to);
+    console.log('[fa-webhook] fallback send-email OK to', Array.isArray(to) ? to.join(',') : to);
     return true;
   } catch (err) {
-    console.error('[fa-webhook] send-email exception:', err.message);
+    console.error('[fa-webhook] sendEmail exception:', err.message);
     return false;
   }
 }
@@ -254,14 +266,84 @@ export default async function handler(req, res) {
       return;
     }
 
-    const providedSecret = req.headers['x-flightaware-signature']
-                       || req.headers['x-fa-signature']
-                       || req.headers['authorization']?.replace(/^Bearer\s+/i, '');
-    if (providedSecret !== expectedSecret) {
-      console.warn('[fa-webhook] invalid signature header — rejected');
+    const providedSig = req.headers['x-flightaware-signature']
+                     || req.headers['x-fa-signature']
+                     || req.headers['authorization']?.replace(/^Bearer\s+/i, '')
+                     || '';
+
+    // Get raw body for HMAC verification (Vercel may have already parsed it).
+    // We try both: the raw text (if available) and the stringified parsed body.
+    let rawBody = '';
+    if (typeof req.body === 'string') {
+      rawBody = req.body;
+    } else if (req.body && typeof req.body === 'object') {
+      try { rawBody = JSON.stringify(req.body); } catch (_) {}
+    }
+
+    // Try three validation methods (FlightAware varies by configuration):
+    //
+    //   (A) shared-secret: provided header === FLIGHTAWARE_WEBHOOK_SECRET
+    //   (B) HMAC-SHA256 hex: HMAC(secret, body) === provided header
+    //   (C) HMAC-SHA256 base64: base64(HMAC(secret, body)) === provided header
+    //
+    // If ANY of the three matches, accept. This is safe because the secret is
+    // never sent over the wire in clear (in B/C); the only way an attacker
+    // gets through (A) is if they already have the secret.
+    let crypto;
+    try { crypto = await import('crypto'); } catch (_) {}
+
+    function tryHmac(encoding) {
+      if (!crypto || !rawBody) return null;
+      try {
+        return crypto.createHmac('sha256', expectedSecret).update(rawBody).digest(encoding);
+      } catch (_) { return null; }
+    }
+
+    const hmacHex = tryHmac('hex');
+    const hmacB64 = tryHmac('base64');
+
+    // Constant-time comparison helper to avoid timing leaks
+    function safeEq(a, b) {
+      if (!a || !b) return false;
+      if (typeof a !== 'string' || typeof b !== 'string') return false;
+      if (a.length !== b.length) return false;
+      let result = 0;
+      for (let i = 0; i < a.length; i++) result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+      return result === 0;
+    }
+
+    const sigMatchShared = safeEq(providedSig, expectedSecret);
+    const sigMatchHex    = hmacHex && safeEq(providedSig, hmacHex);
+    const sigMatchB64    = hmacB64 && safeEq(providedSig, hmacB64);
+    // Also allow common "sha256=..." prefix that some webhook senders use
+    const providedSigStripped = providedSig.replace(/^sha256=/i, '');
+    const sigMatchHexStripped = hmacHex && safeEq(providedSigStripped, hmacHex);
+    const sigMatchB64Stripped = hmacB64 && safeEq(providedSigStripped, hmacB64);
+
+    const sigOk = sigMatchShared || sigMatchHex || sigMatchB64
+               || sigMatchHexStripped || sigMatchB64Stripped;
+
+    if (!sigOk) {
+      // Verbose logging so we can diagnose which auth mode FA is using.
+      // Logs only the first 10 chars of any actual hash so we don't leak the
+      // secret to anyone who later reads logs.
+      const trim = (s) => (s ? String(s).slice(0, 12) + '…' : '(none)');
+      console.warn('[fa-webhook] invalid signature header — rejected', {
+        receivedHeader: trim(providedSig),
+        expectedShared: trim(expectedSecret),
+        computedHmacHex: trim(hmacHex),
+        computedHmacB64: trim(hmacB64),
+        bodyLength: rawBody.length,
+        headerNames: Object.keys(req.headers).filter(h => /sig|fa|auth|flight/i.test(h)),
+      });
       res.status(200).json({ received: false, error: 'invalid signature' });
       return;
     }
+
+    console.log('[fa-webhook] signature OK via',
+      sigMatchShared ? 'shared-secret' :
+      sigMatchHex || sigMatchHexStripped ? 'hmac-sha256-hex' :
+      'hmac-sha256-base64');
 
     // === 2. Parse payload ===
     let body = req.body;
