@@ -12170,6 +12170,44 @@ function loadMapboxGL() {
   return _mapboxLoadPromise;
 }
 
+/**
+ * Lazy-load Leaflet from CDN. Returns the L global once available.
+ * Free, open-source mapping library. No API key required.
+ */
+let _leafletLoadPromise = null;
+function loadLeaflet() {
+  if (_leafletLoadPromise) return _leafletLoadPromise;
+  if (typeof window === 'undefined') return Promise.reject(new Error('Not in browser'));
+  if (window.L) return Promise.resolve(window.L);
+
+  _leafletLoadPromise = new Promise((resolve, reject) => {
+    // CSS first
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+    link.integrity = 'sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=';
+    link.crossOrigin = '';
+    document.head.appendChild(link);
+
+    // Then JS
+    const script = document.createElement('script');
+    script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+    script.integrity = 'sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=';
+    script.crossOrigin = '';
+    script.async = true;
+    script.onload = () => {
+      if (window.L) {
+        resolve(window.L);
+      } else {
+        reject(new Error('Leaflet failed to load'));
+      }
+    };
+    script.onerror = () => reject(new Error('Failed to load Leaflet'));
+    document.head.appendChild(script);
+  });
+  return _leafletLoadPromise;
+}
+
 /** Convert FlightAware altitude (hundreds of feet) to "FL340" style string. */
 function formatAltitude(ft) {
   if (!ft || ft < 18000) return ft ? `${ft.toLocaleString()} ft` : '—';
@@ -12398,8 +12436,9 @@ function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
 function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
-  const tailMarkersRef = useRef({});      // { tail: { marker, isAirborne } }
-  const trackOverlayRef = useRef({ origin: null, dest: null });
+  // Layer group holding all aircraft markers, track lines, and airport pins.
+  // Always cleared and rebuilt — no marker reuse, no shared state, no race conditions.
+  const layersRef = useRef(null);
   const [mapReady, setMapReady] = useState(false);
   const [mapError, setMapError] = useState(null);
 
@@ -12413,77 +12452,68 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
 
     (async () => {
       try {
-        const mapboxgl = await loadMapboxGL();
+        const L = await loadLeaflet();
         if (cancelled || !containerRef.current) return;
-        const token = import.meta.env.VITE_MAPBOX_TOKEN;
-        if (!token) { setMapError('VITE_MAPBOX_TOKEN not configured'); return; }
-        mapboxgl.accessToken = token;
 
-        const map = new mapboxgl.Map({
-          container: containerRef.current,
-          style: 'mapbox://styles/mapbox/dark-v11',
-          projection: 'mercator',
-          center: [-95, 38],
-          zoom: 3.3,
+        const map = L.map(containerRef.current, {
+          center: [38, -95],
+          zoom: 4,
+          zoomControl: true,
           attributionControl: false,
-          dragRotate: false,
-          pitchWithRotate: false,
+          worldCopyJump: false,
+          minZoom: 2,
+          maxZoom: 16,
         });
-        map.addControl(new mapboxgl.NavigationControl({ showCompass: false }), 'top-right');
 
-        map.on('load', () => {
-          map.addSource('selected-flown', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
-          map.addLayer({
-            id: 'selected-flown-line',
-            type: 'line',
-            source: 'selected-flown',
-            paint: { 'line-color': '#22c55e', 'line-width': 2.5 },
-          });
-          map.addSource('selected-projected', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
-          map.addLayer({
-            id: 'selected-projected-line',
-            type: 'line',
-            source: 'selected-projected',
-            paint: { 'line-color': '#22c55e', 'line-width': 2, 'line-opacity': 0.45, 'line-dasharray': [2, 2] },
-          });
-          mapRef.current = map;
-          // Force a resize so Mapbox recomputes container dimensions, since
-          // the flex parent may not have resolved its height when init ran.
-          try { map.resize(); } catch (_) {}
-          // Schedule another resize after flex layout settles
-          setTimeout(() => { try { map.resize(); } catch (_) {} }, 250);
-          if (!cancelled) setMapReady(true);
-        });
+        // CartoDB Dark Matter tiles - free, looks similar to Mapbox dark style.
+        // No API key required.
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {
+          maxZoom: 16,
+          subdomains: 'abcd',
+        }).addTo(map);
+
+        // Place labels in a separate layer above tracks so airports/cities show through
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', {
+          maxZoom: 16,
+          subdomains: 'abcd',
+          pane: 'shadowPane',
+        }).addTo(map);
+
+        // Group to hold all our overlay layers
+        const grp = L.layerGroup().addTo(map);
+
+        // Subtle attribution
+        L.control.attribution({ position: 'bottomright', prefix: false })
+          .addAttribution('© <a href="https://carto.com">CARTO</a> · © <a href="https://www.openstreetmap.org/copyright">OSM</a>')
+          .addTo(map);
+
+        mapRef.current = map;
+        layersRef.current = grp;
+        if (!cancelled) setMapReady(true);
       } catch (e) {
+        console.error('[fleet-map] init failed:', e);
         if (!cancelled) setMapError(e.message || 'Map failed to load');
       }
     })();
 
     return () => {
       cancelled = true;
-      Object.values(tailMarkersRef.current).forEach(o => { try { o?.marker?.remove(); } catch (_) {} });
-      tailMarkersRef.current = {};
-      if (trackOverlayRef.current.origin) { try { trackOverlayRef.current.origin.remove(); } catch (_) {} }
-      if (trackOverlayRef.current.dest) { try { trackOverlayRef.current.dest.remove(); } catch (_) {} }
-      trackOverlayRef.current = { origin: null, dest: null };
       if (mapRef.current) {
         try { mapRef.current.remove(); } catch (_) {}
         mapRef.current = null;
+        layersRef.current = null;
       }
     };
   }, []);
 
-  // ====== Fetch selected tail's detail + track log (for track polyline + airport markers) ======
+  // ====== Fetch selected tail's detail + track log ======
   useEffect(() => {
     if (!selectedTail) { setSelectedDetail(null); setSelectedTrack(null); return; }
     let cancelled = false;
     let timer = null;
 
-    // CRITICAL: clear the previous aircraft's data immediately. Without this,
-    // when you click N168ZZ, the renderer briefly draws N168ZZ as "selected"
-    // but still uses the previous aircraft's origin/destination data because
-    // setSelectedDetail() hasn't completed for the new tail yet. The marker
-    // render effect would draw wrong airports until the new fetch finishes.
+    // Clear previous aircraft's data immediately so the renderer doesn't
+    // show stale data while we wait for the new fetch.
     setSelectedDetail(null);
     setSelectedTrack(null);
 
@@ -12502,13 +12532,8 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
         const trk = trkR.ok ? await trkR.json() : null;
         if (cancelled) return;
 
-        // Verify the response is FOR THE CURRENTLY SELECTED TAIL. If the user
-        // clicked rapidly through tails, an earlier in-flight request might
-        // resolve AFTER we've already moved on — don't accept stale data.
-        if (det?.flight && det.flight.ident && det.flight.ident.toUpperCase() !== selectedTail.toUpperCase()) {
-          console.warn('[fleet-map] discarding stale detail response — for', det.flight.ident, 'not', selectedTail);
-          return;
-        }
+        // Discard stale responses (user clicked another tail while we fetched)
+        if (det?.flight?.ident && det.flight.ident.toUpperCase() !== selectedTail.toUpperCase()) return;
 
         setSelectedDetail(det?.flight || null);
         setSelectedTrack(Array.isArray(trk?.points) ? trk.points : []);
@@ -12520,243 +12545,150 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
     return () => { cancelled = true; if (timer) clearInterval(timer); };
   }, [selectedTail]);
 
-  // ====== Render/update fleet markers + selected overlay ======
-  // Track which tail the overlay markers were last drawn for. If selection
-  // changes, we DESTROY origin/dest markers and recreate them on the next
-  // pass — otherwise a marker created for aircraft A would visually jump
-  // to aircraft B's airport, making the pin appear to "move to wrong city."
-  const lastSelectedForOverlayRef = useRef(null);
+  // ====== Render all map overlays ======
+  // SINGLE effect that clears the layer group and rebuilds everything from
+  // current state. No marker references kept across renders — no stale
+  // state bugs possible. The performance cost is negligible (12-30 DOM nodes).
   useEffect(() => {
-    if (lastSelectedForOverlayRef.current && lastSelectedForOverlayRef.current !== selectedTail) {
-      // Selection changed — destroy stale overlay markers
-      if (trackOverlayRef.current.origin) {
-        try { trackOverlayRef.current.origin.remove(); } catch (_) {}
-        trackOverlayRef.current.origin = null;
-      }
-      if (trackOverlayRef.current.dest) {
-        try { trackOverlayRef.current.dest.remove(); } catch (_) {}
-        trackOverlayRef.current.dest = null;
-      }
-    }
-    lastSelectedForOverlayRef.current = selectedTail;
-  }, [selectedTail]);
-
-  useEffect(() => {
-    const mapboxgl = window.mapboxgl;
+    if (!mapReady || !mapRef.current || !layersRef.current) return;
+    const L = window.L;
     const map = mapRef.current;
-    if (!mapReady || !mapboxgl || !map) {
-      console.log('[fleet-map] skip render — mapReady:', mapReady, 'mapboxgl:', !!mapboxgl, 'map:', !!map);
-      return;
-    }
-    const airborneTails = fleetTails.filter(t => tailStates[t]?.airborne === true);
-    console.log('[fleet-map] rendering — airborne tails:', airborneTails.length, '· selectedTail:', selectedTail,
-      '· detail loaded:', !!selectedDetail, '· track points:', (selectedTrack || []).length);
+    const grp = layersRef.current;
 
-    // ----- Fleet markers (one per tail) -----
-    fleetTails.forEach(tail => {
+    // Clear everything
+    grp.clearLayers();
+
+    const airborneTails = fleetTails.filter(t => tailStates[t]?.airborne === true);
+
+    // ----- All airborne aircraft icons -----
+    airborneTails.forEach(tail => {
       const state = tailStates[tail];
-      const airborne = state?.airborne === true;
-      const lat = airborne ? state?.latitude : null;
-      const lon = airborne ? state?.longitude : null;
+      const lat = state?.latitude;
+      const lon = state?.longitude;
       const heading = state?.heading ?? 0;
+      if (lat == null || lon == null) return;
       const isSelected = tail === selectedTail;
 
-      if (airborne) {
-        console.log('[fleet-map]', tail, 'airborne — lat:', lat, 'lon:', lon, 'heading:', heading);
-      }
+      // Build the plane icon as an HTML div, rotated to heading
+      const ringSize = isSelected ? 40 : 32;
+      const planeSize = isSelected ? 22 : 18;
+      const ringStyle = isSelected
+        ? `background: #0b0f17; border: 2px solid #22d3ee; box-shadow: 0 0 0 3px rgba(34,211,238,0.35), 0 0 16px rgba(34,211,238,0.5);`
+        : `background: #0b0f17; border: 2px solid #22d3ee;`;
 
-      let entry = tailMarkersRef.current[tail];
+      const html = `
+        <div style="position: relative; cursor: pointer; width: ${ringSize}px; height: ${ringSize}px;">
+          <div style="position: absolute; inset: 0; border-radius: 50%; ${ringStyle}"></div>
+          <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%) rotate(${heading}deg); width: ${planeSize}px; height: ${planeSize}px; color: #22d3ee; display: flex; align-items: center; justify-content: center;">
+            <svg viewBox="0 0 24 24" width="${planeSize}" height="${planeSize}" fill="currentColor">
+              <path d="M12 2 L14 9 L22 11 L22 13 L14 14 L13 22 L11 22 L10 14 L2 13 L2 11 L10 9 Z"/>
+            </svg>
+          </div>
+          <div style="position: absolute; left: ${ringSize + 4}px; top: 50%; transform: translateY(-50%); font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: ${isSelected ? 700 : 600}; color: #22d3ee; background: rgba(11,15,23,0.92); padding: 3px 7px; border-radius: 2px; white-space: nowrap; pointer-events: none; border: 0.5px solid rgba(34,211,238,${isSelected ? '0.5' : '0.3'});">${tail}</div>
+        </div>
+      `;
 
-      // If no position data and no existing marker, skip (we'll never place
-      // ground-based tails unless we have last-known position from earlier).
-      if (lat == null || lon == null) {
-        // Could remove a stale marker if the aircraft just landed and lat/lon dropped
-        if (entry) {
-          try { entry.marker.remove(); } catch (_) {}
-          delete tailMarkersRef.current[tail];
-        }
-        return;
-      }
+      const icon = L.divIcon({
+        html,
+        className: 'fleet-aircraft-marker',
+        iconSize: [ringSize, ringSize],
+        iconAnchor: [ringSize / 2, ringSize / 2],
+      });
 
-      if (!entry) {
-        // Create marker
-        const wrap = document.createElement('div');
-        wrap.style.cssText = `
-          position: relative; cursor: pointer; z-index: 10;
-          width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
-        `;
-        const ring = document.createElement('div');
-        ring.className = 'fleet-marker-ring';
-        ring.style.cssText = `
-          position: absolute; inset: 0; border-radius: 50%;
-          background: #0b0f17;
-          border: 2px solid #22d3ee;
-          transition: background 0.2s, box-shadow 0.2s, transform 0.2s, border-color 0.2s;
-        `;
-        const inner = document.createElement('div');
-        inner.className = 'fleet-marker-icon';
-        inner.style.cssText = `
-          width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;
-          color: #22d3ee; transform: rotate(${heading}deg); position: relative; z-index: 1;
-        `;
-        inner.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
-          <path d="M12 2 L14 9 L22 11 L22 13 L14 14 L13 22 L11 22 L10 14 L2 13 L2 11 L10 9 Z"/>
-        </svg>`;
-        const label = document.createElement('div');
-        label.className = 'fleet-marker-label';
-        label.textContent = tail;
-        label.style.cssText = `
-          position: absolute; left: 40px; top: 50%; transform: translateY(-50%);
-          font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 600;
-          color: #22d3ee; background: rgba(11,15,23,0.92); padding: 3px 7px;
-          border-radius: 2px; white-space: nowrap; pointer-events: none;
-          text-shadow: 0 0 4px rgba(0,0,0,0.9); border: 0.5px solid rgba(34,211,238,0.3);
-        `;
-        wrap.appendChild(ring);
-        wrap.appendChild(inner);
-        wrap.appendChild(label);
-        wrap.addEventListener('click', (e) => { e.stopPropagation(); onSelectTail(tail); });
-
-        const marker = new mapboxgl.Marker({ element: wrap, anchor: 'center' })
-          .setLngLat([lon, lat])
-          .addTo(map);
-        entry = { marker, wrap, ring, inner, label };
-        tailMarkersRef.current[tail] = entry;
-      } else {
-        // Update existing
-        entry.marker.setLngLat([lon, lat]);
-        if (entry.inner) entry.inner.style.transform = `rotate(${heading}deg)`;
-      }
-
-      // Selection styling
-      if (isSelected) {
-        entry.ring.style.background = '#0b0f17';
-        entry.ring.style.borderColor = '#22d3ee';
-        entry.ring.style.boxShadow = '0 0 0 3px rgba(34,211,238,0.4), 0 0 18px rgba(34,211,238,0.6)';
-        entry.ring.style.transform = 'scale(1.15)';
-        entry.label.style.color = '#22d3ee';
-        entry.label.style.fontWeight = '700';
-        entry.label.style.borderColor = '#22d3ee';
-      } else {
-        entry.ring.style.background = '#0b0f17';
-        entry.ring.style.borderColor = '#22d3ee';
-        entry.ring.style.boxShadow = 'none';
-        entry.ring.style.transform = 'scale(1)';
-        entry.label.style.color = '#22d3ee';
-        entry.label.style.fontWeight = '600';
-        entry.label.style.borderColor = 'rgba(34,211,238,0.3)';
-      }
+      const marker = L.marker([lat, lon], { icon, zIndexOffset: isSelected ? 1000 : 100 }).addTo(grp);
+      marker.on('click', () => onSelectTail(tail));
     });
 
-    // ----- Selected tail track polyline + airport markers -----
-    const o = selectedDetail?.origin || {};
-    const d = selectedDetail?.destination || {};
-    const oLat = o.latitude, oLon = o.longitude;
-    const dLat = d.latitude, dLon = d.longitude;
-    const pts = Array.isArray(selectedTrack) ? selectedTrack.filter(p => p.lat != null && p.lon != null) : [];
+    // ----- Selected aircraft's track + airports -----
+    if (selectedTail && selectedDetail) {
+      const o = selectedDetail.origin || {};
+      const d = selectedDetail.destination || {};
+      const pts = Array.isArray(selectedTrack) ? selectedTrack.filter(p => p.lat != null && p.lon != null) : [];
 
-    // ALWAYS destroy and recreate origin/destination markers on every render.
-    // Reusing markers across selectedDetail changes caused bugs where the
-    // marker position didn't update correctly. Two DOM elements is cheap.
-    if (trackOverlayRef.current.origin) {
-      try { trackOverlayRef.current.origin.remove(); } catch (_) {}
-      trackOverlayRef.current.origin = null;
-    }
-    if (trackOverlayRef.current.dest) {
-      try { trackOverlayRef.current.dest.remove(); } catch (_) {}
-      trackOverlayRef.current.dest = null;
-    }
-
-    // Origin marker (green)
-    console.log('[fleet-map] origin data — code:', o.code, 'lat:', oLat, 'lon:', oLon);
-    if (oLat != null && oLon != null) {
-      console.log('[fleet-map] CREATING origin marker at', oLon, oLat, 'for', o.code);
-      const wrap = document.createElement('div');
-      wrap.style.cssText = 'position: relative; z-index: 5;';
-      const dot = document.createElement('div');
-      dot.style.cssText = `width: 14px; height: 14px; border-radius: 50%; background: #22c55e; border: 2px solid #0b0f17; box-shadow: 0 0 0 2px rgba(34,197,94,0.4);`;
-      const lab = document.createElement('div');
-      lab.textContent = o.code || '';
-      lab.style.cssText = `position: absolute; left: 20px; top: -2px; color: #86efac; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; white-space: nowrap; background: rgba(11,15,23,0.85); padding: 2px 6px; border-radius: 2px; text-shadow: 0 0 4px rgba(0,0,0,0.9);`;
-      wrap.appendChild(dot); wrap.appendChild(lab);
-      trackOverlayRef.current.origin = new mapboxgl.Marker({ element: wrap, anchor: 'center' })
-        .setLngLat([oLon, oLat]).addTo(map);
-    }
-
-    // Destination marker (orange)
-    console.log('[fleet-map] destination data — code:', d.code, 'lat:', dLat, 'lon:', dLon);
-    if (dLat != null && dLon != null) {
-      console.log('[fleet-map] CREATING destination marker at', dLon, dLat, 'for', d.code);
-      const wrap = document.createElement('div');
-      wrap.style.cssText = 'position: relative; z-index: 5;';
-      const dot = document.createElement('div');
-      dot.style.cssText = `width: 14px; height: 14px; border-radius: 50%; background: #fb923c; border: 2px solid #0b0f17; box-shadow: 0 0 0 2px rgba(251,146,60,0.4);`;
-      const lab = document.createElement('div');
-      lab.textContent = d.code || '';
-      lab.style.cssText = `position: absolute; left: 20px; top: -2px; color: #fdba74; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; white-space: nowrap; background: rgba(11,15,23,0.85); padding: 2px 6px; border-radius: 2px; text-shadow: 0 0 4px rgba(0,0,0,0.9);`;
-      wrap.appendChild(dot); wrap.appendChild(lab);
-      trackOverlayRef.current.dest = new mapboxgl.Marker({ element: wrap, anchor: 'center' })
-        .setLngLat([dLon, dLat]).addTo(map);
-    }
-
-    // Flown track polyline
-    if (map.getSource('selected-flown')) {
+      // Flown track (solid green line)
       if (pts.length >= 2) {
-        map.getSource('selected-flown').setData({
-          type: 'FeatureCollection',
-          features: [{
-            type: 'Feature',
-            geometry: { type: 'LineString', coordinates: pts.map(p => [p.lon, p.lat]) },
-          }],
-        });
-      } else {
-        map.getSource('selected-flown').setData({ type: 'FeatureCollection', features: [] });
+        L.polyline(pts.map(p => [p.lat, p.lon]), {
+          color: '#22c55e',
+          weight: 3,
+          opacity: 0.9,
+          lineCap: 'round',
+          lineJoin: 'round',
+        }).addTo(grp);
       }
-    }
-    // Projected line (current pos → destination)
-    const last = pts.length > 0 ? pts[pts.length - 1] : null;
-    if (map.getSource('selected-projected')) {
-      if (last && dLat != null && dLon != null) {
-        console.log('[fleet-map] PROJECTED line — from', last.lon, last.lat, 'to', dLon, dLat);
-        map.getSource('selected-projected').setData({
-          type: 'FeatureCollection',
-          features: [{
-            type: 'Feature',
-            geometry: { type: 'LineString', coordinates: [[last.lon, last.lat], [dLon, dLat]] },
-          }],
+
+      // Projected track (dashed line from last position to destination)
+      if (d.latitude != null && d.longitude != null && pts.length >= 1) {
+        const last = pts[pts.length - 1];
+        L.polyline([[last.lat, last.lon], [d.latitude, d.longitude]], {
+          color: '#22c55e',
+          weight: 2,
+          opacity: 0.7,
+          dashArray: '6,8',
+          lineCap: 'round',
+        }).addTo(grp);
+      }
+
+      // Origin marker (green)
+      if (o.latitude != null && o.longitude != null) {
+        const html = `
+          <div style="position: relative;">
+            <div style="width: 14px; height: 14px; border-radius: 50%; background: #22c55e; border: 2px solid #0b0f17; box-shadow: 0 0 0 2px rgba(34,197,94,0.4);"></div>
+            <div style="position: absolute; left: 20px; top: -2px; color: #86efac; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; white-space: nowrap; background: rgba(11,15,23,0.85); padding: 2px 6px; border-radius: 2px;">${o.code || ''}</div>
+          </div>
+        `;
+        const icon = L.divIcon({
+          html,
+          className: 'fleet-airport-marker',
+          iconSize: [14, 14],
+          iconAnchor: [7, 7],
         });
-      } else {
-        map.getSource('selected-projected').setData({ type: 'FeatureCollection', features: [] });
+        L.marker([o.latitude, o.longitude], { icon, zIndexOffset: 500 }).addTo(grp);
+      }
+
+      // Destination marker (orange)
+      if (d.latitude != null && d.longitude != null) {
+        const html = `
+          <div style="position: relative;">
+            <div style="width: 14px; height: 14px; border-radius: 50%; background: #fb923c; border: 2px solid #0b0f17; box-shadow: 0 0 0 2px rgba(251,146,60,0.4);"></div>
+            <div style="position: absolute; left: 20px; top: -2px; color: #fdba74; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; white-space: nowrap; background: rgba(11,15,23,0.85); padding: 2px 6px; border-radius: 2px;">${d.code || ''}</div>
+          </div>
+        `;
+        const icon = L.divIcon({
+          html,
+          className: 'fleet-airport-marker',
+          iconSize: [14, 14],
+          iconAnchor: [7, 7],
+        });
+        L.marker([d.latitude, d.longitude], { icon, zIndexOffset: 500 }).addTo(grp);
       }
     }
   }, [fleetTails, tailStates, selectedTail, selectedDetail, selectedTrack, mapReady, onSelectTail]);
 
-  // ====== Fit map to selected aircraft's bounds when selection changes ======
+  // ====== Fit map bounds when selected tail or its data changes ======
   useEffect(() => {
+    if (!mapReady || !mapRef.current || !selectedTail) return;
+    const L = window.L;
     const map = mapRef.current;
-    const mapboxgl = window.mapboxgl;
-    if (!mapReady || !map || !mapboxgl || !selectedTail) return;
-
     const state = tailStates[selectedTail];
     const airborne = state?.airborne === true && state?.latitude != null && state?.longitude != null;
     const o = selectedDetail?.origin || {};
     const d = selectedDetail?.destination || {};
     const pts = Array.isArray(selectedTrack) ? selectedTrack.filter(p => p.lat != null && p.lon != null) : [];
 
-    const coords = [
-      ...(airborne ? [[state.longitude, state.latitude]] : []),
-      ...(o.latitude != null && o.longitude != null ? [[o.longitude, o.latitude]] : []),
-      ...(d.latitude != null && d.longitude != null ? [[d.longitude, d.latitude]] : []),
-      ...pts.map(p => [p.lon, p.lat]),
+    const points = [
+      ...(airborne ? [[state.latitude, state.longitude]] : []),
+      ...(o.latitude != null && o.longitude != null ? [[o.latitude, o.longitude]] : []),
+      ...(d.latitude != null && d.longitude != null ? [[d.latitude, d.longitude]] : []),
+      ...pts.map(p => [p.lat, p.lon]),
     ];
-    if (coords.length >= 2) {
-      const bounds = new mapboxgl.LngLatBounds();
-      coords.forEach(c => bounds.extend(c));
-      map.fitBounds(bounds, { padding: 80, duration: 700, maxZoom: 8 });
-    } else if (coords.length === 1) {
-      map.flyTo({ center: coords[0], zoom: 7, duration: 700 });
+
+    if (points.length >= 2) {
+      const bounds = L.latLngBounds(points);
+      map.fitBounds(bounds, { padding: [60, 60], maxZoom: 8, animate: true, duration: 0.7 });
+    } else if (points.length === 1) {
+      map.setView(points[0], 7, { animate: true });
     }
-  }, [selectedTail, selectedDetail, selectedTrack, mapReady]);
+  }, [selectedTail, selectedDetail, selectedTrack, mapReady, tailStates]);
 
   if (mapError) {
     return (
@@ -12768,7 +12700,7 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
 
   return (
     <div className="relative w-full h-full bg-slate-950">
-      <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+      <div ref={containerRef} style={{ width: '100%', height: '100%', background: '#0b0f17' }} />
       {!mapReady && (
         <div className="absolute inset-0 flex items-center justify-center text-slate-600 text-xs pointer-events-none">
           <Loader2 className="w-4 h-4 animate-spin mr-2" /> Loading map…
