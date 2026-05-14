@@ -12503,6 +12503,26 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
   }, [selectedTail]);
 
   // ====== Render/update fleet markers + selected overlay ======
+  // Track which tail the overlay markers were last drawn for. If selection
+  // changes, we DESTROY origin/dest markers and recreate them on the next
+  // pass — otherwise a marker created for aircraft A would visually jump
+  // to aircraft B's airport, making the pin appear to "move to wrong city."
+  const lastSelectedForOverlayRef = useRef(null);
+  useEffect(() => {
+    if (lastSelectedForOverlayRef.current && lastSelectedForOverlayRef.current !== selectedTail) {
+      // Selection changed — destroy stale overlay markers
+      if (trackOverlayRef.current.origin) {
+        try { trackOverlayRef.current.origin.remove(); } catch (_) {}
+        trackOverlayRef.current.origin = null;
+      }
+      if (trackOverlayRef.current.dest) {
+        try { trackOverlayRef.current.dest.remove(); } catch (_) {}
+        trackOverlayRef.current.dest = null;
+      }
+    }
+    lastSelectedForOverlayRef.current = selectedTail;
+  }, [selectedTail]);
+
   useEffect(() => {
     const mapboxgl = window.mapboxgl;
     const map = mapRef.current;
