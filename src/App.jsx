@@ -2760,7 +2760,6 @@ function DutyTracker({ currentUser, onDutyStateChange }) {
   const [error, setError] = useState(null);
   const [nowTick, setNowTick] = useState(Date.now());
   const [confirmModal, setConfirmModal] = useState(null);  // { type, message, action }
-  const [adminPanel, setAdminPanel] = useState(false);
 
   // Refresh duty info from the API
   const refreshDuty = useCallback(async () => {
@@ -3010,35 +3009,11 @@ function DutyTracker({ currentUser, onDutyStateChange }) {
           </div>
         )}
 
-        {/* Admin controls — set or correct duty-on time */}
-        {isAdminOps && (
-          <div className="pt-2 border-t border-slate-800/50">
-            <button
-              onClick={() => setAdminPanel(true)}
-              className="text-[10px] tracking-widest text-slate-500 hover:text-cyan-400 transition-colors flex items-center gap-1"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}
-            >
-              <Shield className="w-3 h-3" /> ADMIN: SET/CORRECT DUTY TIME
-            </button>
-          </div>
-        )}
-
         {/* Disclaimer */}
         <div className="pt-2 border-t border-slate-800/50 text-[10px] text-slate-600 leading-relaxed" style={{ fontFamily: 'DM Sans, sans-serif' }}>
           For awareness only. Maintain your own duty record per 14 CFR 135.267. Skyway Ops is not a legal duty log.
         </div>
       </div>
-
-      {/* Admin duty-on/off modal */}
-      {adminPanel && (
-        <AdminDutyEditor
-          currentUser={currentUser}
-          targetPilot={{ uid: dutyInfo.pilotUid, name: dutyInfo.pilotName }}
-          state={state}
-          onClose={() => setAdminPanel(false)}
-          onSaved={() => { setAdminPanel(false); refreshDuty(); }}
-        />
-      )}
 
       {/* Confirmation modal */}
       {confirmModal && (
@@ -3079,205 +3054,6 @@ function DutyTracker({ currentUser, onDutyStateChange }) {
         </div>
       )}
     </>
-  );
-}
-
-
-/* ============================================================
-   AdminDutyEditor — modal for admin/ops to manually set, correct, or
-   close out a pilot's duty time. Used when:
-   - Pilot forgot to go on duty (admin records it retroactively)
-   - Pilot's logged duty-on time is wrong (admin corrects)
-   - Duty has exceeded 14h and admin must close it with a chosen duty-off time
-   ============================================================ */
-
-function AdminDutyEditor({ currentUser, targetPilot, state, onClose, onSaved }) {
-  const isOnDuty = state.status === 'on';
-  const currentDutyOnMs = state.dutyOnAt
-    ? (typeof state.dutyOnAt === 'object' && state.dutyOnAt.toMillis
-        ? state.dutyOnAt.toMillis()
-        : (state.dutyOnAt?._seconds ? state.dutyOnAt._seconds * 1000 : new Date(state.dutyOnAt).getTime()))
-    : null;
-
-  // Default new duty-on time: now, or current dutyOn if already on duty
-  const [mode, setMode] = useState('set-on');  // 'set-on' or 'close-off'
-  const defaultDateTime = formatLocalDateTimeForInput(isOnDuty && currentDutyOnMs ? currentDutyOnMs : Date.now());
-  const [dateTimeStr, setDateTimeStr] = useState(defaultDateTime);
-  const [reason, setReason] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [err, setErr] = useState(null);
-
-  // Helper to format a Date as the value expected by <input type="datetime-local">
-  // (YYYY-MM-DDTHH:MM in local timezone)
-  function formatLocalDateTimeForInput(ms) {
-    const d = new Date(ms);
-    const pad = (n) => String(n).padStart(2, '0');
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  }
-
-  // Convert datetime-local input back to ISO
-  function inputToIso(s) {
-    if (!s) return null;
-    // datetime-local gives "2026-05-14T08:00" (no timezone) which JS interprets as local time
-    return new Date(s).toISOString();
-  }
-
-  async function submit() {
-    setSaving(true);
-    setErr(null);
-    try {
-      const { auth } = await import('./firebase.js');
-      const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : null;
-      if (!idToken) { setErr('Not signed in'); setSaving(false); return; }
-      const action = mode === 'set-on' ? 'admin-duty-on' : 'admin-duty-off';
-      const timeKey = mode === 'set-on' ? 'dutyOnAt' : 'dutyOffAt';
-      const r = await fetch('/api/duty-state', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken}` },
-        body: JSON.stringify({
-          action,
-          pilotUid: targetPilot.uid,
-          [timeKey]: inputToIso(dateTimeStr),
-          reason: reason.trim() || null,
-        }),
-      });
-      const data = await r.json();
-      if (!r.ok) {
-        setErr(data.error || 'Save failed');
-        setSaving(false);
-        return;
-      }
-      onSaved();
-    } catch (e) {
-      setErr(e.message || 'Network error');
-      setSaving(false);
-    }
-  }
-
-  const canCloseOff = isOnDuty;
-  const setOnLabel = isOnDuty ? 'Correct duty-on time' : 'Set duty-on retroactively';
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-      <div className="bg-slate-950 border border-slate-700 max-w-md w-full p-5 space-y-4">
-        <div className="flex items-center justify-between">
-          <h3 className="text-sm tracking-widest text-slate-200"
-            style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
-            ADMIN: EDIT DUTY · {targetPilot.name}
-          </h3>
-          <button onClick={onClose} className="text-slate-500 hover:text-slate-300">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        {/* Current status summary */}
-        <div className="text-[11px] text-slate-400 bg-slate-900/40 border border-slate-800 p-2.5"
-          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-          STATUS: <span className={isOnDuty ? 'text-cyan-400' : 'text-emerald-400'}>{isOnDuty ? 'ON DUTY' : 'OFF DUTY'}</span>
-          {isOnDuty && currentDutyOnMs && (
-            <div className="mt-1 text-slate-500">
-              Current duty-on: {new Date(currentDutyOnMs).toLocaleString()}
-            </div>
-          )}
-        </div>
-
-        {/* Mode toggle */}
-        <div className="flex gap-2">
-          <button
-            onClick={() => setMode('set-on')}
-            className={`flex-1 py-2 text-[11px] tracking-widest border transition-colors ${
-              mode === 'set-on'
-                ? 'border-cyan-400 text-cyan-300 bg-cyan-500/10'
-                : 'border-slate-700 text-slate-500 hover:text-slate-300'
-            }`}
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}
-          >
-            DUTY ON
-          </button>
-          <button
-            onClick={() => setMode('close-off')}
-            disabled={!canCloseOff}
-            className={`flex-1 py-2 text-[11px] tracking-widest border transition-colors ${
-              !canCloseOff
-                ? 'border-slate-800 text-slate-700 cursor-not-allowed'
-                : mode === 'close-off'
-                  ? 'border-cyan-400 text-cyan-300 bg-cyan-500/10'
-                  : 'border-slate-700 text-slate-500 hover:text-slate-300'
-            }`}
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}
-          >
-            DUTY OFF
-          </button>
-        </div>
-
-        {/* Datetime input */}
-        <div>
-          <label className="block text-[10px] tracking-widest text-slate-500 mb-1.5"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            {mode === 'set-on' ? setOnLabel.toUpperCase() : 'CLOSE DUTY-OFF AT'}
-          </label>
-          <input
-            type="datetime-local"
-            value={dateTimeStr}
-            onChange={(e) => setDateTimeStr(e.target.value)}
-            max={formatLocalDateTimeForInput(Date.now() + 60000)}  // can't pick future
-            className="w-full px-3 py-2 bg-slate-900 border border-slate-700 text-slate-200 text-sm focus:outline-none focus:border-cyan-500/50"
-            style={{ fontFamily: 'JetBrains Mono, monospace', colorScheme: 'dark' }}
-          />
-          <div className="mt-1.5 text-[10px] text-slate-500" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-            {mode === 'set-on'
-              ? 'Time the pilot actually started duty. Local time.'
-              : 'Time the duty period actually ended. Local time.'}
-          </div>
-        </div>
-
-        {/* Reason */}
-        <div>
-          <label className="block text-[10px] tracking-widest text-slate-500 mb-1.5"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            REASON (optional)
-          </label>
-          <input
-            type="text"
-            value={reason}
-            onChange={(e) => setReason(e.target.value)}
-            placeholder={mode === 'set-on' ? 'e.g. Pilot forgot to log on' : 'e.g. Exceeded 14h cap'}
-            className="w-full px-3 py-2 bg-slate-900 border border-slate-700 text-slate-200 text-sm focus:outline-none focus:border-cyan-500/50"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}
-          />
-        </div>
-
-        {err && (
-          <div className="text-[11px] text-red-400 border border-red-500/30 bg-red-500/5 px-2.5 py-1.5"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            {err}
-          </div>
-        )}
-
-        <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
-          <button
-            onClick={onClose}
-            disabled={saving}
-            className="px-3 py-2 text-[11px] tracking-widest text-slate-400 hover:text-slate-200 disabled:opacity-50"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}
-          >
-            CANCEL
-          </button>
-          <button
-            onClick={submit}
-            disabled={saving}
-            className="px-4 py-2 text-[11px] tracking-widest text-cyan-300 border border-cyan-500/50 bg-cyan-500/10 hover:bg-cyan-500/20 disabled:opacity-50"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}
-          >
-            {saving ? 'SAVING...' : 'SAVE'}
-          </button>
-        </div>
-
-        <div className="text-[10px] text-amber-300/70 border-t border-slate-800 pt-2" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-          ⓘ This override will be logged with your name and timestamp. Acting on someone else's duty record is auditable.
-        </div>
-      </div>
-    </div>
   );
 }
 
