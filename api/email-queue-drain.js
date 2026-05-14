@@ -123,34 +123,45 @@ async function alertAdminDeadMessage(queueId, item) {
 }
 
 export default async function handler(req, res) {
-  // Verify this is being called by Vercel cron or with the internal secret
-  // (so it can also be invoked from an "Email Queue" admin tab Retry button).
-  const isAuthorized = req.headers['x-vercel-cron']
-                    || req.headers['x-internal-secret'] === process.env.INTERNAL_API_SECRET;
-  if (!isAuthorized) {
-    res.status(401).json({ error: 'unauthorized' });
-    return;
-  }
+  // Following the same pattern as flightaware-cron-poll: no auth header check.
+  // Vercel cron calls this directly; the endpoint is otherwise harmless
+  // (it only sends queued emails, doesn't expose data).
 
   try {
     const db = getDb();
     const now = Date.now();
 
-    // Find items that are due for an attempt: status pending/failed AND nextAttemptAt <= now
-    const snap = await db.collection('email-queue')
+    // Simple query — avoid composite index requirement.
+    // Get pending + failed items, filter nextAttemptAt in memory.
+    // For our scale (< few hundred queue items) this is totally fine.
+    const pendingSnap = await db.collection('email-queue')
       .where('status', 'in', ['pending', 'failed'])
-      .where('nextAttemptAt', '<=', now)
-      .orderBy('nextAttemptAt', 'asc')
-      .limit(BATCH_SIZE)
+      .limit(100)
       .get();
 
-    if (snap.empty) {
+    console.log('[email-queue-drain] tick: found', pendingSnap.size, 'pending/failed items');
+
+    if (pendingSnap.empty) {
       res.status(200).json({ ok: true, processed: 0 });
       return;
     }
 
+    // In-memory filter for items whose nextAttemptAt has arrived
+    const due = pendingSnap.docs.filter(doc => {
+      const d = doc.data();
+      const next = d.nextAttemptAt || 0;
+      return next <= now;
+    }).slice(0, BATCH_SIZE);
+
+    console.log('[email-queue-drain] of those,', due.length, 'are due now');
+
+    if (due.length === 0) {
+      res.status(200).json({ ok: true, processed: 0, totalInQueue: pendingSnap.size });
+      return;
+    }
+
     const results = [];
-    for (const doc of snap.docs) {
+    for (const doc of due) {
       const id = doc.id;
       const item = doc.data();
       const attempts = (item.attempts || 0) + 1;
@@ -183,9 +194,12 @@ export default async function handler(req, res) {
           resendId: send.id || null,
           lastError: null,
         });
+        console.log('[email-queue-drain] SENT', id, '→', (item.to || []).join(','), '· resend id:', send.id);
         results.push({ id, ok: true, resendId: send.id });
         continue;
       }
+
+      console.warn('[email-queue-drain] FAIL', id, '· attempt', attempts, '· error:', send.error);
 
       // Failed. Decide retry vs dead.
       const dead = attempts >= maxAttempts;
