@@ -11,6 +11,7 @@
 
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
+import { lookupAirport } from './_airports-data.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -164,12 +165,21 @@ export default async function handler(req, res) {
       diverted: f.diverted || false,
     };
 
-    // ====== Fetch airport coordinates (with cache) ======
-    // FlightAware's /flights/{ident} doesn't include lat/lon. Fetch each
-    // airport from /airports/{code} and cache permanently — airport coords
-    // don't change. Errors are non-fatal; map just won't show the markers.
+    // ====== Resolve airport coordinates ======
+    // Strategy: try hardcoded table first (covers virtually all common US airports
+    // and known-good coords), then Firestore cache, then FlightAware /airports/
+    // endpoint as a last resort. The FlightAware endpoint has produced WRONG
+    // results in the past (KINT returning Oklahoma coords), so we no longer
+    // trust it for primary lookups. Hardcoded table entries are cross-checked
+    // against FAA AIS.
     async function getAirportCoords(code) {
       if (!code) return null;
+      // 1. Hardcoded table
+      const hardcoded = lookupAirport(code);
+      if (hardcoded) {
+        return { latitude: hardcoded.latitude, longitude: hardcoded.longitude };
+      }
+      // 2. Firestore cache (only used for FlightAware fallback results)
       try {
         const cRef = db.collection('flightaware-cache').doc(`airport_${code}`);
         const cSnap = await cRef.get();
@@ -177,6 +187,7 @@ export default async function handler(req, res) {
           const c = cSnap.data();
           if (c.coords) return c.coords;
         }
+        // 3. FlightAware fallback — for airports not in our hardcoded table
         const r = await fetch(
           `https://aeroapi.flightaware.com/aeroapi/airports/${encodeURIComponent(code)}`,
           { headers: { 'x-apikey': apiKey } }
@@ -186,7 +197,7 @@ export default async function handler(req, res) {
         const coords = (a.latitude != null && a.longitude != null)
           ? { latitude: a.latitude, longitude: a.longitude }
           : null;
-        if (coords) await cRef.set({ coords, cachedAt: Date.now() });
+        if (coords) await cRef.set({ coords, cachedAt: Date.now(), source: 'flightaware' });
         return coords;
       } catch (_) {
         return null;
