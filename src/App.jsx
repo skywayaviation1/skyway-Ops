@@ -2864,7 +2864,7 @@ function ForeFlightHandoff({ trip, currentUser }) {
           <div>
             <div className="text-[10px] tracking-widest text-cyan-400 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>OPEN IN FOREFLIGHT</div>
             <div className="text-[11px] text-slate-400" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-              Loads the route on the ForeFlight Maps view. Speed, fuel, altitude, tail and ETD are pre-populated. Review, then file from ForeFlight's flight plan form.
+              Loads the route on the ForeFlight Maps view with speed, fuel, altitude, tail and ETD pre-populated. From there, send to Flights to file.
             </div>
           </div>
         </div>
@@ -2915,6 +2915,46 @@ function ForeFlightHandoff({ trip, currentUser }) {
             <div className="mt-2 p-2 bg-slate-950 border border-slate-800 break-all">{url}</div>
           </details>
         )}
+      </div>
+
+      {/* In-ForeFlight instructions */}
+      <div className="border border-slate-800 bg-slate-900/40 p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>NEXT STEPS IN FOREFLIGHT</span>
+        </div>
+        <ol className="space-y-2.5">
+          <li className="flex gap-3 items-start">
+            <span className="shrink-0 inline-flex items-center justify-center w-5 h-5 bg-cyan-500/10 border border-cyan-500/40 text-cyan-300 text-[10px]"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>1</span>
+            <div className="text-[11px] text-slate-300" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+              Tap <strong className="text-cyan-300">OPEN IN FOREFLIGHT</strong> above. The Maps view will load with your route.
+            </div>
+          </li>
+          <li className="flex gap-3 items-start">
+            <span className="shrink-0 inline-flex items-center justify-center w-5 h-5 bg-cyan-500/10 border border-cyan-500/40 text-cyan-300 text-[10px]"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>2</span>
+            <div className="text-[11px] text-slate-300" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+              In ForeFlight, tap the <strong className="text-cyan-300">Send To</strong> button (square with up-arrow, bottom-left of the Route Editor).
+            </div>
+          </li>
+          <li className="flex gap-3 items-start">
+            <span className="shrink-0 inline-flex items-center justify-center w-5 h-5 bg-cyan-500/10 border border-cyan-500/40 text-cyan-300 text-[10px]"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>3</span>
+            <div className="text-[11px] text-slate-300" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+              Select <strong className="text-cyan-300">Flights</strong>. ForeFlight creates a new flight plan record pre-filled with the route, aircraft, and performance.
+            </div>
+          </li>
+          <li className="flex gap-3 items-start">
+            <span className="shrink-0 inline-flex items-center justify-center w-5 h-5 bg-cyan-500/10 border border-cyan-500/40 text-cyan-300 text-[10px]"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>4</span>
+            <div className="text-[11px] text-slate-300" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+              Complete any remaining required fields (alternate, fuel on board, souls, ICAO equipment), then tap <strong className="text-cyan-300">Proceed to File</strong>.
+            </div>
+          </li>
+        </ol>
+        <div className="mt-3 pt-3 border-t border-slate-800 text-[10px] text-slate-500" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+          Aircraft profile, ICAO equipment codes, and crew contact info come from your personal ForeFlight setup. If a tail isn't recognized, add it as an Aircraft Profile in ForeFlight first.
+        </div>
       </div>
 
       {/* Plain-text summary for 1800wxbrief / radio call / etc */}
