@@ -116,37 +116,118 @@ export default async function handler(req, res) {
   try {
     getAdmin();
     const db = getDb();
-
     const id = genId();
     const now = Date.now();
-    const item = {
-      status: 'pending',
+
+    // ATTEMPT 1: Send immediately via Resend. This is the fast path that
+    // 99% of emails take. The dispatcher tapped the status; they want the
+    // email out NOW, not in 60 seconds when the queue cron next runs.
+    const sendResult = await sendViaResendInline({
       to: validTo,
       cc: validCc,
       subject: String(subject).slice(0, 200),
       html: html ? String(html).slice(0, 200000) : textToHtml(text).slice(0, 200000),
       from: from || null,
-      attempts: 0,
+    });
+
+    // Write the record either way — sent or pending. This gives us a full
+    // audit trail of every email that should have gone out, regardless of
+    // delivery success.
+    const baseRecord = {
+      to: validTo,
+      cc: validCc,
+      subject: String(subject).slice(0, 200),
+      html: html ? String(html).slice(0, 200000) : textToHtml(text).slice(0, 200000),
+      from: from || null,
+      attempts: 1,
       maxAttempts: body.maxAttempts || 5,
-      lastError: null,
-      resendId: null,
       queuedAt: now,
-      lastAttemptAt: null,
-      nextAttemptAt: now,                  // ready for immediate pickup
-      sentAt: null,
-      deadAt: null,
+      lastAttemptAt: now,
       source: source || null,
       tripId: tripId || null,
       statusKey: statusKey || null,
       queuedBy: authedAs,
     };
 
-    await db.collection('email-queue').doc(id).set(item);
+    if (sendResult.ok) {
+      // FAST PATH: delivered to Resend on the first try.
+      await db.collection('email-queue').doc(id).set({
+        ...baseRecord,
+        status: 'sent',
+        sentAt: Date.now(),
+        resendId: sendResult.id || null,
+        lastError: null,
+        nextAttemptAt: null,
+        deadAt: null,
+      });
+      console.log('[email-enqueue] SENT inline', id, '→', validTo.join(','),
+        '· resend id:', sendResult.id, '· source:', source || '-');
+      return res.status(200).json({
+        ok: true,
+        queueId: id,
+        resendId: sendResult.id,
+        delivery: 'inline',
+      });
+    }
 
-    console.log('[email-enqueue] queued', id, 'to', validTo.join(','), 'source=', source || '-');
-    return res.status(200).json({ ok: true, queueId: id });
+    // SLOW PATH: Resend failed (transient or otherwise). Queue for retry.
+    await db.collection('email-queue').doc(id).set({
+      ...baseRecord,
+      status: 'failed',
+      sentAt: null,
+      resendId: null,
+      lastError: sendResult.error || 'unknown error',
+      nextAttemptAt: now + 10 * 1000,    // retry in 10 seconds
+      deadAt: null,
+    });
+    console.warn('[email-enqueue] inline send failed for', id, '· error:', sendResult.error,
+      '· queued for retry');
+    return res.status(200).json({
+      ok: true,
+      queueId: id,
+      delivery: 'queued',
+      reason: sendResult.error,
+    });
   } catch (err) {
     console.error('[email-enqueue] error:', err);
     return res.status(500).json({ error: err.message || 'enqueue failed' });
+  }
+}
+
+// Send via Resend directly, return { ok, id?, error? }
+async function sendViaResendInline({ to, cc, subject, html, from }) {
+  if (!process.env.RESEND_API_KEY) {
+    return { ok: false, error: 'RESEND_API_KEY missing on server' };
+  }
+  const DEFAULT_FROM = process.env.OPS_FROM_EMAIL || 'Skyway Ops <noreply@send.flyskyway.com>';
+  const body = {
+    from: from || DEFAULT_FROM,
+    to: Array.isArray(to) ? to : [to],
+    subject,
+    html,
+  };
+  if (Array.isArray(cc) && cc.length > 0) body.cc = cc;
+
+  try {
+    // 8-second timeout so we don't hang the user's request
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    const r = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      return { ok: false, error: `Resend ${r.status}: ${data.message || data.error || 'unknown'}` };
+    }
+    return { ok: true, id: data.id };
+  } catch (e) {
+    return { ok: false, error: `Network: ${e.message || String(e)}` };
   }
 }
