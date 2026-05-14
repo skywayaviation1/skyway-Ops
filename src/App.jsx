@@ -12301,27 +12301,30 @@ function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
         const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : null;
         if (!idToken) return;
 
-        const results = await Promise.all(fleetTails.map(async (t) => {
-          try {
-            const r = await fetch(`/api/flightaware-positions?idents=${encodeURIComponent(t)}`, {
-              headers: { 'Authorization': `Bearer ${idToken}` },
-            });
-            if (!r.ok) return [t, null];
-            const data = await r.json();
-            const positions = Array.isArray(data?.positions) ? data.positions : [];
-            return [t, positions[0] || null];
-          } catch (_) {
-            return [t, null];
-          }
-        }));
+        // Single POST with all idents (matches flightaware-positions.js contract)
+        const r = await fetch('/api/flightaware-positions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ idToken, idents: fleetTails }),
+        });
+        if (!r.ok) {
+          console.warn('[tracking-v2] positions endpoint returned', r.status);
+          if (!cancelled) setLoadingFleet(false);
+          return;
+        }
+        const data = await r.json();
+        const positions = Array.isArray(data?.positions) ? data.positions : [];
 
         if (!cancelled) {
           const next = {};
-          for (const [t, s] of results) next[t] = s;
+          for (const p of positions) {
+            if (p && p.ident) next[String(p.ident).toUpperCase()] = p;
+          }
           setTailStates(next);
           setLoadingFleet(false);
         }
-      } catch (_) {
+      } catch (e) {
+        console.warn('[tracking-v2] poll failed:', e?.message);
         if (!cancelled) setLoadingFleet(false);
       }
     }
@@ -12383,14 +12386,15 @@ function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
    Fleet list item — one row per tail
    =========================== */
 function FleetListItem({ tail, state, trips, tripStates, isSelected, onClick }) {
-  // Status synthesis: airborne / scheduled / on ground / AOG
-  const airborne = state?.airborne === true || state?.last_position?.altitude != null;
-  const altFt = state?.last_position?.altitude != null
-    ? Math.round(state.last_position.altitude * 100)
-    : null;
-  const speedKt = state?.last_position?.groundspeed ?? null;
-  const origin = state?.origin?.code_icao || state?.origin?.code || state?.origin?.code_iata || null;
-  const destination = state?.destination?.code_icao || state?.destination?.code || state?.destination?.code_iata || null;
+  // /api/flightaware-positions returns FLAT fields when airborne:
+  //   { ident, airborne: true, altitude (already in feet), groundspeed,
+  //     origin (ICAO string), destination (ICAO string), ... }
+  // When grounded: { ident, airborne: false }
+  const airborne = state?.airborne === true;
+  const altFt = state?.altitude != null ? state.altitude : null;
+  const speedKt = state?.groundspeed ?? null;
+  const origin = state?.origin || null;
+  const destination = state?.destination || null;
 
   const statusColor = airborne ? 'text-cyan-400' : 'text-slate-500';
   const statusLabel = airborne ? 'En route' : 'On ground';
