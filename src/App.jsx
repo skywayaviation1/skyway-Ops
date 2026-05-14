@@ -12636,8 +12636,10 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
     }
 
     // Destination marker
+    console.log('[fleet-map] destination data — code:', d.code, 'lat:', dLat, 'lon:', dLon);
     if (dLat != null && dLon != null) {
       if (!trackOverlayRef.current.dest) {
+        console.log('[fleet-map] CREATING destination marker at', dLon, dLat, 'for', d.code);
         const wrap = document.createElement('div');
         wrap.style.cssText = 'position: relative;';
         const dot = document.createElement('div');
@@ -12648,12 +12650,14 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
         wrap.appendChild(dot); wrap.appendChild(lab);
         trackOverlayRef.current.dest = new mapboxgl.Marker({ element: wrap, anchor: 'center' })
           .setLngLat([dLon, dLat]).addTo(map);
+        console.log('[fleet-map] destination marker created. Marker element:', wrap, 'on map?', !!trackOverlayRef.current.dest);
       } else {
         trackOverlayRef.current.dest.setLngLat([dLon, dLat]);
         const lab = trackOverlayRef.current.dest.getElement().querySelector('div:nth-child(2)');
         if (lab) lab.textContent = d.code || '';
       }
     } else if (trackOverlayRef.current.dest) {
+      console.log('[fleet-map] REMOVING destination marker because coords are null');
       try { trackOverlayRef.current.dest.remove(); } catch (_) {}
       trackOverlayRef.current.dest = null;
     }
@@ -12676,6 +12680,7 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
     const last = pts.length > 0 ? pts[pts.length - 1] : null;
     if (map.getSource('selected-projected')) {
       if (last && dLat != null && dLon != null) {
+        console.log('[fleet-map] PROJECTED line — from', last.lon, last.lat, 'to', dLon, dLat);
         map.getSource('selected-projected').setData({
           type: 'FeatureCollection',
           features: [{
