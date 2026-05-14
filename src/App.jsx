@@ -12613,8 +12613,10 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
     const pts = Array.isArray(selectedTrack) ? selectedTrack.filter(p => p.lat != null && p.lon != null) : [];
 
     // Origin marker
+    console.log('[fleet-map] origin data — code:', o.code, 'lat:', oLat, 'lon:', oLon);
     if (oLat != null && oLon != null) {
       if (!trackOverlayRef.current.origin) {
+        console.log('[fleet-map] CREATING origin marker at', oLon, oLat, 'for', o.code);
         const wrap = document.createElement('div');
         wrap.style.cssText = 'position: relative;';
         const dot = document.createElement('div');
@@ -12626,6 +12628,11 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
         trackOverlayRef.current.origin = new mapboxgl.Marker({ element: wrap, anchor: 'center' })
           .setLngLat([oLon, oLat]).addTo(map);
       } else {
+        const existing = trackOverlayRef.current.origin.getLngLat();
+        if (Math.abs(existing.lng - oLon) > 0.001 || Math.abs(existing.lat - oLat) > 0.001) {
+          console.warn('[fleet-map] ORIGIN MARKER MOVED — was', existing.lng.toFixed(4), existing.lat.toFixed(4),
+            '· now', oLon.toFixed(4), oLat.toFixed(4));
+        }
         trackOverlayRef.current.origin.setLngLat([oLon, oLat]);
         const lab = trackOverlayRef.current.origin.getElement().querySelector('div:nth-child(2)');
         if (lab) lab.textContent = o.code || '';
