@@ -12654,61 +12654,48 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
     const dLat = d.latitude, dLon = d.longitude;
     const pts = Array.isArray(selectedTrack) ? selectedTrack.filter(p => p.lat != null && p.lon != null) : [];
 
-    // Origin marker
-    console.log('[fleet-map] origin data — code:', o.code, 'lat:', oLat, 'lon:', oLon);
-    if (oLat != null && oLon != null) {
-      if (!trackOverlayRef.current.origin) {
-        console.log('[fleet-map] CREATING origin marker at', oLon, oLat, 'for', o.code);
-        const wrap = document.createElement('div');
-        wrap.style.cssText = 'position: relative; z-index: 5;';
-        const dot = document.createElement('div');
-        dot.style.cssText = `width: 14px; height: 14px; border-radius: 50%; background: #22c55e; border: 2px solid #0b0f17; box-shadow: 0 0 0 2px rgba(34,197,94,0.4);`;
-        const lab = document.createElement('div');
-        lab.textContent = o.code || '';
-        lab.style.cssText = `position: absolute; left: 20px; top: -2px; color: #86efac; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; white-space: nowrap; background: rgba(11,15,23,0.85); padding: 2px 6px; border-radius: 2px; text-shadow: 0 0 4px rgba(0,0,0,0.9);`;
-        wrap.appendChild(dot); wrap.appendChild(lab);
-        trackOverlayRef.current.origin = new mapboxgl.Marker({ element: wrap, anchor: 'center' })
-          .setLngLat([oLon, oLat]).addTo(map);
-      } else {
-        const existing = trackOverlayRef.current.origin.getLngLat();
-        if (Math.abs(existing.lng - oLon) > 0.001 || Math.abs(existing.lat - oLat) > 0.001) {
-          console.warn('[fleet-map] ORIGIN MARKER MOVED — was', existing.lng.toFixed(4), existing.lat.toFixed(4),
-            '· now', oLon.toFixed(4), oLat.toFixed(4));
-        }
-        trackOverlayRef.current.origin.setLngLat([oLon, oLat]);
-        const lab = trackOverlayRef.current.origin.getElement().querySelector('div:nth-child(2)');
-        if (lab) lab.textContent = o.code || '';
-      }
-    } else if (trackOverlayRef.current.origin) {
+    // ALWAYS destroy and recreate origin/destination markers on every render.
+    // Reusing markers across selectedDetail changes caused bugs where the
+    // marker position didn't update correctly. Two DOM elements is cheap.
+    if (trackOverlayRef.current.origin) {
       try { trackOverlayRef.current.origin.remove(); } catch (_) {}
       trackOverlayRef.current.origin = null;
     }
-
-    // Destination marker
-    console.log('[fleet-map] destination data — code:', d.code, 'lat:', dLat, 'lon:', dLon);
-    if (dLat != null && dLon != null) {
-      if (!trackOverlayRef.current.dest) {
-        console.log('[fleet-map] CREATING destination marker at', dLon, dLat, 'for', d.code);
-        const wrap = document.createElement('div');
-        wrap.style.cssText = 'position: relative; z-index: 5;';
-        const dot = document.createElement('div');
-        dot.style.cssText = `width: 14px; height: 14px; border-radius: 50%; background: #fb923c; border: 2px solid #0b0f17; box-shadow: 0 0 0 2px rgba(251,146,60,0.4);`;
-        const lab = document.createElement('div');
-        lab.textContent = d.code || '';
-        lab.style.cssText = `position: absolute; left: 20px; top: -2px; color: #fdba74; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; white-space: nowrap; background: rgba(11,15,23,0.85); padding: 2px 6px; border-radius: 2px; text-shadow: 0 0 4px rgba(0,0,0,0.9);`;
-        wrap.appendChild(dot); wrap.appendChild(lab);
-        trackOverlayRef.current.dest = new mapboxgl.Marker({ element: wrap, anchor: 'center' })
-          .setLngLat([dLon, dLat]).addTo(map);
-        console.log('[fleet-map] destination marker created. Marker element:', wrap, 'on map?', !!trackOverlayRef.current.dest);
-      } else {
-        trackOverlayRef.current.dest.setLngLat([dLon, dLat]);
-        const lab = trackOverlayRef.current.dest.getElement().querySelector('div:nth-child(2)');
-        if (lab) lab.textContent = d.code || '';
-      }
-    } else if (trackOverlayRef.current.dest) {
-      console.log('[fleet-map] REMOVING destination marker because coords are null');
+    if (trackOverlayRef.current.dest) {
       try { trackOverlayRef.current.dest.remove(); } catch (_) {}
       trackOverlayRef.current.dest = null;
+    }
+
+    // Origin marker (green)
+    console.log('[fleet-map] origin data — code:', o.code, 'lat:', oLat, 'lon:', oLon);
+    if (oLat != null && oLon != null) {
+      console.log('[fleet-map] CREATING origin marker at', oLon, oLat, 'for', o.code);
+      const wrap = document.createElement('div');
+      wrap.style.cssText = 'position: relative; z-index: 5;';
+      const dot = document.createElement('div');
+      dot.style.cssText = `width: 14px; height: 14px; border-radius: 50%; background: #22c55e; border: 2px solid #0b0f17; box-shadow: 0 0 0 2px rgba(34,197,94,0.4);`;
+      const lab = document.createElement('div');
+      lab.textContent = o.code || '';
+      lab.style.cssText = `position: absolute; left: 20px; top: -2px; color: #86efac; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; white-space: nowrap; background: rgba(11,15,23,0.85); padding: 2px 6px; border-radius: 2px; text-shadow: 0 0 4px rgba(0,0,0,0.9);`;
+      wrap.appendChild(dot); wrap.appendChild(lab);
+      trackOverlayRef.current.origin = new mapboxgl.Marker({ element: wrap, anchor: 'center' })
+        .setLngLat([oLon, oLat]).addTo(map);
+    }
+
+    // Destination marker (orange)
+    console.log('[fleet-map] destination data — code:', d.code, 'lat:', dLat, 'lon:', dLon);
+    if (dLat != null && dLon != null) {
+      console.log('[fleet-map] CREATING destination marker at', dLon, dLat, 'for', d.code);
+      const wrap = document.createElement('div');
+      wrap.style.cssText = 'position: relative; z-index: 5;';
+      const dot = document.createElement('div');
+      dot.style.cssText = `width: 14px; height: 14px; border-radius: 50%; background: #fb923c; border: 2px solid #0b0f17; box-shadow: 0 0 0 2px rgba(251,146,60,0.4);`;
+      const lab = document.createElement('div');
+      lab.textContent = d.code || '';
+      lab.style.cssText = `position: absolute; left: 20px; top: -2px; color: #fdba74; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; white-space: nowrap; background: rgba(11,15,23,0.85); padding: 2px 6px; border-radius: 2px; text-shadow: 0 0 4px rgba(0,0,0,0.9);`;
+      wrap.appendChild(dot); wrap.appendChild(lab);
+      trackOverlayRef.current.dest = new mapboxgl.Marker({ element: wrap, anchor: 'center' })
+        .setLngLat([dLon, dLat]).addTo(map);
     }
 
     // Flown track polyline
