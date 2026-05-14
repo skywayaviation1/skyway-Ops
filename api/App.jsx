@@ -5,7 +5,7 @@ import {
   Coffee, ArrowRight, Clock, Shield, X, ScanLine, ChevronLeft,
   Mail, Navigation, Loader2, Wifi, WifiOff, Settings as SettingsIcon,
   Download, Trash2, Plus, FileText, Zap, Radio, AlertCircle,
-  CheckCheck, UserCheck, Sparkles, Hash
+  CheckCheck, UserCheck, Sparkles, Hash, Cloud
 } from 'lucide-react';
 import { formatLocalTime, formatLocalDate } from './airports.js';
 import {
@@ -2286,6 +2286,617 @@ function NotifyPanel({ trip, opsEmail, brokerEmail, setBrokerEmail, statuses, au
 }
 
 /* ============================================================
+   Weather components — METAR/TAF/winds aloft for trip planning
+   ============================================================ */
+
+// Cache fetched weather across components within a single page session.
+// Avoids hitting the API multiple times if a trip has the same airport
+// in multiple places (origin + destination of a round-trip).
+const _wxCache = new Map();   // icao -> { data, fetchedAt }
+const _windsCache = new Map(); // 'lat,lon' (rounded) -> { data, fetchedAt }
+const WX_CLIENT_TTL_MS = 5 * 60 * 1000; // 5 min client-side cache
+
+async function fetchAirportWx(icao) {
+  if (!icao) return null;
+  const key = String(icao).toUpperCase();
+  const now = Date.now();
+  const cached = _wxCache.get(key);
+  if (cached && (now - cached.fetchedAt) < WX_CLIENT_TTL_MS) return cached.data;
+  try {
+    const { auth } = await import('./firebase.js');
+    const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : null;
+    if (!idToken) return null;
+    const r = await fetch(`/api/airport-weather?icao=${encodeURIComponent(key)}`, {
+      headers: { 'Authorization': `Bearer ${idToken}` },
+    });
+    if (!r.ok) return null;
+    const data = await r.json();
+    _wxCache.set(key, { data, fetchedAt: now });
+    return data;
+  } catch (_) { return null; }
+}
+
+async function fetchWindsAloft(icao) {
+  if (!icao) return null;
+  const key = String(icao).toUpperCase();
+  const now = Date.now();
+  const cached = _windsCache.get(key);
+  if (cached && (now - cached.fetchedAt) < WX_CLIENT_TTL_MS) return cached.data;
+  try {
+    const { auth } = await import('./firebase.js');
+    const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : null;
+    if (!idToken) return null;
+    const r = await fetch(`/api/winds-aloft?icao=${encodeURIComponent(key)}`, {
+      headers: { 'Authorization': `Bearer ${idToken}` },
+    });
+    if (!r.ok) return null;
+    const data = await r.json();
+    _windsCache.set(key, { data, fetchedAt: now });
+    return data;
+  } catch (_) { return null; }
+}
+
+// Style helpers
+function flightCategoryStyles(cat) {
+  switch (cat) {
+    case 'VFR':  return { bg: 'bg-emerald-500/10', text: 'text-emerald-400', border: 'border-emerald-500/40', dot: 'bg-emerald-400' };
+    case 'MVFR': return { bg: 'bg-blue-500/10',    text: 'text-blue-400',    border: 'border-blue-500/40',    dot: 'bg-blue-400' };
+    case 'IFR':  return { bg: 'bg-red-500/10',     text: 'text-red-400',     border: 'border-red-500/40',     dot: 'bg-red-400' };
+    case 'LIFR': return { bg: 'bg-fuchsia-500/10', text: 'text-fuchsia-400', border: 'border-fuchsia-500/40', dot: 'bg-fuchsia-400' };
+    default:     return { bg: 'bg-slate-800',      text: 'text-slate-500',   border: 'border-slate-700',      dot: 'bg-slate-500' };
+  }
+}
+
+function formatWind(dir, kt, gustKt) {
+  if (kt == null || kt === 0) return 'CALM';
+  const dirStr = dir != null ? String(dir).padStart(3, '0') : 'VRB';
+  let s = `${dirStr}° @ ${kt}kt`;
+  if (gustKt && gustKt > kt) s += ` G${gustKt}`;
+  return s;
+}
+
+function formatObsTime(iso) {
+  if (!iso) return '—';
+  try {
+    const d = new Date(iso);
+    const ago = Math.floor((Date.now() - d.getTime()) / 60000);
+    if (ago < 1) return 'just now';
+    if (ago < 60) return `${ago}m ago`;
+    if (ago < 1440) return `${Math.floor(ago / 60)}h ago`;
+    return d.toLocaleString();
+  } catch (_) { return '—'; }
+}
+
+/* -----
+   AirportWxBadge — small inline VFR/IFR badge with click-to-expand details.
+   Used inline next to airport codes in trip headers.
+   ----- */
+function AirportWxBadge({ icao, compact }) {
+  const [wx, setWx] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    fetchAirportWx(icao).then(data => {
+      if (cancelled) return;
+      setWx(data);
+      setLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [icao]);
+
+  if (loading) {
+    return (
+      <span className="inline-flex items-center px-1.5 py-0.5 text-[9px] text-slate-600 bg-slate-900/50 rounded-sm"
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}>···</span>
+    );
+  }
+  if (!wx?.metar) return null;
+  const cat = wx.metar.flightCategory;
+  const styles = flightCategoryStyles(cat);
+
+  if (compact) {
+    return (
+      <span
+        className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] tracking-wider border ${styles.bg} ${styles.text} ${styles.border} rounded-sm cursor-pointer`}
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        title={wx.metar.rawMetar || ''}
+        onClick={(e) => { e.stopPropagation(); setOpen(o => !o); }}
+      >
+        <span className={`w-1.5 h-1.5 ${styles.dot} rounded-full`} />
+        {cat || '?'}
+      </span>
+    );
+  }
+
+  return (
+    <span className="relative inline-block">
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); setOpen(o => !o); }}
+        className={`inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] tracking-wider border ${styles.bg} ${styles.text} ${styles.border} rounded-sm`}
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}
+      >
+        <span className={`w-1.5 h-1.5 ${styles.dot} rounded-full`} />
+        {cat || '?'}
+      </button>
+      {open && (
+        <div className="absolute left-0 top-full mt-1 z-50 w-80 max-w-[90vw] bg-slate-950 border border-slate-700 shadow-xl p-3 text-left"
+          onClick={(e) => e.stopPropagation()}>
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs text-slate-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {icao} · {formatObsTime(wx.metar.observedTime)}
+            </span>
+            <button onClick={() => setOpen(false)} className="text-slate-500 hover:text-slate-300 text-sm">×</button>
+          </div>
+          <div className="text-[10px] text-slate-400 leading-relaxed whitespace-pre-wrap break-words" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {wx.metar.rawMetar || '—'}
+          </div>
+          <div className="mt-2 pt-2 border-t border-slate-800 grid grid-cols-2 gap-x-3 gap-y-1 text-[10px] text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            <span>WIND</span><span className="text-slate-200 text-right">{formatWind(wx.metar.windDir, wx.metar.windKt, wx.metar.windGustKt)}</span>
+            <span>VIS</span><span className="text-slate-200 text-right">{wx.metar.visibilitySm != null ? `${wx.metar.visibilitySm} SM` : '—'}</span>
+            <span>CEIL</span><span className="text-slate-200 text-right">{wx.metar.ceilingFt != null ? `${wx.metar.ceilingFt} ft` : 'CLR'}</span>
+            <span>TEMP / DEW</span><span className="text-slate-200 text-right">{wx.metar.tempC != null ? `${wx.metar.tempC}°C / ${wx.metar.dewpointC ?? '—'}°C` : '—'}</span>
+            <span>ALT</span><span className="text-slate-200 text-right">{wx.metar.altimeterInHg != null ? `${wx.metar.altimeterInHg.toFixed(2)}` : '—'}</span>
+          </div>
+        </div>
+      )}
+    </span>
+  );
+}
+
+/* -----
+   AirportWxCard — full details card for one airport. Used in the Weather tab.
+   Shows METAR, TAF periods, and a "Reference only" indicator.
+   ----- */
+function AirportWxCard({ icao }) {
+  const [wx, setWx] = useState(null);
+  const [winds, setWinds] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    Promise.all([
+      fetchAirportWx(icao),
+      fetchWindsAloft(icao),
+    ]).then(([wxData, windsData]) => {
+      if (cancelled) return;
+      setWx(wxData);
+      setWinds(windsData);
+      setLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [icao]);
+
+  if (loading) {
+    return (
+      <div className="border border-slate-800 bg-slate-900/30 p-4">
+        <div className="flex items-center gap-2 text-slate-500 text-xs">
+          <Loader2 className="w-3 h-3 animate-spin" />
+          <span>Loading weather for {icao}…</span>
+        </div>
+      </div>
+    );
+  }
+  if (!wx) {
+    return (
+      <div className="border border-slate-800 bg-slate-900/30 p-4">
+        <div className="text-slate-500 text-xs">Weather unavailable for {icao}</div>
+      </div>
+    );
+  }
+  const m = wx.metar;
+  const t = wx.taf;
+  const cat = m?.flightCategory;
+  const styles = flightCategoryStyles(cat);
+
+  return (
+    <div className="border border-slate-800 bg-slate-900/30">
+      {/* Header */}
+      <div className={`px-4 py-2.5 flex items-center justify-between border-b ${styles.border} ${styles.bg}`}>
+        <div className="flex items-center gap-3">
+          <h3 className="text-lg text-slate-100" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>{icao}</h3>
+          {cat && (
+            <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] tracking-wider border ${styles.text} ${styles.border}`}
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              <span className={`w-1.5 h-1.5 ${styles.dot} rounded-full`} />
+              {cat}
+            </span>
+          )}
+        </div>
+        <span className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {m ? formatObsTime(m.observedTime) : 'NO METAR'}
+        </span>
+      </div>
+
+      {/* METAR */}
+      {m ? (
+        <div className="p-4 border-b border-slate-800">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>METAR</span>
+          </div>
+          <div className="text-[11px] text-slate-300 leading-relaxed whitespace-pre-wrap break-words mb-3"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {m.rawMetar || '—'}
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-1.5 text-[11px]" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            <WxField label="WIND" value={formatWind(m.windDir, m.windKt, m.windGustKt)} />
+            <WxField label="VISIBILITY" value={m.visibilitySm != null ? `${m.visibilitySm} SM` : '—'} />
+            <WxField label="CEILING" value={m.ceilingFt != null ? `${m.ceilingFt} ft` : 'CLR'} />
+            <WxField label="TEMP" value={m.tempC != null ? `${m.tempC}°C` : '—'} />
+            <WxField label="DEWPOINT" value={m.dewpointC != null ? `${m.dewpointC}°C` : '—'} />
+            <WxField label="ALTIMETER" value={m.altimeterInHg != null ? `${m.altimeterInHg.toFixed(2)}"` : '—'} />
+          </div>
+        </div>
+      ) : (
+        <div className="p-4 border-b border-slate-800 text-slate-500 text-xs">METAR unavailable</div>
+      )}
+
+      {/* TAF */}
+      <div className="p-4 border-b border-slate-800">
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>TAF</span>
+          {t?.issuedTime && (
+            <span className="text-[10px] text-slate-600" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              issued {formatObsTime(t.issuedTime)}
+            </span>
+          )}
+        </div>
+        {!t ? (
+          <div className="text-[11px] text-slate-500">No TAF available for this airport</div>
+        ) : (
+          <>
+            <div className="text-[11px] text-slate-300 leading-relaxed whitespace-pre-wrap break-words mb-3"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {t.rawTaf || '—'}
+            </div>
+            {Array.isArray(t.periods) && t.periods.length > 0 && (
+              <div className="space-y-1.5">
+                {t.periods.map((p, i) => {
+                  const pStyles = flightCategoryStyles(p.flightCategory);
+                  return (
+                    <div key={i} className={`flex items-center gap-3 px-2 py-1.5 border ${pStyles.border} ${pStyles.bg}`}>
+                      <span className={`shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] tracking-wider ${pStyles.text}`}
+                        style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                        <span className={`w-1.5 h-1.5 ${pStyles.dot} rounded-full`} />
+                        {p.flightCategory || '?'}
+                      </span>
+                      {p.changeIndicator && (
+                        <span className="shrink-0 text-[9px] text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                          {p.changeIndicator}
+                        </span>
+                      )}
+                      <span className="text-[10px] text-slate-400 truncate" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                        {formatWind(p.windDir, p.windKt, p.windGustKt)}
+                        {p.visibilitySm != null && ` · ${p.visibilitySm}SM`}
+                        {p.ceilingFt != null && ` · ${p.ceilingFt}ft`}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Winds Aloft */}
+      <div className="p-4">
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>WINDS ALOFT</span>
+        </div>
+        {!winds || !Array.isArray(winds.levels) || winds.levels.length === 0 ? (
+          <div className="text-[11px] text-slate-500">Winds aloft unavailable for this location</div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1.5 text-[11px]"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {winds.levels.map((l, i) => (
+              <div key={i} className="flex items-center justify-between border-b border-slate-800/50 pb-1">
+                <span className="text-slate-500">{(l.altitude / 1000).toString().padStart(2, ' ')},000 ft</span>
+                <span className="text-slate-300">
+                  {formatWind(l.windDir, l.windKt)}
+                  {l.tempC != null && <span className="text-slate-500 ml-3">{l.tempC > 0 ? `+${l.tempC}` : l.tempC}°C</span>}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function WxField({ label, value }) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span className="text-slate-500">{label}</span>
+      <span className="text-slate-200">{value}</span>
+    </div>
+  );
+}
+
+/* -----
+   TripWeatherSection — the full "WEATHER" tab content. Shows weather cards
+   for the trip's origin and destination, plus a "reference only" disclaimer.
+   ----- */
+function TripWeatherSection({ trip }) {
+  const from = trip?.info?.from;
+  const to = trip?.info?.to;
+  // We don't have airport coords stored on the trip directly. The winds-aloft
+  // endpoint needs lat/lon. We'll let AirportWxCard look them up via the
+  // hardcoded airports table indirectly — for now, pass null and let winds
+  // aloft be optional. (A future enhancement is to enrich trip data with
+  // coords at write time.)
+  const airports = [from, to].filter(Boolean);
+
+  return (
+    <div className="p-4 max-w-4xl space-y-4">
+      {/* Disclaimer banner */}
+      <div className="border border-amber-500/30 bg-amber-500/5 px-3 py-2 flex items-start gap-2">
+        <AlertCircle className="w-3.5 h-3.5 text-amber-400 mt-0.5 shrink-0" />
+        <div className="text-[11px] text-amber-200/80" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+          <strong className="text-amber-300">Reference only.</strong> This is a convenience snapshot from NOAA. Always obtain an official weather brief from ForeFlight, 1800wxbrief.com, or another approved source before flight.
+        </div>
+      </div>
+
+      {airports.length === 0 ? (
+        <div className="text-slate-500 text-xs">No airports defined for this trip.</div>
+      ) : (
+        airports.map(icao => (
+          <AirportWxCard key={icao} icao={icao} />
+        ))
+      )}
+    </div>
+  );
+}
+
+
+/* ============================================================
+   ForeFlight handoff — pre-fill ForeFlight Mobile with trip data
+   so pilots can review and file from the certified app they use.
+   We never touch the FAA filing system directly.
+   ============================================================ */
+
+// Default cruise performance per aircraft type (rough)
+const _aircraftDefaults = {
+  // Citation-style jets — Skyway's fleet
+  'C25B': { cruiseKts: 380, burnGph: 180, cruiseFt: 39000 }, // CJ3
+  'C25A': { cruiseKts: 360, burnGph: 165, cruiseFt: 39000 }, // CJ2
+  'C25':  { cruiseKts: 340, burnGph: 150, cruiseFt: 39000 }, // CJ1
+  'C56X': { cruiseKts: 400, burnGph: 230, cruiseFt: 45000 }, // Excel
+  'C680': { cruiseKts: 430, burnGph: 280, cruiseFt: 45000 }, // Sovereign
+  // Helicopter
+  'AS50': { cruiseKts: 130, burnGph: 55,  cruiseFt: 5000 },
+  'EC30': { cruiseKts: 135, burnGph: 60,  cruiseFt: 5000 },
+};
+
+function getAircraftDefaults(aircraftType) {
+  if (!aircraftType) return { cruiseKts: 380, burnGph: 180, cruiseFt: 39000 };
+  const key = String(aircraftType).toUpperCase().replace(/[\s\-]/g, '');
+  // Try exact match first, then prefix
+  if (_aircraftDefaults[key]) return _aircraftDefaults[key];
+  for (const k of Object.keys(_aircraftDefaults)) {
+    if (key.startsWith(k)) return _aircraftDefaults[k];
+  }
+  return { cruiseKts: 380, burnGph: 180, cruiseFt: 39000 };
+}
+
+/**
+ * Build a ForeFlight Mobile URL that opens the route on the Maps view
+ * with speed, fuel burn, altitude, tail, and ETD pre-populated.
+ *
+ * Format (from foreflight.com/support/app-urls):
+ *   foreflightmobile://maps/search?q=KAPF+KGON+380kts+180gph+39000ft+N444AM+20260514T22:40:00Z
+ */
+function buildForeFlightUrl({ from, to, cruiseKts, burnGph, cruiseFt, tail, etdIso }) {
+  if (!from || !to) return null;
+  const parts = [from, to];
+  if (cruiseKts) parts.push(`${cruiseKts}kts`);
+  if (burnGph) parts.push(`${burnGph}gph`);
+  if (cruiseFt) parts.push(`${cruiseFt}ft`);
+  if (tail) parts.push(tail);
+  if (etdIso) {
+    // ForeFlight expects YYYYMMDDTHH:MM:SSZ format
+    try {
+      const d = new Date(etdIso);
+      const yyyy = d.getUTCFullYear();
+      const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+      const dd = String(d.getUTCDate()).padStart(2, '0');
+      const hh = String(d.getUTCHours()).padStart(2, '0');
+      const mi = String(d.getUTCMinutes()).padStart(2, '0');
+      const ss = String(d.getUTCSeconds()).padStart(2, '0');
+      parts.push(`${yyyy}${mm}${dd}T${hh}:${mi}:${ss}Z`);
+    } catch (_) { /* skip ETD */ }
+  }
+  return `foreflightmobile://maps/search?q=${parts.join('+')}`;
+}
+
+/**
+ * Detect whether the user is on iOS (where ForeFlight Mobile lives).
+ * On non-iOS, the deep link won't do anything useful.
+ */
+function isIosDevice() {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  return /iPad|iPhone|iPod/.test(ua)
+    || (ua.includes('Mac') && navigator.maxTouchPoints > 1); // iPadOS 13+
+}
+
+function ForeFlightHandoff({ trip, currentUser }) {
+  const from = trip?.info?.from || '';
+  const to = trip?.info?.to || '';
+  const tail = trip?.info?.tail || '';
+  const aircraftType = trip?.info?.aircraftType || trip?.info?.acType || '';
+  const etdIso = trip?.start || '';
+
+  const acDefaults = getAircraftDefaults(aircraftType);
+
+  // Editable plan fields. Default from aircraft type, but pilot can override.
+  const [cruiseKts, setCruiseKts] = useState(acDefaults.cruiseKts);
+  const [burnGph, setBurnGph] = useState(acDefaults.burnGph);
+  const [cruiseFt, setCruiseFt] = useState(acDefaults.cruiseFt);
+  const [alternate, setAlternate] = useState('');
+  const [routeNotes, setRouteNotes] = useState('');
+
+  const url = buildForeFlightUrl({
+    from, to,
+    cruiseKts: cruiseKts || acDefaults.cruiseKts,
+    burnGph: burnGph || acDefaults.burnGph,
+    cruiseFt: cruiseFt || acDefaults.cruiseFt,
+    tail,
+    etdIso,
+  });
+
+  // Plain-text summary that the pilot can copy and paste into 1800wxbrief etc.
+  // Uses ICAO order: from/to/alt at top, then route, then remarks
+  const ttSummary = [
+    `AIRCRAFT: ${tail || '—'} ${aircraftType ? `(${aircraftType})` : ''}`,
+    `ROUTE: ${from || '—'} → ${to || '—'}${alternate ? `  ALT: ${alternate}` : ''}`,
+    `CRUISE: ${cruiseFt}ft @ ${cruiseKts}kts, ${burnGph}gph`,
+    etdIso ? `ETD (Z): ${new Date(etdIso).toISOString().replace(/\.\d+Z$/, 'Z')}` : null,
+    trip?.info?.pic ? `PIC: ${trip.info.pic}` : null,
+    trip?.info?.sic ? `SIC: ${trip.info.sic}` : null,
+    `SOULS ON BOARD: ${(trip?.info?.pax || 0) + (trip?.info?.pic ? 1 : 0) + (trip?.info?.sic ? 1 : 0)}`,
+    routeNotes ? `NOTES: ${routeNotes}` : null,
+  ].filter(Boolean).join('\n');
+
+  const [copied, setCopied] = useState(false);
+  function copySummary() {
+    if (!navigator.clipboard) return;
+    navigator.clipboard.writeText(ttSummary).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }).catch(() => {});
+  }
+
+  const onIos = isIosDevice();
+
+  return (
+    <div className="p-4 max-w-3xl space-y-4">
+      {/* Disclaimer */}
+      <div className="border border-amber-500/30 bg-amber-500/5 px-3 py-2 flex items-start gap-2">
+        <AlertCircle className="w-3.5 h-3.5 text-amber-400 mt-0.5 shrink-0" />
+        <div className="text-[11px] text-amber-200/80" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+          <strong className="text-amber-300">Pilot files the actual plan.</strong> This page pre-fills ForeFlight with trip data so you can review the route and file from inside ForeFlight. Skyway Ops does not file directly with the FAA.
+        </div>
+      </div>
+
+      {/* Trip summary card */}
+      <div className="border border-slate-800 bg-slate-900/40 p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>TRIP</span>
+          <span className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{tail || '—'}</span>
+        </div>
+        <div className="flex items-center gap-3 text-lg" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          <span className="text-slate-100">{from || '—'}</span>
+          <ArrowRight className="w-4 h-4 text-cyan-400" />
+          <span className="text-slate-100">{to || '—'}</span>
+        </div>
+        {etdIso && (
+          <div className="text-[11px] text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            ETD: {new Date(etdIso).toISOString().replace(/\.\d+Z$/, 'Z')}
+          </div>
+        )}
+      </div>
+
+      {/* Editable performance fields */}
+      <div className="border border-slate-800 bg-slate-900/40 p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>PERFORMANCE</span>
+          {aircraftType && (
+            <span className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{aircraftType} defaults</span>
+          )}
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <PlanField label="CRUISE ALT (ft)" value={cruiseFt} onChange={setCruiseFt} type="number" />
+          <PlanField label="CRUISE SPEED (kts)" value={cruiseKts} onChange={setCruiseKts} type="number" />
+          <PlanField label="FUEL BURN (gph)" value={burnGph} onChange={setBurnGph} type="number" />
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <PlanField label="ALTERNATE (optional)" value={alternate} onChange={setAlternate} placeholder="e.g. KJAX" />
+          <PlanField label="ROUTE NOTES (optional)" value={routeNotes} onChange={setRouteNotes} placeholder="e.g. DCT WAYPT DCT" />
+        </div>
+      </div>
+
+      {/* Primary action: open in ForeFlight */}
+      <div className="border border-cyan-500/30 bg-cyan-500/5 p-4 space-y-3">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="text-[10px] tracking-widest text-cyan-400 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>OPEN IN FOREFLIGHT</div>
+            <div className="text-[11px] text-slate-400" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+              Loads the route on the ForeFlight Maps view. Speed, fuel, altitude, tail and ETD are pre-populated. Review, then file from ForeFlight's flight plan form.
+            </div>
+          </div>
+        </div>
+        {!onIos && (
+          <div className="text-[10px] text-amber-300/80" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            ⚠ This link only works on iOS devices with ForeFlight installed.
+          </div>
+        )}
+        <a
+          href={url || '#'}
+          className={`block w-full text-center py-3 text-sm tracking-widest border transition-colors ${
+            url
+              ? 'bg-cyan-500/10 border-cyan-400 text-cyan-300 hover:bg-cyan-500/20'
+              : 'bg-slate-900 border-slate-800 text-slate-600 cursor-not-allowed pointer-events-none'
+          }`}
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        >
+          OPEN IN FOREFLIGHT →
+        </a>
+        {url && (
+          <details className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            <summary className="cursor-pointer hover:text-slate-300">Show URL</summary>
+            <div className="mt-2 p-2 bg-slate-950 border border-slate-800 break-all">{url}</div>
+          </details>
+        )}
+      </div>
+
+      {/* Plain-text summary for 1800wxbrief / radio call / etc */}
+      <div className="border border-slate-800 bg-slate-900/40 p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>FLIGHT PLAN SUMMARY</span>
+          <button
+            onClick={copySummary}
+            className="text-[10px] tracking-widest text-cyan-400 hover:text-cyan-300 transition-colors"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            {copied ? '✓ COPIED' : 'COPY'}
+          </button>
+        </div>
+        <pre className="text-[11px] text-slate-300 leading-relaxed whitespace-pre-wrap bg-slate-950 border border-slate-800 p-3"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+{ttSummary}
+        </pre>
+        <div className="text-[10px] text-slate-500" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+          Use this for radio briefings, 1800wxbrief.com manual entry, or pasting into other dispatch tools.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PlanField({ label, value, onChange, type = 'text', placeholder }) {
+  return (
+    <label className="block">
+      <span className="block text-[10px] tracking-widest text-slate-500 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{label}</span>
+      <input
+        type={type}
+        value={value}
+        onChange={(e) => onChange(type === 'number' ? Number(e.target.value) || 0 : e.target.value)}
+        placeholder={placeholder}
+        className="w-full px-2 py-1.5 bg-slate-950 border border-slate-800 text-slate-200 text-sm focus:outline-none focus:border-cyan-500/50"
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}
+      />
+    </label>
+  );
+}
+
+
+/* ============================================================
    Trip detail view
    ============================================================ */
 function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEmail, onBack, onArchive }) {
@@ -2976,9 +3587,19 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
             {trip.info.tail}
           </h1>
           <div className="flex items-center gap-2 text-xl text-slate-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            <span>{trip.info.from}</span>
+            <div className="flex items-center gap-1.5">
+              <span>{trip.info.from}</span>
+              {trip.info.from && ['admin', 'ops', 'crew'].includes(currentUser?.role) && (
+                <AirportWxBadge icao={trip.info.from} compact />
+              )}
+            </div>
             <ArrowRight className="w-5 h-5 text-cyan-400" />
-            <span>{trip.info.to}</span>
+            <div className="flex items-center gap-1.5">
+              <span>{trip.info.to}</span>
+              {trip.info.to && ['admin', 'ops', 'crew'].includes(currentUser?.role) && (
+                <AirportWxBadge icao={trip.info.to} compact />
+              )}
+            </div>
           </div>
         </div>
 
@@ -3044,6 +3665,8 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
             { id: 'pax', label: 'PAX', icon: Users, badge: trip.info.pax === 0 ? null : `${totalVerified}/${totalExpected}`, hidden: trip.info.pax === 0 || !trip.info.isOps },
             { id: 'sheet', label: 'SHEET', icon: FileText, badge: tripSheetUrl ? '✓' : null, hidden: !showSheetTab },
             { id: 'notes', label: 'NOTES', icon: AlertCircle, hidden: !hasNotes },
+            { id: 'weather', label: 'WEATHER', icon: Cloud, hidden: !['admin', 'ops', 'crew'].includes(currentUser?.role) },
+            { id: 'plan', label: 'PLAN', icon: Navigation, hidden: !['admin', 'ops', 'crew'].includes(currentUser?.role) },
             { id: 'chat', label: 'COMMS', icon: MessageSquare },
             { id: 'notify', label: 'NOTIFY', icon: Bell, hidden: !trip.info.isOps },
             { id: 'delay', label: 'DELAY', icon: AlertCircle, hidden: !trip.info.isOps },
@@ -3223,6 +3846,10 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
           <div className="p-6 max-w-2xl space-y-4">
             <TripNotesPanel notes={tripSheetNotes} />
           </div>
+        ) : tab === 'weather' ? (
+          <TripWeatherSection trip={trip} />
+        ) : tab === 'plan' ? (
+          <ForeFlightHandoff trip={trip} currentUser={currentUser} />
         ) : tab === 'chat' ? (
           <ChatPanel tripId={trip.uid} currentUser={currentUserDisplayName || currentUser?.name || ''} />
         ) : tab === 'notify' ? (
@@ -12374,11 +13001,25 @@ function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
 
   // Mobile tab state: 'list' | 'map' | 'detail'
   const [mobileTab, setMobileTab] = useState('list');
+  // Reliable mobile detection (works regardless of Tailwind config / viewport meta)
+  const [isMobile, setIsMobile] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.innerWidth < 768;
+  });
+  useEffect(() => {
+    function check() { setIsMobile(window.innerWidth < 768); }
+    window.addEventListener('resize', check);
+    window.addEventListener('orientationchange', check);
+    check();
+    return () => {
+      window.removeEventListener('resize', check);
+      window.removeEventListener('orientationchange', check);
+    };
+  }, []);
   // Selecting a tail on mobile auto-advances to the map tab
   const handleSelectTail = useCallback((tail) => {
     setSelectedTail(tail);
-    if (window.matchMedia && window.matchMedia('(max-width: 767px)').matches) {
-      // If currently on list, move to map. If already on map, jump to detail.
+    if (window.innerWidth < 768) {
       setMobileTab(prev => prev === 'list' ? 'map' : prev === 'map' ? 'detail' : 'detail');
     }
   }, []);
@@ -12449,27 +13090,10 @@ function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
     </div>
   );
 
-  return (
-    <div className="flex-1 overflow-hidden flex flex-col md:flex-row">
-      {/* ============ DESKTOP LAYOUT (md and up) ============ */}
-      <div className="hidden md:flex md:flex-1 md:overflow-hidden">
-        {/* LEFT: fleet list */}
-        <div className="w-80 shrink-0 border-r border-slate-800">
-          {listPanel}
-        </div>
-        {/* RIGHT: map on top (60%), detail panel below (40%) */}
-        <div className="flex-1 flex flex-col overflow-hidden">
-          <div className="shrink-0" style={{ height: '60%', minHeight: '320px' }}>
-            {mapPanel}
-          </div>
-          <div className="flex-1 overflow-hidden border-t border-slate-800">
-            {detailPanel}
-          </div>
-        </div>
-      </div>
-
-      {/* ============ MOBILE LAYOUT (below md) — tab switcher ============ */}
-      <div className="flex md:hidden flex-col flex-1 overflow-hidden">
+  // === MOBILE LAYOUT (under 768px) — tab switcher ===
+  if (isMobile) {
+    return (
+      <div className="flex-1 overflow-hidden flex flex-col">
         {/* Tab bar */}
         <div className="shrink-0 flex border-b border-slate-800 bg-slate-950">
           <button
@@ -12477,7 +13101,7 @@ function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
             className={`flex-1 py-2.5 text-[11px] tracking-widest border-b-2 transition-colors ${
               mobileTab === 'list'
                 ? 'text-cyan-400 border-cyan-400'
-                : 'text-slate-500 border-transparent hover:text-slate-300'
+                : 'text-slate-500 border-transparent'
             }`}
             style={{ fontFamily: 'JetBrains Mono, monospace' }}
           >
@@ -12488,7 +13112,7 @@ function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
             className={`flex-1 py-2.5 text-[11px] tracking-widest border-b-2 transition-colors ${
               mobileTab === 'map'
                 ? 'text-cyan-400 border-cyan-400'
-                : 'text-slate-500 border-transparent hover:text-slate-300'
+                : 'text-slate-500 border-transparent'
             }`}
             style={{ fontFamily: 'JetBrains Mono, monospace' }}
           >
@@ -12501,8 +13125,8 @@ function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
               mobileTab === 'detail'
                 ? 'text-cyan-400 border-cyan-400'
                 : !selectedTail
-                  ? 'text-slate-700 border-transparent cursor-not-allowed'
-                  : 'text-slate-500 border-transparent hover:text-slate-300'
+                  ? 'text-slate-700 border-transparent'
+                  : 'text-slate-500 border-transparent'
             }`}
             style={{ fontFamily: 'JetBrains Mono, monospace' }}
           >
@@ -12510,8 +13134,7 @@ function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
           </button>
         </div>
 
-        {/* Active tab content. Use display:none instead of conditional rendering so
-            the map stays mounted (re-init is expensive) and state survives tab switches. */}
+        {/* Active tab content. Use display:none so the map stays mounted across tab switches. */}
         <div className="flex-1 overflow-hidden relative">
           <div style={{ display: mobileTab === 'list' ? 'block' : 'none' }} className="absolute inset-0">
             {listPanel}
@@ -12522,6 +13145,23 @@ function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
           <div style={{ display: mobileTab === 'detail' ? 'block' : 'none' }} className="absolute inset-0">
             {detailPanel}
           </div>
+        </div>
+      </div>
+    );
+  }
+
+  // === DESKTOP LAYOUT (768px and up) ===
+  return (
+    <div className="flex-1 overflow-hidden flex">
+      <div className="w-80 shrink-0 border-r border-slate-800">
+        {listPanel}
+      </div>
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="shrink-0" style={{ height: '60%', minHeight: '320px' }}>
+          {mapPanel}
+        </div>
+        <div className="flex-1 overflow-hidden border-t border-slate-800">
+          {detailPanel}
         </div>
       </div>
     </div>
