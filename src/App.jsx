@@ -12277,6 +12277,770 @@ function airportCoords(code) {
   return AIRPORT_COORDS[c] || null;
 }
 
+/* ============================================================
+   TRACKING — list + detail (FlightAware-style)
+   ============================================================ */
+
+function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
+  const fleetTails = Array.isArray(config?.fleetTails) && config.fleetTails.length > 0
+    ? config.fleetTails
+    : ['N20UF', 'N168ZZ', 'N286N', 'N444AM', 'N651TW', 'N551FP', 'N85AH', 'N525CR'];
+
+  const [selectedTail, setSelectedTail] = useState(fleetTails[0]);
+  const [tailStates, setTailStates] = useState({});   // { N286N: { airborne, alt, speed, origin, destination, ... } }
+  const [loadingFleet, setLoadingFleet] = useState(true);
+
+  // Poll each tail's FlightAware position state every 30s for the list
+  useEffect(() => {
+    let cancelled = false;
+    let timer = null;
+
+    async function pollAll() {
+      try {
+        const { auth } = await import('./firebase.js');
+        const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : null;
+        if (!idToken) return;
+
+        const results = await Promise.all(fleetTails.map(async (t) => {
+          try {
+            const r = await fetch(`/api/flightaware-positions?idents=${encodeURIComponent(t)}`, {
+              headers: { 'Authorization': `Bearer ${idToken}` },
+            });
+            if (!r.ok) return [t, null];
+            const data = await r.json();
+            const positions = Array.isArray(data?.positions) ? data.positions : [];
+            return [t, positions[0] || null];
+          } catch (_) {
+            return [t, null];
+          }
+        }));
+
+        if (!cancelled) {
+          const next = {};
+          for (const [t, s] of results) next[t] = s;
+          setTailStates(next);
+          setLoadingFleet(false);
+        }
+      } catch (_) {
+        if (!cancelled) setLoadingFleet(false);
+      }
+    }
+
+    pollAll();
+    timer = setInterval(pollAll, 30000);
+    return () => { cancelled = true; if (timer) clearInterval(timer); };
+  }, [fleetTails.join(',')]);
+
+  return (
+    <div className="flex-1 overflow-hidden flex">
+      {/* LEFT: fleet list */}
+      <div className="w-80 shrink-0 border-r border-slate-800 bg-slate-950 overflow-y-auto scroll-area">
+        <div className="px-4 py-3 border-b border-slate-800 sticky top-0 bg-slate-950 z-10">
+          <div className="text-[10px] tracking-widest text-slate-500"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>FLEET · {fleetTails.length}</div>
+          <h3 className="text-sm text-slate-200 mt-1">Tracking</h3>
+        </div>
+        {loadingFleet ? (
+          <div className="p-6 text-center text-slate-500 text-xs">
+            <Loader2 className="w-4 h-4 animate-spin mx-auto mb-1" /> Loading positions…
+          </div>
+        ) : (
+          fleetTails.map(tail => (
+            <FleetListItem
+              key={tail}
+              tail={tail}
+              state={tailStates[tail]}
+              trips={trips}
+              tripStates={tripStates}
+              isSelected={tail === selectedTail}
+              onClick={() => setSelectedTail(tail)}
+            />
+          ))
+        )}
+      </div>
+
+      {/* RIGHT: detail panel for selected tail */}
+      <div className="flex-1 overflow-y-auto scroll-area">
+        {selectedTail ? (
+          <TrackingDetailPanel
+            key={selectedTail}
+            tail={selectedTail}
+            initialState={tailStates[selectedTail]}
+            trips={trips}
+            tripStates={tripStates}
+          />
+        ) : (
+          <div className="flex items-center justify-center h-full text-slate-500">
+            Select an aircraft from the list
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ===========================
+   Fleet list item — one row per tail
+   =========================== */
+function FleetListItem({ tail, state, trips, tripStates, isSelected, onClick }) {
+  // Status synthesis: airborne / scheduled / on ground / AOG
+  const airborne = state?.airborne === true || state?.last_position?.altitude != null;
+  const altFt = state?.last_position?.altitude != null
+    ? Math.round(state.last_position.altitude * 100)
+    : null;
+  const speedKt = state?.last_position?.groundspeed ?? null;
+  const origin = state?.origin?.code_icao || state?.origin?.code || state?.origin?.code_iata || null;
+  const destination = state?.destination?.code_icao || state?.destination?.code || state?.destination?.code_iata || null;
+
+  const statusColor = airborne ? 'text-cyan-400' : 'text-slate-500';
+  const statusLabel = airborne ? 'En route' : 'On ground';
+
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full text-left px-4 py-3 border-b border-slate-800 transition-colors ${
+        isSelected ? 'bg-cyan-500/5 border-l-2 border-l-cyan-500' : 'hover:bg-slate-900'
+      }`}
+    >
+      <div className="flex items-center justify-between mb-1.5">
+        <span className="text-sm text-slate-100"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>{tail}</span>
+        <span className={`text-[10px] tracking-widest ${statusColor}`}
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          ● {statusLabel.toUpperCase()}
+        </span>
+      </div>
+      {airborne ? (
+        <>
+          <div className="text-xs text-slate-400">
+            {origin && destination ? `${origin} → ${destination}` : 'In flight'}
+          </div>
+          <div className="text-[10px] text-slate-500 mt-1 flex gap-3">
+            {altFt != null && <span>{altFt.toLocaleString()} ft</span>}
+            {speedKt != null && <span>{speedKt} kt</span>}
+          </div>
+        </>
+      ) : (
+        <div className="text-[10px] text-slate-500">
+          {origin ? `Last at ${origin}` : 'Idle'}
+        </div>
+      )}
+    </button>
+  );
+}
+
+/* ===========================
+   TRACKING DETAIL — the right panel
+   =========================== */
+function TrackingDetailPanel({ tail, initialState, trips, tripStates }) {
+  const [detail, setDetail] = useState(null);
+  const [trackLog, setTrackLog] = useState(null);
+  const [originWx, setOriginWx] = useState(null);
+  const [destWx, setDestWx] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [showChart, setShowChart] = useState(true);
+
+  // Fetch detail + track + weather; refresh every 30s
+  useEffect(() => {
+    let cancelled = false;
+    let timer = null;
+
+    async function fetchAll() {
+      try {
+        const { auth } = await import('./firebase.js');
+        const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : null;
+        if (!idToken) { setError('Not signed in'); setLoading(false); return; }
+        const authH = { 'Authorization': `Bearer ${idToken}` };
+
+        // Detail
+        const detailResp = await fetch(`/api/flightaware-flight-detail?ident=${encodeURIComponent(tail)}`, { headers: authH });
+        const detailData = detailResp.ok ? await detailResp.json() : { flight: null };
+        if (cancelled) return;
+        setDetail(detailData.flight || null);
+
+        // Track log
+        const trackResp = await fetch(`/api/flightaware-track-log?ident=${encodeURIComponent(tail)}`, { headers: authH });
+        const trackData = trackResp.ok ? await trackResp.json() : { points: [] };
+        if (cancelled) return;
+        setTrackLog(Array.isArray(trackData.points) ? trackData.points : []);
+
+        // Weather for origin + destination
+        if (detailData.flight?.origin?.code) {
+          fetch(`/api/airport-weather?icao=${encodeURIComponent(detailData.flight.origin.code)}`, { headers: authH })
+            .then(r => r.ok ? r.json() : null)
+            .then(d => !cancelled && d && setOriginWx(d.parsed || null))
+            .catch(() => {});
+        }
+        if (detailData.flight?.destination?.code) {
+          fetch(`/api/airport-weather?icao=${encodeURIComponent(detailData.flight.destination.code)}`, { headers: authH })
+            .then(r => r.ok ? r.json() : null)
+            .then(d => !cancelled && d && setDestWx(d.parsed || null))
+            .catch(() => {});
+        }
+
+        setLoading(false);
+      } catch (e) {
+        if (!cancelled) {
+          setError(e.message);
+          setLoading(false);
+        }
+      }
+    }
+
+    fetchAll();
+    timer = setInterval(fetchAll, 30000);
+    return () => { cancelled = true; if (timer) clearInterval(timer); };
+  }, [tail]);
+
+  // Find the matching trip for this tail (for showing the 7-step status)
+  const matchingTrip = useMemo(() => {
+    if (!Array.isArray(trips)) return null;
+    return trips.find(t => {
+      const tailMatch = (t.tail || '').toUpperCase() === tail;
+      if (!tailMatch) return false;
+      // Prefer the most recent active trip
+      const state = tripStates?.[t.id || t.uid];
+      const status = state?.status || t.status;
+      return !['LANDED', 'ARCHIVED'].includes(status);
+    }) || trips.find(t => (t.tail || '').toUpperCase() === tail);
+  }, [trips, tripStates, tail]);
+
+  if (loading) {
+    return (
+      <div className="p-12 text-center text-slate-500">
+        <Loader2 className="w-5 h-5 animate-spin mx-auto mb-2" /> Loading flight detail…
+      </div>
+    );
+  }
+
+  if (error || !detail) {
+    return (
+      <div className="p-8">
+        <div className="text-sm text-slate-400 mb-2">{tail}</div>
+        <div className="text-xs text-slate-500">
+          {error || 'No active or recent flight data from FlightAware.'}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <DetailHero tail={tail} detail={detail} />
+      <DetailMap tail={tail} detail={detail} trackLog={trackLog} />
+      <DetailRouteTimeline detail={detail} />
+      {matchingTrip && (
+        <DetailStatusSteps trip={matchingTrip} tripState={tripStates?.[matchingTrip.id || matchingTrip.uid]} detail={detail} />
+      )}
+      <DetailFlightTimes detail={detail} />
+      <DetailRunwaysWeather detail={detail} originWx={originWx} destWx={destWx} />
+      {showChart && trackLog && trackLog.length > 0 && (
+        <DetailAltSpeedChart trackLog={trackLog} detail={detail} />
+      )}
+      {trackLog && trackLog.length > 0 && (
+        <div className="px-4 py-3 border-t border-slate-800 text-right">
+          <button onClick={() => setShowChart(s => !s)}
+            className="text-[10px] text-slate-500 hover:text-slate-300 tracking-widest"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {showChart ? 'HIDE' : 'SHOW'} ALT/SPEED CHART
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ===========================
+   HERO: tail + status + ETA
+   =========================== */
+function DetailHero({ tail, detail }) {
+  const enRoute = detail.actualOff && !detail.actualOn;
+  const landed = !!detail.actualOn;
+  const scheduled = !detail.actualOff && !detail.actualOn;
+
+  let primary, secondary, color;
+  if (enRoute) {
+    color = 'text-green-400';
+    primary = 'En route';
+    const remainMs = (detail.estimatedOn ? new Date(detail.estimatedOn).getTime() : 0) - Date.now();
+    if (remainMs > 0) {
+      const hrs = Math.floor(remainMs / 3600000);
+      const mins = Math.floor((remainMs % 3600000) / 60000);
+      secondary = `Landing in ${hrs > 0 ? hrs + 'h ' : ''}${mins}m`;
+    } else {
+      secondary = 'On approach';
+    }
+  } else if (landed) {
+    color = 'text-slate-400';
+    primary = 'Landed';
+    const ago = Date.now() - new Date(detail.actualOn).getTime();
+    const mins = Math.round(ago / 60000);
+    secondary = mins < 60 ? `${mins}m ago` : `${Math.floor(mins / 60)}h ${mins % 60}m ago`;
+  } else if (scheduled) {
+    color = 'text-amber-400';
+    primary = 'Scheduled';
+    if (detail.scheduledOff) {
+      const t = new Date(detail.scheduledOff);
+      secondary = `Departs ${t.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
+    } else {
+      secondary = 'Awaiting filing';
+    }
+  } else {
+    color = 'text-slate-500';
+    primary = 'No data';
+    secondary = '';
+  }
+
+  return (
+    <div className="px-5 py-4 border-b border-slate-800 bg-slate-950">
+      <div className="flex items-baseline gap-3 mb-1">
+        <span className="text-2xl font-medium text-slate-100"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>{tail}</span>
+        <span className="text-xs text-slate-500">
+          {detail.aircraftType || ''} · Skyway Aviation
+        </span>
+      </div>
+      <div className={`text-2xl font-semibold ${color}`} style={{ letterSpacing: '-0.02em' }}>
+        {primary}
+      </div>
+      {secondary && (
+        <div className="text-sm text-slate-300 mt-0.5">{secondary}</div>
+      )}
+    </div>
+  );
+}
+
+/* ===========================
+   MAP placeholder — uses existing Mapbox setup if available, else SVG fallback
+   =========================== */
+function DetailMap({ tail, detail, trackLog }) {
+  // For simplicity (and because we already have a Mapbox setup in the original
+  // Tracking screen), render a compact SVG track summary here. The full Mapbox
+  // map remains the primary feature in the existing Tracking tab. A full
+  // Mapbox port would require lifting the existing setup out and is left as a
+  // follow-up.
+  const points = Array.isArray(trackLog) ? trackLog.filter(p => p.lat != null && p.lon != null) : [];
+  if (points.length < 2) {
+    return (
+      <div className="h-32 border-b border-slate-800 bg-slate-950 flex items-center justify-center text-slate-600 text-xs">
+        Track log not yet available
+      </div>
+    );
+  }
+
+  // Compute bounding box
+  const lats = points.map(p => p.lat);
+  const lons = points.map(p => p.lon);
+  const minLat = Math.min(...lats), maxLat = Math.max(...lats);
+  const minLon = Math.min(...lons), maxLon = Math.max(...lons);
+  const padLat = (maxLat - minLat) * 0.1 + 0.5;
+  const padLon = (maxLon - minLon) * 0.1 + 0.5;
+
+  const W = 800, H = 220;
+  function project(lat, lon) {
+    const x = ((lon - (minLon - padLon)) / ((maxLon + padLon) - (minLon - padLon))) * W;
+    const y = H - ((lat - (minLat - padLat)) / ((maxLat + padLat) - (minLat - padLat))) * H;
+    return [x, y];
+  }
+
+  const path = points.map((p, i) => {
+    const [x, y] = project(p.lat, p.lon);
+    return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+
+  const [px, py] = project(points[points.length - 1].lat, points[points.length - 1].lon);
+  const [ox, oy] = project(points[0].lat, points[0].lon);
+
+  return (
+    <div className="border-b border-slate-800 bg-slate-950">
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: '220px', display: 'block' }}>
+        <rect width={W} height={H} fill="#0a1429"/>
+        {/* Track */}
+        <path d={path} stroke="#22c55e" strokeWidth="2" fill="none"/>
+        {/* Origin */}
+        <circle cx={ox} cy={oy} r="5" fill="#22c55e"/>
+        <text x={ox + 8} y={oy - 6} fill="#86efac" fontSize="11" fontFamily="JetBrains Mono">
+          {detail.origin?.code || ''}
+        </text>
+        {/* Aircraft */}
+        <circle cx={px} cy={py} r="14" fill="rgba(34,211,238,0.2)"/>
+        <circle cx={px} cy={py} r="6" fill="#22d3ee"/>
+        {/* Destination */}
+        {detail.destination?.code && (
+          <text x={W - 60} y={H / 2} fill="#cbd5e1" fontSize="11" fontFamily="JetBrains Mono">
+            → {detail.destination.code}
+          </text>
+        )}
+      </svg>
+    </div>
+  );
+}
+
+/* ===========================
+   ROUTE TIMELINE
+   =========================== */
+function DetailRouteTimeline({ detail }) {
+  const o = detail.origin || {};
+  const d = detail.destination || {};
+
+  const totalMs = detail.scheduledOn && detail.scheduledOff
+    ? new Date(detail.scheduledOn).getTime() - new Date(detail.scheduledOff).getTime()
+    : null;
+  const elapsedMs = detail.actualOff
+    ? Date.now() - new Date(detail.actualOff).getTime()
+    : 0;
+  const remainingMs = detail.estimatedOn
+    ? new Date(detail.estimatedOn).getTime() - Date.now()
+    : null;
+
+  const progress = (totalMs && elapsedMs > 0 && elapsedMs < totalMs)
+    ? Math.max(2, Math.min(98, (elapsedMs / totalMs) * 100))
+    : (detail.actualOn ? 100 : 0);
+
+  const fmtDur = (ms) => {
+    if (ms == null || ms < 0) return '—';
+    const h = Math.floor(ms / 3600000);
+    const m = Math.floor((ms % 3600000) / 60000);
+    return h > 0 ? `${h}h ${m}m` : `${m}m`;
+  };
+
+  return (
+    <div className="px-5 py-4 border-b border-slate-800">
+      <div className="text-[10px] text-slate-500 tracking-widest mb-3"
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}>ROUTE</div>
+
+      <div className="grid grid-cols-[auto_1fr_auto] gap-3 items-center mb-4">
+        <div>
+          <div className="text-lg font-semibold text-slate-100"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>{o.code || '—'}</div>
+          <div className="text-[10px] text-slate-500 mt-0.5">{o.city || o.name || ''}</div>
+        </div>
+        <div className="relative h-8">
+          <div className="absolute left-0 right-0 top-1/2 h-px bg-slate-800"/>
+          <div className="absolute left-0 top-[calc(50%-1px)] h-0.5 bg-cyan-500"
+            style={{ width: `${progress}%` }}/>
+          <div className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2"
+            style={{ left: `${progress}%` }}>
+            <div className="w-6 h-6 rounded-full bg-cyan-500/20 flex items-center justify-center text-cyan-400">
+              <Plane className="w-3 h-3 rotate-90"/>
+            </div>
+          </div>
+        </div>
+        <div className="text-right">
+          <div className="text-lg font-semibold text-slate-300"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>{d.code || '—'}</div>
+          <div className="text-[10px] text-slate-500 mt-0.5">{d.city || d.name || ''}</div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-3 text-xs">
+        <div>
+          <div className="text-[9px] text-slate-500 tracking-widest"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>ELAPSED</div>
+          <div className="text-slate-300">{fmtDur(elapsedMs)}</div>
+        </div>
+        <div className="text-center">
+          <div className="text-[9px] text-slate-500 tracking-widest"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>TOTAL</div>
+          <div className="text-slate-300">{fmtDur(totalMs)}</div>
+          {detail.routeDistance != null && (
+            <div className="text-[10px] text-slate-500">{detail.routeDistance} nm</div>
+          )}
+        </div>
+        <div className="text-right">
+          <div className="text-[9px] text-slate-500 tracking-widest"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>REMAINING</div>
+          <div className="text-cyan-400">{fmtDur(remainingMs)}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ===========================
+   STATUS STEPS (Skyway 7-step) — with auto/manual indicators
+   =========================== */
+function DetailStatusSteps({ trip, tripState, detail }) {
+  const state = tripState || {};
+  const autoFired = state.autoFiredEvents || {};
+
+  const steps = [
+    { id: 'crew_onsite', label: 'Crew onsite' },
+    { id: 'aircraft_ready', label: 'Aircraft ready' },
+    { id: 'pax_arrived', label: 'Pax arrived' },
+    { id: 'pax_boarded', label: 'Pax boarded' },
+    { id: 'taxi_dep', label: 'Taxi out' },
+    { id: 'wheels_up', label: 'Wheels up' },
+    { id: 'landed', label: 'Landed' },
+  ];
+
+  function timeFor(stepId) {
+    const t = state[`${stepId}_at`] || state[stepId]?.timestamp;
+    return t ? new Date(t).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : null;
+  }
+
+  return (
+    <div className="px-5 py-4 border-b border-slate-800">
+      <div className="text-[10px] text-slate-500 tracking-widest mb-3"
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}>STATUS · THIS TRIP</div>
+      <div className="space-y-1">
+        {steps.map(s => {
+          const time = timeFor(s.id);
+          const isAuto = autoFired[s.id] === true;
+          const done = !!time;
+          return (
+            <div key={s.id} className="flex items-center gap-2 text-xs">
+              {done ? (
+                <CheckCircle2 className="w-3.5 h-3.5 text-green-400 shrink-0"/>
+              ) : (
+                <Circle className="w-3.5 h-3.5 text-slate-700 shrink-0"/>
+              )}
+              <span className={`flex-1 ${done ? 'text-slate-400' : 'text-slate-600'}`}>
+                {s.label}
+              </span>
+              <span className="text-[10px] text-slate-500">
+                {time || '—'}
+                {isAuto && <span className="text-green-400 ml-1">· auto</span>}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ===========================
+   FLIGHT TIMES grid
+   =========================== */
+function DetailFlightTimes({ detail }) {
+  function fmt(iso, tz) {
+    if (!iso) return '—';
+    try {
+      return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+    } catch (_) { return '—'; }
+  }
+  function taxiMin(outIso, offIso) {
+    if (!outIso || !offIso) return null;
+    return Math.round((new Date(offIso).getTime() - new Date(outIso).getTime()) / 60000);
+  }
+  function blockTime(outIso, inIso) {
+    if (!outIso || !inIso) return null;
+    const m = Math.round((new Date(inIso).getTime() - new Date(outIso).getTime()) / 60000);
+    return m > 0 ? `${Math.floor(m / 60)}h ${m % 60}m` : null;
+  }
+
+  const taxiOut = taxiMin(detail.actualOut, detail.actualOff);
+  const taxiIn = taxiMin(detail.actualOn, detail.actualIn);
+  const block = blockTime(detail.actualOut || detail.estimatedOut, detail.actualIn || detail.estimatedIn);
+
+  return (
+    <div className="px-5 py-4 border-b border-slate-800">
+      <div className="text-[10px] text-slate-500 tracking-widest mb-3"
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}>FLIGHT TIMES</div>
+      <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-xs">
+        <FlightTimeCell label="Gate out" actual={detail.actualOut} scheduled={detail.scheduledOut} estimated={detail.estimatedOut}/>
+        <FlightTimeCell label="Gate in" actual={detail.actualIn} scheduled={detail.scheduledIn} estimated={detail.estimatedIn}/>
+        <FlightTimeCell label="Takeoff" actual={detail.actualOff} scheduled={detail.scheduledOff} estimated={detail.estimatedOff}/>
+        <FlightTimeCell label="Landing" actual={detail.actualOn} scheduled={detail.scheduledOn} estimated={detail.estimatedOn} primary={true}/>
+        <div>
+          <div className="text-[9px] text-slate-500 tracking-widest"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>TAXI OUT</div>
+          <div className="text-slate-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {taxiOut != null ? `${taxiOut} min` : '—'}
+          </div>
+        </div>
+        <div>
+          <div className="text-[9px] text-slate-500 tracking-widest"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>BLOCK TIME</div>
+          <div className="text-slate-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {block || '—'}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FlightTimeCell({ label, actual, scheduled, estimated, primary }) {
+  const t = actual || estimated;
+  const fmt = (iso) => { try { return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }); } catch (_) { return '—'; } };
+  return (
+    <div>
+      <div className="text-[9px] text-slate-500 tracking-widest"
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}>{label.toUpperCase()}</div>
+      <div className={`${primary ? 'text-cyan-400' : 'text-slate-300'}`}
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        {t ? fmt(t) : '—'}
+        {!actual && estimated && <span className="text-[9px] text-slate-500 ml-1">est</span>}
+      </div>
+      {scheduled && (
+        <div className="text-[9px] text-slate-500">scheduled {fmt(scheduled)}</div>
+      )}
+    </div>
+  );
+}
+
+/* ===========================
+   RUNWAYS & WEATHER
+   =========================== */
+function DetailRunwaysWeather({ detail, originWx, destWx }) {
+  function WxBlock({ label, code, runway, wx }) {
+    const cat = wx?.flightCategory || null;
+    const catColor = cat === 'VFR' ? 'text-green-400'
+                   : cat === 'MVFR' ? 'text-amber-400'
+                   : cat === 'IFR' ? 'text-orange-400'
+                   : cat === 'LIFR' ? 'text-red-400'
+                   : 'text-slate-500';
+    return (
+      <div>
+        <div className="text-[10px] text-slate-500">
+          <span style={{ fontFamily: 'JetBrains Mono, monospace' }}>{code || '—'}</span> · {label}
+        </div>
+        {runway && (
+          <div className="text-xs text-slate-300 mt-1">Runway {runway}</div>
+        )}
+        {wx ? (
+          <>
+            <div className={`text-[10px] mt-1.5 ${catColor}`}>
+              {cat || '—'}{wx.visibilitySm != null ? ` · ${wx.visibilitySm} sm` : ''}
+              {wx.ceilingFt != null ? ` · ceiling ${wx.ceilingFt} ft` : ''}
+            </div>
+            <div className="text-[10px] text-slate-500">
+              {wx.windDir != null && wx.windKt != null
+                ? `Wind ${String(wx.windDir).padStart(3, '0')}° @ ${wx.windKt}${wx.windGustKt ? 'G' + wx.windGustKt : ''} kt`
+                : 'Wind —'}
+            </div>
+          </>
+        ) : (
+          <div className="text-[10px] text-slate-600 mt-1.5">weather unavailable</div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="px-5 py-4 border-b border-slate-800">
+      <div className="text-[10px] text-slate-500 tracking-widest mb-3"
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}>RUNWAYS &amp; WEATHER</div>
+      <div className="grid grid-cols-2 gap-3">
+        <WxBlock label="departing" code={detail.origin?.code} runway={detail.runwayOrigin} wx={originWx}/>
+        <WxBlock label="landing" code={detail.destination?.code} runway={detail.runwayDestination} wx={destWx}/>
+      </div>
+    </div>
+  );
+}
+
+/* ===========================
+   ALT / SPEED CHART
+   =========================== */
+function DetailAltSpeedChart({ trackLog, detail }) {
+  const pts = trackLog.filter(p => p.time != null && p.altitude_ft != null);
+  if (pts.length < 2) {
+    return (
+      <div className="px-5 py-4 border-b border-slate-800">
+        <div className="text-[10px] text-slate-500 tracking-widest"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>ALTITUDE &amp; SPEED</div>
+        <div className="text-xs text-slate-600 mt-2">Not enough track data yet.</div>
+      </div>
+    );
+  }
+
+  const minT = pts[0].time;
+  const maxT = pts[pts.length - 1].time;
+  const span = Math.max(1, maxT - minT);
+  const maxAlt = Math.max(...pts.map(p => p.altitude_ft || 0));
+  const maxSpd = Math.max(...pts.map(p => p.groundspeed_kt || 0)) || 500;
+
+  const W = 1200, H = 160, padL = 40, padR = 40, padT = 10, padB = 22;
+  const innerW = W - padL - padR;
+  const innerH = H - padT - padB;
+
+  const xFor = (t) => padL + ((t - minT) / span) * innerW;
+  const yAltFor = (alt) => padT + innerH - (alt / Math.max(maxAlt, 1)) * innerH;
+  const ySpdFor = (spd) => padT + innerH - (spd / Math.max(maxSpd, 1)) * innerH;
+
+  const altPath = pts.map((p, i) => {
+    const x = xFor(p.time);
+    const y = yAltFor(p.altitude_ft || 0);
+    return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  const altArea = altPath + ` L${xFor(maxT).toFixed(1)},${(padT + innerH).toFixed(1)} L${padL},${(padT + innerH).toFixed(1)} Z`;
+
+  const spdPath = pts.filter(p => p.groundspeed_kt != null).map((p, i) => {
+    const x = xFor(p.time);
+    const y = ySpdFor(p.groundspeed_kt);
+    return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+
+  const last = pts[pts.length - 1];
+  const lastX = xFor(last.time);
+  const lastAltY = yAltFor(last.altitude_ft || 0);
+  const lastSpdY = last.groundspeed_kt != null ? ySpdFor(last.groundspeed_kt) : null;
+
+  const fmtTime = (ms) => {
+    try {
+      return new Date(ms).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+    } catch (_) { return ''; }
+  };
+
+  return (
+    <div className="px-5 py-4 border-b border-slate-800">
+      <div className="flex items-center justify-between mb-3">
+        <div className="text-[10px] text-slate-500 tracking-widest"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>ALTITUDE &amp; SPEED</div>
+        <div className="flex gap-3 text-[10px]"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          <span className="text-green-400 border-b border-green-400 pb-0.5">ALTITUDE (FT)</span>
+          <span className="text-amber-400 border-b border-amber-400 pb-0.5">SPEED (KT)</span>
+        </div>
+      </div>
+
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: '160px' }}>
+        <text x="0" y={padT + 8} fill="#64748b" fontSize="9" fontFamily="JetBrains Mono">{Math.round(maxAlt).toLocaleString()}</text>
+        <text x="0" y={padT + innerH} fill="#64748b" fontSize="9" fontFamily="JetBrains Mono">0</text>
+        <text x={W - 30} y={padT + 8} fill="#64748b" fontSize="9" fontFamily="JetBrains Mono">{Math.round(maxSpd)}</text>
+        <text x={W - 30} y={padT + innerH} fill="#64748b" fontSize="9" fontFamily="JetBrains Mono">0</text>
+
+        <line x1={padL} y1={padT} x2={W - padR} y2={padT} stroke="#1a2030" strokeWidth="0.5"/>
+        <line x1={padL} y1={padT + innerH / 2} x2={W - padR} y2={padT + innerH / 2} stroke="#1a2030" strokeWidth="0.5"/>
+        <line x1={padL} y1={padT + innerH} x2={W - padR} y2={padT + innerH} stroke="#1a2030" strokeWidth="0.5"/>
+
+        <path d={altArea} fill="#22c55e" opacity="0.08"/>
+        <path d={altPath} stroke="#22c55e" strokeWidth="2" fill="none"/>
+        {spdPath && <path d={spdPath} stroke="#fbbf24" strokeWidth="1.5" fill="none"/>}
+
+        <line x1={lastX} y1={padT} x2={lastX} y2={padT + innerH} stroke="#22d3ee" strokeWidth="1" strokeDasharray="3,3"/>
+        <circle cx={lastX} cy={lastAltY} r="4" fill="#22d3ee"/>
+        {lastSpdY != null && <circle cx={lastX} cy={lastSpdY} r="3" fill="#fbbf24"/>}
+
+        <text x={padL} y={H - 4} fill="#64748b" fontSize="9" fontFamily="JetBrains Mono">{fmtTime(minT)}</text>
+        <text x={W - padR - 30} y={H - 4} fill="#22d3ee" fontSize="9" fontFamily="JetBrains Mono">{fmtTime(maxT)}</text>
+      </svg>
+
+      <div className="grid grid-cols-4 gap-3 mt-3 pt-3 border-t border-slate-800">
+        <ReadingCell label="ALTITUDE" value={last.altitude_ft ? `${last.altitude_ft.toLocaleString()} ft` : '—'} color="text-green-400"/>
+        <ReadingCell label="GROUND SPEED" value={last.groundspeed_kt != null ? `${last.groundspeed_kt} kt` : '—'} color="text-amber-400"/>
+        <ReadingCell label="HEADING" value={last.heading_deg != null ? `${Math.round(last.heading_deg)}°` : '—'} color="text-slate-300"/>
+        <ReadingCell label="POINTS" value={`${pts.length}`} color="text-slate-300"/>
+      </div>
+    </div>
+  );
+}
+
+function ReadingCell({ label, value, color }) {
+  return (
+    <div>
+      <div className="text-[9px] text-slate-500 tracking-widest"
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}>{label}</div>
+      <div className={`text-sm font-medium ${color}`}
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}>{value}</div>
+    </div>
+  );
+}
+
+
 function TrackingScreen({ currentUser, allTrips, trackingEnabled }) {
   const [positions, setPositions] = useState([]);     // [{ ident, airborne, latitude, ... }]
   const [fetchedAt, setFetchedAt] = useState(null);
@@ -15204,10 +15968,11 @@ export default function CharterOps() {
 
         {/* === TRACKING SECTION === */}
         {section === 'tracking' && (
-          <TrackingScreen
+          <TrackingScreenV2
             currentUser={currentUser}
-            allTrips={allTrips}
-            trackingEnabled={trackingEnabled}
+            trips={allTrips}
+            tripStates={null}
+            config={config}
           />
         )}
 
