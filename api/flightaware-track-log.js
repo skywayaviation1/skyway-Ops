@@ -94,14 +94,26 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true, ident, flightId: null, points: [], cached: false });
     }
 
-    // Pick most recent: prefer in-progress (no actual_on) else most recent actual_on
+    // Pick the most relevant flight. Order of preference:
+    //   1. In-progress: has actual_off AND no actual_on (airborne right now)
+    //   2. Upcoming scheduled: no actual_off AND scheduled_off in the future
+    //   3. Most recent completed: has actual_on
+    function flightPriority(f) {
+      const hasOff = !!f.actual_off;
+      const hasOn = !!f.actual_on;
+      if (hasOff && !hasOn) return 1;
+      if (!hasOff && !hasOn) {
+        const sched = f.scheduled_off ? new Date(f.scheduled_off).getTime() : 0;
+        return sched >= Date.now() - 30 * 60 * 1000 ? 2 : 4;
+      }
+      return 3;
+    }
     const sorted = [...flights].sort((a, b) => {
-      const aActive = !a.actual_on;
-      const bActive = !b.actual_on;
-      if (aActive && !bActive) return -1;
-      if (bActive && !aActive) return 1;
-      const aT = new Date(a.actual_on || a.scheduled_on || 0).getTime();
-      const bT = new Date(b.actual_on || b.scheduled_on || 0).getTime();
+      const pa = flightPriority(a), pb = flightPriority(b);
+      if (pa !== pb) return pa - pb;
+      const aT = new Date(a.actual_off || a.scheduled_off || a.actual_on || 0).getTime();
+      const bT = new Date(b.actual_off || b.scheduled_off || b.actual_on || 0).getTime();
+      if (pa === 2) return aT - bT;
       return bT - aT;
     });
     const f = sorted[0];
