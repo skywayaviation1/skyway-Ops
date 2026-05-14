@@ -12581,34 +12581,35 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
         // Create marker
         const wrap = document.createElement('div');
         wrap.style.cssText = `
-          position: relative; cursor: pointer;
-          width: 32px; height: 32px; display: flex; align-items: center; justify-content: center;
+          position: relative; cursor: pointer; z-index: 10;
+          width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
         `;
         const ring = document.createElement('div');
         ring.className = 'fleet-marker-ring';
         ring.style.cssText = `
           position: absolute; inset: 0; border-radius: 50%;
-          background: rgba(34,211,238,0.18);
-          transition: background 0.2s, box-shadow 0.2s, transform 0.2s;
+          background: #0b0f17;
+          border: 2px solid #22d3ee;
+          transition: background 0.2s, box-shadow 0.2s, transform 0.2s, border-color 0.2s;
         `;
         const inner = document.createElement('div');
         inner.className = 'fleet-marker-icon';
         inner.style.cssText = `
-          width: 18px; height: 18px; display: flex; align-items: center; justify-content: center;
-          color: #22d3ee; transform: rotate(${heading}deg);
+          width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;
+          color: #22d3ee; transform: rotate(${heading}deg); position: relative; z-index: 1;
         `;
-        inner.innerHTML = `<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+        inner.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
           <path d="M12 2 L14 9 L22 11 L22 13 L14 14 L13 22 L11 22 L10 14 L2 13 L2 11 L10 9 Z"/>
         </svg>`;
         const label = document.createElement('div');
         label.className = 'fleet-marker-label';
         label.textContent = tail;
         label.style.cssText = `
-          position: absolute; left: 36px; top: 50%; transform: translateY(-50%);
-          font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 500;
-          color: #cbd5e1; background: rgba(11,15,23,0.78); padding: 2px 6px;
+          position: absolute; left: 40px; top: 50%; transform: translateY(-50%);
+          font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 600;
+          color: #22d3ee; background: rgba(11,15,23,0.92); padding: 3px 7px;
           border-radius: 2px; white-space: nowrap; pointer-events: none;
-          text-shadow: 0 0 4px rgba(0,0,0,0.9);
+          text-shadow: 0 0 4px rgba(0,0,0,0.9); border: 0.5px solid rgba(34,211,238,0.3);
         `;
         wrap.appendChild(ring);
         wrap.appendChild(inner);
@@ -12628,17 +12629,21 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
 
       // Selection styling
       if (isSelected) {
-        entry.ring.style.background = 'rgba(34,211,238,0.32)';
-        entry.ring.style.boxShadow = '0 0 0 2px #22d3ee, 0 0 14px rgba(34,211,238,0.5)';
-        entry.ring.style.transform = 'scale(1.1)';
+        entry.ring.style.background = '#0b0f17';
+        entry.ring.style.borderColor = '#22d3ee';
+        entry.ring.style.boxShadow = '0 0 0 3px rgba(34,211,238,0.4), 0 0 18px rgba(34,211,238,0.6)';
+        entry.ring.style.transform = 'scale(1.15)';
         entry.label.style.color = '#22d3ee';
-        entry.label.style.fontWeight = '600';
+        entry.label.style.fontWeight = '700';
+        entry.label.style.borderColor = '#22d3ee';
       } else {
-        entry.ring.style.background = 'rgba(34,211,238,0.18)';
+        entry.ring.style.background = '#0b0f17';
+        entry.ring.style.borderColor = '#22d3ee';
         entry.ring.style.boxShadow = 'none';
         entry.ring.style.transform = 'scale(1)';
-        entry.label.style.color = '#cbd5e1';
-        entry.label.style.fontWeight = '500';
+        entry.label.style.color = '#22d3ee';
+        entry.label.style.fontWeight = '600';
+        entry.label.style.borderColor = 'rgba(34,211,238,0.3)';
       }
     });
 
@@ -12655,12 +12660,12 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
       if (!trackOverlayRef.current.origin) {
         console.log('[fleet-map] CREATING origin marker at', oLon, oLat, 'for', o.code);
         const wrap = document.createElement('div');
-        wrap.style.cssText = 'position: relative;';
+        wrap.style.cssText = 'position: relative; z-index: 5;';
         const dot = document.createElement('div');
-        dot.style.cssText = `width: 12px; height: 12px; border-radius: 50%; background: #22c55e; border: 2px solid #0b0f17; box-shadow: 0 0 0 1.5px rgba(34,197,94,0.5);`;
+        dot.style.cssText = `width: 14px; height: 14px; border-radius: 50%; background: #22c55e; border: 2px solid #0b0f17; box-shadow: 0 0 0 2px rgba(34,197,94,0.4);`;
         const lab = document.createElement('div');
         lab.textContent = o.code || '';
-        lab.style.cssText = `position: absolute; left: 16px; top: -2px; color: #86efac; font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 500; white-space: nowrap; text-shadow: 0 0 4px rgba(0,0,0,0.9);`;
+        lab.style.cssText = `position: absolute; left: 20px; top: -2px; color: #86efac; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; white-space: nowrap; background: rgba(11,15,23,0.85); padding: 2px 6px; border-radius: 2px; text-shadow: 0 0 4px rgba(0,0,0,0.9);`;
         wrap.appendChild(dot); wrap.appendChild(lab);
         trackOverlayRef.current.origin = new mapboxgl.Marker({ element: wrap, anchor: 'center' })
           .setLngLat([oLon, oLat]).addTo(map);
@@ -12685,12 +12690,12 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
       if (!trackOverlayRef.current.dest) {
         console.log('[fleet-map] CREATING destination marker at', dLon, dLat, 'for', d.code);
         const wrap = document.createElement('div');
-        wrap.style.cssText = 'position: relative;';
+        wrap.style.cssText = 'position: relative; z-index: 5;';
         const dot = document.createElement('div');
-        dot.style.cssText = `width: 12px; height: 12px; border-radius: 50%; background: #94a3b8; border: 2px solid #0b0f17;`;
+        dot.style.cssText = `width: 14px; height: 14px; border-radius: 50%; background: #fb923c; border: 2px solid #0b0f17; box-shadow: 0 0 0 2px rgba(251,146,60,0.4);`;
         const lab = document.createElement('div');
         lab.textContent = d.code || '';
-        lab.style.cssText = `position: absolute; left: 16px; top: -2px; color: #cbd5e1; font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 500; white-space: nowrap; text-shadow: 0 0 4px rgba(0,0,0,0.9);`;
+        lab.style.cssText = `position: absolute; left: 20px; top: -2px; color: #fdba74; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; white-space: nowrap; background: rgba(11,15,23,0.85); padding: 2px 6px; border-radius: 2px; text-shadow: 0 0 4px rgba(0,0,0,0.9);`;
         wrap.appendChild(dot); wrap.appendChild(lab);
         trackOverlayRef.current.dest = new mapboxgl.Marker({ element: wrap, anchor: 'center' })
           .setLngLat([dLon, dLat]).addTo(map);
@@ -12763,7 +12768,7 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
     } else if (coords.length === 1) {
       map.flyTo({ center: coords[0], zoom: 7, duration: 700 });
     }
-  }, [selectedTail, selectedDetail, mapReady]);
+  }, [selectedTail, selectedDetail, selectedTrack, mapReady]);
 
   if (mapError) {
     return (
