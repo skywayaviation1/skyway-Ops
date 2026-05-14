@@ -12446,6 +12446,11 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
             paint: { 'line-color': '#22c55e', 'line-width': 2, 'line-opacity': 0.45, 'line-dasharray': [2, 2] },
           });
           mapRef.current = map;
+          // Force a resize so Mapbox recomputes container dimensions, since
+          // the flex parent may not have resolved its height when init ran.
+          try { map.resize(); } catch (_) {}
+          // Schedule another resize after flex layout settles
+          setTimeout(() => { try { map.resize(); } catch (_) {} }, 250);
           if (!cancelled) setMapReady(true);
         });
       } catch (e) {
@@ -12501,7 +12506,13 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
   useEffect(() => {
     const mapboxgl = window.mapboxgl;
     const map = mapRef.current;
-    if (!mapReady || !mapboxgl || !map) return;
+    if (!mapReady || !mapboxgl || !map) {
+      console.log('[fleet-map] skip render — mapReady:', mapReady, 'mapboxgl:', !!mapboxgl, 'map:', !!map);
+      return;
+    }
+    const airborneTails = fleetTails.filter(t => tailStates[t]?.airborne === true);
+    console.log('[fleet-map] rendering — airborne tails:', airborneTails.length, '· selectedTail:', selectedTail,
+      '· detail loaded:', !!selectedDetail, '· track points:', (selectedTrack || []).length);
 
     // ----- Fleet markers (one per tail) -----
     fleetTails.forEach(tail => {
@@ -12511,6 +12522,10 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
       const lon = airborne ? state?.longitude : null;
       const heading = state?.heading ?? 0;
       const isSelected = tail === selectedTail;
+
+      if (airborne) {
+        console.log('[fleet-map]', tail, 'airborne — lat:', lat, 'lon:', lon, 'heading:', heading);
+      }
 
       let entry = tailMarkersRef.current[tail];
 
