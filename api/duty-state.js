@@ -157,6 +157,25 @@ async function getDutyState(pilotUid) {
 
 async function handleGet(req, res, user) {
   const pilotUid = req.query?.pilotUid || user.uid;
+
+  // Admin "list all" mode — pilotUid = 'all'
+  if (pilotUid === 'all' && isAdminOrOps(user)) {
+    const db = getDb();
+    // Get all users with crew/admin/ops role
+    const usersSnap = await db.collection('users')
+      .where('role', 'in', ['crew', 'admin', 'ops'])
+      .get();
+    const results = await Promise.all(
+      usersSnap.docs.map(async (uDoc) => {
+        const uid = uDoc.id;
+        const u = uDoc.data();
+        const state = await getDutyState(uid);
+        return { pilotUid: uid, pilotName: u.name || uid, role: u.role, state };
+      })
+    );
+    return res.status(200).json({ ok: true, pilots: results });
+  }
+
   // Non-admin can only query themselves
   if (pilotUid !== user.uid && !isAdminOrOps(user)) {
     return res.status(403).json({ error: 'You can only view your own duty state' });
@@ -274,6 +293,65 @@ async function handlePost(req, res, user) {
     };
     await ref.set(newState, { merge: true });
     return res.status(200).json({ ok: true, state: newState });
+  }
+
+  // ===== admin-duty-on (admin sets/corrects a duty-on time) =====
+  // Used when:
+  // - Pilot forgot to log duty-on and admin records it retroactively
+  // - Pilot's logged duty-on time is wrong and admin corrects it
+  // - Skips all rest/window checks (admin is explicitly overriding)
+  if (action === 'admin-duty-on') {
+    if (!isAdminOrOps(user)) {
+      return res.status(403).json({ error: 'Only admin/ops can use admin-duty-on' });
+    }
+    const dutyOnMs = body.dutyOnAt ? new Date(body.dutyOnAt).getTime() : now;
+    if (!isFinite(dutyOnMs)) {
+      return res.status(400).json({ error: 'Invalid dutyOnAt timestamp' });
+    }
+    if (dutyOnMs > now) {
+      return res.status(400).json({ error: 'duty-on cannot be in the future' });
+    }
+    // If pilot has a previous duty-off, the new duty-on must be after it
+    const lastOffMs = state.dutyOffAt
+      ? (typeof state.dutyOffAt === 'object' ? state.dutyOffAt.toMillis() : new Date(state.dutyOffAt).getTime())
+      : null;
+    if (lastOffMs && dutyOnMs < lastOffMs) {
+      return res.status(400).json({
+        error: 'duty-on cannot be before previous duty-off',
+        previousDutyOff: lastOffMs,
+      });
+    }
+
+    const onTimestamp = admin.firestore.Timestamp.fromMillis(dutyOnMs);
+    const isCorrection = state.status === 'on';  // already on duty → correcting time
+
+    // Compute rest period (for visibility — we're not blocking on it since admin is overriding)
+    const restMs = lastOffMs ? (dutyOnMs - lastOffMs) : null;
+
+    const overrideEntry = {
+      type: isCorrection ? 'admin-correct-on' : 'admin-set-on',
+      byUid: user.uid,
+      byName: user.name,
+      at: nowDate,
+      setTo: onTimestamp,
+      previousOnAt: isCorrection ? state.dutyOnAt : null,
+      restMs,
+      reason: body.reason || null,
+    };
+
+    const newState = {
+      pilotUid: targetUid,
+      pilotName,
+      status: 'on',
+      dutyOnAt: onTimestamp,
+      dutyOffAt: state.dutyOffAt || null,
+      history: state.history || [],
+      updatedAt: nowDate,
+      updatedBy: user.uid,
+      currentOverrides: [...(state.currentOverrides || []), overrideEntry],
+    };
+    await ref.set(newState);
+    return res.status(200).json({ ok: true, state: newState, action: isCorrection ? 'corrected' : 'set' });
   }
 
   // ===== duty-off (regular, by the pilot themselves or auto) =====
