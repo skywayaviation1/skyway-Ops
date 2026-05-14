@@ -2685,32 +2685,58 @@ function getAircraftDefaults(aircraftType) {
 }
 
 /**
+ * Normalize an airport code to ICAO format that ForeFlight expects.
+ * 3-letter US airports get a "K" prefix (APF → KAPF). Already-prefixed
+ * codes and non-US codes pass through unchanged.
+ */
+function normalizeIcao(code) {
+  if (!code) return '';
+  const c = String(code).toUpperCase().trim();
+  // Already 4-letter ICAO — pass through (KAPF, MYNN, EGLL, etc)
+  if (/^[A-Z0-9]{4}$/.test(c)) return c;
+  // 3-letter US airport — add K prefix (APF → KAPF)
+  if (/^[A-Z]{3}$/.test(c)) return 'K' + c;
+  return c;
+}
+
+/**
  * Build a ForeFlight Mobile URL that opens the route on the Maps view
  * with speed, fuel burn, altitude, tail, and ETD pre-populated.
  *
  * Format (from foreflight.com/support/app-urls):
- *   foreflightmobile://maps/search?q=KAPF+KGON+380kts+180gph+39000ft+N444AM+20260514T22:40:00Z
+ *   foreflightmobile://maps/search?q=KAPF+KGON+380kts+180gph+39000ft+N444AM
+ *
+ * Notes:
+ * - 3-letter codes (APF, GON) are auto-prefixed to ICAO (KAPF, KGON) for US airports
+ * - ETD is skipped if it's in the past (ForeFlight rejects stale departure times)
+ * - The "+" between parts is a space-separator per ForeFlight's URL spec
  */
 function buildForeFlightUrl({ from, to, cruiseKts, burnGph, cruiseFt, tail, etdIso }) {
-  if (!from || !to) return null;
-  const parts = [from, to];
+  const fromIcao = normalizeIcao(from);
+  const toIcao = normalizeIcao(to);
+  if (!fromIcao || !toIcao) return null;
+  const parts = [fromIcao, toIcao];
   if (cruiseKts) parts.push(`${cruiseKts}kts`);
   if (burnGph) parts.push(`${burnGph}gph`);
   if (cruiseFt) parts.push(`${cruiseFt}ft`);
-  if (tail) parts.push(tail);
+  if (tail) parts.push(String(tail).toUpperCase());
   if (etdIso) {
-    // ForeFlight expects YYYYMMDDTHH:MM:SSZ format
+    // ForeFlight expects YYYYMMDDTHH:MM:SSZ format. Skip if departure is in the past.
     try {
       const d = new Date(etdIso);
-      const yyyy = d.getUTCFullYear();
-      const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-      const dd = String(d.getUTCDate()).padStart(2, '0');
-      const hh = String(d.getUTCHours()).padStart(2, '0');
-      const mi = String(d.getUTCMinutes()).padStart(2, '0');
-      const ss = String(d.getUTCSeconds()).padStart(2, '0');
-      parts.push(`${yyyy}${mm}${dd}T${hh}:${mi}:${ss}Z`);
+      if (d.getTime() > Date.now()) {
+        const yyyy = d.getUTCFullYear();
+        const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+        const dd = String(d.getUTCDate()).padStart(2, '0');
+        const hh = String(d.getUTCHours()).padStart(2, '0');
+        const mi = String(d.getUTCMinutes()).padStart(2, '0');
+        const ss = String(d.getUTCSeconds()).padStart(2, '0');
+        parts.push(`${yyyy}${mm}${dd}T${hh}:${mi}:${ss}Z`);
+      }
     } catch (_) { /* skip ETD */ }
   }
+  // Join with '+' which ForeFlight parses as space-separator. Do NOT
+  // URL-encode the entire query string — the '+' chars are meant to be literal.
   return `foreflightmobile://maps/search?q=${parts.join('+')}`;
 }
 
@@ -2749,6 +2775,17 @@ function ForeFlightHandoff({ trip, currentUser }) {
     tail,
     etdIso,
   });
+
+  // Fallback URL with just the route — minimal version that's more likely to
+  // work if the full URL with all parameters has issues.
+  const minimalUrl = buildForeFlightUrl({
+    from, to,
+  });
+
+  // Show the normalized ICAO codes so the user can see what's being sent
+  const fromIcao = normalizeIcao(from);
+  const toIcao = normalizeIcao(to);
+  const codesNormalized = (fromIcao !== from?.toUpperCase()) || (toIcao !== to?.toUpperCase());
 
   // Plain-text summary that the pilot can copy and paste into 1800wxbrief etc.
   // Uses ICAO order: from/to/alt at top, then route, then remarks
@@ -2831,6 +2868,12 @@ function ForeFlightHandoff({ trip, currentUser }) {
             </div>
           </div>
         </div>
+        {codesNormalized && (
+          <div className="text-[10px] text-cyan-300/80 bg-cyan-500/5 border border-cyan-500/20 px-2 py-1.5"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            Codes normalized: {from} → <strong>{fromIcao}</strong>, {to} → <strong>{toIcao}</strong>
+          </div>
+        )}
         {!onIos && (
           <div className="text-[10px] text-amber-300/80" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
             ⚠ This link only works on iOS devices with ForeFlight installed.
@@ -2847,9 +2890,28 @@ function ForeFlightHandoff({ trip, currentUser }) {
         >
           OPEN IN FOREFLIGHT →
         </a>
+        {/* Fallback: minimal URL — try if the full one doesn't load the route */}
+        {minimalUrl && url && minimalUrl !== url && (
+          <details className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            <summary className="cursor-pointer hover:text-slate-300">Route not loading? Try minimal URL</summary>
+            <div className="mt-2 space-y-2">
+              <div className="text-slate-400 text-[10px]">
+                This URL has just the airports — no aircraft data or ETD. Useful if ForeFlight is rejecting the full URL.
+              </div>
+              <a
+                href={minimalUrl}
+                className="block w-full text-center py-2 text-xs tracking-widest border border-slate-700 text-slate-300 hover:bg-slate-800/50"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              >
+                OPEN ROUTE ONLY →
+              </a>
+              <div className="p-2 bg-slate-950 border border-slate-800 break-all text-slate-500">{minimalUrl}</div>
+            </div>
+          </details>
+        )}
         {url && (
           <details className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            <summary className="cursor-pointer hover:text-slate-300">Show URL</summary>
+            <summary className="cursor-pointer hover:text-slate-300">Show full URL</summary>
             <div className="mt-2 p-2 bg-slate-950 border border-slate-800 break-all">{url}</div>
           </details>
         )}
