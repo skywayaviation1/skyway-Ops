@@ -81,46 +81,74 @@ export default async function handler(req, res) {
 
     // NOAA AviationWeather.gov - free, no key
     const url = `https://aviationweather.gov/api/data/metar?ids=${encodeURIComponent(icao)}&format=json&taf=false&hours=2`;
-    const r = await fetch(url, { headers: { 'User-Agent': 'SkywayOps/1.0' } });
-    if (!r.ok) {
-      return res.status(502).json({ error: `AviationWeather ${r.status}` });
+    let r;
+    try {
+      r = await fetch(url, { headers: { 'User-Agent': 'SkywayOps/1.0 (charter ops)' } });
+    } catch (e) {
+      // Network/CORS failure — return empty gracefully so the caller doesn't see a 500
+      const empty = { icao, metar: null, parsed: null, error: 'fetch failed' };
+      return res.status(200).json({ ok: true, ...empty, cached: false });
     }
-    const arr = await r.json();
-    if (!Array.isArray(arr) || arr.length === 0) {
-      const empty = { icao, metar: null, parsed: null };
-      await cacheRef.set({ payload: empty, cachedAt: Date.now() });
+    if (!r.ok) {
+      // NOAA non-200 — return empty gracefully
+      const empty = { icao, metar: null, parsed: null, error: `noaa ${r.status}` };
       return res.status(200).json({ ok: true, ...empty, cached: false });
     }
 
-    // Most recent observation
-    const m = arr[0];
-    const ceiling = (m.clouds || []).reduce((min, c) => {
-      if (['BKN', 'OVC'].includes(c.cover) && c.base != null) {
-        return min == null ? c.base : Math.min(min, c.base);
-      }
-      return min;
-    }, null);
-    const parsed = {
-      observedTime: m.reportTime || m.obsTime || null,
-      rawMetar: m.rawOb,
-      tempC: m.temp,
-      dewpointC: m.dewp,
-      windDir: m.wdir,
-      windKt: m.wspd,
-      windGustKt: m.wgst,
-      visibilitySm: m.visib,
-      altimeterInHg: m.altim,
-      ceilingFt: ceiling,
-      flightCategory: m.fltCat || flightCategory(m.visib, ceiling),
-      clouds: m.clouds,
-    };
+    let arr;
+    try {
+      arr = await r.json();
+    } catch (e) {
+      const empty = { icao, metar: null, parsed: null, error: 'noaa json parse' };
+      return res.status(200).json({ ok: true, ...empty, cached: false });
+    }
 
-    const payload = { icao, metar: m.rawOb, parsed };
-    await cacheRef.set({ payload, cachedAt: Date.now() });
+    if (!Array.isArray(arr) || arr.length === 0) {
+      const empty = { icao, metar: null, parsed: null };
+      try { await cacheRef.set({ payload: empty, cachedAt: Date.now() }); } catch (_) {}
+      return res.status(200).json({ ok: true, ...empty, cached: false });
+    }
 
-    return res.status(200).json({ ok: true, ...payload, cached: false });
+    // Most recent observation. Wrap parsing in try/catch — NOAA's response
+    // shape can vary unexpectedly (some fields can be null/missing/mismatched).
+    try {
+      const m = arr[0] || {};
+      const cloudsArr = Array.isArray(m.clouds) ? m.clouds : [];
+      const ceiling = cloudsArr.reduce((min, c) => {
+        if (c && ['BKN', 'OVC'].includes(c.cover) && c.base != null) {
+          return min == null ? c.base : Math.min(min, c.base);
+        }
+        return min;
+      }, null);
+      const parsed = {
+        observedTime: m.reportTime || m.obsTime || null,
+        rawMetar: m.rawOb || null,
+        tempC: m.temp ?? null,
+        dewpointC: m.dewp ?? null,
+        windDir: m.wdir ?? null,
+        windKt: m.wspd ?? null,
+        windGustKt: m.wgst ?? null,
+        visibilitySm: m.visib ?? null,
+        altimeterInHg: m.altim ?? null,
+        ceilingFt: ceiling,
+        flightCategory: m.fltCat || flightCategory(m.visib, ceiling),
+        clouds: cloudsArr,
+      };
+
+      const payload = { icao, metar: m.rawOb || null, parsed };
+      try { await cacheRef.set({ payload, cachedAt: Date.now() }); } catch (_) {}
+
+      return res.status(200).json({ ok: true, ...payload, cached: false });
+    } catch (e) {
+      const empty = { icao, metar: null, parsed: null, error: 'parse failed' };
+      return res.status(200).json({ ok: true, ...empty, cached: false });
+    }
   } catch (err) {
     console.error('[airport-weather] error:', err);
-    return res.status(500).json({ error: err.message || 'weather fetch failed' });
+    // Don't bubble up 500 — caller will show "weather unavailable" gracefully
+    return res.status(200).json({
+      ok: true, icao: req.query?.icao, metar: null, parsed: null,
+      error: err.message || 'weather fetch failed'
+    });
   }
 }
