@@ -120,6 +120,8 @@ export default async function handler(req, res) {
         name: f.origin?.name,
         city: f.origin?.city,
         timezone: f.origin?.timezone,
+        latitude: null,                              // populated below
+        longitude: null,
       },
       destination: {
         code: f.destination?.code_icao || f.destination?.code,
@@ -127,6 +129,8 @@ export default async function handler(req, res) {
         name: f.destination?.name,
         city: f.destination?.city,
         timezone: f.destination?.timezone,
+        latitude: null,
+        longitude: null,
       },
       // Scheduled times (when filed)
       scheduledOff: f.scheduled_off || null,
@@ -159,6 +163,42 @@ export default async function handler(req, res) {
       cancelled: f.cancelled || false,
       diverted: f.diverted || false,
     };
+
+    // ====== Fetch airport coordinates (with cache) ======
+    // FlightAware's /flights/{ident} doesn't include lat/lon. Fetch each
+    // airport from /airports/{code} and cache permanently — airport coords
+    // don't change. Errors are non-fatal; map just won't show the markers.
+    async function getAirportCoords(code) {
+      if (!code) return null;
+      try {
+        const cRef = db.collection('flightaware-cache').doc(`airport_${code}`);
+        const cSnap = await cRef.get();
+        if (cSnap.exists) {
+          const c = cSnap.data();
+          if (c.coords) return c.coords;
+        }
+        const r = await fetch(
+          `https://aeroapi.flightaware.com/aeroapi/airports/${encodeURIComponent(code)}`,
+          { headers: { 'x-apikey': apiKey } }
+        );
+        if (!r.ok) return null;
+        const a = await r.json();
+        const coords = (a.latitude != null && a.longitude != null)
+          ? { latitude: a.latitude, longitude: a.longitude }
+          : null;
+        if (coords) await cRef.set({ coords, cachedAt: Date.now() });
+        return coords;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    const [oCoords, dCoords] = await Promise.all([
+      getAirportCoords(flight.origin.code),
+      getAirportCoords(flight.destination.code),
+    ]);
+    if (oCoords) { flight.origin.latitude = oCoords.latitude; flight.origin.longitude = oCoords.longitude; }
+    if (dCoords) { flight.destination.latitude = dCoords.latitude; flight.destination.longitude = dCoords.longitude; }
 
     const payload = { ident, flight };
     await cacheRef.set({ payload, cachedAt: Date.now() });
