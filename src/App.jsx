@@ -12616,67 +12616,232 @@ function DetailHero({ tail, detail }) {
 }
 
 /* ===========================
-   MAP placeholder — uses existing Mapbox setup if available, else SVG fallback
+   MAP — Mapbox with track + airports + live aircraft
    =========================== */
 function DetailMap({ tail, detail, trackLog }) {
-  // For simplicity (and because we already have a Mapbox setup in the original
-  // Tracking screen), render a compact SVG track summary here. The full Mapbox
-  // map remains the primary feature in the existing Tracking tab. A full
-  // Mapbox port would require lifting the existing setup out and is left as a
-  // follow-up.
-  const points = Array.isArray(trackLog) ? trackLog.filter(p => p.lat != null && p.lon != null) : [];
-  if (points.length < 2) {
+  const containerRef = useRef(null);
+  const mapRef = useRef(null);
+  const markersRef = useRef({ aircraft: null, origin: null, destination: null });
+  const [mapError, setMapError] = useState(null);
+
+  // Initialize the map once
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const mapboxgl = await loadMapboxGL();
+        if (cancelled || !containerRef.current) return;
+        const token = import.meta.env.VITE_MAPBOX_TOKEN;
+        if (!token) {
+          setMapError('VITE_MAPBOX_TOKEN not configured');
+          return;
+        }
+        mapboxgl.accessToken = token;
+
+        const map = new mapboxgl.Map({
+          container: containerRef.current,
+          style: 'mapbox://styles/mapbox/dark-v11',
+          center: [-95, 38],
+          zoom: 3.2,
+          attributionControl: false,
+          dragRotate: false,
+          pitchWithRotate: false,
+        });
+        map.addControl(new mapboxgl.NavigationControl({ showCompass: false }), 'top-right');
+
+        map.on('load', () => {
+          // Empty sources for the flown + projected paths
+          map.addSource('flown', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+          map.addLayer({
+            id: 'flown-line',
+            type: 'line',
+            source: 'flown',
+            paint: { 'line-color': '#22c55e', 'line-width': 2.5 },
+          });
+          map.addSource('projected', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+          map.addLayer({
+            id: 'projected-line',
+            type: 'line',
+            source: 'projected',
+            paint: { 'line-color': '#22c55e', 'line-width': 2, 'line-opacity': 0.45, 'line-dasharray': [2, 2] },
+          });
+          mapRef.current = map;
+        });
+      } catch (e) {
+        setMapError(e.message || 'Map failed to load');
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (mapRef.current) {
+        try { mapRef.current.remove(); } catch (_) {}
+        mapRef.current = null;
+      }
+      Object.values(markersRef.current).forEach(m => { try { m && m.remove(); } catch (_) {} });
+      markersRef.current = { aircraft: null, origin: null, destination: null };
+    };
+  }, []);
+
+  // Update markers + paths whenever data changes
+  useEffect(() => {
+    const mapboxgl = window.mapboxgl;
+    const map = mapRef.current;
+    if (!mapboxgl || !map) return;
+    if (!map.isStyleLoaded()) {
+      map.once('load', () => { /* will re-run via next render */ });
+      return;
+    }
+
+    // Coordinates from detail (origin/destination) and track log
+    const o = detail?.origin || {};
+    const d = detail?.destination || {};
+    const oLat = o.latitude ?? o.lat ?? null;
+    const oLon = o.longitude ?? o.lon ?? null;
+    const dLat = d.latitude ?? d.lat ?? null;
+    const dLon = d.longitude ?? d.lon ?? null;
+
+    const pts = Array.isArray(trackLog) ? trackLog.filter(p => p.lat != null && p.lon != null) : [];
+    const lastPt = pts.length > 0 ? pts[pts.length - 1] : null;
+
+    // ====== ORIGIN MARKER ======
+    if (oLat != null && oLon != null) {
+      if (!markersRef.current.origin) {
+        const el = document.createElement('div');
+        el.style.cssText = `
+          width: 14px; height: 14px; border-radius: 50%;
+          background: #22c55e; border: 2px solid #0b0f17;
+          box-shadow: 0 0 0 2px rgba(34,197,94,0.3);
+        `;
+        const label = document.createElement('div');
+        label.textContent = o.code || 'ORIG';
+        label.style.cssText = `
+          position: absolute; left: 18px; top: -2px;
+          color: #86efac; font-family: 'JetBrains Mono', monospace;
+          font-size: 11px; font-weight: 500; white-space: nowrap;
+          text-shadow: 0 0 4px rgba(0,0,0,0.9);
+        `;
+        const wrap = document.createElement('div');
+        wrap.style.cssText = 'position: relative;';
+        wrap.appendChild(el);
+        wrap.appendChild(label);
+        markersRef.current.origin = new mapboxgl.Marker({ element: wrap, anchor: 'center' })
+          .setLngLat([oLon, oLat]).addTo(map);
+      } else {
+        markersRef.current.origin.setLngLat([oLon, oLat]);
+      }
+    }
+
+    // ====== DESTINATION MARKER ======
+    if (dLat != null && dLon != null) {
+      if (!markersRef.current.destination) {
+        const el = document.createElement('div');
+        el.style.cssText = `
+          width: 14px; height: 14px; border-radius: 50%;
+          background: #94a3b8; border: 2px solid #0b0f17;
+        `;
+        const label = document.createElement('div');
+        label.textContent = d.code || 'DEST';
+        label.style.cssText = `
+          position: absolute; left: 18px; top: -2px;
+          color: #cbd5e1; font-family: 'JetBrains Mono', monospace;
+          font-size: 11px; font-weight: 500; white-space: nowrap;
+          text-shadow: 0 0 4px rgba(0,0,0,0.9);
+        `;
+        const wrap = document.createElement('div');
+        wrap.style.cssText = 'position: relative;';
+        wrap.appendChild(el);
+        wrap.appendChild(label);
+        markersRef.current.destination = new mapboxgl.Marker({ element: wrap, anchor: 'center' })
+          .setLngLat([dLon, dLat]).addTo(map);
+      } else {
+        markersRef.current.destination.setLngLat([dLon, dLat]);
+      }
+    }
+
+    // ====== AIRCRAFT MARKER ======
+    if (lastPt) {
+      const heading = lastPt.heading_deg ?? 0;
+      if (!markersRef.current.aircraft) {
+        const wrap = document.createElement('div');
+        wrap.style.cssText = `
+          width: 32px; height: 32px; display: flex; align-items: center; justify-content: center;
+          background: rgba(34,211,238,0.18); border-radius: 50%;
+        `;
+        const inner = document.createElement('div');
+        inner.style.cssText = `
+          width: 18px; height: 18px; display: flex; align-items: center; justify-content: center;
+          color: #22d3ee; transform: rotate(${heading}deg);
+        `;
+        inner.innerHTML = `<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+          <path d="M12 2 L14 9 L22 11 L22 13 L14 14 L13 22 L11 22 L10 14 L2 13 L2 11 L10 9 Z"/>
+        </svg>`;
+        wrap.appendChild(inner);
+        wrap.dataset.heading = heading;
+        markersRef.current.aircraft = new mapboxgl.Marker({ element: wrap, anchor: 'center' })
+          .setLngLat([lastPt.lon, lastPt.lat]).addTo(map);
+      } else {
+        markersRef.current.aircraft.setLngLat([lastPt.lon, lastPt.lat]);
+        const inner = markersRef.current.aircraft.getElement().querySelector('div');
+        if (inner) inner.style.transform = `rotate(${heading}deg)`;
+      }
+    }
+
+    // ====== FLOWN TRACK LINE ======
+    if (pts.length >= 2 && map.getSource('flown')) {
+      map.getSource('flown').setData({
+        type: 'FeatureCollection',
+        features: [{
+          type: 'Feature',
+          geometry: { type: 'LineString', coordinates: pts.map(p => [p.lon, p.lat]) },
+        }],
+      });
+    }
+
+    // ====== PROJECTED TRACK LINE (aircraft → destination) ======
+    if (lastPt && dLat != null && dLon != null && map.getSource('projected')) {
+      map.getSource('projected').setData({
+        type: 'FeatureCollection',
+        features: [{
+          type: 'Feature',
+          geometry: { type: 'LineString', coordinates: [[lastPt.lon, lastPt.lat], [dLon, dLat]] },
+        }],
+      });
+    } else if (map.getSource('projected')) {
+      map.getSource('projected').setData({ type: 'FeatureCollection', features: [] });
+    }
+
+    // ====== FIT BOUNDS — fit everything we have on screen ======
+    const allCoords = [
+      ...(oLat != null && oLon != null ? [[oLon, oLat]] : []),
+      ...(dLat != null && dLon != null ? [[dLon, dLat]] : []),
+      ...pts.map(p => [p.lon, p.lat]),
+    ];
+    if (allCoords.length >= 2) {
+      const bounds = new mapboxgl.LngLatBounds();
+      allCoords.forEach(c => bounds.extend(c));
+      map.fitBounds(bounds, { padding: 60, duration: 800, maxZoom: 8 });
+    } else if (allCoords.length === 1) {
+      map.flyTo({ center: allCoords[0], zoom: 6, duration: 600 });
+    }
+  }, [
+    detail?.origin?.latitude, detail?.origin?.longitude, detail?.origin?.code,
+    detail?.destination?.latitude, detail?.destination?.longitude, detail?.destination?.code,
+    trackLog,
+  ]);
+
+  if (mapError) {
     return (
-      <div className="h-32 border-b border-slate-800 bg-slate-950 flex items-center justify-center text-slate-600 text-xs">
-        Track log not yet available
+      <div className="h-64 border-b border-slate-800 bg-slate-950 flex items-center justify-center text-slate-500 text-xs">
+        {mapError}
       </div>
     );
   }
 
-  // Compute bounding box
-  const lats = points.map(p => p.lat);
-  const lons = points.map(p => p.lon);
-  const minLat = Math.min(...lats), maxLat = Math.max(...lats);
-  const minLon = Math.min(...lons), maxLon = Math.max(...lons);
-  const padLat = (maxLat - minLat) * 0.1 + 0.5;
-  const padLon = (maxLon - minLon) * 0.1 + 0.5;
-
-  const W = 800, H = 220;
-  function project(lat, lon) {
-    const x = ((lon - (minLon - padLon)) / ((maxLon + padLon) - (minLon - padLon))) * W;
-    const y = H - ((lat - (minLat - padLat)) / ((maxLat + padLat) - (minLat - padLat))) * H;
-    return [x, y];
-  }
-
-  const path = points.map((p, i) => {
-    const [x, y] = project(p.lat, p.lon);
-    return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(' ');
-
-  const [px, py] = project(points[points.length - 1].lat, points[points.length - 1].lon);
-  const [ox, oy] = project(points[0].lat, points[0].lon);
-
   return (
-    <div className="border-b border-slate-800 bg-slate-950">
-      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: '220px', display: 'block' }}>
-        <rect width={W} height={H} fill="#0a1429"/>
-        {/* Track */}
-        <path d={path} stroke="#22c55e" strokeWidth="2" fill="none"/>
-        {/* Origin */}
-        <circle cx={ox} cy={oy} r="5" fill="#22c55e"/>
-        <text x={ox + 8} y={oy - 6} fill="#86efac" fontSize="11" fontFamily="JetBrains Mono">
-          {detail.origin?.code || ''}
-        </text>
-        {/* Aircraft */}
-        <circle cx={px} cy={py} r="14" fill="rgba(34,211,238,0.2)"/>
-        <circle cx={px} cy={py} r="6" fill="#22d3ee"/>
-        {/* Destination */}
-        {detail.destination?.code && (
-          <text x={W - 60} y={H / 2} fill="#cbd5e1" fontSize="11" fontFamily="JetBrains Mono">
-            → {detail.destination.code}
-          </text>
-        )}
-      </svg>
+    <div className="border-b border-slate-800 bg-slate-950 relative">
+      <div ref={containerRef} style={{ width: '100%', height: '360px' }} />
     </div>
   );
 }
