@@ -10702,6 +10702,11 @@ function AogDetail({ aog, currentUser, onBack }) {
               </Section>
             )}
 
+            {/* Tech Chat — Skyway side of the live chat with external tech */}
+            <Section label={`Tech Chat${Array.isArray(aog.techChat) && aog.techChat.length ? ` (${aog.techChat.length})` : ''}`}>
+              <AogTechChatPanel aog={aog} currentUser={currentUser} reporter={reporter} canEdit={canEdit} />
+            </Section>
+
             {/* Log */}
             {aog.logEntries && aog.logEntries.length > 0 && (
               <Section label="Activity Log">
@@ -10844,6 +10849,98 @@ function fmtRelativeTime(ts) {
   if (hrs > 24) return `${Math.floor(hrs/24)}d ${hrs%24}h ago`;
   if (hrs > 0) return `${hrs}h ${mins}m ago`;
   return `${mins}m ago`;
+}
+
+/* ============================================================
+   AOG TECH CHAT PANEL (Skyway side)
+   Reads aog.techChat (live via the AOG subscription) and posts
+   replies through postSkywayChatReply. The external tech polls
+   /api/aog-public every 10s and sees these replies.
+   ============================================================ */
+function AogTechChatPanel({ aog, currentUser, reporter, canEdit }) {
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const scrollRef = useRef(null);
+
+  const chat = Array.isArray(aog.techChat) ? aog.techChat : [];
+
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [chat.length]);
+
+  async function send() {
+    if (!text.trim()) return;
+    setBusy(true); setErr('');
+    try {
+      const aogMod = await import('./firebase-aog.js');
+      await aogMod.postSkywayChatReply(aog.id, text, reporter);
+      setText('');
+      // The AOG subscription will refresh techChat live.
+    } catch (e) {
+      setErr('Failed to send: ' + e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div>
+      {chat.length === 0 ? (
+        <p className="text-xs text-slate-500">
+          No messages yet. When an external technician sends a chat message via
+          their link, it appears here and you'll be emailed.
+        </p>
+      ) : (
+        <div ref={scrollRef} className="space-y-2 max-h-72 overflow-y-auto pr-1 mb-3">
+          {chat.map((m) => {
+            const skyway = m.from === 'skyway';
+            return (
+              <div key={m.id} className={`flex ${skyway ? 'justify-end' : 'justify-start'}`}>
+                <div className={`max-w-[80%] px-3 py-2 ${skyway ? 'bg-cyan-500/15 border border-cyan-500/30' : 'bg-slate-800 border border-slate-700'}`}>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className={`text-[10px] tracking-widest ${skyway ? 'text-cyan-300' : 'text-slate-400'}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                      {skyway ? (m.author || 'Skyway') : (m.author || 'Tech')}
+                    </span>
+                    {!skyway && (
+                      <span className="text-[9px] bg-amber-500/20 text-amber-300 px-1.5 py-0.5 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>EXTERNAL</span>
+                    )}
+                    <span className="text-[9px] text-slate-600" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                      {new Date(m.timestamp).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-200 whitespace-pre-wrap">{m.message}</p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {canEdit && !aog.linkRevoked && aog.status !== 'resolved' && (
+        <div className="flex gap-2">
+          <textarea
+            value={text}
+            onChange={e => setText(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
+            rows={2}
+            placeholder="Reply to the technician…  (Enter to send)"
+            className="flex-1 bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none resize-none"
+          />
+          <button onClick={send} disabled={busy}
+            className="px-4 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 text-xs tracking-widest font-medium flex items-center justify-center"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+          </button>
+        </div>
+      )}
+      {err && <div className="mt-2 text-xs text-amber-400">{err}</div>}
+      <p className="mt-2 text-[10px] text-slate-600 leading-relaxed">
+        Coordination chat only — not a maintenance record or return-to-service
+        authorization. The technician's page refreshes every ~10 seconds.
+      </p>
+    </div>
+  );
 }
 
 /* ============================================================
@@ -17411,15 +17508,15 @@ export function ExternalTechPage({ token }) {
             style={{ fontFamily: 'JetBrains Mono, monospace' }}
           >LOGBOOK ENTRY</button>
           <button
-            onClick={() => setTab('question')}
-            className={`px-4 py-2 text-xs tracking-widest font-medium ${tab === 'question' ? 'text-cyan-300 border-b-2 border-cyan-400' : 'text-slate-500'}`}
+            onClick={() => setTab('chat')}
+            className={`px-4 py-2 text-xs tracking-widest font-medium ${tab === 'chat' ? 'text-cyan-300 border-b-2 border-cyan-400' : 'text-slate-500'}`}
             style={{ fontFamily: 'JetBrains Mono, monospace' }}
-          >ASK A QUESTION</button>
+          >CHAT</button>
         </div>
 
         {tab === 'status' && <ExtStatusTab aog={aog} token={token} onPosted={load} />}
         {tab === 'logbook' && <ExtLogbookTab aog={aog} token={token} onPosted={load} />}
-        {tab === 'question' && <ExtQuestionTab aog={aog} token={token} onPosted={load} />}
+        {tab === 'chat' && <ExtChatTab aog={aog} token={token} onPosted={load} />}
 
         <p className="text-[10px] text-slate-600 leading-relaxed mt-8 border-t border-slate-900 pt-4">
           This portal is for coordination during the active AOG event. Logbook
@@ -17605,88 +17702,119 @@ function ExtLogbookTab({ aog, token, onPosted }) {
   );
 }
 
-function ExtQuestionTab({ aog, token, onPosted }) {
+function ExtChatTab({ aog, token, onPosted }) {
   const [author, setAuthor] = useState('');
   const [company, setCompany] = useState('');
-  const [message, setMessage] = useState('');
+  const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
+  const scrollRef = useRef(null);
 
-  async function submit() {
-    if (!author.trim() || !message.trim()) {
-      setStatus('Your name and question are required.');
+  const chat = Array.isArray(aog.techChat) ? aog.techChat : [];
+
+  // Auto-scroll to newest message when the thread grows.
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [chat.length]);
+
+  // Poll for new messages every 10s (the parent's load() re-fetches the AOG).
+  useEffect(() => {
+    const iv = setInterval(() => { onPosted && onPosted(); }, 10000);
+    return () => clearInterval(iv);
+  }, [onPosted]);
+
+  async function send() {
+    if (!author.trim() || !text.trim()) {
+      setStatus('Your name and a message are required.');
       return;
     }
     setBusy(true); setStatus('');
     try {
-      const r = await fetch('/api/aog-public?action=question', {
+      const r = await fetch('/api/aog-public?action=chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token, question: { author, company, message } }),
+        body: JSON.stringify({ token, message: { author, company, text } }),
       });
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
-      setMessage('');
-      setStatus('Question sent. Skyway has been notified and will respond here.');
+      setText('');
       onPosted && onPosted();
-      setTimeout(() => setStatus(''), 7000);
     } catch (e) {
-      setStatus('Failed: ' + e.message);
+      setStatus('Failed to send: ' + e.message);
     } finally {
       setBusy(false);
     }
   }
 
-  const questions = Array.isArray(aog.techQuestions) ? [...aog.techQuestions].reverse() : [];
-
   return (
-    <div className="space-y-4">
-      <div className="space-y-3 bg-slate-900 border border-slate-800 p-4">
-        <p className="text-xs text-slate-500">
-          Ask the Skyway team a question about this AOG. Jake and the
-          maintenance team are emailed immediately with a link to respond.
-          Their answer will appear in Status Updates.
+    <div className="space-y-3">
+      <div className="bg-slate-900 border border-slate-800 p-3">
+        <p className="text-xs text-slate-500 mb-3">
+          Live chat with the Skyway team about this AOG. They are notified
+          immediately and reminded if you are left waiting. Messages refresh
+          automatically. This chat is for coordination only — it is not a
+          maintenance record or a return-to-service authorization.
         </p>
-        <div className="grid grid-cols-2 gap-3">
-          <input value={author} onChange={e => setAuthor(e.target.value)} placeholder="Your name *"
-            className="bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none" />
-          <input value={company} onChange={e => setCompany(e.target.value)} placeholder="Company / shop"
-            className="bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none" />
-        </div>
-        <textarea value={message} onChange={e => setMessage(e.target.value)} rows={4}
-          placeholder="Your question for the Skyway team…"
-          className="w-full bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none resize-none" />
-        {status && <div className={`text-xs ${status.startsWith('Question sent') ? 'text-green-400' : 'text-amber-400'}`}>{status}</div>}
-        <button onClick={submit} disabled={busy}
-          className="w-full px-4 py-2 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 text-xs tracking-widest font-medium flex items-center justify-center gap-2"
-          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-          {busy ? <><Loader2 className="w-3 h-3 animate-spin" /> SENDING…</> : <><Send className="w-3 h-3" /> SEND QUESTION</>}
-        </button>
+        {chat.length === 0 ? (
+          <p className="text-xs text-slate-600 py-6 text-center">
+            No messages yet. Send the first message to start the conversation.
+          </p>
+        ) : (
+          <div ref={scrollRef} className="space-y-2 max-h-80 overflow-y-auto pr-1">
+            {chat.map((m) => {
+              const mine = m.from === 'tech';
+              return (
+                <div key={m.id} className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[80%] px-3 py-2 ${mine ? 'bg-cyan-500/15 border border-cyan-500/30' : 'bg-slate-800 border border-slate-700'}`}>
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className={`text-[10px] tracking-widest ${mine ? 'text-cyan-300' : 'text-slate-400'}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                        {mine ? (m.author || 'You') : `${m.author || 'Skyway'}`}
+                      </span>
+                      <span className="text-[9px] text-slate-600" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                        {new Date(m.timestamp).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-200 whitespace-pre-wrap">{m.message}</p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
-      {questions.length > 0 && (
-        <div>
-          <div className="text-[10px] text-slate-500 tracking-widest mb-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>YOUR QUESTIONS</div>
-          <div className="space-y-2">
-            {questions.map(q => (
-              <div key={q.id} className="bg-slate-900 border border-slate-800 p-3">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-sm text-slate-300">{q.author}{q.company ? ` · ${q.company}` : ''}</span>
-                  <span className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                    {new Date(q.timestamp).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
-                  </span>
-                </div>
-                <p className="text-xs text-slate-400 whitespace-pre-wrap">{q.message}</p>
-                <div className="mt-2 text-[10px] tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                  {q.answered
-                    ? <span className="text-green-400">ANSWERED — see Status Updates</span>
-                    : <span className="text-amber-400">AWAITING RESPONSE</span>}
-                </div>
-              </div>
-            ))}
+      <div className="bg-slate-900 border border-slate-800 p-3 space-y-2">
+        {chat.length === 0 && (
+          <div className="grid grid-cols-2 gap-2">
+            <input value={author} onChange={e => setAuthor(e.target.value)} placeholder="Your name *"
+              className="bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none" />
+            <input value={company} onChange={e => setCompany(e.target.value)} placeholder="Company / shop"
+              className="bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none" />
           </div>
+        )}
+        {chat.length > 0 && !author.trim() && (
+          <input value={author} onChange={e => setAuthor(e.target.value)} placeholder="Your name *"
+            className="w-full bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none" />
+        )}
+        <div className="flex gap-2">
+          <textarea
+            value={text}
+            onChange={e => setText(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
+            rows={2}
+            placeholder="Type a message…  (Enter to send, Shift+Enter for newline)"
+            className="flex-1 bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none resize-none"
+          />
+          <button onClick={send} disabled={busy}
+            className="px-4 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 text-xs tracking-widest font-medium flex items-center justify-center"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+          </button>
         </div>
-      )}
+        {status && <div className="text-xs text-amber-400">{status}</div>}
+      </div>
     </div>
   );
 }

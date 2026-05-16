@@ -475,3 +475,50 @@ export async function markReferenceEmailed(eventId, refIds, sentTo, sender) {
 
   return { ok: true };
 }
+
+/* ============================================================
+   TECH CHAT — Skyway-side reply
+   ------------------------------------------------------------
+   The external tech posts via /api/aog-public (token-gated).
+   Skyway staff reply here, through the authenticated app. Both
+   sides' messages live in the same techChat[] array on the AOG.
+
+   Posting a Skyway reply stamps lastSkywayReplyAt, which the
+   5-minute "tech is waiting" nudge cron uses to know the tech
+   is no longer waiting.
+   ============================================================ */
+export async function postSkywayChatReply(eventId, message, sender) {
+  if (!eventId) throw new Error('postSkywayChatReply: eventId required');
+  const text = String(message || '').trim();
+  if (!text) throw new Error('message required');
+  const ref = doc(db, 'aog-events', eventId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error(`AOG event ${eventId} not found`);
+  const current = snap.data();
+
+  const msg = {
+    id: `m-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+    timestamp: Date.now(),
+    from: 'skyway',
+    author: String(sender?.displayName || 'Skyway Ops').trim(),
+    company: 'Skyway Aviation',
+    message: text.slice(0, 4000),
+  };
+  const existing = Array.isArray(current.techChat) ? current.techChat : [];
+  const log = Array.isArray(current.logEntries) ? current.logEntries : [];
+
+  await updateDoc(ref, {
+    techChat: [...existing, msg],
+    // Tech is no longer waiting — reset the nudge tracking.
+    lastSkywayReplyAt: msg.timestamp,
+    techChatNudgedAt: null,
+    logEntries: [...log, {
+      timestamp: Date.now(),
+      author: msg.author,
+      message: `Replied to tech chat: ${text.slice(0, 80)}${text.length > 80 ? '…' : ''}`,
+    }],
+    updatedAt: Date.now(),
+  });
+
+  return msg.id;
+}
