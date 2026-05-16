@@ -3495,7 +3495,7 @@ function DutyOversightPanel({ currentUser }) {
   );
 }
 
-function DutyOversightRow({ period, editor }) {
+function DutyOversightRow({ period, editor, compact }) {
   const [mode, setMode] = React.useState(null); // 'dutyOnAt' | 'dutyOffAt' | 'forceClose' | null
   const [val, setVal] = React.useState('');
   const [note, setNote] = React.useState('');
@@ -3538,6 +3538,62 @@ function DutyOversightRow({ period, editor }) {
   }
 
   const edits = Array.isArray(period.adminEdits) ? period.adminEdits : [];
+
+  if (compact) {
+    return (
+      <div>
+        <div className="flex items-center justify-end gap-1">
+          {!mode && (
+            <>
+              <button onClick={() => openEdit('dutyOnAt')} className="px-2 py-1 text-[10px] tracking-widest bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700" style={{ fontFamily: 'JetBrains Mono, monospace' }}>EDIT ON</button>
+              <button onClick={() => openEdit('dutyOffAt')} className="px-2 py-1 text-[10px] tracking-widest bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700" style={{ fontFamily: 'JetBrains Mono, monospace' }}>EDIT OFF</button>
+              <button onClick={() => openEdit('forceClose')} className="px-2 py-1 text-[10px] tracking-widest bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/30" style={{ fontFamily: 'JetBrains Mono, monospace' }}>FORCE CLOSE</button>
+            </>
+          )}
+        </div>
+        {mode && (
+          <div className="mt-2 space-y-2">
+            <div className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {mode === 'dutyOnAt' ? 'EDIT DUTY-ON (ET)' : mode === 'dutyOffAt' ? 'EDIT DUTY-OFF (ET)' : 'FORCE CLOSE — SET DUTY-OFF (ET)'}
+            </div>
+            <input type="datetime-local" value={val} onChange={e => setVal(e.target.value)}
+              className="w-full bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none" />
+            <textarea value={note} onChange={e => setNote(e.target.value)} rows={2}
+              placeholder="Reason for this change (required — recorded in audit) *"
+              className="w-full bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none resize-none" />
+            <div className="text-[9px] text-slate-600">Times Eastern. Recorded with your name, timestamp, old→new.</div>
+            {msg && <div className={`text-xs ${msg === 'Saved.' ? 'text-green-400' : 'text-amber-400'}`}>{msg}</div>}
+            <div className="flex gap-2">
+              <button onClick={submit} disabled={busy}
+                className={`flex-1 px-3 py-2 text-xs tracking-widest font-medium disabled:opacity-50 ${mode === 'forceClose' ? 'bg-red-500 hover:bg-red-400 text-white' : 'bg-cyan-500 hover:bg-cyan-400 text-slate-950'}`}
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                {busy ? 'SAVING…' : (mode === 'forceClose' ? 'FORCE CLOSE' : 'SAVE CHANGE')}
+              </button>
+              <button onClick={() => { setMode(null); setMsg(''); }} disabled={busy}
+                className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs tracking-widest font-medium"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}>CANCEL</button>
+            </div>
+          </div>
+        )}
+        {!mode && edits.length > 0 && (
+          <details className="mt-2">
+            <summary className="text-[10px] text-slate-600 cursor-pointer tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              AUDIT TRAIL ({edits.length})
+            </summary>
+            <div className="mt-1 space-y-1">
+              {edits.slice().reverse().map((e, i) => (
+                <div key={i} className="text-[10px] text-slate-500 leading-relaxed border-l border-slate-800 pl-2">
+                  <span className="text-slate-400">{e.by}</span> · {fmtET(e.at, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} ·{' '}
+                  {e.field === 'forceClose' ? 'force-closed' : `${e.field}: ${e.from ? fmtET(e.from, { hour: 'numeric', minute: '2-digit' }) : '—'} → ${e.to ? fmtET(e.to, { hour: 'numeric', minute: '2-digit' }) : '—'}`}
+                  {e.note ? <span className="text-slate-600"> · “{e.note}”</span> : null}
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="bg-slate-950 border border-slate-800 p-3">
@@ -3612,6 +3668,183 @@ function DutyOversightRow({ period, editor }) {
           </div>
         </details>
       )}
+    </div>
+  );
+}
+
+/* ============================================================
+   ADMIN DUTY DASHBOARD (top-nav DUTY tab, admin only)
+   All registered crew. Each row: duty/rest remaining, assigned
+   tail + route + next departure, inline admin edit (reuses the
+   audited adminEditDuty / forceCloseDuty data layer).
+   ============================================================ */
+function AdminDutyDashboard({ currentUser, users, allTrips }) {
+  const [periods, setPeriods] = React.useState(null); // all duty docs
+  const [err, setErr] = React.useState('');
+  const [tick, setTick] = React.useState(0);
+
+  // Subscribe to ALL duty-state docs (admin scope). We reuse the active
+  // subscription plus a full read for off/resting via a broad listener.
+  React.useEffect(() => {
+    let unsub = () => {};
+    let cancelled = false;
+    (async () => {
+      try {
+        const [{ db }, { collection, onSnapshot }] = await Promise.all([
+          import('./firebase.js'),
+          import('firebase/firestore'),
+        ]);
+        if (cancelled) return;
+        unsub = onSnapshot(
+          collection(db, 'duty-state'),
+          (snap) => setPeriods(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+          (e) => { setErr('Could not load duty data: ' + e.message); setPeriods([]); }
+        );
+      } catch (e) {
+        setErr('Could not load duty data: ' + e.message);
+        setPeriods([]);
+      }
+    })();
+    return () => { cancelled = true; try { unsub(); } catch {} };
+  }, []);
+
+  React.useEffect(() => {
+    const iv = setInterval(() => setTick(t => t + 1), 1000);
+    return () => clearInterval(iv);
+  }, []);
+
+  const now = Date.now();
+  const DUTY_MAX = 14 * 60 * 60 * 1000;
+
+  // Latest duty period per pilotUid.
+  const latestByUid = React.useMemo(() => {
+    const m = {};
+    for (const p of (periods || [])) {
+      if (p.linkRejected) continue;
+      const cur = m[p.pilotUid];
+      if (!cur || (p.dutyOnAt || 0) > (cur.dutyOnAt || 0)) m[p.pilotUid] = p;
+    }
+    return m;
+  }, [periods]);
+
+  // Crew = registered users with a pilot-ish role.
+  const crew = React.useMemo(() => {
+    const list = Array.isArray(users) ? users : [];
+    return list
+      .filter(u => u && (u.uid || u.id) && ['crew', 'ops', 'admin'].includes(u.role))
+      .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  }, [users]);
+
+  // Resolve a crew member's assigned tail/route/next-departure from trips.
+  function assignment(u) {
+    const trips = Array.isArray(allTrips) ? allTrips : [];
+    const uname = u.jetinsightName || u.name || '';
+    const mine = trips
+      .filter(t => t?.info && t.start &&
+        (nameMatchesPilot(t.info.pic || '', uname) || nameMatchesPilot(t.info.sic || '', uname)))
+      .map(t => ({ t, s: new Date(t.start).getTime() }))
+      .filter(x => Number.isFinite(x.s))
+      .sort((a, b) => a.s - b.s);
+    // Prefer an active/next trip: first trip ending in the future.
+    const next = mine.find(x => {
+      const e = x.t.end ? new Date(x.t.end).getTime() : x.s;
+      return e >= now - 2 * 3600 * 1000;
+    }) || mine[mine.length - 1] || null;
+    if (!next) return null;
+    const i = next.t.info || {};
+    return {
+      tail: i.tail || '—',
+      route: `${i.from || '?'} → ${i.to || '?'}`,
+      dep: next.s,
+    };
+  }
+
+  if (periods == null) {
+    return <div className="max-w-5xl mx-auto p-6 text-sm text-slate-500">Loading duty dashboard…</div>;
+  }
+
+  return (
+    <div className="max-w-5xl mx-auto p-4 md:p-6 space-y-4">
+      <div className="flex items-baseline gap-3 flex-wrap">
+        <h1 className="text-3xl tracking-wide text-slate-100" style={{ fontFamily: 'Bebas Neue, sans-serif', letterSpacing: '0.05em' }}>
+          DUTY OVERSIGHT
+        </h1>
+        <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          14 CFR 135.267 · ALL CREW · build: duty-tab-v1
+        </span>
+      </div>
+      {err && <div className="text-xs text-amber-400">{err}</div>}
+
+      <div className="space-y-2">
+        {crew.map(u => {
+          const uid = u.uid || u.id;
+          const p = latestByUid[uid] || null;
+          const onDuty = p && p.status === 'on';
+          const resting = p && p.status === 'off' && p.restUntil && now < p.restUntil;
+          const dutyLeft = onDuty && p.dutyOnAt ? (p.dutyOnAt + DUTY_MAX) - now : null;
+          const restLeft = resting ? p.restUntil - now : null;
+          const asg = assignment(u);
+
+          let stateLabel, stateColor, timeStr;
+          if (onDuty) {
+            stateLabel = dutyLeft < 0 ? 'OVER 14H' : 'ON DUTY';
+            stateColor = dutyLeft < 0 ? 'text-red-300' : 'text-cyan-300';
+            timeStr = `${fmtCountdown(dutyLeft)} duty left`;
+          } else if (resting) {
+            stateLabel = 'RESTING';
+            stateColor = 'text-amber-300';
+            timeStr = `${fmtCountdown(restLeft)} rest left`;
+          } else if (p && p.linkPending) {
+            stateLabel = 'LINK PENDING';
+            stateColor = 'text-amber-300';
+            timeStr = 'awaiting pilot confirm';
+          } else {
+            stateLabel = 'NO DUTY';
+            stateColor = 'text-slate-600';
+            timeStr = '—';
+          }
+
+          return (
+            <div key={uid} className="bg-slate-900 border border-slate-800 p-3">
+              <div className="flex items-start justify-between gap-3 flex-wrap">
+                <div className="min-w-0">
+                  <div className="text-sm text-slate-200">{u.name || 'Unknown'}</div>
+                  <div className="text-[10px] tracking-widest mt-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    <span className={stateColor}>{stateLabel}</span>
+                    <span className="text-slate-600"> · {timeStr}</span>
+                  </div>
+                  {p && p.dutyOnAt && (
+                    <div className="text-[10px] text-slate-600 mt-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                      ON: {fmtET(p.dutyOnAt, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })}
+                      {p.dutyOffAt ? ` · OFF: ${fmtET(p.dutyOffAt, { hour: 'numeric', minute: '2-digit' })}` : ''}
+                    </div>
+                  )}
+                </div>
+                <div className="text-right shrink-0">
+                  <div className="text-[9px] text-slate-600 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>ASSIGNED</div>
+                  {asg ? (
+                    <>
+                      <div className="text-sm text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{asg.tail}</div>
+                      <div className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{asg.route}</div>
+                      <div className="text-[10px] text-slate-500">{fmtET(asg.dep, { weekday: 'short', hour: 'numeric', minute: '2-digit' })} ET</div>
+                    </>
+                  ) : (
+                    <div className="text-[10px] text-slate-600">no trips</div>
+                  )}
+                </div>
+              </div>
+              {p && (
+                <div className="mt-2 pt-2 border-t border-slate-800">
+                  <DutyOversightRow period={p} editor={currentUser} compact />
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {crew.length === 0 && (
+          <div className="text-sm text-slate-500">No registered crew found.</div>
+        )}
+      </div>
     </div>
   );
 }
@@ -14562,8 +14795,14 @@ function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, sync
     { id: 'ops',      label: 'OPS',       icon: Zap,      roles: ['ops', 'admin'] },
     { id: 'maint',    label: 'MAINT',     icon: AlertTriangle, roles: ['maint', 'ops', 'admin'] },
     { id: 'users',    label: 'USERS',     icon: Users,    roles: ['ops', 'admin'] },
+    { id: 'duty',     label: 'DUTY',      icon: Clock,    roles: ['admin'] },
   ];
-  const allowed = sections.filter(s => s.roles.includes(currentUser.role));
+  // Admin-only DUTY tab also shows when an admin is impersonating a crew
+  // member (impersonation is admin-only, so _impersonating is a safe signal).
+  const isAdminContext = currentUser.role === 'admin' || currentUser._impersonating === true;
+  const allowed = sections.filter(s =>
+    s.roles.includes(currentUser.role) || (s.id === 'duty' && isAdminContext)
+  );
 
   return (
     <header className="border-b border-slate-800 bg-slate-950/80 backdrop-blur sticky top-0 z-30">
@@ -20157,6 +20396,22 @@ export default function CharterOps() {
               onRemoveUser={removeUser}
               onImpersonate={setImpersonateUid}
             />
+          </div>
+        )}
+
+        {/* === DUTY SECTION (admin duty/rest oversight) === */}
+        {section === 'duty' && (currentUser.role === 'admin' || currentUser._impersonating === true) && config?.dutyTrackerEnabled && (
+          <div className="flex-1 overflow-y-auto scroll-area bg-slate-950">
+            <DutyErrorBoundary>
+              <AdminDutyDashboard currentUser={currentUser} users={users} allTrips={allTrips} />
+            </DutyErrorBoundary>
+          </div>
+        )}
+        {section === 'duty' && (currentUser.role === 'admin' || currentUser._impersonating === true) && !config?.dutyTrackerEnabled && (
+          <div className="flex-1 overflow-y-auto scroll-area bg-slate-950 p-6">
+            <div className="max-w-2xl mx-auto bg-slate-900 border border-slate-800 p-4 text-sm text-slate-400">
+              The duty tracker is currently disabled. Enable it in Settings → DUTY TRACKER (ADMIN) to use this dashboard.
+            </div>
           </div>
         )}
       </div>
