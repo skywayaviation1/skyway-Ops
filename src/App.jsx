@@ -9683,6 +9683,34 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
   const [icalText, setIcalText] = useState('');
   const [crewName, setCrewName] = useState(config.crewName || '');
   const [textMode, setTextMode] = useState(false);
+  const isAdminUser = currentUser?.role === 'admin';
+  const [dutyEnabled, setDutyEnabled] = useState(!!config.dutyTrackerEnabled);
+  const [dutyEmails, setDutyEmails] = useState(
+    Array.isArray(config.dutyAlertEmails) ? config.dutyAlertEmails.join(', ') : ''
+  );
+  const [dutyBusy, setDutyBusy] = useState(false);
+  const [dutyMsg, setDutyMsg] = useState('');
+
+  async function saveDutySettings() {
+    setDutyBusy(true); setDutyMsg('');
+    try {
+      const { db } = await import('./firebase.js');
+      const { doc, setDoc } = await import('firebase/firestore');
+      const emails = dutyEmails
+        .split(/[,;\s]+/).map(s => s.trim())
+        .filter(e => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
+      await setDoc(
+        doc(db, 'flightaware', 'config'),
+        { dutyTrackerEnabled: dutyEnabled, dutyAlertEmails: emails },
+        { merge: true }
+      );
+      setDutyMsg(`Saved. ${dutyEnabled ? 'Duty tracker ON' : 'Duty tracker OFF'} · ${emails.length} alert recipient(s).`);
+    } catch (e) {
+      setDutyMsg('Failed: ' + e.message);
+    } finally {
+      setDutyBusy(false);
+    }
+  }
 
   const save = async () => {
     const next = { ...config, icalUrl, crewName };
@@ -9718,6 +9746,57 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
               <span className="text-[11px] text-slate-500 mt-1 block">Shown next to chat messages and status events.</span>
             </label>
           </section>
+
+          {isAdminUser && (
+            <section>
+              <h3 className="text-xs tracking-widest text-cyan-400 mb-3" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
+                DUTY TRACKER (ADMIN)
+              </h3>
+              <label className="flex items-center justify-between gap-3 mb-3">
+                <div className="min-w-0">
+                  <span className="text-sm text-slate-200">Enable duty/rest tracker</span>
+                  <span className="text-[11px] text-slate-500 block mt-0.5">
+                    Shows the Part 135.267 duty card on every pilot's home screen.
+                    Off by default.
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setDutyEnabled(v => !v)}
+                  className={`shrink-0 px-3 py-2 text-xs tracking-widest font-medium border ${dutyEnabled ? 'bg-green-600/20 border-green-500/40 text-green-300' : 'bg-slate-900 border-slate-700 text-slate-300'}`}
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                >
+                  {dutyEnabled ? 'ENABLED' : 'DISABLED'}
+                </button>
+              </label>
+              <label className="block">
+                <span className="text-[10px] tracking-widest text-slate-500 uppercase" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  OVER-14H ALERT EMAILS (comma-separated)
+                </span>
+                <input
+                  value={dutyEmails}
+                  onChange={e => setDutyEmails(e.target.value)}
+                  placeholder="ops@flyskyway.com, jake@flyskyway.com"
+                  className="mt-1 w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                />
+                <span className="text-[11px] text-slate-500 mt-1 block">
+                  Notified when a crew exceeds the 14-hour duty limit.
+                </span>
+              </label>
+              <button
+                onClick={saveDutySettings}
+                disabled={dutyBusy}
+                className="mt-3 px-4 py-2 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 text-xs tracking-widest font-medium"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              >
+                {dutyBusy ? 'SAVING…' : 'SAVE DUTY SETTINGS'}
+              </button>
+              {dutyMsg && (
+                <div className={`mt-2 text-xs ${dutyMsg.startsWith('Failed') ? 'text-amber-400' : 'text-green-400'}`}>{dutyMsg}</div>
+              )}
+            </section>
+          )}
 
           <section>
             <h3 className="text-xs tracking-widest text-cyan-400 mb-3" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
@@ -18461,6 +18540,18 @@ export default function CharterOps() {
             const data = snap.data();
             // Default to true if field missing; only false explicitly disables
             setTrackingEnabled(data.trackingEnabled !== false);
+            // Duty tracker flag + alert emails are shared (admin sets once,
+            // every pilot's app sees it live). Default OFF.
+            setConfig(prev => {
+              const dutyEnabled = data.dutyTrackerEnabled === true;
+              const dutyEmails = Array.isArray(data.dutyAlertEmails) ? data.dutyAlertEmails : [];
+              if (prev &&
+                  prev.dutyTrackerEnabled === dutyEnabled &&
+                  JSON.stringify(prev.dutyAlertEmails || []) === JSON.stringify(dutyEmails)) {
+                return prev; // no change — avoid render churn
+              }
+              return { ...(prev || {}), dutyTrackerEnabled: dutyEnabled, dutyAlertEmails: dutyEmails };
+            });
           }
         });
       } catch (err) {
