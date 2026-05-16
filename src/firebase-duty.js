@@ -27,7 +27,7 @@
 import { db } from './firebase.js';
 import {
   doc, setDoc, updateDoc, getDoc, collection, query, where,
-  onSnapshot, orderBy, limit,
+  onSnapshot,
 } from 'firebase/firestore';
 
 export const DUTY_MAX_MS = 14 * 60 * 60 * 1000;  // 14h legal duty
@@ -43,18 +43,23 @@ function periodId(pilotUid, dutyOnAt) {
  */
 export function subscribeToCurrentDuty(pilotUid, onUpdate) {
   if (!pilotUid) { onUpdate(null); return () => {}; }
+  // NOTE: where(pilotUid) + orderBy(dutyOnAt) would require a composite
+  // Firestore index. We filter only, then pick the newest period in JS.
+  // The per-pilot duty-state set is tiny, so this is cheap and needs no index.
   const q = query(
     collection(db, 'duty-state'),
     where('pilotUid', '==', pilotUid),
-    orderBy('dutyOnAt', 'desc'),
-    limit(1),
   );
   return onSnapshot(
     q,
     (snap) => {
       if (snap.empty) { onUpdate(null); return; }
-      const d = snap.docs[0];
-      onUpdate({ id: d.id, ...d.data() });
+      let newest = null;
+      snap.forEach((d) => {
+        const v = { id: d.id, ...d.data() };
+        if (!newest || (v.dutyOnAt || 0) > (newest.dutyOnAt || 0)) newest = v;
+      });
+      onUpdate(newest);
     },
     (err) => {
       console.error('[firebase-duty] subscribe error:', err);

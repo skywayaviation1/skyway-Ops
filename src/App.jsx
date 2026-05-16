@@ -2788,7 +2788,7 @@ function fmtCountdown(ms) {
   return `${neg ? '-' : ''}${pad(h)}:${pad(m)}:${pad(s)}`;
 }
 
-function DutyCardInner({ currentUser }) {
+function DutyCardInner({ currentUser, nextTripStart }) {
   const [period, setPeriod] = React.useState(null);
   const [loaded, setLoaded] = React.useState(false);
   const [tick, setTick] = React.useState(0);
@@ -2835,6 +2835,15 @@ function DutyCardInner({ currentUser }) {
   const restRemaining = resting ? period.restUntil - now : 0;
   const dutyRemaining = onDuty ? (period.dutyOnAt + DUTY_MAX) - now : null;
   const over14 = onDuty && dutyRemaining != null && dutyRemaining < 0;
+
+  // To get 10h rest before the next trip, crew must be duty-OFF by
+  // (nextTripStart - 10h). Compute that deadline if we know the next trip.
+  let restDeadline = null;
+  if (nextTripStart) {
+    const ts = nextTripStart instanceof Date ? nextTripStart.getTime() : new Date(nextTripStart).getTime();
+    if (Number.isFinite(ts)) restDeadline = ts - REST_MIN;
+  }
+  const pastRestDeadline = restDeadline != null && now > restDeadline;
 
   async function doStart({ fboArrival = false, restOverrideReason = null } = {}) {
     setBusy(true); setErr('');
@@ -2959,6 +2968,21 @@ function DutyCardInner({ currentUser }) {
           <div className="text-[10px] text-slate-600">
             {over14 ? 'OVER legal 14-hour duty limit.' : 'Remaining until 14-hour legal duty limit.'}
           </div>
+          {restDeadline != null && (
+            <div className={`mt-2 p-2 border text-xs ${pastRestDeadline ? 'border-red-500/40 bg-red-500/5 text-red-300' : 'border-slate-700 bg-slate-950 text-slate-300'}`}>
+              <div className="text-[10px] text-slate-500 tracking-widest mb-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                DUTY-OFF DEADLINE FOR 10H REST
+              </div>
+              <div className="tabular-nums" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                {new Date(restDeadline).toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })}
+              </div>
+              <div className="text-[10px] mt-0.5 opacity-80">
+                {pastRestDeadline
+                  ? 'Past the deadline — 10h rest before next trip is at risk.'
+                  : 'Duty off by this time to get 10h rest before your next trip.'}
+              </div>
+            </div>
+          )}
           <button
             onClick={() => setShowOff(true)}
             disabled={busy}
@@ -3066,11 +3090,11 @@ function DutyOffForm({ over14, busy, err, sicName, onCancel, onConfirm }) {
 
 // Public entry point: gated + error-boundaried. This is the ONLY thing
 // PilotHomeScreen renders. If the flag is off, renders nothing.
-function DutyCard({ currentUser, config }) {
+function DutyCard({ currentUser, config, nextTripStart }) {
   if (!config?.dutyTrackerEnabled) return null;
   return (
     <DutyErrorBoundary>
-      <DutyCardInner currentUser={currentUser} />
+      <DutyCardInner currentUser={currentUser} nextTripStart={nextTripStart} />
     </DutyErrorBoundary>
   );
 }
@@ -3132,7 +3156,11 @@ function PilotHomeScreen({ currentUser, trips, tripStates, config, onSelectTrip,
         </div>
 
         {/* Duty tracker (isolated, flag-gated, error-boundaried) */}
-        <DutyCard currentUser={currentUser} config={config} />
+        <DutyCard
+          currentUser={currentUser}
+          config={config}
+          nextTripStart={(buckets.imminent[0] || buckets.upcoming[0])?.start || null}
+        />
 
         {/* Today's stats strip */}
         <div className="grid grid-cols-3 gap-3">
