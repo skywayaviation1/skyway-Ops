@@ -10373,6 +10373,7 @@ function AogDetail({ aog, currentUser, onBack }) {
                         <th className="px-3 py-2 font-normal">ETA</th>
                         <th className="px-3 py-2 font-normal">Ship method</th>
                         <th className="px-3 py-2 font-normal">Tracking</th>
+                        <th className="px-3 py-2 font-normal">Tech</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -10404,6 +10405,15 @@ function AogDetail({ aog, currentUser, onBack }) {
                                   {p.trackingNumber}
                                 </span>
                               )
+                            ) : (
+                              <span className="text-slate-600">—</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2">
+                            {p.techUsage === 'used' ? (
+                              <span className="text-[10px] px-1.5 py-0.5 bg-green-500/20 text-green-300 tracking-widest font-medium" style={{ fontFamily: 'JetBrains Mono, monospace' }} title={`${p.techUsageBy || ''}${p.techUsageNote ? ' · ' + p.techUsageNote : ''}`}>USED</span>
+                            ) : p.techUsage === 'not_used' ? (
+                              <span className="text-[10px] px-1.5 py-0.5 bg-slate-700 text-slate-300 tracking-widest font-medium" style={{ fontFamily: 'JetBrains Mono, monospace' }} title={`${p.techUsageBy || ''}${p.techUsageNote ? ' · ' + p.techUsageNote : ''}`}>NOT USED</span>
                             ) : (
                               <span className="text-slate-600">—</span>
                             )}
@@ -17480,6 +17490,9 @@ export function ExternalTechPage({ token }) {
           <ExtField label="Pilot Discrepancy" value={aog.diagnostics?.pilotDiscrepancy} />
           <ExtField label="Troubleshooting So Far" value={aog.diagnostics?.troubleshooting} />
           <ExtField label="Current Status" value={aog.currentStatus} />
+          {Array.isArray(aog.parts) && aog.parts.length > 0 && (
+            <ExtPartsPanel aog={aog} token={token} onPosted={load} />
+          )}
           {Array.isArray(aog.referenceDocs) && aog.referenceDocs.length > 0 && (
             <div>
               <div className="text-[10px] text-slate-500 tracking-widest mb-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>REFERENCE DOCUMENTS</div>
@@ -17526,6 +17539,132 @@ export function ExternalTechPage({ token }) {
           Aviation's primary maintenance tracking system per OpSpecs.
         </p>
       </div>
+    </div>
+  );
+}
+
+function ExtPartsPanel({ aog, token, onPosted }) {
+  const parts = Array.isArray(aog.parts) ? aog.parts : [];
+  const [busyIdx, setBusyIdx] = useState(null);
+  const [err, setErr] = useState('');
+  const [who, setWho] = useState('');
+  const [noteFor, setNoteFor] = useState(null); // partIdx currently editing a note
+  const [noteText, setNoteText] = useState('');
+
+  async function mark(part, usage) {
+    if (!who.trim()) {
+      setErr('Enter your name once at the top so usage is attributed.');
+      return;
+    }
+    setBusyIdx(part.idx);
+    setErr('');
+    try {
+      const r = await fetch('/api/aog-public?action=part-usage', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token,
+          partIdx: part.idx,
+          usage,
+          author: who.trim(),
+          note: (noteFor === part.idx ? noteText : part.techUsageNote) || '',
+        }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      setNoteFor(null);
+      setNoteText('');
+      onPosted && onPosted();
+    } catch (e) {
+      setErr('Failed: ' + e.message);
+    } finally {
+      setBusyIdx(null);
+    }
+  }
+
+  return (
+    <div>
+      <div className="text-[10px] text-slate-500 tracking-widest mb-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        PARTS — MARK WHICH WERE USED
+      </div>
+      <input
+        value={who}
+        onChange={e => setWho(e.target.value)}
+        placeholder="Your name (recorded with each part) *"
+        className="w-full mb-2 bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none"
+      />
+      <div className="space-y-2">
+        {parts.map((p) => {
+          const used = p.techUsage === 'used';
+          const notUsed = p.techUsage === 'not_used';
+          const busy = busyIdx === p.idx;
+          return (
+            <div key={p.idx} className={`border p-3 ${used ? 'border-green-500/40 bg-green-500/5' : notUsed ? 'border-slate-700 bg-slate-900' : 'border-slate-800 bg-slate-900'}`}>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-sm text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    {p.partNumber || '(no P/N)'}
+                  </div>
+                  <div className="text-xs text-slate-400">{p.description || '—'}</div>
+                  <div className="text-[10px] text-slate-600 mt-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    {p.status ? `status: ${p.status}` : ''}{p.eta ? ` · ETA ${p.eta}` : ''}
+                  </div>
+                </div>
+                <div className="flex flex-col gap-1 shrink-0">
+                  <button
+                    disabled={busy}
+                    onClick={() => mark(p, 'used')}
+                    className={`px-3 py-1.5 text-[10px] tracking-widest font-medium disabled:opacity-50 ${used ? 'bg-green-500 text-slate-950' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
+                    style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                  >
+                    {busy ? '…' : 'USED'}
+                  </button>
+                  <button
+                    disabled={busy}
+                    onClick={() => mark(p, 'not_used')}
+                    className={`px-3 py-1.5 text-[10px] tracking-widest font-medium disabled:opacity-50 ${notUsed ? 'bg-slate-600 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
+                    style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                  >
+                    {busy ? '…' : 'NOT USED'}
+                  </button>
+                </div>
+              </div>
+              {p.techUsage && (
+                <div className="mt-2 text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  Marked {p.techUsage === 'used' ? 'USED' : 'NOT USED'}
+                  {p.techUsageBy ? ` by ${p.techUsageBy}` : ''}
+                  {p.techUsageAt ? ` · ${new Date(p.techUsageAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : ''}
+                  {p.techUsageNote ? ` · note: ${p.techUsageNote}` : ''}
+                  <button onClick={() => mark(p, '')} className="ml-2 text-slate-600 hover:text-slate-400 underline">clear</button>
+                </div>
+              )}
+              {noteFor === p.idx ? (
+                <div className="mt-2 flex gap-2">
+                  <input
+                    value={noteText}
+                    onChange={e => setNoteText(e.target.value)}
+                    placeholder="Optional note (e.g. installed S/N, partial qty)…"
+                    className="flex-1 bg-slate-950 border border-slate-700 px-2 py-1 text-xs text-slate-200 focus:border-cyan-400 outline-none"
+                  />
+                  <button onClick={() => { setNoteFor(null); setNoteText(''); }} className="text-[10px] text-slate-500 px-2">cancel</button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => { setNoteFor(p.idx); setNoteText(p.techUsageNote || ''); }}
+                  className="mt-1 text-[10px] text-cyan-500 hover:text-cyan-400"
+                >
+                  + add note
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {err && <div className="mt-2 text-xs text-amber-400">{err}</div>}
+      <p className="mt-2 text-[10px] text-slate-600 leading-relaxed">
+        Marking parts here records coordination info for the Skyway team. It is
+        not a parts certification or maintenance record.
+      </p>
     </div>
   );
 }
