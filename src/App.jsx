@@ -10255,7 +10255,7 @@ function AogDetail({ aog, currentUser, onBack }) {
         body: JSON.stringify({ action: 'mint', aogId: aog.id, idToken }),
       });
       const data = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      if (!r.ok) throw new Error(data.detail || data.error || `HTTP ${r.status}`);
       setLinkUrl(data.url);
       setLinkMsg('Link generated. Any previous link is now invalid.');
     } catch (e) {
@@ -10278,7 +10278,7 @@ function AogDetail({ aog, currentUser, onBack }) {
         body: JSON.stringify({ action: 'revoke', aogId: aog.id, idToken }),
       });
       const data = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      if (!r.ok) throw new Error(data.detail || data.error || `HTTP ${r.status}`);
       setLinkMsg('Link revoked. It no longer works.');
     } catch (e) {
       setLinkMsg('Failed: ' + e.message);
