@@ -7,6 +7,10 @@
     {
       "path": "/api/email-queue-drain",
       "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/aog-chat-nudge",
+      "schedule": "* * * * *"
     }
   ],
   "rewrites": [
