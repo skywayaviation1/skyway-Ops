@@ -85,6 +85,7 @@ function sanitizeAog(a) {
     })) : [],
     techUpdates: Array.isArray(a.techUpdates) ? a.techUpdates : [],
     techChat: Array.isArray(a.techChat) ? a.techChat : [],
+    externalLogbookEnabled: a.externalLogbookEnabled === true,
     logbookEntries: Array.isArray(a.logbookEntries) ? a.logbookEntries.map(e => ({
       id: e.id, timestamp: e.timestamp,
       technicianName: e.technicianName || '',
@@ -214,6 +215,11 @@ export default async function handler(req, res) {
 
     // ---------- POST external logbook entry (flagged unverified) ----------
     if (action === 'logbook') {
+      // External logbook submission is opt-in per AOG. Default is OFF.
+      // Server-side gate (defense in depth — not just a hidden UI tab).
+      if (data.externalLogbookEnabled !== true) {
+        return res.status(403).json({ error: 'External logbook entry is not enabled for this AOG.' });
+      }
       const e = body.entry || {};
       const technicianName = clip(e.technicianName, 160).trim();
       const workPerformed = clip(e.workPerformed, 8000).trim();

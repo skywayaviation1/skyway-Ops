@@ -110,6 +110,12 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true, revoked: true });
     }
 
+    if (action === 'set-logbook') {
+      const enabled = body.enabled === true;
+      await ref.update({ externalLogbookEnabled: enabled, updatedAt: Date.now() });
+      return res.status(200).json({ ok: true, externalLogbookEnabled: enabled });
+    }
+
     return res.status(400).json({ error: 'unknown action' });
   } catch (err) {
     console.error('[aog-link] error:', err && err.message, err && err.stack);
