@@ -8,5 +8,11 @@
       "path": "/api/email-queue-drain",
       "schedule": "* * * * *"
     }
+  ],
+  "rewrites": [
+    {
+      "source": "/((?!api/).*)",
+      "destination": "/index.html"
+    }
   ]
 }
