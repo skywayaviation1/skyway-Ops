@@ -2788,6 +2788,20 @@ function fmtCountdown(ms) {
   return `${neg ? '-' : ''}${pad(h)}:${pad(m)}:${pad(s)}`;
 }
 
+// All duty/rest times are shown in Eastern (Skyway is East-Coast based).
+// America/New_York auto-handles EST/EDT. opts pass-through to toLocaleString.
+function fmtET(ms, opts) {
+  if (ms == null) return '—';
+  try {
+    return new Date(ms).toLocaleString('en-US', {
+      timeZone: 'America/New_York',
+      ...opts,
+    });
+  } catch {
+    return '—';
+  }
+}
+
 function DutyCardInner({ currentUser, myTrips }) {
   const [period, setPeriod] = React.useState(null);
   const [loaded, setLoaded] = React.useState(false);
@@ -2878,18 +2892,29 @@ function DutyCardInner({ currentUser, myTrips }) {
     const nextTripStartMs = nextAfter ? nextAfter.s : null;
 
     const limit14 = onDuty && period?.dutyOnAt ? period.dutyOnAt + DUTY_MAX : null;
-    const limitRest = nextTripStartMs != null ? nextTripStartMs - REST_MIN : null;
+    // Next legal duty-on starts 45 min before the next first leg's departure,
+    // and that duty-on requires 10h rest immediately before it. So the latest
+    // duty-off for the rest constraint is:
+    //   nextFirstLegDep - 45min - 10h
+    const DUTY_ON_LEAD_MS = 45 * 60 * 1000;
+    const limitRest = nextTripStartMs != null
+      ? nextTripStartMs - DUTY_ON_LEAD_MS - REST_MIN
+      : null;
+    const nextDutyOnMs = nextTripStartMs != null
+      ? nextTripStartMs - DUTY_ON_LEAD_MS
+      : null;
 
     // Binding = earlier of the two that exist.
     let binding = null, bindingReason = null;
     if (limit14 != null && limitRest != null) {
       if (limit14 <= limitRest) { binding = limit14; bindingReason = '14h duty limit'; }
-      else { binding = limitRest; bindingReason = '10h rest before next trip'; }
+      else { binding = limitRest; bindingReason = '10h rest before next duty-on'; }
     } else if (limit14 != null) { binding = limit14; bindingReason = '14h duty limit'; }
-    else if (limitRest != null) { binding = limitRest; bindingReason = '10h rest before next trip'; }
+    else if (limitRest != null) { binding = limitRest; bindingReason = '10h rest before next duty-on'; }
 
     return {
       nextTripStartMs,
+      nextDutyOnMs,
       limit14, limitRest,
       binding, bindingReason,
       lastTodayEnd,
@@ -3018,7 +3043,7 @@ function DutyCardInner({ currentUser, myTrips }) {
       {/* State: on duty → 14h countdown + DUTY OFF */}
       {onDuty && !showOff && (
         <div className="space-y-2">
-          <div className="text-sm text-slate-400">On duty since {new Date(period.dutyOnAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}.</div>
+          <div className="text-sm text-slate-400">On duty since {fmtET(period.dutyOnAt, { hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })}.</div>
           <div className={`text-3xl tabular-nums ${over14 ? 'text-red-400' : 'text-cyan-300'}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
             {fmtCountdown(dutyRemaining)}
           </div>
@@ -3031,7 +3056,7 @@ function DutyCardInner({ currentUser, myTrips }) {
                 LATEST DUTY-OFF
               </div>
               <div className={`text-lg tabular-nums ${pastBinding ? 'text-red-300' : 'text-cyan-300'}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                {new Date(dutyCalc.binding).toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })}
+                {fmtET(dutyCalc.binding, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })}
               </div>
               <div className="text-[10px] text-slate-500 mt-0.5">
                 Binding constraint: <span className={pastBinding ? 'text-red-300' : 'text-slate-300'}>{dutyCalc.bindingReason}</span>
@@ -3054,15 +3079,18 @@ function DutyCardInner({ currentUser, myTrips }) {
 
               <div className="mt-2 text-[9px] text-slate-600 leading-relaxed space-y-0.5">
                 {dutyCalc.limit14 != null && (
-                  <div>14h duty limit: {new Date(dutyCalc.limit14).toLocaleString('en-US', { hour: 'numeric', minute: '2-digit' })}</div>
+                  <div>14h duty limit: {fmtET(dutyCalc.limit14, { weekday: 'short', hour: 'numeric', minute: '2-digit' })} ET</div>
                 )}
                 {dutyCalc.limitRest != null && (
-                  <div>Rest-before-next-trip: {new Date(dutyCalc.limitRest).toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' })}</div>
+                  <div>Rest-before-next-duty-on: {fmtET(dutyCalc.limitRest, { weekday: 'short', hour: 'numeric', minute: '2-digit' })} ET</div>
                 )}
                 {dutyCalc.nextTripStartMs != null && (
-                  <div>Next trip after today: {new Date(dutyCalc.nextTripStartMs).toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' })}</div>
+                  <div>Next first leg: {fmtET(dutyCalc.nextTripStartMs, { weekday: 'short', hour: 'numeric', minute: '2-digit' })} ET</div>
                 )}
-                <div className="text-slate-700 pt-1">Planning estimate — not a 14 CFR 135.267 compliance determination.</div>
+                {dutyCalc.nextDutyOnMs != null && (
+                  <div>Next duty-on (−45m): {fmtET(dutyCalc.nextDutyOnMs, { weekday: 'short', hour: 'numeric', minute: '2-digit' })} ET</div>
+                )}
+                <div className="text-slate-700 pt-1">Rest math: next first leg − 45m duty-on − 10h rest. All times Eastern. Planning estimate — not a 14 CFR 135.267 compliance determination.</div>
               </div>
             </div>
           )}
