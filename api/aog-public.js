@@ -79,7 +79,7 @@ function sanitizeAog(a) {
       id: d.id, filename: d.filename, url: d.url,
     })) : [],
     techUpdates: Array.isArray(a.techUpdates) ? a.techUpdates : [],
-    techQuestions: Array.isArray(a.techQuestions) ? a.techQuestions : [],
+    techChat: Array.isArray(a.techChat) ? a.techChat : [],
     logbookEntries: Array.isArray(a.logbookEntries) ? a.logbookEntries.map(e => ({
       id: e.id, timestamp: e.timestamp,
       technicianName: e.technicianName || '',
@@ -267,67 +267,74 @@ export default async function handler(req, res) {
     }
 
     // ---------- POST tech question (emails Jake + MX with link) ----------
-    if (action === 'question') {
-      const q = body.question || {};
+    if (action === 'chat') {
+      const q = body.message || {};
       const author = clip(q.author, 120).trim();
-      const message = clip(q.message, 4000).trim();
-      if (!author || !message) {
-        return res.status(400).json({ error: 'author and question are required' });
+      const text = clip(q.text, 4000).trim();
+      if (!author || !text) {
+        return res.status(400).json({ error: 'author and message are required' });
       }
-      const entry = {
-        id: `q-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      const msg = {
+        id: `m-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
         timestamp: Date.now(),
+        from: 'tech',
         author,
         company: clip(q.company, 160).trim(),
-        message,
-        answered: false,
-        source: 'external',
+        message: text,
       };
-      const existing = Array.isArray(data.techQuestions) ? data.techQuestions : [];
+      const existing = Array.isArray(data.techChat) ? data.techChat : [];
+      const isFirstMessage = existing.length === 0;
       const log = Array.isArray(data.logEntries) ? data.logEntries : [];
+
       await ref.update({
-        techQuestions: [...existing, entry],
+        techChat: [...existing, msg],
+        // Tech is now waiting. The 5-min nudge cron uses these two fields:
+        // it emails if lastTechMsgAt is newer than lastSkywayReplyAt by >5min
+        // and we haven't already nudged for this exact message.
+        lastTechMsgAt: msg.timestamp,
+        techChatNudgedAt: null,
         logEntries: [...log, {
           timestamp: Date.now(),
           author: `${author} (external)`,
-          message: `Tech question: ${message.slice(0, 100)}${message.length > 100 ? '…' : ''}`,
+          message: `Tech chat: ${text.slice(0, 100)}${text.length > 100 ? '…' : ''}`,
         }],
         updatedAt: Date.now(),
       });
 
-      // Build the link back to this AOG's external page so the team can
-      // jump straight in to respond. Reconstruct from the request origin.
-      const proto = (req.headers['x-forwarded-proto'] || 'https').toString().split(',')[0];
-      const host = (req.headers['x-forwarded-host'] || req.headers.host || '').toString();
-      const techLink = `${proto}://${host}/aog-tech?token=${encodeURIComponent(body.token)}`;
-
-      // Question notifications go specifically to Jake + MX.
-      try {
-        const apiKey = process.env.RESEND_API_KEY;
-        if (apiKey) {
-          await fetch('https://api.resend.com/emails', {
-            method: 'POST',
-            headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              from: 'Skyway Ops <noreply@send.flyskyway.com>',
-              to: ['Jake@flyskyway.com', 'MX@flyskyway.com'],
-              subject: `[AOG TECH QUESTION] ${data.tail} at ${data.location} — response needed`,
-              text:
-                `An external maintenance technician has a question on the AOG for ` +
-                `${data.tail} (${data.location}${data.fboName ? ' / ' + data.fboName : ''}).\n\n` +
-                `From: ${author}${entry.company ? ` — ${entry.company}` : ''}\n\n` +
-                `Question:\n${message}\n\n` +
-                `Respond here (opens the maintenance portal where you can add a ` +
-                `status update the tech will see):\n${techLink}\n\n` +
-                `— Skyway Ops`,
-            }),
-          });
+      // Email Jake + MX ONLY on the first message of the conversation.
+      // Subsequent unanswered messages are handled by the 5-min nudge cron.
+      if (isFirstMessage) {
+        const proto = (req.headers['x-forwarded-proto'] || 'https').toString().split(',')[0];
+        const host = (req.headers['x-forwarded-host'] || req.headers.host || '').toString();
+        const techLink = `${proto}://${host}/aog-tech?token=${encodeURIComponent(body.token)}`;
+        try {
+          const apiKey = process.env.RESEND_API_KEY;
+          if (apiKey) {
+            await fetch('https://api.resend.com/emails', {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                from: 'Skyway Ops <noreply@send.flyskyway.com>',
+                to: ['Jake@flyskyway.com', 'MX@flyskyway.com'],
+                subject: `[AOG CHAT STARTED] ${data.tail} at ${data.location} — tech is waiting`,
+                text:
+                  `An external maintenance technician started a chat on the AOG for ` +
+                  `${data.tail} (${data.location}${data.fboName ? ' / ' + data.fboName : ''}).\n\n` +
+                  `From: ${author}${msg.company ? ` — ${msg.company}` : ''}\n\n` +
+                  `Message:\n${text}\n\n` +
+                  `Reply in Skyway Ops (open the AOG → Tech Chat), or use this ` +
+                  `quick-reply link which opens the conversation:\n${techLink}\n\n` +
+                  `You'll get another email if the tech is left waiting more ` +
+                  `than 5 minutes.\n— Skyway Ops`,
+              }),
+            });
+          }
+        } catch (e) {
+          console.warn('[aog-public] chat first-message email failed:', e.message);
         }
-      } catch (e) {
-        console.warn('[aog-public] question email failed:', e.message);
       }
 
-      return res.status(200).json({ ok: true, id: entry.id });
+      return res.status(200).json({ ok: true, id: msg.id });
     }
 
     return res.status(400).json({ error: 'unknown action' });
