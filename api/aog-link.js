@@ -77,6 +77,18 @@ export default async function handler(req, res) {
   const snap = await ref.get();
   if (!snap.exists) return res.status(404).json({ error: 'AOG not found' });
 
+  // Pre-flight: surface the most common misconfig with a clear message
+  // instead of a generic 500 from deep inside signAogToken().
+  if (action === 'mint') {
+    const secret = process.env.AOG_LINK_SECRET;
+    if (!secret || secret.length < 16) {
+      return res.status(500).json({
+        error: 'AOG_LINK_SECRET not configured',
+        detail: 'Set the AOG_LINK_SECRET environment variable in Vercel (min 16 characters), then redeploy.',
+      });
+    }
+  }
+
   try {
     if (action === 'mint') {
       const issuedAt = Date.now();
@@ -100,7 +112,11 @@ export default async function handler(req, res) {
 
     return res.status(400).json({ error: 'unknown action' });
   } catch (err) {
-    console.error('[aog-link] error:', err.message);
-    return res.status(500).json({ error: 'Server error' });
+    console.error('[aog-link] error:', err && err.message, err && err.stack);
+    // Return the real message so the UI can show something actionable.
+    return res.status(500).json({
+      error: 'Server error',
+      detail: (err && err.message) ? String(err.message).slice(0, 300) : 'unknown',
+    });
   }
 }
