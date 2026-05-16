@@ -2744,6 +2744,337 @@ function timeUntil(iso) {
   return future ? `in ${mins}m` : `${mins}m ago`;
 }
 
+/* ============================================================
+   DUTY TRACKER — Part 135 §135.267 duty/rest
+   ------------------------------------------------------------
+   ISOLATION CONTRACT:
+   - Gated behind config.dutyTrackerEnabled (default OFF).
+   - Wrapped in DutyErrorBoundary: any render/runtime fault shows
+     a small fallback box, NEVER crashes the app. This is the
+     specific failure mode (TDZ blue-screen) we are engineering
+     against after the earlier outage.
+   ============================================================ */
+class DutyErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { failed: false };
+  }
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidCatch(err, info) {
+    console.error('[DutyErrorBoundary] caught — duty card isolated, app safe:', err, info);
+  }
+  render() {
+    if (this.state.failed) {
+      return (
+        <div className="bg-slate-900 border border-amber-500/30 p-3 text-xs text-amber-400">
+          Duty tracker is temporarily unavailable. The rest of the app is
+          unaffected. (This panel is isolated by design.)
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function fmtCountdown(ms) {
+  if (ms == null) return '--:--:--';
+  const neg = ms < 0;
+  let s = Math.floor(Math.abs(ms) / 1000);
+  const h = Math.floor(s / 3600); s -= h * 3600;
+  const m = Math.floor(s / 60); s -= m * 60;
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${neg ? '-' : ''}${pad(h)}:${pad(m)}:${pad(s)}`;
+}
+
+function DutyCardInner({ currentUser }) {
+  const [period, setPeriod] = React.useState(null);
+  const [loaded, setLoaded] = React.useState(false);
+  const [tick, setTick] = React.useState(0);
+  const [busy, setBusy] = React.useState(false);
+  const [err, setErr] = React.useState('');
+  const [showOff, setShowOff] = React.useState(false);
+  const [showRestOverride, setShowRestOverride] = React.useState(false);
+
+  // Subscribe to my latest duty period.
+  React.useEffect(() => {
+    if (!currentUser?.uid && !currentUser?.id) return;
+    let unsub = () => {};
+    let cancelled = false;
+    (async () => {
+      try {
+        const m = await import('./firebase-duty.js');
+        if (cancelled) return;
+        unsub = m.subscribeToCurrentDuty(currentUser.uid || currentUser.id, (p) => {
+          setPeriod(p);
+          setLoaded(true);
+        });
+      } catch (e) {
+        console.error('[DutyCard] load failed:', e);
+        setErr('Duty data unavailable');
+        setLoaded(true);
+      }
+    })();
+    return () => { cancelled = true; try { unsub(); } catch {} };
+  }, [currentUser?.uid, currentUser?.id]);
+
+  // 1s ticker only while there's something counting.
+  React.useEffect(() => {
+    const iv = setInterval(() => setTick(t => t + 1), 1000);
+    return () => clearInterval(iv);
+  }, []);
+
+  const now = Date.now();
+  const DUTY_MAX = 14 * 60 * 60 * 1000;
+  const REST_MIN = 10 * 60 * 60 * 1000;
+
+  const onDuty = period && period.status === 'on';
+  const offDuty = period && period.status === 'off';
+  const resting = offDuty && period.restUntil && now < period.restUntil;
+  const restRemaining = resting ? period.restUntil - now : 0;
+  const dutyRemaining = onDuty ? (period.dutyOnAt + DUTY_MAX) - now : null;
+  const over14 = onDuty && dutyRemaining != null && dutyRemaining < 0;
+
+  async function doStart({ fboArrival = false, restOverrideReason = null } = {}) {
+    setBusy(true); setErr('');
+    try {
+      const m = await import('./firebase-duty.js');
+      const pilot = {
+        uid: currentUser.uid || currentUser.id,
+        name: currentUser.name || currentUser.displayName || currentUser.email,
+      };
+      await m.startDuty(pilot, {
+        fboArrival,
+        restOverride: restOverrideReason ? { reason: restOverrideReason } : null,
+      });
+      setShowRestOverride(false);
+    } catch (e) {
+      setErr(e.message || 'Failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function onDutyOnClick() {
+    // If still in a rest window from the previous period, warn + offer override.
+    if (resting) { setShowRestOverride(true); return; }
+    doStart({});
+  }
+
+  async function doEnd({ picReason = '', sicReason = '' } = {}) {
+    setBusy(true); setErr('');
+    try {
+      const m = await import('./firebase-duty.js');
+      await m.endDuty(period.id, { over14ReasonPic: picReason, over14ReasonSic: sicReason });
+      setShowOff(false);
+    } catch (e) {
+      if (e.code === 'OVER14_REASON_REQUIRED') {
+        setErr(e.message);
+      } else {
+        setErr(e.message || 'Failed');
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!loaded) {
+    return <div className="bg-slate-900 border border-slate-800 p-4 text-xs text-slate-500">Loading duty status…</div>;
+  }
+
+  return (
+    <div className="bg-slate-900 border border-slate-800 p-4">
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          DUTY STATUS · 14 CFR 135.267
+        </span>
+        {over14 && (
+          <span className="text-[10px] bg-red-500/20 text-red-300 px-2 py-0.5 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            OVER 14H
+          </span>
+        )}
+      </div>
+
+      {/* State: not on duty and not resting → DUTY ON / CREW AT FBO */}
+      {!onDuty && !resting && (
+        <div className="space-y-2">
+          <div className="text-sm text-slate-400 mb-2">You are off duty.</div>
+          <div className="flex gap-2">
+            <button
+              onClick={onDutyOnClick}
+              disabled={busy}
+              className="flex-1 px-4 py-3 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 text-sm tracking-widest font-medium"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              DUTY ON
+            </button>
+            <button
+              onClick={() => doStart({ fboArrival: true })}
+              disabled={busy}
+              className="flex-1 px-4 py-3 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 text-sm tracking-widest font-medium border border-slate-700"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              CREW AT FBO
+            </button>
+          </div>
+          <p className="text-[10px] text-slate-600">Either action starts your duty period and stamps FBO arrival.</p>
+        </div>
+      )}
+
+      {/* State: resting (10h rest countdown, duty-on warns) */}
+      {resting && !showRestOverride && (
+        <div className="space-y-2">
+          <div className="text-sm text-slate-400">Rest period in progress.</div>
+          <div className="text-3xl text-amber-300 tabular-nums" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {fmtCountdown(restRemaining)}
+          </div>
+          <div className="text-[10px] text-slate-600">Until 10-hour rest complete.</div>
+          <button
+            onClick={() => setShowRestOverride(true)}
+            className="w-full mt-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-400 text-xs tracking-widest font-medium border border-slate-700"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            DUTY ON (rest not complete — override)
+          </button>
+        </div>
+      )}
+
+      {/* Rest override: requires a reason (PIC/admin) */}
+      {showRestOverride && (
+        <RestOverrideForm
+          busy={busy}
+          onCancel={() => setShowRestOverride(false)}
+          onConfirm={(reason) => doStart({ restOverrideReason: reason })}
+        />
+      )}
+
+      {/* State: on duty → 14h countdown + DUTY OFF */}
+      {onDuty && !showOff && (
+        <div className="space-y-2">
+          <div className="text-sm text-slate-400">On duty since {new Date(period.dutyOnAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}.</div>
+          <div className={`text-3xl tabular-nums ${over14 ? 'text-red-400' : 'text-cyan-300'}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {fmtCountdown(dutyRemaining)}
+          </div>
+          <div className="text-[10px] text-slate-600">
+            {over14 ? 'OVER legal 14-hour duty limit.' : 'Remaining until 14-hour legal duty limit.'}
+          </div>
+          <button
+            onClick={() => setShowOff(true)}
+            disabled={busy}
+            className="w-full mt-2 px-4 py-3 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 text-sm tracking-widest font-medium border border-slate-700"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            DUTY OFF
+          </button>
+        </div>
+      )}
+
+      {/* Duty-off form (over-14 requires PIC + SIC reasons) */}
+      {onDuty && showOff && (
+        <DutyOffForm
+          over14={over14}
+          busy={busy}
+          err={err}
+          sicName={period.sicName}
+          onCancel={() => { setShowOff(false); setErr(''); }}
+          onConfirm={(picReason, sicReason) => doEnd({ picReason, sicReason })}
+        />
+      )}
+
+      {err && !showOff && <div className="mt-2 text-xs text-amber-400">{err}</div>}
+    </div>
+  );
+}
+
+function RestOverrideForm({ busy, onCancel, onConfirm }) {
+  const [reason, setReason] = React.useState('');
+  return (
+    <div className="space-y-2">
+      <div className="bg-amber-500/10 border border-amber-500/30 text-amber-300 text-[11px] p-2 leading-relaxed">
+        The 10-hour rest period is not complete. Starting duty now requires a
+        reason and will be logged. Confirm only if a legal rest requirement is
+        otherwise satisfied (e.g. reschedule, split rest) per your OpSpecs.
+      </div>
+      <textarea
+        value={reason}
+        onChange={e => setReason(e.target.value)}
+        rows={3}
+        placeholder="Reason for starting duty before 10h rest completes *"
+        className="w-full bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-amber-400 outline-none resize-none"
+      />
+      <div className="flex gap-2">
+        <button
+          onClick={() => reason.trim() && onConfirm(reason.trim())}
+          disabled={busy || !reason.trim()}
+          className="flex-1 px-4 py-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 text-xs tracking-widest font-medium"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        >
+          OVERRIDE & DUTY ON
+        </button>
+        <button onClick={onCancel} disabled={busy}
+          className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs tracking-widest font-medium"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          CANCEL
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function DutyOffForm({ over14, busy, err, sicName, onCancel, onConfirm }) {
+  const [pic, setPic] = React.useState('');
+  const [sic, setSic] = React.useState('');
+  return (
+    <div className="space-y-2">
+      {over14 ? (
+        <>
+          <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-[11px] p-2 leading-relaxed">
+            This duty period exceeded the 14-hour legal limit. A reason is
+            required for BOTH the PIC and the SIC{sicName ? ` (${sicName})` : ''}
+            before this period can be closed. This is recorded.
+          </div>
+          <textarea value={pic} onChange={e => setPic(e.target.value)} rows={2}
+            placeholder="PIC reason for exceeding 14h *"
+            className="w-full bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-red-400 outline-none resize-none" />
+          <textarea value={sic} onChange={e => setSic(e.target.value)} rows={2}
+            placeholder="SIC reason for exceeding 14h *"
+            className="w-full bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-red-400 outline-none resize-none" />
+        </>
+      ) : (
+        <div className="text-sm text-slate-400">Confirm duty off. A 10-hour rest period will begin.</div>
+      )}
+      {err && <div className="text-xs text-amber-400">{err}</div>}
+      <div className="flex gap-2">
+        <button
+          onClick={() => onConfirm(pic.trim(), sic.trim())}
+          disabled={busy || (over14 && (!pic.trim() || !sic.trim()))}
+          className="flex-1 px-4 py-2 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 text-xs tracking-widest font-medium"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        >
+          CONFIRM DUTY OFF
+        </button>
+        <button onClick={onCancel} disabled={busy}
+          className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs tracking-widest font-medium"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          CANCEL
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Public entry point: gated + error-boundaried. This is the ONLY thing
+// PilotHomeScreen renders. If the flag is off, renders nothing.
+function DutyCard({ currentUser, config }) {
+  if (!config?.dutyTrackerEnabled) return null;
+  return (
+    <DutyErrorBoundary>
+      <DutyCardInner currentUser={currentUser} />
+    </DutyErrorBoundary>
+  );
+}
+
 function PilotHomeScreen({ currentUser, trips, tripStates, config, onSelectTrip, onSwitchSection }) {
   // Filter to MY trips (PIC/SIC match)
   const myTrips = useMemo(() => {
@@ -2799,6 +3130,9 @@ function PilotHomeScreen({ currentUser, trips, tripStates, config, onSelectTrip,
             </span>
           )}
         </div>
+
+        {/* Duty tracker (isolated, flag-gated, error-boundaried) */}
+        <DutyCard currentUser={currentUser} config={config} />
 
         {/* Today's stats strip */}
         <div className="grid grid-cols-3 gap-3">
@@ -10658,6 +10992,9 @@ function AogDetail({ aog, currentUser, onBack }) {
 
             {/* External Maintenance Link */}
             <Section label="External Maintenance Link">
+              <div className="text-[9px] text-slate-700 mb-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                build: ext-logbook-toggle-v1
+              </div>
               <p className="text-xs text-slate-500 mb-3">
                 Generate a secure link an outside maintenance vendor can open
                 (no login) to view this AOG, post status updates, and submit
