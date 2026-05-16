@@ -5,7 +5,7 @@ import {
   CheckCircle2, Circle, AlertTriangle, Camera, Send, RefreshCw,
   Coffee, ArrowRight, Clock, Shield, X, ScanLine, ChevronLeft,
   Mail, Navigation, Loader2, Wifi, WifiOff, Settings as SettingsIcon,
-  Download, Trash2, Plus, FileText, Zap, Radio, AlertCircle,
+  Download, Trash2, Plus, FileText, Zap, Radio, AlertCircle, Upload,
   CheckCheck, UserCheck, Sparkles, Hash, Cloud
 } from 'lucide-react';
 import { formatLocalTime, formatLocalDate } from './airports.js';
