@@ -10629,7 +10629,7 @@ function NewAogModal({ currentUser, fleetTails, onClose, onCreated }) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur flex items-start justify-center overflow-y-auto p-4">
+    <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur flex items-start justify-center overflow-y-auto px-4 pb-4 pt-[max(1rem,env(safe-area-inset-top))]">
       <div className="bg-slate-950 border border-red-500/40 max-w-2xl w-full my-8">
         <div className="bg-red-500/10 px-5 py-3 flex items-center justify-between border-b border-red-500/30">
           <h3 className="text-sm tracking-widest text-red-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
@@ -10877,7 +10877,7 @@ function AogEditModal({ aog, currentUser, onClose }) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur flex items-start justify-center overflow-y-auto p-4">
+    <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur flex items-start justify-center overflow-y-auto px-4 pb-4 pt-[max(1rem,env(safe-area-inset-top))]">
       <div className="bg-slate-950 border border-slate-700 max-w-3xl w-full my-8">
         <div className="bg-slate-900 px-5 py-3 flex items-center justify-between border-b border-slate-700 sticky top-0 z-10">
           <h3 className="text-sm tracking-widest text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
@@ -11258,7 +11258,7 @@ function AddLogbookEntryModal({ aog, currentUser, onClose }) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur flex items-start justify-center overflow-y-auto p-4">
+    <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur flex items-start justify-center overflow-y-auto px-4 pb-4 pt-[max(1rem,env(safe-area-inset-top))]">
       <div className="bg-slate-950 border border-cyan-500/40 max-w-3xl w-full my-8">
         <div className="bg-cyan-500/10 px-5 py-3 flex items-center justify-between border-b border-cyan-500/30 sticky top-0 z-10">
           <h3 className="text-sm tracking-widest text-cyan-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
@@ -11548,7 +11548,7 @@ function ViewLogbookEntryModal({ aog, entry, currentUser, onClose }) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur flex items-start justify-center overflow-y-auto p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur flex items-start justify-center overflow-y-auto px-4 pb-4 pt-[max(1rem,env(safe-area-inset-top))]" onClick={onClose}>
       <div className="bg-slate-950 border border-slate-700 max-w-2xl w-full my-8" onClick={e => e.stopPropagation()}>
         <div className="bg-slate-900 px-5 py-3 flex items-center justify-between border-b border-slate-700 sticky top-0 z-10">
           <h3 className="text-sm tracking-widest text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
@@ -12572,7 +12572,7 @@ function NewMxProjectModal({ currentUser, users, fleetTails, onClose, onCreated 
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur flex items-start justify-center overflow-y-auto p-4">
+    <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur flex items-start justify-center overflow-y-auto px-4 pb-4 pt-[max(1rem,env(safe-area-inset-top))]">
       <div className="bg-slate-950 border border-cyan-500/40 max-w-2xl w-full my-8">
         <div className="bg-cyan-500/10 px-5 py-3 flex items-center justify-between border-b border-cyan-500/30 sticky top-0 z-10">
           <h3 className="text-sm tracking-widest text-cyan-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
@@ -12743,7 +12743,7 @@ function AddTaskModal({ project, users, actor, onClose }) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur flex items-start justify-center overflow-y-auto p-4">
+    <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur flex items-start justify-center overflow-y-auto px-4 pb-4 pt-[max(1rem,env(safe-area-inset-top))]">
       <div className="bg-slate-950 border border-slate-700 max-w-lg w-full my-8">
         <div className="bg-slate-900 px-5 py-3 flex items-center justify-between border-b border-slate-700">
           <h3 className="text-sm tracking-widest text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
@@ -12828,7 +12828,7 @@ function RequestPartModal({ project, actor, onClose }) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur flex items-start justify-center overflow-y-auto p-4">
+    <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur flex items-start justify-center overflow-y-auto px-4 pb-4 pt-[max(1rem,env(safe-area-inset-top))]">
       <div className="bg-slate-950 border border-slate-700 max-w-lg w-full my-8">
         <div className="bg-slate-900 px-5 py-3 flex items-center justify-between border-b border-slate-700">
           <h3 className="text-sm tracking-widest text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
@@ -12914,7 +12914,7 @@ function AddChecklistModal({ project, actor, onClose }) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur flex items-start justify-center overflow-y-auto p-4">
+    <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur flex items-start justify-center overflow-y-auto px-4 pb-4 pt-[max(1rem,env(safe-area-inset-top))]">
       <div className="bg-slate-950 border border-slate-700 max-w-lg w-full my-8">
         <div className="bg-slate-900 px-5 py-3 flex items-center justify-between border-b border-slate-700">
           <h3 className="text-sm tracking-widest text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
@@ -16870,14 +16870,15 @@ export default function CharterOps() {
       else localStorage.removeItem('skyway-tail-filter');
     } catch { /* ignore quota errors */ }
   }, [tailFilter]);
-  // Default landing screen: starts as 'schedule' so the initial render never
-  // touches `currentUser` (which is declared further down — see TDZ note).
-  // A useEffect later in this function switches to 'home' for crew on first
-  // load once currentUser is available.
-  const [section, setSection] = useState('schedule');
-  // Track whether we've already applied the role-based default so we don't
-  // fight the user when they navigate.
-  const sectionInitRef = useRef(false);
+  // Default landing screen: 'home' for crew (their personalized view),
+  // 'schedule' for everyone else (ops/admin/sales workflow).
+  // Use `profile` here (not `currentUser`) because currentUser is declared
+  // ~150 lines later via useMemo — referencing it here would hit TDZ in
+  // production minified builds. profile is the auth profile and gives us
+  // the role we need for the initial section decision.
+  const [section, setSection] = useState(
+    profile?.role === 'crew' ? 'home' : 'schedule'
+  );
   // FlightAware live tracking kill switch — synced from Firestore so admin can
   // disable it cluster-wide if costs spike. Default: enabled.
   const [trackingEnabled, setTrackingEnabled] = useState(true);
@@ -17071,18 +17072,6 @@ export default function CharterOps() {
     }
     return realUser;
   }, [profile, impersonateUid, users]);
-
-  // Apply the role-based default landing screen ONCE, after currentUser
-  // resolves. This used to live in the useState initializer above, but doing
-  // it there caused a Temporal Dead Zone error in production minified builds
-  // because `currentUser` is declared further down. Running it as a useEffect
-  // is safe because the effect fires after the component body finishes.
-  useEffect(() => {
-    if (sectionInitRef.current) return;
-    if (!currentUser) return;
-    sectionInitRef.current = true;
-    if (currentUser.role === 'crew') setSection('home');
-  }, [currentUser]);
 
   // Tick clock
   useEffect(() => {
