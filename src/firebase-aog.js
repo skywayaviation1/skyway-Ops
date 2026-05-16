@@ -354,3 +354,124 @@ export async function deleteLogbookEntry(aogId, entryId, deleter, reason = '') {
 
   return { ok: true, auditRecordId: entryId };
 }
+
+/* ============================================================
+   MANUAL REFERENCE DOCUMENTS (coordination PDFs)
+   ------------------------------------------------------------
+   Stored as a referenceDocs[] array on the AOG event. Each:
+     { id, filename, url, storagePath, sizeBytes,
+       uploadedAt, uploadedBy: { uid, displayName },
+       emailedAt, emailedTo: [string] }
+
+   These are coordination/convenience copies sent to a tech in
+   the field — NOT official Part 43 records.
+   ============================================================ */
+
+export async function addReferenceDoc(eventId, docMeta, uploader) {
+  if (!eventId) throw new Error('addReferenceDoc: eventId required');
+  if (!docMeta || !docMeta.url || !docMeta.storagePath) {
+    throw new Error('addReferenceDoc: docMeta.url and storagePath required');
+  }
+  const ref = doc(db, 'aog-events', eventId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error(`AOG event ${eventId} not found`);
+  const current = snap.data();
+
+  const refId = `ref-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  const newDoc = {
+    id: refId,
+    filename: String(docMeta.filename || 'reference.pdf'),
+    url: docMeta.url,
+    storagePath: docMeta.storagePath,
+    sizeBytes: docMeta.sizeBytes || 0,
+    uploadedAt: Date.now(),
+    uploadedBy: {
+      uid: uploader?.uid || null,
+      displayName: String(uploader?.displayName || '').trim() || 'Unknown',
+    },
+    emailedAt: null,
+    emailedTo: [],
+  };
+
+  const existing = Array.isArray(current.referenceDocs) ? current.referenceDocs : [];
+  const activityLog = Array.isArray(current.logEntries) ? current.logEntries : [];
+
+  await updateDoc(ref, {
+    referenceDocs: [...existing, newDoc],
+    logEntries: [...activityLog, {
+      timestamp: Date.now(),
+      author: newDoc.uploadedBy.displayName,
+      message: `Manual reference uploaded: ${newDoc.filename}`,
+    }],
+    updatedAt: Date.now(),
+  });
+
+  return refId;
+}
+
+export async function removeReferenceDoc(eventId, refId, remover) {
+  if (!eventId || !refId) throw new Error('eventId and refId required');
+  const ref = doc(db, 'aog-events', eventId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error(`AOG event ${eventId} not found`);
+  const current = snap.data();
+  const existing = Array.isArray(current.referenceDocs) ? current.referenceDocs : [];
+  const target = existing.find(d => d.id === refId);
+  if (!target) throw new Error(`Reference doc ${refId} not found`);
+
+  const activityLog = Array.isArray(current.logEntries) ? current.logEntries : [];
+  await updateDoc(ref, {
+    referenceDocs: existing.filter(d => d.id !== refId),
+    logEntries: [...activityLog, {
+      timestamp: Date.now(),
+      author: remover?.displayName || 'Unknown',
+      message: `Manual reference removed: ${target.filename}`,
+    }],
+    updatedAt: Date.now(),
+  });
+
+  // Best-effort storage cleanup
+  if (target.storagePath) {
+    try {
+      const { getStorage, ref: storageRef, deleteObject } = await import('firebase/storage');
+      const storage = getStorage();
+      await deleteObject(storageRef(storage, target.storagePath));
+    } catch (e) {
+      console.warn('[firebase-aog] reference PDF delete failed:', e.message);
+    }
+  }
+
+  return { ok: true };
+}
+
+export async function markReferenceEmailed(eventId, refIds, sentTo, sender) {
+  if (!eventId) throw new Error('markReferenceEmailed: eventId required');
+  const ids = Array.isArray(refIds) ? refIds : [refIds];
+  const ref = doc(db, 'aog-events', eventId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error(`AOG event ${eventId} not found`);
+  const current = snap.data();
+  const existing = Array.isArray(current.referenceDocs) ? current.referenceDocs : [];
+  const toList = Array.isArray(sentTo) ? sentTo.filter(Boolean) : [];
+
+  const updated = existing.map(d =>
+    ids.includes(d.id)
+      ? { ...d, emailedAt: Date.now(), emailedTo: toList }
+      : d
+  );
+
+  const sentNames = existing.filter(d => ids.includes(d.id)).map(d => d.filename).join(', ');
+  const activityLog = Array.isArray(current.logEntries) ? current.logEntries : [];
+
+  await updateDoc(ref, {
+    referenceDocs: updated,
+    logEntries: [...activityLog, {
+      timestamp: Date.now(),
+      author: sender?.displayName || 'Unknown',
+      message: `Reference(s) emailed to ${toList.join(', ')}: ${sentNames}`,
+    }],
+    updatedAt: Date.now(),
+  });
+
+  return { ok: true };
+}

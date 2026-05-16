@@ -91,3 +91,60 @@ export async function deleteTripSheet(path) {
     }
   }
 }
+
+/* ============================================================
+   AOG MANUAL REFERENCE DOCUMENTS
+   ------------------------------------------------------------
+   PDFs attached to an AOG event (manual references, OEM
+   bulletins, wiring diagrams, etc.) that ops/maint upload and
+   can send to a technician in the field.
+
+   Storage layout: /aog-references/{aogId}/{timestamp}_{safeName}.pdf
+
+   These are COORDINATION documents, not official 14 CFR Part 43
+   maintenance records. The official records live in the
+   maintenance tracking system per OpSpecs.
+   ============================================================ */
+
+export async function uploadAogReference(file, aogId) {
+  if (!file) throw new Error('No file provided');
+  if (!aogId) throw new Error('Missing AOG id');
+  if (file.size > 15 * 1024 * 1024) {
+    throw new Error('File too large — limit is 15MB');
+  }
+  const isPdf = file.type === 'application/pdf' ||
+    (file.name || '').toLowerCase().endsWith('.pdf');
+  if (!isPdf) {
+    throw new Error('Only PDF files are accepted for manual references');
+  }
+
+  // Keep the original filename (sanitized) so the tech sees a meaningful
+  // name in their inbox, but prefix a timestamp so re-uploads don't collide.
+  const baseName = String(file.name || 'reference.pdf')
+    .replace(/[^a-zA-Z0-9._-]/g, '_')
+    .replace(/_{2,}/g, '_')
+    .slice(0, 80);
+  const safeName = baseName.toLowerCase().endsWith('.pdf') ? baseName : `${baseName}.pdf`;
+  const filename = `${Date.now()}_${safeName}`;
+  const path = `aog-references/${aogId}/${filename}`;
+  const storageRef = ref(storage, path);
+
+  const snapshot = await uploadBytes(storageRef, file, {
+    contentType: 'application/pdf',
+    cacheControl: 'private, max-age=3600',
+  });
+
+  const url = await getDownloadURL(snapshot.ref);
+  return { url, path, filename: safeName, sizeBytes: file.size };
+}
+
+export async function deleteAogReference(path) {
+  if (!path) return;
+  try {
+    await deleteObject(ref(storage, path));
+  } catch (err) {
+    if (err.code !== 'storage/object-not-found') {
+      console.warn('[storage] deleteAogReference failed:', err.message);
+    }
+  }
+}

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Plane, Calendar, MessageSquare, Users, Bell, MapPin,
   CheckCircle2, Circle, AlertTriangle, Camera, Send, RefreshCw,
@@ -10142,6 +10143,10 @@ function AogDetail({ aog, currentUser, onBack }) {
   const [sendStatus, setSendStatus] = useState('');
   const [addingLogbook, setAddingLogbook] = useState(false);
   const [viewingEntryId, setViewingEntryId] = useState(null);
+  const [uploadingRef, setUploadingRef] = useState(false);
+  const [refError, setRefError] = useState('');
+  const [sendRefPicker, setSendRefPicker] = useState(null); // { docIds: [...] } or null
+  const refFileInputRef = useRef(null);
 
   const canEdit = ['admin', 'ops', 'maint'].includes(currentUser?.role);
   const isResolved = aog.status === 'resolved';
@@ -10202,6 +10207,36 @@ function AogDetail({ aog, currentUser, onBack }) {
       }).catch(e => console.warn('resolved email failed:', e));
     } catch (err) {
       alert('Failed to resolve: ' + err.message);
+    }
+  }
+
+  async function handleRefFilePicked(e) {
+    const file = e.target.files && e.target.files[0];
+    if (refFileInputRef.current) refFileInputRef.current.value = '';
+    if (!file) return;
+    setRefError('');
+    setUploadingRef(true);
+    try {
+      const storageMod = await import('./firebase-storage.js');
+      const meta = await storageMod.uploadAogReference(file, aog.id);
+      const aogMod = await import('./firebase-aog.js');
+      await aogMod.addReferenceDoc(aog.id, meta, reporter);
+      // Realtime subscription on the AOG list will refresh the doc.
+    } catch (err) {
+      console.error('[aog-ref] upload failed:', err);
+      setRefError(err.message || 'Upload failed');
+    } finally {
+      setUploadingRef(false);
+    }
+  }
+
+  async function handleRemoveRef(refDoc) {
+    if (!window.confirm(`Remove "${refDoc.filename}"? This deletes the file.`)) return;
+    try {
+      const aogMod = await import('./firebase-aog.js');
+      await aogMod.removeReferenceDoc(aog.id, refDoc.id, reporter);
+    } catch (err) {
+      alert('Failed to remove: ' + err.message);
     }
   }
 
@@ -10434,6 +10469,103 @@ function AogDetail({ aog, currentUser, onBack }) {
               )}
             </Section>
 
+            {/* Manual Reference Documents (coordination PDFs) */}
+            <Section label={`Manual References (${(aog.referenceDocs || []).length})`}>
+              {(!aog.referenceDocs || aog.referenceDocs.length === 0) ? (
+                <p className="text-xs text-slate-500">
+                  No reference documents. Upload OEM bulletins, wiring diagrams, or
+                  manual excerpts to share with the technician.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {aog.referenceDocs.map((d) => (
+                    <div key={d.id} className="bg-slate-900 border border-slate-800 p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <FileText className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                            <a
+                              href={d.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-sm text-cyan-400 hover:text-cyan-300 truncate"
+                            >
+                              {d.filename}
+                            </a>
+                          </div>
+                          <div className="text-[10px] text-slate-500 mt-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                            {d.sizeBytes ? `${(d.sizeBytes / 1024).toFixed(0)} KB · ` : ''}
+                            uploaded by {d.uploadedBy?.displayName || 'Unknown'}
+                            {d.emailedAt ? (
+                              <span className="text-green-500"> · sent {new Date(d.emailedAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}{Array.isArray(d.emailedTo) && d.emailedTo.length ? ` to ${d.emailedTo.join(', ')}` : ''}</span>
+                            ) : (
+                              <span className="text-slate-600"> · not sent</span>
+                            )}
+                          </div>
+                        </div>
+                        {canEdit && !isResolved && (
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              onClick={() => setSendRefPicker({ docIds: [d.id] })}
+                              title="Send to technician"
+                              className="p-1.5 text-cyan-400 hover:text-cyan-300 hover:bg-slate-800"
+                            >
+                              <Send className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={() => handleRemoveRef(d)}
+                              title="Remove"
+                              className="p-1.5 text-slate-500 hover:text-red-400 hover:bg-slate-800"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {canEdit && !isResolved && (
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <input
+                    ref={refFileInputRef}
+                    type="file"
+                    accept="application/pdf,.pdf"
+                    onChange={handleRefFilePicked}
+                    className="hidden"
+                  />
+                  <button
+                    onClick={() => refFileInputRef.current && refFileInputRef.current.click()}
+                    disabled={uploadingRef}
+                    className="flex items-center gap-2 px-3 py-2 bg-slate-900 hover:bg-slate-800 border border-cyan-500/30 text-cyan-300 text-xs tracking-widest font-medium disabled:opacity-50"
+                    style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                  >
+                    {uploadingRef
+                      ? <><Loader2 className="w-3 h-3 animate-spin" /> UPLOADING...</>
+                      : <><Upload className="w-3 h-3" /> UPLOAD REFERENCE PDF</>}
+                  </button>
+                  {Array.isArray(aog.referenceDocs) && aog.referenceDocs.length > 1 && (
+                    <button
+                      onClick={() => setSendRefPicker({ docIds: aog.referenceDocs.map(d => d.id) })}
+                      className="flex items-center gap-2 px-3 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 text-xs tracking-widest font-medium"
+                      style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                    >
+                      <Send className="w-3 h-3" /> SEND ALL
+                    </button>
+                  )}
+                </div>
+              )}
+              {refError && (
+                <div className="mt-2 text-xs text-amber-400">{refError}</div>
+              )}
+              <p className="mt-2 text-[10px] text-slate-600 leading-relaxed">
+                Coordination/reference copies only — not official Part 43/91/135
+                maintenance records.
+              </p>
+            </Section>
+
             {/* Log */}
             {aog.logEntries && aog.logEntries.length > 0 && (
               <Section label="Activity Log">
@@ -10509,6 +10641,15 @@ function AogDetail({ aog, currentUser, onBack }) {
           />
         );
       })()}
+      {sendRefPicker && (
+        <SendReferencePickerModal
+          aog={aog}
+          docIds={sendRefPicker.docIds}
+          currentUser={currentUser}
+          reporter={reporter}
+          onClose={() => setSendRefPicker(null)}
+        />
+      )}
     </div>
   );
 }
@@ -10567,6 +10708,200 @@ function fmtRelativeTime(ts) {
   if (hrs > 24) return `${Math.floor(hrs/24)}d ${hrs%24}h ago`;
   if (hrs > 0) return `${hrs}h ${mins}m ago`;
   return `${mins}m ago`;
+}
+
+/* ============================================================
+   SEND REFERENCE PICKER MODAL
+   Pick recipients (from the AOG list + ad-hoc additions) and
+   email the selected reference PDF(s) as attachments.
+   ============================================================ */
+function SendReferencePickerModal({ aog, docIds, currentUser, reporter, onClose }) {
+  const aogRecipients = Array.isArray(aog.recipients) ? aog.recipients.filter(Boolean) : [];
+  const techEmail = (aog.coordination?.technician || '').match(/[^\s@]+@[^\s@]+\.[^\s@]+/);
+  const suggested = Array.from(new Set([
+    ...(techEmail ? [techEmail[0]] : []),
+    ...aogRecipients,
+  ]));
+
+  const [selected, setSelected] = useState(() => {
+    // Pre-check the technician if we found one, else nothing.
+    const init = {};
+    if (techEmail) init[techEmail[0]] = true;
+    return init;
+  });
+  const [extra, setExtra] = useState('');
+  const [note, setNote] = useState('');
+  const [sending, setSending] = useState(false);
+  const [status, setStatus] = useState('');
+
+  const docs = (Array.isArray(aog.referenceDocs) ? aog.referenceDocs : [])
+    .filter(d => docIds.includes(d.id));
+
+  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+  function toggle(email) {
+    setSelected(s => ({ ...s, [email]: !s[email] }));
+  }
+
+  function gatherRecipients() {
+    const picked = Object.keys(selected).filter(k => selected[k]);
+    const typed = extra
+      .split(/[,;\s]+/)
+      .map(s => s.trim())
+      .filter(Boolean);
+    return Array.from(new Set([...picked, ...typed]))
+      .filter(e => EMAIL_RE.test(e));
+  }
+
+  async function handleSend() {
+    const recipients = gatherRecipients();
+    if (recipients.length === 0) {
+      setStatus('Pick or type at least one valid email address.');
+      return;
+    }
+    if (docs.length === 0) {
+      setStatus('No documents to send.');
+      return;
+    }
+    setSending(true);
+    setStatus('');
+    try {
+      const { auth } = await import('./firebase.js');
+      let idToken = null;
+      if (auth.currentUser) idToken = await auth.currentUser.getIdToken();
+      const r = await fetch('/api/send-aog-references', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          aog: {
+            id: aog.id, tail: aog.tail, location: aog.location,
+            fboName: aog.fboName, issueDescription: aog.issueDescription,
+          },
+          docs: docs.map(d => ({ id: d.id, filename: d.filename, url: d.url })),
+          recipients,
+          note,
+          idToken,
+        }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+
+      const aogMod = await import('./firebase-aog.js');
+      await aogMod.markReferenceEmailed(aog.id, docIds, recipients, reporter);
+
+      setStatus(`Sent ${docs.length} document${docs.length === 1 ? '' : 's'} to ${recipients.length} recipient${recipients.length === 1 ? '' : 's'}.`);
+      setTimeout(() => onClose(), 1400);
+    } catch (err) {
+      console.error('[aog-ref] send failed:', err);
+      setStatus('Send failed: ' + err.message);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return createPortal((
+    <div className="fixed inset-0 z-[100] bg-slate-950/90 backdrop-blur flex items-center justify-center px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))]">
+      <div className="bg-slate-950 border border-cyan-500/40 max-w-lg w-full flex flex-col max-h-full">
+        <div className="bg-cyan-500/10 px-5 py-3 flex items-center justify-between border-b border-cyan-500/30 flex-shrink-0">
+          <h3 className="text-sm tracking-widest text-cyan-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            <Send className="w-4 h-4 inline mr-2" />SEND REFERENCE{docs.length === 1 ? '' : 'S'}
+          </h3>
+          <button onClick={onClose} className="text-cyan-300 hover:text-white">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-4 overflow-y-auto">
+          <div>
+            <div className="text-[10px] text-slate-500 tracking-widest mb-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              ATTACHING ({docs.length})
+            </div>
+            <div className="space-y-1">
+              {docs.map(d => (
+                <div key={d.id} className="flex items-center gap-2 text-xs text-slate-300">
+                  <FileText className="w-3 h-3 text-slate-500 shrink-0" />
+                  <span className="truncate">{d.filename}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <div className="text-[10px] text-slate-500 tracking-widest mb-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              RECIPIENTS
+            </div>
+            {suggested.length === 0 ? (
+              <p className="text-xs text-slate-500 mb-2">No saved recipients on this AOG — type addresses below.</p>
+            ) : (
+              <div className="space-y-1.5 mb-3">
+                {suggested.map(email => (
+                  <label key={email} className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={!!selected[email]}
+                      onChange={() => toggle(email)}
+                      className="accent-cyan-500"
+                    />
+                    <span className="truncate">{email}</span>
+                    {techEmail && email === techEmail[0] && (
+                      <span className="text-[9px] bg-cyan-500/20 text-cyan-300 px-1.5 py-0.5 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>TECH</span>
+                    )}
+                  </label>
+                ))}
+              </div>
+            )}
+            <input
+              type="text"
+              value={extra}
+              onChange={e => setExtra(e.target.value)}
+              placeholder="Add more emails (comma-separated)"
+              className="w-full bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none"
+            />
+          </div>
+
+          <div>
+            <div className="text-[10px] text-slate-500 tracking-widest mb-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              NOTE TO TECH (optional)
+            </div>
+            <textarea
+              value={note}
+              onChange={e => setNote(e.target.value)}
+              rows={3}
+              placeholder="Optional message included in the email body…"
+              className="w-full bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none resize-none"
+            />
+          </div>
+
+          {status && (
+            <div className={`text-xs ${status.startsWith('Sent') ? 'text-green-400' : 'text-amber-400'}`}>
+              {status}
+            </div>
+          )}
+
+          <div className="flex gap-2 pt-3 border-t border-slate-800">
+            <button
+              onClick={handleSend}
+              disabled={sending}
+              className="flex-1 px-4 py-2 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 text-xs tracking-widest font-medium flex items-center justify-center gap-2"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              {sending
+                ? <><Loader2 className="w-3 h-3 animate-spin" /> SENDING...</>
+                : <><Send className="w-3 h-3" /> SEND EMAIL</>}
+            </button>
+            <button
+              onClick={onClose}
+              disabled={sending}
+              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs tracking-widest font-medium"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              CANCEL
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  ), document.body);
 }
 
 function NewAogModal({ currentUser, fleetTails, onClose, onCreated }) {
@@ -10628,8 +10963,8 @@ function NewAogModal({ currentUser, fleetTails, onClose, onCreated }) {
     }
   }
 
-  return (
-    <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur flex items-center justify-center px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))]">
+  return createPortal((
+    <div className="fixed inset-0 z-[100] bg-slate-950/90 backdrop-blur flex items-center justify-center px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))]">
       <div className="bg-slate-950 border border-red-500/40 max-w-2xl w-full flex flex-col max-h-full">
         <div className="bg-red-500/10 px-5 py-3 flex items-center justify-between border-b border-red-500/30 flex-shrink-0">
           <h3 className="text-sm tracking-widest text-red-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
@@ -10748,7 +11083,7 @@ function NewAogModal({ currentUser, fleetTails, onClose, onCreated }) {
         </div>
       </div>
     </div>
-  );
+  ), document.body);
 }
 
 function AogEditModal({ aog, currentUser, onClose }) {
