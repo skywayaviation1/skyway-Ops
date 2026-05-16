@@ -135,7 +135,7 @@ export async function uploadAogReference(file, aogId) {
   });
 
   const url = await getDownloadURL(snapshot.ref);
-  return { url, path, filename: safeName, sizeBytes: file.size };
+  return { url, path, storagePath: path, filename: safeName, sizeBytes: file.size };
 }
 
 export async function deleteAogReference(path) {
