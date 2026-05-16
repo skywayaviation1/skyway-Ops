@@ -10629,9 +10629,9 @@ function NewAogModal({ currentUser, fleetTails, onClose, onCreated }) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur flex items-start justify-center overflow-y-auto px-4 pb-4 pt-[max(1rem,env(safe-area-inset-top))]">
-      <div className="bg-slate-950 border border-red-500/40 max-w-2xl w-full my-8">
-        <div className="bg-red-500/10 px-5 py-3 flex items-center justify-between border-b border-red-500/30">
+    <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur flex items-center justify-center px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))]">
+      <div className="bg-slate-950 border border-red-500/40 max-w-2xl w-full flex flex-col max-h-full">
+        <div className="bg-red-500/10 px-5 py-3 flex items-center justify-between border-b border-red-500/30 flex-shrink-0">
           <h3 className="text-sm tracking-widest text-red-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
             <AlertTriangle className="w-4 h-4 inline mr-2" />DECLARE AOG EVENT
           </h3>
@@ -10640,7 +10640,7 @@ function NewAogModal({ currentUser, fleetTails, onClose, onCreated }) {
           </button>
         </div>
 
-        <div className="p-5 space-y-4">
+        <div className="p-5 space-y-4 overflow-y-auto">
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
