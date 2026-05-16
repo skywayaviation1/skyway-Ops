@@ -2810,6 +2810,8 @@ function DutyCardInner({ currentUser, myTrips }) {
   const [err, setErr] = React.useState('');
   const [showOff, setShowOff] = React.useState(false);
   const [showRestOverride, setShowRestOverride] = React.useState(false);
+  const [adminEdit, setAdminEdit] = React.useState(null); // 'dutyOnAt'|'dutyOffAt'|null
+  const isImpersonatingAdmin = currentUser?._impersonating === true;
 
   // Subscribe to my latest duty period.
   React.useEffect(() => {
@@ -3118,6 +3120,98 @@ function DutyCardInner({ currentUser, myTrips }) {
       )}
 
       {err && !showOff && <div className="mt-2 text-xs text-amber-400">{err}</div>}
+
+      {isImpersonatingAdmin && period && (
+        <div className="mt-3 pt-3 border-t border-amber-500/20">
+          {!adminEdit ? (
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[10px] text-amber-500/70 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                ADMIN (viewing as {currentUser._realName ? 'crew' : 'crew'})
+              </span>
+              <div className="flex gap-1">
+                <button
+                  onClick={() => setAdminEdit('dutyOnAt')}
+                  className="px-2 py-1 text-[10px] tracking-widest bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                >EDIT DUTY ON</button>
+                {period.dutyOffAt && (
+                  <button
+                    onClick={() => setAdminEdit('dutyOffAt')}
+                    className="px-2 py-1 text-[10px] tracking-widest bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700"
+                    style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                  >EDIT DUTY OFF</button>
+                )}
+              </div>
+            </div>
+          ) : (
+            <InCardDutyEdit
+              field={adminEdit}
+              period={period}
+              editor={currentUser}
+              onClose={() => setAdminEdit(null)}
+            />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function InCardDutyEdit({ field, period, editor, onClose }) {
+  const [val, setVal] = React.useState(() => msToEtLocalString(period[field] || Date.now()));
+  const [note, setNote] = React.useState('');
+  const [busy, setBusy] = React.useState(false);
+  const [msg, setMsg] = React.useState('');
+
+  async function save() {
+    if (!note.trim()) { setMsg('A reason note is required.'); return; }
+    const ms = etLocalStringToMs(val);
+    if (ms == null) { setMsg('Enter a valid date/time.'); return; }
+    setBusy(true); setMsg('');
+    try {
+      const m = await import('./firebase-duty.js');
+      await m.adminEditDuty(period.id, { field, newValueMs: ms, editor, note });
+      setMsg('Saved.');
+      setTimeout(onClose, 700);
+    } catch (e) {
+      setMsg((e.code === 'REASON_REQUIRED' ? '' : 'Failed: ') + (e.message || 'error'));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        {field === 'dutyOnAt' ? 'EDIT DUTY-ON (ET)' : 'EDIT DUTY-OFF (ET)'}
+      </div>
+      <input
+        type="datetime-local"
+        value={val}
+        onChange={e => setVal(e.target.value)}
+        className="w-full bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none"
+      />
+      <textarea
+        value={note}
+        onChange={e => setNote(e.target.value)}
+        rows={2}
+        placeholder="Reason for this change (required — recorded in audit) *"
+        className="w-full bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none resize-none"
+      />
+      <div className="text-[9px] text-slate-600">Time in Eastern. Recorded with your name, timestamp, and old→new value.</div>
+      {msg && <div className={`text-xs ${msg === 'Saved.' ? 'text-green-400' : 'text-amber-400'}`}>{msg}</div>}
+      <div className="flex gap-2">
+        <button onClick={save} disabled={busy}
+          className="flex-1 px-3 py-2 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 text-xs tracking-widest font-medium"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {busy ? 'SAVING…' : 'SAVE CHANGE'}
+        </button>
+        <button onClick={onClose} disabled={busy}
+          className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs tracking-widest font-medium"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          CANCEL
+        </button>
+      </div>
     </div>
   );
 }
