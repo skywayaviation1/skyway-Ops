@@ -3727,6 +3727,48 @@ function AdminDutyDashboard({ currentUser, users, allTrips }) {
     return m;
   }, [periods]);
 
+  // Full history per pilotUid, retained for the last 380 days, newest first.
+  const RETAIN_MS = 380 * 24 * 60 * 60 * 1000;
+  const historyByUid = React.useMemo(() => {
+    const cutoff = now - RETAIN_MS;
+    const m = {};
+    for (const p of (periods || [])) {
+      if (p.linkRejected) continue;
+      if ((p.dutyOnAt || 0) < cutoff) continue; // older than 380d — not shown
+      (m[p.pilotUid] = m[p.pilotUid] || []).push(p);
+    }
+    for (const k of Object.keys(m)) {
+      m[k].sort((a, b) => (b.dutyOnAt || 0) - (a.dutyOnAt || 0));
+    }
+    return m;
+  }, [periods, now]);
+
+  // Scheduled flight time within a duty period = sum of scheduled leg
+  // durations (trip.start → trip.end) for this pilot's trips that fall
+  // inside [dutyOnAt, dutyOffAt or now]. iCal-derived; this is real.
+  function scheduledFlightMs(u, period) {
+    if (!period?.dutyOnAt) return null;
+    const winStart = period.dutyOnAt;
+    const winEnd = period.dutyOffAt || now;
+    const trips = Array.isArray(allTrips) ? allTrips : [];
+    const uname = u.jetinsightName || u.name || '';
+    let total = 0;
+    let counted = 0;
+    for (const t of trips) {
+      if (!t?.info || !t.start) continue;
+      if (!(nameMatchesPilot(t.info.pic || '', uname) || nameMatchesPilot(t.info.sic || '', uname))) continue;
+      const s = new Date(t.start).getTime();
+      const e = t.end ? new Date(t.end).getTime() : null;
+      if (!Number.isFinite(s) || !Number.isFinite(e)) continue;
+      // Leg counts if its departure is within the duty window.
+      if (s >= winStart - 60 * 1000 && s <= winEnd + 60 * 1000) {
+        const dur = e - s;
+        if (dur > 0 && dur < 24 * 3600 * 1000) { total += dur; counted++; }
+      }
+    }
+    return counted > 0 ? { ms: total, legs: counted } : null;
+  }
+
   // Crew = registered users with a pilot-ish role.
   const crew = React.useMemo(() => {
     const list = Array.isArray(users) ? users : [];
@@ -3775,10 +3817,11 @@ function AdminDutyDashboard({ currentUser, users, allTrips }) {
       </div>
       {err && <div className="text-xs text-amber-400">{err}</div>}
 
-      <div className="space-y-2">
+      <div className="space-y-3">
         {crew.map(u => {
           const uid = u.uid || u.id;
           const p = latestByUid[uid] || null;
+          const hist = historyByUid[uid] || [];
           const onDuty = p && p.status === 'on';
           const resting = p && p.status === 'off' && p.restUntil && now < p.restUntil;
           const dutyLeft = onDuty && p.dutyOnAt ? (p.dutyOnAt + DUTY_MAX) - now : null;
@@ -3804,46 +3847,118 @@ function AdminDutyDashboard({ currentUser, users, allTrips }) {
             timeStr = '—';
           }
 
+          const fmtDur = (ms) => {
+            if (ms == null) return '—';
+            const h = Math.floor(ms / 3600000);
+            const m = Math.round((ms % 3600000) / 60000);
+            return `${h}h ${String(m).padStart(2, '0')}m`;
+          };
+
           return (
-            <div key={uid} className="bg-slate-900 border border-slate-800 p-3">
-              <div className="flex items-start justify-between gap-3 flex-wrap">
-                <div className="min-w-0">
-                  <div className="text-sm text-slate-200">{u.name || 'Unknown'}</div>
-                  <div className="text-[10px] tracking-widest mt-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                    <span className={stateColor}>{stateLabel}</span>
-                    <span className="text-slate-600"> · {timeStr}</span>
-                  </div>
-                  {p && p.dutyOnAt && (
-                    <div className="text-[10px] text-slate-600 mt-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                      ON: {fmtET(p.dutyOnAt, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })}
-                      {p.dutyOffAt ? ` · OFF: ${fmtET(p.dutyOffAt, { hour: 'numeric', minute: '2-digit' })}` : ''}
+            <div key={uid} className="bg-slate-900 border border-slate-800 overflow-hidden">
+              {/* Card header */}
+              <div className="p-4 border-b border-slate-800">
+                <div className="flex items-start justify-between gap-3 flex-wrap">
+                  <div className="min-w-0">
+                    <div className="text-base text-slate-100" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
+                      {u.name || 'Unknown'}
                     </div>
-                  )}
+                    <div className="text-[10px] tracking-widest mt-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                      <span className={stateColor}>{stateLabel}</span>
+                      <span className="text-slate-600"> · {timeStr}</span>
+                    </div>
+                    {p && p.dutyOnAt && (
+                      <div className="text-[10px] text-slate-600 mt-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                        ON: {fmtET(p.dutyOnAt, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })}
+                        {p.dutyOffAt ? ` · OFF: ${fmtET(p.dutyOffAt, { hour: 'numeric', minute: '2-digit' })}` : ''}
+                      </div>
+                    )}
+                  </div>
+                  <div className="text-right shrink-0">
+                    <div className="text-[9px] text-slate-600 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>ASSIGNED</div>
+                    {asg ? (
+                      <>
+                        <div className="text-sm text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{asg.tail}</div>
+                        <div className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{asg.route}</div>
+                        <div className="text-[10px] text-slate-500">{fmtET(asg.dep, { weekday: 'short', hour: 'numeric', minute: '2-digit' })} ET</div>
+                      </>
+                    ) : (
+                      <div className="text-[10px] text-slate-600">no trips</div>
+                    )}
+                  </div>
                 </div>
-                <div className="text-right shrink-0">
-                  <div className="text-[9px] text-slate-600 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>ASSIGNED</div>
-                  {asg ? (
-                    <>
-                      <div className="text-sm text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{asg.tail}</div>
-                      <div className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{asg.route}</div>
-                      <div className="text-[10px] text-slate-500">{fmtET(asg.dep, { weekday: 'short', hour: 'numeric', minute: '2-digit' })} ET</div>
-                    </>
-                  ) : (
-                    <div className="text-[10px] text-slate-600">no trips</div>
-                  )}
-                </div>
+
+                {/* Current period flight time: scheduled (real) vs actual (pending) */}
+                {p && p.dutyOnAt && (() => {
+                  const sched = scheduledFlightMs(u, p);
+                  return (
+                    <div className="mt-3 pt-3 border-t border-slate-800 grid grid-cols-2 gap-3">
+                      <div>
+                        <div className="text-[9px] text-slate-600 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>SCHEDULED FLIGHT (THIS PERIOD)</div>
+                        <div className="text-sm text-slate-200 tabular-nums" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                          {sched ? `${fmtDur(sched.ms)} · ${sched.legs} leg${sched.legs > 1 ? 's' : ''}` : '—'}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-[9px] text-slate-600 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>ACTUAL FLOWN</div>
+                        <div className="text-[11px] text-amber-400/80 leading-tight">
+                          pending — FlightAware actuals not yet captured
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {p && (
+                  <div className="mt-3 pt-3 border-t border-slate-800">
+                    <DutyOversightRow period={p} editor={currentUser} compact />
+                  </div>
+                )}
               </div>
-              {p && (
-                <div className="mt-2 pt-2 border-t border-slate-800">
-                  <DutyOversightRow period={p} editor={currentUser} compact />
+
+              {/* 380-day duty/rest history */}
+              <details className="group">
+                <summary className="px-4 py-2 text-[10px] text-slate-500 tracking-widest cursor-pointer hover:text-slate-300 select-none" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  DUTY / REST HISTORY — {hist.length} period{hist.length === 1 ? '' : 's'} (last 380 days)
+                </summary>
+                <div className="px-4 pb-3 space-y-1">
+                  {hist.length === 0 && (
+                    <div className="text-[10px] text-slate-600">No duty records in the last 380 days.</div>
+                  )}
+                  {hist.map(hp => {
+                    const dur = hp.dutyOffAt && hp.dutyOnAt ? hp.dutyOffAt - hp.dutyOnAt : null;
+                    const sched = scheduledFlightMs(u, hp);
+                    return (
+                      <div key={hp.id} className="text-[10px] text-slate-500 border-l border-slate-800 pl-2 py-1 leading-relaxed">
+                        <span className="text-slate-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                          {fmtET(hp.dutyOnAt, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                        </span>
+                        {hp.dutyOffAt ? ` → ${fmtET(hp.dutyOffAt, { hour: 'numeric', minute: '2-digit' })}` : ' → (open)'}
+                        {dur != null && <span className="text-slate-600"> · duty {fmtDur(dur)}</span>}
+                        {sched && <span className="text-slate-600"> · sched flt {fmtDur(sched.ms)}</span>}
+                        {hp.over14 && <span className="text-red-400"> · OVER14</span>}
+                        {Array.isArray(hp.adminEdits) && hp.adminEdits.length > 0 && (
+                          <span className="text-amber-500/70"> · {hp.adminEdits.length} edit{hp.adminEdits.length > 1 ? 's' : ''}</span>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
-              )}
+              </details>
             </div>
           );
         })}
         {crew.length === 0 && (
           <div className="text-sm text-slate-500">No registered crew found.</div>
         )}
+      </div>
+
+      <div className="text-[10px] text-slate-700 leading-relaxed pt-2">
+        SCHEDULED flight time = sum of scheduled leg durations (iCal) within the
+        duty period. ACTUAL FLOWN requires a FlightAware actuals-capture
+        backend (not yet built) — it is shown as pending rather than estimated
+        from schedule, to avoid a misleading flight-time figure. All times
+        Eastern. Planning aid — not a 14 CFR 135.267 determination.
       </div>
     </div>
   );
