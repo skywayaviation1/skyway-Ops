@@ -69,9 +69,14 @@ function sanitizeAog(a) {
       troubleshooting: a.diagnostics?.troubleshooting || '',
       oemRecommendation: a.diagnostics?.oemRecommendation || '',
     },
-    parts: Array.isArray(a.parts) ? a.parts.map(p => ({
+    parts: Array.isArray(a.parts) ? a.parts.map((p, idx) => ({
+      idx,
       partNumber: p.partNumber || '', description: p.description || '',
       status: p.status || '', eta: p.eta || '',
+      techUsage: p.techUsage || null,            // 'used' | 'not_used' | null
+      techUsageNote: p.techUsageNote || '',
+      techUsageBy: p.techUsageBy || '',
+      techUsageAt: p.techUsageAt || null,
     })) : [],
     currentStatus: a.currentStatus || '',
     rtsEstimate: a.rtsEstimate || '',
@@ -264,6 +269,48 @@ export default async function handler(req, res) {
         `Open the AOG in Skyway Ops to review and verify this entry.\n— Skyway Ops`
       );
       return res.status(200).json({ ok: true, id: entry.id });
+    }
+
+    // ---------- POST part usage (tech marks part used / not used) ----------
+    if (action === 'part-usage') {
+      const partIdx = Number(body.partIdx);
+      const usage = String(body.usage || '').trim(); // 'used' | 'not_used' | ''
+      const note = clip(body.note, 1000).trim();
+      const author = clip(body.author, 120).trim();
+      if (!Number.isInteger(partIdx) || partIdx < 0) {
+        return res.status(400).json({ error: 'valid partIdx required' });
+      }
+      if (!['used', 'not_used', ''].includes(usage)) {
+        return res.status(400).json({ error: "usage must be 'used', 'not_used', or '' to clear" });
+      }
+      const parts = Array.isArray(data.parts) ? data.parts.slice() : [];
+      if (partIdx >= parts.length) {
+        return res.status(400).json({ error: 'partIdx out of range' });
+      }
+      const before = parts[partIdx] || {};
+      parts[partIdx] = {
+        ...before,
+        techUsage: usage || null,
+        techUsageNote: note,
+        techUsageBy: author || before.techUsageBy || 'External tech',
+        techUsageAt: usage ? Date.now() : null,
+      };
+
+      const log = Array.isArray(data.logEntries) ? data.logEntries : [];
+      const label = usage === 'used' ? 'USED'
+                  : usage === 'not_used' ? 'NOT USED'
+                  : 'cleared';
+      await ref.update({
+        parts,
+        updatedAt: Date.now(),
+        logEntries: [...log, {
+          timestamp: Date.now(),
+          author: `${author || 'External tech'} (external)`,
+          message: `Part marked ${label}: ${before.partNumber || '(no P/N)'}${before.description ? ` — ${before.description}` : ''}${note ? ` · note: ${note}` : ''}`,
+        }],
+      });
+
+      return res.status(200).json({ ok: true });
     }
 
     // ---------- POST tech question (emails Jake + MX with link) ----------
