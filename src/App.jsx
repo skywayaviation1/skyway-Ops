@@ -9752,6 +9752,9 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
               <h3 className="text-xs tracking-widest text-cyan-400 mb-3" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
                 DUTY TRACKER (ADMIN)
               </h3>
+              <div className="text-[9px] text-slate-700 mb-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                build: duty-slice2-settings-v1
+              </div>
               <label className="flex items-center justify-between gap-3 mb-3">
                 <div className="min-w-0">
                   <span className="text-sm text-slate-200">Enable duty/rest tracker</span>
