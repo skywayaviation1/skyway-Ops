@@ -17355,7 +17355,12 @@ export function ExternalTechPage({ token }) {
       <div className="max-w-2xl mx-auto px-4 py-6 pt-[max(1.5rem,env(safe-area-inset-top))]">
         {/* Header */}
         <div className="flex items-center justify-between mb-1">
-          <div className="text-cyan-400 text-lg font-bold tracking-tight">SKYWAY</div>
+          <img
+            src="/skyway-logo-nav.png"
+            srcSet="/skyway-logo-nav.png 1x, /skyway-logo-nav@2x.png 2x"
+            alt="Skyway Aviation"
+            className="h-8 w-auto block"
+          />
           <span className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
             MAINTENANCE PORTAL
           </span>
@@ -17405,10 +17410,16 @@ export function ExternalTechPage({ token }) {
             className={`px-4 py-2 text-xs tracking-widest font-medium ${tab === 'logbook' ? 'text-cyan-300 border-b-2 border-cyan-400' : 'text-slate-500'}`}
             style={{ fontFamily: 'JetBrains Mono, monospace' }}
           >LOGBOOK ENTRY</button>
+          <button
+            onClick={() => setTab('question')}
+            className={`px-4 py-2 text-xs tracking-widest font-medium ${tab === 'question' ? 'text-cyan-300 border-b-2 border-cyan-400' : 'text-slate-500'}`}
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >ASK A QUESTION</button>
         </div>
 
         {tab === 'status' && <ExtStatusTab aog={aog} token={token} onPosted={load} />}
         {tab === 'logbook' && <ExtLogbookTab aog={aog} token={token} onPosted={load} />}
+        {tab === 'question' && <ExtQuestionTab aog={aog} token={token} onPosted={load} />}
 
         <p className="text-[10px] text-slate-600 leading-relaxed mt-8 border-t border-slate-900 pt-4">
           This portal is for coordination during the active AOG event. Logbook
@@ -17590,6 +17601,92 @@ function ExtLogbookTab({ aog, token, onPosted }) {
         style={{ fontFamily: 'JetBrains Mono, monospace' }}>
         {busy ? <><Loader2 className="w-3 h-3 animate-spin" /> SUBMITTING…</> : <><Plus className="w-3 h-3" /> SUBMIT LOGBOOK ENTRY</>}
       </button>
+    </div>
+  );
+}
+
+function ExtQuestionTab({ aog, token, onPosted }) {
+  const [author, setAuthor] = useState('');
+  const [company, setCompany] = useState('');
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState('');
+
+  async function submit() {
+    if (!author.trim() || !message.trim()) {
+      setStatus('Your name and question are required.');
+      return;
+    }
+    setBusy(true); setStatus('');
+    try {
+      const r = await fetch('/api/aog-public?action=question', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token, question: { author, company, message } }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      setMessage('');
+      setStatus('Question sent. Skyway has been notified and will respond here.');
+      onPosted && onPosted();
+      setTimeout(() => setStatus(''), 7000);
+    } catch (e) {
+      setStatus('Failed: ' + e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const questions = Array.isArray(aog.techQuestions) ? [...aog.techQuestions].reverse() : [];
+
+  return (
+    <div className="space-y-4">
+      <div className="space-y-3 bg-slate-900 border border-slate-800 p-4">
+        <p className="text-xs text-slate-500">
+          Ask the Skyway team a question about this AOG. Jake and the
+          maintenance team are emailed immediately with a link to respond.
+          Their answer will appear in Status Updates.
+        </p>
+        <div className="grid grid-cols-2 gap-3">
+          <input value={author} onChange={e => setAuthor(e.target.value)} placeholder="Your name *"
+            className="bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none" />
+          <input value={company} onChange={e => setCompany(e.target.value)} placeholder="Company / shop"
+            className="bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none" />
+        </div>
+        <textarea value={message} onChange={e => setMessage(e.target.value)} rows={4}
+          placeholder="Your question for the Skyway team…"
+          className="w-full bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none resize-none" />
+        {status && <div className={`text-xs ${status.startsWith('Question sent') ? 'text-green-400' : 'text-amber-400'}`}>{status}</div>}
+        <button onClick={submit} disabled={busy}
+          className="w-full px-4 py-2 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 text-xs tracking-widest font-medium flex items-center justify-center gap-2"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {busy ? <><Loader2 className="w-3 h-3 animate-spin" /> SENDING…</> : <><Send className="w-3 h-3" /> SEND QUESTION</>}
+        </button>
+      </div>
+
+      {questions.length > 0 && (
+        <div>
+          <div className="text-[10px] text-slate-500 tracking-widest mb-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>YOUR QUESTIONS</div>
+          <div className="space-y-2">
+            {questions.map(q => (
+              <div key={q.id} className="bg-slate-900 border border-slate-800 p-3">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-sm text-slate-300">{q.author}{q.company ? ` · ${q.company}` : ''}</span>
+                  <span className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    {new Date(q.timestamp).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-400 whitespace-pre-wrap">{q.message}</p>
+                <div className="mt-2 text-[10px] tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  {q.answered
+                    ? <span className="text-green-400">ANSWERED — see Status Updates</span>
+                    : <span className="text-amber-400">AWAITING RESPONSE</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
