@@ -10147,6 +10147,9 @@ function AogDetail({ aog, currentUser, onBack }) {
   const [refError, setRefError] = useState('');
   const [sendRefPicker, setSendRefPicker] = useState(null); // { docIds: [...] } or null
   const refFileInputRef = useRef(null);
+  const [linkBusy, setLinkBusy] = useState(false);
+  const [linkUrl, setLinkUrl] = useState('');
+  const [linkMsg, setLinkMsg] = useState('');
 
   const canEdit = ['admin', 'ops', 'maint'].includes(currentUser?.role);
   const isResolved = aog.status === 'resolved';
@@ -10237,6 +10240,60 @@ function AogDetail({ aog, currentUser, onBack }) {
       await aogMod.removeReferenceDoc(aog.id, refDoc.id, reporter);
     } catch (err) {
       alert('Failed to remove: ' + err.message);
+    }
+  }
+
+  async function handleMintLink() {
+    setLinkBusy(true); setLinkMsg(''); setLinkUrl('');
+    try {
+      const { auth } = await import('./firebase.js');
+      let idToken = null;
+      if (auth.currentUser) idToken = await auth.currentUser.getIdToken();
+      const r = await fetch('/api/aog-link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'mint', aogId: aog.id, idToken }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      setLinkUrl(data.url);
+      setLinkMsg('Link generated. Any previous link is now invalid.');
+    } catch (e) {
+      setLinkMsg('Failed: ' + e.message);
+    } finally {
+      setLinkBusy(false);
+    }
+  }
+
+  async function handleRevokeLink() {
+    if (!window.confirm('Revoke the external maintenance link? Anyone holding it will immediately lose access.')) return;
+    setLinkBusy(true); setLinkMsg(''); setLinkUrl('');
+    try {
+      const { auth } = await import('./firebase.js');
+      let idToken = null;
+      if (auth.currentUser) idToken = await auth.currentUser.getIdToken();
+      const r = await fetch('/api/aog-link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'revoke', aogId: aog.id, idToken }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      setLinkMsg('Link revoked. It no longer works.');
+    } catch (e) {
+      setLinkMsg('Failed: ' + e.message);
+    } finally {
+      setLinkBusy(false);
+    }
+  }
+
+  function copyLink() {
+    if (!linkUrl) return;
+    try {
+      navigator.clipboard.writeText(linkUrl);
+      setLinkMsg('Link copied to clipboard.');
+    } catch {
+      setLinkMsg('Copy failed — select and copy manually.');
     }
   }
 
@@ -10565,6 +10622,85 @@ function AogDetail({ aog, currentUser, onBack }) {
                 maintenance records.
               </p>
             </Section>
+
+            {/* External Maintenance Link */}
+            <Section label="External Maintenance Link">
+              <p className="text-xs text-slate-500 mb-3">
+                Generate a secure link an outside maintenance vendor can open
+                (no login) to view this AOG, post status updates, and submit
+                logbook entries. The link works until this AOG is resolved and
+                can be revoked anytime.
+              </p>
+              {aog.linkRevoked && (
+                <div className="mb-3 text-xs text-amber-400 bg-amber-500/10 border border-amber-500/30 p-2">
+                  The external link is currently revoked. Generate a new one to re-enable access.
+                </div>
+              )}
+              {canEdit && !isResolved && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={handleMintLink}
+                    disabled={linkBusy}
+                    className="flex items-center gap-2 px-3 py-2 bg-slate-900 hover:bg-slate-800 border border-cyan-500/30 text-cyan-300 text-xs tracking-widest font-medium disabled:opacity-50"
+                    style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                  >
+                    {linkBusy
+                      ? <><Loader2 className="w-3 h-3 animate-spin" /> WORKING…</>
+                      : <><Send className="w-3 h-3" /> {aog.linkTokenIssuedAt ? 'REGENERATE LINK' : 'GENERATE LINK'}</>}
+                  </button>
+                  {aog.linkTokenIssuedAt && !aog.linkRevoked && (
+                    <button
+                      onClick={handleRevokeLink}
+                      disabled={linkBusy}
+                      className="flex items-center gap-2 px-3 py-2 bg-slate-900 hover:bg-slate-800 border border-red-500/30 text-red-300 text-xs tracking-widest font-medium disabled:opacity-50"
+                      style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                    >
+                      <X className="w-3 h-3" /> REVOKE LINK
+                    </button>
+                  )}
+                </div>
+              )}
+              {linkUrl && (
+                <div className="mt-3 bg-slate-900 border border-slate-800 p-3">
+                  <div className="text-[10px] text-slate-500 tracking-widest mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>SHARE THIS LINK</div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      readOnly
+                      value={linkUrl}
+                      onFocus={e => e.target.select()}
+                      className="flex-1 bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs text-cyan-300 outline-none"
+                      style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                    />
+                    <button onClick={copyLink} className="px-3 py-1.5 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-[10px] tracking-widest font-medium" style={{ fontFamily: 'JetBrains Mono, monospace' }}>COPY</button>
+                  </div>
+                </div>
+              )}
+              {linkMsg && (
+                <div className={`mt-2 text-xs ${linkMsg.startsWith('Failed') ? 'text-amber-400' : 'text-green-400'}`}>{linkMsg}</div>
+              )}
+            </Section>
+
+            {/* Technician Updates (from external link) */}
+            {Array.isArray(aog.techUpdates) && aog.techUpdates.length > 0 && (
+              <Section label={`Technician Updates (${aog.techUpdates.length})`}>
+                <div className="space-y-2">
+                  {[...aog.techUpdates].reverse().map((u) => (
+                    <div key={u.id} className="bg-slate-900 border border-slate-800 border-l-2 border-l-cyan-500/50 p-3">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-sm text-slate-200">
+                          {u.author}{u.company ? <span className="text-slate-500"> · {u.company}</span> : null}
+                          <span className="ml-2 text-[9px] bg-cyan-500/20 text-cyan-300 px-1.5 py-0.5 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>EXTERNAL</span>
+                        </span>
+                        <span className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                          {new Date(u.timestamp).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-400 whitespace-pre-wrap">{u.message}</p>
+                    </div>
+                  ))}
+                </div>
+              </Section>
+            )}
 
             {/* Log */}
             {aog.logEntries && aog.logEntries.length > 0 && (
@@ -17161,6 +17297,303 @@ function UserEditPanel({ user, onSave, onCancel }) {
 /* ============================================================
    Main app
    ============================================================ */
+/* ============================================================
+   EXTERNAL TECH PAGE  (/aog-tech?token=...)
+   Public, no login. Talks ONLY to /api/aog-public with the
+   token. Lets an outside maintenance vendor see the AOG, post
+   status updates, and submit logbook entries (flagged external
+   / unverified server-side).
+   ============================================================ */
+export function ExternalTechPage({ token }) {
+  const [aog, setAog] = useState(null);
+  const [loadErr, setLoadErr] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState('status'); // 'status' | 'logbook'
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setLoadErr('');
+    try {
+      const r = await fetch(`/api/aog-public?action=get&token=${encodeURIComponent(token)}`);
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      setAog(data.aog);
+    } catch (e) {
+      setLoadErr(e.message || 'Could not load');
+    } finally {
+      setLoading(false);
+    }
+  }, [token]);
+
+  useEffect(() => { load(); }, [load]);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center text-slate-500">
+        <Loader2 className="w-6 h-6 animate-spin" />
+      </div>
+    );
+  }
+
+  if (loadErr || !aog) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6">
+        <div className="max-w-md text-center">
+          <AlertTriangle className="w-10 h-10 text-amber-400 mx-auto mb-4" />
+          <h1 className="text-lg text-slate-200 mb-2">Link unavailable</h1>
+          <p className="text-sm text-slate-400">{loadErr || 'This maintenance link is not valid.'}</p>
+          <p className="text-xs text-slate-600 mt-4">
+            Contact Skyway Operations if you believe this is an error.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100">
+      <div className="max-w-2xl mx-auto px-4 py-6 pt-[max(1.5rem,env(safe-area-inset-top))]">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-1">
+          <div className="text-cyan-400 text-lg font-bold tracking-tight">SKYWAY</div>
+          <span className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            MAINTENANCE PORTAL
+          </span>
+        </div>
+        <div className="border-b border-slate-800 pb-4 mb-4">
+          <div className="flex items-center gap-2">
+            <span className="bg-red-500 text-white text-[10px] px-2 py-0.5 tracking-widest font-medium" style={{ fontFamily: 'JetBrains Mono, monospace' }}>AOG</span>
+            <span className="text-xl font-medium text-red-300">{aog.tail}</span>
+            <span className="text-sm text-slate-400">at {aog.location}{aog.fboName ? ` · ${aog.fboName}` : ''}</span>
+          </div>
+        </div>
+
+        {/* AOG context (read-only) */}
+        <div className="space-y-3 mb-5">
+          <ExtField label="Issue Reported" value={aog.issueDescription} />
+          <div className="grid grid-cols-2 gap-3">
+            <ExtField label="Maintenance Lead" value={aog.coordination?.maintLead} />
+            <ExtField label="Skyway Tech Contact" value={aog.coordination?.technician} />
+          </div>
+          <ExtField label="Pilot Discrepancy" value={aog.diagnostics?.pilotDiscrepancy} />
+          <ExtField label="Troubleshooting So Far" value={aog.diagnostics?.troubleshooting} />
+          <ExtField label="Current Status" value={aog.currentStatus} />
+          {Array.isArray(aog.referenceDocs) && aog.referenceDocs.length > 0 && (
+            <div>
+              <div className="text-[10px] text-slate-500 tracking-widest mb-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>REFERENCE DOCUMENTS</div>
+              <div className="space-y-1">
+                {aog.referenceDocs.map(d => (
+                  <a key={d.id} href={d.url} target="_blank" rel="noopener noreferrer"
+                     className="flex items-center gap-2 text-sm text-cyan-400 hover:text-cyan-300">
+                    <FileText className="w-3.5 h-3.5 shrink-0" /><span className="truncate">{d.filename}</span>
+                  </a>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Tabs */}
+        <div className="flex border-b border-slate-800 mb-4">
+          <button
+            onClick={() => setTab('status')}
+            className={`px-4 py-2 text-xs tracking-widest font-medium ${tab === 'status' ? 'text-cyan-300 border-b-2 border-cyan-400' : 'text-slate-500'}`}
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >STATUS UPDATES</button>
+          <button
+            onClick={() => setTab('logbook')}
+            className={`px-4 py-2 text-xs tracking-widest font-medium ${tab === 'logbook' ? 'text-cyan-300 border-b-2 border-cyan-400' : 'text-slate-500'}`}
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >LOGBOOK ENTRY</button>
+        </div>
+
+        {tab === 'status' && <ExtStatusTab aog={aog} token={token} onPosted={load} />}
+        {tab === 'logbook' && <ExtLogbookTab aog={aog} token={token} onPosted={load} />}
+
+        <p className="text-[10px] text-slate-600 leading-relaxed mt-8 border-t border-slate-900 pt-4">
+          This portal is for coordination during the active AOG event. Logbook
+          entries submitted here are recorded as <span className="text-slate-500">external / unverified</span> and
+          must be reviewed by Skyway maintenance personnel. Official 14 CFR
+          Part 43/91/135 maintenance records are maintained in Skyway
+          Aviation's primary maintenance tracking system per OpSpecs.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function ExtField({ label, value }) {
+  return (
+    <div>
+      <div className="text-[10px] text-slate-500 tracking-widest mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{label}</div>
+      <div className="text-sm text-slate-300">{value || '—'}</div>
+    </div>
+  );
+}
+
+function ExtStatusTab({ aog, token, onPosted }) {
+  const [author, setAuthor] = useState('');
+  const [company, setCompany] = useState('');
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState('');
+
+  async function submit() {
+    if (!author.trim() || !message.trim()) {
+      setStatus('Name and update are required.');
+      return;
+    }
+    setBusy(true); setStatus('');
+    try {
+      const r = await fetch('/api/aog-public?action=status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token, update: { author, company, message } }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      setMessage('');
+      setStatus('Update sent to Skyway Operations.');
+      onPosted && onPosted();
+      setTimeout(() => setStatus(''), 5000);
+    } catch (e) {
+      setStatus('Failed: ' + e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const updates = Array.isArray(aog.techUpdates) ? [...aog.techUpdates].reverse() : [];
+
+  return (
+    <div className="space-y-4">
+      <div className="space-y-3 bg-slate-900 border border-slate-800 p-4">
+        <div className="grid grid-cols-2 gap-3">
+          <input value={author} onChange={e => setAuthor(e.target.value)} placeholder="Your name *"
+            className="bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none" />
+          <input value={company} onChange={e => setCompany(e.target.value)} placeholder="Company / shop"
+            className="bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none" />
+        </div>
+        <textarea value={message} onChange={e => setMessage(e.target.value)} rows={4}
+          placeholder="Status update for the Skyway team…"
+          className="w-full bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none resize-none" />
+        {status && <div className={`text-xs ${status.startsWith('Update sent') ? 'text-green-400' : 'text-amber-400'}`}>{status}</div>}
+        <button onClick={submit} disabled={busy}
+          className="w-full px-4 py-2 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 text-xs tracking-widest font-medium flex items-center justify-center gap-2"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {busy ? <><Loader2 className="w-3 h-3 animate-spin" /> SENDING…</> : <><Send className="w-3 h-3" /> SEND UPDATE</>}
+        </button>
+      </div>
+
+      {updates.length > 0 && (
+        <div>
+          <div className="text-[10px] text-slate-500 tracking-widest mb-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>PREVIOUS UPDATES</div>
+          <div className="space-y-2">
+            {updates.map(u => (
+              <div key={u.id} className="bg-slate-900 border border-slate-800 p-3">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-sm text-slate-300">{u.author}{u.company ? ` · ${u.company}` : ''}</span>
+                  <span className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    {new Date(u.timestamp).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-400 whitespace-pre-wrap">{u.message}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ExtLogbookTab({ aog, token, onPosted }) {
+  const [f, setF] = useState({
+    technicianName: '', technicianCertType: 'A&P', technicianCertNumber: '',
+    company: '', workPerformed: '', inspectionPerformed: '',
+    aircraftTotalTime: '', aircraftCycles: '', rtsApproved: false, signatureTyped: '',
+  });
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState('');
+  const set = (k, v) => setF(s => ({ ...s, [k]: v }));
+
+  async function submit() {
+    if (!f.technicianName.trim() || !f.workPerformed.trim()) {
+      setStatus('Technician name and work performed are required.');
+      return;
+    }
+    if (f.rtsApproved && !f.signatureTyped.trim()) {
+      setStatus('Typed signature is required to claim return to service.');
+      return;
+    }
+    setBusy(true); setStatus('');
+    try {
+      const r = await fetch('/api/aog-public?action=logbook', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token, entry: f }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      setStatus('Logbook entry submitted. It is flagged for Skyway review.');
+      setF(s => ({ ...s, workPerformed: '', inspectionPerformed: '', rtsApproved: false, signatureTyped: '' }));
+      onPosted && onPosted();
+      setTimeout(() => setStatus(''), 7000);
+    } catch (e) {
+      setStatus('Failed: ' + e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-3 bg-slate-900 border border-slate-800 p-4">
+      <div className="bg-amber-500/10 border border-amber-500/30 text-amber-300 text-[11px] p-2 leading-relaxed">
+        Entries submitted here are recorded as <strong>external / unverified</strong> and
+        must be reviewed and accepted by Skyway maintenance personnel. This is
+        not an official 14 CFR Part 43 record.
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <input value={f.technicianName} onChange={e => set('technicianName', e.target.value)} placeholder="Technician name *"
+          className="bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none" />
+        <input value={f.company} onChange={e => set('company', e.target.value)} placeholder="Company / shop"
+          className="bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none" />
+        <select value={f.technicianCertType} onChange={e => set('technicianCertType', e.target.value)}
+          className="bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none">
+          <option>A&P</option><option>IA</option><option>Repair Station</option><option>Other</option>
+        </select>
+        <input value={f.technicianCertNumber} onChange={e => set('technicianCertNumber', e.target.value)} placeholder="Cert / Repair Station #"
+          className="bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none" />
+        <input value={f.aircraftTotalTime} onChange={e => set('aircraftTotalTime', e.target.value)} placeholder="Aircraft total time"
+          className="bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none" />
+        <input value={f.aircraftCycles} onChange={e => set('aircraftCycles', e.target.value)} placeholder="Cycles"
+          className="bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none" />
+      </div>
+      <textarea value={f.workPerformed} onChange={e => set('workPerformed', e.target.value)} rows={5}
+        placeholder="Work performed * — describe the corrective action in full"
+        className="w-full bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none resize-none" />
+      <textarea value={f.inspectionPerformed} onChange={e => set('inspectionPerformed', e.target.value)} rows={3}
+        placeholder="Inspection performed (if any)"
+        className="w-full bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none resize-none" />
+      <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+        <input type="checkbox" checked={f.rtsApproved} onChange={e => set('rtsApproved', e.target.checked)} className="accent-cyan-500" />
+        I am approving this aircraft for return to service for the work performed
+      </label>
+      {f.rtsApproved && (
+        <input value={f.signatureTyped} onChange={e => set('signatureTyped', e.target.value)}
+          placeholder="Type your full name as signature *"
+          className="w-full bg-slate-950 border border-amber-500/40 px-3 py-2 text-sm text-slate-200 focus:border-amber-400 outline-none" />
+      )}
+      {status && <div className={`text-xs ${status.startsWith('Logbook entry submitted') ? 'text-green-400' : 'text-amber-400'}`}>{status}</div>}
+      <button onClick={submit} disabled={busy}
+        className="w-full px-4 py-2 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 text-xs tracking-widest font-medium flex items-center justify-center gap-2"
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        {busy ? <><Loader2 className="w-3 h-3 animate-spin" /> SUBMITTING…</> : <><Plus className="w-3 h-3" /> SUBMIT LOGBOOK ENTRY</>}
+      </button>
+    </div>
+  );
+}
+
 export default function CharterOps() {
   // Auth & users
   const { authState, profile, user, signOut } = useAuth();

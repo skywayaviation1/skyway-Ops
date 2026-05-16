@@ -1,6 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import App from './App.jsx';
+import App, { ExternalTechPage } from './App.jsx';
 import './index.css';
 
 /* ============================================================
@@ -64,8 +64,26 @@ import './index.css';
   });
 })();
 
-ReactDOM.createRoot(document.getElementById('root')).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
-);
+// PUBLIC EXTERNAL-TECH ROUTE — decided here, before the main app component
+// is ever instantiated, so it cannot interfere with the app's React hooks
+// and an outside vendor never touches the auth/Firebase flow.
+const isExternalTechRoute =
+  typeof window !== 'undefined' &&
+  window.location.pathname.replace(/\/+$/, '') === '/aog-tech';
+
+const rootEl = ReactDOM.createRoot(document.getElementById('root'));
+
+if (isExternalTechRoute) {
+  const params = new URLSearchParams(window.location.search);
+  rootEl.render(
+    <React.StrictMode>
+      <ExternalTechPage token={params.get('token') || ''} />
+    </React.StrictMode>
+  );
+} else {
+  rootEl.render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>
+  );
+}
