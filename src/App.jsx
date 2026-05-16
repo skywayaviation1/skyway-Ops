@@ -2788,7 +2788,7 @@ function fmtCountdown(ms) {
   return `${neg ? '-' : ''}${pad(h)}:${pad(m)}:${pad(s)}`;
 }
 
-function DutyCardInner({ currentUser, nextTripStart }) {
+function DutyCardInner({ currentUser, myTrips }) {
   const [period, setPeriod] = React.useState(null);
   const [loaded, setLoaded] = React.useState(false);
   const [tick, setTick] = React.useState(0);
@@ -2836,14 +2836,71 @@ function DutyCardInner({ currentUser, nextTripStart }) {
   const dutyRemaining = onDuty ? (period.dutyOnAt + DUTY_MAX) - now : null;
   const over14 = onDuty && dutyRemaining != null && dutyRemaining < 0;
 
-  // To get 10h rest before the next trip, crew must be duty-OFF by
-  // (nextTripStart - 10h). Compute that deadline if we know the next trip.
-  let restDeadline = null;
-  if (nextTripStart) {
-    const ts = nextTripStart instanceof Date ? nextTripStart.getTime() : new Date(nextTripStart).getTime();
-    if (Number.isFinite(ts)) restDeadline = ts - REST_MIN;
-  }
-  const pastRestDeadline = restDeadline != null && now > restDeadline;
+  // ---- Binding duty-off limit ----------------------------------------
+  // Two caps on when you must be duty-off:
+  //   (a) 14h duty limit:      dutyOnAt + 14h
+  //   (b) 10h rest before the next trip after today's last assigned trip:
+  //       (first trip after today's last trip) - 10h
+  // The binding limit is the EARLIER of the two. "Tomorrow's first trip"
+  // = the next assigned trip that departs after today's last trip ends.
+  const dutyCalc = React.useMemo(() => {
+    const trips = Array.isArray(myTrips) ? myTrips : [];
+    const ms = (v) => {
+      if (!v) return null;
+      const t = v instanceof Date ? v.getTime() : new Date(v).getTime();
+      return Number.isFinite(t) ? t : null;
+    };
+
+    // Anchor "today" on the duty period if on duty, else on now.
+    const anchor = onDuty && period?.dutyOnAt ? period.dutyOnAt : now;
+    const dayEnd = (() => {
+      const d = new Date(anchor);
+      d.setHours(23, 59, 59, 999);
+      return d.getTime();
+    })();
+
+    // Trips with usable start times, sorted ascending.
+    const withStart = trips
+      .map(t => ({ t, s: ms(t.start), e: ms(t.end) }))
+      .filter(x => x.s != null)
+      .sort((a, b) => a.s - b.s);
+
+    // Today's assigned trips = those starting on/before end of anchor day
+    // and not already in the past relative to `now` by a wide margin.
+    const todays = withStart.filter(x => x.s <= dayEnd && (x.e == null || x.e >= (anchor - 24 * 3600 * 1000)));
+    const lastToday = todays.length ? todays[todays.length - 1] : null;
+    const lastTodayEnd = lastToday ? (lastToday.e || lastToday.s) : null;
+
+    // First trip AFTER today's last trip (the "next day" first trip — even
+    // if technically within the same rolling 24h, per the chosen rule).
+    const afterRef = lastTodayEnd != null ? lastTodayEnd : anchor;
+    const nextAfter = withStart.find(x => x.s > afterRef) || null;
+    const nextTripStartMs = nextAfter ? nextAfter.s : null;
+
+    const limit14 = onDuty && period?.dutyOnAt ? period.dutyOnAt + DUTY_MAX : null;
+    const limitRest = nextTripStartMs != null ? nextTripStartMs - REST_MIN : null;
+
+    // Binding = earlier of the two that exist.
+    let binding = null, bindingReason = null;
+    if (limit14 != null && limitRest != null) {
+      if (limit14 <= limitRest) { binding = limit14; bindingReason = '14h duty limit'; }
+      else { binding = limitRest; bindingReason = '10h rest before next trip'; }
+    } else if (limit14 != null) { binding = limit14; bindingReason = '14h duty limit'; }
+    else if (limitRest != null) { binding = limitRest; bindingReason = '10h rest before next trip'; }
+
+    return {
+      nextTripStartMs,
+      limit14, limitRest,
+      binding, bindingReason,
+      lastTodayEnd,
+      // Available duty time:
+      remainingFromNow: binding != null ? binding - now : null,
+      totalFromDutyOn: (binding != null && onDuty && period?.dutyOnAt)
+        ? binding - period.dutyOnAt : null,
+    };
+  }, [myTrips, onDuty, period?.dutyOnAt, now]);
+
+  const pastBinding = dutyCalc.binding != null && now > dutyCalc.binding;
 
   async function doStart({ fboArrival = false, restOverrideReason = null } = {}) {
     setBusy(true); setErr('');
@@ -2968,18 +3025,44 @@ function DutyCardInner({ currentUser, nextTripStart }) {
           <div className="text-[10px] text-slate-600">
             {over14 ? 'OVER legal 14-hour duty limit.' : 'Remaining until 14-hour legal duty limit.'}
           </div>
-          {restDeadline != null && (
-            <div className={`mt-2 p-2 border text-xs ${pastRestDeadline ? 'border-red-500/40 bg-red-500/5 text-red-300' : 'border-slate-700 bg-slate-950 text-slate-300'}`}>
-              <div className="text-[10px] text-slate-500 tracking-widest mb-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                DUTY-OFF DEADLINE FOR 10H REST
+          {dutyCalc.binding != null && (
+            <div className={`mt-2 p-3 border text-xs ${pastBinding ? 'border-red-500/40 bg-red-500/5' : 'border-cyan-500/30 bg-slate-950'}`}>
+              <div className="text-[10px] text-slate-500 tracking-widest mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                LATEST DUTY-OFF
               </div>
-              <div className="tabular-nums" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                {new Date(restDeadline).toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })}
+              <div className={`text-lg tabular-nums ${pastBinding ? 'text-red-300' : 'text-cyan-300'}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                {new Date(dutyCalc.binding).toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })}
               </div>
-              <div className="text-[10px] mt-0.5 opacity-80">
-                {pastRestDeadline
-                  ? 'Past the deadline — 10h rest before next trip is at risk.'
-                  : 'Duty off by this time to get 10h rest before your next trip.'}
+              <div className="text-[10px] text-slate-500 mt-0.5">
+                Binding constraint: <span className={pastBinding ? 'text-red-300' : 'text-slate-300'}>{dutyCalc.bindingReason}</span>
+              </div>
+
+              <div className="mt-2 pt-2 border-t border-slate-800 grid grid-cols-2 gap-2">
+                <div>
+                  <div className="text-[9px] text-slate-600 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>AVAILABLE FROM NOW</div>
+                  <div className={`tabular-nums ${pastBinding ? 'text-red-300' : 'text-slate-200'}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    {dutyCalc.remainingFromNow != null ? fmtCountdown(dutyCalc.remainingFromNow) : '--:--:--'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[9px] text-slate-600 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>TOTAL DUTY PERIOD</div>
+                  <div className="tabular-nums text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    {dutyCalc.totalFromDutyOn != null ? fmtCountdown(dutyCalc.totalFromDutyOn) : '--:--:--'}
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-2 text-[9px] text-slate-600 leading-relaxed space-y-0.5">
+                {dutyCalc.limit14 != null && (
+                  <div>14h duty limit: {new Date(dutyCalc.limit14).toLocaleString('en-US', { hour: 'numeric', minute: '2-digit' })}</div>
+                )}
+                {dutyCalc.limitRest != null && (
+                  <div>Rest-before-next-trip: {new Date(dutyCalc.limitRest).toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' })}</div>
+                )}
+                {dutyCalc.nextTripStartMs != null && (
+                  <div>Next trip after today: {new Date(dutyCalc.nextTripStartMs).toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' })}</div>
+                )}
+                <div className="text-slate-700 pt-1">Planning estimate — not a 14 CFR 135.267 compliance determination.</div>
               </div>
             </div>
           )}
@@ -3090,11 +3173,11 @@ function DutyOffForm({ over14, busy, err, sicName, onCancel, onConfirm }) {
 
 // Public entry point: gated + error-boundaried. This is the ONLY thing
 // PilotHomeScreen renders. If the flag is off, renders nothing.
-function DutyCard({ currentUser, config, nextTripStart }) {
+function DutyCard({ currentUser, config, myTrips }) {
   if (!config?.dutyTrackerEnabled) return null;
   return (
     <DutyErrorBoundary>
-      <DutyCardInner currentUser={currentUser} nextTripStart={nextTripStart} />
+      <DutyCardInner currentUser={currentUser} myTrips={myTrips} />
     </DutyErrorBoundary>
   );
 }
@@ -3159,7 +3242,7 @@ function PilotHomeScreen({ currentUser, trips, tripStates, config, onSelectTrip,
         <DutyCard
           currentUser={currentUser}
           config={config}
-          nextTripStart={(buckets.imminent[0] || buckets.upcoming[0])?.start || null}
+          myTrips={myTrips}
         />
 
         {/* Today's stats strip */}
