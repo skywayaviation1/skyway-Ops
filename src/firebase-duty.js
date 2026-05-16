@@ -180,6 +180,15 @@ export async function adminEditDuty(periodDocId, { field, newValueMs, editor, no
   if (!['dutyOnAt', 'dutyOffAt'].includes(field)) {
     throw new Error("field must be 'dutyOnAt' or 'dutyOffAt'");
   }
+  const reason = String(note || '').trim();
+  if (!reason) {
+    const e = new Error('A reason note is required for every admin duty edit.');
+    e.code = 'REASON_REQUIRED';
+    throw e;
+  }
+  if (!Number.isFinite(newValueMs)) {
+    throw new Error('A valid new time is required.');
+  }
   const ref = doc(db, 'duty-state', periodDocId);
   const snap = await getDoc(ref);
   if (!snap.exists()) throw new Error('duty period not found');
@@ -197,7 +206,7 @@ export async function adminEditDuty(periodDocId, { field, newValueMs, editor, no
       field,
       from,
       to,
-      note: String(note || '').slice(0, 500),
+      note: reason.slice(0, 500),
     }],
     updatedAt: Date.now(),
   };
@@ -212,6 +221,48 @@ export async function adminEditDuty(periodDocId, { field, newValueMs, editor, no
   }
 
   await updateDoc(ref, patch);
+}
+
+/**
+ * Force-close a stuck/forgotten duty period. Sets duty-off to the supplied
+ * time (or now), starts the rest clock, and records an audited admin entry.
+ * Reason note required.
+ */
+export async function forceCloseDuty(periodDocId, { closeAtMs, editor, note } = {}) {
+  if (!periodDocId) throw new Error('period id required');
+  const reason = String(note || '').trim();
+  if (!reason) {
+    const e = new Error('A reason note is required to force-close a duty period.');
+    e.code = 'REASON_REQUIRED';
+    throw e;
+  }
+  const ref = doc(db, 'duty-state', periodDocId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error('duty period not found');
+  const cur = snap.data();
+
+  const closeAt = Number.isFinite(closeAtMs) ? closeAtMs : Date.now();
+  const from = cur.dutyOffAt || null;
+  const edits = Array.isArray(cur.adminEdits) ? cur.adminEdits : [];
+  const elapsed = closeAt - (cur.dutyOnAt || closeAt);
+  const over14 = elapsed > DUTY_MAX_MS;
+
+  await updateDoc(ref, {
+    dutyOffAt: closeAt,
+    restUntil: closeAt + REST_MIN_MS,
+    over14,
+    status: 'off',
+    adminEdits: [...edits, {
+      by: editor?.displayName || editor?.name || 'Admin',
+      at: Date.now(),
+      field: 'forceClose',
+      from,
+      to: closeAt,
+      note: reason.slice(0, 500),
+    }],
+    updatedAt: Date.now(),
+  });
+  return { over14, elapsed };
 }
 
 async function getLatestDuty(pilotUid) {

@@ -3210,6 +3210,218 @@ function DutyCard({ currentUser, config, myTrips }) {
   );
 }
 
+/* ============================================================
+   ADMIN DUTY OVERSIGHT
+   Shows all currently on-duty crew. Admin can edit duty-on /
+   duty-off and force-close a stuck period. Every change requires
+   a reason note and is written to the append-only adminEdits[]
+   audit trail by the data layer.
+   ============================================================ */
+// Convert an ET wall-clock datetime-local string to an epoch ms.
+// The <input type="datetime-local"> has no zone; we interpret it as ET.
+function etLocalStringToMs(s) {
+  if (!s) return null;
+  // s = "YYYY-MM-DDTHH:MM"
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(s);
+  if (!m) return null;
+  const [, Y, Mo, D, H, Mi] = m.map(Number);
+  // Find the UTC instant whose ET wall-clock equals the entered values.
+  // Try a UTC guess, read back its ET offset, correct once (DST-safe).
+  let guess = Date.UTC(Y, Mo - 1, D, H, Mi);
+  const partsAt = (ms) => {
+    const f = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York', hour12: false,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit',
+    }).formatToParts(new Date(ms));
+    const o = {};
+    for (const p of f) if (p.type !== 'literal') o[p.type] = Number(p.value);
+    return o;
+  };
+  let p = partsAt(guess);
+  // Difference between what ET shows and what we wanted, in minutes.
+  const wantUTCofShown = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute);
+  const wantUTCofTarget = Date.UTC(Y, Mo - 1, D, H, Mi);
+  const deltaMs = wantUTCofTarget - wantUTCofShown;
+  return guess + deltaMs;
+}
+
+function msToEtLocalString(ms) {
+  if (ms == null) return '';
+  const f = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York', hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit',
+  }).formatToParts(new Date(ms));
+  const o = {};
+  for (const x of f) if (x.type !== 'literal') o[x.type] = x.value;
+  if (!o.year) return '';
+  return `${o.year}-${o.month}-${o.day}T${o.hour}:${o.minute}`;
+}
+
+function DutyOversightPanel({ currentUser }) {
+  const [periods, setPeriods] = React.useState(null);
+  const [err, setErr] = React.useState('');
+
+  React.useEffect(() => {
+    let unsub = () => {};
+    let cancelled = false;
+    (async () => {
+      try {
+        const m = await import('./firebase-duty.js');
+        if (cancelled) return;
+        unsub = m.subscribeToActiveDuty((list) => setPeriods(list));
+      } catch (e) {
+        setErr('Could not load duty oversight: ' + e.message);
+        setPeriods([]);
+      }
+    })();
+    return () => { cancelled = true; try { unsub(); } catch {} };
+  }, []);
+
+  if (periods == null) {
+    return <div className="text-xs text-slate-500">Loading on-duty crew…</div>;
+  }
+  if (err) {
+    return <div className="text-xs text-amber-400">{err}</div>;
+  }
+  if (periods.length === 0) {
+    return <div className="text-xs text-slate-500">No crew currently on duty.</div>;
+  }
+
+  return (
+    <div className="space-y-2">
+      {periods
+        .slice()
+        .sort((a, b) => (a.dutyOnAt || 0) - (b.dutyOnAt || 0))
+        .map(p => (
+          <DutyOversightRow key={p.id} period={p} editor={currentUser} />
+        ))}
+    </div>
+  );
+}
+
+function DutyOversightRow({ period, editor }) {
+  const [mode, setMode] = React.useState(null); // 'dutyOnAt' | 'dutyOffAt' | 'forceClose' | null
+  const [val, setVal] = React.useState('');
+  const [note, setNote] = React.useState('');
+  const [busy, setBusy] = React.useState(false);
+  const [msg, setMsg] = React.useState('');
+
+  const onAt = period.dutyOnAt
+    ? fmtET(period.dutyOnAt, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })
+    : '—';
+
+  function openEdit(which) {
+    setMode(which);
+    setMsg('');
+    setNote('');
+    if (which === 'dutyOnAt') setVal(msToEtLocalString(period.dutyOnAt));
+    else if (which === 'dutyOffAt') setVal(msToEtLocalString(period.dutyOffAt || Date.now()));
+    else setVal(msToEtLocalString(Date.now())); // forceClose default = now
+  }
+
+  async function submit() {
+    if (!note.trim()) { setMsg('A reason note is required.'); return; }
+    setBusy(true); setMsg('');
+    try {
+      const m = await import('./firebase-duty.js');
+      if (mode === 'forceClose') {
+        const ms = etLocalStringToMs(val);
+        await m.forceCloseDuty(period.id, { closeAtMs: ms ?? Date.now(), editor, note });
+      } else {
+        const ms = etLocalStringToMs(val);
+        if (ms == null) { setMsg('Enter a valid date/time.'); setBusy(false); return; }
+        await m.adminEditDuty(period.id, { field: mode, newValueMs: ms, editor, note });
+      }
+      setMode(null);
+      setMsg('Saved.');
+    } catch (e) {
+      setMsg((e.code === 'REASON_REQUIRED' ? '' : 'Failed: ') + (e.message || 'error'));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const edits = Array.isArray(period.adminEdits) ? period.adminEdits : [];
+
+  return (
+    <div className="bg-slate-950 border border-slate-800 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-sm text-slate-200">{period.pilotName || 'Unknown'}</div>
+          <div className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            DUTY ON: {onAt}
+            {period.sicName ? ` · SIC: ${period.sicName}` : ''}
+          </div>
+          {period.over14 && (
+            <div className="text-[10px] text-red-400 mt-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>OVER 14H</div>
+          )}
+        </div>
+        {!mode && (
+          <div className="flex flex-col gap-1 shrink-0">
+            <button onClick={() => openEdit('dutyOnAt')} className="px-2 py-1 text-[10px] tracking-widest bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700" style={{ fontFamily: 'JetBrains Mono, monospace' }}>EDIT ON</button>
+            <button onClick={() => openEdit('dutyOffAt')} className="px-2 py-1 text-[10px] tracking-widest bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700" style={{ fontFamily: 'JetBrains Mono, monospace' }}>EDIT OFF</button>
+            <button onClick={() => openEdit('forceClose')} className="px-2 py-1 text-[10px] tracking-widest bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/30" style={{ fontFamily: 'JetBrains Mono, monospace' }}>FORCE CLOSE</button>
+          </div>
+        )}
+      </div>
+
+      {mode && (
+        <div className="mt-3 pt-3 border-t border-slate-800 space-y-2">
+          <div className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {mode === 'dutyOnAt' ? 'EDIT DUTY-ON (ET)' : mode === 'dutyOffAt' ? 'EDIT DUTY-OFF (ET)' : 'FORCE CLOSE — SET DUTY-OFF (ET)'}
+          </div>
+          <input
+            type="datetime-local"
+            value={val}
+            onChange={e => setVal(e.target.value)}
+            className="w-full bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none"
+          />
+          <textarea
+            value={note}
+            onChange={e => setNote(e.target.value)}
+            rows={2}
+            placeholder="Reason for this change (required — recorded in audit) *"
+            className="w-full bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none resize-none"
+          />
+          <div className="text-[9px] text-slate-600">Times entered/shown in Eastern. This change is recorded with your name and timestamp.</div>
+          {msg && <div className={`text-xs ${msg === 'Saved.' ? 'text-green-400' : 'text-amber-400'}`}>{msg}</div>}
+          <div className="flex gap-2">
+            <button onClick={submit} disabled={busy}
+              className={`flex-1 px-3 py-2 text-xs tracking-widest font-medium disabled:opacity-50 ${mode === 'forceClose' ? 'bg-red-500 hover:bg-red-400 text-white' : 'bg-cyan-500 hover:bg-cyan-400 text-slate-950'}`}
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {busy ? 'SAVING…' : (mode === 'forceClose' ? 'FORCE CLOSE' : 'SAVE CHANGE')}
+            </button>
+            <button onClick={() => { setMode(null); setMsg(''); }} disabled={busy}
+              className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs tracking-widest font-medium"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              CANCEL
+            </button>
+          </div>
+        </div>
+      )}
+
+      {!mode && edits.length > 0 && (
+        <details className="mt-2">
+          <summary className="text-[10px] text-slate-600 cursor-pointer tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            AUDIT TRAIL ({edits.length})
+          </summary>
+          <div className="mt-1 space-y-1">
+            {edits.slice().reverse().map((e, i) => (
+              <div key={i} className="text-[10px] text-slate-500 leading-relaxed border-l border-slate-800 pl-2">
+                <span className="text-slate-400">{e.by}</span> · {fmtET(e.at, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} ·{' '}
+                {e.field === 'forceClose' ? 'force-closed' : `${e.field}: ${e.from ? fmtET(e.from, { hour: 'numeric', minute: '2-digit' }) : '—'} → ${e.to ? fmtET(e.to, { hour: 'numeric', minute: '2-digit' }) : '—'}`}
+                {e.note ? <span className="text-slate-600"> · “{e.note}”</span> : null}
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
+
 function PilotHomeScreen({ currentUser, trips, tripStates, config, onSelectTrip, onSwitchSection }) {
   // Filter to MY trips (PIC/SIC match)
   const myTrips = useMemo(() => {
@@ -9937,6 +10149,15 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
               {dutyMsg && (
                 <div className={`mt-2 text-xs ${dutyMsg.startsWith('Failed') ? 'text-amber-400' : 'text-green-400'}`}>{dutyMsg}</div>
               )}
+
+              <div className="mt-5 pt-4 border-t border-slate-800">
+                <h4 className="text-[11px] tracking-widest text-slate-400 mb-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  DUTY OVERSIGHT — ON-DUTY CREW
+                </h4>
+                <DutyErrorBoundary>
+                  <DutyOversightPanel currentUser={currentUser} />
+                </DutyErrorBoundary>
+              </div>
             </section>
           )}
 
