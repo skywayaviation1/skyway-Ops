@@ -10287,6 +10287,29 @@ function AogDetail({ aog, currentUser, onBack }) {
     }
   }
 
+  async function handleToggleLogbook() {
+    const next = !aog.externalLogbookEnabled;
+    if (next && !window.confirm('Allow this outside maintenance vendor to submit logbook entries through the link? Entries are flagged external/unverified until you review them.')) return;
+    setLinkBusy(true); setLinkMsg('');
+    try {
+      const { auth } = await import('./firebase.js');
+      let idToken = null;
+      if (auth.currentUser) idToken = await auth.currentUser.getIdToken();
+      const r = await fetch('/api/aog-link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'set-logbook', aogId: aog.id, enabled: next, idToken }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.detail || data.error || `HTTP ${r.status}`);
+      setLinkMsg(next ? 'External logbook entry enabled.' : 'External logbook entry turned off.');
+    } catch (e) {
+      setLinkMsg('Failed: ' + e.message);
+    } finally {
+      setLinkBusy(false);
+    }
+  }
+
   function copyLink() {
     if (!linkUrl) return;
     try {
@@ -10687,6 +10710,29 @@ function AogDetail({ aog, currentUser, onBack }) {
               )}
               {linkMsg && (
                 <div className={`mt-2 text-xs ${linkMsg.startsWith('Failed') ? 'text-amber-400' : 'text-green-400'}`}>{linkMsg}</div>
+              )}
+
+              {canEdit && !isResolved && (
+                <div className="mt-4 pt-4 border-t border-slate-800">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-xs text-slate-300">External logbook entry</div>
+                      <div className="text-[10px] text-slate-500 mt-0.5 leading-relaxed">
+                        {aog.externalLogbookEnabled
+                          ? 'Tech can submit logbook entries (flagged external/unverified).'
+                          : 'Off — the tech cannot submit logbook entries. Status updates, chat, and parts still work.'}
+                      </div>
+                    </div>
+                    <button
+                      onClick={handleToggleLogbook}
+                      disabled={linkBusy}
+                      className={`shrink-0 px-3 py-2 text-xs tracking-widest font-medium disabled:opacity-50 border ${aog.externalLogbookEnabled ? 'bg-green-600/20 border-green-500/40 text-green-300' : 'bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800'}`}
+                      style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                    >
+                      {aog.externalLogbookEnabled ? 'ENABLED — TURN OFF' : 'ENABLE LOGBOOK'}
+                    </button>
+                  </div>
+                </div>
               )}
             </Section>
 
@@ -17515,11 +17561,13 @@ export function ExternalTechPage({ token }) {
             className={`px-4 py-2 text-xs tracking-widest font-medium ${tab === 'status' ? 'text-cyan-300 border-b-2 border-cyan-400' : 'text-slate-500'}`}
             style={{ fontFamily: 'JetBrains Mono, monospace' }}
           >STATUS UPDATES</button>
-          <button
-            onClick={() => setTab('logbook')}
-            className={`px-4 py-2 text-xs tracking-widest font-medium ${tab === 'logbook' ? 'text-cyan-300 border-b-2 border-cyan-400' : 'text-slate-500'}`}
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}
-          >LOGBOOK ENTRY</button>
+          {aog.externalLogbookEnabled && (
+            <button
+              onClick={() => setTab('logbook')}
+              className={`px-4 py-2 text-xs tracking-widest font-medium ${tab === 'logbook' ? 'text-cyan-300 border-b-2 border-cyan-400' : 'text-slate-500'}`}
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >LOGBOOK ENTRY</button>
+          )}
           <button
             onClick={() => setTab('chat')}
             className={`px-4 py-2 text-xs tracking-widest font-medium ${tab === 'chat' ? 'text-cyan-300 border-b-2 border-cyan-400' : 'text-slate-500'}`}
@@ -17528,7 +17576,10 @@ export function ExternalTechPage({ token }) {
         </div>
 
         {tab === 'status' && <ExtStatusTab aog={aog} token={token} onPosted={load} />}
-        {tab === 'logbook' && <ExtLogbookTab aog={aog} token={token} onPosted={load} />}
+        {tab === 'logbook' && (aog.externalLogbookEnabled
+          ? <ExtLogbookTab aog={aog} token={token} onPosted={load} />
+          : <div className="bg-slate-900 border border-slate-800 p-4 text-xs text-slate-400">External logbook entry is not enabled for this AOG. Contact Skyway Operations if you need to submit one.</div>
+        )}
         {tab === 'chat' && <ExtChatTab aog={aog} token={token} onPosted={load} />}
 
         <p className="text-[10px] text-slate-600 leading-relaxed mt-8 border-t border-slate-900 pt-4">
@@ -17762,6 +17813,7 @@ function ExtLogbookTab({ aog, token, onPosted }) {
   });
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
+  const [submitted, setSubmitted] = useState(false);
   const set = (k, v) => setF(s => ({ ...s, [k]: v }));
 
   async function submit() {
@@ -17782,10 +17834,10 @@ function ExtLogbookTab({ aog, token, onPosted }) {
       });
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      setSubmitted(true);
       setStatus('Logbook entry submitted. It is flagged for Skyway review.');
       setF(s => ({ ...s, workPerformed: '', inspectionPerformed: '', rtsApproved: false, signatureTyped: '' }));
       onPosted && onPosted();
-      setTimeout(() => setStatus(''), 7000);
     } catch (e) {
       setStatus('Failed: ' + e.message);
     } finally {
@@ -17793,12 +17845,54 @@ function ExtLogbookTab({ aog, token, onPosted }) {
     }
   }
 
+  if (submitted) {
+    return (
+      <div className="space-y-3">
+        <div className="bg-green-500/10 border border-green-500/40 p-4">
+          <div className="flex items-center gap-2 mb-2">
+            <CheckCircle2 className="w-5 h-5 text-green-400" />
+            <span className="text-sm text-green-300 tracking-widest font-medium" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              ENTRY SUBMITTED
+            </span>
+          </div>
+          <p className="text-xs text-slate-300">
+            Your logbook entry has been sent to Skyway and is flagged for review.
+          </p>
+        </div>
+        <div className="bg-amber-500/10 border border-amber-500/40 p-4">
+          <div className="text-amber-300 text-sm font-medium mb-2 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            ⚠ REQUIRED NEXT STEP
+          </div>
+          <p className="text-sm text-amber-200 leading-relaxed">
+            After completing this entry, please <strong>print it and wet-sign
+            with pen</strong>, then <strong>place the signed copy in the
+            aircraft</strong>.
+          </p>
+          <p className="text-[11px] text-slate-400 mt-2 leading-relaxed">
+            This electronic submission is a coordination record only. The
+            wet-signed paper copy placed in the aircraft is the maintenance
+            record.
+          </p>
+        </div>
+        <button
+          onClick={() => { setSubmitted(false); setStatus(''); }}
+          className="w-full px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs tracking-widest font-medium"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        >
+          ADD ANOTHER ENTRY
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-3 bg-slate-900 border border-slate-800 p-4">
       <div className="bg-amber-500/10 border border-amber-500/30 text-amber-300 text-[11px] p-2 leading-relaxed">
         Entries submitted here are recorded as <strong>external / unverified</strong> and
         must be reviewed and accepted by Skyway maintenance personnel. This is
-        not an official 14 CFR Part 43 record.
+        not an official 14 CFR Part 43 record. After submitting you will be
+        asked to print, wet-sign with pen, and place the signed copy in the
+        aircraft.
       </div>
       <div className="grid grid-cols-2 gap-3">
         <input value={f.technicianName} onChange={e => set('technicianName', e.target.value)} placeholder="Technician name *"
