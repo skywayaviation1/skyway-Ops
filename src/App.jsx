@@ -3094,6 +3094,35 @@ function DutyCardInner({ currentUser, myTrips, users }) {
             {fmtCountdown(restRemaining)}
           </div>
           <div className="text-[10px] text-slate-600">Until 10-hour rest complete.</div>
+
+          {(dutyCalc.nextTripStartMs != null || period.restUntil) && (
+            <div className="mt-2 p-3 border border-cyan-500/30 bg-slate-950 text-xs">
+              <div className="text-[10px] text-slate-500 tracking-widest mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                NEXT DUTY-ON
+              </div>
+              {dutyCalc.nextDutyOnMs != null ? (
+                <>
+                  <div className="text-lg text-cyan-300 tabular-nums" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    {fmtET(dutyCalc.nextDutyOnMs, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })}
+                  </div>
+                  <div className="text-[10px] text-slate-500 mt-0.5">
+                    45 min before next first leg ({fmtET(dutyCalc.nextTripStartMs, { weekday: 'short', hour: 'numeric', minute: '2-digit' })} ET)
+                  </div>
+                </>
+              ) : (
+                <div className="text-slate-500">No next trip on schedule.</div>
+              )}
+              {period.restUntil && (
+                <div className="mt-2 pt-2 border-t border-slate-800 text-[10px] text-slate-500">
+                  Rest complete: <span className="text-slate-300">{fmtET(period.restUntil, { weekday: 'short', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })}</span>
+                  {dutyCalc.nextDutyOnMs != null && period.restUntil > dutyCalc.nextDutyOnMs && (
+                    <span className="text-red-400"> · rest ends AFTER next duty-on — at risk</span>
+                  )}
+                </div>
+              )}
+              <div className="mt-1 text-[9px] text-slate-700">All times Eastern. Planning estimate — not a 14 CFR 135.267 determination.</div>
+            </div>
+          )}
           <button
             onClick={() => setShowRestOverride(true)}
             className="w-full mt-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-400 text-xs tracking-widest font-medium border border-slate-700"
