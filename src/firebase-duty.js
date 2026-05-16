@@ -133,6 +133,107 @@ export async function startDuty(pilot, opts = {}) {
 }
 
 /**
+ * Start the presser's duty period AND, if a registered partner pilot is
+ * supplied, auto-create a LINKED period for them (flagged linkedAuto +
+ * linkPending so it is not silently treated as their authoritative record
+ * until they confirm on their own card).
+ *
+ * presser: { uid, name }
+ * partner: { uid, name } | null   (only pass if a registered app user)
+ * opts:    same as startDuty (fboArrival, restOverride)
+ */
+export async function startDutyLinked(presser, partner, opts = {}) {
+  const myId = await startDuty(presser, opts);
+
+  if (!partner?.uid || partner.uid === presser.uid) {
+    return { myId, linkedId: null };
+  }
+
+  // Don't create/duplicate if the partner already has an open period.
+  const partnerExisting = await getLatestDuty(partner.uid);
+  if (partnerExisting && partnerExisting.status === 'on') {
+    // Cross-link the two periods if not already linked.
+    if (!partnerExisting.linkedPeriodId) {
+      await updateDoc(doc(db, 'duty-state', partnerExisting.id), {
+        linkedPeriodId: myId, updatedAt: Date.now(),
+      });
+    }
+    await updateDoc(doc(db, 'duty-state', myId), {
+      linkedPeriodId: partnerExisting.id, updatedAt: Date.now(),
+    });
+    return { myId, linkedId: partnerExisting.id };
+  }
+
+  const now = Date.now();
+  const linkedId = periodId(partner.uid, now);
+  await setDoc(doc(db, 'duty-state', linkedId), {
+    id: linkedId,
+    pilotUid: partner.uid,
+    pilotName: partner.name || 'Unknown',
+    role: 'PIC',
+    sicUid: null,
+    sicName: null,
+    dutyOnAt: now,
+    fboArrivalAt: now,
+    dutyOffAt: null,
+    restUntil: null,
+    over14: false,
+    over14ReasonPic: '',
+    over14ReasonSic: '',
+    restOverride: null,
+    status: 'on',
+    adminEdits: [],
+    // Linking metadata:
+    linkedAuto: true,                       // created by partner's action
+    linkPending: true,                      // partner must confirm it's theirs
+    linkedPeriodId: myId,                   // the period that spawned this
+    linkedFromName: presser.name || '',
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  await updateDoc(doc(db, 'duty-state', myId), {
+    linkedPeriodId: linkedId, updatedAt: Date.now(),
+  });
+
+  return { myId, linkedId };
+}
+
+/**
+ * The linked pilot confirms the auto-created period is genuinely theirs.
+ * Clears linkPending. (Does NOT remove linkedAuto — we keep that as
+ * provenance for the audit trail.)
+ */
+export async function confirmLinkedDuty(periodDocId) {
+  if (!periodDocId) throw new Error('period id required');
+  const ref = doc(db, 'duty-state', periodDocId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error('duty period not found');
+  await updateDoc(ref, { linkPending: false, updatedAt: Date.now() });
+}
+
+/**
+ * The linked pilot rejects the auto-created period (it wasn't theirs / wrong
+ * pairing). Marks it rejected and closes it so it doesn't pollute their
+ * record or the oversight panel.
+ */
+export async function rejectLinkedDuty(periodDocId) {
+  if (!periodDocId) throw new Error('period id required');
+  const ref = doc(db, 'duty-state', periodDocId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error('duty period not found');
+  const now = Date.now();
+  await updateDoc(ref, {
+    linkPending: false,
+    linkRejected: true,
+    status: 'off',
+    dutyOffAt: now,
+    restUntil: null,
+    updatedAt: now,
+  });
+}
+
+/**
  * End a duty period (duty-off). If the period exceeded 14h, BOTH reasons are
  * required (caller must supply them) or this throws.
  */

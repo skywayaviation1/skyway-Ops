@@ -2802,7 +2802,7 @@ function fmtET(ms, opts) {
   }
 }
 
-function DutyCardInner({ currentUser, myTrips }) {
+function DutyCardInner({ currentUser, myTrips, users }) {
   const [period, setPeriod] = React.useState(null);
   const [loaded, setLoaded] = React.useState(false);
   const [tick, setTick] = React.useState(0);
@@ -2937,7 +2937,43 @@ function DutyCardInner({ currentUser, myTrips }) {
         uid: currentUser.uid || currentUser.id,
         name: currentUser.name || currentUser.displayName || currentUser.email,
       };
-      await m.startDuty(pilot, {
+
+      // Resolve the partner pilot from the FIRST trip of the duty day.
+      // Either PIC or SIC pressing links the other. Link ONLY if the
+      // partner is a registered app user (has a uid in `users`).
+      let partner = null;
+      try {
+        const trips = Array.isArray(myTrips) ? myTrips : [];
+        const myName = currentUser.jetinsightName || currentUser.name || '';
+        // First trip of the duty day = earliest trip starting today/onward
+        // that this user is on.
+        const dayStartRef = Date.now() - 2 * 3600 * 1000; // small grace window
+        const firstTrip = trips
+          .filter(t => t?.info && (t.start))
+          .sort((a, b) => new Date(a.start) - new Date(b.start))
+          .find(t => {
+            const s = new Date(t.start).getTime();
+            return Number.isFinite(s) && s >= dayStartRef &&
+              (nameMatchesPilot(t.info.pic || '', myName) || nameMatchesPilot(t.info.sic || '', myName));
+          });
+        if (firstTrip) {
+          const meIsPic = nameMatchesPilot(firstTrip.info.pic || '', myName);
+          const partnerName = (meIsPic ? firstTrip.info.sic : firstTrip.info.pic) || '';
+          if (partnerName && Array.isArray(users)) {
+            const match = users.find(u =>
+              u && (u.uid || u.id) &&
+              nameMatchesPilot(partnerName, u.jetinsightName || u.name || '')
+            );
+            if (match) {
+              partner = { uid: match.uid || match.id, name: match.name || partnerName };
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('[duty] partner resolve skipped:', e);
+      }
+
+      await m.startDutyLinked(pilot, partner, {
         fboArrival,
         restOverride: restOverrideReason ? { reason: restOverrideReason } : null,
       });
@@ -2989,7 +3025,42 @@ function DutyCardInner({ currentUser, myTrips }) {
         )}
       </div>
 
-      {/* State: not on duty and not resting → DUTY ON / CREW AT FBO */}
+      {period && period.linkPending && (
+        <div className="mb-3 bg-amber-500/10 border border-amber-500/40 p-3">
+          <div className="text-xs text-amber-300 mb-2">
+            A duty period was started for you{period.linkedFromName ? ` by ${period.linkedFromName}` : ' by your crew partner'} (on duty since {fmtET(period.dutyOnAt, { hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })}). Confirm this is your duty period.
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={async () => {
+                setBusy(true);
+                try { const m = await import('./firebase-duty.js'); await m.confirmLinkedDuty(period.id); }
+                catch (e) { setErr(e.message || 'Failed'); }
+                finally { setBusy(false); }
+              }}
+              disabled={busy}
+              className="flex-1 px-3 py-2 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 text-xs tracking-widest font-medium"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              YES, THIS IS MY DUTY
+            </button>
+            <button
+              onClick={async () => {
+                if (!window.confirm("Reject this duty period? Use this only if it isn't yours / wrong pairing.")) return;
+                setBusy(true);
+                try { const m = await import('./firebase-duty.js'); await m.rejectLinkedDuty(period.id); }
+                catch (e) { setErr(e.message || 'Failed'); }
+                finally { setBusy(false); }
+              }}
+              disabled={busy}
+              className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs tracking-widest font-medium"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              NOT MINE
+            </button>
+          </div>
+        </div>
+      )}
       {!onDuty && !resting && (
         <div className="space-y-2">
           <div className="text-sm text-slate-400 mb-2">You are off duty.</div>
@@ -3295,11 +3366,11 @@ function DutyOffForm({ over14, busy, err, sicName, onCancel, onConfirm }) {
 
 // Public entry point: gated + error-boundaried. This is the ONLY thing
 // PilotHomeScreen renders. If the flag is off, renders nothing.
-function DutyCard({ currentUser, config, myTrips }) {
+function DutyCard({ currentUser, config, myTrips, users }) {
   if (!config?.dutyTrackerEnabled) return null;
   return (
     <DutyErrorBoundary>
-      <DutyCardInner currentUser={currentUser} myTrips={myTrips} />
+      <DutyCardInner currentUser={currentUser} myTrips={myTrips} users={users} />
     </DutyErrorBoundary>
   );
 }
@@ -3516,7 +3587,7 @@ function DutyOversightRow({ period, editor }) {
   );
 }
 
-function PilotHomeScreen({ currentUser, trips, tripStates, config, onSelectTrip, onSwitchSection }) {
+function PilotHomeScreen({ currentUser, trips, tripStates, config, users, onSelectTrip, onSwitchSection }) {
   // Filter to MY trips (PIC/SIC match)
   const myTrips = useMemo(() => {
     if (!Array.isArray(trips)) return [];
@@ -3577,6 +3648,7 @@ function PilotHomeScreen({ currentUser, trips, tripStates, config, onSelectTrip,
           currentUser={currentUser}
           config={config}
           myTrips={myTrips}
+          users={users}
         />
 
         {/* Today's stats strip */}
@@ -19668,6 +19740,7 @@ export default function CharterOps() {
             trips={allTrips}
             tripStates={null}
             config={config}
+            users={users}
             onSelectTrip={(uid) => { setSelectedId(uid); setSection('schedule'); }}
             onSwitchSection={(id) => setSection(id)}
           />
