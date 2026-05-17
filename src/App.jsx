@@ -2876,6 +2876,7 @@ function DutyCardInner({ currentUser, myTrips, users }) {
   const [showOff, setShowOff] = React.useState(false);
   const [showRestOverride, setShowRestOverride] = React.useState(false);
   const [adminEdit, setAdminEdit] = React.useState(null); // 'dutyOnAt'|'dutyOffAt'|null
+  const [linkInfo, setLinkInfo] = React.useState('');
   const isImpersonatingAdmin = currentUser?._impersonating === true;
 
   // Subscribe to my latest duty period.
@@ -3010,36 +3011,56 @@ function DutyCardInner({ currentUser, myTrips, users }) {
       // Either PIC or SIC pressing links the other. Link ONLY if the
       // partner is a registered app user (has a uid in `users`).
       let partner = null;
+      let linkDiag = '';
       try {
         const trips = Array.isArray(myTrips) ? myTrips : [];
         const myName = currentUser.jetinsightName || currentUser.name || '';
+        // nameMatchesPilot is ASYMMETRIC (tokenizes arg2, searches arg1).
+        // For linking we must match regardless of which name is fuller, so
+        // check BOTH directions everywhere here. We deliberately do NOT
+        // change the global nameMatchesPilot (used app-wide for trip assign).
+        const symMatch = (a, b) =>
+          nameMatchesPilot(a || '', b || '') || nameMatchesPilot(b || '', a || '');
         // First trip of the duty day = earliest trip starting today/onward
-        // that this user is on.
-        const dayStartRef = Date.now() - 2 * 3600 * 1000; // small grace window
-        const firstTrip = trips
-          .filter(t => t?.info && (t.start))
-          .sort((a, b) => new Date(a.start) - new Date(b.start))
-          .find(t => {
-            const s = new Date(t.start).getTime();
-            return Number.isFinite(s) && s >= dayStartRef &&
-              (nameMatchesPilot(t.info.pic || '', myName) || nameMatchesPilot(t.info.sic || '', myName));
-          });
-        if (firstTrip) {
-          const meIsPic = nameMatchesPilot(firstTrip.info.pic || '', myName);
+        // that this user is on. Widen the floor to the start of *yesterday*
+        // so a late DUTY-ON (or a trip that already departed) still resolves.
+        const dayFloor = (() => {
+          const d = new Date(); d.setHours(0, 0, 0, 0);
+          return d.getTime() - 24 * 3600 * 1000;
+        })();
+        const onTrips = trips
+          .filter(t => t?.info && t.start)
+          .map(t => ({ t, s: new Date(t.start).getTime() }))
+          .filter(x => Number.isFinite(x.s) && x.s >= dayFloor &&
+            (symMatch(x.t.info.pic || '', myName) || symMatch(x.t.info.sic || '', myName)))
+          .sort((a, b) => a.s - b.s);
+        const firstTrip = onTrips.length ? onTrips[0].t : null;
+        if (!firstTrip) {
+          linkDiag = `No trip found for "${myName}" today (checked ${trips.length} trips). Linking skipped — your own duty still started.`;
+        } else {
+          const meIsPic = symMatch(firstTrip.info.pic || '', myName);
           const partnerName = (meIsPic ? firstTrip.info.sic : firstTrip.info.pic) || '';
-          if (partnerName && Array.isArray(users)) {
+          if (!partnerName) {
+            linkDiag = `First trip ${firstTrip.info.from || '?'}→${firstTrip.info.to || '?'} has no ${meIsPic ? 'SIC' : 'PIC'} listed. Nothing to link.`;
+          } else if (Array.isArray(users)) {
+            // (symMatch defined above — same both-directions matcher)
             const match = users.find(u =>
               u && (u.uid || u.id) &&
-              nameMatchesPilot(partnerName, u.jetinsightName || u.name || '')
+              symMatch(partnerName, u.jetinsightName || u.name || '')
             );
             if (match) {
               partner = { uid: match.uid || match.id, name: match.name || partnerName };
+              linkDiag = `Linking with ${partner.name}.`;
+            } else {
+              linkDiag = `Partner "${partnerName}" on the trip isn't a matched app user — no account name matches. Linking skipped.`;
             }
           }
         }
       } catch (e) {
         console.warn('[duty] partner resolve skipped:', e);
+        linkDiag = 'Partner lookup error: ' + (e.message || 'unknown');
       }
+      if (linkDiag) setLinkInfo(linkDiag);
 
       await m.startDutyLinked(pilot, partner, {
         fboArrival,
@@ -3308,6 +3329,11 @@ function DutyCardInner({ currentUser, myTrips, users }) {
       )}
 
       {err && !showOff && <div className="mt-2 text-xs text-amber-400">{err}</div>}
+      {linkInfo && (
+        <div className="mt-2 text-[11px] text-slate-500 border-l-2 border-slate-700 pl-2 leading-relaxed">
+          {linkInfo}
+        </div>
+      )}
 
       {isImpersonatingAdmin && period && (
         <div className="mt-3 pt-3 border-t border-amber-500/20">
