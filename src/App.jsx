@@ -2914,6 +2914,9 @@ function DutyCardInner({ currentUser, myTrips, users }) {
   const offDuty = period && period.status === 'off';
   const resting = offDuty && period.restUntil && now < period.restUntil;
   const restRemaining = resting ? period.restUntil - now : 0;
+  // Rest complete: off duty, had a rest window, and it has now elapsed.
+  const restComplete = offDuty && period.restUntil && now >= period.restUntil;
+  const sinceRestEnded = restComplete ? now - period.restUntil : 0;
   const dutyRemaining = onDuty ? (period.dutyOnAt + DUTY_MAX) - now : null;
   const over14 = onDuty && dutyRemaining != null && dutyRemaining < 0;
 
@@ -3128,7 +3131,27 @@ function DutyCardInner({ currentUser, myTrips, users }) {
       )}
       {!onDuty && !resting && (
         <div className="space-y-2">
-          <div className="text-sm text-slate-400 mb-2">You are off duty.</div>
+          {restComplete ? (
+            <div className="bg-green-500/10 border border-green-500/40 p-3 mb-2">
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-green-400 shrink-0" />
+                <span className="text-sm text-green-300">You have now completed your legal rest requirement.</span>
+              </div>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span className="text-2xl text-green-300 tabular-nums" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  {fmtCountdown(sinceRestEnded)}
+                </span>
+                <span className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  SINCE REST COMPLETE
+                </span>
+              </div>
+              <div className="text-[10px] text-slate-500 mt-1">
+                Rest completed {fmtET(period.restUntil, { weekday: 'short', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })}.
+              </div>
+            </div>
+          ) : (
+            <div className="text-sm text-slate-400 mb-2">You are off duty.</div>
+          )}
           <div className="flex gap-2">
             <button
               onClick={onDutyOnClick}
@@ -5967,9 +5990,6 @@ function TripSheetPanel({
   const [error, setError] = useState(null);
   const [matchPreview, setMatchPreview] = useState(null); // {tripCode, tail, legs, matches: [{leg, candidates}]}
   const [showViewer, setShowViewer] = useState(false);
-  const [reparsing, setReparsing] = useState(false);
-  const [reparseMsg, setReparseMsg] = useState('');
-  const reparseInputRef = React.useRef(null);
 
   const canUpload = ['ops', 'admin'].includes(currentUser.role);
   const hasSheet = !!tripSheetUrl;
@@ -6071,85 +6091,6 @@ function TripSheetPanel({
     if (onCleared) await onCleared();
   };
 
-  // Re-parse FBO for THIS trip's sheet. Tries to fetch the stored PDF first
-  // (works once Storage CORS is configured). If the fetch is blocked (CORS),
-  // it asks the user to re-select the PDF from their device — a local File,
-  // which has no CORS restriction — and parses that.
-  async function reparseFromBuffer(buf) {
-    const text = await extractPdfText(buf);
-    const fbos = extractFbosFromText(text);
-    const from = (trip.info?.from || '').toUpperCase();
-    const to = (trip.info?.to || '').toUpperCase();
-    const fromFbo = from ? (fbos[from] || null) : null;
-    const toFbo = to ? (fbos[to] || null) : null;
-    if (!fromFbo && !toFbo) {
-      throw new Error(`Parsed the PDF but found no FBO for ${from || '?'} / ${to || '?'}.`);
-    }
-    const { attachTripSheetToLeg } = await import('./firebase-data.js');
-    await attachTripSheetToLeg({
-      tripUid: trip.uid,
-      // Preserve the existing sheet linkage — only update FBO.
-      tripSheetUrl, tripSheetPath, tripSheetFilename,
-      uploadedBy: currentUserUid || currentUser.name,
-      preloadedPax,
-      fromFbo, toFbo,
-    });
-    return { fromFbo, toFbo };
-  }
-
-  const handleReparse = async () => {
-    setReparseMsg(''); setReparsing(true);
-    try {
-      let buf = null;
-      // Attempt 1: stored URL.
-      if (tripSheetUrl) {
-        try {
-          const r = await fetch(tripSheetUrl);
-          if (r.ok) buf = await r.arrayBuffer();
-        } catch { /* CORS / network — fall through */ }
-      }
-      // Attempt 2: fresh download URL from the storage path.
-      if (!buf && tripSheetPath) {
-        try {
-          const { getStorage, ref, getDownloadURL } = await import('firebase/storage');
-          const fresh = await getDownloadURL(ref(getStorage(), tripSheetPath));
-          const r2 = await fetch(fresh);
-          if (r2.ok) buf = await r2.arrayBuffer();
-        } catch { /* still blocked — fall through to file pick */ }
-      }
-      if (buf) {
-        const { fromFbo, toFbo } = await reparseFromBuffer(buf);
-        setReparseMsg(`FBO updated — ${trip.info?.from}: ${fromFbo || '—'} · ${trip.info?.to}: ${toFbo || '—'}`);
-        if (onUploaded) onUploaded();
-        return;
-      }
-      // Fetch blocked (CORS). Ask the user to re-pick the file locally.
-      setReparseMsg("Couldn't read the stored PDF from this browser (storage access blocked). Choose the trip-sheet PDF to re-parse it.");
-      reparseInputRef.current?.click();
-    } catch (e) {
-      setReparseMsg('Re-parse failed: ' + (e.message || 'error'));
-    } finally {
-      setReparsing(false);
-    }
-  };
-
-  const handleReparseFilePick = async (e) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
-    if (!file.name.toLowerCase().endsWith('.pdf')) { setReparseMsg('File must be a PDF'); return; }
-    setReparsing(true); setReparseMsg('');
-    try {
-      const buf = await file.arrayBuffer();
-      const { fromFbo, toFbo } = await reparseFromBuffer(buf);
-      setReparseMsg(`FBO updated from selected file — ${trip.info?.from}: ${fromFbo || '—'} · ${trip.info?.to}: ${toFbo || '—'}`);
-      if (onUploaded) onUploaded();
-    } catch (err) {
-      setReparseMsg('Re-parse failed: ' + (err.message || 'error'));
-    } finally {
-      setReparsing(false);
-    }
-  };
 
   // Match preview UI
   if (matchPreview) {
@@ -6315,31 +6256,8 @@ function TripSheetPanel({
               REMOVE
             </button>
           )}
-          {canUpload && (
-            <button
-              onClick={handleReparse}
-              disabled={reparsing}
-              className="text-[10px] px-2 py-1 border border-slate-700 text-slate-400 hover:border-cyan-500/40 hover:text-cyan-300 disabled:opacity-50 tracking-widest"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}
-              title="Re-parse this sheet to refresh FBO names"
-            >
-              {reparsing ? 'PARSING…' : 'RE-PARSE FBO'}
-            </button>
-          )}
         </div>
       </div>
-      <input
-        ref={reparseInputRef}
-        type="file"
-        accept="application/pdf,.pdf"
-        onChange={handleReparseFilePick}
-        className="hidden"
-      />
-      {reparseMsg && (
-        <div className={`mt-2 text-[11px] ${reparseMsg.startsWith('Re-parse failed') || reparseMsg.startsWith("Couldn't") ? 'text-amber-400' : 'text-green-400'}`}>
-          {reparseMsg}
-        </div>
-      )}
       {showViewer && (
         <div className="aspect-[8.5/11] bg-slate-950 border border-slate-700 overflow-hidden">
           <iframe
