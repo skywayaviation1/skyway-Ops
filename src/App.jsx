@@ -4775,6 +4775,8 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
   const [tripSheetUploadedBy, setTripSheetUploadedBy] = useState(null);
   const [preloadedPax, setPreloadedPax] = useState([]);
   const [tripSheetNotes, setTripSheetNotes] = useState(null);
+  const [fromFbo, setFromFbo] = useState(null);
+  const [toFbo, setToFbo] = useState(null);
   const [pendingScanPax, setPendingScanPax] = useState(null); // pre-loaded pax being checked in
   const [loading, setLoading] = useState(true);
   // UPDATE ETA flow: tracks whether we're mid-call so we can disable the button
@@ -4822,6 +4824,8 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
           setTripSheetUploadedBy(state.tripSheetUploadedBy || null);
           setPreloadedPax(Array.isArray(state.preloadedPax) ? state.preloadedPax : []);
           setTripSheetNotes(state.tripSheetNotes || null);
+          setFromFbo(state.fromFbo || null);
+          setToFbo(state.toFbo || null);
           setCompleted(state.completed === true);
           setLoading(false);
         });
@@ -4858,6 +4862,8 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
         tripSheetUploadedBy,
         preloadedPax,
         tripSheetNotes,
+        fromFbo,
+        toFbo,
         tripMeta,
         ...next,
       };
@@ -4866,7 +4872,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
       console.error('Failed to save trip state:', err);
       alert('Failed to save — check your connection');
     }
-  }, [trip.uid, trip.info?.tail, trip.info?.from, trip.info?.to, trip.start, trip.info?.legType, tripSheetUrl, tripSheetPath, tripSheetFilename, tripSheetUploadedAt, tripSheetUploadedBy, preloadedPax, tripSheetNotes]);
+  }, [trip.uid, trip.info?.tail, trip.info?.from, trip.info?.to, trip.start, trip.info?.legType, tripSheetUrl, tripSheetPath, tripSheetFilename, tripSheetUploadedAt, tripSheetUploadedBy, preloadedPax, tripSheetNotes, fromFbo, toFbo]);
 
   const openMailto = (url) => {
     const a = document.createElement('a');
@@ -5446,17 +5452,31 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
             {trip.info.tail}
           </h1>
           <div className="flex items-center gap-2 text-xl text-slate-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            <div className="flex items-center gap-1.5">
-              <span>{trip.info.from}</span>
-              {trip.info.from && ['admin', 'ops', 'crew'].includes(currentUser?.role) && (
-                <AirportWxBadge icao={trip.info.from} compact />
+            <div className="flex flex-col">
+              <div className="flex items-center gap-1.5">
+                <span>{trip.info.from}</span>
+                {trip.info.from && ['admin', 'ops', 'crew'].includes(currentUser?.role) && (
+                  <AirportWxBadge icao={trip.info.from} compact />
+                )}
+              </div>
+              {fromFbo && (
+                <span className="text-[11px] text-slate-500 mt-0.5" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                  {fromFbo}
+                </span>
               )}
             </div>
-            <ArrowRight className="w-5 h-5 text-cyan-400" />
-            <div className="flex items-center gap-1.5">
-              <span>{trip.info.to}</span>
-              {trip.info.to && ['admin', 'ops', 'crew'].includes(currentUser?.role) && (
-                <AirportWxBadge icao={trip.info.to} compact />
+            <ArrowRight className="w-5 h-5 text-cyan-400 self-start mt-1.5" />
+            <div className="flex flex-col">
+              <div className="flex items-center gap-1.5">
+                <span>{trip.info.to}</span>
+                {trip.info.to && ['admin', 'ops', 'crew'].includes(currentUser?.role) && (
+                  <AirportWxBadge icao={trip.info.to} compact />
+                )}
+              </div>
+              {toFbo && (
+                <span className="text-[11px] text-slate-500 mt-0.5" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                  {toFbo}
+                </span>
               )}
             </div>
           </div>
@@ -6010,6 +6030,8 @@ function TripSheetPanel({
           uploadedBy: currentUserUid || currentUser.name,
           preloadedPax,
           tripSheetNotes: matchPreview.notes || null,
+          fromFbo: m.leg.fromFbo || null,
+          toFbo: m.leg.toFbo || null,
         });
       }
 

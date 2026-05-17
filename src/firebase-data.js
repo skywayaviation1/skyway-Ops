@@ -83,6 +83,9 @@ export function subscribeToTripState(tripId, onUpdate) {
           preloadedPax: Array.isArray(data.preloadedPax) ? data.preloadedPax : [],
           // Notes parsed from trip sheet (crew/pax/customer/specialItems)
           tripSheetNotes: data.tripSheetNotes || null,
+          // FBO names parsed from the trip sheet for THIS leg's two airports.
+          fromFbo: data.fromFbo || null,
+          toFbo: data.toFbo || null,
         });
       } else {
         // No state yet — emit empty defaults
@@ -94,6 +97,8 @@ export function subscribeToTripState(tripId, onUpdate) {
           tripSheetUploadedBy: null, tripSheetFilename: null,
           preloadedPax: [],
           tripSheetNotes: null,
+          fromFbo: null,
+          toFbo: null,
         });
       }
     },
@@ -146,6 +151,8 @@ export async function saveTripState(tripId, state) {
   if (has('tripSheetFilename'))    patch.tripSheetFilename = state.tripSheetFilename || null;
   if (has('preloadedPax'))         patch.preloadedPax = Array.isArray(state.preloadedPax) ? state.preloadedPax : [];
   if (has('tripSheetNotes'))       patch.tripSheetNotes = state.tripSheetNotes || null;
+  if (has('fromFbo'))              patch.fromFbo = state.fromFbo || null;
+  if (has('toFbo'))                patch.toFbo = state.toFbo || null;
   // tripMeta — route/tail/start info, used by the FlightAware webhook to match
   // incoming events to this trip. See PR 2c.
   if (has('tripMeta'))             patch.tripMeta = state.tripMeta || null;
@@ -189,6 +196,8 @@ export async function attachTripSheetToLeg(legUpdate) {
         tripSheetFilename: null,
         preloadedPax: [],
         tripSheetNotes: null,
+        fromFbo: null,
+        toFbo: null,
         updatedAt: Date.now(),
       },
       { merge: true }
@@ -205,6 +214,8 @@ export async function attachTripSheetToLeg(legUpdate) {
       tripSheetFilename: legUpdate.tripSheetFilename || null,
       preloadedPax: Array.isArray(legUpdate.preloadedPax) ? legUpdate.preloadedPax : [],
       tripSheetNotes: legUpdate.tripSheetNotes || null,
+      fromFbo: legUpdate.fromFbo || null,
+      toFbo: legUpdate.toFbo || null,
       updatedAt: Date.now(),
     },
     { merge: true }
