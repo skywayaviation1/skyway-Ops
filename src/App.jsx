@@ -6,8 +6,9 @@ import {
   Coffee, ArrowRight, Clock, Shield, X, ScanLine, ChevronLeft,
   Mail, Navigation, Loader2, Wifi, WifiOff, Settings as SettingsIcon,
   Download, Trash2, Plus, FileText, Zap, Radio, AlertCircle, Upload,
-  CheckCheck, UserCheck, Sparkles, Hash, Cloud
+  CheckCheck, UserCheck, Sparkles, Hash, Cloud, Wrench
 } from 'lucide-react';
+const ServiceRequestsTab = React.lazy(() => import('./ServiceRequests.jsx'));
 import { formatLocalTime, formatLocalDate } from './airports.js';
 import {
   logoUrl, fuelCardDomain, cachedAirlineDomain, cachedHotelDomain,
@@ -3929,18 +3930,29 @@ function AdminDutyDashboard({ currentUser, users, allTrips }) {
   function scheduledFlightMs(u, period) {
     if (!period?.dutyOnAt) return null;
     const winStart = period.dutyOnAt;
-    const winEnd = period.dutyOffAt || now;
+    // The duty DAY = the full 14 CFR 135.267 period: from duty-on to either
+    // the actual duty-off, or (while still on duty) the 14h limit. Using
+    // `now` here was the bug — it excluded trips later in the duty day that
+    // hadn't departed yet, so SCHED FLT under-counted (e.g. showed "1 leg"
+    // when the day had several).
+    const DUTY_DAY_MAX = 14 * 60 * 60 * 1000;
+    const winEnd = period.dutyOffAt || (period.dutyOnAt + DUTY_DAY_MAX);
     const trips = Array.isArray(allTrips) ? allTrips : [];
     const uname = u.jetinsightName || u.name || '';
+    // Symmetric match (nameMatchesPilot is asymmetric — same fix as the
+    // linking logic, so name-form differences don't drop trips).
+    const symM = (a, b) =>
+      nameMatchesPilot(a || '', b || '') || nameMatchesPilot(b || '', a || '');
     let total = 0;
     let counted = 0;
     for (const t of trips) {
       if (!t?.info || !t.start) continue;
-      if (!(nameMatchesPilot(t.info.pic || '', uname) || nameMatchesPilot(t.info.sic || '', uname))) continue;
+      if (!(symM(t.info.pic || '', uname) || symM(t.info.sic || '', uname))) continue;
       const s = new Date(t.start).getTime();
       const e = t.end ? new Date(t.end).getTime() : null;
       if (!Number.isFinite(s) || !Number.isFinite(e)) continue;
-      // Leg counts if its departure is within the duty window.
+      // Count every assigned leg whose departure falls within the duty day
+      // (small grace at both ends for clock skew).
       if (s >= winStart - 60 * 1000 && s <= winEnd + 60 * 1000) {
         const dur = e - s;
         if (dur > 0 && dur < 24 * 3600 * 1000) { total += dur; counted++; }
@@ -4150,7 +4162,7 @@ function AdminDutyDashboard({ currentUser, users, allTrips }) {
         </div>
         {sched && (
           <div className="text-[9px] text-slate-600 mt-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            SCHED FLT {fmtDur(sched.ms)} · {sched.legs} leg{sched.legs > 1 ? 's' : ''} · ACTUAL pending
+            SCHED BLOCK {fmtDur(sched.ms)} · {sched.legs} leg{sched.legs > 1 ? 's' : ''} · ACTUAL pending
           </div>
         )}
         {asg && (
@@ -4283,7 +4295,7 @@ function AdminDutyDashboard({ currentUser, users, allTrips }) {
                               </span>
                               {hp.dutyOffAt ? ` → ${fmtET(hp.dutyOffAt, { hour: 'numeric', minute: '2-digit' })}` : ' → (open)'}
                               {dur != null && <span className="text-slate-600"> · duty {fmtDur(dur)}</span>}
-                              {sched && <span className="text-slate-600"> · flt {fmtDur(sched.ms)}</span>}
+                              {sched && <span className="text-slate-600"> · sched blk {fmtDur(sched.ms)}</span>}
                               {hp.over14 && <span className="text-red-400"> · OVER14</span>}
                               {Array.isArray(hp.adminEdits) && hp.adminEdits.length > 0 && (
                                 <span className="text-amber-500/70"> · {hp.adminEdits.length} edit{hp.adminEdits.length > 1 ? 's' : ''}</span>
@@ -4305,10 +4317,14 @@ function AdminDutyDashboard({ currentUser, users, allTrips }) {
       </div>
 
       <div className="text-[10px] text-slate-700 leading-relaxed pt-2 border-t border-slate-800">
-        Crew shown paired when their duty periods are linked. SCHEDULED flight =
-        sum of scheduled leg durations (iCal) within the duty period. ACTUAL
-        FLOWN pending FlightAware actuals capture. All times Eastern. Planning
-        aid — not a 14 CFR 135.267 determination.
+        Crew shown paired when their duty periods are linked. SCHED BLOCK = sum
+        of scheduled gate-to-gate block times (iCal start→end) for every leg
+        assigned to that crew across the full 14-hour duty day. This is BLOCK
+        time, not flight time — the iCal feed does not carry separate
+        wheels-up/down figures. ACTUAL is pending: real wheels-up to
+        wheels-down totals require the FlightAware actuals-capture backend
+        (not yet built) and are NOT estimated from schedule. All times
+        Eastern. Planning aid — not a 14 CFR 135.267 determination.
       </div>
     </div>
   );
@@ -11784,6 +11800,17 @@ function MaintScreen({ currentUser, users, fleetTails }) {
             <AlertTriangle className="w-3 h-3 inline mr-1" /> AOG EVENTS
           </button>
           <button
+            onClick={() => setMainTab('service')}
+            className={`text-xs px-4 py-2 tracking-widest ${
+              mainTab === 'service'
+                ? 'text-cyan-300 border-b-2 border-cyan-500'
+                : 'text-slate-500 hover:text-slate-300 border-b-2 border-transparent'
+            }`}
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            <Wrench className="w-3 h-3 inline mr-1" /> REQUEST SERVICE
+          </button>
+          <button
             onClick={() => setMainTab('projects')}
             className={`text-xs px-4 py-2 tracking-widest ${
               mainTab === 'projects'
@@ -11797,6 +11824,11 @@ function MaintScreen({ currentUser, users, fleetTails }) {
         </div>
         {mainTab === 'aog' && (
           <AogEventsTab currentUser={currentUser} fleetTails={fleetTails} />
+        )}
+        {mainTab === 'service' && (
+          <React.Suspense fallback={<div className="p-12 text-center text-slate-500 text-sm">Loading service requests…</div>}>
+            <ServiceRequestsTab currentUser={currentUser} fleetTails={fleetTails} />
+          </React.Suspense>
         )}
         {mainTab === 'projects' && (
           <MxProjectsTab currentUser={currentUser} users={users} fleetTails={fleetTails} />
