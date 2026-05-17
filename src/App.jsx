@@ -3966,9 +3966,22 @@ function AdminDutyDashboard({ currentUser, users, allTrips }) {
     idle:   { text: 'text-slate-500', bar: 'bg-slate-700',  ring: 'border-slate-800' },
   };
 
-  // Pair crew via linkedPeriodId. Build groups: [{members:[u,...], lead}].
+  // Pair crew via linkedPeriodId — but ONLY when the link is MUTUAL between
+  // each crew's CURRENT (latest) period. A stale closed period can still
+  // carry an old linkedPeriodId pointing at a former partner; if we followed
+  // it one-directionally we'd mis-pair (e.g. Seth's old closed RHP→TPA period
+  // still points at Cole, while Seth's real active pairing is with David).
+  // Requiring both latest periods to reference each other discards stale
+  // half-links automatically.
   const crewByUid = {};
   for (const u of crew) crewByUid[u.uid || u.id] = u;
+  // Map a period id -> the pilotUid whose LATEST period has that id.
+  const latestIdToUid = {};
+  for (const u of crew) {
+    const uid = u.uid || u.id;
+    const lp = latestByUid[uid];
+    if (lp && lp.id) latestIdToUid[lp.id] = uid;
+  }
   const grouped = [];
   const seen = new Set();
   for (const u of crew) {
@@ -3977,9 +3990,16 @@ function AdminDutyDashboard({ currentUser, users, allTrips }) {
     const p = latestByUid[uid];
     let partnerUid = null;
     if (p && p.linkedPeriodId) {
-      // linkedPeriodId points at the partner's period doc; its pilotUid is them
-      const partnerPeriod = (periods || []).find(x => x.id === p.linkedPeriodId);
-      if (partnerPeriod && crewByUid[partnerPeriod.pilotUid]) partnerUid = partnerPeriod.pilotUid;
+      // The partner is whoever's LATEST period is the one we link to.
+      const candidateUid = latestIdToUid[p.linkedPeriodId];
+      if (candidateUid && candidateUid !== uid) {
+        const partnerLatest = latestByUid[candidateUid];
+        // Mutual check: partner's latest period must link back to OUR latest
+        // period. This rejects stale one-directional links.
+        if (partnerLatest && partnerLatest.linkedPeriodId === p.id) {
+          partnerUid = candidateUid;
+        }
+      }
     }
     if (partnerUid && partnerUid !== uid && !seen.has(partnerUid)) {
       seen.add(uid); seen.add(partnerUid);
