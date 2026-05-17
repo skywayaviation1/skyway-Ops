@@ -10688,21 +10688,61 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
 
   async function runFboBackfill() {
     if (fboBusy) return;
-    if (!window.confirm('Re-parse all stored trip sheets to fill in FBO names? This reads each PDF again — it may take a minute.')) return;
+    if (!window.confirm('Re-parse trip sheets from today forward to fill in FBO names? Reads each PDF again — may take a moment.')) return;
     setFboBusy(true); setFboMsg(''); setFboProgress(null);
+    const errSamples = []; // collect distinct failure reasons to show the user
     try {
       const { getTripSheetsForBackfill, setTripFboById } = await import('./firebase-data.js');
-      const list = await getTripSheetsForBackfill();
+      const all = await getTripSheetsForBackfill();
+
+      // Today-forward only: keep trips whose start date is today (local) or
+      // later. Trips with no usable start date are EXCLUDED (can't tell if
+      // they're in range — avoids touching old sheets).
+      const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0);
+      const list = all.filter(it => {
+        if (!it.start) return false;
+        const t = new Date(it.start).getTime();
+        return Number.isFinite(t) && t >= startOfToday.getTime();
+      });
+
       const total = list.length;
       let done = 0, ok = 0, skip = 0, fail = 0;
       setFboProgress({ done, total, ok, skip, fail });
+
+      if (total === 0) {
+        setFboMsg(`No trip sheets dated today or later (${all.length} total sheet(s) on file, all earlier).`);
+        setFboBusy(false);
+        return;
+      }
+
       for (const item of list) {
         try {
-          // Skip ones that already have FBO (idempotent — safe to re-run).
           if (item.hasFbo) { skip++; done++; setFboProgress({ done, total, ok, skip, fail }); continue; }
-          const resp = await fetch(item.tripSheetUrl);
-          if (!resp.ok) throw new Error(`fetch ${resp.status}`);
-          const buf = await resp.arrayBuffer();
+
+          // Fetch the PDF. If the stored URL fails (stale Storage token /
+          // CORS), try minting a fresh download URL from the storage path.
+          let buf = null;
+          let fetchErr = null;
+          try {
+            const r = await fetch(item.tripSheetUrl);
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            buf = await r.arrayBuffer();
+          } catch (e1) {
+            fetchErr = e1;
+          }
+          if (!buf && item.tripSheetPath) {
+            try {
+              const { getStorage, ref, getDownloadURL } = await import('firebase/storage');
+              const fresh = await getDownloadURL(ref(getStorage(), item.tripSheetPath));
+              const r2 = await fetch(fresh);
+              if (!r2.ok) throw new Error(`HTTP ${r2.status} (refreshed)`);
+              buf = await r2.arrayBuffer();
+            } catch (e2) {
+              throw new Error(`fetch failed: ${(fetchErr && fetchErr.message) || ''} | refresh: ${e2.message}`);
+            }
+          }
+          if (!buf) throw new Error(`fetch failed: ${(fetchErr && fetchErr.message) || 'unknown'}`);
+
           const text = await extractPdfText(buf);
           const fbos = extractFbosFromText(text);
           const fromFbo = item.from ? (fbos[String(item.from).toUpperCase()] || null) : null;
@@ -10711,16 +10751,23 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
             await setTripFboById(item.tripId, fromFbo, toFbo);
             ok++;
           } else {
-            skip++; // PDF parsed but no FBO for this leg's airports
+            skip++;
           }
         } catch (e) {
-          console.warn('[fbo-backfill] failed for', item.tripId, e);
           fail++;
+          const msg = (e && e.message) || String(e);
+          if (errSamples.length < 3 && !errSamples.includes(msg)) errSamples.push(msg);
+          console.warn('[fbo-backfill] failed for', item.tripId, e);
         }
         done++;
         setFboProgress({ done, total, ok, skip, fail });
       }
-      setFboMsg(`Done. ${ok} updated, ${skip} skipped (already set or no match), ${fail} failed of ${total} sheet(s).`);
+
+      let summary = `Done. ${ok} updated, ${skip} skipped, ${fail} failed of ${total} sheet(s) dated today or later.`;
+      if (fail > 0 && errSamples.length) {
+        summary += ` First error(s): ${errSamples.join(' • ')}`;
+      }
+      setFboMsg(summary);
     } catch (e) {
       setFboMsg('Backfill failed: ' + (e.message || 'error'));
     } finally {
@@ -10790,9 +10837,9 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
                 TRIP SHEET FBO BACKFILL (ADMIN)
               </h3>
               <p className="text-[11px] text-slate-500 mb-3 leading-relaxed">
-                Re-parses every stored trip sheet to fill in FBO names for
-                trips uploaded before this feature existed. Safe to run
-                repeatedly — trips that already have an FBO are skipped.
+                Re-parses trip sheets dated <strong>today or later</strong> to
+                fill in FBO names. Safe to run repeatedly — trips that already
+                have an FBO are skipped. Older sheets are left untouched.
               </p>
               <button
                 onClick={runFboBackfill}
@@ -10800,7 +10847,7 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
                 className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 text-xs tracking-widest font-medium"
                 style={{ fontFamily: 'JetBrains Mono, monospace' }}
               >
-                {fboBusy ? 'RUNNING…' : 'RE-PARSE ALL TRIP SHEETS'}
+                {fboBusy ? 'RUNNING…' : 'RE-PARSE TODAY-FORWARD SHEETS'}
               </button>
               {fboProgress && (
                 <div className="mt-2 text-[11px] text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>

@@ -237,10 +237,12 @@ export async function getTripSheetsForBackfill() {
     out.push({
       tripId: d.id,
       tripSheetUrl: data.tripSheetUrl,
+      tripSheetPath: data.tripSheetPath || null,
       tripSheetFilename: data.tripSheetFilename || '(unnamed)',
       hasFbo: !!(data.fromFbo || data.toFbo),
       from: (data.tripMeta && data.tripMeta.from) || null,
       to: (data.tripMeta && data.tripMeta.to) || null,
+      start: (data.tripMeta && data.tripMeta.start) || null,
     });
   });
   return out;
