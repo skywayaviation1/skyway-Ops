@@ -8,7 +8,6 @@ import {
   Download, Trash2, Plus, FileText, Zap, Radio, AlertCircle, Upload,
   CheckCheck, UserCheck, Sparkles, Hash, Cloud, Wrench
 } from 'lucide-react';
-const ServiceRequestsTab = React.lazy(() => import('./ServiceRequests.jsx'));
 import { formatLocalTime, formatLocalDate } from './airports.js';
 import {
   logoUrl, fuelCardDomain, cachedAirlineDomain, cachedHotelDomain,
@@ -11826,9 +11825,7 @@ function MaintScreen({ currentUser, users, fleetTails }) {
           <AogEventsTab currentUser={currentUser} fleetTails={fleetTails} />
         )}
         {mainTab === 'service' && (
-          <React.Suspense fallback={<div className="p-12 text-center text-slate-500 text-sm">Loading service requests…</div>}>
-            <ServiceRequestsTab currentUser={currentUser} fleetTails={fleetTails} />
-          </React.Suspense>
+          <AogEventsTab currentUser={currentUser} fleetTails={fleetTails} mode="service" />
         )}
         {mainTab === 'projects' && (
           <MxProjectsTab currentUser={currentUser} users={users} fleetTails={fleetTails} />
@@ -11838,29 +11835,94 @@ function MaintScreen({ currentUser, users, fleetTails }) {
   );
 }
 
-function AogEventsTab({ currentUser, fleetTails }) {
+// ===========================================================================
+// MAINT-EVENT MODE CONFIG
+// The SAME AOG components render both AOG events and Service Requests. The
+// only differences (data module, API endpoints, storage paths, field labels,
+// status vocabulary) live HERE. Default is 'aog' so every existing AOG call
+// site is byte-for-byte unchanged; the service tab passes mode="service".
+// ===========================================================================
+const MAINT_MODES = {
+  aog: {
+    mode: 'aog',
+    dataModule: './firebase-aog.js',
+    linkApi: '/api/aog-link',
+    emailApi: '/api/send-aog-email',
+    refsApi: '/api/send-aog-references',
+    logbookEmailApi: '/api/send-aog-logbook-email',
+    uploadRefFn: 'uploadAogReference',
+    techPath: '/aog-tech',
+    idField: 'aogId',                 // body key for link API
+    openStatus: 'active',
+    closedStatus: 'resolved',
+    createFn: 'declareAog',
+    closeFn: 'resolveAog',
+    appendLogFn: 'appendAogLogEntry',
+    descField: 'issueDescription',
+    titleNoun: 'AOG',
+    closeVerb: 'RETURN TO SERVICE',
+    closedLabel: 'RESOLVED',
+    createVerb: 'DECLARE AOG',
+    createTitle: 'DECLARE AOG EVENT',
+    editTitle: 'EDIT AOG',
+    descLabel: 'ISSUE DESCRIPTION',
+    closedEmailEvent: 'resolved',
+    refsPayloadKey: 'aog',
+  },
+  service: {
+    mode: 'service',
+    dataModule: './firebase-service.js',
+    linkApi: '/api/service-link',
+    emailApi: '/api/send-service-references', // service has no separate email endpoint; references endpoint covers notify
+    refsApi: '/api/send-service-references',
+    logbookEmailApi: '/api/send-service-references',
+    uploadRefFn: 'uploadServiceReference',
+    techPath: '/service-tech',
+    idField: 'srId',
+    openStatus: 'open',
+    closedStatus: 'completed',
+    createFn: 'createServiceRequest',
+    closeFn: 'completeServiceRequest',
+    appendLogFn: 'appendServiceLogEntry',
+    descField: 'serviceDescription',
+    titleNoun: 'SERVICE REQUEST',
+    closeVerb: 'MARK COMPLETE',
+    closedLabel: 'COMPLETED',
+    createVerb: 'REQUEST SERVICE',
+    createTitle: 'NEW SERVICE REQUEST',
+    editTitle: 'EDIT SERVICE REQUEST',
+    descLabel: 'SERVICE REQUESTED / SQUAWKS',
+    closedEmailEvent: 'completed',
+    refsPayloadKey: 'sr',
+  },
+};
+function maintCfg(mode) { return MAINT_MODES[mode] || MAINT_MODES.aog; }
+
+function AogEventsTab({ currentUser, fleetTails, mode = 'aog' }) {
+  const M = maintCfg(mode);
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showNew, setShowNew] = useState(false);
   const [selectedId, setSelectedId] = useState(null);
-  const [tab, setTab] = useState('active'); // active | resolved
+  const [tab, setTab] = useState(M.openStatus); // open/active | closed/resolved
 
   useEffect(() => {
     let unsub = null;
     let cancelled = false;
     (async () => {
-      const m = await import('./firebase-aog.js');
+      const m = await import(/* @vite-ignore */ M.dataModule);
       if (cancelled) return;
-      unsub = m.subscribeToAogEvents((list) => {
+      const subscribe = M.mode === 'aog' ? m.subscribeToAogEvents : m.subscribeToServiceRequests;
+      unsub = subscribe((list) => {
         setEvents(list);
         setLoading(false);
       });
     })();
     return () => { cancelled = true; if (unsub) unsub(); };
-  }, []);
+  }, [M.dataModule, M.mode]);
 
-  const activeCount = events.filter(e => e.status === 'active').length;
-  const resolvedCount = events.filter(e => e.status === 'resolved').length;
+  const activeCount = events.filter(e => e.status === M.openStatus).length;
+  const resolvedCount = events.filter(e => e.status === M.closedStatus).length;
   const filtered = events.filter(e => e.status === tab);
   const selected = events.find(e => e.id === selectedId);
 
@@ -11870,49 +11932,52 @@ function AogEventsTab({ currentUser, fleetTails }) {
         aog={selected}
         currentUser={currentUser}
         onBack={() => setSelectedId(null)}
+        mode={mode}
       />
     );
   }
+
+  const accent = M.mode === 'aog' ? 'red' : 'cyan';
 
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
         <div>
           <p className="text-xs text-slate-500">
-            {activeCount} active · {resolvedCount} resolved
+            {activeCount} {M.openStatus} · {resolvedCount} {M.closedStatus}
           </p>
         </div>
         <button
           onClick={() => setShowNew(true)}
-          className="flex items-center gap-2 px-3 py-2 bg-red-500 hover:bg-red-400 text-white text-xs tracking-widest font-medium"
+          className={`flex items-center gap-2 px-3 py-2 ${M.mode === 'aog' ? 'bg-red-500 hover:bg-red-400 text-white' : 'bg-cyan-500 hover:bg-cyan-400 text-slate-950'} text-xs tracking-widest font-medium`}
           style={{ fontFamily: 'JetBrains Mono, monospace' }}
         >
-          <AlertTriangle className="w-4 h-4" /> DECLARE AOG
+          {M.mode === 'aog' ? <AlertTriangle className="w-4 h-4" /> : <Wrench className="w-4 h-4" />} {M.createVerb}
         </button>
       </div>
 
       <div className="flex gap-2 mb-4">
         <button
-          onClick={() => setTab('active')}
+          onClick={() => setTab(M.openStatus)}
           className={`text-xs px-3 py-1.5 tracking-widest ${
-            tab === 'active'
-              ? 'bg-red-500/20 text-red-300 border border-red-500/40'
+            tab === M.openStatus
+              ? (M.mode === 'aog' ? 'bg-red-500/20 text-red-300 border border-red-500/40' : 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40')
               : 'bg-slate-900 text-slate-500 border border-slate-800 hover:text-slate-300'
           }`}
           style={{ fontFamily: 'JetBrains Mono, monospace' }}
         >
-          ACTIVE ({activeCount})
+          {M.openStatus.toUpperCase()} ({activeCount})
         </button>
         <button
-          onClick={() => setTab('resolved')}
+          onClick={() => setTab(M.closedStatus)}
           className={`text-xs px-3 py-1.5 tracking-widest ${
-            tab === 'resolved'
+            tab === M.closedStatus
               ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
               : 'bg-slate-900 text-slate-500 border border-slate-800 hover:text-slate-300'
           }`}
           style={{ fontFamily: 'JetBrains Mono, monospace' }}
         >
-          RESOLVED ({resolvedCount})
+          {M.closedStatus.toUpperCase()} ({resolvedCount})
         </button>
       </div>
 
@@ -11922,11 +11987,11 @@ function AogEventsTab({ currentUser, fleetTails }) {
         </div>
       ) : filtered.length === 0 ? (
         <div className="p-12 text-center border border-slate-800 bg-slate-950">
-          <AlertTriangle className="w-8 h-8 text-slate-700 mx-auto mb-2" />
+          {M.mode === 'aog' ? <AlertTriangle className="w-8 h-8 text-slate-700 mx-auto mb-2" /> : <Wrench className="w-8 h-8 text-slate-700 mx-auto mb-2" />}
           <p className="text-sm text-slate-500">
-            {tab === 'active' ? 'No active AOG events' : 'No resolved events yet'}
+            {tab === M.openStatus ? `No ${M.openStatus} ${M.mode === 'aog' ? 'AOG events' : 'service requests'}` : `No ${M.closedStatus} ${M.mode === 'aog' ? 'events' : 'requests'} yet`}
           </p>
-          {tab === 'active' && (
+          {tab === M.openStatus && M.mode === 'aog' && (
             <p className="text-xs text-slate-600 mt-1">
               All fleet aircraft operational.
             </p>
@@ -11935,7 +12000,7 @@ function AogEventsTab({ currentUser, fleetTails }) {
       ) : (
         <div className="space-y-3">
           {filtered.map(ev => (
-            <AogCard key={ev.id} aog={ev} onClick={() => setSelectedId(ev.id)} />
+            <AogCard key={ev.id} aog={ev} onClick={() => setSelectedId(ev.id)} mode={mode} />
           ))}
         </div>
       )}
@@ -11946,15 +12011,17 @@ function AogEventsTab({ currentUser, fleetTails }) {
           fleetTails={fleetTails}
           onClose={() => setShowNew(false)}
           onCreated={(id) => { setShowNew(false); setSelectedId(id); }}
+          mode={mode}
         />
       )}
     </div>
   );
 }
 
-function AogCard({ aog, onClick }) {
+function AogCard({ aog, onClick, mode = 'aog' }) {
+  const M = maintCfg(mode);
   const ago = (() => {
-    const ms = Date.now() - (aog.reportedAt || Date.now());
+    const ms = Date.now() - (aog.reportedAt || aog.requestedAt || Date.now());
     const hrs = Math.floor(ms / 3600000);
     const mins = Math.floor((ms % 3600000) / 60000);
     if (hrs > 24) return `${Math.floor(hrs/24)}d ${hrs%24}h ago`;
@@ -11962,11 +12029,13 @@ function AogCard({ aog, onClick }) {
     return `${mins}m ago`;
   })();
 
-  const isResolved = aog.status === 'resolved';
-  const borderColor = isResolved ? 'border-l-cyan-500' : 'border-l-red-500';
-  const headerBg = isResolved ? 'bg-cyan-500/10' : 'bg-red-500/10';
-  const headerText = isResolved ? 'text-cyan-300' : 'text-red-300';
-  const badgeBg = isResolved ? 'bg-cyan-500' : 'bg-red-500';
+  const isResolved = aog.status === M.closedStatus;
+  const borderColor = isResolved ? 'border-l-cyan-500' : (M.mode === 'aog' ? 'border-l-red-500' : 'border-l-cyan-500');
+  const headerBg = isResolved ? 'bg-cyan-500/10' : (M.mode === 'aog' ? 'bg-red-500/10' : 'bg-cyan-500/10');
+  const headerText = isResolved ? 'text-cyan-300' : (M.mode === 'aog' ? 'text-red-300' : 'text-cyan-300');
+  const badgeBg = isResolved ? 'bg-cyan-500' : (M.mode === 'aog' ? 'bg-red-500' : 'bg-cyan-500');
+  const openBadge = M.mode === 'aog' ? 'AOG' : 'SVC';
+  const closedBadge = M.mode === 'aog' ? 'RTS' : 'DONE';
 
   return (
     <button
@@ -11976,7 +12045,7 @@ function AogCard({ aog, onClick }) {
       <div className={`${headerBg} px-4 py-2 flex items-center justify-between`}>
         <div className="flex items-center gap-3">
           <span className={`${badgeBg} text-white text-[10px] px-2 py-0.5 tracking-widest font-medium`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            {isResolved ? 'RTS' : 'AOG'}
+            {isResolved ? closedBadge : openBadge}
           </span>
           <span className={`text-base font-medium ${headerText}`}>{aog.tail}</span>
           <span className={`text-xs ${headerText} opacity-75`}>
@@ -11988,7 +12057,7 @@ function AogCard({ aog, onClick }) {
         </span>
       </div>
       <div className="p-4">
-        <p className="text-sm text-slate-300 line-clamp-2 mb-2">{aog.issueDescription || '(no description)'}</p>
+        <p className="text-sm text-slate-300 line-clamp-2 mb-2">{aog[M.descField] || '(no description)'}</p>
         <div className="flex items-center gap-4 text-xs text-slate-500">
           {aog.rtsEstimate && (
             <span>RTS: <span className="text-amber-400">{aog.rtsEstimate}</span></span>
@@ -12005,7 +12074,8 @@ function AogCard({ aog, onClick }) {
   );
 }
 
-function AogDetail({ aog, currentUser, onBack }) {
+function AogDetail({ aog, currentUser, onBack, mode = 'aog' }) {
+  const M = maintCfg(mode);
   const [editing, setEditing] = useState(false);
   const [sending, setSending] = useState(false);
   const [sendStatus, setSendStatus] = useState('');
@@ -12020,7 +12090,7 @@ function AogDetail({ aog, currentUser, onBack }) {
   const [linkMsg, setLinkMsg] = useState('');
 
   const canEdit = ['admin', 'ops', 'maint'].includes(currentUser?.role);
-  const isResolved = aog.status === 'resolved';
+  const isResolved = aog.status === M.closedStatus;
 
   const reporter = {
     uid: currentUser?.uid || currentUser?.id,
@@ -12038,23 +12108,25 @@ function AogDetail({ aog, currentUser, onBack }) {
       const { auth } = await import('./firebase.js');
       let idToken = null;
       if (auth.currentUser) idToken = await auth.currentUser.getIdToken();
-      const r = await fetch('/api/send-aog-email', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ aog, eventType: 'manual_update', idToken }),
-      });
-      if (!r.ok) {
-        const txt = await r.text().catch(() => '');
-        throw new Error(`HTTP ${r.status}: ${txt}`);
+      const mod = await import(/* @vite-ignore */ M.dataModule);
+      if (M.mode === 'aog') {
+        const r = await fetch(M.emailApi, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ aog, eventType: 'manual_update', idToken }),
+        });
+        if (!r.ok) {
+          const txt = await r.text().catch(() => '');
+          throw new Error(`HTTP ${r.status}: ${txt}`);
+        }
+        await r.json();
       }
-      const data = await r.json();
+      await mod[M.appendLogFn](aog.id, reporter.displayName,
+        M.mode === 'aog' ? 'Update email sent to team' : `Details shared with: ${aog.recipients.join(', ')}`);
       setSendStatus(`Sent to ${aog.recipients.length} recipient${aog.recipients.length === 1 ? '' : 's'}`);
-      // Append log entry
-      const aogMod = await import('./firebase-aog.js');
-      await aogMod.appendAogLogEntry(aog.id, reporter.displayName, 'Update email sent to team');
       setTimeout(() => setSendStatus(''), 8000);
     } catch (err) {
-      console.error('[aog] send email failed:', err);
+      console.error('[maint] send update failed:', err);
       setSendStatus('Send failed: ' + err.message);
     } finally {
       setSending(false);
@@ -12062,22 +12134,24 @@ function AogDetail({ aog, currentUser, onBack }) {
   }
 
   async function handleResolve() {
-    if (!window.confirm(`Mark ${aog.tail} as Returned to Service?`)) return;
+    const verb = M.mode === 'aog' ? 'Returned to Service' : 'completed';
+    if (!window.confirm(`Mark ${aog.tail} as ${verb}?`)) return;
     try {
-      const aogMod = await import('./firebase-aog.js');
-      await aogMod.resolveAog(aog.id, reporter);
-      // Send resolved email (best effort)
-      const updatedAog = { ...aog, status: 'resolved', resolvedAt: Date.now(), resolvedBy: reporter };
-      const { auth } = await import('./firebase.js');
-      let idToken = null;
-      if (auth.currentUser) idToken = await auth.currentUser.getIdToken();
-      await fetch('/api/send-aog-email', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ aog: updatedAog, eventType: 'resolved', idToken }),
-      }).catch(e => console.warn('resolved email failed:', e));
+      const mod = await import(/* @vite-ignore */ M.dataModule);
+      await mod[M.closeFn](aog.id, reporter);
+      if (M.mode === 'aog') {
+        const updatedAog = { ...aog, status: M.closedStatus, resolvedAt: Date.now(), resolvedBy: reporter };
+        const { auth } = await import('./firebase.js');
+        let idToken = null;
+        if (auth.currentUser) idToken = await auth.currentUser.getIdToken();
+        await fetch(M.emailApi, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ aog: updatedAog, eventType: M.closedEmailEvent, idToken }),
+        }).catch(e => console.warn('close email failed:', e));
+      }
     } catch (err) {
-      alert('Failed to resolve: ' + err.message);
+      alert('Failed: ' + err.message);
     }
   }
 
@@ -12089,12 +12163,12 @@ function AogDetail({ aog, currentUser, onBack }) {
     setUploadingRef(true);
     try {
       const storageMod = await import('./firebase-storage.js');
-      const meta = await storageMod.uploadAogReference(file, aog.id);
-      const aogMod = await import('./firebase-aog.js');
-      await aogMod.addReferenceDoc(aog.id, meta, reporter);
-      // Realtime subscription on the AOG list will refresh the doc.
+      const meta = await storageMod[M.uploadRefFn](file, aog.id);
+      const mod = await import(/* @vite-ignore */ M.dataModule);
+      await mod.addReferenceDoc(aog.id, meta, reporter);
+      // Realtime subscription refreshes the doc.
     } catch (err) {
-      console.error('[aog-ref] upload failed:', err);
+      console.error('[maint-ref] upload failed:', err);
       setRefError(err.message || 'Upload failed');
     } finally {
       setUploadingRef(false);
@@ -12104,8 +12178,8 @@ function AogDetail({ aog, currentUser, onBack }) {
   async function handleRemoveRef(refDoc) {
     if (!window.confirm(`Remove "${refDoc.filename}"? This deletes the file.`)) return;
     try {
-      const aogMod = await import('./firebase-aog.js');
-      await aogMod.removeReferenceDoc(aog.id, refDoc.id, reporter);
+      const mod = await import(/* @vite-ignore */ M.dataModule);
+      await mod.removeReferenceDoc(aog.id, refDoc.id, reporter);
     } catch (err) {
       alert('Failed to remove: ' + err.message);
     }
@@ -12117,10 +12191,10 @@ function AogDetail({ aog, currentUser, onBack }) {
       const { auth } = await import('./firebase.js');
       let idToken = null;
       if (auth.currentUser) idToken = await auth.currentUser.getIdToken();
-      const r = await fetch('/api/aog-link', {
+      const r = await fetch(M.linkApi, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'mint', aogId: aog.id, idToken }),
+        body: JSON.stringify({ action: 'mint', [M.idField]: aog.id, idToken }),
       });
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(data.detail || data.error || `HTTP ${r.status}`);
@@ -12140,10 +12214,10 @@ function AogDetail({ aog, currentUser, onBack }) {
       const { auth } = await import('./firebase.js');
       let idToken = null;
       if (auth.currentUser) idToken = await auth.currentUser.getIdToken();
-      const r = await fetch('/api/aog-link', {
+      const r = await fetch(M.linkApi, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'revoke', aogId: aog.id, idToken }),
+        body: JSON.stringify({ action: 'revoke', [M.idField]: aog.id, idToken }),
       });
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(data.detail || data.error || `HTTP ${r.status}`);
@@ -12163,10 +12237,10 @@ function AogDetail({ aog, currentUser, onBack }) {
       const { auth } = await import('./firebase.js');
       let idToken = null;
       if (auth.currentUser) idToken = await auth.currentUser.getIdToken();
-      const r = await fetch('/api/aog-link', {
+      const r = await fetch(M.linkApi, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'set-logbook', aogId: aog.id, enabled: next, idToken }),
+        body: JSON.stringify({ action: 'set-logbook', [M.idField]: aog.id, enabled: next, idToken }),
       });
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(data.detail || data.error || `HTTP ${r.status}`);
@@ -12191,6 +12265,7 @@ function AogDetail({ aog, currentUser, onBack }) {
   if (editing) {
     return (
       <AogEditModal
+          mode={mode}
         aog={aog}
         currentUser={currentUser}
         onClose={() => setEditing(false)}
@@ -12227,7 +12302,7 @@ function AogDetail({ aog, currentUser, onBack }) {
           <div className="p-5 space-y-5">
             {/* Issue */}
             <Section label="Issue Reported">
-              <p className="text-sm text-slate-300">{aog.issueDescription || '(none)'}</p>
+              <p className="text-sm text-slate-300">{aog[M.descField] || '(none)'}</p>
             </Section>
 
             {/* Coordination team */}
@@ -12631,7 +12706,7 @@ function AogDetail({ aog, currentUser, onBack }) {
 
             {/* Tech Chat — Skyway side of the live chat with external tech */}
             <Section label={`Tech Chat${Array.isArray(aog.techChat) && aog.techChat.length ? ` (${aog.techChat.length})` : ''}`}>
-              <AogTechChatPanel aog={aog} currentUser={currentUser} reporter={reporter} canEdit={canEdit} />
+              <AogTechChatPanel aog={aog} currentUser={currentUser} reporter={reporter} canEdit={canEdit} mode={mode} />
             </Section>
 
             {/* Log */}
@@ -12692,6 +12767,7 @@ function AogDetail({ aog, currentUser, onBack }) {
 
       {addingLogbook && (
         <AddLogbookEntryModal
+            mode={mode}
           aog={aog}
           currentUser={currentUser}
           onClose={() => setAddingLogbook(false)}
@@ -12711,6 +12787,7 @@ function AogDetail({ aog, currentUser, onBack }) {
       })()}
       {sendRefPicker && (
         <SendReferencePickerModal
+            mode={mode}
           aog={aog}
           docIds={sendRefPicker.docIds}
           currentUser={currentUser}
@@ -12784,7 +12861,8 @@ function fmtRelativeTime(ts) {
    replies through postSkywayChatReply. The external tech polls
    /api/aog-public every 10s and sees these replies.
    ============================================================ */
-function AogTechChatPanel({ aog, currentUser, reporter, canEdit }) {
+function AogTechChatPanel({ aog, currentUser, reporter, canEdit, mode = 'aog' }) {
+  const M = maintCfg(mode);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -12800,7 +12878,7 @@ function AogTechChatPanel({ aog, currentUser, reporter, canEdit }) {
     if (!text.trim()) return;
     setBusy(true); setErr('');
     try {
-      const aogMod = await import('./firebase-aog.js');
+      const aogMod = await import(/* @vite-ignore */ M.dataModule);
       await aogMod.postSkywayChatReply(aog.id, text, reporter);
       setText('');
       // The AOG subscription will refresh techChat live.
@@ -12844,7 +12922,7 @@ function AogTechChatPanel({ aog, currentUser, reporter, canEdit }) {
         </div>
       )}
 
-      {canEdit && !aog.linkRevoked && aog.status !== 'resolved' && (
+      {canEdit && !aog.linkRevoked && aog.status !== M.closedStatus && (
         <div className="flex gap-2">
           <textarea
             value={text}
@@ -12875,7 +12953,8 @@ function AogTechChatPanel({ aog, currentUser, reporter, canEdit }) {
    Pick recipients (from the AOG list + ad-hoc additions) and
    email the selected reference PDF(s) as attachments.
    ============================================================ */
-function SendReferencePickerModal({ aog, docIds, currentUser, reporter, onClose }) {
+function SendReferencePickerModal({ aog, docIds, currentUser, reporter, onClose, mode = 'aog' }) {
+  const M = maintCfg(mode);
   const aogRecipients = Array.isArray(aog.recipients) ? aog.recipients.filter(Boolean) : [];
   const techEmail = (aog.coordination?.technician || '').match(/[^\s@]+@[^\s@]+\.[^\s@]+/);
   const suggested = Array.from(new Set([
@@ -12929,13 +13008,13 @@ function SendReferencePickerModal({ aog, docIds, currentUser, reporter, onClose 
       const { auth } = await import('./firebase.js');
       let idToken = null;
       if (auth.currentUser) idToken = await auth.currentUser.getIdToken();
-      const r = await fetch('/api/send-aog-references', {
+      const r = await fetch(M.refsApi, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          aog: {
+          [M.refsPayloadKey]: {
             id: aog.id, tail: aog.tail, location: aog.location,
-            fboName: aog.fboName, issueDescription: aog.issueDescription,
+            fboName: aog.fboName, [M.descField]: aog[M.descField],
           },
           docs: docs.map(d => ({ id: d.id, filename: d.filename, url: d.url })),
           recipients,
@@ -12946,7 +13025,7 @@ function SendReferencePickerModal({ aog, docIds, currentUser, reporter, onClose 
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
 
-      const aogMod = await import('./firebase-aog.js');
+      const aogMod = await import(/* @vite-ignore */ M.dataModule);
       await aogMod.markReferenceEmailed(aog.id, docIds, recipients, reporter);
 
       setStatus(`Sent ${docs.length} document${docs.length === 1 ? '' : 's'} to ${recipients.length} recipient${recipients.length === 1 ? '' : 's'}.`);
@@ -13064,7 +13143,8 @@ function SendReferencePickerModal({ aog, docIds, currentUser, reporter, onClose 
   ), document.body);
 }
 
-function NewAogModal({ currentUser, fleetTails, onClose, onCreated }) {
+function NewAogModal({ currentUser, fleetTails, onClose, onCreated, mode = 'aog' }) {
+  const M = maintCfg(mode);
   const [tail, setTail] = useState('');
   const [location, setLocation] = useState('');
   const [fboName, setFboName] = useState('');
@@ -13082,18 +13162,30 @@ function NewAogModal({ currentUser, fleetTails, onClose, onCreated }) {
     setError('');
     if (!tail.trim()) { setError('Tail number is required'); return; }
     if (!location.trim()) { setError('Location is required'); return; }
-    if (!issueDescription.trim()) { setError('Issue description is required'); return; }
+    if (!issueDescription.trim()) { setError(M.mode === 'aog' ? 'Issue description is required' : 'Service description is required'); return; }
     const recipients = recipientsText.split(/[,;\s]+/).map(e => e.trim()).filter(e => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
 
     setSubmitting(true);
     try {
-      const aogMod = await import('./firebase-aog.js');
-      const id = await aogMod.declareAog({
-        tail, location, fboName, issueDescription, recipients, reporter,
-      });
+      const mod = await import(/* @vite-ignore */ M.dataModule);
+      let id;
+      if (M.mode === 'aog') {
+        id = await mod.declareAog({
+          tail, location, fboName, issueDescription, recipients, reporter,
+        });
+      } else {
+        id = await mod.createServiceRequest({
+          tail, location, fboName,
+          serviceDescription: issueDescription,
+          serviceType: 'Scheduled',
+          requestedDate: '',
+          recipients,
+          requester: reporter,
+        });
+      }
 
-      // Fire declared email (best effort)
-      if (recipients.length > 0) {
+      // Fire declared email (best effort) — AOG only
+      if (M.mode === 'aog' && recipients.length > 0) {
         try {
           const { auth } = await import('./firebase.js');
           let idToken = null;
@@ -13128,7 +13220,7 @@ function NewAogModal({ currentUser, fleetTails, onClose, onCreated }) {
       <div className="bg-slate-950 border border-red-500/40 max-w-2xl w-full flex flex-col max-h-full">
         <div className="bg-red-500/10 px-5 py-3 flex items-center justify-between border-b border-red-500/30 flex-shrink-0">
           <h3 className="text-sm tracking-widest text-red-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            <AlertTriangle className="w-4 h-4 inline mr-2" />DECLARE AOG EVENT
+            {M.mode === 'aog' ? <AlertTriangle className="w-4 h-4 inline mr-2" /> : <Wrench className="w-4 h-4 inline mr-2" />}{M.createTitle}
           </h3>
           <button onClick={onClose} className="text-red-300 hover:text-white">
             <X className="w-4 h-4" />
@@ -13229,7 +13321,7 @@ function NewAogModal({ currentUser, fleetTails, onClose, onCreated }) {
               className="flex-1 px-4 py-2 bg-red-500 hover:bg-red-400 disabled:opacity-50 text-white text-xs tracking-widest font-medium"
               style={{ fontFamily: 'JetBrains Mono, monospace' }}
             >
-              {submitting ? 'DECLARING...' : 'DECLARE AOG'}
+              {submitting ? 'SAVING...' : M.createVerb}
             </button>
             <button
               onClick={onClose}
@@ -13246,7 +13338,8 @@ function NewAogModal({ currentUser, fleetTails, onClose, onCreated }) {
   ), document.body);
 }
 
-function AogEditModal({ aog, currentUser, onClose }) {
+function AogEditModal({ aog, currentUser, onClose, mode = 'aog' }) {
+  const M = maintCfg(mode);
   const [draft, setDraft] = useState(() => JSON.parse(JSON.stringify(aog)));
   const [recipientsText, setRecipientsText] = useState(
     Array.isArray(aog.recipients) ? aog.recipients.join(', ') : ''
@@ -13322,7 +13415,7 @@ function AogEditModal({ aog, currentUser, onClose }) {
       const patch = {
         location: String(draft.location || '').toUpperCase().trim(),
         fboName: draft.fboName || '',
-        issueDescription: draft.issueDescription || '',
+        [M.descField]: draft[M.descField] || '',
         coordination: draft.coordination || {},
         diagnostics: draft.diagnostics || {},
         parts: (draft.parts || []).filter(p => p.partNumber || p.description),
@@ -13345,8 +13438,9 @@ function AogEditModal({ aog, currentUser, onClose }) {
         ? `RTS estimate updated: ${aog.rtsEstimate || 'TBD'} → ${draft.rtsEstimate}`
         : 'Details updated';
 
-      const aogMod = await import('./firebase-aog.js');
-      await aogMod.updateAog(aog.id, patch, { author: reporter.displayName, message: logMsg });
+      const mod = await import(/* @vite-ignore */ M.dataModule);
+      const updateFn = M.mode === 'aog' ? mod.updateAog : mod.updateServiceRequest;
+      await updateFn(aog.id, patch, { author: reporter.displayName, message: logMsg });
 
       // Fire status-change email if RTS changed
       if (rtsChanged && recipients.length > 0) {
@@ -13355,7 +13449,7 @@ function AogEditModal({ aog, currentUser, onClose }) {
           let idToken = null;
           if (auth.currentUser) idToken = await auth.currentUser.getIdToken();
           const updatedAog = { ...aog, ...patch };
-          await fetch('/api/send-aog-email', {
+          if (M.mode === 'aog') await fetch(M.emailApi, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ aog: updatedAog, eventType: 'rts_changed', idToken }),
@@ -13376,7 +13470,7 @@ function AogEditModal({ aog, currentUser, onClose }) {
       <div className="bg-slate-950 border border-slate-700 max-w-3xl w-full my-8">
         <div className="bg-slate-900 px-5 py-3 flex items-center justify-between border-b border-slate-700 sticky top-0 z-10">
           <h3 className="text-sm tracking-widest text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            EDIT AOG — {aog.tail}
+            {M.editTitle} — {aog.tail}
           </h3>
           <button onClick={onClose} className="text-slate-400 hover:text-white">
             <X className="w-4 h-4" />
@@ -13391,7 +13485,7 @@ function AogEditModal({ aog, currentUser, onClose }) {
           </div>
 
           {/* Issue */}
-          <EditTextarea label="ISSUE DESCRIPTION" value={draft.issueDescription} onChange={v => updateField('issueDescription', v)} rows={3} />
+          <EditTextarea label={M.descLabel} value={draft[M.descField]} onChange={v => updateField(M.descField, v)} rows={3} />
 
           {/* Coordination */}
           <div>
@@ -13574,7 +13668,8 @@ function AogEditModal({ aog, currentUser, onClose }) {
 /* ============================================================
    ADD LOGBOOK ENTRY MODAL — compliant maintenance record entry
    ============================================================ */
-function AddLogbookEntryModal({ aog, currentUser, onClose }) {
+function AddLogbookEntryModal({ aog, currentUser, onClose, mode = 'aog' }) {
+  const M = maintCfg(mode);
   const [workPerformed, setWorkPerformed] = useState('');
   const [inspectionPerformed, setInspectionPerformed] = useState('');
   const [aircraftTotalTime, setAircraftTotalTime] = useState('');
@@ -13671,13 +13766,16 @@ function AddLogbookEntryModal({ aog, currentUser, onClose }) {
         },
       };
 
-      const aogMod = await import('./firebase-aog.js');
+      const aogMod = await import(/* @vite-ignore */ M.dataModule);
       const entryId = await aogMod.addLogbookEntry(aog.id, entry);
       const fullEntry = { ...entry, id: entryId, timestamp: Date.now(), signedAt: Date.now() };
 
       setStatus('Generating PDF...');
       const pdfMod = await import('./aog-logbook-pdf.js');
-      const { blob, base64, filename } = await pdfMod.generateLogbookEntryPdf(aog, fullEntry);
+      const pdfRecord = M.mode === 'aog'
+        ? aog
+        : { ...aog, reportedAt: aog.requestedAt, issueDescription: aog.serviceDescription };
+      const { blob, base64, filename } = await pdfMod.generateLogbookEntryPdf(pdfRecord, fullEntry);
 
       setStatus('Storing record...');
       let pdfDownloadUrl = null;
@@ -13685,7 +13783,7 @@ function AddLogbookEntryModal({ aog, currentUser, onClose }) {
       try {
         const { getStorage, ref, uploadBytes, getDownloadURL } = await import('firebase/storage');
         const storage = getStorage();
-        pdfStoragePath = `aog-logbook/${aog.id}/${filename}`;
+        pdfStoragePath = `${M.mode === 'aog' ? 'aog-logbook' : 'service-logbook'}/${aog.id}/${filename}`;
         const fileRef = ref(storage, pdfStoragePath);
         await uploadBytes(fileRef, blob, { contentType: 'application/pdf' });
         pdfDownloadUrl = await getDownloadURL(fileRef);
@@ -13694,6 +13792,7 @@ function AddLogbookEntryModal({ aog, currentUser, onClose }) {
         console.warn('[aog-logbook] storage upload failed (non-fatal):', storageErr);
       }
 
+      if (M.mode === 'aog') {
       setStatus('Sending email...');
       try {
         const { auth } = await import('./firebase.js');
@@ -13720,6 +13819,7 @@ function AddLogbookEntryModal({ aog, currentUser, onClose }) {
         setError(`Entry saved but email failed: ${emailErr.message}`);
         setSaving(false);
         return;
+      }
       }
 
       setTimeout(() => onClose(), 1200);
@@ -13769,7 +13869,7 @@ function AddLogbookEntryModal({ aog, currentUser, onClose }) {
             <div className="grid grid-cols-2 gap-2">
               <div><span className="text-slate-500">Aircraft:</span> <span className="text-slate-200 font-medium">{aog.tail}</span></div>
               <div><span className="text-slate-500">Location:</span> <span className="text-slate-200">{aog.location}{aog.fboName ? ' / ' + aog.fboName : ''}</span></div>
-              <div className="col-span-2"><span className="text-slate-500">Discrepancy:</span> <span className="text-slate-300">{aog.issueDescription || '—'}</span></div>
+              <div className="col-span-2"><span className="text-slate-500">Discrepancy:</span> <span className="text-slate-300">{aog[M.descField] || '—'}</span></div>
             </div>
           </div>
 
