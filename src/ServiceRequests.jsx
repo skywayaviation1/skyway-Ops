@@ -871,70 +871,250 @@ function NewServiceModal({ currentUser, fleetTails, onClose, onCreated }) {
    EDIT MODAL
    ========================================================================= */
 function ServiceEditModal({ sr, currentUser, onClose }) {
-  const [maintLead, setMaintLead] = useState(sr.coordination?.maintLead || '');
-  const [technician, setTechnician] = useState(sr.coordination?.technician || '');
-  const [vendor, setVendor] = useState(sr.coordination?.vendor || '');
-  const [opsContact, setOpsContact] = useState(sr.coordination?.opsContact || '');
-  const [discrep, setDiscrep] = useState(sr.diagnostics?.pilotDiscrepancy || '');
-  const [trouble, setTrouble] = useState(sr.diagnostics?.troubleshooting || '');
-  const [oem, setOem] = useState(sr.diagnostics?.oemRecommendation || '');
-  const [desc, setDesc] = useState(sr.serviceDescription || '');
-  const [recipients, setRecipients] = useState(
+  const [draft, setDraft] = useState(() => JSON.parse(JSON.stringify(sr)));
+  const [recipientsText, setRecipientsText] = useState(
     Array.isArray(sr.recipients) ? sr.recipients.join(', ') : ''
   );
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
 
-  async function save() {
-    setBusy(true); setErr('');
+  const reporter = {
+    uid: currentUser?.uid || currentUser?.id,
+    displayName: currentUser?.displayName || currentUser?.name || currentUser?.email || 'Unknown',
+  };
+
+  function updateField(path, value) {
+    setDraft(d => {
+      const next = { ...d };
+      const keys = path.split('.');
+      let cur = next;
+      for (let i = 0; i < keys.length - 1; i++) {
+        cur[keys[i]] = { ...(cur[keys[i]] || {}) };
+        cur = cur[keys[i]];
+      }
+      cur[keys[keys.length - 1]] = value;
+      return next;
+    });
+  }
+  function updatePart(idx, field, value) {
+    setDraft(d => {
+      const parts = Array.isArray(d.parts) ? [...d.parts] : [];
+      parts[idx] = { ...parts[idx], [field]: value };
+      return { ...d, parts };
+    });
+  }
+  function addPart() {
+    setDraft(d => ({
+      ...d,
+      parts: [...(d.parts || []), { partNumber: '', description: '', status: 'Ordered', eta: '', shipMethod: '', trackingNumber: '' }],
+    }));
+  }
+  function removePart(idx) {
+    setDraft(d => ({ ...d, parts: (d.parts || []).filter((_, i) => i !== idx) }));
+  }
+  function updateOpenItem(idx, value) {
+    setDraft(d => {
+      const items = Array.isArray(d.openItems) ? [...d.openItems] : [];
+      items[idx] = value;
+      return { ...d, openItems: items };
+    });
+  }
+  function addOpenItem() {
+    setDraft(d => ({ ...d, openItems: [...(d.openItems || []), ''] }));
+  }
+  function removeOpenItem(idx) {
+    setDraft(d => ({ ...d, openItems: (d.openItems || []).filter((_, i) => i !== idx) }));
+  }
+
+  async function handleSave() {
+    setError(''); setSaving(true);
     try {
+      const recipients = recipientsText
+        .split(/[,;\s]+/).map(e => e.trim())
+        .filter(e => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
+
+      const patch = {
+        location: String(draft.location || '').toUpperCase().trim(),
+        fboName: draft.fboName || '',
+        serviceDescription: draft.serviceDescription || '',
+        serviceType: draft.serviceType || 'Scheduled',
+        requestedDate: draft.requestedDate || '',
+        coordination: draft.coordination || {},
+        diagnostics: draft.diagnostics || {},
+        parts: (draft.parts || []).filter(p => p.partNumber || p.description),
+        shipTo: draft.shipTo || {},
+        personnel: draft.personnel || {},
+        rtsEstimate: draft.rtsEstimate || '',
+        currentStatus: draft.currentStatus || '',
+        openItems: (draft.openItems || []).filter(i => i && i.trim()),
+        nextUpdateDue: draft.nextUpdateDue || '',
+        recipients,
+      };
+
+      const rtsChanged = (sr.rtsEstimate || '') !== (draft.rtsEstimate || '') && draft.rtsEstimate;
+      if (rtsChanged) patch.rtsEstimatePrevious = sr.rtsEstimate || '';
+      const logMsg = rtsChanged
+        ? `RTS estimate updated: ${sr.rtsEstimate || 'TBD'} → ${draft.rtsEstimate}`
+        : 'Service request details updated';
+
       const m = await import('./firebase-service.js');
-      await m.updateServiceRequest(sr.id, {
-        serviceDescription: desc.trim(),
-        coordination: { maintLead, technician, vendor, opsContact },
-        diagnostics: { pilotDiscrepancy: discrep, troubleshooting: trouble, oemRecommendation: oem },
-        recipients: recipients.split(',').map(s => s.trim()).filter(Boolean),
-      }, {
-        author: currentUser?.displayName || currentUser?.name || 'Unknown',
-        message: 'Service request details updated',
-      });
+      await m.updateServiceRequest(sr.id, patch, { author: reporter.displayName, message: logMsg });
       onClose();
-    } catch (e) {
-      setErr('Failed: ' + e.message);
-      setBusy(false);
+    } catch (err) {
+      setError(err.message);
+      setSaving(false);
     }
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/70 overflow-y-auto p-4">
-      <div className="bg-slate-900 border border-slate-700 w-full max-w-lg my-8">
-        <div className="flex items-center justify-between p-4 border-b border-slate-800">
-          <h3 className="text-sm tracking-widest text-cyan-300" style={MONO}>EDIT SERVICE REQUEST</h3>
-          <button onClick={onClose} className="text-slate-500 hover:text-slate-300"><X className="w-5 h-5" /></button>
+    <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur flex items-start justify-center overflow-y-auto px-4 pb-4 pt-4">
+      <div className="bg-slate-950 border border-slate-700 max-w-3xl w-full my-8">
+        <div className="bg-slate-900 px-5 py-3 flex items-center justify-between border-b border-slate-700 sticky top-0 z-10">
+          <h3 className="text-sm tracking-widest text-slate-200" style={MONO}>EDIT SERVICE REQUEST — {sr.tail}</h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-white"><X className="w-4 h-4" /></button>
         </div>
-        <div className="p-4 space-y-3">
-          <EditRow label="SERVICE REQUESTED / SQUAWKS" value={desc} set={setDesc} area />
+
+        <div className="p-5 space-y-5">
           <div className="grid grid-cols-2 gap-3">
-            <EditRow label="MAINT LEAD" value={maintLead} set={setMaintLead} />
-            <EditRow label="TECHNICIAN" value={technician} set={setTechnician} />
-            <EditRow label="VENDOR" value={vendor} set={setVendor} />
-            <EditRow label="OPS CONTACT" value={opsContact} set={setOpsContact} />
+            <EditRow label="LOCATION" value={draft.location || ''} set={v => updateField('location', v.toUpperCase())} />
+            <EditRow label="FBO / SHOP" value={draft.fboName || ''} set={v => updateField('fboName', v)} />
           </div>
-          <EditRow label="DISCREPANCY" value={discrep} set={setDiscrep} area />
-          <EditRow label="TROUBLESHOOTING" value={trouble} set={setTrouble} area />
-          <EditRow label="OEM RECOMMENDATION" value={oem} set={setOem} area />
-          <EditRow label="TEAM EMAILS (comma-separated)" value={recipients} set={setRecipients} />
-          {err && <div className="text-xs text-amber-400">{err}</div>}
-        </div>
-        <div className="flex gap-2 p-4 border-t border-slate-800">
-          <button onClick={save} disabled={busy}
-            className="flex-1 px-4 py-2 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 text-xs tracking-widest font-medium" style={MONO}>
-            {busy ? 'SAVING…' : 'SAVE'}
-          </button>
-          <button onClick={onClose} disabled={busy}
-            className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs tracking-widest font-medium" style={MONO}>
-            CANCEL
-          </button>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-[10px] text-slate-500 tracking-widest" style={MONO}>SERVICE TYPE</label>
+              <select value={draft.serviceType || 'Scheduled'} onChange={e => updateField('serviceType', e.target.value)}
+                className="w-full bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none mt-1" style={MONO}>
+                <option>Scheduled</option><option>Inspection</option><option>Discrepancy</option><option>AD / SB</option><option>Other</option>
+              </select>
+            </div>
+            <EditRow label="DESIRED DATE/WINDOW" value={draft.requestedDate || ''} set={v => updateField('requestedDate', v)} />
+          </div>
+
+          <EditRow label="SERVICE REQUESTED / SQUAWKS" value={draft.serviceDescription || ''} set={v => updateField('serviceDescription', v)} area />
+
+          <div>
+            <div className="text-[10px] text-slate-500 tracking-widest mb-2" style={MONO}>COORDINATION TEAM</div>
+            <div className="grid grid-cols-2 gap-3">
+              <EditRow label="Maintenance Lead" value={draft.coordination?.maintLead || ''} set={v => updateField('coordination.maintLead', v)} />
+              <EditRow label="Technician" value={draft.coordination?.technician || ''} set={v => updateField('coordination.technician', v)} />
+              <EditRow label="Vendor / OEM" value={draft.coordination?.vendor || ''} set={v => updateField('coordination.vendor', v)} />
+              <EditRow label="Ops Contact" value={draft.coordination?.opsContact || ''} set={v => updateField('coordination.opsContact', v)} />
+            </div>
+          </div>
+
+          <div>
+            <div className="text-[10px] text-slate-500 tracking-widest mb-2" style={MONO}>DIAGNOSTICS</div>
+            <div className="space-y-2">
+              <EditRow label="Discrepancy" value={draft.diagnostics?.pilotDiscrepancy || ''} set={v => updateField('diagnostics.pilotDiscrepancy', v)} area />
+              <EditRow label="Troubleshooting Completed" value={draft.diagnostics?.troubleshooting || ''} set={v => updateField('diagnostics.troubleshooting', v)} area />
+              <EditRow label="OEM Recommendation" value={draft.diagnostics?.oemRecommendation || ''} set={v => updateField('diagnostics.oemRecommendation', v)} area />
+            </div>
+          </div>
+
+          {/* Parts editor */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-[10px] text-slate-500 tracking-widest" style={MONO}>PARTS</div>
+              <button onClick={addPart} className="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1"><Plus className="w-3 h-3" /> Add part</button>
+            </div>
+            {(draft.parts || []).length === 0 ? (
+              <p className="text-xs text-slate-500">No parts yet. Click "Add part" to list one the vendor needs to order.</p>
+            ) : (
+              <div className="space-y-2">
+                {(draft.parts || []).map((p, idx) => (
+                  <div key={idx} className="bg-slate-900 border border-slate-800 p-2 space-y-2">
+                    <div className="grid grid-cols-12 gap-2 items-center">
+                      <input placeholder="Part #" value={p.partNumber || ''} onChange={e => updatePart(idx, 'partNumber', e.target.value)}
+                        className="col-span-2 bg-slate-950 border border-slate-700 px-2 py-1 text-xs text-slate-200 focus:border-cyan-400 outline-none" />
+                      <input placeholder="Description" value={p.description || ''} onChange={e => updatePart(idx, 'description', e.target.value)}
+                        className="col-span-3 bg-slate-950 border border-slate-700 px-2 py-1 text-xs text-slate-200 focus:border-cyan-400 outline-none" />
+                      <select value={p.status || 'Ordered'} onChange={e => updatePart(idx, 'status', e.target.value)}
+                        className="col-span-2 bg-slate-950 border border-slate-700 px-2 py-1 text-xs text-slate-200 focus:border-cyan-400 outline-none">
+                        <option>Ordered</option><option>In Transit</option><option>Delivered</option><option>Installed</option>
+                      </select>
+                      <input placeholder="ETA" value={p.eta || ''} onChange={e => updatePart(idx, 'eta', e.target.value)}
+                        className="col-span-2 bg-slate-950 border border-slate-700 px-2 py-1 text-xs text-slate-200 focus:border-cyan-400 outline-none" />
+                      <input placeholder="Ship" value={p.shipMethod || ''} onChange={e => updatePart(idx, 'shipMethod', e.target.value)}
+                        className="col-span-2 bg-slate-950 border border-slate-700 px-2 py-1 text-xs text-slate-200 focus:border-cyan-400 outline-none" />
+                      <button onClick={() => removePart(idx)} className="col-span-1 text-slate-500 hover:text-red-400 flex justify-center"><Trash2 className="w-3 h-3" /></button>
+                    </div>
+                    <input placeholder="Tracking # (FedEx or UPS)" value={p.trackingNumber || ''} onChange={e => updatePart(idx, 'trackingNumber', e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-700 px-2 py-1 text-xs text-slate-200 focus:border-cyan-400 outline-none" style={MONO} />
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Ship-to */}
+          <div>
+            <div className="text-[10px] text-slate-500 tracking-widest mb-2" style={MONO}>PARTS SHIPPING ADDRESS</div>
+            <div className="space-y-2">
+              <EditRow label="FBO/Recipient" value={draft.shipTo?.fboName || ''} set={v => updateField('shipTo.fboName', v)} />
+              <EditRow label="Street address" value={draft.shipTo?.address || ''} set={v => updateField('shipTo.address', v)} />
+              <EditRow label="ATTN / Hangar" value={draft.shipTo?.attn || ''} set={v => updateField('shipTo.attn', v)} />
+            </div>
+          </div>
+
+          {/* Personnel */}
+          <div>
+            <div className="text-[10px] text-slate-500 tracking-widest mb-2" style={MONO}>PERSONNEL LOGISTICS</div>
+            <div className="grid grid-cols-2 gap-3">
+              <EditRow label="Tech Departure Time" value={draft.personnel?.techDeparture || ''} set={v => updateField('personnel.techDeparture', v)} />
+              <EditRow label="Tech Arrival ETA" value={draft.personnel?.techArrivalEta || ''} set={v => updateField('personnel.techArrivalEta', v)} />
+            </div>
+            <div className="mt-2">
+              <EditRow label="Transportation Arranged" value={draft.personnel?.transport || ''} set={v => updateField('personnel.transport', v)} />
+            </div>
+          </div>
+
+          {/* RTS */}
+          <div className="bg-amber-500/5 border border-amber-500/30 p-3">
+            <EditRow label="ESTIMATED RETURN TO SERVICE (RTS)" value={draft.rtsEstimate || ''} set={v => updateField('rtsEstimate', v)} />
+          </div>
+
+          {/* Current status */}
+          <EditRow label="CURRENT STATUS UPDATE" value={draft.currentStatus || ''} set={v => updateField('currentStatus', v)} area />
+
+          {/* Open items */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-[10px] text-slate-500 tracking-widest" style={MONO}>OPEN ITEMS</div>
+              <button onClick={addOpenItem} className="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1"><Plus className="w-3 h-3" /> Add item</button>
+            </div>
+            {(draft.openItems || []).length === 0 ? (
+              <p className="text-xs text-slate-500">No open items.</p>
+            ) : (
+              <div className="space-y-1">
+                {(draft.openItems || []).map((item, idx) => (
+                  <div key={idx} className="flex gap-2 items-center">
+                    <input value={item} onChange={e => updateOpenItem(idx, e.target.value)} placeholder="Describe item..."
+                      className="flex-1 bg-slate-900 border border-slate-700 px-2 py-1 text-xs text-slate-200 focus:border-cyan-400 outline-none" />
+                    <button onClick={() => removeOpenItem(idx)} className="text-slate-500 hover:text-red-400"><Trash2 className="w-3 h-3" /></button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <EditRow label="NEXT UPDATE EXPECTED" value={draft.nextUpdateDue || ''} set={v => updateField('nextUpdateDue', v)} />
+
+          <div>
+            <label className="text-[10px] text-slate-500 tracking-widest" style={MONO}>TEAM EMAIL RECIPIENTS (comma-separated)</label>
+            <textarea value={recipientsText} onChange={e => setRecipientsText(e.target.value)} rows={2}
+              className="w-full mt-1 bg-slate-900 border border-slate-700 px-3 py-2 text-xs text-slate-200 focus:border-cyan-400 outline-none resize-none" />
+          </div>
+
+          {error && <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-xs p-2">{error}</div>}
+
+          <div className="flex gap-2 pt-3 border-t border-slate-800 sticky bottom-0 bg-slate-950 -mx-5 -mb-5 px-5 pb-5">
+            <button onClick={handleSave} disabled={saving}
+              className="flex-1 px-4 py-2 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 text-xs tracking-widest font-medium" style={MONO}>
+              {saving ? 'SAVING...' : 'SAVE CHANGES'}
+            </button>
+            <button onClick={onClose} disabled={saving}
+              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs tracking-widest font-medium" style={MONO}>CANCEL</button>
+          </div>
         </div>
       </div>
     </div>
