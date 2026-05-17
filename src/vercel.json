@@ -2,7 +2,25 @@
   "crons": [
     {
       "path": "/api/flightaware-cron-poll",
-      "schedule": "*/2 * * * *"
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/email-queue-drain",
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/aog-chat-nudge",
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/service-chat-nudge",
+      "schedule": "* * * * *"
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/((?!api/).*)",
+      "destination": "/index.html"
     }
   ]
 }

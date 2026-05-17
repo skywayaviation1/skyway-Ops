@@ -700,3 +700,269 @@ function Field({ label, value }) {
     </div>
   );
 }
+
+/* =========================================================================
+   PUBLIC VENDOR PORTAL  (/service-tech?token=...)
+   Mirror of ExternalTechPage — calls /api/service-public only. No Skyway
+   account, no Firebase, fully sandboxed to one service request via token.
+   ========================================================================= */
+export function ServiceTechPage({ token }) {
+  const [sr, setSr] = useState(null);
+  const [loadErr, setLoadErr] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState('status'); // status | parts | chat
+
+  const load = React.useCallback(async () => {
+    setLoading(true); setLoadErr('');
+    try {
+      const r = await fetch(`/api/service-public?action=get&token=${encodeURIComponent(token)}`);
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      setSr(data.sr);
+    } catch (e) {
+      setLoadErr(e.message || 'Could not load');
+    } finally {
+      setLoading(false);
+    }
+  }, [token]);
+
+  useEffect(() => { load(); }, [load]);
+  // Light polling so Skyway replies appear for the vendor.
+  useEffect(() => {
+    const iv = setInterval(load, 12000);
+    return () => clearInterval(iv);
+  }, [load]);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center text-slate-500">
+        <Loader2 className="w-6 h-6 animate-spin" />
+      </div>
+    );
+  }
+  if (loadErr || !sr) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6">
+        <div className="max-w-md text-center">
+          <AlertTriangle className="w-10 h-10 text-amber-400 mx-auto mb-4" />
+          <h1 className="text-lg text-slate-200 mb-2">Link unavailable</h1>
+          <p className="text-sm text-slate-400">{loadErr || 'This service link is not valid.'}</p>
+          <p className="text-xs text-slate-600 mt-4">Contact Skyway Operations if you believe this is an error.</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-200">
+      <div className="max-w-2xl mx-auto p-4 md:p-6">
+        <div className="mb-4 pb-4 border-b border-slate-800">
+          <div className="text-[10px] tracking-widest text-cyan-400" style={MONO}>SKYWAY AVIATION · SERVICE REQUEST</div>
+          <h1 className="text-2xl mt-1" style={SANS}>{sr.tail} — {sr.serviceType || 'Service'}</h1>
+          <div className="text-xs text-slate-500 mt-1" style={MONO}>
+            {sr.location || '—'}{sr.fboName ? ` · ${sr.fboName}` : ''}{sr.requestedDate ? ` · ${sr.requestedDate}` : ''}
+          </div>
+        </div>
+
+        <ServiceSection label="SERVICE REQUESTED">
+          <p className="text-sm text-slate-300 whitespace-pre-wrap">{sr.serviceDescription || '—'}</p>
+        </ServiceSection>
+        {(sr.diagnostics?.pilotDiscrepancy || sr.diagnostics?.troubleshooting || sr.diagnostics?.oemRecommendation) && (
+          <ServiceSection label="NOTES">
+            {sr.diagnostics.pilotDiscrepancy && <p className="text-xs text-slate-400 mb-1">Discrepancy: {sr.diagnostics.pilotDiscrepancy}</p>}
+            {sr.diagnostics.troubleshooting && <p className="text-xs text-slate-400 mb-1">Troubleshooting: {sr.diagnostics.troubleshooting}</p>}
+            {sr.diagnostics.oemRecommendation && <p className="text-xs text-slate-400">OEM: {sr.diagnostics.oemRecommendation}</p>}
+          </ServiceSection>
+        )}
+
+        <div className="flex gap-2 my-4">
+          {['status', 'parts', 'chat'].map(t => (
+            <button key={t} onClick={() => setTab(t)}
+              className={`text-xs px-3 py-1.5 tracking-widest ${tab === t
+                ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
+                : 'bg-slate-900 text-slate-500 border border-slate-800'}`} style={MONO}>
+              {t.toUpperCase()}
+            </button>
+          ))}
+        </div>
+
+        {tab === 'status' && <VendorStatusTab sr={sr} token={token} onPosted={load} />}
+        {tab === 'parts' && <VendorPartsTab sr={sr} token={token} onPosted={load} />}
+        {tab === 'chat' && <VendorChatTab sr={sr} token={token} onPosted={load} />}
+
+        <p className="text-[10px] text-slate-700 mt-6 leading-relaxed">
+          Submissions here are coordination records, not official 14 CFR Part
+          43/91/135 maintenance entries. Skyway Operations reviews and verifies
+          all entries.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function ServiceSection({ label, children }) {
+  return (
+    <div className="mb-3 border border-slate-800 bg-slate-900/40">
+      <div className="px-3 py-2 border-b border-slate-800 text-[10px] text-slate-500 tracking-widest" style={MONO}>{label}</div>
+      <div className="p-3">{children}</div>
+    </div>
+  );
+}
+
+function VendorStatusTab({ sr, token, onPosted }) {
+  const [author, setAuthor] = useState('');
+  const [company, setCompany] = useState('');
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const updates = Array.isArray(sr.techUpdates) ? sr.techUpdates : [];
+
+  async function post() {
+    if (!author.trim() || !message.trim()) { setMsg('Name and update required.'); return; }
+    setBusy(true); setMsg('');
+    try {
+      const r = await fetch('/api/service-public?action=status', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token, update: { author, company, message } }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+      setMessage(''); setMsg('Update sent to Skyway.'); onPosted();
+    } catch (e) { setMsg('Failed: ' + e.message); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div>
+      {updates.length > 0 && (
+        <div className="space-y-2 mb-3">
+          {[...updates].reverse().map((u, i) => (
+            <div key={i} className="text-xs p-2 bg-slate-900 border border-slate-800">
+              <div className="text-[9px] text-slate-600 tracking-widest mb-0.5" style={MONO}>
+                {u.author}{u.company ? ` — ${u.company}` : ''}
+              </div>
+              <div className="text-slate-300 whitespace-pre-wrap">{u.message}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="grid grid-cols-2 gap-2 mb-2">
+        <input value={author} onChange={e => setAuthor(e.target.value)} placeholder="Your name *"
+          className="bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none" />
+        <input value={company} onChange={e => setCompany(e.target.value)} placeholder="Company"
+          className="bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none" />
+      </div>
+      <textarea value={message} onChange={e => setMessage(e.target.value)} rows={3} placeholder="Status update for Skyway *"
+        className="w-full bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none resize-none mb-2" />
+      {msg && <div className={`text-xs mb-2 ${msg.startsWith('Failed') ? 'text-amber-400' : 'text-green-400'}`}>{msg}</div>}
+      <button onClick={post} disabled={busy}
+        className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 text-xs tracking-widest font-medium" style={MONO}>
+        {busy ? 'SENDING…' : 'SEND UPDATE'}
+      </button>
+    </div>
+  );
+}
+
+function VendorPartsTab({ sr, token, onPosted }) {
+  const [busyIdx, setBusyIdx] = useState(-1);
+  const [author, setAuthor] = useState('');
+  const parts = Array.isArray(sr.parts) ? sr.parts : [];
+
+  async function mark(idx, usage) {
+    setBusyIdx(idx);
+    try {
+      const r = await fetch('/api/service-public?action=part-usage', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token, partIdx: idx, usage, author }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+      onPosted();
+    } catch (e) { alert('Failed: ' + e.message); }
+    finally { setBusyIdx(-1); }
+  }
+
+  if (parts.length === 0) return <p className="text-xs text-slate-500">No parts listed for this request.</p>;
+  return (
+    <div>
+      <input value={author} onChange={e => setAuthor(e.target.value)} placeholder="Your name (recorded with part marks)"
+        className="w-full bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none mb-3" />
+      <div className="space-y-2">
+        {parts.map((p, i) => (
+          <div key={i} className="p-2 bg-slate-900 border border-slate-800">
+            <div className="text-xs text-slate-300" style={MONO}>{p.partNumber || '(no P/N)'} {p.description ? `· ${p.description}` : ''}</div>
+            <div className="text-[10px] text-slate-600 mb-2">{p.techUsage ? `Currently: ${p.techUsage.toUpperCase()}` : 'Not marked'}</div>
+            <div className="flex gap-2">
+              <button onClick={() => mark(i, 'used')} disabled={busyIdx === i}
+                className="px-2 py-1 text-[10px] tracking-widest bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 disabled:opacity-50" style={MONO}>USED</button>
+              <button onClick={() => mark(i, 'not_used')} disabled={busyIdx === i}
+                className="px-2 py-1 text-[10px] tracking-widest bg-slate-800 text-slate-300 border border-slate-700 disabled:opacity-50" style={MONO}>NOT USED</button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function VendorChatTab({ sr, token, onPosted }) {
+  const [author, setAuthor] = useState('');
+  const [company, setCompany] = useState('');
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const chat = Array.isArray(sr.techChat) ? sr.techChat : [];
+  const replies = Array.isArray(sr.skywayChatReplies) ? sr.skywayChatReplies : [];
+  const merged = [
+    ...chat.map(m => ({ ...m, side: 'tech' })),
+    ...replies.map(m => ({ ...m, side: 'skyway' })),
+  ].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+
+  async function send() {
+    if (!author.trim() || !text.trim()) return;
+    setBusy(true);
+    try {
+      const r = await fetch('/api/service-public?action=chat', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token, message: { author, company, text } }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+      setText(''); onPosted();
+    } catch (e) { alert('Failed: ' + e.message); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div>
+      {merged.length > 0 && (
+        <div className="space-y-2 mb-3">
+          {merged.map((m, i) => (
+            <div key={i} className={`text-xs p-2 border ${m.side === 'tech'
+              ? 'bg-slate-900 border-slate-800' : 'bg-cyan-500/5 border-cyan-500/20 ml-6'}`}>
+              <div className="text-[9px] text-slate-600 tracking-widest mb-0.5" style={MONO}>
+                {m.side === 'tech' ? `${m.author || 'You'}${m.company ? ` — ${m.company}` : ''}` : `${m.author || 'Skyway'} (Skyway)`}
+              </div>
+              <div className="text-slate-300 whitespace-pre-wrap">{m.message}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="grid grid-cols-2 gap-2 mb-2">
+        <input value={author} onChange={e => setAuthor(e.target.value)} placeholder="Your name *"
+          className="bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none" />
+        <input value={company} onChange={e => setCompany(e.target.value)} placeholder="Company"
+          className="bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none" />
+      </div>
+      <div className="flex gap-2">
+        <input value={text} onChange={e => setText(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
+          placeholder="Message Skyway…"
+          className="flex-1 bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none" />
+        <button onClick={send} disabled={busy || !text.trim()}
+          className="px-3 py-2 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 text-xs tracking-widest font-medium" style={MONO}>
+          {busy ? '…' : 'SEND'}
+        </button>
+      </div>
+    </div>
+  );
+}

@@ -1,6 +1,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App, { ExternalTechPage } from './App.jsx';
+import { ServiceTechPage } from './ServiceRequests.jsx';
 import './index.css';
 
 /* ============================================================
@@ -76,6 +77,10 @@ const isExternalTechRoute =
   typeof window !== 'undefined' &&
   window.location.pathname.replace(/\/+$/, '') === '/aog-tech';
 
+const isServiceTechRoute =
+  typeof window !== 'undefined' &&
+  window.location.pathname.replace(/\/+$/, '') === '/service-tech';
+
 const rootEl = ReactDOM.createRoot(document.getElementById('root'));
 
 if (isExternalTechRoute) {
@@ -83,6 +88,13 @@ if (isExternalTechRoute) {
   rootEl.render(
     <React.StrictMode>
       <ExternalTechPage token={params.get('token') || ''} />
+    </React.StrictMode>
+  );
+} else if (isServiceTechRoute) {
+  const params = new URLSearchParams(window.location.search);
+  rootEl.render(
+    <React.StrictMode>
+      <ServiceTechPage token={params.get('token') || ''} />
     </React.StrictMode>
   );
 } else {
