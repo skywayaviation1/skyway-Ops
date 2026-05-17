@@ -3909,10 +3909,19 @@ function AdminDutyDashboard({ currentUser, users, allTrips }) {
     }) || mine[mine.length - 1] || null;
     if (!next) return null;
     const i = next.t.info || {};
+    // Determine the real seat from the schedule, not period.role (which
+    // startDutyLinked hardcodes to 'PIC' for the auto-created partner and is
+    // therefore unreliable). symMatch both directions for name-form safety.
+    const symM = (a, b) =>
+      nameMatchesPilot(a || '', b || '') || nameMatchesPilot(b || '', a || '');
+    let seat = null;
+    if (symM(i.pic || '', uname)) seat = 'PIC';
+    else if (symM(i.sic || '', uname)) seat = 'SIC';
     return {
       tail: i.tail || '—',
       route: `${i.from || '?'} → ${i.to || '?'}`,
       dep: next.s,
+      seat,
     };
   }
 
@@ -3966,22 +3975,29 @@ function AdminDutyDashboard({ currentUser, users, allTrips }) {
     idle:   { text: 'text-slate-500', bar: 'bg-slate-700',  ring: 'border-slate-800' },
   };
 
-  // Pair crew via linkedPeriodId — but ONLY when the link is MUTUAL between
-  // each crew's CURRENT (latest) period. A stale closed period can still
-  // carry an old linkedPeriodId pointing at a former partner; if we followed
-  // it one-directionally we'd mis-pair (e.g. Seth's old closed RHP→TPA period
-  // still points at Cole, while Seth's real active pairing is with David).
-  // Requiring both latest periods to reference each other discards stale
-  // half-links automatically.
+  // Pair crew via linkedPeriodId — but ONLY when (a) the link is mutual
+  // between each crew's CURRENT (latest) period AND (b) the pairing is still
+  // CURRENT, i.e. at least one of the two is actually on duty or in active
+  // rest from that period. A crew swap (Seth+Cole flew yesterday, then David
+  // replaced Cole) leaves yesterday's Seth↔Cole periods still mutually linked
+  // forever — but both are closed and rest has long elapsed, so that pair is
+  // stale history and must NOT be grouped today.
   const crewByUid = {};
   for (const u of crew) crewByUid[u.uid || u.id] = u;
-  // Map a period id -> the pilotUid whose LATEST period has that id.
   const latestIdToUid = {};
   for (const u of crew) {
     const uid = u.uid || u.id;
     const lp = latestByUid[uid];
     if (lp && lp.id) latestIdToUid[lp.id] = uid;
   }
+  // A period counts as "current" if on duty, or off-duty but rest hasn't
+  // elapsed yet (still the active rest from that period).
+  const periodIsCurrent = (pp) => {
+    if (!pp) return false;
+    if (pp.status === 'on') return true;
+    if (pp.status === 'off' && pp.restUntil && now < pp.restUntil) return true;
+    return false;
+  };
   const grouped = [];
   const seen = new Set();
   for (const u of crew) {
@@ -3990,14 +4006,16 @@ function AdminDutyDashboard({ currentUser, users, allTrips }) {
     const p = latestByUid[uid];
     let partnerUid = null;
     if (p && p.linkedPeriodId) {
-      // The partner is whoever's LATEST period is the one we link to.
       const candidateUid = latestIdToUid[p.linkedPeriodId];
       if (candidateUid && candidateUid !== uid) {
         const partnerLatest = latestByUid[candidateUid];
-        // Mutual check: partner's latest period must link back to OUR latest
-        // period. This rejects stale one-directional links.
+        // Mutual link between both latest periods…
         if (partnerLatest && partnerLatest.linkedPeriodId === p.id) {
-          partnerUid = candidateUid;
+          // …AND the pairing is still live (not a closed historical pair
+          // left over from a previous trip / crew swap).
+          if (periodIsCurrent(p) || periodIsCurrent(partnerLatest)) {
+            partnerUid = candidateUid;
+          }
         }
       }
     }
@@ -4034,12 +4052,15 @@ function AdminDutyDashboard({ currentUser, users, allTrips }) {
     const c = toneColor[s.tone] || toneColor.idle;
     const sched = s.p ? scheduledFlightMs(u, s.p) : null;
     const asg = assignment(u);
+    // Prefer the real seat from the trip schedule; fall back to the
+    // positional hint only if the schedule doesn't say.
+    const effectiveSeat = (asg && asg.seat) || seatLabel || null;
     return (
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 mb-2">
-          {seatLabel && (
+          {effectiveSeat && (
             <span className="text-[9px] tracking-widest px-1.5 py-0.5 border border-slate-700 text-slate-500 rounded" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              {seatLabel}
+              {effectiveSeat}
             </span>
           )}
           <span className="text-sm text-slate-100 truncate" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
@@ -4133,9 +4154,18 @@ function AdminDutyDashboard({ currentUser, users, allTrips }) {
                 </div>
               )}
               <div className={`p-4 ${isPair ? 'grid md:grid-cols-2 gap-5' : ''}`}>
-                {g.members.map((u, mi) => (
+                {(isPair
+                  ? [...g.members].sort((a, b) => {
+                      const sa = (assignment(a) && assignment(a).seat) || '';
+                      const sb = (assignment(b) && assignment(b).seat) || '';
+                      // PIC before SIC; unknown seats keep stable order.
+                      const rank = (x) => (x === 'PIC' ? 0 : x === 'SIC' ? 1 : 2);
+                      return rank(sa) - rank(sb);
+                    })
+                  : g.members
+                ).map((u) => (
                   <React.Fragment key={u.uid || u.id}>
-                    <MemberBlock u={u} seatLabel={isPair ? (mi === 0 ? 'PIC' : 'SIC') : null} />
+                    <MemberBlock u={u} seatLabel={null} />
                   </React.Fragment>
                 ))}
               </div>
