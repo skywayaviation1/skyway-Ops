@@ -534,9 +534,42 @@ function parseJetInsightTripSheet(text) {
   });
 
   // Combine summaries + pax
+  // ---- FBO extraction --------------------------------------------------
+  // In the PDF detail blocks each airport appears as:
+  //   "PWK - Chicago Executive"
+  //   "Signature Aviation"          <-- FBO (next non-empty line)
+  //   "1100 South Milwaukee Avenue"
+  // We find, per airport code, the FBO name as the line immediately
+  // following the "CODE - <Airport Name>" header. First occurrence wins
+  // (DEPARTS for origin, ARRIVES for destination — same FBO string).
+  const fboByCode = {};
+  try {
+    const lines = String(text).split(/\r?\n/).map(l => l.trim());
+    for (let i = 0; i < lines.length; i++) {
+      // Header line: 3-4 char code, " - ", then an airport name (has a letter)
+      const hm = /^([A-Z0-9]{3,4})\s+-\s+(.+\S)\s*$/.exec(lines[i]);
+      if (!hm) continue;
+      const code = hm[1].toUpperCase();
+      if (fboByCode[code]) continue; // already have it
+      // Next non-empty line is the FBO name.
+      let j = i + 1;
+      while (j < lines.length && !lines[j]) j++;
+      const fbo = lines[j] || '';
+      // Sanity: FBO line shouldn't itself look like an address (starts with
+      // a number) or another code header.
+      if (fbo && !/^\d/.test(fbo) && !/^[A-Z0-9]{3,4}\s+-\s+/.test(fbo) && fbo.length <= 80) {
+        fboByCode[code] = fbo;
+      }
+    }
+  } catch (e) {
+    console.warn('[parse] FBO extraction skipped:', e);
+  }
+
   const legs = legSummaries.map(s => ({
     ...s,
     pax: paxByLeg[s.legNumber] || [],
+    fromFbo: fboByCode[s.from] || null,
+    toFbo: fboByCode[s.to] || null,
   }));
 
   return { tripCode, tail, legs, notes };
@@ -6008,6 +6041,11 @@ function TripSheetPanel({
                       Leg {m.leg.legNumber}: {m.leg.from} → {m.leg.to}
                     </span>
                     <span className="text-slate-500 ml-2">({m.leg.depDate})</span>
+                    {(m.leg.fromFbo || m.leg.toFbo) && (
+                      <div className="text-[10px] text-slate-500 mt-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                        {m.leg.from}: {m.leg.fromFbo || '—'} · {m.leg.to}: {m.leg.toFbo || '—'}
+                      </div>
+                    )}
                   </div>
                   {matched ? (
                     matched._tailMismatch ? (
