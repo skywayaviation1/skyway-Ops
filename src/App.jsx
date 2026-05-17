@@ -3829,6 +3829,7 @@ function AdminDutyDashboard({ currentUser, users, allTrips }) {
 
   const now = Date.now();
   const DUTY_MAX = 14 * 60 * 60 * 1000;
+  const REST_MIN = 10 * 60 * 60 * 1000;
 
   // Latest duty period per pilotUid.
   const latestByUid = React.useMemo(() => {
@@ -3919,141 +3920,238 @@ function AdminDutyDashboard({ currentUser, users, allTrips }) {
     return <div className="max-w-5xl mx-auto p-6 text-sm text-slate-500">Loading duty dashboard…</div>;
   }
 
+  const fmtDur = (ms) => {
+    if (ms == null) return '—';
+    const neg = ms < 0;
+    const a = Math.abs(ms);
+    const h = Math.floor(a / 3600000);
+    const m = Math.round((a % 3600000) / 60000);
+    return `${neg ? '-' : ''}${h}h ${String(m).padStart(2, '0')}m`;
+  };
+
+  // Compute display status + progress for one crew member's latest period.
+  function statusFor(u) {
+    const uid = u.uid || u.id;
+    const p = latestByUid[uid] || null;
+    const onDuty = p && p.status === 'on';
+    const resting = p && p.status === 'off' && p.restUntil && now < p.restUntil;
+    const restComplete = p && p.status === 'off' && p.restUntil && now >= p.restUntil;
+    const linkPending = p && p.linkPending;
+
+    let state = 'NO DUTY', tone = 'idle', pct = 0, big = '—', sub = '';
+    if (onDuty) {
+      const used = now - (p.dutyOnAt || now);
+      pct = Math.max(0, Math.min(100, (used / DUTY_MAX) * 100));
+      const left = (p.dutyOnAt + DUTY_MAX) - now;
+      if (left < 0) { state = 'OVER 14H'; tone = 'danger'; big = fmtDur(left); sub = 'over legal duty limit'; pct = 100; }
+      else { state = linkPending ? 'ON DUTY · UNCONFIRMED' : 'ON DUTY'; tone = left < 60 * 60 * 1000 ? 'warn' : 'ok'; big = fmtDur(left); sub = 'duty remaining'; }
+    } else if (resting) {
+      const restTotal = (p.restUntil) - (p.dutyOffAt || (p.restUntil - REST_MIN));
+      const restUsed = now - (p.dutyOffAt || (p.restUntil - REST_MIN));
+      pct = Math.max(0, Math.min(100, (restUsed / (restTotal || REST_MIN)) * 100));
+      state = 'RESTING'; tone = 'rest'; big = fmtDur(p.restUntil - now); sub = 'rest remaining';
+    } else if (restComplete) {
+      state = 'REST COMPLETE'; tone = 'ok'; pct = 100; big = fmtDur(now - p.restUntil); sub = 'since rest complete';
+    } else if (linkPending) {
+      state = 'LINK PENDING'; tone = 'warn'; big = 'confirm'; sub = 'awaiting pilot';
+    }
+    return { uid, p, state, tone, pct, big, sub, onDuty, resting, restComplete };
+  }
+
+  const toneColor = {
+    ok:     { text: 'text-cyan-300',  bar: 'bg-cyan-400',   ring: 'border-cyan-500/30' },
+    warn:   { text: 'text-amber-300', bar: 'bg-amber-400',  ring: 'border-amber-500/30' },
+    danger: { text: 'text-red-300',   bar: 'bg-red-400',    ring: 'border-red-500/40' },
+    rest:   { text: 'text-amber-300', bar: 'bg-amber-400/70',ring: 'border-amber-500/20' },
+    idle:   { text: 'text-slate-500', bar: 'bg-slate-700',  ring: 'border-slate-800' },
+  };
+
+  // Pair crew via linkedPeriodId. Build groups: [{members:[u,...], lead}].
+  const crewByUid = {};
+  for (const u of crew) crewByUid[u.uid || u.id] = u;
+  const grouped = [];
+  const seen = new Set();
+  for (const u of crew) {
+    const uid = u.uid || u.id;
+    if (seen.has(uid)) continue;
+    const p = latestByUid[uid];
+    let partnerUid = null;
+    if (p && p.linkedPeriodId) {
+      // linkedPeriodId points at the partner's period doc; its pilotUid is them
+      const partnerPeriod = (periods || []).find(x => x.id === p.linkedPeriodId);
+      if (partnerPeriod && crewByUid[partnerPeriod.pilotUid]) partnerUid = partnerPeriod.pilotUid;
+    }
+    if (partnerUid && partnerUid !== uid && !seen.has(partnerUid)) {
+      seen.add(uid); seen.add(partnerUid);
+      grouped.push({ members: [u, crewByUid[partnerUid]] });
+    } else {
+      seen.add(uid);
+      grouped.push({ members: [u] });
+    }
+  }
+  // Sort: active crews first, then resting, then idle; alpha within.
+  const groupRank = (g) => {
+    const s = g.members.map(statusFor);
+    if (s.some(x => x.tone === 'danger')) return 0;
+    if (s.some(x => x.onDuty)) return 1;
+    if (s.some(x => x.resting || x.restComplete)) return 2;
+    return 3;
+  };
+  grouped.sort((a, b) => {
+    const r = groupRank(a) - groupRank(b);
+    if (r !== 0) return r;
+    return (a.members[0].name || '').localeCompare(b.members[0].name || '');
+  });
+
+  const Bar = ({ pct, cls }) => (
+    <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
+      <div className={`h-full ${cls} rounded-full transition-all duration-700`} style={{ width: `${pct}%` }} />
+    </div>
+  );
+
+  function MemberBlock({ u, seatLabel }) {
+    const s = statusFor(u);
+    const c = toneColor[s.tone] || toneColor.idle;
+    const sched = s.p ? scheduledFlightMs(u, s.p) : null;
+    const asg = assignment(u);
+    return (
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 mb-2">
+          {seatLabel && (
+            <span className="text-[9px] tracking-widest px-1.5 py-0.5 border border-slate-700 text-slate-500 rounded" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {seatLabel}
+            </span>
+          )}
+          <span className="text-sm text-slate-100 truncate" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
+            {u.name || 'Unknown'}
+          </span>
+        </div>
+        <div className="flex items-baseline justify-between gap-2 mb-1">
+          <span className={`text-[10px] tracking-widest ${c.text}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {s.state}
+          </span>
+          <span className={`text-lg tabular-nums ${c.text}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {s.big}
+          </span>
+        </div>
+        <Bar pct={s.pct} cls={c.bar} />
+        <div className="text-[9px] text-slate-600 mt-1 tracking-wide" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {s.sub}
+          {s.p && s.p.dutyOnAt ? ` · ON ${fmtET(s.p.dutyOnAt, { hour: 'numeric', minute: '2-digit' })}` : ''}
+          {s.p && s.p.dutyOffAt ? ` · OFF ${fmtET(s.p.dutyOffAt, { hour: 'numeric', minute: '2-digit' })}` : ''}
+        </div>
+        {sched && (
+          <div className="text-[9px] text-slate-600 mt-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            SCHED FLT {fmtDur(sched.ms)} · {sched.legs} leg{sched.legs > 1 ? 's' : ''} · ACTUAL pending
+          </div>
+        )}
+        {asg && (
+          <div className="text-[9px] text-slate-500 mt-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {asg.tail} · {asg.route} · {fmtET(asg.dep, { weekday: 'short', hour: 'numeric', minute: '2-digit' })} ET
+          </div>
+        )}
+        {s.p && (
+          <div className="mt-2">
+            <DutyOversightRow period={s.p} editor={currentUser} compact />
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
-    <div className="max-w-5xl mx-auto p-4 md:p-6 space-y-4">
-      <div className="flex items-baseline gap-3 flex-wrap">
-        <h1 className="text-3xl tracking-wide text-slate-100" style={{ fontFamily: 'Bebas Neue, sans-serif', letterSpacing: '0.05em' }}>
-          DUTY OVERSIGHT
-        </h1>
-        <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-          14 CFR 135.267 · ALL CREW · build: duty-tab-v1
-        </span>
+    <div className="max-w-5xl mx-auto p-4 md:p-6 space-y-5">
+      <div className="flex items-end justify-between gap-3 flex-wrap border-b border-slate-800 pb-3">
+        <div>
+          <h1 className="text-4xl tracking-wide text-slate-100" style={{ fontFamily: 'Bebas Neue, sans-serif', letterSpacing: '0.06em' }}>
+            DUTY OVERSIGHT
+          </h1>
+          <span className="text-[10px] tracking-widest text-slate-600" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            14 CFR 135.267 · ALL CREW · ET · build: duty-tab-v2
+          </span>
+        </div>
+        <div className="flex gap-4 text-right">
+          {(() => {
+            const all = crew.map(statusFor);
+            const onCount = all.filter(x => x.onDuty).length;
+            const restCount = all.filter(x => x.resting).length;
+            const overCount = all.filter(x => x.tone === 'danger').length;
+            const Stat = ({ n, label, cls }) => (
+              <div>
+                <div className={`text-2xl tabular-nums ${cls}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>{n}</div>
+                <div className="text-[9px] tracking-widest text-slate-600" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{label}</div>
+              </div>
+            );
+            return (
+              <>
+                <Stat n={onCount} label="ON DUTY" cls="text-cyan-300" />
+                <Stat n={restCount} label="RESTING" cls="text-amber-300" />
+                <Stat n={overCount} label="OVER 14H" cls={overCount ? 'text-red-300' : 'text-slate-600'} />
+              </>
+            );
+          })()}
+        </div>
       </div>
       {err && <div className="text-xs text-amber-400">{err}</div>}
 
       <div className="space-y-3">
-        {crew.map(u => {
-          const uid = u.uid || u.id;
-          const p = latestByUid[uid] || null;
-          const hist = historyByUid[uid] || [];
-          const onDuty = p && p.status === 'on';
-          const resting = p && p.status === 'off' && p.restUntil && now < p.restUntil;
-          const dutyLeft = onDuty && p.dutyOnAt ? (p.dutyOnAt + DUTY_MAX) - now : null;
-          const restLeft = resting ? p.restUntil - now : null;
-          const asg = assignment(u);
-
-          let stateLabel, stateColor, timeStr;
-          if (onDuty) {
-            stateLabel = dutyLeft < 0 ? 'OVER 14H' : 'ON DUTY';
-            stateColor = dutyLeft < 0 ? 'text-red-300' : 'text-cyan-300';
-            timeStr = `${fmtCountdown(dutyLeft)} duty left`;
-          } else if (resting) {
-            stateLabel = 'RESTING';
-            stateColor = 'text-amber-300';
-            timeStr = `${fmtCountdown(restLeft)} rest left`;
-          } else if (p && p.linkPending) {
-            stateLabel = 'LINK PENDING';
-            stateColor = 'text-amber-300';
-            timeStr = 'awaiting pilot confirm';
-          } else {
-            stateLabel = 'NO DUTY';
-            stateColor = 'text-slate-600';
-            timeStr = '—';
-          }
-
-          const fmtDur = (ms) => {
-            if (ms == null) return '—';
-            const h = Math.floor(ms / 3600000);
-            const m = Math.round((ms % 3600000) / 60000);
-            return `${h}h ${String(m).padStart(2, '0')}m`;
-          };
-
+        {grouped.map((g, gi) => {
+          const isPair = g.members.length === 2;
+          const anyDanger = g.members.some(u => statusFor(u).tone === 'danger');
+          const anyActive = g.members.some(u => { const s = statusFor(u); return s.onDuty || s.resting; });
+          const ring = anyDanger ? 'border-red-500/40' : anyActive ? 'border-slate-700' : 'border-slate-800';
           return (
-            <div key={uid} className="bg-slate-900 border border-slate-800 overflow-hidden">
-              {/* Card header */}
-              <div className="p-4 border-b border-slate-800">
-                <div className="flex items-start justify-between gap-3 flex-wrap">
-                  <div className="min-w-0">
-                    <div className="text-base text-slate-100" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
-                      {u.name || 'Unknown'}
-                    </div>
-                    <div className="text-[10px] tracking-widest mt-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                      <span className={stateColor}>{stateLabel}</span>
-                      <span className="text-slate-600"> · {timeStr}</span>
-                    </div>
-                    {p && p.dutyOnAt && (
-                      <div className="text-[10px] text-slate-600 mt-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                        ON: {fmtET(p.dutyOnAt, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })}
-                        {p.dutyOffAt ? ` · OFF: ${fmtET(p.dutyOffAt, { hour: 'numeric', minute: '2-digit' })}` : ''}
-                      </div>
-                    )}
-                  </div>
-                  <div className="text-right shrink-0">
-                    <div className="text-[9px] text-slate-600 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>ASSIGNED</div>
-                    {asg ? (
-                      <>
-                        <div className="text-sm text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{asg.tail}</div>
-                        <div className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{asg.route}</div>
-                        <div className="text-[10px] text-slate-500">{fmtET(asg.dep, { weekday: 'short', hour: 'numeric', minute: '2-digit' })} ET</div>
-                      </>
-                    ) : (
-                      <div className="text-[10px] text-slate-600">no trips</div>
-                    )}
-                  </div>
+            <div key={gi} className={`bg-slate-900/60 border ${ring} rounded-lg overflow-hidden`}>
+              {isPair && (
+                <div className="px-4 pt-3 pb-2 flex items-center gap-2 border-b border-slate-800/60">
+                  <span className="text-[9px] tracking-widest px-2 py-0.5 bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 rounded" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    CREW PAIR
+                  </span>
+                  <span className="text-[10px] text-slate-500 truncate" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    {g.members.map(m => m.name).join('  +  ')}
+                  </span>
                 </div>
-
-                {/* Current period flight time: scheduled (real) vs actual (pending) */}
-                {p && p.dutyOnAt && (() => {
-                  const sched = scheduledFlightMs(u, p);
-                  return (
-                    <div className="mt-3 pt-3 border-t border-slate-800 grid grid-cols-2 gap-3">
-                      <div>
-                        <div className="text-[9px] text-slate-600 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>SCHEDULED FLIGHT (THIS PERIOD)</div>
-                        <div className="text-sm text-slate-200 tabular-nums" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                          {sched ? `${fmtDur(sched.ms)} · ${sched.legs} leg${sched.legs > 1 ? 's' : ''}` : '—'}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-[9px] text-slate-600 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>ACTUAL FLOWN</div>
-                        <div className="text-[11px] text-amber-400/80 leading-tight">
-                          pending — FlightAware actuals not yet captured
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })()}
-
-                {p && (
-                  <div className="mt-3 pt-3 border-t border-slate-800">
-                    <DutyOversightRow period={p} editor={currentUser} compact />
-                  </div>
-                )}
+              )}
+              <div className={`p-4 ${isPair ? 'grid md:grid-cols-2 gap-5' : ''}`}>
+                {g.members.map((u, mi) => (
+                  <React.Fragment key={u.uid || u.id}>
+                    <MemberBlock u={u} seatLabel={isPair ? (mi === 0 ? 'PIC' : 'SIC') : null} />
+                  </React.Fragment>
+                ))}
               </div>
-
-              {/* 380-day duty/rest history */}
-              <details className="group">
-                <summary className="px-4 py-2 text-[10px] text-slate-500 tracking-widest cursor-pointer hover:text-slate-300 select-none" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                  DUTY / REST HISTORY — {hist.length} period{hist.length === 1 ? '' : 's'} (last 380 days)
+              {/* combined history (per member, collapsed) */}
+              <details className="border-t border-slate-800/60">
+                <summary className="px-4 py-2 text-[10px] text-slate-600 tracking-widest cursor-pointer hover:text-slate-400 select-none" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  DUTY / REST HISTORY (380 DAYS)
                 </summary>
-                <div className="px-4 pb-3 space-y-1">
-                  {hist.length === 0 && (
-                    <div className="text-[10px] text-slate-600">No duty records in the last 380 days.</div>
-                  )}
-                  {hist.map(hp => {
-                    const dur = hp.dutyOffAt && hp.dutyOnAt ? hp.dutyOffAt - hp.dutyOnAt : null;
-                    const sched = scheduledFlightMs(u, hp);
+                <div className="px-4 pb-3 space-y-3">
+                  {g.members.map(u => {
+                    const uid = u.uid || u.id;
+                    const hist = historyByUid[uid] || [];
                     return (
-                      <div key={hp.id} className="text-[10px] text-slate-500 border-l border-slate-800 pl-2 py-1 leading-relaxed">
-                        <span className="text-slate-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                          {fmtET(hp.dutyOnAt, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
-                        </span>
-                        {hp.dutyOffAt ? ` → ${fmtET(hp.dutyOffAt, { hour: 'numeric', minute: '2-digit' })}` : ' → (open)'}
-                        {dur != null && <span className="text-slate-600"> · duty {fmtDur(dur)}</span>}
-                        {sched && <span className="text-slate-600"> · sched flt {fmtDur(sched.ms)}</span>}
-                        {hp.over14 && <span className="text-red-400"> · OVER14</span>}
-                        {Array.isArray(hp.adminEdits) && hp.adminEdits.length > 0 && (
-                          <span className="text-amber-500/70"> · {hp.adminEdits.length} edit{hp.adminEdits.length > 1 ? 's' : ''}</span>
+                      <div key={uid}>
+                        {g.members.length > 1 && (
+                          <div className="text-[9px] text-slate-500 tracking-widest mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{u.name}</div>
                         )}
+                        {hist.length === 0 && <div className="text-[10px] text-slate-600">No records in 380 days.</div>}
+                        {hist.map(hp => {
+                          const dur = hp.dutyOffAt && hp.dutyOnAt ? hp.dutyOffAt - hp.dutyOnAt : null;
+                          const sched = scheduledFlightMs(u, hp);
+                          return (
+                            <div key={hp.id} className="text-[10px] text-slate-500 border-l border-slate-800 pl-2 py-0.5 leading-relaxed">
+                              <span className="text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                                {fmtET(hp.dutyOnAt, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                              </span>
+                              {hp.dutyOffAt ? ` → ${fmtET(hp.dutyOffAt, { hour: 'numeric', minute: '2-digit' })}` : ' → (open)'}
+                              {dur != null && <span className="text-slate-600"> · duty {fmtDur(dur)}</span>}
+                              {sched && <span className="text-slate-600"> · flt {fmtDur(sched.ms)}</span>}
+                              {hp.over14 && <span className="text-red-400"> · OVER14</span>}
+                              {Array.isArray(hp.adminEdits) && hp.adminEdits.length > 0 && (
+                                <span className="text-amber-500/70"> · {hp.adminEdits.length} edit{hp.adminEdits.length > 1 ? 's' : ''}</span>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     );
                   })}
@@ -4067,12 +4165,11 @@ function AdminDutyDashboard({ currentUser, users, allTrips }) {
         )}
       </div>
 
-      <div className="text-[10px] text-slate-700 leading-relaxed pt-2">
-        SCHEDULED flight time = sum of scheduled leg durations (iCal) within the
-        duty period. ACTUAL FLOWN requires a FlightAware actuals-capture
-        backend (not yet built) — it is shown as pending rather than estimated
-        from schedule, to avoid a misleading flight-time figure. All times
-        Eastern. Planning aid — not a 14 CFR 135.267 determination.
+      <div className="text-[10px] text-slate-700 leading-relaxed pt-2 border-t border-slate-800">
+        Crew shown paired when their duty periods are linked. SCHEDULED flight =
+        sum of scheduled leg durations (iCal) within the duty period. ACTUAL
+        FLOWN pending FlightAware actuals capture. All times Eastern. Planning
+        aid — not a 14 CFR 135.267 determination.
       </div>
     </div>
   );
