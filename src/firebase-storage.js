@@ -148,3 +148,47 @@ export async function deleteAogReference(path) {
     }
   }
 }
+
+// ---- Service-request manual references (mirror of uploadAogReference) ----
+// Separate storage path prefix (service-references/) so service and AOG
+// reference files never collide.
+export async function uploadServiceReference(file, srId) {
+  if (!file) throw new Error('No file provided');
+  if (!srId) throw new Error('Missing service request id');
+  if (file.size > 15 * 1024 * 1024) {
+    throw new Error('File too large — limit is 15MB');
+  }
+  const isPdf = file.type === 'application/pdf' ||
+    (file.name || '').toLowerCase().endsWith('.pdf');
+  if (!isPdf) {
+    throw new Error('Only PDF files are accepted for manual references');
+  }
+
+  const baseName = String(file.name || 'reference.pdf')
+    .replace(/[^a-zA-Z0-9._-]/g, '_')
+    .replace(/_{2,}/g, '_')
+    .slice(0, 80);
+  const safeName = baseName.toLowerCase().endsWith('.pdf') ? baseName : `${baseName}.pdf`;
+  const filename = `${Date.now()}_${safeName}`;
+  const path = `service-references/${srId}/${filename}`;
+  const storageRef = ref(storage, path);
+
+  const snapshot = await uploadBytes(storageRef, file, {
+    contentType: 'application/pdf',
+    cacheControl: 'private, max-age=3600',
+  });
+
+  const url = await getDownloadURL(snapshot.ref);
+  return { url, path, storagePath: path, filename: safeName, sizeBytes: file.size };
+}
+
+export async function deleteServiceReference(path) {
+  if (!path) return;
+  try {
+    await deleteObject(ref(storage, path));
+  } catch (err) {
+    if (err.code !== 'storage/object-not-found') {
+      console.warn('[storage] deleteServiceReference failed:', err.message);
+    }
+  }
+}
