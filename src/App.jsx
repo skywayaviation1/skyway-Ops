@@ -383,6 +383,57 @@ function nameMatchesPilot(jetinsightName, pilotName) {
  * Format-tolerant — built against the JetInsight crew itinerary format. If
  * a future format change breaks this, we'll need to retune the regexes.
  */
+/**
+ * Extract FBO names per airport code from flattened trip-sheet PDF text.
+ * extractPdfText joins PDF items with SPACES (no newlines), so the text is
+ * one run. For each "CODE - " header we scan ~160 chars: an FBO name is
+ * either a known FBO chain or a Title-Case phrase ending in
+ * Aviation/FBO/Flight Support/Jet Center just before the street address.
+ * Returns { CODE: 'FBO Name', ... }. Used by the parser AND the admin
+ * backfill so the logic never drifts between the two.
+ */
+function extractFbosFromText(text) {
+  const fboByCode = {};
+  if (!text || typeof text !== 'string') return fboByCode;
+  try {
+    const KNOWN_FBO = /(Signature Flight Support|Signature Aviation|Atlantic Aviation|Jet Aviation|Million Air|Sheltair|Wilson Air|Cutter Aviation|Ross Aviation|Modern Aviation|Clay Lacy Aviation|Meridian|Landmark Aviation|TAC Air|Banyan Air Service|Galaxy FBO|Stevens Aerospace|Jet Center|Airport Authority)/;
+    const headerRe = /\b([A-Z]{3,4})\s+-\s+/g;
+    let hm;
+    while ((hm = headerRe.exec(text)) !== null) {
+      const code = hm[1].toUpperCase();
+      if (fboByCode[code]) continue;
+      const start = hm.index + hm[0].length;
+      // Bound the scan to BEFORE the next "CODE - " header so one airport's
+      // window can't bleed into the next airport's FBO. Cap at 160 chars.
+      const nextHeader = /\b[A-Z]{3,4}\s+-\s+/g;
+      nextHeader.lastIndex = start;
+      const nh = nextHeader.exec(text);
+      const bound = nh ? Math.min(nh.index, start + 160) : start + 160;
+      const after = text.slice(start, bound);
+      const k = KNOWN_FBO.exec(after);
+      if (k) { fboByCode[code] = k[0].trim(); continue; }
+      const g = /([A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]+){0,4}\s+(?:Aviation|FBO|Air Center|Jet Center|Flight Support))(?=\s+\d|\s+[A-Z]{3,4}\s+-|\s*$)/.exec(after);
+      if (g) {
+        const words = g[1].split(/\s+/);
+        const out = [];
+        for (const w of words) if (out[out.length - 1] !== w) out.push(w);
+        let cut = out;
+        for (let a = 0; a + 1 < out.length && cut === out; a++) {
+          const bg = out[a] + ' ' + out[a + 1];
+          for (let b = a + 2; b + 1 < out.length; b++) {
+            if (out[b] + ' ' + out[b + 1] === bg) { cut = out.slice(b); break; }
+          }
+        }
+        const phrase = cut.join(' ');
+        if (phrase.length <= 60) fboByCode[code] = phrase;
+      }
+    }
+  } catch (e) {
+    console.warn('[parse] FBO extraction skipped:', e);
+  }
+  return fboByCode;
+}
+
 function parseJetInsightTripSheet(text) {
   if (!text || typeof text !== 'string') return null;
 
@@ -542,46 +593,9 @@ function parseJetInsightTripSheet(text) {
   // We find, per airport code, the FBO name as the line immediately
   // following the "CODE - <Airport Name>" header. First occurrence wins
   // (DEPARTS for origin, ARRIVES for destination — same FBO string).
-  // IMPORTANT: extractPdfText joins PDF items with SPACES, not newlines, so
-  // the text is one flattened run. We cannot rely on line breaks. Instead,
-  // for each "CODE - " header we scan the ~140 chars after it. The FBO name
-  // is either a known FBO chain, or a Title-Case phrase ending in
-  // Aviation/FBO/Flight Support/Jet Center just before the street address.
-  const fboByCode = {};
-  try {
-    const KNOWN_FBO = /(Signature Flight Support|Signature Aviation|Atlantic Aviation|Jet Aviation|Million Air|Sheltair|Wilson Air|Cutter Aviation|Ross Aviation|Modern Aviation|Clay Lacy Aviation|Meridian|Landmark Aviation|TAC Air|Banyan Air Service|Galaxy FBO|Stevens Aerospace|Jet Center|Airport Authority)/;
-    const headerRe = /\b([A-Z]{3,4})\s+-\s+/g;
-    let hm;
-    while ((hm = headerRe.exec(text)) !== null) {
-      const code = hm[1].toUpperCase();
-      if (fboByCode[code]) continue;
-      const after = text.slice(hm.index + hm[0].length, hm.index + hm[0].length + 160);
-      const k = KNOWN_FBO.exec(after);
-      if (k) { fboByCode[code] = k[0].trim(); continue; }
-      // Generic fallback: Title-Case phrase (<=5 words) ending in an FBO-ish
-      // suffix, immediately before a street number or another code header.
-      const g = /([A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]+){0,4}\s+(?:Aviation|FBO|Air Center|Jet Center|Flight Support))(?=\s+\d|\s+[A-Z]{3,4}\s+-|\s*$)/.exec(after);
-      if (g) {
-        const words = g[1].split(/\s+/);
-        // Collapse adjacent duplicate words.
-        const out = [];
-        for (const w of words) if (out[out.length - 1] !== w) out.push(w);
-        // If a bigram repeats (airport name echoed before the FBO, e.g.
-        // "Martin State Martin State Airport FBO"), cut at the 2nd occurrence.
-        let cut = out;
-        for (let a = 0; a + 1 < out.length && cut === out; a++) {
-          const bg = out[a] + ' ' + out[a + 1];
-          for (let b = a + 2; b + 1 < out.length; b++) {
-            if (out[b] + ' ' + out[b + 1] === bg) { cut = out.slice(b); break; }
-          }
-        }
-        const phrase = cut.join(' ');
-        if (phrase.length <= 60) fboByCode[code] = phrase;
-      }
-    }
-  } catch (e) {
-    console.warn('[parse] FBO extraction skipped:', e);
-  }
+  // Shared extractor (also used by the admin backfill) — see
+  // extractFbosFromText below.
+  const fboByCode = extractFbosFromText(text);
 
   const legs = legSummaries.map(s => ({
     ...s,
@@ -5918,14 +5932,18 @@ function PaxCountEditor({ trip, paxOverride, onChange, canEdit }) {
 
 // Extract plain text from a PDF File using pdfjs-dist (dynamically imported
 // so the ~500KB library only loads when ops actually uploads a PDF).
-async function extractPdfText(file) {
+async function extractPdfText(fileOrBuffer) {
   const pdfjsLib = await import('pdfjs-dist/build/pdf.mjs');
   // Worker setup — load from cloudflare CDN to avoid Vite bundling issues
   // with the worker file (locally-bundled worker was returning HTML 404 fallback).
   // Pinned to the same version as in package.json to avoid API drift.
   pdfjsLib.GlobalWorkerOptions.workerSrc =
     `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
-  const arrayBuffer = await file.arrayBuffer();
+  // Accept either a File/Blob (upload) or an ArrayBuffer (backfill from a
+  // fetched stored PDF).
+  const arrayBuffer = (fileOrBuffer && typeof fileOrBuffer.arrayBuffer === 'function')
+    ? await fileOrBuffer.arrayBuffer()
+    : fileOrBuffer;
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
   let fullText = '';
   for (let i = 1; i <= pdf.numPages; i++) {
@@ -10663,6 +10681,53 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
   const [dutyBusy, setDutyBusy] = useState(false);
   const [dutyMsg, setDutyMsg] = useState('');
 
+  // ---- Trip-sheet FBO backfill (admin one-time migration) -------------
+  const [fboBusy, setFboBusy] = useState(false);
+  const [fboProgress, setFboProgress] = useState(null); // {done,total,ok,skip,fail}
+  const [fboMsg, setFboMsg] = useState('');
+
+  async function runFboBackfill() {
+    if (fboBusy) return;
+    if (!window.confirm('Re-parse all stored trip sheets to fill in FBO names? This reads each PDF again — it may take a minute.')) return;
+    setFboBusy(true); setFboMsg(''); setFboProgress(null);
+    try {
+      const { getTripSheetsForBackfill, setTripFboById } = await import('./firebase-data.js');
+      const list = await getTripSheetsForBackfill();
+      const total = list.length;
+      let done = 0, ok = 0, skip = 0, fail = 0;
+      setFboProgress({ done, total, ok, skip, fail });
+      for (const item of list) {
+        try {
+          // Skip ones that already have FBO (idempotent — safe to re-run).
+          if (item.hasFbo) { skip++; done++; setFboProgress({ done, total, ok, skip, fail }); continue; }
+          const resp = await fetch(item.tripSheetUrl);
+          if (!resp.ok) throw new Error(`fetch ${resp.status}`);
+          const buf = await resp.arrayBuffer();
+          const text = await extractPdfText(buf);
+          const fbos = extractFbosFromText(text);
+          const fromFbo = item.from ? (fbos[String(item.from).toUpperCase()] || null) : null;
+          const toFbo = item.to ? (fbos[String(item.to).toUpperCase()] || null) : null;
+          if (fromFbo || toFbo) {
+            await setTripFboById(item.tripId, fromFbo, toFbo);
+            ok++;
+          } else {
+            skip++; // PDF parsed but no FBO for this leg's airports
+          }
+        } catch (e) {
+          console.warn('[fbo-backfill] failed for', item.tripId, e);
+          fail++;
+        }
+        done++;
+        setFboProgress({ done, total, ok, skip, fail });
+      }
+      setFboMsg(`Done. ${ok} updated, ${skip} skipped (already set or no match), ${fail} failed of ${total} sheet(s).`);
+    } catch (e) {
+      setFboMsg('Backfill failed: ' + (e.message || 'error'));
+    } finally {
+      setFboBusy(false);
+    }
+  }
+
   async function saveDutySettings() {
     setDutyBusy(true); setDutyMsg('');
     try {
@@ -10718,6 +10783,35 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
               <span className="text-[11px] text-slate-500 mt-1 block">Shown next to chat messages and status events.</span>
             </label>
           </section>
+
+          {isAdminUser && (
+            <section>
+              <h3 className="text-xs tracking-widest text-cyan-400 mb-3" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
+                TRIP SHEET FBO BACKFILL (ADMIN)
+              </h3>
+              <p className="text-[11px] text-slate-500 mb-3 leading-relaxed">
+                Re-parses every stored trip sheet to fill in FBO names for
+                trips uploaded before this feature existed. Safe to run
+                repeatedly — trips that already have an FBO are skipped.
+              </p>
+              <button
+                onClick={runFboBackfill}
+                disabled={fboBusy}
+                className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 text-xs tracking-widest font-medium"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              >
+                {fboBusy ? 'RUNNING…' : 'RE-PARSE ALL TRIP SHEETS'}
+              </button>
+              {fboProgress && (
+                <div className="mt-2 text-[11px] text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  {fboProgress.done}/{fboProgress.total} processed · {fboProgress.ok} updated · {fboProgress.skip} skipped · {fboProgress.fail} failed
+                </div>
+              )}
+              {fboMsg && (
+                <div className={`mt-2 text-xs ${fboMsg.startsWith('Backfill failed') ? 'text-amber-400' : 'text-green-400'}`}>{fboMsg}</div>
+              )}
+            </section>
+          )}
 
           {isAdminUser && (
             <section>

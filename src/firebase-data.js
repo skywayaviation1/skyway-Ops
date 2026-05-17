@@ -13,6 +13,7 @@ import {
   setDoc,
   updateDoc,
   getDoc,
+  getDocs,
   deleteDoc,
   collection,
   onSnapshot,
@@ -218,6 +219,41 @@ export async function attachTripSheetToLeg(legUpdate) {
       toFbo: legUpdate.toFbo || null,
       updatedAt: Date.now(),
     },
+    { merge: true }
+  );
+}
+
+/**
+ * One-shot: return all trip-state docs that have a trip sheet PDF stored.
+ * Used by the admin FBO backfill. Each item: { tripId, tripSheetUrl,
+ * tripSheetFilename, hasFbo } so the caller can skip already-done ones.
+ */
+export async function getTripSheetsForBackfill() {
+  const snap = await getDocs(collection(db, 'trip-state'));
+  const out = [];
+  snap.forEach((d) => {
+    const data = d.data() || {};
+    if (!data.tripSheetUrl) return; // no PDF to reparse
+    out.push({
+      tripId: d.id,
+      tripSheetUrl: data.tripSheetUrl,
+      tripSheetFilename: data.tripSheetFilename || '(unnamed)',
+      hasFbo: !!(data.fromFbo || data.toFbo),
+      from: (data.tripMeta && data.tripMeta.from) || null,
+      to: (data.tripMeta && data.tripMeta.to) || null,
+    });
+  });
+  return out;
+}
+
+/**
+ * Write just the FBO fields onto a trip-state doc by its already-sanitized
+ * doc id (used by the backfill — the id comes straight from getDocs).
+ */
+export async function setTripFboById(tripDocId, fromFbo, toFbo) {
+  await setDoc(
+    doc(db, 'trip-state', tripDocId),
+    { fromFbo: fromFbo || null, toFbo: toFbo || null, updatedAt: Date.now() },
     { merge: true }
   );
 }
