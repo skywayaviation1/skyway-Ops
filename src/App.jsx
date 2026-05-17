@@ -4142,7 +4142,7 @@ function AdminDutyDashboard({ currentUser, users, allTrips }) {
             {s.big}
           </span>
         </div>
-        <Bar pct={s.pct} cls={c.bar} />
+        {Bar({ pct: s.pct, cls: c.bar })}
         <div className="text-[9px] text-slate-600 mt-1 tracking-wide" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
           {s.sub}
           {s.p && s.p.dutyOnAt ? ` · ON ${fmtET(s.p.dutyOnAt, { hour: 'numeric', minute: '2-digit' })}` : ''}
@@ -4248,7 +4248,13 @@ function AdminDutyDashboard({ currentUser, users, allTrips }) {
                   : g.members
                 ).map((u) => (
                   <React.Fragment key={u.uid || u.id}>
-                    <MemberBlock u={u} seatLabel={null} />
+                    {/* Call as a function, NOT <MemberBlock/>. MemberBlock is
+                        redefined every render (the 1s countdown tick), so as a
+                        JSX component it remounts each tick and wipes the open
+                        edit/RE-PAIR panel state inside DutyOversightRow.
+                        Calling it inlines the elements with no component
+                        boundary, so DutyOversightRow stays mounted. */}
+                    {MemberBlock({ u, seatLabel: null })}
                   </React.Fragment>
                 ))}
               </div>
