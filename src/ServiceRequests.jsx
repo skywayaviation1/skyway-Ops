@@ -905,19 +905,6 @@ function ServiceEditModal({ sr, currentUser, onClose }) {
     }
   }
 
-  const F = ({ label, value, set, area }) => (
-    <div>
-      <label className="text-[10px] text-slate-500 tracking-widest" style={MONO}>{label}</label>
-      {area ? (
-        <textarea value={value} onChange={e => set(e.target.value)} rows={3}
-          className="w-full bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none mt-1 resize-none" />
-      ) : (
-        <input value={value} onChange={e => set(e.target.value)}
-          className="w-full bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none mt-1" />
-      )}
-    </div>
-  );
-
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/70 overflow-y-auto p-4">
       <div className="bg-slate-900 border border-slate-700 w-full max-w-lg my-8">
@@ -926,17 +913,17 @@ function ServiceEditModal({ sr, currentUser, onClose }) {
           <button onClick={onClose} className="text-slate-500 hover:text-slate-300"><X className="w-5 h-5" /></button>
         </div>
         <div className="p-4 space-y-3">
-          <F label="SERVICE REQUESTED / SQUAWKS" value={desc} set={setDesc} area />
+          <EditRow label="SERVICE REQUESTED / SQUAWKS" value={desc} set={setDesc} area />
           <div className="grid grid-cols-2 gap-3">
-            <F label="MAINT LEAD" value={maintLead} set={setMaintLead} />
-            <F label="TECHNICIAN" value={technician} set={setTechnician} />
-            <F label="VENDOR" value={vendor} set={setVendor} />
-            <F label="OPS CONTACT" value={opsContact} set={setOpsContact} />
+            <EditRow label="MAINT LEAD" value={maintLead} set={setMaintLead} />
+            <EditRow label="TECHNICIAN" value={technician} set={setTechnician} />
+            <EditRow label="VENDOR" value={vendor} set={setVendor} />
+            <EditRow label="OPS CONTACT" value={opsContact} set={setOpsContact} />
           </div>
-          <F label="DISCREPANCY" value={discrep} set={setDiscrep} area />
-          <F label="TROUBLESHOOTING" value={trouble} set={setTrouble} area />
-          <F label="OEM RECOMMENDATION" value={oem} set={setOem} area />
-          <F label="TEAM EMAILS (comma-separated)" value={recipients} set={setRecipients} />
+          <EditRow label="DISCREPANCY" value={discrep} set={setDiscrep} area />
+          <EditRow label="TROUBLESHOOTING" value={trouble} set={setTrouble} area />
+          <EditRow label="OEM RECOMMENDATION" value={oem} set={setOem} area />
+          <EditRow label="TEAM EMAILS (comma-separated)" value={recipients} set={setRecipients} />
           {err && <div className="text-xs text-amber-400">{err}</div>}
         </div>
         <div className="flex gap-2 p-4 border-t border-slate-800">
@@ -973,6 +960,23 @@ function Field({ label, value }) {
     <div className="flex gap-2 text-xs">
       <span className="text-slate-600 w-32 shrink-0" style={MONO}>{label}</span>
       <span className="text-slate-300">{value || '—'}</span>
+    </div>
+  );
+}
+
+// Module-level (stable identity) — defining this inside a component caused
+// inputs to remount and lose focus after every keystroke.
+function EditRow({ label, value, set, area }) {
+  return (
+    <div>
+      <label className="text-[10px] text-slate-500 tracking-widest" style={MONO}>{label}</label>
+      {area ? (
+        <textarea value={value} onChange={e => set(e.target.value)} rows={3}
+          className="w-full bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none mt-1 resize-none" />
+      ) : (
+        <input value={value} onChange={e => set(e.target.value)}
+          className="w-full bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none mt-1" />
+      )}
     </div>
   );
 }
