@@ -11898,6 +11898,17 @@ const MAINT_MODES = {
 };
 function maintCfg(mode) { return MAINT_MODES[mode] || MAINT_MODES.aog; }
 
+// Vite can only code-split dynamic imports whose specifier is a STATIC string
+// literal. A variable specifier (import(M.dataModule)) does NOT resolve at
+// runtime — the browser fetches the literal text "./firebase-aog.js" which
+// 404s, the import throws, and the list never loads. So branch on mode with
+// real literal import() calls here.
+async function loadMaintModule(mode) {
+  return mode === 'service'
+    ? import('./firebase-service.js')
+    : import('./firebase-aog.js');
+}
+
 function AogEventsTab({ currentUser, fleetTails, mode = 'aog' }) {
   const M = maintCfg(mode);
   const [events, setEvents] = useState([]);
@@ -11910,7 +11921,7 @@ function AogEventsTab({ currentUser, fleetTails, mode = 'aog' }) {
     let unsub = null;
     let cancelled = false;
     (async () => {
-      const m = await import(/* @vite-ignore */ M.dataModule);
+      const m = await loadMaintModule(M.mode);
       if (cancelled) return;
       const subscribe = M.mode === 'aog' ? m.subscribeToAogEvents : m.subscribeToServiceRequests;
       unsub = subscribe((list) => {
@@ -12108,7 +12119,7 @@ function AogDetail({ aog, currentUser, onBack, mode = 'aog' }) {
       const { auth } = await import('./firebase.js');
       let idToken = null;
       if (auth.currentUser) idToken = await auth.currentUser.getIdToken();
-      const mod = await import(/* @vite-ignore */ M.dataModule);
+      const mod = await loadMaintModule(M.mode);
       if (M.mode === 'aog') {
         const r = await fetch(M.emailApi, {
           method: 'POST',
@@ -12137,7 +12148,7 @@ function AogDetail({ aog, currentUser, onBack, mode = 'aog' }) {
     const verb = M.mode === 'aog' ? 'Returned to Service' : 'completed';
     if (!window.confirm(`Mark ${aog.tail} as ${verb}?`)) return;
     try {
-      const mod = await import(/* @vite-ignore */ M.dataModule);
+      const mod = await loadMaintModule(M.mode);
       await mod[M.closeFn](aog.id, reporter);
       if (M.mode === 'aog') {
         const updatedAog = { ...aog, status: M.closedStatus, resolvedAt: Date.now(), resolvedBy: reporter };
@@ -12164,7 +12175,7 @@ function AogDetail({ aog, currentUser, onBack, mode = 'aog' }) {
     try {
       const storageMod = await import('./firebase-storage.js');
       const meta = await storageMod[M.uploadRefFn](file, aog.id);
-      const mod = await import(/* @vite-ignore */ M.dataModule);
+      const mod = await loadMaintModule(M.mode);
       await mod.addReferenceDoc(aog.id, meta, reporter);
       // Realtime subscription refreshes the doc.
     } catch (err) {
@@ -12178,7 +12189,7 @@ function AogDetail({ aog, currentUser, onBack, mode = 'aog' }) {
   async function handleRemoveRef(refDoc) {
     if (!window.confirm(`Remove "${refDoc.filename}"? This deletes the file.`)) return;
     try {
-      const mod = await import(/* @vite-ignore */ M.dataModule);
+      const mod = await loadMaintModule(M.mode);
       await mod.removeReferenceDoc(aog.id, refDoc.id, reporter);
     } catch (err) {
       alert('Failed to remove: ' + err.message);
@@ -12878,7 +12889,7 @@ function AogTechChatPanel({ aog, currentUser, reporter, canEdit, mode = 'aog' })
     if (!text.trim()) return;
     setBusy(true); setErr('');
     try {
-      const aogMod = await import(/* @vite-ignore */ M.dataModule);
+      const aogMod = await loadMaintModule(M.mode);
       await aogMod.postSkywayChatReply(aog.id, text, reporter);
       setText('');
       // The AOG subscription will refresh techChat live.
@@ -13025,7 +13036,7 @@ function SendReferencePickerModal({ aog, docIds, currentUser, reporter, onClose,
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
 
-      const aogMod = await import(/* @vite-ignore */ M.dataModule);
+      const aogMod = await loadMaintModule(M.mode);
       await aogMod.markReferenceEmailed(aog.id, docIds, recipients, reporter);
 
       setStatus(`Sent ${docs.length} document${docs.length === 1 ? '' : 's'} to ${recipients.length} recipient${recipients.length === 1 ? '' : 's'}.`);
@@ -13167,7 +13178,7 @@ function NewAogModal({ currentUser, fleetTails, onClose, onCreated, mode = 'aog'
 
     setSubmitting(true);
     try {
-      const mod = await import(/* @vite-ignore */ M.dataModule);
+      const mod = await loadMaintModule(M.mode);
       let id;
       if (M.mode === 'aog') {
         id = await mod.declareAog({
@@ -13438,7 +13449,7 @@ function AogEditModal({ aog, currentUser, onClose, mode = 'aog' }) {
         ? `RTS estimate updated: ${aog.rtsEstimate || 'TBD'} → ${draft.rtsEstimate}`
         : 'Details updated';
 
-      const mod = await import(/* @vite-ignore */ M.dataModule);
+      const mod = await loadMaintModule(M.mode);
       const updateFn = M.mode === 'aog' ? mod.updateAog : mod.updateServiceRequest;
       await updateFn(aog.id, patch, { author: reporter.displayName, message: logMsg });
 
@@ -13766,7 +13777,7 @@ function AddLogbookEntryModal({ aog, currentUser, onClose, mode = 'aog' }) {
         },
       };
 
-      const aogMod = await import(/* @vite-ignore */ M.dataModule);
+      const aogMod = await loadMaintModule(M.mode);
       const entryId = await aogMod.addLogbookEntry(aog.id, entry);
       const fullEntry = { ...entry, id: entryId, timestamp: Date.now(), signedAt: Date.now() };
 
