@@ -366,6 +366,92 @@ export async function forceCloseDuty(periodDocId, { closeAtMs, editor, note } = 
   return { over14, elapsed };
 }
 
+/**
+ * Admin override: set (or clear) the crew pairing for a duty period.
+ *
+ * Auto-linking at DUTY-ON can be wrong when crew swap mid-trip-day. This lets
+ * an admin authoritatively bind `periodDocId` to `partnerPeriodDocId` (each
+ * period's linkedPeriodId points at the other — the bidirectional form the
+ * dashboard requires), or unbind it entirely. Audited on both periods.
+ *
+ * - To re-pair:  adminSetDutyPair(periodId, { partnerPeriodId, editor, note })
+ * - To unpair:   adminSetDutyPair(periodId, { partnerPeriodId: null, editor, note })
+ */
+export async function adminSetDutyPair(periodDocId, { partnerPeriodId, editor, note }) {
+  if (!periodDocId) throw new Error('period id required');
+  const reason = String(note || '').trim();
+  if (!reason) {
+    const e = new Error('A reason note is required to change a crew pairing.');
+    e.code = 'REASON_REQUIRED';
+    throw e;
+  }
+  const ref = doc(db, 'duty-state', periodDocId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error('duty period not found');
+  const cur = snap.data();
+  const stamp = (d, extra) => ({
+    by: editor?.displayName || editor?.name || 'Admin',
+    at: Date.now(),
+    field: 'crewPair',
+    from: d.linkedPeriodId || null,
+    to: extra,
+    note: reason.slice(0, 500),
+  });
+
+  // First, detach any period that currently points back at THIS one but
+  // isn't the new partner (so we don't leave a dangling half-link).
+  const oldPartnerId = cur.linkedPeriodId || null;
+  if (oldPartnerId && oldPartnerId !== partnerPeriodId) {
+    try {
+      const oldRef = doc(db, 'duty-state', oldPartnerId);
+      const oldSnap = await getDoc(oldRef);
+      if (oldSnap.exists() && oldSnap.data().linkedPeriodId === periodDocId) {
+        const od = oldSnap.data();
+        await updateDoc(oldRef, {
+          linkedPeriodId: null,
+          linkPending: false,
+          adminEdits: [...(Array.isArray(od.adminEdits) ? od.adminEdits : []), stamp(od, null)],
+          updatedAt: Date.now(),
+        });
+      }
+    } catch (e) {
+      // Non-fatal — proceed with the primary change.
+      console.warn('[duty] old-partner detach skipped:', e);
+    }
+  }
+
+  if (!partnerPeriodId) {
+    // Unpair this period.
+    await updateDoc(ref, {
+      linkedPeriodId: null,
+      linkPending: false,
+      adminEdits: [...(Array.isArray(cur.adminEdits) ? cur.adminEdits : []), stamp(cur, null)],
+      updatedAt: Date.now(),
+    });
+    return { paired: false };
+  }
+
+  // Bind partner -> this (and confirm it, since an admin is asserting it).
+  const pRef = doc(db, 'duty-state', partnerPeriodId);
+  const pSnap = await getDoc(pRef);
+  if (!pSnap.exists()) throw new Error('partner duty period not found');
+  const pCur = pSnap.data();
+  await updateDoc(pRef, {
+    linkedPeriodId: periodDocId,
+    linkPending: false,
+    adminEdits: [...(Array.isArray(pCur.adminEdits) ? pCur.adminEdits : []), stamp(pCur, periodDocId)],
+    updatedAt: Date.now(),
+  });
+  // Bind this -> partner.
+  await updateDoc(ref, {
+    linkedPeriodId: partnerPeriodId,
+    linkPending: false,
+    adminEdits: [...(Array.isArray(cur.adminEdits) ? cur.adminEdits : []), stamp(cur, partnerPeriodId)],
+    updatedAt: Date.now(),
+  });
+  return { paired: true };
+}
+
 async function getLatestDuty(pilotUid) {
   // Lightweight one-shot of the latest period (used by startDuty guard).
   return new Promise((resolve) => {

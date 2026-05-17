@@ -3511,6 +3511,11 @@ function DutyOffForm({ over14, busy, err, sicName, onCancel, onConfirm }) {
 // PilotHomeScreen renders. If the flag is off, renders nothing.
 function DutyCard({ currentUser, config, myTrips, users }) {
   if (!config?.dutyTrackerEnabled) return null;
+  // Duty applies to CREW only. During impersonation currentUser.role is the
+  // impersonated person's role, so an admin viewing-as a crew member still
+  // sees the card (to inspect/edit that pilot's duty); a real admin/ops user
+  // on their own account does not get a duty card.
+  if (currentUser?.role !== 'crew') return null;
   return (
     <DutyErrorBoundary>
       <DutyCardInner currentUser={currentUser} myTrips={myTrips} users={users} />
@@ -3609,12 +3614,13 @@ function DutyOversightPanel({ currentUser }) {
   );
 }
 
-function DutyOversightRow({ period, editor, compact }) {
-  const [mode, setMode] = React.useState(null); // 'dutyOnAt' | 'dutyOffAt' | 'forceClose' | null
+function DutyOversightRow({ period, editor, compact, pairCandidates }) {
+  const [mode, setMode] = React.useState(null); // 'dutyOnAt'|'dutyOffAt'|'forceClose'|'pair'|null
   const [val, setVal] = React.useState('');
   const [note, setNote] = React.useState('');
   const [busy, setBusy] = React.useState(false);
   const [msg, setMsg] = React.useState('');
+  const [pairSel, setPairSel] = React.useState(''); // '' = unpair, else partner period id
 
   const onAt = period.dutyOnAt
     ? fmtET(period.dutyOnAt, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })
@@ -3624,9 +3630,32 @@ function DutyOversightRow({ period, editor, compact }) {
     setMode(which);
     setMsg('');
     setNote('');
+    if (which === 'pair') {
+      setPairSel(period.linkedPeriodId || '');
+      return;
+    }
     if (which === 'dutyOnAt') setVal(msToEtLocalString(period.dutyOnAt));
     else if (which === 'dutyOffAt') setVal(msToEtLocalString(period.dutyOffAt || Date.now()));
     else setVal(msToEtLocalString(Date.now())); // forceClose default = now
+  }
+
+  async function submitPair() {
+    if (!note.trim()) { setMsg('A reason note is required.'); return; }
+    setBusy(true); setMsg('');
+    try {
+      const m = await import('./firebase-duty.js');
+      await m.adminSetDutyPair(period.id, {
+        partnerPeriodId: pairSel || null,
+        editor,
+        note,
+      });
+      setMode(null);
+      setMsg('Saved.');
+    } catch (e) {
+      setMsg((e.code === 'REASON_REQUIRED' ? '' : 'Failed: ') + (e.message || 'error'));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function submit() {
@@ -3661,15 +3690,47 @@ function DutyOversightRow({ period, editor, compact }) {
             <>
               <button onClick={() => openEdit('dutyOnAt')} className="px-2 py-1 text-[10px] tracking-widest bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700" style={{ fontFamily: 'JetBrains Mono, monospace' }}>EDIT ON</button>
               <button onClick={() => openEdit('dutyOffAt')} className="px-2 py-1 text-[10px] tracking-widest bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700" style={{ fontFamily: 'JetBrains Mono, monospace' }}>EDIT OFF</button>
+              {Array.isArray(pairCandidates) && (
+                <button onClick={() => openEdit('pair')} className="px-2 py-1 text-[10px] tracking-widest bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-cyan-500/30" style={{ fontFamily: 'JetBrains Mono, monospace' }}>RE-PAIR</button>
+              )}
               <button onClick={() => openEdit('forceClose')} className="px-2 py-1 text-[10px] tracking-widest bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/30" style={{ fontFamily: 'JetBrains Mono, monospace' }}>FORCE CLOSE</button>
             </>
           )}
         </div>
-        {mode && (
+        {mode === 'pair' && (
           <div className="mt-2 space-y-2">
             <div className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              {mode === 'dutyOnAt' ? 'EDIT DUTY-ON (ET)' : mode === 'dutyOffAt' ? 'EDIT DUTY-OFF (ET)' : 'FORCE CLOSE — SET DUTY-OFF (ET)'}
+              SET CREW PAIR FOR THIS PERIOD
             </div>
+            <select
+              value={pairSel}
+              onChange={e => setPairSel(e.target.value)}
+              className="w-full bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              <option value="">— No pair (unlink) —</option>
+              {(pairCandidates || []).map(c => (
+                <option key={c.id} value={c.id}>{c.label}</option>
+              ))}
+            </select>
+            <textarea value={note} onChange={e => setNote(e.target.value)} rows={2}
+              placeholder="Reason for changing the crew pairing (required — recorded in audit) *"
+              className="w-full bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none resize-none" />
+            <div className="text-[9px] text-slate-600">Binds both periods to each other (or clears the link). Recorded with your name, timestamp, old→new on both periods.</div>
+            {msg && <div className={`text-xs ${msg === 'Saved.' ? 'text-green-400' : 'text-amber-400'}`}>{msg}</div>}
+            <div className="flex gap-2">
+              <button onClick={submitPair} disabled={busy}
+                className="flex-1 px-3 py-2 text-xs tracking-widest font-medium disabled:opacity-50 bg-cyan-500 hover:bg-cyan-400 text-slate-950"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                {busy ? 'SAVING…' : (pairSel ? 'SET PAIR' : 'UNLINK')}
+              </button>
+              <button onClick={() => { setMode(null); setMsg(''); }} disabled={busy}
+                className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs tracking-widest font-medium"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}>CANCEL</button>
+            </div>
+          </div>
+        )}
+        {mode && mode !== 'pair' && (
             <input type="datetime-local" value={val} onChange={e => setVal(e.target.value)}
               className="w-full bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none" />
             <textarea value={note} onChange={e => setNote(e.target.value)} rows={2}
@@ -3884,11 +3945,12 @@ function AdminDutyDashboard({ currentUser, users, allTrips }) {
     return counted > 0 ? { ms: total, legs: counted } : null;
   }
 
-  // Crew = registered users with a pilot-ish role.
+  // Duty oversight covers CREW only — duty/rest under 14 CFR 135.267 applies
+  // to crewmembers. Ops/admin accounts are not shown here.
   const crew = React.useMemo(() => {
     const list = Array.isArray(users) ? users : [];
     return list
-      .filter(u => u && (u.uid || u.id) && ['crew', 'ops', 'admin'].includes(u.role))
+      .filter(u => u && (u.uid || u.id) && u.role === 'crew')
       .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   }, [users]);
 
@@ -4093,7 +4155,23 @@ function AdminDutyDashboard({ currentUser, users, allTrips }) {
         )}
         {s.p && (
           <div className="mt-2">
-            <DutyOversightRow period={s.p} editor={currentUser} compact />
+            <DutyOversightRow
+              period={s.p}
+              editor={currentUser}
+              compact
+              pairCandidates={crew
+                .filter(o => (o.uid || o.id) !== (u.uid || u.id))
+                .map(o => {
+                  const op = latestByUid[o.uid || o.id];
+                  if (!op || !op.id) return null;
+                  const oa = assignment(o);
+                  return {
+                    id: op.id,
+                    label: `${o.name || 'Unknown'}${oa ? ` · ${oa.tail} ${oa.route}` : ''}${op.status === 'on' ? ' · on duty' : ''}`,
+                  };
+                })
+                .filter(Boolean)}
+            />
           </div>
         )}
       </div>
