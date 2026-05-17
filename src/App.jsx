@@ -542,23 +542,41 @@ function parseJetInsightTripSheet(text) {
   // We find, per airport code, the FBO name as the line immediately
   // following the "CODE - <Airport Name>" header. First occurrence wins
   // (DEPARTS for origin, ARRIVES for destination — same FBO string).
+  // IMPORTANT: extractPdfText joins PDF items with SPACES, not newlines, so
+  // the text is one flattened run. We cannot rely on line breaks. Instead,
+  // for each "CODE - " header we scan the ~140 chars after it. The FBO name
+  // is either a known FBO chain, or a Title-Case phrase ending in
+  // Aviation/FBO/Flight Support/Jet Center just before the street address.
   const fboByCode = {};
   try {
-    const lines = String(text).split(/\r?\n/).map(l => l.trim());
-    for (let i = 0; i < lines.length; i++) {
-      // Header line: 3-4 char code, " - ", then an airport name (has a letter)
-      const hm = /^([A-Z0-9]{3,4})\s+-\s+(.+\S)\s*$/.exec(lines[i]);
-      if (!hm) continue;
+    const KNOWN_FBO = /(Signature Flight Support|Signature Aviation|Atlantic Aviation|Jet Aviation|Million Air|Sheltair|Wilson Air|Cutter Aviation|Ross Aviation|Modern Aviation|Clay Lacy Aviation|Meridian|Landmark Aviation|TAC Air|Banyan Air Service|Galaxy FBO|Stevens Aerospace|Jet Center|Airport Authority)/;
+    const headerRe = /\b([A-Z]{3,4})\s+-\s+/g;
+    let hm;
+    while ((hm = headerRe.exec(text)) !== null) {
       const code = hm[1].toUpperCase();
-      if (fboByCode[code]) continue; // already have it
-      // Next non-empty line is the FBO name.
-      let j = i + 1;
-      while (j < lines.length && !lines[j]) j++;
-      const fbo = lines[j] || '';
-      // Sanity: FBO line shouldn't itself look like an address (starts with
-      // a number) or another code header.
-      if (fbo && !/^\d/.test(fbo) && !/^[A-Z0-9]{3,4}\s+-\s+/.test(fbo) && fbo.length <= 80) {
-        fboByCode[code] = fbo;
+      if (fboByCode[code]) continue;
+      const after = text.slice(hm.index + hm[0].length, hm.index + hm[0].length + 160);
+      const k = KNOWN_FBO.exec(after);
+      if (k) { fboByCode[code] = k[0].trim(); continue; }
+      // Generic fallback: Title-Case phrase (<=5 words) ending in an FBO-ish
+      // suffix, immediately before a street number or another code header.
+      const g = /([A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]+){0,4}\s+(?:Aviation|FBO|Air Center|Jet Center|Flight Support))(?=\s+\d|\s+[A-Z]{3,4}\s+-|\s*$)/.exec(after);
+      if (g) {
+        const words = g[1].split(/\s+/);
+        // Collapse adjacent duplicate words.
+        const out = [];
+        for (const w of words) if (out[out.length - 1] !== w) out.push(w);
+        // If a bigram repeats (airport name echoed before the FBO, e.g.
+        // "Martin State Martin State Airport FBO"), cut at the 2nd occurrence.
+        let cut = out;
+        for (let a = 0; a + 1 < out.length && cut === out; a++) {
+          const bg = out[a] + ' ' + out[a + 1];
+          for (let b = a + 2; b + 1 < out.length; b++) {
+            if (out[b] + ' ' + out[b + 1] === bg) { cut = out.slice(b); break; }
+          }
+        }
+        const phrase = cut.join(' ');
+        if (phrase.length <= 60) fboByCode[code] = phrase;
       }
     }
   } catch (e) {
