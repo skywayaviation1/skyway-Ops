@@ -3731,6 +3731,10 @@ function DutyOversightRow({ period, editor, compact, pairCandidates }) {
           </div>
         )}
         {mode && mode !== 'pair' && (
+          <div className="mt-2 space-y-2">
+            <div className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {mode === 'dutyOnAt' ? 'EDIT DUTY-ON (ET)' : mode === 'dutyOffAt' ? 'EDIT DUTY-OFF (ET)' : 'FORCE CLOSE — SET DUTY-OFF (ET)'}
+            </div>
             <input type="datetime-local" value={val} onChange={e => setVal(e.target.value)}
               className="w-full bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none" />
             <textarea value={note} onChange={e => setNote(e.target.value)} rows={2}
@@ -3945,8 +3949,9 @@ function AdminDutyDashboard({ currentUser, users, allTrips }) {
     return counted > 0 ? { ms: total, legs: counted } : null;
   }
 
-  // Duty oversight covers CREW only — duty/rest under 14 CFR 135.267 applies
-  // to crewmembers. Ops/admin accounts are not shown here.
+  // Duty oversight covers crewmembers (those subject to 14 CFR 135.267) as
+  // the duty SUBJECTS. Ops/admin still VIEW this whole page — they just don't
+  // appear as duty subjects themselves and have no home-screen duty card.
   const crew = React.useMemo(() => {
     const list = Array.isArray(users) ? users : [];
     return list
@@ -15416,10 +15421,10 @@ function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, sync
     { id: 'ops',      label: 'OPS',       icon: Zap,      roles: ['ops', 'admin'] },
     { id: 'maint',    label: 'MAINT',     icon: AlertTriangle, roles: ['maint', 'ops', 'admin'] },
     { id: 'users',    label: 'USERS',     icon: Users,    roles: ['ops', 'admin'] },
-    { id: 'duty',     label: 'DUTY',      icon: Clock,    roles: ['admin'] },
+    { id: 'duty',     label: 'DUTY',      icon: Clock,    roles: ['ops', 'admin'] },
   ];
-  // Admin-only DUTY tab also shows when an admin is impersonating a crew
-  // member (impersonation is admin-only, so _impersonating is a safe signal).
+  // DUTY tab also shows when an admin is impersonating a crew member
+  // (impersonation is admin-only, so _impersonating is a safe signal).
   const isAdminContext = currentUser.role === 'admin' || currentUser._impersonating === true;
   const allowed = sections.filter(s =>
     s.roles.includes(currentUser.role) || (s.id === 'duty' && isAdminContext)
