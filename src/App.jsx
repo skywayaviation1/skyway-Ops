@@ -6055,7 +6055,18 @@ function TripSheetPanel({
       // 3. Show preview before uploading
       setMatchPreview({ ...parsed, matches, file });
     } catch (err) {
-      setError(err.message || 'Upload failed');
+      const m = String(err && err.message || '');
+      if (m.includes('is not a valid JavaScript MIME type') ||
+          m.includes('Failed to fetch dynamically imported module') ||
+          m.includes('Importing a module script failed') ||
+          (m.includes('MIME type') && m.includes('module'))) {
+        // Stale cached app version — the lazy chunk for PDF/upload no longer
+        // exists on the server. Tell the user plainly; the global recovery
+        // handler will also attempt one auto-reload.
+        setError('The app needs to reload to a newer version. Please refresh this page (or fully close and reopen the app) and try the upload again.');
+      } else {
+        setError(err.message || 'Upload failed');
+      }
     } finally {
       setUploading(false);
       // Reset the input so picking the same file again still triggers onChange

@@ -31,7 +31,12 @@ import './index.css';
       m.includes('Importing a module script failed') ||
       m.includes('Failed to fetch dynamically imported module') ||
       m.includes('error loading dynamically imported module') ||
-      (m.includes('dynamically imported module') && m.includes('failed'))
+      (m.includes('dynamically imported module') && m.includes('failed')) ||
+      // Safari / iOS WebKit phrasing when a dynamic import receives the
+      // HTML 404 fallback instead of the JS chunk:
+      m.includes('is not a valid JavaScript MIME type') ||
+      m.includes("Expected a JavaScript module script but the server responded with a MIME type") ||
+      (m.includes('MIME type') && m.includes('module'))
     );
   }
 
