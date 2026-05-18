@@ -4072,6 +4072,49 @@ function AdminDutyDashboard({ currentUser, users, allTrips }) {
   // replaced Cole) leaves yesterday's Seth↔Cole periods still mutually linked
   // forever — but both are closed and rest has long elapsed, so that pair is
   // stale history and must NOT be grouped today.
+  // ---- SCHEDULE-DERIVED PAIRING (Stage 1) -------------------------------
+  // The old logic paired ONLY via linkedPeriodId, which is set by a brittle
+  // one-shot name-match at duty-on. If that failed (late schedule, name-form
+  // mismatch, trip assigned after duty-on, pilot dutied on before partner),
+  // the pair never showed even though the schedule clearly shows the crew.
+  //
+  // This derives the partner LIVE from allTrips every render: find this
+  // pilot's current duty-day trip, read the OTHER seat's name, resolve it to
+  // a crew uid. Pairing is then established when BOTH are on duty (or in
+  // active rest from that period) — regardless of whether linkedPeriodId was
+  // ever set. An explicit admin RE-PAIR override still wins (Stage 3 wires
+  // the sticky flag; here we already honor adminPairOverrideUid if present).
+  const symMatchD = (a, b) =>
+    nameMatchesPilot(a || '', b || '') || nameMatchesPilot(b || '', a || '');
+
+  function scheduleDerivedPartnerUid(u) {
+    const a = assignment(u);            // already finds the current trip + seat
+    if (!a || !a.seat) return null;
+    const trips = Array.isArray(allTrips) ? allTrips : [];
+    const uname = u.jetinsightName || u.name || '';
+    // Re-find the exact trip assignment() chose (same selection rule) so we
+    // can read its PIC/SIC pair.
+    const mine = trips
+      .filter(t => t?.info && t.start &&
+        (symMatchD(t.info.pic || '', uname) || symMatchD(t.info.sic || '', uname)))
+      .map(t => ({ t, s: new Date(t.start).getTime() }))
+      .filter(x => Number.isFinite(x.s))
+      .sort((x, y) => x.s - y.s);
+    const next = mine.find(x => {
+      const e = x.t.end ? new Date(x.t.end).getTime() : x.s;
+      return e >= now - 2 * 3600 * 1000;
+    }) || mine[mine.length - 1] || null;
+    if (!next) return null;
+    const i = next.t.info || {};
+    const partnerName = (a.seat === 'PIC' ? i.sic : i.pic) || '';
+    if (!partnerName) return null;
+    const match = crew.find(o =>
+      o && (o.uid || o.id) &&
+      symMatchD(partnerName, o.jetinsightName || o.name || '')
+    );
+    return match ? (match.uid || match.id) : null;
+  }
+
   const crewByUid = {};
   for (const u of crew) crewByUid[u.uid || u.id] = u;
   const latestIdToUid = {};
@@ -4088,34 +4131,65 @@ function AdminDutyDashboard({ currentUser, users, allTrips }) {
     if (pp.status === 'off' && pp.restUntil && now < pp.restUntil) return true;
     return false;
   };
+
+  // Resolve each crew member's partner uid by precedence:
+  //   1. Explicit admin override stamped on their current period
+  //      (adminPairOverrideUid) — sticky, wins over everything.
+  //   2. Schedule-derived partner, if BOTH have a current period.
+  //   3. Legacy mutual linkedPeriodId between both latest periods (fallback
+  //      for periods created before this change, still current).
+  function resolvePartnerUid(u) {
+    const uid = u.uid || u.id;
+    const p = latestByUid[uid];
+
+    // (1) Sticky admin override.
+    if (p && p.adminPairOverrideUid && p.adminPairOverrideUid !== uid && periodIsCurrent(p)) {
+      const ov = crewByUid[p.adminPairOverrideUid];
+      if (ov) return p.adminPairOverrideUid;
+    }
+
+    // (2) Schedule-derived — only if both are current (on duty / active rest).
+    const schedUid = scheduleDerivedPartnerUid(u);
+    if (schedUid && schedUid !== uid && crewByUid[schedUid]) {
+      const myCur = periodIsCurrent(p);
+      const theirCur = periodIsCurrent(latestByUid[schedUid]);
+      if (myCur && theirCur) return schedUid;
+    }
+
+    // (3) Legacy mutual linkedPeriodId fallback.
+    if (p && p.linkedPeriodId) {
+      const candidateUid = latestIdToUid[p.linkedPeriodId];
+      if (candidateUid && candidateUid !== uid) {
+        const partnerLatest = latestByUid[candidateUid];
+        if (partnerLatest && partnerLatest.linkedPeriodId === p.id) {
+          if (periodIsCurrent(p) || periodIsCurrent(partnerLatest)) {
+            return candidateUid;
+          }
+        }
+      }
+    }
+    return null;
+  }
+
   const grouped = [];
   const seen = new Set();
   for (const u of crew) {
     const uid = u.uid || u.id;
     if (seen.has(uid)) continue;
-    const p = latestByUid[uid];
-    let partnerUid = null;
-    if (p && p.linkedPeriodId) {
-      const candidateUid = latestIdToUid[p.linkedPeriodId];
-      if (candidateUid && candidateUid !== uid) {
-        const partnerLatest = latestByUid[candidateUid];
-        // Mutual link between both latest periods…
-        if (partnerLatest && partnerLatest.linkedPeriodId === p.id) {
-          // …AND the pairing is still live (not a closed historical pair
-          // left over from a previous trip / crew swap).
-          if (periodIsCurrent(p) || periodIsCurrent(partnerLatest)) {
-            partnerUid = candidateUid;
-          }
-        }
+    let partnerUid = resolvePartnerUid(u);
+    // Only pair if the partner ALSO resolves back to this pilot (mutual) —
+    // prevents a one-sided schedule read from creating a phantom pair.
+    if (partnerUid && partnerUid !== uid && !seen.has(partnerUid)) {
+      const partnerU = crewByUid[partnerUid];
+      const back = partnerU ? resolvePartnerUid(partnerU) : null;
+      if (back === uid) {
+        seen.add(uid); seen.add(partnerUid);
+        grouped.push({ members: [u, partnerU] });
+        continue;
       }
     }
-    if (partnerUid && partnerUid !== uid && !seen.has(partnerUid)) {
-      seen.add(uid); seen.add(partnerUid);
-      grouped.push({ members: [u, crewByUid[partnerUid]] });
-    } else {
-      seen.add(uid);
-      grouped.push({ members: [u] });
-    }
+    seen.add(uid);
+    grouped.push({ members: [u] });
   }
   // Sort: active crews first, then resting, then idle; alpha within.
   const groupRank = (g) => {
