@@ -602,6 +602,127 @@ export async function adminSetDutyPair(periodDocId, { partnerPeriodId, editor, n
   return { paired: true };
 }
 
+/**
+ * Admin: pair an on-duty pilot's period (A) with partner pilot B, and make
+ * B's duty state MATCH A — creating B's duty period if B has none, or
+ * aligning B's existing open period's duty-on time to A's. Both periods are
+ * bidirectionally linked. Every B-side change is audit-marked as an
+ * admin crew-pair action carrying the required reason.
+ *
+ *   periodDocId   : A's period id (the on-duty pilot you're pairing FROM)
+ *   partnerPeriodId: B's existing period id, if B already has one (optional)
+ *   partnerPilot  : { uid, name } — required if B has no open period so we
+ *                   can create one
+ *   editor        : { displayName } admin performing this
+ *   note          : required reason (audit)
+ *
+ * Returns { paired, createdPartner, alignedTo }.
+ */
+export async function adminPairAndSyncDuty(periodDocId, { partnerPeriodId, partnerPilot, editor, note }) {
+  if (!periodDocId) throw new Error('period id required');
+  const reason = String(note || '').trim();
+  if (!reason) {
+    const e = new Error('A reason note is required to pair and sync crew duty.');
+    e.code = 'REASON_REQUIRED';
+    throw e;
+  }
+  const aRef = doc(db, 'duty-state', periodDocId);
+  const aSnap = await getDoc(aRef);
+  if (!aSnap.exists()) throw new Error('duty period not found');
+  const a = aSnap.data();
+  if (!Number.isFinite(a.dutyOnAt)) {
+    throw new Error('The source pilot has no valid duty-on time to sync from.');
+  }
+  const now = Date.now();
+  const adminName = editor?.displayName || editor?.name || 'Admin';
+  const mkStamp = (from, to, extra) => ({
+    by: adminName,
+    at: now,
+    field: 'crewPairSync',
+    from,
+    to,
+    note: `${extra} Admin reason: ${reason.slice(0, 400)}`,
+  });
+
+  // Resolve B's period: explicit partnerPeriodId, else look up B's open one.
+  let bId = partnerPeriodId || null;
+  let bSnap = null;
+  if (bId) {
+    bSnap = await getDoc(doc(db, 'duty-state', bId));
+    if (!bSnap.exists()) bSnap = null;
+  }
+  if ((!bSnap || bSnap.data().status === 'off') && partnerPilot?.uid) {
+    // Try B's current open period by uid before creating a new one.
+    const existing = await getLatestDuty(partnerPilot.uid);
+    if (existing && existing.status === 'on' && existing.id) {
+      bId = existing.id;
+      bSnap = await getDoc(doc(db, 'duty-state', bId));
+    }
+  }
+
+  let createdPartner = false;
+
+  if (bSnap && bSnap.data().status === 'on') {
+    // B already on duty — align B's duty-on to A's and link.
+    const b = bSnap.data();
+    const bRef = doc(db, 'duty-state', bId);
+    const bEdits = Array.isArray(b.adminEdits) ? b.adminEdits : [];
+    const patch = {
+      dutyOnAt: a.dutyOnAt,
+      linkedPeriodId: periodDocId,
+      linkPending: false,
+      updatedAt: now,
+      adminEdits: [...bEdits, mkStamp(b.dutyOnAt || null, a.dutyOnAt,
+        `Duty-on aligned to paired crew (period ${periodDocId}).`)],
+    };
+    if (b.dutyOffAt) patch.over14 = (b.dutyOffAt - a.dutyOnAt) > DUTY_MAX_MS;
+    await updateDoc(bRef, patch);
+  } else {
+    // B has no open period — create one matching A's duty-on time.
+    if (!partnerPilot?.uid) {
+      throw new Error('Partner pilot identity required to start their duty period.');
+    }
+    bId = periodId(partnerPilot.uid, a.dutyOnAt);
+    const record = {
+      id: bId,
+      pilotUid: partnerPilot.uid,
+      pilotName: partnerPilot.name || partnerPilot.displayName || 'Unknown',
+      role: 'SIC',
+      sicUid: null,
+      sicName: null,
+      dutyOnAt: a.dutyOnAt,
+      fboArrivalAt: a.dutyOnAt,
+      dutyOffAt: null,
+      restUntil: null,
+      over14: false,
+      over14ReasonPic: '',
+      over14ReasonSic: '',
+      restOverride: null,
+      status: 'on',
+      linkedPeriodId: periodDocId,
+      linkPending: false,
+      adminEdits: [mkStamp(null, a.dutyOnAt,
+        `Duty period created by admin to match paired crew (period ${periodDocId}); duty-on set to paired crew's start.`)],
+      createdAt: now,
+      updatedAt: now,
+    };
+    await setDoc(doc(db, 'duty-state', bId), record);
+    createdPartner = true;
+  }
+
+  // Link A -> B (audit on A too).
+  const aEdits = Array.isArray(a.adminEdits) ? a.adminEdits : [];
+  await updateDoc(aRef, {
+    linkedPeriodId: bId,
+    linkPending: false,
+    updatedAt: now,
+    adminEdits: [...aEdits, mkStamp(a.linkedPeriodId || null, bId,
+      `Paired with crew period ${bId}${createdPartner ? ' (partner duty period created)' : ' (partner duty-on aligned)'}.`)],
+  });
+
+  return { paired: true, createdPartner, alignedTo: a.dutyOnAt };
+}
+
 async function getLatestDuty(pilotUid) {
   // Lightweight one-shot of the latest period (used by startDuty guard).
   return new Promise((resolve) => {

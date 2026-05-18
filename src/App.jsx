@@ -3644,13 +3644,25 @@ function DutyOversightRow({ period, editor, compact, pairCandidates }) {
     setBusy(true); setMsg('');
     try {
       const m = await import('./firebase-duty.js');
-      await m.adminSetDutyPair(period.id, {
-        partnerPeriodId: pairSel || null,
+      if (!pairSel) {
+        // Unlink only.
+        await m.adminSetDutyPair(period.id, { partnerPeriodId: null, editor, note });
+        setMode(null);
+        setMsg('Saved.');
+        return;
+      }
+      // value = "periodId|uid|name"  (periodId may be empty if not on duty)
+      const [pPid, pUid, pName] = String(pairSel).split('|');
+      const res = await m.adminPairAndSyncDuty(period.id, {
+        partnerPeriodId: pPid || null,
+        partnerPilot: pUid ? { uid: pUid, name: pName } : null,
         editor,
         note,
       });
       setMode(null);
-      setMsg('Saved.');
+      setMsg(res?.createdPartner
+        ? 'Saved — partner duty started & paired.'
+        : 'Saved — partner aligned & paired.');
     } catch (e) {
       setMsg((e.code === 'REASON_REQUIRED' ? '' : 'Failed: ') + (e.message || 'error'));
     } finally {
@@ -3710,13 +3722,13 @@ function DutyOversightRow({ period, editor, compact, pairCandidates }) {
             >
               <option value="">— No pair (unlink) —</option>
               {(pairCandidates || []).map(c => (
-                <option key={c.id} value={c.id}>{c.label}</option>
+                <option key={c.value} value={c.value}>{c.label}</option>
               ))}
             </select>
             <textarea value={note} onChange={e => setNote(e.target.value)} rows={2}
               placeholder="Reason for changing the crew pairing (required — recorded in audit) *"
               className="w-full bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-cyan-400 outline-none resize-none" />
-            <div className="text-[9px] text-slate-600">Binds both periods to each other (or clears the link). Recorded with your name, timestamp, old→new on both periods.</div>
+            <div className="text-[9px] text-slate-600">Pairs both crew. If the selected pilot isn't on duty, their duty period is started at this crew's duty-on time. All changes recorded with your name, timestamp, and reason on both periods.</div>
             {msg && <div className={`text-xs ${msg === 'Saved.' ? 'text-green-400' : 'text-amber-400'}`}>{msg}</div>}
             <div className="flex gap-2">
               <button onClick={submitPair} disabled={busy}
@@ -4178,12 +4190,17 @@ function AdminDutyDashboard({ currentUser, users, allTrips }) {
               pairCandidates={crew
                 .filter(o => (o.uid || o.id) !== (u.uid || u.id))
                 .map(o => {
-                  const op = latestByUid[o.uid || o.id];
-                  if (!op || !op.id) return null;
+                  const ouid = o.uid || o.id;
+                  const op = latestByUid[ouid];
                   const oa = assignment(o);
+                  const onDuty = op && op.status === 'on';
+                  // value encodes: periodId|uid|name  (periodId may be empty
+                  // if the pilot isn't on duty — the data layer will create
+                  // their period matching this pilot's duty-on time).
+                  const pid = (op && op.id) ? op.id : '';
                   return {
-                    id: op.id,
-                    label: `${o.name || 'Unknown'}${oa ? ` · ${oa.tail} ${oa.route}` : ''}${op.status === 'on' ? ' · on duty' : ''}`,
+                    value: `${pid}|${ouid}|${(o.name || 'Unknown').replace(/\|/g, ' ')}`,
+                    label: `${o.name || 'Unknown'}${oa ? ` · ${oa.tail} ${oa.route}` : ''}${onDuty ? ' · on duty' : ' · NOT on duty (will start at this crew\u2019s duty-on)'}`,
                   };
                 })
                 .filter(Boolean)}
