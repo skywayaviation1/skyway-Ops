@@ -395,6 +395,49 @@ export async function adminEditDuty(periodDocId, { field, newValueMs, editor, no
   }
 
   await updateDoc(ref, patch);
+
+  // Crew-pair sync: an admin correcting one pilot's duty-on/off applies the
+  // same correction to the linked partner so the pair doesn't drift. This
+  // assumes both pilots' actual times were identical (usually true for a
+  // crew pair). The partner edit is stamped with an audit marker showing it
+  // was a paired sync triggered by the admin's edit on the other pilot, so
+  // the record is honest about how the time was set and an admin can still
+  // individually re-edit the partner if their real time genuinely differed.
+  const partnerId = cur.linkedPeriodId || null;
+  if (partnerId && partnerId !== periodDocId) {
+    try {
+      const pRef = doc(db, 'duty-state', partnerId);
+      const pSnap = await getDoc(pRef);
+      if (pSnap.exists()) {
+        const p = pSnap.data();
+        const pFrom = p[field] || null;
+        const pEdits = Array.isArray(p.adminEdits) ? p.adminEdits : [];
+        const pPatch = {
+          [field]: to,
+          adminEdits: [...pEdits, {
+            by: editor?.displayName || editor?.name || 'Admin',
+            at: Date.now(),
+            field,
+            from: pFrom,
+            to,
+            note: `Crew-pair sync: matched to paired crew (period ${periodDocId}). Original admin reason: ${reason.slice(0, 400)}`,
+          }],
+          updatedAt: Date.now(),
+        };
+        if (field === 'dutyOffAt' && to) {
+          pPatch.restUntil = to + REST_MIN_MS;
+          pPatch.status = 'off';
+        }
+        if (field === 'dutyOnAt' && to && p.dutyOffAt) {
+          pPatch.over14 = (p.dutyOffAt - to) > DUTY_MAX_MS;
+        }
+        await updateDoc(pRef, pPatch);
+      }
+    } catch (e) {
+      // Non-fatal: the primary pilot's edit is already saved correctly.
+      console.warn('[duty] partner admin-edit sync failed:', e);
+    }
+  }
 }
 
 /**
@@ -436,6 +479,40 @@ export async function forceCloseDuty(periodDocId, { closeAtMs, editor, note } = 
     }],
     updatedAt: Date.now(),
   });
+
+  // Crew-pair sync: force-closing one pilot force-closes the linked partner
+  // at the same time with the same rest clock, audit-marked as a paired sync.
+  const partnerId = cur.linkedPeriodId || null;
+  if (partnerId && partnerId !== periodDocId) {
+    try {
+      const pRef = doc(db, 'duty-state', partnerId);
+      const pSnap = await getDoc(pRef);
+      if (pSnap.exists()) {
+        const p = pSnap.data();
+        if (p.status !== 'off') {
+          const pElapsed = closeAt - (p.dutyOnAt || closeAt);
+          const pEdits = Array.isArray(p.adminEdits) ? p.adminEdits : [];
+          await updateDoc(pRef, {
+            dutyOffAt: closeAt,
+            restUntil: closeAt + REST_MIN_MS,
+            over14: pElapsed > DUTY_MAX_MS,
+            status: 'off',
+            adminEdits: [...pEdits, {
+              by: editor?.displayName || editor?.name || 'Admin',
+              at: Date.now(),
+              field: 'forceClose',
+              from: p.dutyOffAt || null,
+              to: closeAt,
+              note: `Crew-pair sync: force-closed with paired crew (period ${periodDocId}). Original admin reason: ${reason.slice(0, 400)}`,
+            }],
+            updatedAt: Date.now(),
+          });
+        }
+      }
+    } catch (e) {
+      console.warn('[duty] partner force-close sync failed:', e);
+    }
+  }
   return { over14, elapsed };
 }
 
