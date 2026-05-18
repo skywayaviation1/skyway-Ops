@@ -19221,6 +19221,30 @@ function ReadField({ label, value, highlight }) {
 function UsersScreen({ users, currentUser, realUserRole, onApproveUser, onUpdateUser, onRemoveUser, onImpersonate }) {
   const [confirmRemoveId, setConfirmRemoveId] = useState(null);
   const [editingId, setEditingId] = useState(null);
+  const [resetState, setResetState] = useState({}); // { [uid]: 'sending'|'sent'|'error:msg' }
+
+  async function handleSendReset(u) {
+    if (!u?.email) {
+      setResetState(s => ({ ...s, [u.uid]: 'error:No email on file for this user' }));
+      return;
+    }
+    if (!window.confirm(`Send a password reset email to ${u.email}? They will receive a secure link to set a new password. You will not see or set their password.`)) return;
+    setResetState(s => ({ ...s, [u.uid]: 'sending' }));
+    try {
+      const { auth } = await import('./firebase.js');
+      const { sendPasswordResetEmail } = await import('firebase/auth');
+      await sendPasswordResetEmail(auth, u.email);
+      setResetState(s => ({ ...s, [u.uid]: 'sent' }));
+      setTimeout(() => setResetState(s => {
+        const n = { ...s }; delete n[u.uid]; return n;
+      }), 8000);
+    } catch (e) {
+      const msg = e?.code === 'auth/user-not-found'
+        ? 'No Firebase account for that email'
+        : (e?.message || 'Failed to send');
+      setResetState(s => ({ ...s, [u.uid]: 'error:' + msg }));
+    }
+  }
   // Use realUserRole when present (so admin keeps admin powers even while impersonating)
   const effectiveRole = realUserRole || currentUser.role;
   const isAdmin = effectiveRole === 'admin' || effectiveRole === 'ops';
@@ -19306,6 +19330,31 @@ function UsersScreen({ users, currentUser, realUserRole, onApproveUser, onUpdate
                     >
                       EDIT
                     </button>
+                  )}
+                  {!isYou && (
+                    (() => {
+                      const rs = resetState[u.uid];
+                      if (rs === 'sent') {
+                        return <span className="px-2 py-1.5 text-[10px] tracking-widest text-green-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>RESET SENT ✓</span>;
+                      }
+                      if (rs && rs.startsWith('error:')) {
+                        return (
+                          <span className="px-2 py-1.5 text-[10px] tracking-widest text-amber-400" title={rs.slice(6)} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                            RESET FAILED
+                          </span>
+                        );
+                      }
+                      return (
+                        <button
+                          onClick={() => handleSendReset(u)}
+                          disabled={rs === 'sending'}
+                          className="px-2 py-1.5 text-[10px] tracking-widest border border-slate-700 text-slate-300 hover:border-cyan-500/50 hover:text-cyan-300 disabled:opacity-50"
+                          title="Email this user a secure password-reset link (you never see their password)"
+                        >
+                          {rs === 'sending' ? 'SENDING…' : 'RESET PW'}
+                        </button>
+                      );
+                    })()
                   )}
                   {!isYou && canImpersonate && u.approved && (
                     <button
