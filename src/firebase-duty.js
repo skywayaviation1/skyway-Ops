@@ -249,11 +249,36 @@ export async function endDuty(periodDocId, { over14ReasonPic, over14ReasonSic } 
   const elapsed = now - (cur.dutyOnAt || now);
   const over14 = elapsed > DUTY_MAX_MS;
 
-  if (over14) {
+  // The linked partner may be over 14h even if the pressing pilot is not
+  // (different duty-on times). An over-14 close with no documented reason
+  // is a compliance gap, so the reason gate must consider BOTH periods.
+  let partnerOver14 = false;
+  const partnerIdPre = cur.linkedPeriodId || null;
+  if (partnerIdPre && partnerIdPre !== periodDocId) {
+    try {
+      const pSnapPre = await getDoc(doc(db, 'duty-state', partnerIdPre));
+      if (pSnapPre.exists()) {
+        const pPre = pSnapPre.data();
+        if (pPre.status !== 'off') {
+          partnerOver14 = (now - (pPre.dutyOnAt || now)) > DUTY_MAX_MS;
+        }
+      }
+    } catch (e) {
+      console.warn('[duty] partner over-14 pre-check failed:', e);
+    }
+  }
+
+  if (over14 || partnerOver14) {
     const pic = String(over14ReasonPic || '').trim();
     const sic = String(over14ReasonSic || '').trim();
     if (!pic || !sic) {
-      const e = new Error('Over-14h: PIC and SIC reasons are both required to close this duty period.');
+      const e = new Error(
+        (over14 && partnerOver14)
+          ? 'Over-14h: both crew exceeded 14h. PIC and SIC reasons are both required to close.'
+          : over14
+            ? 'Over-14h: PIC and SIC reasons are both required to close this duty period.'
+            : 'Over-14h: your paired crew exceeded 14h. PIC and SIC reasons are both required to close.'
+      );
       e.code = 'OVER14_REASON_REQUIRED';
       throw e;
     }
@@ -268,6 +293,54 @@ export async function endDuty(periodDocId, { over14ReasonPic, over14ReasonSic } 
     status: 'off',
     updatedAt: now,
   });
+
+  // Crew-pair sync: when one pilot duties off, the linked partner's period
+  // is closed too, with the SAME dutyOffAt and rest clock (so both pilots'
+  // rest windows are identical). This is a deliberate operational choice —
+  // it can under-report the partner's duty if they were genuinely still on
+  // duty, so the partner close is stamped with an audit marker showing it
+  // was a paired auto-close triggered by this period, not the pilot's own
+  // duty-off action.
+  const partnerId = cur.linkedPeriodId || null;
+  if (partnerId && partnerId !== periodDocId) {
+    try {
+      const pRef = doc(db, 'duty-state', partnerId);
+      const pSnap = await getDoc(pRef);
+      if (pSnap.exists()) {
+        const p = pSnap.data();
+        if (p.status !== 'off') {
+          const pElapsed = now - (p.dutyOnAt || now);
+          const pOver14 = pElapsed > DUTY_MAX_MS;
+          await updateDoc(pRef, {
+            dutyOffAt: now,
+            restUntil: now + REST_MIN_MS,
+            over14: pOver14,
+            // Mirror the entered over-14 reasons onto the partner if the
+            // partner also exceeded 14h (same crew pairing, same trip).
+            over14ReasonPic: pOver14 ? String(over14ReasonPic || '').trim().slice(0, 2000) : (p.over14ReasonPic || ''),
+            over14ReasonSic: pOver14 ? String(over14ReasonSic || '').trim().slice(0, 2000) : (p.over14ReasonSic || ''),
+            status: 'off',
+            updatedAt: now,
+            adminEdits: [
+              ...(Array.isArray(p.adminEdits) ? p.adminEdits : []),
+              {
+                by: 'System (crew-pair sync)',
+                at: now,
+                field: 'dutyOffAt',
+                from: p.dutyOffAt || null,
+                to: now,
+                note: `Auto-closed because paired crew (period ${periodDocId}) went off duty. Rest clock started at the same time.`,
+              },
+            ],
+          });
+        }
+      }
+    } catch (e) {
+      // Non-fatal: the pilot who pressed off is still correctly closed.
+      // Surface in logs so a failed partner-sync is visible.
+      console.warn('[duty] partner crew-pair sync failed:', e);
+    }
+  }
 
   return { over14, elapsed };
 }
