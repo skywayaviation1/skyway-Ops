@@ -308,15 +308,20 @@ export async function endDuty(periodDocId, { over14ReasonPic, over14ReasonSic } 
       const pSnap = await getDoc(pRef);
       if (pSnap.exists()) {
         const p = pSnap.data();
-        if (p.status !== 'off') {
+        // SAFETY: only cascade-close the partner when the link is MUTUAL —
+        // the partner's period must point back at THIS exact period. A
+        // one-directional or stale link (e.g. a re-pair pointed A→B but B
+        // still points at an old period, or B was resolved to the wrong
+        // period) must NEVER auto-close the partner. Without this guard,
+        // pairing a freshly-dutied-on pilot could wrongly duty them off.
+        const mutual = p.linkedPeriodId === periodDocId;
+        if (mutual && p.status !== 'off') {
           const pElapsed = now - (p.dutyOnAt || now);
           const pOver14 = pElapsed > DUTY_MAX_MS;
           await updateDoc(pRef, {
             dutyOffAt: now,
             restUntil: now + REST_MIN_MS,
             over14: pOver14,
-            // Mirror the entered over-14 reasons onto the partner if the
-            // partner also exceeded 14h (same crew pairing, same trip).
             over14ReasonPic: pOver14 ? String(over14ReasonPic || '').trim().slice(0, 2000) : (p.over14ReasonPic || ''),
             over14ReasonSic: pOver14 ? String(over14ReasonSic || '').trim().slice(0, 2000) : (p.over14ReasonSic || ''),
             status: 'off',
@@ -336,8 +341,6 @@ export async function endDuty(periodDocId, { over14ReasonPic, over14ReasonSic } 
         }
       }
     } catch (e) {
-      // Non-fatal: the pilot who pressed off is still correctly closed.
-      // Surface in logs so a failed partner-sync is visible.
       console.warn('[duty] partner crew-pair sync failed:', e);
     }
   }
@@ -410,28 +413,34 @@ export async function adminEditDuty(periodDocId, { field, newValueMs, editor, no
       const pSnap = await getDoc(pRef);
       if (pSnap.exists()) {
         const p = pSnap.data();
-        const pFrom = p[field] || null;
-        const pEdits = Array.isArray(p.adminEdits) ? p.adminEdits : [];
-        const pPatch = {
-          [field]: to,
-          adminEdits: [...pEdits, {
-            by: editor?.displayName || editor?.name || 'Admin',
-            at: Date.now(),
-            field,
-            from: pFrom,
-            to,
-            note: `Crew-pair sync: matched to paired crew (period ${periodDocId}). Original admin reason: ${reason.slice(0, 400)}`,
-          }],
-          updatedAt: Date.now(),
-        };
-        if (field === 'dutyOffAt' && to) {
-          pPatch.restUntil = to + REST_MIN_MS;
-          pPatch.status = 'off';
+        // SAFETY: mutual-link guard — see endDuty. An edit (especially a
+        // dutyOffAt edit, which sets status:'off' below) must NOT cascade
+        // onto a partner whose period doesn't point back at this one.
+        const mutual = p.linkedPeriodId === periodDocId;
+        if (mutual) {
+          const pFrom = p[field] || null;
+          const pEdits = Array.isArray(p.adminEdits) ? p.adminEdits : [];
+          const pPatch = {
+            [field]: to,
+            adminEdits: [...pEdits, {
+              by: editor?.displayName || editor?.name || 'Admin',
+              at: Date.now(),
+              field,
+              from: pFrom,
+              to,
+              note: `Crew-pair sync: matched to paired crew (period ${periodDocId}). Original admin reason: ${reason.slice(0, 400)}`,
+            }],
+            updatedAt: Date.now(),
+          };
+          if (field === 'dutyOffAt' && to) {
+            pPatch.restUntil = to + REST_MIN_MS;
+            pPatch.status = 'off';
+          }
+          if (field === 'dutyOnAt' && to && p.dutyOffAt) {
+            pPatch.over14 = (p.dutyOffAt - to) > DUTY_MAX_MS;
+          }
+          await updateDoc(pRef, pPatch);
         }
-        if (field === 'dutyOnAt' && to && p.dutyOffAt) {
-          pPatch.over14 = (p.dutyOffAt - to) > DUTY_MAX_MS;
-        }
-        await updateDoc(pRef, pPatch);
       }
     } catch (e) {
       // Non-fatal: the primary pilot's edit is already saved correctly.
@@ -489,7 +498,10 @@ export async function forceCloseDuty(periodDocId, { closeAtMs, editor, note } = 
       const pSnap = await getDoc(pRef);
       if (pSnap.exists()) {
         const p = pSnap.data();
-        if (p.status !== 'off') {
+        // SAFETY: mutual-link guard — see endDuty. A stale/one-directional
+        // link must never cascade a force-close onto the wrong pilot.
+        const mutual = p.linkedPeriodId === periodDocId;
+        if (mutual && p.status !== 'off') {
           const pElapsed = closeAt - (p.dutyOnAt || closeAt);
           const pEdits = Array.isArray(p.adminEdits) ? p.adminEdits : [];
           await updateDoc(pRef, {
