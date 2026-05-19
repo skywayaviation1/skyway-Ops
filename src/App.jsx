@@ -12056,6 +12056,252 @@ function FleetStatusTab({ currentUser, fleetTails }) {
 }
 
 /* ============================================================
+   MEL LIBRARY — browse / search the aircraft's ACTIVE approved
+   MEL revision, view items VERBATIM, and pre-fill a deferral.
+   Compliance: this surfaces the operator's own approved MEL and
+   helps a qualified person FIND the item. It does not decide
+   deferrability — the user reads the actual provisos and the
+   existing deferral form is the confirm point.
+   ============================================================ */
+function MelLibraryTab({ currentUser, fleetTails, onAssignToDeferral }) {
+  const tails = (fleetTails && fleetTails.length ? fleetTails : ['N20UF','N168ZZ','N286N','N444AM','N651TW','N551FP','N85AH','N525CR']);
+  const [tail, setTail] = useState('N168ZZ');
+  const [active, setActive] = useState(null);
+  const [revisions, setRevisions] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [q, setQ] = useState('');
+  const [results, setResults] = useState(null);     // null = browse, [] = searched
+  const [sel, setSel] = useState(null);             // selected item detail
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiNote, setAiNote] = useState('');
+  const [showRev, setShowRev] = useState(false);
+  const [busy, setBusy] = useState(null);
+
+  const canAdmin = ['maint', 'admin'].includes(currentUser?.role);
+
+  useEffect(() => {
+    let unsubA = null, unsubR = null, cancelled = false;
+    setLoading(true); setActive(null); setSel(null); setResults(null);
+    (async () => {
+      const m = await import('./firebase-mel.js');
+      if (cancelled) return;
+      unsubA = m.subscribeActiveRevision(tail, (rev) => { setActive(rev); setLoading(false); });
+      unsubR = m.subscribeRevisions(tail, (list) => setRevisions(list));
+    })();
+    return () => { cancelled = true; if (unsubA) try { unsubA(); } catch (e) {} if (unsubR) try { unsubR(); } catch (e) {} };
+  }, [tail]);
+
+  const items = active?.items || [];
+
+  const runSearch = async () => {
+    if (!q.trim()) { setResults(null); return; }
+    const m = await import('./firebase-mel.js');
+    setResults(m.searchMelItems(items, q));
+    setAiNote('');
+  };
+
+  const runAi = async () => {
+    if (!q.trim() || !active) return;
+    setAiBusy(true); setAiNote('');
+    try {
+      const { auth } = await import('./firebase.js');
+      let idToken = null;
+      if (auth.currentUser) idToken = await auth.currentUser.getIdToken();
+      const r = await fetch('/api/mel-search', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken, tail, query: q }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) { setAiNote(`AI finder: ${data.error || r.status}`); setResults([]); return; }
+      const m = await import('./firebase-mel.js');
+      setResults(m.resolveRefs(items, data.candidates || []));
+      setAiNote(data.note || 'Suggestions only — read the actual MEL provisos and decide.');
+    } catch (e) {
+      setAiNote(`AI finder error: ${e.message}`);
+    } finally { setAiBusy(false); }
+  };
+
+  const activate = async (revId) => {
+    if (!window.confirm('Activate this MEL revision? It becomes the in-effect MEL for ' + tail + ' and supersedes the current one. Confirm you have reviewed it against the source PDF.')) return;
+    setBusy(revId);
+    try {
+      const m = await import('./firebase-mel.js');
+      await m.activateRevision(revId, { byUid: currentUser?.uid || currentUser?.id, byName: currentUser?.displayName || currentUser?.name || 'Unknown' });
+    } catch (e) { window.alert('Activate failed: ' + e.message); } finally { setBusy(null); }
+  };
+  const delDraft = async (revId) => {
+    if (!window.confirm('Delete this DRAFT revision?')) return;
+    setBusy(revId);
+    try {
+      const m = await import('./firebase-mel.js');
+      await m.deleteDraftRevision(revId);
+    } catch (e) { window.alert(e.message); } finally { setBusy(null); }
+  };
+
+  const assign = async (it) => {
+    const m = await import('./firebase-mel.js');
+    const input = m.melItemToDeferralInput(it, tail);
+    if (onAssignToDeferral) onAssignToDeferral(input);
+  };
+
+  const inputCls = "w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400";
+  const bySection = {};
+  items.forEach((it) => { (bySection[it.system] = bySection[it.system] || []).push(it); });
+  const sectionKeys = Object.keys(bySection).sort((a, b) => Number(a) - Number(b));
+  const list = results === null ? items : results;
+
+  return (
+    <div>
+      <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+        <div className="flex items-center gap-2">
+          <select value={tail} onChange={(e) => setTail(e.target.value)} className="bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400">
+            {tails.map((t) => <option key={t} value={t}>{t}</option>)}
+          </select>
+          {active ? (
+            <span className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              REV {active.revisionLabel} · {active.revisionDate} · {active.itemCount} items
+            </span>
+          ) : (
+            <span className="text-[10px] text-amber-400 tracking-widest">NO ACTIVE MEL — ingest &amp; activate one</span>
+          )}
+        </div>
+        {canAdmin && (
+          <button onClick={() => setShowRev((v) => !v)} className="text-[11px] px-3 py-1.5 border border-slate-700 text-slate-400 hover:text-slate-200 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            MEL REVISIONS ({revisions.length})
+          </button>
+        )}
+      </div>
+
+      {showRev && canAdmin && (
+        <div className="border border-slate-800 bg-slate-950 p-4 mb-4">
+          <p className="text-[10px] text-slate-500 tracking-widest mb-2">REVISIONS — {tail}</p>
+          <p className="text-[11px] text-slate-600 mb-3">
+            Upload a MEL PDF to Firebase Storage, then ingest it server-side (parses to a DRAFT).
+            Review the draft against the source PDF, then ACTIVATE — that review is the compliance gate.
+          </p>
+          {revisions.length === 0 ? (
+            <p className="text-xs text-slate-600">No revisions yet for {tail}.</p>
+          ) : (
+            <div className="space-y-2">
+              {revisions.map((r) => (
+                <div key={r.id} className="flex items-center justify-between border border-slate-800/60 bg-slate-900/40 p-2">
+                  <div>
+                    <span className="text-xs text-slate-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                      {r.revisionLabel} {r.revisionDate ? `· ${r.revisionDate}` : ''} · {r.itemCount} items
+                    </span>
+                    <span className={`ml-2 text-[10px] px-2 py-0.5 tracking-widest ${r.status === 'active' ? 'text-emerald-300 border border-emerald-500/40' : r.status === 'draft' ? 'text-amber-300 border border-amber-500/40' : 'text-slate-600 border border-slate-700'}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                      {String(r.status).toUpperCase()}
+                    </span>
+                    {r.ingestReport && r.ingestReport.clean === false && (
+                      <span className="ml-2 text-[10px] text-amber-400">⚠ review flags: {r.ingestReport.missingSections?.length || 0} missing · {r.ingestReport.invalidCategory || 0} bad cat</span>
+                    )}
+                  </div>
+                  <div className="flex gap-2">
+                    {r.status === 'draft' && (
+                      <button onClick={() => activate(r.id)} disabled={busy === r.id} className="text-[10px] px-2 py-1 border border-emerald-700/50 text-emerald-400 hover:text-emerald-200 tracking-widest disabled:opacity-40">{busy === r.id ? '…' : 'ACTIVATE'}</button>
+                    )}
+                    {r.status === 'draft' && (
+                      <button onClick={() => delDraft(r.id)} disabled={busy === r.id} className="text-[10px] px-2 py-1 border border-red-700/50 text-red-400 hover:text-red-200 tracking-widest disabled:opacity-40">DELETE</button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {loading ? (
+        <div className="p-12 text-center text-slate-500"><Loader2 className="w-5 h-5 animate-spin mx-auto mb-2" /> Loading MEL…</div>
+      ) : !active ? (
+        <div className="p-10 text-center border border-slate-800 bg-slate-950">
+          <FileText className="w-8 h-8 text-slate-700 mx-auto mb-2" />
+          <p className="text-sm text-slate-500">No active MEL revision for {tail}.</p>
+          <p className="text-xs text-slate-600 mt-1">{canAdmin ? 'Use MEL REVISIONS to ingest and activate the approved MEL.' : 'A maintenance/admin user must ingest and activate the MEL.'}</p>
+        </div>
+      ) : (
+        <div>
+          <div className="flex gap-2 mb-2">
+            <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') runSearch(); }} className={inputCls} placeholder="Search MEL (e.g. cabin altimeter, MFD, pressurization)…" />
+            <button onClick={runSearch} className="px-3 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>SEARCH</button>
+            <button onClick={runAi} disabled={aiBusy} className="px-3 py-2 bg-cyan-600 hover:bg-cyan-500 text-white text-xs tracking-widest disabled:opacity-40 flex items-center gap-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{aiBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />} AI FIND</button>
+          </div>
+          {aiNote && <p className="text-[11px] text-cyan-400/80 mb-2">{aiNote}</p>}
+          {results !== null && (
+            <p className="text-[10px] text-slate-500 mb-2 tracking-widest">{list.length} match{list.length === 1 ? '' : 'es'} <button onClick={() => { setResults(null); setQ(''); setAiNote(''); }} className="ml-2 underline hover:text-slate-300">clear</button></p>
+          )}
+
+          {sel ? (
+            <div className="border border-amber-500/40 bg-amber-500/5 p-4">
+              <button onClick={() => setSel(null)} className="text-[11px] text-slate-500 hover:text-slate-300 mb-2 flex items-center gap-1"><ChevronLeft className="w-3 h-3" /> back to list</button>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-sm tracking-widest text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{sel.ref}</span>
+                {sel.category && <span className="text-[10px] px-2 py-0.5 tracking-widest text-amber-300 border border-amber-500/40" style={{ fontFamily: 'JetBrains Mono, monospace' }}>CAT {sel.category}</span>}
+                {sel.maint_required && <span className="text-[10px] px-2 py-0.5 tracking-widest text-red-300 border border-red-500/40">(M)</span>}
+                {sel.ops_required && <span className="text-[10px] px-2 py-0.5 tracking-widest text-cyan-300 border border-cyan-500/40">(O)</span>}
+              </div>
+              <p className="text-sm text-slate-200 mt-2">{sel.system} {sel.system_name} — {sel.item}{sel.subitem ? ` — ${sel.subitem}. ${sel.subitem_name || ''}` : ''}</p>
+              <div className="grid grid-cols-3 gap-2 mt-2 text-[11px] text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                <span>Installed: {sel.installed ?? '—'}</span>
+                <span>Req for dispatch: {sel.required ?? '—'}</span>
+                <span>Repair cat: {sel.category ?? '—'}</span>
+              </div>
+              <p className="text-[10px] text-slate-500 tracking-widest mt-3 mb-1">REMARKS &amp; EXCEPTIONS (verbatim)</p>
+              <pre className="text-xs text-slate-300 whitespace-pre-wrap font-sans bg-slate-950 border border-slate-800 p-3">{sel.remarks || '(none)'}</pre>
+              {Array.isArray(sel.procedures) && sel.procedures.map((p, i) => (
+                <div key={i} className="mt-2">
+                  <p className="text-[10px] text-slate-500 tracking-widest mb-1">{p.kind}{p.title ? ` — ${p.title}` : ''}</p>
+                  <pre className="text-xs text-slate-400 whitespace-pre-wrap font-sans bg-slate-950 border border-slate-800 p-3">{p.text}</pre>
+                </div>
+              ))}
+              <button onClick={() => assign(sel)} disabled={sel.non_relief} className="mt-3 flex items-center gap-2 px-3 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs tracking-widest disabled:opacity-40" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                <ArrowRight className="w-4 h-4" /> {sel.non_relief ? 'NO RELIEF (cannot defer)' : 'APPLY TO DEFERRAL'}
+              </button>
+              <p className="text-[10px] text-slate-600 mt-2">Pre-fills the deferral form. You confirm against the actual MEL provisos above — this tool does not determine deferrability.</p>
+            </div>
+          ) : results === null ? (
+            <div className="space-y-3">
+              {sectionKeys.map((sk) => (
+                <details key={sk} className="border border-slate-800 bg-slate-950">
+                  <summary className="px-3 py-2 text-xs text-slate-300 cursor-pointer tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    ATA {sk} — {bySection[sk][0].system_name} ({bySection[sk].length})
+                  </summary>
+                  <div className="divide-y divide-slate-800/60">
+                    {bySection[sk].map((it, i) => (
+                      <button key={i} onClick={() => setSel(it)} className="w-full text-left px-3 py-2 hover:bg-slate-900/50 flex items-center justify-between gap-2">
+                        <span className="text-xs text-slate-300">{it.ref} — {it.item}{it.subitem ? ` (${it.subitem})` : ''}</span>
+                        {it.category && <span className="text-[10px] text-amber-400 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>CAT {it.category}</span>}
+                      </button>
+                    ))}
+                  </div>
+                </details>
+              ))}
+            </div>
+          ) : list.length === 0 ? (
+            <div className="p-8 text-center border border-slate-800 bg-slate-950">
+              <p className="text-sm text-slate-500">No matching MEL items.</p>
+              <p className="text-xs text-slate-600 mt-1">Try different words, or AI FIND for a plain-language match.</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {list.map((it, i) => (
+                <button key={i} onClick={() => setSel(it)} className="w-full text-left border border-slate-800 bg-slate-950 hover:border-amber-500/40 p-3 flex items-center justify-between gap-2">
+                  <div>
+                    <span className="text-xs text-slate-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{it.ref}</span>
+                    <span className="text-xs text-slate-400 ml-2">{it.item}{it.subitem ? ` — ${it.subitem}. ${it.subitem_name || ''}` : ''}</span>
+                  </div>
+                  {it.category && <span className="text-[10px] text-amber-400 tracking-widest shrink-0" style={{ fontFamily: 'JetBrains Mono, monospace' }}>CAT {it.category}</span>}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
    SQUAWKS & MEL — discrepancy lifecycle + deferral tracking.
    Closing a squawk records a STATED corrective action by a
    named user; it is NOT the regulatory return-to-service,
@@ -12067,7 +12313,7 @@ function SquawksTab({ currentUser, fleetTails }) {
   const [squawks, setSquawks] = useState([]);
   const [mel, setMel] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [view, setView] = useState('squawks'); // squawks | mel
+  const [view, setView] = useState('squawks'); // squawks | mel | library
   const [showNew, setShowNew] = useState(false);
   const [busyId, setBusyId] = useState(null);
 
@@ -12080,6 +12326,21 @@ function SquawksTab({ currentUser, fleetTails }) {
   const [mDesc, setMDesc] = useState('');
   const [mCat, setMCat] = useState('C');
   const [mDays, setMDays] = useState('');
+  const [mRemarks, setMRemarks] = useState('');     // verbatim MEL provisos (from Apply to Deferral)
+  const [mRef, setMRef] = useState('');             // ATA ref (from Apply to Deferral)
+
+  // Called by the MEL Library "Apply to Deferral": pre-fill the deferral
+  // form with the verbatim MEL item, switch to the MEL view, open the form.
+  // The qualified user still reviews and submits — this only pre-fills.
+  const applyMelToDeferral = (input) => {
+    setMTail(input.tail || '');
+    setMCat(['A', 'B', 'C', 'D'].includes(input.category) ? input.category : 'C');
+    setMDesc(input.description || '');
+    setMRemarks(input.remarks || '');
+    setMRef(input.melRef || '');
+    setShowMel(true);
+    setView('mel');
+  };
 
   const who = {
     byUid: currentUser?.uid || currentUser?.id || null,
@@ -12143,8 +12404,10 @@ function SquawksTab({ currentUser, fleetTails }) {
       await m.createMelDeferral({
         tail: mTail, description: mDesc.trim(), category: mCat,
         limitDays: mCat === 'A' && mDays ? Number(mDays) : undefined,
+        remarks: mRemarks || undefined,
+        melRef: mRef || undefined,
       });
-      setMTail(''); setMDesc(''); setMCat('C'); setMDays(''); setShowMel(false);
+      setMTail(''); setMDesc(''); setMCat('C'); setMDays(''); setMRemarks(''); setMRef(''); setShowMel(false);
     } catch (e) { console.error(e); } finally { setBusyId(null); }
   };
 
@@ -12180,6 +12443,7 @@ function SquawksTab({ currentUser, fleetTails }) {
       <div className="flex gap-2 mb-4">
         <button onClick={() => setView('squawks')} className={`text-xs px-3 py-1.5 tracking-widest ${view === 'squawks' ? 'bg-red-500/20 text-red-300 border border-red-500/40' : 'bg-slate-900 text-slate-500 border border-slate-800 hover:text-slate-300'}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>SQUAWKS ({openSq.length})</button>
         <button onClick={() => setView('mel')} className={`text-xs px-3 py-1.5 tracking-widest ${view === 'mel' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40' : 'bg-slate-900 text-slate-500 border border-slate-800 hover:text-slate-300'}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>MEL / DEFERRED ({openMel.length})</button>
+        <button onClick={() => setView('library')} className={`text-xs px-3 py-1.5 tracking-widest ${view === 'library' ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40' : 'bg-slate-900 text-slate-500 border border-slate-800 hover:text-slate-300'}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>MEL LIBRARY</button>
       </div>
 
       {view === 'squawks' && (
@@ -12351,6 +12615,14 @@ function SquawksTab({ currentUser, fleetTails }) {
             </div>
           )}
         </div>
+      )}
+
+      {view === 'library' && (
+        <MelLibraryTab
+          currentUser={currentUser}
+          fleetTails={fleetTails}
+          onAssignToDeferral={applyMelToDeferral}
+        />
       )}
     </div>
   );
