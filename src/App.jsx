@@ -12056,10 +12056,477 @@ function FleetStatusTab({ currentUser, fleetTails }) {
 }
 
 /* ============================================================
+   SQUAWKS & MEL — discrepancy lifecycle + deferral tracking.
+   Closing a squawk records a STATED corrective action by a
+   named user; it is NOT the regulatory return-to-service,
+   which is made by certificated personnel in the official
+   records. Veryon remains the system of record.
+   ============================================================ */
+function SquawksTab({ currentUser, fleetTails }) {
+  const tails = (fleetTails && fleetTails.length ? fleetTails : ['N20UF','N168ZZ','N286N','N444AM','N651TW','N551FP','N85AH','N525CR']);
+  const [squawks, setSquawks] = useState([]);
+  const [mel, setMel] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [view, setView] = useState('squawks'); // squawks | mel
+  const [showNew, setShowNew] = useState(false);
+  const [busyId, setBusyId] = useState(null);
+
+  const [nTail, setNTail] = useState('');
+  const [nDesc, setNDesc] = useState('');
+  const [nGround, setNGround] = useState(false);
+
+  const [showMel, setShowMel] = useState(false);
+  const [mTail, setMTail] = useState('');
+  const [mDesc, setMDesc] = useState('');
+  const [mCat, setMCat] = useState('C');
+  const [mDays, setMDays] = useState('');
+
+  const who = {
+    byUid: currentUser?.uid || currentUser?.id || null,
+    byName: currentUser?.displayName || currentUser?.name || currentUser?.email || 'Unknown',
+    byRole: currentUser?.role || null,
+  };
+
+  useEffect(() => {
+    let unsubs = []; let cancelled = false;
+    (async () => {
+      const m = await import('./firebase-maint.js');
+      if (cancelled) return;
+      unsubs.push(m.subscribeSquawks((l) => { setSquawks(l); setLoading(false); }));
+      unsubs.push(m.subscribeMel((l) => setMel(l)));
+    })();
+    return () => { cancelled = true; unsubs.forEach(u => { try { u && u(); } catch (e) {} }); };
+  }, []);
+
+  const createSquawk = async () => {
+    if (!nTail || !nDesc.trim()) return;
+    setBusyId('new');
+    try {
+      const m = await import('./firebase-maint.js');
+      await m.createSquawk({ tail: nTail, description: nDesc.trim(), grounding: nGround, ...who });
+      setNTail(''); setNDesc(''); setNGround(false); setShowNew(false);
+    } catch (e) { console.error(e); } finally { setBusyId(null); }
+  };
+
+  const toggleGround = async (s) => {
+    setBusyId(s.id);
+    try {
+      const m = await import('./firebase-maint.js');
+      await m.triageSquawk(s.id, { grounding: !s.grounding, ...who });
+    } catch (e) { console.error(e); } finally { setBusyId(null); }
+  };
+
+  const closeSq = async (s) => {
+    const ca = window.prompt('Corrective action (recorded as a stated action — not regulatory return-to-service):');
+    if (!ca || !ca.trim()) return;
+    setBusyId(s.id);
+    try {
+      const m = await import('./firebase-maint.js');
+      await m.closeSquawk(s.id, { correctiveAction: ca.trim(), ...who });
+    } catch (e) { console.error(e); } finally { setBusyId(null); }
+  };
+
+  const deferSq = async (s) => {
+    setBusyId(s.id);
+    try {
+      const m = await import('./firebase-maint.js');
+      const melId = await m.createMelDeferral({ tail: s.tail, squawkId: s.id, description: s.description, category: 'C' });
+      await m.triageSquawk(s.id, { melItemId: melId, ...who });
+    } catch (e) { console.error(e); } finally { setBusyId(null); }
+  };
+
+  const createMel = async () => {
+    if (!mTail || !mDesc.trim()) return;
+    setBusyId('newmel');
+    try {
+      const m = await import('./firebase-maint.js');
+      await m.createMelDeferral({
+        tail: mTail, description: mDesc.trim(), category: mCat,
+        limitDays: mCat === 'A' && mDays ? Number(mDays) : undefined,
+      });
+      setMTail(''); setMDesc(''); setMCat('C'); setMDays(''); setShowMel(false);
+    } catch (e) { console.error(e); } finally { setBusyId(null); }
+  };
+
+  const clearMel = async (item) => {
+    setBusyId(item.id);
+    try {
+      const m = await import('./firebase-maint.js');
+      await m.clearMelDeferral(item.id, who);
+    } catch (e) { console.error(e); } finally { setBusyId(null); }
+  };
+
+  const [melDays, setMelDays] = useState({});
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const m = await import('./firebase-maint.js');
+      if (cancelled) return;
+      const out = {};
+      mel.forEach(it => { out[it.id] = m.melDaysRemaining(it); });
+      setMelDays(out);
+    })();
+    return () => { cancelled = true; };
+  }, [mel]);
+
+  const inputCls = "w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400";
+  const openSq = squawks.filter(s => s.status !== 'closed');
+  const closedSq = squawks.filter(s => s.status === 'closed');
+  const openMel = mel.filter(m => m.status === 'open');
+  const clearedMel = mel.filter(m => m.status !== 'open');
+
+  return (
+    <div>
+      <div className="flex gap-2 mb-4">
+        <button onClick={() => setView('squawks')} className={`text-xs px-3 py-1.5 tracking-widest ${view === 'squawks' ? 'bg-red-500/20 text-red-300 border border-red-500/40' : 'bg-slate-900 text-slate-500 border border-slate-800 hover:text-slate-300'}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>SQUAWKS ({openSq.length})</button>
+        <button onClick={() => setView('mel')} className={`text-xs px-3 py-1.5 tracking-widest ${view === 'mel' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40' : 'bg-slate-900 text-slate-500 border border-slate-800 hover:text-slate-300'}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>MEL / DEFERRED ({openMel.length})</button>
+      </div>
+
+      {view === 'squawks' && (
+        <div>
+          <div className="flex justify-end mb-3">
+            <button onClick={() => setShowNew(v => !v)} className="flex items-center gap-2 px-3 py-2 bg-red-500 hover:bg-red-400 text-white text-xs tracking-widest font-medium" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              <Plus className="w-4 h-4" /> NEW SQUAWK
+            </button>
+          </div>
+          {showNew && (
+            <div className="border border-slate-800 bg-slate-950 p-4 mb-4 space-y-3">
+              <div>
+                <label className="text-[10px] text-slate-500 tracking-widest block mb-1">TAIL</label>
+                <select value={nTail} onChange={e => setNTail(e.target.value)} className={inputCls}>
+                  <option value="">Select tail…</option>
+                  {tails.map(t => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-[10px] text-slate-500 tracking-widest block mb-1">DISCREPANCY</label>
+                <textarea value={nDesc} onChange={e => setNDesc(e.target.value)} rows={3} className={inputCls} placeholder="Describe the discrepancy as written up…" />
+              </div>
+              <label className="flex items-center gap-2 text-xs text-slate-400">
+                <input type="checkbox" checked={nGround} onChange={e => setNGround(e.target.checked)} />
+                Grounding item (aircraft not airworthy until cleared)
+              </label>
+              <div className="flex gap-2">
+                <button onClick={createSquawk} disabled={busyId === 'new' || !nTail || !nDesc.trim()} className="flex items-center gap-2 px-3 py-2 bg-red-500 hover:bg-red-400 text-white text-xs tracking-widest disabled:opacity-40" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  {busyId === 'new' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />} CREATE
+                </button>
+                <button onClick={() => setShowNew(false)} className="px-3 py-2 text-xs text-slate-500 hover:text-slate-300 tracking-widest">CANCEL</button>
+              </div>
+            </div>
+          )}
+          {loading ? (
+            <div className="p-12 text-center text-slate-500"><Loader2 className="w-5 h-5 animate-spin mx-auto mb-2" /> Loading…</div>
+          ) : openSq.length === 0 ? (
+            <div className="p-10 text-center border border-slate-800 bg-slate-950">
+              <CheckCircle2 className="w-8 h-8 text-slate-700 mx-auto mb-2" />
+              <p className="text-sm text-slate-500">No open squawks.</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {openSq.map(s => (
+                <div key={s.id} className={`border ${s.grounding ? 'border-red-500/40 bg-red-500/10' : 'border-slate-800 bg-slate-950'} p-4`}>
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm tracking-widest text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{s.tail}</span>
+                      {s.grounding && <span className="text-[10px] px-2 py-0.5 tracking-widest text-red-300 border border-red-500/40" style={{ fontFamily: 'JetBrains Mono, monospace' }}>GROUNDING</span>}
+                      {s.status === 'deferred' && <span className="text-[10px] px-2 py-0.5 tracking-widest text-amber-300 border border-amber-500/40" style={{ fontFamily: 'JetBrains Mono, monospace' }}>MEL DEFERRED</span>}
+                    </div>
+                    <span className="text-[10px] text-slate-600">{s.reportedByName}</span>
+                  </div>
+                  <p className="text-sm text-slate-300 mt-2">{s.description}</p>
+                  <div className="flex gap-2 mt-3 flex-wrap">
+                    <button onClick={() => toggleGround(s)} disabled={busyId === s.id} className="text-[11px] px-2 py-1 border border-slate-700 text-slate-400 hover:text-slate-200 tracking-widest disabled:opacity-40">{s.grounding ? 'CLEAR GROUNDING' : 'MARK GROUNDING'}</button>
+                    {s.status !== 'deferred' && <button onClick={() => deferSq(s)} disabled={busyId === s.id} className="text-[11px] px-2 py-1 border border-amber-700/50 text-amber-400 hover:text-amber-200 tracking-widest disabled:opacity-40">DEFER (MEL)</button>}
+                    <button onClick={() => closeSq(s)} disabled={busyId === s.id} className="text-[11px] px-2 py-1 border border-emerald-700/50 text-emerald-400 hover:text-emerald-200 tracking-widest disabled:opacity-40">{busyId === s.id ? '…' : 'CLOSE'}</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {closedSq.length > 0 && (
+            <div className="mt-6">
+              <p className="text-[10px] text-slate-600 tracking-widest mb-2">CLOSED ({closedSq.length})</p>
+              <div className="space-y-2">
+                {closedSq.slice(0, 25).map(s => (
+                  <div key={s.id} className="border border-slate-800/60 bg-slate-950/50 p-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{s.tail}</span>
+                      <span className="text-[10px] text-slate-600">closed by {s.closedByName}</span>
+                    </div>
+                    <p className="text-xs text-slate-500 mt-1">{s.description}</p>
+                    {s.correctiveAction && <p className="text-[11px] text-slate-600 mt-1">↳ {s.correctiveAction}</p>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {view === 'mel' && (
+        <div>
+          <div className="flex justify-end mb-3">
+            <button onClick={() => setShowMel(v => !v)} className="flex items-center gap-2 px-3 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs tracking-widest font-medium" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              <Plus className="w-4 h-4" /> NEW DEFERRAL
+            </button>
+          </div>
+          {showMel && (
+            <div className="border border-slate-800 bg-slate-950 p-4 mb-4 space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[10px] text-slate-500 tracking-widest block mb-1">TAIL</label>
+                  <select value={mTail} onChange={e => setMTail(e.target.value)} className={inputCls}>
+                    <option value="">Select tail…</option>
+                    {tails.map(t => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] text-slate-500 tracking-widest block mb-1">CATEGORY</label>
+                  <select value={mCat} onChange={e => setMCat(e.target.value)} className={inputCls}>
+                    <option value="A">A — per remarks</option>
+                    <option value="B">B — 3 days</option>
+                    <option value="C">C — 10 days</option>
+                    <option value="D">D — 120 days</option>
+                  </select>
+                </div>
+              </div>
+              {mCat === 'A' && (
+                <div>
+                  <label className="text-[10px] text-slate-500 tracking-widest block mb-1">CATEGORY A — LIMIT DAYS (optional, per remarks)</label>
+                  <input value={mDays} onChange={e => setMDays(e.target.value)} type="number" className={inputCls} placeholder="leave blank if none" />
+                </div>
+              )}
+              <div>
+                <label className="text-[10px] text-slate-500 tracking-widest block mb-1">DESCRIPTION</label>
+                <textarea value={mDesc} onChange={e => setMDesc(e.target.value)} rows={2} className={inputCls} placeholder="Deferred item description…" />
+              </div>
+              <div className="flex gap-2">
+                <button onClick={createMel} disabled={busyId === 'newmel' || !mTail || !mDesc.trim()} className="flex items-center gap-2 px-3 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs tracking-widest disabled:opacity-40" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  {busyId === 'newmel' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />} CREATE
+                </button>
+                <button onClick={() => setShowMel(false)} className="px-3 py-2 text-xs text-slate-500 hover:text-slate-300 tracking-widest">CANCEL</button>
+              </div>
+            </div>
+          )}
+          {openMel.length === 0 ? (
+            <div className="p-10 text-center border border-slate-800 bg-slate-950">
+              <CheckCircle2 className="w-8 h-8 text-slate-700 mx-auto mb-2" />
+              <p className="text-sm text-slate-500">No open deferrals.</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {openMel.map(it => {
+                const dr = melDays[it.id];
+                const over = dr != null && dr < 0;
+                const soon = dr != null && dr >= 0 && dr <= 2;
+                return (
+                  <div key={it.id} className={`border p-4 ${over ? 'border-red-500/50 bg-red-500/10' : soon ? 'border-amber-500/50 bg-amber-500/10' : 'border-slate-800 bg-slate-950'}`}>
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm tracking-widest text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{it.tail}</span>
+                        <span className="text-[10px] px-2 py-0.5 tracking-widest text-amber-300 border border-amber-500/40" style={{ fontFamily: 'JetBrains Mono, monospace' }}>CAT {it.category}</span>
+                      </div>
+                      <span className={`text-xs tracking-widest ${over ? 'text-red-300' : soon ? 'text-amber-300' : 'text-slate-400'}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                        {dr == null ? 'no fixed limit' : over ? `OVER LIMIT by ${Math.abs(dr)}d` : `${dr}d remaining`}
+                      </span>
+                    </div>
+                    <p className="text-sm text-slate-300 mt-2">{it.description}</p>
+                    <button onClick={() => clearMel(it)} disabled={busyId === it.id} className="mt-3 text-[11px] px-2 py-1 border border-emerald-700/50 text-emerald-400 hover:text-emerald-200 tracking-widest disabled:opacity-40">{busyId === it.id ? '…' : 'CLEAR DEFERRAL'}</button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {clearedMel.length > 0 && (
+            <div className="mt-6">
+              <p className="text-[10px] text-slate-600 tracking-widest mb-2">CLEARED ({clearedMel.length})</p>
+              <div className="space-y-2">
+                {clearedMel.slice(0, 20).map(it => (
+                  <div key={it.id} className="border border-slate-800/60 bg-slate-950/50 p-3 flex items-center justify-between">
+                    <span className="text-xs text-slate-500">{it.tail} — {it.description}</span>
+                    <span className="text-[10px] text-slate-600">cleared by {it.clearedByName}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   TIMES — per-trip capture (stage) + maint review/confirm.
+   No silent push: confirming makes an entry eligible to sync;
+   Veryon sync is Phase 2 and shows as pending until wired.
+   ============================================================ */
+function TimesTab({ currentUser, fleetTails }) {
+  const tails = (fleetTails && fleetTails.length ? fleetTails : ['N20UF','N168ZZ','N286N','N444AM','N651TW','N551FP','N85AH','N525CR']);
+  const [staged, setStaged] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState(null);
+  const [showCap, setShowCap] = useState(false);
+
+  const [cTail, setCTail] = useState('');
+  const [cTrip, setCTrip] = useState('');
+  const [cAfH, setCAfH] = useState('');
+  const [cAfC, setCAfC] = useState('');
+  const [cE1H, setCE1H] = useState('');
+  const [cE1C, setCE1C] = useState('');
+  const [cE2H, setCE2H] = useState('');
+  const [cE2C, setCE2C] = useState('');
+  const [cApH, setCApH] = useState('');
+
+  const who = {
+    byUid: currentUser?.uid || currentUser?.id || null,
+    byName: currentUser?.displayName || currentUser?.name || currentUser?.email || 'Unknown',
+    byRole: currentUser?.role || null,
+  };
+  const canConfirm = ['maint', 'admin'].includes(currentUser?.role);
+
+  useEffect(() => {
+    let unsub = null; let cancelled = false;
+    (async () => {
+      const m = await import('./firebase-maint.js');
+      if (cancelled) return;
+      unsub = m.subscribeStagedTimes((l) => { setStaged(l); setLoading(false); });
+    })();
+    return () => { cancelled = true; if (unsub) try { unsub(); } catch (e) {} };
+  }, []);
+
+  const capture = async () => {
+    if (!cTail) return;
+    setBusyId('cap');
+    try {
+      const m = await import('./firebase-maint.js');
+      const engines = [];
+      if (cE1H || cE1C) engines.push({ position: 1, hours: cE1H, cycles: cE1C });
+      if (cE2H || cE2C) engines.push({ position: 2, hours: cE2H, cycles: cE2C });
+      await m.stageTripTimes({
+        tail: cTail, tripLabel: cTrip || null, source: 'maint-screen', ...who,
+        times: { airframe: { hours: cAfH, cycles: cAfC }, engines, apu: { hours: cApH, cycles: null } },
+      });
+      setCTail(''); setCTrip(''); setCAfH(''); setCAfC(''); setCE1H(''); setCE1C(''); setCE2H(''); setCE2C(''); setCApH('');
+      setShowCap(false);
+    } catch (e) { console.error(e); } finally { setBusyId(null); }
+  };
+
+  const confirm = async (e) => {
+    setBusyId(e.id);
+    try {
+      const m = await import('./firebase-maint.js');
+      await m.confirmTimeEntry(e.id, who);
+    } catch (err) { console.error(err); } finally { setBusyId(null); }
+  };
+  const reject = async (e) => {
+    const r = window.prompt('Reason for rejecting this time entry:');
+    if (!r || !r.trim()) return;
+    setBusyId(e.id);
+    try {
+      const m = await import('./firebase-maint.js');
+      await m.rejectTimeEntry(e.id, { reason: r.trim(), ...who });
+    } catch (err) { console.error(err); } finally { setBusyId(null); }
+  };
+
+  const inputCls = "w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400";
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+        <p className="text-xs text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {staged.length} entr{staged.length === 1 ? 'y' : 'ies'} pending review
+        </p>
+        <button onClick={() => setShowCap(v => !v)} className="flex items-center gap-2 px-3 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs tracking-widest font-medium" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          <Plus className="w-4 h-4" /> LOG TRIP TIMES
+        </button>
+      </div>
+
+      {showCap && (
+        <div className="border border-slate-800 bg-slate-950 p-4 mb-4 space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-[10px] text-slate-500 tracking-widest block mb-1">TAIL</label>
+              <select value={cTail} onChange={e => setCTail(e.target.value)} className={inputCls}>
+                <option value="">Select tail…</option>
+                {tails.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-500 tracking-widest block mb-1">TRIP / REF (optional)</label>
+              <input value={cTrip} onChange={e => setCTrip(e.target.value)} className={inputCls} placeholder="e.g. KTEB–KMIA 5/19" />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div><label className="text-[10px] text-slate-500 tracking-widest block mb-1">AIRFRAME HOURS</label><input value={cAfH} onChange={e => setCAfH(e.target.value)} type="number" step="0.1" className={inputCls} /></div>
+            <div><label className="text-[10px] text-slate-500 tracking-widest block mb-1">AIRFRAME CYCLES</label><input value={cAfC} onChange={e => setCAfC(e.target.value)} type="number" className={inputCls} /></div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div><label className="text-[10px] text-slate-500 tracking-widest block mb-1">ENG 1 HOURS</label><input value={cE1H} onChange={e => setCE1H(e.target.value)} type="number" step="0.1" className={inputCls} /></div>
+            <div><label className="text-[10px] text-slate-500 tracking-widest block mb-1">ENG 1 CYCLES</label><input value={cE1C} onChange={e => setCE1C(e.target.value)} type="number" className={inputCls} /></div>
+            <div><label className="text-[10px] text-slate-500 tracking-widest block mb-1">ENG 2 HOURS</label><input value={cE2H} onChange={e => setCE2H(e.target.value)} type="number" step="0.1" className={inputCls} /></div>
+            <div><label className="text-[10px] text-slate-500 tracking-widest block mb-1">ENG 2 CYCLES</label><input value={cE2C} onChange={e => setCE2C(e.target.value)} type="number" className={inputCls} /></div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div><label className="text-[10px] text-slate-500 tracking-widest block mb-1">APU HOURS</label><input value={cApH} onChange={e => setCApH(e.target.value)} type="number" step="0.1" className={inputCls} /></div>
+          </div>
+          <p className="text-[10px] text-slate-600">Captured entries are staged for maintenance review. Nothing is sent to Veryon automatically.</p>
+          <div className="flex gap-2">
+            <button onClick={capture} disabled={busyId === 'cap' || !cTail} className="flex items-center gap-2 px-3 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs tracking-widest disabled:opacity-40" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {busyId === 'cap' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />} STAGE ENTRY
+            </button>
+            <button onClick={() => setShowCap(false)} className="px-3 py-2 text-xs text-slate-500 hover:text-slate-300 tracking-widest">CANCEL</button>
+          </div>
+        </div>
+      )}
+
+      <p className="text-[10px] text-slate-600 tracking-widest mb-2">REVIEW QUEUE — STAGED ENTRIES</p>
+      {loading ? (
+        <div className="p-12 text-center text-slate-500"><Loader2 className="w-5 h-5 animate-spin mx-auto mb-2" /> Loading…</div>
+      ) : staged.length === 0 ? (
+        <div className="p-10 text-center border border-slate-800 bg-slate-950">
+          <CheckCircle2 className="w-8 h-8 text-slate-700 mx-auto mb-2" />
+          <p className="text-sm text-slate-500">Nothing pending review.</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {staged.map(e => (
+            <div key={e.id} className="border border-cyan-500/30 bg-cyan-500/5 p-4">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm tracking-widest text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{e.tail}</span>
+                  {e.tripLabel && <span className="text-[11px] text-slate-500">{e.tripLabel}</span>}
+                </div>
+                <span className="text-[10px] text-slate-600">by {e.enteredByName}</span>
+              </div>
+              <div className="grid grid-cols-3 gap-2 mt-3 text-[11px] text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                <span>AF {e.times?.airframe?.hours ?? '—'}h / {e.times?.airframe?.cycles ?? '—'}c</span>
+                {(e.times?.engines || []).map((en, i) => (
+                  <span key={i}>E{en.position} {en.hours ?? '—'}h / {en.cycles ?? '—'}c</span>
+                ))}
+                {e.times?.apu?.hours != null && <span>APU {e.times.apu.hours}h</span>}
+              </div>
+              {canConfirm ? (
+                <div className="flex gap-2 mt-3">
+                  <button onClick={() => confirm(e)} disabled={busyId === e.id} className="flex items-center gap-1 text-[11px] px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white tracking-widest disabled:opacity-40" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{busyId === e.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle2 className="w-3 h-3" />} CONFIRM</button>
+                  <button onClick={() => reject(e)} disabled={busyId === e.id} className="text-[11px] px-3 py-1.5 border border-red-700/50 text-red-400 hover:text-red-200 tracking-widest disabled:opacity-40">REJECT</button>
+                </div>
+              ) : (
+                <p className="text-[10px] text-slate-600 mt-3">Awaiting maintenance review (maint/admin confirms).</p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
    MAINT SCREEN
    ============================================================ */
 function MaintScreen({ currentUser, users, fleetTails }) {
-  const [mainTab, setMainTab] = useState('fleet'); // fleet | aog | service | projects
+  const [mainTab, setMainTab] = useState('fleet'); // fleet | squawks | times | aog | service | projects
 
   return (
     <div className="flex-1 overflow-y-auto scroll-area">
@@ -12080,6 +12547,28 @@ function MaintScreen({ currentUser, users, fleetTails }) {
             style={{ fontFamily: 'JetBrains Mono, monospace' }}
           >
             <Plane className="w-3 h-3 inline mr-1" /> FLEET STATUS
+          </button>
+          <button
+            onClick={() => setMainTab('squawks')}
+            className={`text-xs px-4 py-2 tracking-widest ${
+              mainTab === 'squawks'
+                ? 'text-red-300 border-b-2 border-red-500'
+                : 'text-slate-500 hover:text-slate-300 border-b-2 border-transparent'
+            }`}
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            <AlertTriangle className="w-3 h-3 inline mr-1" /> SQUAWKS &amp; MEL
+          </button>
+          <button
+            onClick={() => setMainTab('times')}
+            className={`text-xs px-4 py-2 tracking-widest ${
+              mainTab === 'times'
+                ? 'text-cyan-300 border-b-2 border-cyan-500'
+                : 'text-slate-500 hover:text-slate-300 border-b-2 border-transparent'
+            }`}
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            <Clock className="w-3 h-3 inline mr-1" /> TIMES
           </button>
           <button
             onClick={() => setMainTab('aog')}
@@ -12117,6 +12606,12 @@ function MaintScreen({ currentUser, users, fleetTails }) {
         </div>
         {mainTab === 'fleet' && (
           <FleetStatusTab currentUser={currentUser} fleetTails={fleetTails} />
+        )}
+        {mainTab === 'squawks' && (
+          <SquawksTab currentUser={currentUser} fleetTails={fleetTails} />
+        )}
+        {mainTab === 'times' && (
+          <TimesTab currentUser={currentUser} fleetTails={fleetTails} />
         )}
         {mainTab === 'aog' && (
           <AogEventsTab currentUser={currentUser} fleetTails={fleetTails} />
