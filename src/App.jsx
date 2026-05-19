@@ -9981,10 +9981,18 @@ function AddBookingModal({ targetUser, currentUser, onClose }) {
         reader.onerror = () => reject(reader.error);
         reader.readAsDataURL(file);
       });
+      // Auth: this endpoint is gated to verified users (it spends our
+      // Anthropic key). Attach the caller's Firebase ID token.
+      let idToken = null;
+      try {
+        const { auth } = await import('./firebase.js');
+        if (auth.currentUser) idToken = await auth.currentUser.getIdToken();
+      } catch (e) { /* idToken stays null -> server returns 401 below */ }
       const r = await fetch('/api/parse-travel-confirmation', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          idToken,
           imageBase64: base64,
           mediaType: file.type || 'image/jpeg',
           expectedType: bookingType,
@@ -18326,10 +18334,17 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
       });
 
       const base64 = await fileToBase64(file);
+      // Auth: this endpoint is gated to verified users (it spends our
+      // Anthropic key). Attach the caller's Firebase ID token.
+      let idToken = null;
+      try {
+        const { auth } = await import('./firebase.js');
+        if (auth.currentUser) idToken = await auth.currentUser.getIdToken();
+      } catch (e) { /* idToken stays null -> server returns 401 below */ }
       const r = await fetch('/api/parse-receipt', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ imageBase64: base64, mediaType: contentType || 'image/jpeg' }),
+        body: JSON.stringify({ idToken, imageBase64: base64, mediaType: contentType || 'image/jpeg' }),
       });
       const data = await r.json();
       if (!r.ok) {
