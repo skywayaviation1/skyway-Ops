@@ -76,10 +76,30 @@ async function getAdmin() {
 
 // Extract per-page text using pdfjs-dist (already a dependency). Returns
 // [{page, text}]. The page footer carries "DATE: <d>  <ATA>-<n>".
+//
+// Worker handling mirrors the app's proven src/App.jsx extractPdfText():
+// import the standard (non-legacy) build and point workerSrc at the
+// version-pinned cloudflare CDN, so pdf.js never tries to resolve a local
+// worker module (the cause of "Cannot find module .../pdf.worker.mjs" on
+// Vercel — the file tracer doesn't bundle the dynamically-referenced
+// worker). If outbound CDN fetch is unavailable to the function, fall back
+// to running with the worker disabled (slower, but no external dependency).
 async function extractPages(buf) {
-  const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
-  const task = pdfjs.getDocument({ data: new Uint8Array(buf), useSystemFonts: true });
-  const pdf = await task.promise;
+  const pdfjs = await import('pdfjs-dist/build/pdf.mjs');
+  pdfjs.GlobalWorkerOptions.workerSrc =
+    `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.mjs`;
+
+  let pdf;
+  try {
+    pdf = await pdfjs.getDocument({ data: new Uint8Array(buf), useSystemFonts: true }).promise;
+  } catch (e) {
+    // CDN worker unreachable from the function — retry with the worker
+    // disabled so extraction still runs on the main thread.
+    pdf = await pdfjs.getDocument({
+      data: new Uint8Array(buf), useSystemFonts: true,
+      disableWorker: true, isEvalSupported: false,
+    }).promise;
+  }
   const pages = [];
   for (let i = 1; i <= pdf.numPages; i++) {
     // eslint-disable-next-line no-await-in-loop
