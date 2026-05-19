@@ -11874,8 +11874,192 @@ function CarrierBadge({ carrier }) {
 /* ============================================================
    MAINT SCREEN — AOG (Aircraft On Ground) event management
    ============================================================ */
+/* ============================================================
+   FLEET STATUS — airworthiness/dispatch VISIBILITY board.
+   Reads the maintenance data layer (src/firebase-maint.js).
+   This is a dispatch-visibility aid, NOT an airworthiness
+   determination — Veryon remains the system of record.
+   ============================================================ */
+function FleetStatusTab({ currentUser, fleetTails }) {
+  const [fleet, setFleet] = useState([]);
+  const [squawks, setSquawks] = useState([]);
+  const [mel, setMel] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [seeding, setSeeding] = useState(false);
+
+  useEffect(() => {
+    let unsubs = [];
+    let cancelled = false;
+    (async () => {
+      const m = await import('./firebase-maint.js');
+      if (cancelled) return;
+      let got = 0;
+      const done = () => { if (++got >= 1) setLoading(false); };
+      unsubs.push(m.subscribeFleet((list) => { setFleet(list); done(); }));
+      unsubs.push(m.subscribeSquawks((list) => setSquawks(list)));
+      unsubs.push(m.subscribeMel((list) => setMel(list)));
+    })();
+    return () => { cancelled = true; unsubs.forEach(u => { try { u && u(); } catch (e) {} }); };
+  }, []);
+
+  const seed = async () => {
+    setSeeding(true);
+    try {
+      const m = await import('./firebase-maint.js');
+      for (const t of (fleetTails && fleetTails.length ? fleetTails : m.FLEET_TAILS)) {
+        // eslint-disable-next-line no-await-in-loop
+        await m.upsertAircraft(t);
+      }
+    } catch (e) {
+      console.error('[fleet-status] seed failed:', e);
+    } finally {
+      setSeeding(false);
+    }
+  };
+
+  // Derive a status view per known tail (use seeded docs, else the prop list).
+  const [statusByTail, setStatusByTail] = useState({});
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const m = await import('./firebase-maint.js');
+      if (cancelled) return;
+      const tails = fleet.length
+        ? fleet.map(a => a.tail)
+        : (fleetTails && fleetTails.length ? fleetTails : m.FLEET_TAILS);
+      const map = {};
+      for (const t of tails) map[t] = m.deriveAircraftStatus(t, squawks, mel);
+      setStatusByTail(map);
+    })();
+    return () => { cancelled = true; };
+  }, [fleet, squawks, mel, fleetTails]);
+
+  const tails = fleet.length
+    ? fleet.map(a => a.tail)
+    : (fleetTails && fleetTails.length ? fleetTails : []);
+
+  const fmtTimes = (a) => {
+    const af = a && a.times && a.times.airframe;
+    if (!af || (af.hours == null && af.cycles == null)) return 'No confirmed times';
+    const h = af.hours != null ? `${af.hours} hrs` : '— hrs';
+    const c = af.cycles != null ? `${af.cycles} cyc` : '— cyc';
+    return `${h} · ${c}`;
+  };
+  const ago = (ms) => {
+    if (!ms) return '';
+    const d = Math.floor((Date.now() - ms) / 86400000);
+    if (d <= 0) return 'today';
+    return `${d}d ago`;
+  };
+
+  const tone = (s) => {
+    if (s === 'AOG') return { dot: 'bg-red-500', txt: 'text-red-300', bd: 'border-red-500/40', bg: 'bg-red-500/10' };
+    if (s === 'RESTRICTED') return { dot: 'bg-amber-500', txt: 'text-amber-300', bd: 'border-amber-500/40', bg: 'bg-amber-500/10' };
+    return { dot: 'bg-emerald-500', txt: 'text-emerald-300', bd: 'border-emerald-500/30', bg: 'bg-slate-950' };
+  };
+
+  if (loading) {
+    return (
+      <div className="p-12 text-center text-slate-500">
+        <Loader2 className="w-5 h-5 animate-spin mx-auto mb-2" /> Loading fleet status...
+      </div>
+    );
+  }
+
+  if (tails.length === 0) {
+    return (
+      <div className="p-12 text-center border border-slate-800 bg-slate-950">
+        <Plane className="w-8 h-8 text-slate-700 mx-auto mb-2" />
+        <p className="text-sm text-slate-500">Fleet not initialized.</p>
+        <p className="text-xs text-slate-600 mt-1 mb-4">
+          Create one maintenance record per tail to start tracking status.
+        </p>
+        <button
+          onClick={seed}
+          disabled={seeding}
+          className="inline-flex items-center gap-2 px-3 py-2 bg-red-500 hover:bg-red-400 text-white text-xs tracking-widest font-medium disabled:opacity-50"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        >
+          {seeding ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+          INITIALIZE FLEET
+        </button>
+      </div>
+    );
+  }
+
+  const counts = tails.reduce((acc, t) => {
+    const s = (statusByTail[t] && statusByTail[t].status) || 'AIRWORTHY';
+    acc[s] = (acc[s] || 0) + 1;
+    return acc;
+  }, {});
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+        <p className="text-xs text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {counts.AIRWORTHY || 0} airworthy · {counts.RESTRICTED || 0} restricted · {counts.AOG || 0} AOG
+        </p>
+        <p className="text-[10px] text-slate-600 uppercase tracking-widest">
+          Visibility aid — Veryon is system of record
+        </p>
+      </div>
+
+      <div className="space-y-3">
+        {tails.map((t) => {
+          const a = fleet.find(x => x.tail === t) || { tail: t };
+          const sv = statusByTail[t] || { status: 'AIRWORTHY', reasons: [], melOpen: 0 };
+          const c = tone(sv.status);
+          const openSq = squawks.filter(s => String(s.tail).toUpperCase() === String(t).toUpperCase() && s.status !== 'closed');
+          return (
+            <div key={t} className={`border ${c.bd} ${c.bg} p-4`}>
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-3">
+                  <span className={`w-2.5 h-2.5 rounded-full ${c.dot}`} />
+                  <span className="text-sm tracking-widest text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    {t}
+                  </span>
+                  {a.model ? <span className="text-xs text-slate-500">{a.model}</span> : null}
+                  <span className={`text-[10px] px-2 py-0.5 tracking-widest ${c.txt} border ${c.bd}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    {sv.status}
+                  </span>
+                </div>
+                <div className="text-right">
+                  <p className="text-xs text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    {fmtTimes(a)}
+                  </p>
+                  {a.timesAsOf ? (
+                    <p className="text-[10px] text-slate-600">confirmed {ago(a.timesAsOf)}</p>
+                  ) : null}
+                </div>
+              </div>
+              <div className="flex items-center gap-4 mt-3 text-[11px] text-slate-500">
+                <span className="flex items-center gap-1">
+                  <AlertTriangle className="w-3 h-3" /> {openSq.length} open squawk{openSq.length === 1 ? '' : 's'}
+                </span>
+                <span className="flex items-center gap-1">
+                  <Wrench className="w-3 h-3" /> {sv.melOpen} open MEL
+                </span>
+              </div>
+              {sv.reasons && sv.reasons.length ? (
+                <ul className="mt-2 space-y-0.5">
+                  {sv.reasons.slice(0, 4).map((r, i) => (
+                    <li key={i} className={`text-[11px] ${c.txt}`}>• {r}</li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   MAINT SCREEN
+   ============================================================ */
 function MaintScreen({ currentUser, users, fleetTails }) {
-  const [mainTab, setMainTab] = useState('aog'); // aog | projects
+  const [mainTab, setMainTab] = useState('fleet'); // fleet | aog | service | projects
 
   return (
     <div className="flex-1 overflow-y-auto scroll-area">
@@ -11886,6 +12070,17 @@ function MaintScreen({ currentUser, users, fleetTails }) {
           </h2>
         </div>
         <div className="flex gap-1 mb-4 border-b border-slate-800">
+          <button
+            onClick={() => setMainTab('fleet')}
+            className={`text-xs px-4 py-2 tracking-widest ${
+              mainTab === 'fleet'
+                ? 'text-emerald-300 border-b-2 border-emerald-500'
+                : 'text-slate-500 hover:text-slate-300 border-b-2 border-transparent'
+            }`}
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            <Plane className="w-3 h-3 inline mr-1" /> FLEET STATUS
+          </button>
           <button
             onClick={() => setMainTab('aog')}
             className={`text-xs px-4 py-2 tracking-widest ${
@@ -11920,6 +12115,9 @@ function MaintScreen({ currentUser, users, fleetTails }) {
             <FileText className="w-3 h-3 inline mr-1" /> PROJECTS
           </button>
         </div>
+        {mainTab === 'fleet' && (
+          <FleetStatusTab currentUser={currentUser} fleetTails={fleetTails} />
+        )}
         {mainTab === 'aog' && (
           <AogEventsTab currentUser={currentUser} fleetTails={fleetTails} />
         )}
