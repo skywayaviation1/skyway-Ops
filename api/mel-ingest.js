@@ -26,18 +26,34 @@
 
 export const config = { runtime: 'nodejs', maxDuration: 300 };
 
-const EXPECTED_SYSTEMS = {
-  '21': 'Air Conditioning', '22': 'Autoflight', '23': 'Communications',
-  '24': 'Electrical Power', '25': 'Equipment/Furnishings', '26': 'Fire Protection',
-  '27': 'Flight Controls', '28': 'Fuel', '29': 'Hydraulic Power',
-  '30': 'Ice and Rain Protection', '31': 'Indicating/Recording Systems',
-  '32': 'Landing Gear', '33': 'Lights', '34': 'Navigation', '35': 'Oxygen',
-  '38': 'Water/Waste', '45': 'Central Maintenance System', '46': 'Information Systems',
-  '49': 'Airborne Auxiliary Power', '52': 'Doors', '74': 'Ignition',
-  '76': 'Engine Control', '77': 'Engine Indicating', '78': 'Engine Exhaust',
-};
+// Bump on every change to this file. Surfaced in success AND the
+// no-sections error so a stale/un-promoted deploy is immediately obvious.
+const IMPL_VERSION = 'mel-ingest/2026-05-19h-multitemplate';
 
-const SYS_PROMPT = `You extract data from ONE section of an FAA-approved Minimum Equipment List (MEL) for a Learjet 60. Output ONLY valid JSON, no markdown, no commentary.
+// Standard ATA-100 chapter numbers/names. These are an industry standard and
+// identical across aircraft types — a given aircraft's MEL simply includes a
+// subset (the Learjet 60 has ATA 29/49/74/78; the Cessna CE-525B instead has
+// ATA 73; etc.). We recognize ANY standard chapter and derive the
+// "expected for this MEL" set from what is actually detected in the document,
+// rather than hardcoding one aircraft's sections.
+const ATA_CHAPTERS = {
+  '21': 'Air Conditioning / Environmental Control', '22': 'Auto Flight',
+  '23': 'Communications', '24': 'Electrical Power',
+  '25': 'Equipment/Furnishings', '26': 'Fire Protection', '27': 'Flight Controls',
+  '28': 'Fuel', '29': 'Hydraulic Power', '30': 'Ice and Rain Protection',
+  '31': 'Indicating/Recording Systems', '32': 'Landing Gear', '33': 'Lights',
+  '34': 'Navigation', '35': 'Oxygen', '36': 'Pneumatic', '38': 'Water/Waste',
+  '45': 'Central Maintenance System', '46': 'Information Systems',
+  '47': 'Inert Gas System', '49': 'Airborne Auxiliary Power', '52': 'Doors',
+  '55': 'Stabilizers', '56': 'Windows', '71': 'Power Plant',
+  '72': 'Engine', '73': 'Engine Fuel and Control', '74': 'Ignition',
+  '75': 'Engine Bleed Air', '76': 'Engine Control', '77': 'Engine Indicating',
+  '78': 'Engine Exhaust', '79': 'Engine Oil', '80': 'Engine Starting',
+};
+// Back-compat alias: existing references use EXPECTED_SYSTEMS.
+const EXPECTED_SYSTEMS = ATA_CHAPTERS;
+
+const SYS_PROMPT = `You extract data from ONE section of an FAA-approved aircraft Minimum Equipment List (MEL). Output ONLY valid JSON, no markdown, no commentary.
 
 MEL columns: (1) REPAIR CATEGORY (A,B,C,D) (2) NUMBER INSTALLED (3) NUMBER REQUIRED FOR DISPATCH (4) REMARKS AND EXCEPTIONS.
 
@@ -107,6 +123,7 @@ async function extractPages(buf) {
   const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
 
   let pdf;
+  let workerMode = 'file-url';
   try {
     const workerPath = req.resolve('pdfjs-dist/legacy/build/pdf.worker.min.mjs');
     pdfjs.GlobalWorkerOptions.workerSrc = pathToFileURL(workerPath).href;
@@ -114,6 +131,7 @@ async function extractPages(buf) {
   } catch (e) {
     // Last-resort: run with the worker disabled (main thread). Slower, no
     // external/worker dependency at all.
+    workerMode = 'fallback-disableWorker:' + String(e && e.message || e).slice(0, 50);
     pdf = await pdfjs.getDocument({
       data: new Uint8Array(buf), useSystemFonts: true,
       disableWorker: true, isEvalSupported: false,
@@ -128,20 +146,45 @@ async function extractPages(buf) {
     const text = tc.items.map((it) => (it.str || '')).join(' ').replace(/\s+/g, ' ');
     pages.push({ page: i, text });
   }
-  return pages;
+  return { pages, workerMode };
+}
+
+// Footer-independent fallback: detect ATA sections from the running page
+// header band ("NN. <ChapterName>"), used when footer detection fails (a
+// different MEL provider template). Range = first..last page the chapter
+// appears as a header.
+export function mapSectionsByHeader(pages) {
+  const map = {};
+  for (const { page, text } of pages) {
+    const head = text.slice(0, 500);
+    const re = /\b(\d{2})\s*\.\s+[A-Z][A-Za-z]/g;
+    let mm;
+    const seen = new Set();
+    while ((mm = re.exec(head)) !== null) {
+      const s = mm[1];
+      if (ATA_CHAPTERS[s] && !seen.has(s)) {
+        seen.add(s);
+        if (!map[s]) map[s] = { first: page, last: page };
+        map[s].last = page;
+      }
+    }
+  }
+  return map;
 }
 
 // Map ATA system -> contiguous page numbers, from the footer page number.
-// pdf.js getTextContent() renders the footer as "PAGE NO: <ATA> - <n>".
-// Two artifacts vs. pdftotext: spaces around the hyphen, AND the two ATA
-// digits are sometimes split by a space ("2 2 - 1" meaning 22-1). Collapse
-// the digit pair, then validate against known ATA numbers.
+// pdf.js getTextContent() renders the footer as "PAGE NO<sep> <ATA> - <n>".
+// Templates differ by MEL provider: the Learjet (N168ZZ) uses "PAGE NO:"
+// (colon); the Cessna CE-525B (N525CR, AccuAero) uses "PAGE NO." (period).
+// Also, in both, the two ATA digits are sometimes split by a space
+// ("2 2 - 2" meaning 22-2). Accept any "PAGE NO" + optional .|: , collapse
+// the digit pair, validate against known ATA numbers.
 export function mapSections(pages) {
   const map = {};
   for (const { page, text } of pages) {
-    let m = text.match(/PAGE\s*NO:\s*(\d)\s*(\d)\s*-\s*\d+/i);
+    let m = text.match(/PAGE\s*NO\s*[.:]?\s*(\d)\s*(\d)\s*-\s*\d+/i);
     if (!m) {
-      const m2 = text.match(/DATE:\s*\d{2}\/\d{2}\/\d{4}\s+(?:PAGE\s*NO:\s*)?(\d)\s*(\d)\s*-\s*\d+/i);
+      const m2 = text.match(/DATE:\s*\d{2}\/\d{2}\/\d{4}\s+(?:PAGE\s*NO\s*[.:]?\s*)?(\d)\s*(\d)\s*-\s*\d+/i);
       if (m2) m = m2;
     }
     if (m) {
@@ -283,12 +326,33 @@ export default async function handler(req, res) {
     const bkt = admin.storage().bucket(bucket || 'skyway-ops-app.firebasestorage.app');
     const [buf] = await bkt.file(storagePath).download();
 
-    // 2. Per-page text + ATA section map.
-    const pages = await extractPages(buf);
-    const sectionMap = mapSections(pages);
+    // 2. Per-page text + ATA section map. Footer detection is primary;
+    //    fall back to header-based detection for other MEL templates.
+    const { pages, workerMode } = await extractPages(buf);
+    let sectionMap = mapSections(pages);
+    let detectMode = 'footer';
+    if (Object.keys(sectionMap).length < 3) {
+      const byHdr = mapSectionsByHeader(pages);
+      if (Object.keys(byHdr).length > Object.keys(sectionMap).length) {
+        sectionMap = byHdr;
+        detectMode = 'header-fallback';
+      }
+    }
     const sysNos = Object.keys(sectionMap).sort((a, b) => Number(a) - Number(b));
     if (sysNos.length === 0) {
-      return res.status(422).json({ error: 'No ATA sections detected — is this the MEL PDF?' });
+      // Rich, packed diagnostic so this failure is informative, not blind.
+      const totalChars = pages.reduce((n, p) => n + p.text.length, 0);
+      const withText = pages.filter((p) => p.text.trim().length > 20).length;
+      const pageNoPages = pages.filter((p) => /PAGE\s*NO/i.test(p.text)).length;
+      const sampPage = pages.find((p) => p.text.length > 50) || pages[0] || { page: 0, text: '' };
+      const samp = (sampPage.text || '').slice(0, 220).replace(/\s+/g, ' ');
+      const diag = `[${IMPL_VERSION} | pages=${pages.length} worker=${workerMode} ` +
+        `detect=${detectMode} textChars=${totalChars} pagesWithText=${withText} ` +
+        `pageNoPages=${pageNoPages} sampleP${sampPage.page}="${samp}"]`;
+      return res.status(422).json({
+        error: `No ATA sections detected — is this the MEL PDF? DIAGNOSTIC ${diag}`,
+        version: IMPL_VERSION,
+      });
     }
 
     // 3. Per-section extraction — bounded-parallel over chunks (large
@@ -344,7 +408,7 @@ export default async function handler(req, res) {
     }
     await fdb.collection('mel-revisions').doc(id).set(doc);
 
-    return res.status(200).json({ ok: true, revisionId: id, itemCount: items.length, report });
+    return res.status(200).json({ ok: true, revisionId: id, itemCount: items.length, report, version: IMPL_VERSION });
   } catch (err) {
     console.error('[mel-ingest]', err);
     return res.status(500).json({ error: `Ingest failed: ${err.message}` });
