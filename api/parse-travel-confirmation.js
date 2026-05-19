@@ -9,8 +9,44 @@
 //
 // Returns:
 //   { ok: true, parsed: { type: 'flight' | 'hotel', ...fields } }
+//
+// AUTH GATE (added): this endpoint spends the org's ANTHROPIC_API_KEY on every
+// call. It is now gated to authenticated Skyway users only. The caller must
+// include `idToken` in the body — the Firebase ID token of the logged-in user,
+// obtained on the frontend via auth.currentUser.getIdToken(). Verified
+// server-side with the Firebase Admin SDK before any Claude call. No role
+// check: any authenticated user may parse their own travel confirmations.
+// Mirrors the gate pattern in api/delete-user.js.
+//
+//   { idToken: '...', imageBase64: '...', mediaType: '...', expectedType?: '...' }
 
 export const config = { runtime: 'nodejs' };
+
+// --- Firebase Admin (cached across warm invocations) -----------------------
+// Identical pattern to api/delete-user.js — verifies caller ID tokens.
+let cachedAdmin = null;
+
+async function getAdmin() {
+  if (cachedAdmin) return cachedAdmin;
+  const admin = await import('firebase-admin');
+  if (!admin.apps || admin.apps.length === 0) {
+    const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+    if (!raw) {
+      throw new Error('FIREBASE_SERVICE_ACCOUNT_JSON not configured on server');
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error('FIREBASE_SERVICE_ACCOUNT_JSON is not valid JSON');
+    }
+    admin.default.initializeApp({
+      credential: admin.default.credential.cert(parsed),
+    });
+  }
+  cachedAdmin = admin.default;
+  return cachedAdmin;
+}
 
 const SYSTEM_PROMPT = `You extract structured booking data from travel confirmations for a Part 135 charter aviation operator. Crew members travel commercially between assignments and stay in hotels; ops uploads their confirmations to keep records.
 
@@ -91,6 +127,24 @@ export default async function handler(req, res) {
     try { body = JSON.parse(body); }
     catch { return res.status(400).json({ error: 'Invalid JSON body' }); }
   }
+
+  // --- AUTH GATE: verified Skyway user only (fails closed before any
+  //     Anthropic call, so an unauthenticated request never bills us) ---
+  const idToken = body?.idToken;
+  if (!idToken || typeof idToken !== 'string') {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+  try {
+    const admin = await getAdmin();
+    await admin.auth().verifyIdToken(idToken);
+  } catch (err) {
+    if (/FIREBASE_SERVICE_ACCOUNT_JSON/.test(err.message)) {
+      console.error('[parse-travel] admin init failed:', err.message);
+      return res.status(500).json({ error: 'Auth not configured on server' });
+    }
+    return res.status(401).json({ error: 'Invalid or expired auth token' });
+  }
+
   const { imageBase64, mediaType, expectedType } = body || {};
   if (!imageBase64) return res.status(400).json({ error: 'Missing imageBase64' });
 
