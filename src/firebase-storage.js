@@ -192,3 +192,37 @@ export async function deleteServiceReference(path) {
     }
   }
 }
+
+// ---- MEL revision PDF upload (mirror of uploadAogReference) --------------
+// Uploads an approved-MEL PDF for server-side ingest by api/mel-ingest.js.
+// Path prefix mel-uploads/ keeps these isolated from aog/service references.
+// Larger limit (30MB) — a full MEL PDF can be sizeable.
+export async function uploadMelRevisionPdf(file, tail) {
+  if (!file) throw new Error('No file provided');
+  if (!tail) throw new Error('Missing tail');
+  if (file.size > 30 * 1024 * 1024) {
+    throw new Error('File too large — limit is 30MB');
+  }
+  const isPdf = file.type === 'application/pdf' ||
+    (file.name || '').toLowerCase().endsWith('.pdf');
+  if (!isPdf) {
+    throw new Error('Only PDF files are accepted for MEL revisions');
+  }
+  const safeTail = String(tail).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12);
+  const baseName = String(file.name || 'mel.pdf')
+    .replace(/[^a-zA-Z0-9._-]/g, '_')
+    .replace(/_{2,}/g, '_')
+    .slice(0, 80);
+  const safeName = baseName.toLowerCase().endsWith('.pdf') ? baseName : `${baseName}.pdf`;
+  const filename = `${Date.now()}_${safeName}`;
+  const path = `mel-uploads/${safeTail}/${filename}`;
+  const storageRef = ref(storage, path);
+
+  const snapshot = await uploadBytes(storageRef, file, {
+    contentType: 'application/pdf',
+    cacheControl: 'private, max-age=3600',
+  });
+
+  const url = await getDownloadURL(snapshot.ref);
+  return { url, path, storagePath: path, filename: safeName, sizeBytes: file.size };
+}

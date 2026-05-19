@@ -12077,6 +12077,14 @@ function MelLibraryTab({ currentUser, fleetTails, onAssignToDeferral }) {
   const [showRev, setShowRev] = useState(false);
   const [busy, setBusy] = useState(null);
 
+  // MEL revision upload + ingest
+  const [showUpload, setShowUpload] = useState(false);
+  const [upFile, setUpFile] = useState(null);
+  const [upLabel, setUpLabel] = useState('');
+  const [upDate, setUpDate] = useState('');
+  const [upBasedOn, setUpBasedOn] = useState('');
+  const [ingestState, setIngestState] = useState(null); // null | 'uploading' | 'parsing' | {ok} | {error}
+
   const canAdmin = ['maint', 'admin'].includes(currentUser?.role);
 
   useEffect(() => {
@@ -12144,6 +12152,37 @@ function MelLibraryTab({ currentUser, fleetTails, onAssignToDeferral }) {
     if (onAssignToDeferral) onAssignToDeferral(input);
   };
 
+  const uploadAndIngest = async () => {
+    if (!upFile || !upLabel.trim()) return;
+    setIngestState('uploading');
+    try {
+      const { uploadMelRevisionPdf } = await import('./firebase-storage.js');
+      const { storagePath } = await uploadMelRevisionPdf(upFile, tail);
+
+      setIngestState('parsing');
+      const { auth } = await import('./firebase.js');
+      let idToken = null;
+      if (auth.currentUser) idToken = await auth.currentUser.getIdToken();
+
+      const r = await fetch('/api/mel-ingest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          idToken, storagePath, tail,
+          revisionLabel: upLabel.trim(),
+          revisionDate: upDate.trim(),
+          basedOn: upBasedOn.trim() || undefined,
+        }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) { setIngestState({ error: data.error || `Ingest failed (${r.status})` }); return; }
+      setIngestState({ ok: true, itemCount: data.itemCount, report: data.report });
+      setUpFile(null); setUpLabel(''); setUpDate(''); setUpBasedOn('');
+    } catch (e) {
+      setIngestState({ error: e.message });
+    }
+  };
+
   const inputCls = "w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400";
   const bySection = {};
   items.forEach((it) => { (bySection[it.system] = bySection[it.system] || []).push(it); });
@@ -12179,6 +12218,74 @@ function MelLibraryTab({ currentUser, fleetTails, onAssignToDeferral }) {
             Upload a MEL PDF to Firebase Storage, then ingest it server-side (parses to a DRAFT).
             Review the draft against the source PDF, then ACTIVATE — that review is the compliance gate.
           </p>
+
+          <div className="mb-3">
+            <button onClick={() => { setShowUpload((v) => !v); setIngestState(null); }} className="flex items-center gap-2 px-3 py-2 bg-cyan-600 hover:bg-cyan-500 text-white text-xs tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              <Upload className="w-4 h-4" /> UPLOAD &amp; INGEST MEL REVISION
+            </button>
+          </div>
+
+          {showUpload && (
+            <div className="border border-cyan-500/30 bg-cyan-500/5 p-4 mb-4 space-y-3">
+              <div>
+                <label className="text-[10px] text-slate-500 tracking-widest block mb-1">MEL PDF — {tail}</label>
+                <input
+                  type="file"
+                  accept="application/pdf,.pdf"
+                  onChange={(e) => setUpFile(e.target.files && e.target.files[0] ? e.target.files[0] : null)}
+                  className="block w-full text-xs text-slate-400 file:mr-3 file:px-3 file:py-2 file:border-0 file:bg-slate-800 file:text-slate-200 file:text-xs file:tracking-widest"
+                />
+                {upFile && <p className="text-[10px] text-slate-600 mt-1">{upFile.name} · {(upFile.size / 1024 / 1024).toFixed(1)} MB</p>}
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[10px] text-slate-500 tracking-widest block mb-1">REVISION LABEL</label>
+                  <input value={upLabel} onChange={(e) => setUpLabel(e.target.value)} className={inputCls} placeholder="ORIGINAL, REV 1, …" />
+                </div>
+                <div>
+                  <label className="text-[10px] text-slate-500 tracking-widest block mb-1">REVISION DATE</label>
+                  <input value={upDate} onChange={(e) => setUpDate(e.target.value)} className={inputCls} placeholder="04/09/2025" />
+                </div>
+              </div>
+              <div>
+                <label className="text-[10px] text-slate-500 tracking-widest block mb-1">BASED ON (optional)</label>
+                <input value={upBasedOn} onChange={(e) => setUpBasedOn(e.target.value)} className={inputCls} placeholder="Master MEL Learjet 60 Rev 6 …" />
+              </div>
+
+              {ingestState === 'uploading' && (
+                <p className="text-[11px] text-cyan-300 flex items-center gap-2"><Loader2 className="w-3 h-3 animate-spin" /> Uploading PDF to storage…</p>
+              )}
+              {ingestState === 'parsing' && (
+                <p className="text-[11px] text-cyan-300 flex items-center gap-2"><Loader2 className="w-3 h-3 animate-spin" /> Parsing the MEL section-by-section — this takes a few minutes. Keep this tab open.</p>
+              )}
+              {ingestState && ingestState.error && (
+                <p className="text-[11px] text-red-400">Ingest failed: {ingestState.error}</p>
+              )}
+              {ingestState && ingestState.ok && (
+                <div className="text-[11px] text-emerald-300 border border-emerald-500/30 bg-emerald-500/5 p-3">
+                  Parsed {ingestState.itemCount} items into a DRAFT revision.
+                  {ingestState.report && (
+                    <span className="block text-slate-400 mt-1">
+                      Sections with items: {ingestState.report.sectionsWithItems}/{ingestState.report.sectionsExpected}
+                      {ingestState.report.missingSections && ingestState.report.missingSections.length > 0 && ` · ⚠ missing: ${ingestState.report.missingSections.join(', ')}`}
+                      {ingestState.report.invalidCategory ? ` · ⚠ ${ingestState.report.invalidCategory} bad category` : ''}
+                      {ingestState.report.itemsMissingRemarks ? ` · ⚠ ${ingestState.report.itemsMissingRemarks} missing remarks` : ''}
+                    </span>
+                  )}
+                  <span className="block text-slate-400 mt-1">Review it below against the source PDF, then ACTIVATE.</span>
+                </div>
+              )}
+
+              {!ingestState || ingestState.error || ingestState.ok ? (
+                <div className="flex gap-2">
+                  <button onClick={uploadAndIngest} disabled={!upFile || !upLabel.trim()} className="flex items-center gap-2 px-3 py-2 bg-cyan-600 hover:bg-cyan-500 text-white text-xs tracking-widest disabled:opacity-40" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    <Upload className="w-4 h-4" /> {ingestState && ingestState.ok ? 'INGEST ANOTHER' : 'UPLOAD & INGEST'}
+                  </button>
+                  <button onClick={() => { setShowUpload(false); setIngestState(null); }} className="px-3 py-2 text-xs text-slate-500 hover:text-slate-300 tracking-widest">CLOSE</button>
+                </div>
+              ) : null}
+            </div>
+          )}
           {revisions.length === 0 ? (
             <p className="text-xs text-slate-600">No revisions yet for {tail}.</p>
           ) : (
