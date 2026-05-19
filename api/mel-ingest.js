@@ -145,7 +145,7 @@ export function mapSections(pages) {
 async function callClaude(apiKey, sysNo, sysName, text) {
   const body = {
     model: 'claude-sonnet-4-5',
-    max_tokens: 8000,
+    max_tokens: 16000,            // large sections (Navigation chunk) need headroom
     system: SYS_PROMPT,
     messages: [{ role: 'user', content:
       `ATA system ${sysNo} (${sysName}). Extract ALL items to the JSON schema. ` +
@@ -169,6 +169,45 @@ async function callClaude(apiKey, sysNo, sysName, text) {
     }
   }
   return { error: 'exhausted retries' };
+}
+
+// Pure: split the section map into extraction chunks. Sections within
+// MAX_CHUNK_PAGES go as one chunk; larger ones (e.g. Navigation = 33 pages)
+// are split into contiguous page-range sub-chunks so no single Claude call
+// is huge/slow or risks output truncation. Items keep their true ATA system.
+export function planChunks(sectionMap, pages, maxPages = 12) {
+  const byPage = new Map(pages.map((p) => [p.page, p.text]));
+  const chunks = [];
+  for (const s of Object.keys(sectionMap).sort((a, b) => Number(a) - Number(b))) {
+    const { first, last } = sectionMap[s];
+    const span = last - first + 1;
+    const parts = Math.max(1, Math.ceil(span / maxPages));
+    const per = Math.ceil(span / parts);
+    for (let i = 0; i < parts; i++) {
+      const a = first + i * per;
+      const b = Math.min(last, a + per - 1);
+      if (a > last) break;
+      let text = '';
+      for (let p = a; p <= b; p++) text += (byPage.get(p) || '') + '\n';
+      chunks.push({ system: s, part: i + 1, parts, first: a, last: b, text });
+    }
+  }
+  return chunks;
+}
+
+// Bounded-concurrency runner: at most `limit` workers in flight. Returns
+// results in the same order as `items`.
+export async function runPool(items, limit, worker) {
+  const results = new Array(items.length);
+  let idx = 0;
+  async function lane() {
+    while (idx < items.length) {
+      const i = idx++;
+      results[i] = await worker(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, lane));
+  return results;
 }
 
 // Pure: structural sanity over merged items. Flags, never drops.
@@ -240,23 +279,29 @@ export default async function handler(req, res) {
       return res.status(422).json({ error: 'No ATA sections detected — is this the MEL PDF?' });
     }
 
-    // 3. Per-section extraction.
-    const items = [];
+    // 3. Per-section extraction — bounded-parallel over chunks (large
+    //    sections sub-split) so the whole job finishes well inside the
+    //    function timeout instead of 24 serial calls.
+    const chunks = planChunks(sectionMap, pages, 12);
     const sectionErrors = {};
-    for (const s of sysNos) {
-      const { first, last } = sectionMap[s];
-      const text = pages.filter(p => p.page >= first && p.page <= last).map(p => p.text).join('\n');
-      // eslint-disable-next-line no-await-in-loop
-      const out = await callClaude(apiKey, s, EXPECTED_SYSTEMS[s], text);
-      if (out.error) { sectionErrors[s] = out.error; continue; }
-      for (const it of out.items) {
-        it.system = s;
-        it.system_name = EXPECTED_SYSTEMS[s];
-        const seq = String(it.sequence || '').trim();
-        it.ref = `ATA ${s}-${seq}` + (it.subitem ? ` ${it.subitem}` : '');
+    const chunkResults = await runPool(chunks, 6, async (c) => {
+      const out = await callClaude(apiKey, c.system, EXPECTED_SYSTEMS[c.system], c.text);
+      if (out.error) {
+        const key = c.parts > 1 ? `${c.system} (pt ${c.part}/${c.parts})` : c.system;
+        sectionErrors[key] = out.error;
+        return [];
       }
-      items.push(...out.items);
-    }
+      for (const it of out.items) {
+        it.system = c.system;
+        it.system_name = EXPECTED_SYSTEMS[c.system];
+        const seq = String(it.sequence || '').trim();
+        it.ref = `ATA ${c.system}-${seq}` + (it.subitem ? ` ${it.subitem}` : '');
+      }
+      return out.items;
+    });
+    const items = [];
+    for (const arr of chunkResults) items.push(...arr);
+    items.sort((a, b) => Number(a.system) - Number(b.system));
 
     // 4. Sanity (flags, never drops).
     const report = sanityReport(items, sectionMap);
