@@ -13,6 +13,11 @@
       "schedule": "* * * * *"
     }
   ],
+  "functions": {
+    "api/mel-ingest.js": {
+      "includeFiles": "node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs"
+    }
+  },
   "rewrites": [
     {
       "source": "/((?!api/).*)",
