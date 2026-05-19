@@ -30,6 +30,15 @@ async function getAdmin() {
   return cachedAdmin;
 }
 
+let cachedDb = null;
+async function getDb() {
+  if (cachedDb) return cachedDb;
+  await getAdmin();
+  const { getFirestore } = await import('firebase-admin/firestore');
+  cachedDb = getFirestore(cachedAdmin.app(), 'appusers');
+  return cachedDb;
+}
+
 const SYS_PROMPT = `You help a maintenance technician FIND candidate items in an aircraft's approved MEL. You are given a discrepancy description and a compact index of MEL items (reference, system, item name only — NOT the provisos). Return ONLY the references most likely relevant, best first.
 
 Output ONLY JSON: {"candidates":["<ref>", ...],"note":"one short sentence on how to interpret these"}
@@ -66,8 +75,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const fdb = admin.firestore();
-    fdb.settings({ databaseId: 'appusers' });
+    const fdb = await getDb();
     const tnorm = String(tail).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12);
     const snap = await fdb.collection('mel-revisions').where('tail', '==', tnorm).get();
     let active = null;

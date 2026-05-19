@@ -59,6 +59,7 @@ Schema: {"items":[{
 Rules: one object per distinct category/installed/required row; capture EVERY item incl. short ones; remarks VERBATIM (safety-critical, never invent/soften); null when genuinely absent; never guess a category.`;
 
 let cachedAdmin = null;
+let cachedDb = null;
 async function getAdmin() {
   if (cachedAdmin) return cachedAdmin;
   const admin = await import('firebase-admin');
@@ -72,6 +73,18 @@ async function getAdmin() {
   }
   cachedAdmin = admin.default;
   return cachedAdmin;
+}
+
+// Named DB `appusers`, via the codebase's canonical getFirestore(app, name)
+// pattern (service-link.js, flightaware-webhook.js, …). No settings() call —
+// settings() can only run once per instance and threw "Firestore has already
+// been initialized" when this endpoint touched Firestore twice.
+async function getDb() {
+  if (cachedDb) return cachedDb;
+  await getAdmin();
+  const { getFirestore } = await import('firebase-admin/firestore');
+  cachedDb = getFirestore(cachedAdmin.app(), 'appusers');
+  return cachedDb;
 }
 
 // Extract per-page text using pdfjs-dist (already a dependency). Returns
@@ -254,8 +267,7 @@ export default async function handler(req, res) {
   try {
     admin = await getAdmin();
     const decoded = await admin.auth().verifyIdToken(idToken);
-    const fdb = admin.firestore();
-    fdb.settings({ databaseId: 'appusers' });
+    const fdb = await getDb();
     const callerDoc = await fdb.collection('users').doc(decoded.uid).get();
     const role = callerDoc.exists ? callerDoc.data()?.role : null;
     if (!['maint', 'admin'].includes(role)) {
@@ -309,8 +321,7 @@ export default async function handler(req, res) {
 
     // 5. Write DRAFT revision (same doc shape firebase-mel.saveDraftRevision
     //    produces, so the client subscribe/activate path reads it correctly).
-    const fdb = admin.firestore();
-    fdb.settings({ databaseId: 'appusers' });
+    const fdb = await getDb();
     const tnorm = String(tail).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12);
     const id = `${tnorm}_${String(revisionLabel || 'rev').replace(/[^A-Za-z0-9]/g, '').slice(0, 24)}_${Date.now()}`;
     const now = Date.now();
