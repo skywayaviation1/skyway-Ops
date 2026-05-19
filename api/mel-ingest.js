@@ -77,24 +77,30 @@ async function getAdmin() {
 // Extract per-page text using pdfjs-dist (already a dependency). Returns
 // [{page, text}]. The page footer carries "DATE: <d>  <ATA>-<n>".
 //
-// Worker handling mirrors the app's proven src/App.jsx extractPdfText():
-// import the standard (non-legacy) build and point workerSrc at the
-// version-pinned cloudflare CDN, so pdf.js never tries to resolve a local
-// worker module (the cause of "Cannot find module .../pdf.worker.mjs" on
-// Vercel — the file tracer doesn't bundle the dynamically-referenced
-// worker). If outbound CDN fetch is unavailable to the function, fall back
-// to running with the worker disabled (slower, but no external dependency).
+// Worker handling for Node serverless (this took two iterations):
+//  - The browser pattern (workerSrc = https CDN, see src/App.jsx) does NOT
+//    work here: Node's ESM loader only imports file: and data: URLs, not
+//    https: ("Only URLs with a scheme in: file and data are supported").
+//  - A bare local module path is not bundled by Vercel's file tracer
+//    ("Cannot find module .../pdf.worker.mjs").
+// Fix: require.resolve() the worker (a) makes @vercel/nft trace & bundle it,
+// and (b) gives its real on-disk path; pathToFileURL() turns that into a
+// file: URL the Node ESM loader will load. vercel.json also force-includes
+// the worker file as belt-and-suspenders.
 async function extractPages(buf) {
-  const pdfjs = await import('pdfjs-dist/build/pdf.mjs');
-  pdfjs.GlobalWorkerOptions.workerSrc =
-    `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.mjs`;
+  const { createRequire } = await import('module');
+  const { pathToFileURL } = await import('url');
+  const req = createRequire(import.meta.url);
+  const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
 
   let pdf;
   try {
+    const workerPath = req.resolve('pdfjs-dist/legacy/build/pdf.worker.min.mjs');
+    pdfjs.GlobalWorkerOptions.workerSrc = pathToFileURL(workerPath).href;
     pdf = await pdfjs.getDocument({ data: new Uint8Array(buf), useSystemFonts: true }).promise;
   } catch (e) {
-    // CDN worker unreachable from the function — retry with the worker
-    // disabled so extraction still runs on the main thread.
+    // Last-resort: run with the worker disabled (main thread). Slower, no
+    // external/worker dependency at all.
     pdf = await pdfjs.getDocument({
       data: new Uint8Array(buf), useSystemFonts: true,
       disableWorker: true, isEvalSupported: false,
@@ -112,18 +118,25 @@ async function extractPages(buf) {
   return pages;
 }
 
-// Map ATA system -> contiguous page numbers, from the footer "<ATA>-<n>".
+// Map ATA system -> contiguous page numbers, from the footer page number.
+// pdf.js getTextContent() renders the footer as "PAGE NO: <ATA> - <n>".
+// Two artifacts vs. pdftotext: spaces around the hyphen, AND the two ATA
+// digits are sometimes split by a space ("2 2 - 1" meaning 22-1). Collapse
+// the digit pair, then validate against known ATA numbers.
 export function mapSections(pages) {
   const map = {};
-  const re = /\b(\d{2})-\d+\b/;
   for (const { page, text } of pages) {
-    // Footer pattern appears with the revision date nearby; restrict to the
-    // known ATA numbers to avoid false hits in body text.
-    const m = text.match(/DATE:\s*\d{2}\/\d{2}\/\d{4}\s+(\d{2})-\d+/) || text.match(re);
-    if (m && EXPECTED_SYSTEMS[m[1]]) {
-      const s = m[1];
-      if (!map[s]) map[s] = { first: page, last: page };
-      map[s].last = page;
+    let m = text.match(/PAGE\s*NO:\s*(\d)\s*(\d)\s*-\s*\d+/i);
+    if (!m) {
+      const m2 = text.match(/DATE:\s*\d{2}\/\d{2}\/\d{4}\s+(?:PAGE\s*NO:\s*)?(\d)\s*(\d)\s*-\s*\d+/i);
+      if (m2) m = m2;
+    }
+    if (m) {
+      const s = `${m[1]}${m[2]}`;
+      if (EXPECTED_SYSTEMS[s]) {
+        if (!map[s]) map[s] = { first: page, last: page };
+        map[s].last = page;
+      }
     }
   }
   return map;
