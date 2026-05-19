@@ -177,6 +177,15 @@ export async function triageSquawk(squawkId, opts = {}) {
   if (opts.melItemId) {
     patch.melItemId = opts.melItemId;
     patch.status = 'deferred';
+    // A squawk that has been MEL-deferred is, by definition, no longer a
+    // grounding condition: maint has asserted it is dispatchable per the
+    // approved MEL. Clear the grounding flag so the record reflects that
+    // and the aircraft moves red(AOG) -> amber(RESTRICTED, refer to MEL).
+    if (cur.grounding === true) {
+      patch.grounding = false;
+      hist.push({ at: now, byUid: opts.byUid || null, byName: opts.byName || 'Unknown',
+        action: 'triage', note: 'Grounding cleared — item MEL-deferred (dispatchable per MEL)' });
+    }
     hist.push({ at: now, byUid: opts.byUid || null, byName: opts.byName || 'Unknown',
       action: 'deferred', note: `Deferred under MEL item ${opts.melItemId}` });
   }
@@ -329,7 +338,12 @@ export function deriveAircraftStatus(tail, squawks = [], melItems = []) {
   const t = safeTail(tail);
   const mySquawks = squawks.filter((s) => safeTail(s.tail) === t);
   const myMel = melItems.filter((m) => safeTail(m.tail) === t);
-  const groundOpen = mySquawks.filter((s) => s.status !== 'closed' && s.grounding === true);
+  // A 'deferred' squawk is dispatchable per the MEL and must NOT force AOG,
+  // even if a legacy/edge record still carries grounding === true. The open
+  // MEL item it created drives RESTRICTED (amber) via the branch below.
+  const groundOpen = mySquawks.filter(
+    (s) => s.status !== 'closed' && s.status !== 'deferred' && s.grounding === true
+  );
   const melOpen = myMel.filter((m) => m.status === 'open');
   if (groundOpen.length > 0) {
     return { status: 'AOG', reasons: groundOpen.map((s) => s.description), melOpen: melOpen.length };
