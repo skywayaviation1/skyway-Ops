@@ -495,36 +495,101 @@ export async function sendLegacyTripMessage(tripId, sender, text, opts = {}) {
   // Fire push dispatch — same fire-and-forget pattern as sendMessage.
   // Skipped during impersonation (sender's auth token uid won't match
   // the impersonated sender.uid, so the server would reject; chat write
-  // itself still posts). Server resolves PIC/SIC/ops recipients itself.
+  // itself still posts). Server resolves PIC/SIC/dispatcher recipients
+  // itself. We log the response for diagnostic visibility: the
+  // `results` array shows per-uid sent/skipped + reason, so we can see
+  // immediately why a recipient didn't get push (no-tokens, quiet hours,
+  // muted, etc.).
   if (!sender._impersonating) {
     (async () => {
       try {
         const { auth } = await import('./firebase.js');
         const currentAuthUser = auth.currentUser;
-        if (!currentAuthUser) return;
+        if (!currentAuthUser) { console.warn('[trip push] no auth user, skip'); return; }
         const idToken = await currentAuthUser.getIdToken();
-        await fetch('/api/send-push', {
+        const resp = await fetch('/api/send-push', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             idToken,
             tripId: id,
-            // pic/sic/tail are passed in so the server can resolve
-            // recipients for iCal trips that have no Firestore doc.
+            // pic/sic/tail/from/to are passed in so the server can
+            // resolve recipients + build a useful title for iCal trips
+            // that have no Firestore doc.
             tripPicName: opts.tripPicName || '',
             tripSicName: opts.tripSicName || '',
             tripTail: opts.tripTail || '',
+            tripFrom: opts.tripFrom || '',
+            tripTo: opts.tripTo || '',
             message: { text: t, senderUid, senderName },
             isAog: opts.isAog || false,
           }),
         });
+        const body = await resp.json().catch(() => ({}));
+        if (resp.ok) {
+          console.log('[trip push] dispatch ok:', body);
+        } else {
+          console.warn('[trip push] dispatch http error', resp.status, body);
+        }
       } catch (e) {
-        console.warn('[comms] trip push dispatch failed (non-fatal):', e);
+        console.warn('[trip push] dispatch failed (non-fatal):', e);
       }
     })();
   }
 
   return ref.id;
+}
+
+// Fire a push notification for a trip status step transition (CREW ONSITE,
+// AIRCRAFT READY, PASSENGERS ARRIVED, etc). Same recipient resolution as
+// trip-chat push: PIC + SIC (name-matched) + dispatchers (or all-ops
+// fallback). Same quiet hours, mute, self-skip rules apply. Fire-and-
+// forget — never throws so a failure here doesn't block the status save.
+//
+//   tripId        Firestore-safe trip id
+//   sender        currentUser-like object ({uid, name, role, ...})
+//   statusLabel   Human-readable step label (e.g. "CREW ONSITE")
+//   tripMeta      { pic, sic, tail, from, to, isAog? } — same shape as the
+//                 trip push meta the client passes for trip-chat
+export async function sendStatusStepPush(tripId, sender, statusLabel, tripMeta = {}) {
+  if (!tripId || !sender || !statusLabel) return;
+  if (sender._impersonating) return; // skip during impersonation
+  const id = safeId(tripId);
+  try {
+    const { auth } = await import('./firebase.js');
+    const currentAuthUser = auth.currentUser;
+    if (!currentAuthUser) { console.warn('[status push] no auth user'); return; }
+    const idToken = await currentAuthUser.getIdToken();
+    const senderUid = sender.uid || sender.id || null;
+    const senderName = sender.name || sender.displayName || 'Unknown';
+    const resp = await fetch('/api/send-push', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        idToken,
+        tripId: id,
+        kind: 'trip-status',
+        statusLabel,
+        tripPicName: tripMeta.pic || '',
+        tripSicName: tripMeta.sic || '',
+        tripTail: tripMeta.tail || '',
+        tripFrom: tripMeta.from || '',
+        tripTo: tripMeta.to || '',
+        // Status events have no text body — server formats the body
+        // from statusLabel + senderName.
+        message: { text: '', senderUid, senderName },
+        isAog: tripMeta.isAog || false,
+      }),
+    });
+    const body = await resp.json().catch(() => ({}));
+    if (resp.ok) {
+      console.log('[status push] dispatch ok:', body);
+    } else {
+      console.warn('[status push] http error', resp.status, body);
+    }
+  } catch (e) {
+    console.warn('[status push] failed (non-fatal):', e);
+  }
 }
 
 // Soft-delete a trip message. Caller is responsible for permission check

@@ -1710,11 +1710,13 @@ function ChatPanel({ tripId, trip, currentUser }) {
   // Build push metadata once — used by both send and attach paths so the
   // server can resolve PIC/SIC name-matched recipients even when the trip
   // has no Firestore doc (iCal-sourced trips don't, unless dispatchers
-  // were explicitly set on them).
+  // were explicitly set on them). from/to round out the title.
   const tripPushMeta = {
     tripPicName: trip?.info?.pic || '',
     tripSicName: trip?.info?.sic || '',
     tripTail: trip?.info?.tail || '',
+    tripFrom: trip?.info?.from || '',
+    tripTo: trip?.info?.to || '',
   };
 
   const handleSend = async (text) => {
@@ -5578,6 +5580,22 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       console.log('[email] Sent successfully · resend id:', respData.id || '(no id)');
     } catch (err) {
       console.error('[email] Network error:', err);
+    }
+
+    // Push notification for status step transitions. Fires regardless of
+    // email outcome — push to dispatchers + PIC/SIC is independent from
+    // the broker/ops email. Fire-and-forget; failures don't block.
+    try {
+      const { sendStatusStepPush } = await import('./firebase-comms.js');
+      sendStatusStepPush(trip.uid, currentUser, step.label, {
+        pic: trip.info?.pic || '',
+        sic: trip.info?.sic || '',
+        tail: trip.info?.tail || '',
+        from: trip.info?.from || '',
+        to: trip.info?.to || '',
+      });
+    } catch (e) {
+      console.warn('[status push] dispatch wiring failed:', e);
     }
   };
 
