@@ -1479,8 +1479,36 @@ function TripDispatchersRow({ trip, currentUser, users }) {
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
 
-  // Tolerate field absence: legacy trips have no dispatcherUids.
-  const currentUids = Array.isArray(trip?.dispatcherUids) ? trip.dispatcherUids : [];
+  // iCal trips have no Firestore doc by default. When we save dispatcher
+  // metadata via setDoc({merge:true}), a doc is created — but the local
+  // `trip` object (from iCal in-memory state) doesn't see it. We
+  // subscribe directly to the trip doc here and overlay dispatcherUids
+  // from Firestore on top of whatever's on the local trip object.
+  const [overlay, setOverlay] = useState(null);
+  const tid = trip?.uid || trip?.id;
+  useEffect(() => {
+    if (!tid) return;
+    let unsub = null;
+    let cancelled = false;
+    (async () => {
+      const { db } = await import('./firebase.js');
+      const { doc, onSnapshot } = await import('firebase/firestore');
+      unsub = onSnapshot(doc(db, 'trips', tid), (snap) => {
+        if (cancelled) return;
+        if (!snap.exists()) { setOverlay(null); return; }
+        setOverlay(snap.data());
+      }, (e) => { console.warn('[dispatchers] overlay listener:', e); });
+    })();
+    return () => { cancelled = true; if (unsub) unsub(); };
+  }, [tid]);
+
+  // Effective dispatcherUids: Firestore overlay wins (since it's the
+  // source of truth for app-owned metadata); falls back to whatever's
+  // on the in-memory trip (likely nothing for iCal trips).
+  const currentUids = Array.isArray(overlay?.dispatcherUids)
+    ? overlay.dispatcherUids
+    : (Array.isArray(trip?.dispatcherUids) ? trip.dispatcherUids : []);
+
   const canEdit = ['ops', 'admin'].includes(currentUser?.role) && !trip?.completedAt;
 
   // Resolve uids to user records for display.
@@ -1496,12 +1524,11 @@ function TripDispatchersRow({ trip, currentUser, users }) {
   if (assigned.length === 0 && !canEdit) return null;
 
   const save = async (newUids) => {
-    if (!trip?.uid && !trip?.id) { setErr('Trip id missing'); return; }
+    if (!tid) { setErr('Trip id missing'); return; }
     setSaving(true); setErr('');
     try {
       const { db } = await import('./firebase.js');
       const { doc, setDoc } = await import('firebase/firestore');
-      const tid = trip.uid || trip.id;
       // setDoc with merge: creates the doc if it doesn't exist (iCal trips
       // have no Firestore doc by default), or merges in just this field
       // for trips that already have one. Also stamps PIC/SIC/tail at the
@@ -1515,6 +1542,9 @@ function TripDispatchersRow({ trip, currentUser, users }) {
           tail: trip.info?.tail || '',
         },
       }, { merge: true });
+      // Optimistic local: the onSnapshot listener will fire too, but this
+      // gives the UI a guaranteed instant update.
+      setOverlay((prev) => ({ ...(prev || {}), dispatcherUids: newUids }));
       setEditing(false);
     } catch (e) {
       console.error('[dispatchers] save failed:', e);
@@ -5900,7 +5930,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   const paxComplete = totalExpected === 0 || totalVerified >= totalExpected;
 
   return (
-    <div className="flex flex-col h-full bg-slate-950">
+    <div className={`flex flex-col bg-slate-950 ${tab === 'chat' ? 'min-h-full overflow-visible' : 'h-full'}`}>
       {/* Trip header */}
       <div className="px-6 py-5 border-b border-slate-800 bg-gradient-to-b from-slate-900/50 to-transparent">
         <div className="flex items-center justify-between mb-3">
@@ -6158,7 +6188,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       </div>
 
       {/* Tab content */}
-      <div className="flex-1 overflow-y-auto">
+      <div className={tab === 'chat' ? 'flex-1' : 'flex-1 overflow-y-auto'}>
         {loading ? (
           <div className="flex items-center justify-center py-16 text-slate-500">
             <Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading trip data...
@@ -22368,7 +22398,7 @@ export default function CharterOps() {
               )}
             </aside>
 
-            <main className={`flex-1 overflow-hidden flex flex-col min-h-0 ${selectedId ? 'block' : 'hidden md:flex'}`}>
+            <main className={`flex-1 overflow-y-auto flex flex-col min-h-0 ${selectedId ? 'block' : 'hidden md:flex'}`}>
               {selectedTrip ? (
                 <TripDetail
                   trip={selectedTrip}
@@ -22475,7 +22505,7 @@ export default function CharterOps() {
                 </div>
               )}
             </aside>
-            <main className={`flex-1 overflow-hidden flex flex-col min-h-0 ${selectedId ? 'block' : 'hidden md:flex'}`}>
+            <main className={`flex-1 overflow-y-auto flex flex-col min-h-0 ${selectedId ? 'block' : 'hidden md:flex'}`}>
               {selectedTrip ? (
                 <TripDetail
                   trip={selectedTrip}
