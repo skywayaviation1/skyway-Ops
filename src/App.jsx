@@ -1,4 +1,7 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback, Suspense, lazy } from 'react';
+
+// Code-split: Comms screen loads only when the user opens the COMMS tab.
+const CommsScreenLazy = lazy(() => import('./CommsScreen.jsx'));
 import { createPortal } from 'react-dom';
 import {
   Plane, Calendar, MessageSquare, Users, Bell, MapPin,
@@ -16732,6 +16735,7 @@ function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, sync
   const sections = [
     { id: 'home',     label: 'HOME',      icon: Sparkles, roles: ['crew', 'sales', 'ops', 'admin'] },
     { id: 'schedule', label: 'SCHEDULE',  icon: Calendar, roles: ['crew', 'ops', 'admin'] },
+    { id: 'comms',    label: 'COMMS',     icon: MessageSquare, roles: ['crew', 'sales', 'ops', 'maint', 'accounting', 'admin'] },
     { id: 'tracking', label: 'TRACKING',  icon: Plane,    roles: ['ops', 'admin'] },
     { id: 'archive',  label: 'ARCHIVE',   icon: Hash,     roles: ['crew', 'ops', 'admin'] },
     { id: 'expenses', label: 'EXPENSES',  icon: Mail,     roles: ['crew', 'sales', 'ops', 'accounting', 'admin'] },
@@ -22384,6 +22388,17 @@ export default function CharterOps() {
             users={users}
             fleetTails={Array.isArray(config?.fleetTails) ? config.fleetTails : ['N20UF', 'N168ZZ', 'N286N', 'N444AM', 'N651TW', 'N551FP', 'N85AH', 'N525CR']}
           />
+        )}
+
+        {/* === COMMS SECTION === */}
+        {section === 'comms' && (
+          <Suspense fallback={
+            <div className="flex-1 flex items-center justify-center text-slate-500">
+              <Loader2 className="w-5 h-5 animate-spin" />
+            </div>
+          }>
+            <CommsScreenLazy currentUser={currentUser} users={users} />
+          </Suspense>
         )}
 
         {/* === USERS SECTION === */}
