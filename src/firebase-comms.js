@@ -48,6 +48,7 @@ import {
   getDoc,
   getDocs,
   updateDoc,
+  deleteDoc,
   serverTimestamp,
   query,
   where,
@@ -277,6 +278,32 @@ export async function sendMessage(convId, sender, text, opts = {}) {
     lastAt: now,
     [`readAt.${senderUid || 'unknown'}`]: now,
   }).catch((e) => console.warn('[comms] lastMessage update failed:', e));
+
+  // Fire push dispatch in the background. NEVER awaited — chat must stay
+  // fast even if the push endpoint is slow or down. All filtering happens
+  // server-side in api/send-push.js (quiet hours, mute, AOG override,
+  // self-skip).
+  (async () => {
+    try {
+      const { auth } = await import('./firebase.js');
+      const currentAuthUser = auth.currentUser;
+      if (!currentAuthUser) return;
+      const idToken = await currentAuthUser.getIdToken();
+      await fetch('/api/send-push', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          idToken,
+          conversationId: id,
+          message: { text: t, senderUid, senderName },
+          isAog: opts.isAog || false,
+        }),
+      });
+    } catch (e) {
+      console.warn('[comms] push dispatch failed (non-fatal):', e);
+    }
+  })();
+
   return msgRef.id;
 }
 
@@ -294,6 +321,83 @@ export async function softDeleteMessage(convId, msgId, byUser) {
     deletedAt: serverTimestamp(),
     deletedBy: byUser?.uid || byUser?.id || null,
   });
+}
+
+/* ============================================================
+   TYPING PRESENCE
+   Each conversation has a `typing/{uid}` doc with an `at` ms
+   timestamp. Clients write while the user is typing (debounced)
+   and clear when they stop. Subscribers filter for entries newer
+   than TYPING_FRESHNESS_MS so stale presence (closed tab, crashed
+   client) ages out naturally without a server cleanup job.
+   ============================================================ */
+
+export const TYPING_FRESHNESS_MS = 6000;   // entries older than this are ignored
+
+export async function setTyping(convId, user, isTyping) {
+  if (!convId || !user) return;
+  const uid = user.uid || user.id;
+  if (!uid) return;
+  const ref = doc(db, 'conversations', safeId(convId), 'typing', uid);
+  if (isTyping) {
+    try {
+      await setDoc(ref, {
+        uid,
+        name: user.name || user.displayName || user.email || 'Someone',
+        at: Date.now(),
+      });
+    } catch (e) { /* non-fatal */ }
+  } else {
+    // Best-effort clear; if the doc never existed, the delete failure is
+    // ignored — we just don't want stale presence.
+    try {
+      await deleteDoc(ref);
+    } catch (e) { /* non-fatal */ }
+  }
+}
+
+export function subscribeTyping(convId, currentUid, onUpdate) {
+  if (!convId) { onUpdate([]); return () => {}; }
+  const qy = query(collection(db, 'conversations', safeId(convId), 'typing'));
+  return onSnapshot(
+    qy,
+    (snap) => {
+      const cutoff = Date.now() - TYPING_FRESHNESS_MS;
+      const names = [];
+      snap.forEach((d) => {
+        const v = d.data();
+        if (v.uid === currentUid) return;       // never show "I am typing"
+        if ((v.at || 0) >= cutoff) names.push(v.name || 'Someone');
+      });
+      onUpdate(names);
+    },
+    (err) => { console.error('[comms] subscribeTyping:', err); onUpdate([]); },
+  );
+}
+
+/* ============================================================
+   READ RECEIPTS — per message
+   When the viewer opens a conversation, every message they
+   haven't acknowledged is marked read by appending their uid to
+   readBy. BubbleChat already renders ✓✓ when readBy contains a
+   non-self uid for "my" messages.
+   ============================================================ */
+
+export async function markMessagesRead(convId, messages, viewerUid) {
+  if (!convId || !viewerUid || !Array.isArray(messages) || messages.length === 0) return;
+  const writes = [];
+  for (const m of messages) {
+    if (!m || !m.id) continue;
+    if (m.senderUid === viewerUid) continue;            // my own messages — skip
+    if (Array.isArray(m.readBy) && m.readBy.includes(viewerUid)) continue; // already marked
+    writes.push(
+      updateDoc(
+        doc(db, 'conversations', safeId(convId), 'messages', safeId(m.id)),
+        { readBy: arrayUnion(viewerUid) },
+      ).catch(() => { /* non-fatal: a missing/stale msg won't block the rest */ }),
+    );
+  }
+  if (writes.length) await Promise.all(writes);
 }
 
 /* ============================================================
