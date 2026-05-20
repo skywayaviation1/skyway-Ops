@@ -116,20 +116,37 @@ export default async function handler(req, res) {
     try {
       decoded = await cachedAdmin.auth().verifyIdToken(idToken);
     } catch (err) {
+      console.warn('[send-push] 401 invalid token:', err.message);
       return res.status(401).json({ error: 'invalid token: ' + err.message });
     }
     if (decoded.uid !== message.senderUid) {
-      return res.status(403).json({ error: 'sender uid mismatch' });
+      console.warn('[send-push] 403 sender uid mismatch',
+        { tokenUid: decoded.uid, claimedSenderUid: message.senderUid, conversationId });
+      return res.status(403).json({
+        error: 'sender uid mismatch',
+        tokenUid: decoded.uid,
+        claimedSenderUid: message.senderUid,
+      });
     }
 
     const db = await getDb();
 
     // Load conversation; participants gate the entire dispatch.
     const convSnap = await db.collection('conversations').doc(conversationId).get();
-    if (!convSnap.exists) return res.status(404).json({ error: 'conversation not found' });
+    if (!convSnap.exists) {
+      console.warn('[send-push] 404 conversation not found',
+        { conversationId, tokenUid: decoded.uid });
+      return res.status(404).json({ error: 'conversation not found', conversationId });
+    }
     const conv = convSnap.data();
     if (!Array.isArray(conv.participants) || !conv.participants.includes(decoded.uid)) {
-      return res.status(403).json({ error: 'sender not a participant' });
+      console.warn('[send-push] 403 sender not a participant',
+        { tokenUid: decoded.uid, participants: conv.participants, conversationId, kind: conv.kind });
+      return res.status(403).json({
+        error: 'sender not a participant',
+        tokenUid: decoded.uid,
+        participants: conv.participants,
+      });
     }
 
     // Build the recipient list — everyone in participants EXCEPT the sender.
