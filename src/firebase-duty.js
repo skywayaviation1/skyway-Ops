@@ -104,8 +104,24 @@ export async function startDuty(pilot, opts = {}) {
     return existing.id;
   }
 
+  // dutyOnAt: pilot may pass a user-entered time via opts.whenMs (we
+  // validate it here defensively). Falls back to Date.now() so any
+  // existing caller (admin edits, paired sync, automatic actions) gets
+  // the original behavior unchanged.
   const now = Date.now();
-  const id = periodId(pilot.uid, now);
+  const PAST_CAP = 24 * 60 * 60 * 1000;  // 24h backdate cap
+  let dutyOnAt = now;
+  if (Number.isFinite(opts.whenMs)) {
+    const candidate = Number(opts.whenMs);
+    if (candidate > now + 60 * 1000) {
+      throw new Error('Duty-on time cannot be in the future');
+    }
+    if (candidate < now - PAST_CAP) {
+      throw new Error('Duty-on time can only be within the past 24 hours');
+    }
+    dutyOnAt = candidate;
+  }
+  const id = periodId(pilot.uid, dutyOnAt);
   const record = {
     id,
     pilotUid: pilot.uid,
@@ -113,8 +129,8 @@ export async function startDuty(pilot, opts = {}) {
     role: 'PIC',
     sicUid: opts.sic?.uid || null,
     sicName: opts.sic?.name || null,
-    dutyOnAt: now,
-    fboArrivalAt: now,                 // hitting either action stamps arrival
+    dutyOnAt,
+    fboArrivalAt: dutyOnAt,            // pilot-entered duty-on doubles as FBO arrival
     dutyOffAt: null,
     restUntil: null,
     over14: false,
@@ -125,6 +141,9 @@ export async function startDuty(pilot, opts = {}) {
       : null,
     status: 'on',
     adminEdits: [],
+    // Audit: if dutyOnAt was user-entered (not now), stamp it so the
+    // compliance log can show this period started with a backdated entry.
+    enteredAtUtc: dutyOnAt !== now ? now : null,
     createdAt: now,
     updatedAt: now,
   };
@@ -164,8 +183,19 @@ export async function startDutyLinked(presser, partner, opts = {}) {
     return { myId, linkedId: partnerExisting.id };
   }
 
+  // The partner's auto-created period gets the same dutyOnAt as the
+  // presser. If the presser entered a backdated time, the partner's
+  // mirror period uses the same time so the pair stays aligned.
   const now = Date.now();
-  const linkedId = periodId(partner.uid, now);
+  const PAST_CAP = 24 * 60 * 60 * 1000;  // 24h backdate cap
+  let partnerDutyOnAt = now;
+  if (Number.isFinite(opts.whenMs)) {
+    const c = Number(opts.whenMs);
+    if (c <= now + 60 * 1000 && c >= now - PAST_CAP) {
+      partnerDutyOnAt = c;
+    }
+  }
+  const linkedId = periodId(partner.uid, partnerDutyOnAt);
   await setDoc(doc(db, 'duty-state', linkedId), {
     id: linkedId,
     pilotUid: partner.uid,
@@ -173,8 +203,8 @@ export async function startDutyLinked(presser, partner, opts = {}) {
     role: 'PIC',
     sicUid: null,
     sicName: null,
-    dutyOnAt: now,
-    fboArrivalAt: now,
+    dutyOnAt: partnerDutyOnAt,
+    fboArrivalAt: partnerDutyOnAt,
     dutyOffAt: null,
     restUntil: null,
     over14: false,
@@ -188,6 +218,7 @@ export async function startDutyLinked(presser, partner, opts = {}) {
     linkPending: true,                      // partner must confirm it's theirs
     linkedPeriodId: myId,                   // the period that spawned this
     linkedFromName: presser.name || '',
+    enteredAtUtc: partnerDutyOnAt !== now ? now : null,
     createdAt: now,
     updatedAt: now,
   });
@@ -237,7 +268,7 @@ export async function rejectLinkedDuty(periodDocId) {
  * End a duty period (duty-off). If the period exceeded 14h, BOTH reasons are
  * required (caller must supply them) or this throws.
  */
-export async function endDuty(periodDocId, { over14ReasonPic, over14ReasonSic } = {}) {
+export async function endDuty(periodDocId, { over14ReasonPic, over14ReasonSic, whenMs } = {}) {
   if (!periodDocId) throw new Error('period id required');
   const ref = doc(db, 'duty-state', periodDocId);
   const snap = await getDoc(ref);
@@ -246,7 +277,25 @@ export async function endDuty(periodDocId, { over14ReasonPic, over14ReasonSic } 
   if (cur.status === 'off') return; // already closed
 
   const now = Date.now();
-  const elapsed = now - (cur.dutyOnAt || now);
+  // Effective duty-off time: pilot-entered (validated) or now. Drives
+  // both `elapsed` (for the over-14 calculation) AND the rest window
+  // start, so backdating duty-off correctly says "rest started THEN."
+  const PAST_CAP = 24 * 60 * 60 * 1000;  // 24h backdate cap
+  let dutyOffAt = now;
+  if (Number.isFinite(whenMs)) {
+    const candidate = Number(whenMs);
+    if (candidate > now + 60 * 1000) {
+      throw new Error('Duty-off time cannot be in the future');
+    }
+    if (candidate < now - PAST_CAP) {
+      throw new Error('Duty-off time can only be within the past 24 hours');
+    }
+    if (cur.dutyOnAt && candidate < cur.dutyOnAt) {
+      throw new Error('Duty-off cannot be before duty-on');
+    }
+    dutyOffAt = candidate;
+  }
+  const elapsed = dutyOffAt - (cur.dutyOnAt || dutyOffAt);
   const over14 = elapsed > DUTY_MAX_MS;
 
   // The linked partner may be over 14h even if the pressing pilot is not
@@ -260,7 +309,7 @@ export async function endDuty(periodDocId, { over14ReasonPic, over14ReasonSic } 
       if (pSnapPre.exists()) {
         const pPre = pSnapPre.data();
         if (pPre.status !== 'off') {
-          partnerOver14 = (now - (pPre.dutyOnAt || now)) > DUTY_MAX_MS;
+          partnerOver14 = (dutyOffAt - (pPre.dutyOnAt || dutyOffAt)) > DUTY_MAX_MS;
         }
       }
     } catch (e) {
@@ -285,12 +334,15 @@ export async function endDuty(periodDocId, { over14ReasonPic, over14ReasonSic } 
   }
 
   await updateDoc(ref, {
-    dutyOffAt: now,
-    restUntil: now + REST_MIN_MS,
+    dutyOffAt,
+    restUntil: dutyOffAt + REST_MIN_MS,
     over14,
     over14ReasonPic: over14 ? String(over14ReasonPic).trim().slice(0, 2000) : '',
     over14ReasonSic: over14 ? String(over14ReasonSic).trim().slice(0, 2000) : '',
     status: 'off',
+    // Audit: stamp when this entry was actually written if it differs
+    // from the dutyOffAt the pilot entered.
+    enteredOffAtUtc: dutyOffAt !== now ? now : null,
     updatedAt: now,
   });
 
@@ -316,11 +368,11 @@ export async function endDuty(periodDocId, { over14ReasonPic, over14ReasonSic } 
         // pairing a freshly-dutied-on pilot could wrongly duty them off.
         const mutual = p.linkedPeriodId === periodDocId;
         if (mutual && p.status !== 'off') {
-          const pElapsed = now - (p.dutyOnAt || now);
+          const pElapsed = dutyOffAt - (p.dutyOnAt || dutyOffAt);
           const pOver14 = pElapsed > DUTY_MAX_MS;
           await updateDoc(pRef, {
-            dutyOffAt: now,
-            restUntil: now + REST_MIN_MS,
+            dutyOffAt,
+            restUntil: dutyOffAt + REST_MIN_MS,
             over14: pOver14,
             over14ReasonPic: pOver14 ? String(over14ReasonPic || '').trim().slice(0, 2000) : (p.over14ReasonPic || ''),
             over14ReasonSic: pOver14 ? String(over14ReasonSic || '').trim().slice(0, 2000) : (p.over14ReasonSic || ''),

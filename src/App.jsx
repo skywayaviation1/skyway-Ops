@@ -3099,6 +3099,51 @@ function fmtET(ms, opts) {
   }
 }
 
+// Convert an HH:MM input (interpreted in Eastern time) into a UTC ms
+// timestamp. The candidate is "today's HH:MM in Eastern." If that
+// candidate is in the future relative to now, we assume the pilot
+// meant yesterday and subtract 24h. Returns null on parse failure.
+function parseDutyTimeInput(hhmm) {
+  if (!hhmm || typeof hhmm !== 'string') return null;
+  const m = hhmm.match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const hh = Number(m[1]); const mm = Number(m[2]);
+  if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
+  if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
+  const now = new Date();
+  try {
+    const fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit',
+    });
+    const parts = fmt.formatToParts(now);
+    const y = Number(parts.find(p => p.type === 'year').value);
+    const mo = Number(parts.find(p => p.type === 'month').value);
+    const d = Number(parts.find(p => p.type === 'day').value);
+    const naive = new Date(Date.UTC(y, mo - 1, d, hh, mm, 0));
+    const etStr = naive.toLocaleString('en-US', { timeZone: 'America/New_York' });
+    const utcStr = naive.toLocaleString('en-US', { timeZone: 'UTC' });
+    const etMs = new Date(etStr).getTime();
+    const utcMs = new Date(utcStr).getTime();
+    const offset = etMs - utcMs;
+    let candidate = naive.getTime() - offset;
+    if (candidate > Date.now() + 60 * 1000) candidate -= 24 * 60 * 60 * 1000;
+    return candidate;
+  } catch {
+    return null;
+  }
+}
+
+// Helper: current Eastern HH:MM string, used as the default for the
+// duty-on/off time input.
+function currentEtHHMM() {
+  try {
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      hour: '2-digit', minute: '2-digit', hour12: false,
+    }).format(new Date());
+  } catch { return ''; }
+}
+
 function DutyCardInner({ currentUser, myTrips, users }) {
   const [period, setPeriod] = React.useState(null);
   const [loaded, setLoaded] = React.useState(false);
@@ -3106,6 +3151,10 @@ function DutyCardInner({ currentUser, myTrips, users }) {
   const [busy, setBusy] = React.useState(false);
   const [err, setErr] = React.useState('');
   const [showOff, setShowOff] = React.useState(false);
+  // Duty-on time picker: HH:MM string the pilot enters before pressing
+  // DUTY ON. Defaults to current Eastern HH:MM so the most common case
+  // ("I'm going on duty NOW") is a single tap.
+  const [dutyTimeInput, setDutyTimeInput] = React.useState(currentEtHHMM);
   const [showRestOverride, setShowRestOverride] = React.useState(false);
   const [adminEdit, setAdminEdit] = React.useState(null); // 'dutyOnAt'|'dutyOffAt'|null
   const [linkInfo, setLinkInfo] = React.useState('');
@@ -3230,7 +3279,7 @@ function DutyCardInner({ currentUser, myTrips, users }) {
 
   const pastBinding = dutyCalc.binding != null && now > dutyCalc.binding;
 
-  async function doStart({ fboArrival = false, restOverrideReason = null } = {}) {
+  async function doStart({ fboArrival = false, restOverrideReason = null, whenMs = null } = {}) {
     setBusy(true); setErr('');
     try {
       const m = await import('./firebase-duty.js');
@@ -3297,6 +3346,7 @@ function DutyCardInner({ currentUser, myTrips, users }) {
       await m.startDutyLinked(pilot, partner, {
         fboArrival,
         restOverride: restOverrideReason ? { reason: restOverrideReason } : null,
+        whenMs: Number.isFinite(whenMs) ? whenMs : null,
       });
       setShowRestOverride(false);
     } catch (e) {
@@ -3309,14 +3359,20 @@ function DutyCardInner({ currentUser, myTrips, users }) {
   function onDutyOnClick() {
     // If still in a rest window from the previous period, warn + offer override.
     if (resting) { setShowRestOverride(true); return; }
-    doStart({});
+    const whenMs = parseDutyTimeInput(dutyTimeInput);
+    if (whenMs == null) { setErr('Please enter a valid time (HH:MM).'); return; }
+    doStart({ whenMs });
   }
 
-  async function doEnd({ picReason = '', sicReason = '' } = {}) {
+  async function doEnd({ picReason = '', sicReason = '', whenMs = null } = {}) {
     setBusy(true); setErr('');
     try {
       const m = await import('./firebase-duty.js');
-      await m.endDuty(period.id, { over14ReasonPic: picReason, over14ReasonSic: sicReason });
+      await m.endDuty(period.id, {
+        over14ReasonPic: picReason,
+        over14ReasonSic: sicReason,
+        whenMs: Number.isFinite(whenMs) ? whenMs : null,
+      });
       setShowOff(false);
     } catch (e) {
       if (e.code === 'OVER14_REASON_REQUIRED') {
@@ -3405,23 +3461,51 @@ function DutyCardInner({ currentUser, myTrips, users }) {
           ) : (
             <div className="text-sm text-slate-400 mb-2">You are off duty.</div>
           )}
-          <div className="flex gap-2">
-            <button
-              onClick={onDutyOnClick}
-              disabled={busy}
-              className="flex-1 px-4 py-3 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 text-sm tracking-widest font-medium"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}
-            >
-              DUTY ON
-            </button>
-            <button
-              onClick={() => doStart({ fboArrival: true })}
-              disabled={busy}
-              className="flex-1 px-4 py-3 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 text-sm tracking-widest font-medium border border-slate-700"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}
-            >
-              CREW AT FBO
-            </button>
+          <div className="space-y-2">
+            <label className="block text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              DUTY ON TIME (ET) · within last 24 hours
+            </label>
+            <div className="flex items-stretch gap-2">
+              <input
+                type="time"
+                value={dutyTimeInput}
+                onChange={(e) => setDutyTimeInput(e.target.value)}
+                className="flex-1 bg-slate-950 border border-slate-700 px-3 py-3 text-base text-slate-100 tabular-nums focus:border-cyan-400 outline-none"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                step={60}
+              />
+              <button
+                onClick={() => setDutyTimeInput(currentEtHHMM())}
+                disabled={busy}
+                className="px-3 py-3 bg-slate-800 hover:bg-slate-700 text-slate-400 text-xs tracking-widest"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                title="Reset to current time"
+              >
+                NOW
+              </button>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={onDutyOnClick}
+                disabled={busy}
+                className="flex-1 px-4 py-3 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 text-sm tracking-widest font-medium"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              >
+                DUTY ON
+              </button>
+              <button
+                onClick={() => {
+                  const whenMs = parseDutyTimeInput(dutyTimeInput);
+                  if (whenMs == null) { setErr('Please enter a valid time (HH:MM).'); return; }
+                  doStart({ fboArrival: true, whenMs });
+                }}
+                disabled={busy}
+                className="flex-1 px-4 py-3 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 text-sm tracking-widest font-medium border border-slate-700"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              >
+                CREW AT FBO
+              </button>
+            </div>
           </div>
           <p className="text-[10px] text-slate-600">Either action starts your duty period and stamps FBO arrival.</p>
         </div>
@@ -3474,12 +3558,18 @@ function DutyCardInner({ currentUser, myTrips, users }) {
         </div>
       )}
 
-      {/* Rest override: requires a reason (PIC/admin) */}
+      {/* Rest override: requires a reason (PIC/admin). Uses the same
+          dutyTimeInput as the normal duty-on path so backdated overrides
+          stamp the entered time, not "now". */}
       {showRestOverride && (
         <RestOverrideForm
           busy={busy}
           onCancel={() => setShowRestOverride(false)}
-          onConfirm={(reason) => doStart({ restOverrideReason: reason })}
+          onConfirm={(reason) => {
+            const whenMs = parseDutyTimeInput(dutyTimeInput);
+            if (whenMs == null) { setErr('Please enter a valid duty-on time before overriding.'); return; }
+            doStart({ restOverrideReason: reason, whenMs });
+          }}
         />
       )}
 
@@ -3556,7 +3646,7 @@ function DutyCardInner({ currentUser, myTrips, users }) {
           err={err}
           sicName={period.sicName}
           onCancel={() => { setShowOff(false); setErr(''); }}
-          onConfirm={(picReason, sicReason) => doEnd({ picReason, sicReason })}
+          onConfirm={(picReason, sicReason, whenMs) => doEnd({ picReason, sicReason, whenMs })}
         />
       )}
 
@@ -3700,6 +3790,8 @@ function RestOverrideForm({ busy, onCancel, onConfirm }) {
 function DutyOffForm({ over14, busy, err, sicName, onCancel, onConfirm }) {
   const [pic, setPic] = React.useState('');
   const [sic, setSic] = React.useState('');
+  const [timeInput, setTimeInput] = React.useState(currentEtHHMM);
+  const [localErr, setLocalErr] = React.useState('');
   return (
     <div className="space-y-2">
       {over14 ? (
@@ -3719,10 +3811,38 @@ function DutyOffForm({ over14, busy, err, sicName, onCancel, onConfirm }) {
       ) : (
         <div className="text-sm text-slate-400">Confirm duty off. A 10-hour rest period will begin.</div>
       )}
-      {err && <div className="text-xs text-amber-400">{err}</div>}
+      <div className="space-y-1">
+        <label className="block text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          DUTY OFF TIME (ET) · within last 24 hours
+        </label>
+        <div className="flex items-stretch gap-2">
+          <input
+            type="time"
+            value={timeInput}
+            onChange={(e) => { setTimeInput(e.target.value); setLocalErr(''); }}
+            className="flex-1 bg-slate-950 border border-slate-700 px-3 py-2 text-base text-slate-100 tabular-nums focus:border-cyan-400 outline-none"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            step={60}
+          />
+          <button
+            onClick={() => setTimeInput(currentEtHHMM())}
+            disabled={busy}
+            className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-400 text-xs tracking-widest"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            title="Reset to current time"
+          >
+            NOW
+          </button>
+        </div>
+      </div>
+      {(err || localErr) && <div className="text-xs text-amber-400">{err || localErr}</div>}
       <div className="flex gap-2">
         <button
-          onClick={() => onConfirm(pic.trim(), sic.trim())}
+          onClick={() => {
+            const whenMs = parseDutyTimeInput(timeInput);
+            if (whenMs == null) { setLocalErr('Please enter a valid time (HH:MM).'); return; }
+            onConfirm(pic.trim(), sic.trim(), whenMs);
+          }}
           disabled={busy || (over14 && (!pic.trim() || !sic.trim()))}
           className="flex-1 px-4 py-2 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 text-xs tracking-widest font-medium"
           style={{ fontFamily: 'JetBrains Mono, monospace' }}
