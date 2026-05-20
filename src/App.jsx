@@ -1495,6 +1495,27 @@ function ChatPanel({ tripId, currentUser }) {
     await sendLegacyTripMessage(tripId, currentUser, text);
   };
 
+  // Attachment upload for trip chat. Uploads to trip-attachments/{tripId}/
+  // then posts a message with the attachment metadata. Mirrors the COMMS
+  // attach flow.
+  const handleAttach = async (file) => {
+    const { uploadTripAttachment } = await import('./firebase-storage.js');
+    const att = await uploadTripAttachment(file, tripId);
+    const { sendLegacyTripMessage } = await import('./firebase-comms.js');
+    await sendLegacyTripMessage(tripId, currentUser, '', {
+      attachments: [{ name: att.name, url: att.url, kind: att.kind }],
+    });
+  };
+
+  // Delete: sender or admin. Rules layer enforces; we gate the UI too.
+  const isAdmin = currentUser?.role === 'admin';
+  const myUid = currentUser?.uid || currentUser?.id;
+  const canDelete = (msg) => isAdmin || (msg.senderUid && msg.senderUid === myUid);
+  const handleDelete = async (msg) => {
+    const { softDeleteLegacyTripMessage } = await import('./firebase-comms.js');
+    await softDeleteLegacyTripMessage(tripId, msg.id, currentUser);
+  };
+
   return (
     <div className="flex flex-col">
       <div className="px-5 py-3 border-b border-slate-800 flex items-center justify-between">
@@ -1513,6 +1534,9 @@ function ChatPanel({ tripId, currentUser }) {
             messages={messages}
             currentUser={currentUser}
             onSend={handleSend}
+            onAttach={handleAttach}
+            onDelete={handleDelete}
+            canDelete={canDelete}
             loading={loading}
             emptyText="No messages yet. Comms are visible to all crew on this trip."
             maxHeight="70vh"

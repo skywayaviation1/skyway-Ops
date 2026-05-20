@@ -193,7 +193,78 @@ export async function deleteServiceReference(path) {
   }
 }
 
-// ---- MEL revision PDF upload (mirror of uploadAogReference) --------------
+// ---- Trip chat attachments ---------------------------------------------
+// Path: trip-attachments/{tripId}/{ts}_{safeName}. Same constraints as
+// comms attachments. Separate Storage path from comms attachments so
+// per-trip rules can authorize differently if you ever tighten them.
+export async function uploadTripAttachment(file, tripId) {
+  if (!file) throw new Error('No file provided');
+  if (!tripId) throw new Error('Missing trip id');
+  if (file.size > 10 * 1024 * 1024) {
+    throw new Error('File too large — limit is 10MB');
+  }
+  const safeTrip = String(tripId).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 200);
+  const baseName = String(file.name || 'file')
+    .replace(/[^a-zA-Z0-9._-]/g, '_')
+    .replace(/_{2,}/g, '_')
+    .slice(0, 80) || 'file';
+  const filename = `${Date.now()}_${baseName}`;
+  const path = `trip-attachments/${safeTrip}/${filename}`;
+  const storageRef = ref(storage, path);
+
+  const isImage = String(file.type || '').startsWith('image/');
+  const snapshot = await uploadBytes(storageRef, file, {
+    contentType: file.type || 'application/octet-stream',
+    cacheControl: 'private, max-age=3600',
+  });
+  const url = await getDownloadURL(snapshot.ref);
+  return {
+    url,
+    path,
+    storagePath: path,
+    name: baseName,
+    kind: isImage ? 'image' : 'file',
+    sizeBytes: file.size,
+    contentType: file.type || 'application/octet-stream',
+  };
+}
+
+// ---- Comms attachments (image or file) ---------------------------------
+// Path: comms-attachments/{conversationId}/{ts}_{safeName}. Accepts images
+// and common document types. Stricter than the AOG reference upload
+// (smaller cap, more types allowed) to fit chat usage.
+export async function uploadCommsAttachment(file, conversationId) {
+  if (!file) throw new Error('No file provided');
+  if (!conversationId) throw new Error('Missing conversation id');
+  if (file.size > 10 * 1024 * 1024) {
+    throw new Error('File too large — limit is 10MB');
+  }
+  const safeConv = String(conversationId).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 200);
+  const baseName = String(file.name || 'file')
+    .replace(/[^a-zA-Z0-9._-]/g, '_')
+    .replace(/_{2,}/g, '_')
+    .slice(0, 80) || 'file';
+  const filename = `${Date.now()}_${baseName}`;
+  const path = `comms-attachments/${safeConv}/${filename}`;
+  const storageRef = ref(storage, path);
+
+  const isImage = String(file.type || '').startsWith('image/');
+  const snapshot = await uploadBytes(storageRef, file, {
+    contentType: file.type || 'application/octet-stream',
+    cacheControl: 'private, max-age=3600',
+  });
+  const url = await getDownloadURL(snapshot.ref);
+  return {
+    url,
+    path,
+    storagePath: path,
+    name: baseName,
+    kind: isImage ? 'image' : 'file',
+    sizeBytes: file.size,
+    contentType: file.type || 'application/octet-stream',
+  };
+}
+
 // Uploads an approved-MEL PDF for server-side ingest by api/mel-ingest.js.
 // Path prefix mel-uploads/ keeps these isolated from aog/service references.
 // Larger limit (30MB) — a full MEL PDF can be sizeable.

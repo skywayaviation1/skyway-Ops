@@ -435,6 +435,20 @@ function CommsScreen({ currentUser, users, onJumpToEntity }) {
     });
   };
 
+  // Delete: sender or admin (rules layer enforces; UI gates too).
+  // (isAdmin is already declared at component scope above.)
+  const myDeleteUid = currentUser?.uid || currentUser?.id;
+  const canDelete = (msg) => isAdmin || (msg.senderUid && msg.senderUid === myDeleteUid);
+  const handleDelete = async (msg) => {
+    if (!selected) return;
+    const M = await import('./firebase-comms.js');
+    if (selected.kind === 'trip' && selected._legacyTripId) {
+      await M.softDeleteLegacyTripMessage(selected._legacyTripId, msg.id, currentUser);
+    } else {
+      await M.softDeleteMessage(selected.id, msg.id, currentUser);
+    }
+  };
+
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       <NewConversationDialog
@@ -544,6 +558,8 @@ function CommsScreen({ currentUser, users, onJumpToEntity }) {
                   onSend={handleSend}
                   onAttach={selected.kind === 'trip' ? null : handleAttach}
                   onTyping={selected.kind === 'trip' ? null : handleTyping}
+                  onDelete={handleDelete}
+                  canDelete={canDelete}
                   loading={msgLoading}
                   emptyText={selected.kind === 'dm' ? 'Say hi.' : 'No messages in this conversation yet.'}
                   className="h-full"

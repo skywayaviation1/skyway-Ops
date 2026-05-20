@@ -282,27 +282,32 @@ export async function sendMessage(convId, sender, text, opts = {}) {
   // Fire push dispatch in the background. NEVER awaited — chat must stay
   // fast even if the push endpoint is slow or down. All filtering happens
   // server-side in api/send-push.js (quiet hours, mute, AOG override,
-  // self-skip).
-  (async () => {
-    try {
-      const { auth } = await import('./firebase.js');
-      const currentAuthUser = auth.currentUser;
-      if (!currentAuthUser) return;
-      const idToken = await currentAuthUser.getIdToken();
-      await fetch('/api/send-push', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          idToken,
-          conversationId: id,
-          message: { text: t, senderUid, senderName },
-          isAog: opts.isAog || false,
-        }),
-      });
-    } catch (e) {
-      console.warn('[comms] push dispatch failed (non-fatal):', e);
-    }
-  })();
+  // self-skip). Skipped entirely when an admin is impersonating another
+  // user: the Firebase Auth token is still the admin's, while sender.uid
+  // is the impersonated user's, so the server would (correctly) reject
+  // the dispatch as a uid mismatch. The chat message itself still posts.
+  if (!sender._impersonating) {
+    (async () => {
+      try {
+        const { auth } = await import('./firebase.js');
+        const currentAuthUser = auth.currentUser;
+        if (!currentAuthUser) return;
+        const idToken = await currentAuthUser.getIdToken();
+        await fetch('/api/send-push', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            idToken,
+            conversationId: id,
+            message: { text: t, senderUid, senderName },
+            isAog: opts.isAog || false,
+          }),
+        });
+      } catch (e) {
+        console.warn('[comms] push dispatch failed (non-fatal):', e);
+      }
+    })();
+  }
 
   return msgRef.id;
 }
@@ -459,6 +464,9 @@ export function subscribeLegacyTripThread(tripId, onMessages) {
           author: data.author || 'Unknown',
           text: data.text || '',
           timestamp: tsToMs(data.timestamp),
+          attachments: Array.isArray(data.attachments) ? data.attachments : undefined,
+          deletedAt: data.deletedAt ? tsToMs(data.deletedAt) : null,
+          deletedBy: data.deletedBy || null,
         });
       });
       onMessages(out);
@@ -468,16 +476,29 @@ export function subscribeLegacyTripThread(tripId, onMessages) {
 }
 
 // Write to the existing trips/{id}/messages path so legacy threads keep
-// working unchanged after we drop BubbleChat in.
-export async function sendLegacyTripMessage(tripId, sender, text) {
+// working unchanged after we drop BubbleChat in. Now accepts attachments
+// via opts (storage upload happens at the call site).
+export async function sendLegacyTripMessage(tripId, sender, text, opts = {}) {
   const id = safeId(tripId);
   const t = String(text || '').trim();
-  if (!t) return null;
+  if (!t && !(opts.attachments && opts.attachments.length)) return null;
   const ref = await addDoc(collection(db, 'trips', id, 'messages'), {
     author: sender.name || sender.displayName || 'Unknown',
     senderUid: sender.uid || sender.id || null,
     text: t,
     timestamp: serverTimestamp(),
+    attachments: opts.attachments || null,
   });
   return ref.id;
+}
+
+// Soft-delete a trip message. Caller is responsible for permission check
+// (sender or admin); the rules layer also enforces it.
+export async function softDeleteLegacyTripMessage(tripId, msgId, byUser) {
+  const tid = safeId(tripId);
+  const mid = safeId(msgId);
+  await updateDoc(doc(db, 'trips', tid, 'messages', mid), {
+    deletedAt: serverTimestamp(),
+    deletedBy: byUser?.uid || byUser?.id || null,
+  });
 }
