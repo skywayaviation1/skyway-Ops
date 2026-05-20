@@ -1463,20 +1463,22 @@ function StatusButton({ step, status, onTrigger, onUntrigger, locked, isNext, au
    Chat panel
    ============================================================ */
 function ChatPanel({ tripId, currentUser }) {
+  // Visual upgrade to the txt-message-style BubbleChat. Backed by the same
+  // trips/{tripId}/messages collection the legacy ChatPanel used — no data
+  // migration needed. The user object passed in is the full currentUser
+  // (uid + name); fallback to author-name match is built into BubbleChat
+  // for any legacy messages written before senderUid was populated.
   const [messages, setMessages] = useState([]);
-  const [draft, setDraft] = useState('');
   const [loading, setLoading] = useState(true);
-  const [sending, setSending] = useState(false);
-  const scrollRef = useRef(null);
 
-  // Subscribe to real-time updates from Firestore
   useEffect(() => {
+    if (!tripId) return;
     setLoading(true);
     let unsubscribe = null;
     (async () => {
       try {
-        const { subscribeToChat } = await import('./firebase-chat.js');
-        unsubscribe = subscribeToChat(tripId, (msgs) => {
+        const { subscribeLegacyTripThread } = await import('./firebase-comms.js');
+        unsubscribe = subscribeLegacyTripThread(tripId, (msgs) => {
           setMessages(msgs);
           setLoading(false);
         });
@@ -1488,24 +1490,9 @@ function ChatPanel({ tripId, currentUser }) {
     return () => { if (unsubscribe) unsubscribe(); };
   }, [tripId]);
 
-  useEffect(() => {
-    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [messages]);
-
-  const send = async () => {
-    if (!draft.trim() || sending) return;
-    setSending(true);
-    const text = draft.trim();
-    setDraft('');
-    try {
-      const { sendChatMessage } = await import('./firebase-chat.js');
-      await sendChatMessage(tripId, currentUser, text);
-    } catch (err) {
-      console.error('Failed to send message:', err);
-      setDraft(text);
-      alert('Failed to send message — check connection');
-    }
-    setSending(false);
+  const handleSend = async (text) => {
+    const { sendLegacyTripMessage } = await import('./firebase-comms.js');
+    await sendLegacyTripMessage(tripId, currentUser, text);
   };
 
   return (
@@ -1520,61 +1507,26 @@ function ChatPanel({ tripId, currentUser }) {
           {messages.length} MSG
         </span>
       </div>
-
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
-        {loading ? (
-          <div className="flex items-center justify-center py-8 text-slate-500">
-            <Loader2 className="w-4 h-4 animate-spin mr-2" /> Loading...
-          </div>
-        ) : messages.length === 0 ? (
-          <div className="text-center py-8">
-            <Radio className="w-8 h-8 text-slate-700 mx-auto mb-2" />
-            <p className="text-sm text-slate-500">No messages yet.</p>
-            <p className="text-xs text-slate-600 mt-1">Comms are visible to all crew on this trip.</p>
-          </div>
-        ) : (
-          messages.map(m => {
-            const mine = m.author === currentUser;
-            return (
-              <div key={m.id} className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
-                <div className={`max-w-[80%] ${mine ? 'items-end' : 'items-start'} flex flex-col`}>
-                  <div className={`text-[10px] mb-1 ${mine ? 'text-cyan-400/80' : 'text-slate-500'}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                    {m.author} · {fmtChatTime(m.timestamp)}
-                  </div>
-                  <div className={`px-3 py-2 text-sm border ${
-                    mine ? 'bg-cyan-500/10 border-cyan-500/30 text-cyan-50' : 'bg-slate-800/60 border-slate-700 text-slate-200'
-                  }`}>
-                    {m.text}
-                  </div>
-                </div>
-              </div>
-            );
-          })
-        )}
-      </div>
-
-      <div className="p-3 border-t border-slate-800 flex gap-2">
-        <input
-          type="text"
-          value={draft}
-          onChange={e => setDraft(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), send())}
-          placeholder="Message crew & ops..."
-          className="flex-1 bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-cyan-400"
-          style={{ fontFamily: 'DM Sans, sans-serif' }}
-        />
-        <button
-          onClick={send}
-          disabled={!draft.trim() || sending}
-          className="px-4 bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-800 disabled:text-slate-600 text-slate-950 font-medium transition-colors flex items-center gap-1.5"
-          style={{ fontFamily: 'DM Sans, sans-serif' }}
-        >
-          {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-        </button>
+      <div className="flex-1 overflow-hidden p-3">
+        <Suspense fallback={<div className="h-full flex items-center justify-center text-slate-500"><Loader2 className="w-4 h-4 animate-spin" /></div>}>
+          <BubbleChatLazyTrip
+            messages={messages}
+            currentUser={currentUser}
+            onSend={handleSend}
+            loading={loading}
+            emptyText="No messages yet. Comms are visible to all crew on this trip."
+            className="h-full"
+            maxHeight="100%"
+          />
+        </Suspense>
       </div>
     </div>
   );
 }
+
+// Lazy import so trip pages don't pull BubbleChat unless someone opens
+// the chat tab. Defined at module scope so it isn't re-imported per render.
+const BubbleChatLazyTrip = lazy(() => import('./BubbleChat.jsx'));
 
 /* ============================================================
    ID Check-In Panel — photo + checkbox verification
@@ -6142,7 +6094,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
         ) : tab === 'plan' ? (
           <ForeFlightHandoff trip={trip} currentUser={currentUser} />
         ) : tab === 'chat' ? (
-          <ChatPanel tripId={trip.uid} currentUser={currentUserDisplayName || currentUser?.name || ''} />
+          <ChatPanel tripId={trip.uid} currentUser={currentUser} />
         ) : tab === 'notify' ? (
           <div className="p-6 max-w-2xl">
             <NotifyPanel
