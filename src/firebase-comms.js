@@ -482,13 +482,43 @@ export async function sendLegacyTripMessage(tripId, sender, text, opts = {}) {
   const id = safeId(tripId);
   const t = String(text || '').trim();
   if (!t && !(opts.attachments && opts.attachments.length)) return null;
+  const senderUid = sender.uid || sender.id || null;
+  const senderName = sender.name || sender.displayName || 'Unknown';
   const ref = await addDoc(collection(db, 'trips', id, 'messages'), {
-    author: sender.name || sender.displayName || 'Unknown',
-    senderUid: sender.uid || sender.id || null,
+    author: senderName,
+    senderUid,
     text: t,
     timestamp: serverTimestamp(),
     attachments: opts.attachments || null,
   });
+
+  // Fire push dispatch — same fire-and-forget pattern as sendMessage.
+  // Skipped during impersonation (sender's auth token uid won't match
+  // the impersonated sender.uid, so the server would reject; chat write
+  // itself still posts). Server resolves PIC/SIC/ops recipients itself.
+  if (!sender._impersonating) {
+    (async () => {
+      try {
+        const { auth } = await import('./firebase.js');
+        const currentAuthUser = auth.currentUser;
+        if (!currentAuthUser) return;
+        const idToken = await currentAuthUser.getIdToken();
+        await fetch('/api/send-push', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            idToken,
+            tripId: id,
+            message: { text: t, senderUid, senderName },
+            isAog: opts.isAog || false,
+          }),
+        });
+      } catch (e) {
+        console.warn('[comms] trip push dispatch failed (non-fatal):', e);
+      }
+    })();
+  }
+
   return ref.id;
 }
 
