@@ -11,11 +11,116 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   MessageSquare, Plus, Search, X, ChevronLeft,
-  Loader2, UserPlus,
+  Loader2, UserPlus, Bell,
 } from 'lucide-react';
 import BubbleChat from './BubbleChat.jsx';
 
-/* ---------- helpers ---------- */
+/* ============================================================
+   Enable-push banner — gentle, dismissible, per-device.
+   Shows when:
+     - push is supported on this browser
+     - the user hasn't already granted permission
+     - the user hasn't dismissed it in the last DISMISS_WINDOW
+     - on iPhone, the PWA is opened from home screen (otherwise push
+       cannot work, so prompting would create false expectations)
+   ============================================================ */
+const PUSH_DISMISS_KEY = 'skyway_push_banner_dismissed_at';
+const DISMISS_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;   // 7 days
+
+function EnablePushBanner({ currentUser }) {
+  const [show, setShow] = useState(false);
+  const [why, setWhy] = useState('');         // 'normal' | 'ios-install' | null
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const M = await import('./firebase-push.js');
+        if (cancelled) return;
+        if (!M.pushSupported()) return;                       // browser doesn't support
+        if (M.notificationPermissionState() === 'granted') return; // already on
+        if (M.notificationPermissionState() === 'denied') return;  // user said no at OS level; don't nag
+        // Per-device cooldown so we don't re-prompt after a recent dismiss.
+        try {
+          const last = parseInt(localStorage.getItem(PUSH_DISMISS_KEY) || '0', 10);
+          if (last && (Date.now() - last) < DISMISS_WINDOW_MS) return;
+        } catch (_) { /* localStorage may be unavailable in private mode */ }
+        // iPhone-specific: PWA must be added to home screen first.
+        const iosNeedsInstall = M.iosNeedsHomeScreenInstall();
+        setWhy(iosNeedsInstall ? 'ios-install' : 'normal');
+        setShow(true);
+      } catch (_) { /* push module load failed — silently skip */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const dismiss = () => {
+    try { localStorage.setItem(PUSH_DISMISS_KEY, String(Date.now())); } catch (_) {}
+    setShow(false);
+  };
+
+  const handleEnable = async () => {
+    setBusy(true); setErr('');
+    try {
+      const M = await import('./firebase-push.js');
+      await M.enablePush(currentUser);
+      // Success — banner hides. Don't store a dismiss timestamp; permission
+      // state itself now blocks future shows.
+      setShow(false);
+    } catch (e) {
+      setErr(e.message || 'Could not enable push');
+    } finally { setBusy(false); }
+  };
+
+  if (!show) return null;
+
+  return (
+    <div className="border-b border-cyan-500/30 bg-cyan-500/5 px-4 py-2.5 flex items-start gap-3">
+      <Bell className="w-4 h-4 text-cyan-400 mt-0.5 shrink-0" />
+      <div className="flex-1 min-w-0">
+        {why === 'ios-install' ? (
+          <>
+            <p className="text-xs text-slate-200 leading-tight">Get notified on your phone when someone messages you.</p>
+            <p className="text-[11px] text-slate-400 leading-snug mt-0.5">
+              On iPhone: open this in Safari → share → Add to Home Screen → open from the home-screen icon.
+            </p>
+          </>
+        ) : (
+          <>
+            <p className="text-xs text-slate-200 leading-tight">Get notified when someone messages you.</p>
+            <p className="text-[11px] text-slate-400 leading-snug mt-0.5">
+              We'll only buzz your phone for direct messages and groups you're in.
+            </p>
+          </>
+        )}
+        {err && <p className="text-[11px] text-red-400 mt-1">{err}</p>}
+      </div>
+      <div className="flex items-center gap-1.5 shrink-0">
+        {why !== 'ios-install' && (
+          <button
+            onClick={handleEnable}
+            disabled={busy}
+            className="px-2.5 py-1 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-[11px] tracking-widest font-medium disabled:opacity-50"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            {busy ? '...' : 'ENABLE'}
+          </button>
+        )}
+        <button
+          onClick={dismiss}
+          className="text-slate-500 hover:text-slate-200 p-1"
+          title="Dismiss for a week"
+          aria-label="Dismiss"
+        >
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function fmtWhen(ts, now = Date.now()) {
   if (!ts) return '';
   const d = new Date(ts);
@@ -212,6 +317,7 @@ function CommsScreen({ currentUser, users, onJumpToEntity }) {
   const [selectedId, setSelectedId] = useState(null);
   const [messages, setMessages] = useState([]);
   const [msgLoading, setMsgLoading] = useState(false);
+  const [typingNames, setTypingNames] = useState([]);
   const [search, setSearch] = useState('');
   const [showNew, setShowNew] = useState(false);
   const [mobileShowChat, setMobileShowChat] = useState(false);
@@ -241,33 +347,42 @@ function CommsScreen({ currentUser, users, onJumpToEntity }) {
 
   // Message subscription for the selected conversation.
   useEffect(() => {
-    if (!selectedId) { setMessages([]); return; }
-    let unsub = null;
+    if (!selectedId) { setMessages([]); setTypingNames([]); return; }
+    let unsubMsg = null;
+    let unsubTyping = null;
     let cancelled = false;
     setMsgLoading(true);
     (async () => {
       const M = await import('./firebase-comms.js');
       if (cancelled) return;
-      // Legacy trip threads use the firebase-chat path under trips/{id}/messages.
-      // We address them by a synthetic id prefixed 'trip:' so the inbox row
-      // links to the same record.
       const conv = conversations.find((c) => c.id === selectedId);
+      const uid = currentUser.uid || currentUser.id;
+
       if (conv && conv.kind === 'trip' && conv._legacyTripId) {
-        unsub = M.subscribeLegacyTripThread(conv._legacyTripId, (msgs) => {
+        // Legacy trip threads: no typing/read on the legacy path (no schema for it).
+        unsubMsg = M.subscribeLegacyTripThread(conv._legacyTripId, (msgs) => {
           setMessages(msgs); setMsgLoading(false);
         });
       } else {
-        unsub = M.subscribeToConversation(selectedId, (msgs) => {
+        unsubMsg = M.subscribeToConversation(selectedId, (msgs) => {
           setMessages(msgs); setMsgLoading(false);
+          // Mark messages from OTHER senders as read, on each delivery.
+          if (uid) M.markMessagesRead(selectedId, msgs, uid).catch(() => {});
+        });
+        unsubTyping = M.subscribeTyping(selectedId, uid, (names) => {
+          setTypingNames(names);
         });
       }
-      // Mark read in the background.
-      const uid = currentUser.uid || currentUser.id;
+      // Mark the conversation itself read (lastSeen marker on the parent doc).
       if (uid && conv && conv.kind !== 'trip') {
         try { await M.markRead(selectedId, uid); } catch (_) {}
       }
     })();
-    return () => { cancelled = true; if (unsub) try { unsub(); } catch (_) {} };
+    return () => {
+      cancelled = true;
+      if (unsubMsg) try { unsubMsg(); } catch (_) {}
+      if (unsubTyping) try { unsubTyping(); } catch (_) {}
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId, currentUser]);
 
@@ -293,6 +408,33 @@ function CommsScreen({ currentUser, users, onJumpToEntity }) {
     }
   };
 
+  // Typing presence: only on the new conversations path. Legacy trip threads
+  // don't have a typing schema and are skipped.
+  const handleTyping = (isTyping) => {
+    if (!selected || (selected.kind === 'trip' && selected._legacyTripId)) return;
+    import('./firebase-comms.js').then((M) => {
+      M.setTyping(selected.id, currentUser, isTyping).catch(() => {});
+    });
+  };
+
+  // Attachment upload: uploads to Firebase Storage at
+  // comms-attachments/{convId}/{file}, then posts a message with the
+  // attachment metadata. Legacy trip threads (which have no
+  // attachments schema) skip — message-only sending is preserved.
+  const handleAttach = async (file) => {
+    if (!selected) return;
+    if (selected.kind === 'trip' && selected._legacyTripId) {
+      throw new Error('Attachments not supported on legacy trip threads');
+    }
+    const { uploadCommsAttachment } = await import('./firebase-storage.js');
+    const att = await uploadCommsAttachment(file, selected.id);
+    const M = await import('./firebase-comms.js');
+    // Message text is empty; the attachment carries the content.
+    await M.sendMessage(selected.id, currentUser, '', {
+      attachments: [{ name: att.name, url: att.url, kind: att.kind }],
+    });
+  };
+
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       <NewConversationDialog
@@ -314,6 +456,8 @@ function CommsScreen({ currentUser, users, onJumpToEntity }) {
           <Plus className="w-3.5 h-3.5" /> NEW
         </button>
       </div>
+
+      <EnablePushBanner currentUser={currentUser} />
 
       <div className="flex-1 flex overflow-hidden">
         {/* INBOX */}
@@ -396,7 +540,10 @@ function CommsScreen({ currentUser, users, onJumpToEntity }) {
                 <BubbleChat
                   messages={messages}
                   currentUser={currentUser}
+                  typingUsers={typingNames}
                   onSend={handleSend}
+                  onAttach={selected.kind === 'trip' ? null : handleAttach}
+                  onTyping={selected.kind === 'trip' ? null : handleTyping}
                   loading={msgLoading}
                   emptyText={selected.kind === 'dm' ? 'Say hi.' : 'No messages in this conversation yet.'}
                   className="h-full"
