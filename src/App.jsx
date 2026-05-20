@@ -1462,6 +1462,176 @@ function StatusButton({ step, status, onTrigger, onUntrigger, locked, isNext, au
 /* ============================================================
    Chat panel
    ============================================================ */
+// ============================================================
+// TripDispatchersRow — inline dispatcher picker on the trip view.
+// Shows currently-assigned dispatchers as pills; ops/admin can edit.
+// Writes to trips/{tripId}.dispatcherUids = [uid, uid, ...]
+// Once the trip is marked complete, the field becomes read-only so
+// stale dispatchers can't be reassigned and re-pinged.
+// ============================================================
+function TripDispatchersRow({ trip, currentUser, users }) {
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
+
+  // Tolerate field absence: legacy trips have no dispatcherUids.
+  const currentUids = Array.isArray(trip?.dispatcherUids) ? trip.dispatcherUids : [];
+  const canEdit = ['ops', 'admin'].includes(currentUser?.role) && !trip?.completedAt;
+
+  // Resolve uids to user records for display.
+  const usersByUid = React.useMemo(() => {
+    const out = {};
+    (users || []).forEach((u) => { const k = u.uid || u.id; if (k) out[k] = u; });
+    return out;
+  }, [users]);
+
+  const assigned = currentUids.map((uid) => usersByUid[uid]).filter(Boolean);
+
+  // If there's nothing to show AND the user can't edit, render nothing.
+  if (assigned.length === 0 && !canEdit) return null;
+
+  const save = async (newUids) => {
+    if (!trip?.uid && !trip?.id) { setErr('Trip id missing'); return; }
+    setSaving(true); setErr('');
+    try {
+      const { db } = await import('./firebase.js');
+      const { doc, updateDoc } = await import('firebase/firestore');
+      const tid = trip.uid || trip.id;
+      await updateDoc(doc(db, 'trips', tid), { dispatcherUids: newUids });
+      setEditing(false);
+    } catch (e) {
+      console.error('[dispatchers] save failed:', e);
+      setErr(e.message || 'Could not save');
+    } finally { setSaving(false); }
+  };
+
+  const removeOne = (uid) => save(currentUids.filter((x) => x !== uid));
+
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1.5 text-xs">
+      <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>DISPATCH</span>
+      {assigned.length === 0 ? (
+        <span className="text-slate-600 italic">none assigned</span>
+      ) : (
+        assigned.map((u) => (
+          <span key={u.uid || u.id} className="inline-flex items-center gap-1.5 px-2 py-0.5 bg-cyan-500/10 border border-cyan-500/30 text-cyan-200">
+            <span style={{ fontFamily: 'DM Sans, sans-serif' }}>{u.name || u.email || '(unknown)'}</span>
+            {canEdit && (
+              <button
+                onClick={() => removeOne(u.uid || u.id)}
+                disabled={saving}
+                className="text-cyan-400 hover:text-red-300"
+                title="Remove dispatcher"
+                aria-label="Remove dispatcher"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            )}
+          </span>
+        ))
+      )}
+      {canEdit && (
+        <button
+          onClick={() => setEditing(true)}
+          disabled={saving}
+          className="text-[10px] tracking-widest text-cyan-400 hover:text-cyan-300 underline underline-offset-2"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        >
+          + ADD
+        </button>
+      )}
+      {trip?.completedAt && currentUids.length > 0 && (
+        <span className="text-[10px] text-slate-600 italic">(trip complete · locked)</span>
+      )}
+      {err && <span className="text-[10px] text-red-400">{err}</span>}
+      {editing && (
+        <DispatcherPicker
+          users={users}
+          alreadyAssigned={currentUids}
+          onCancel={() => setEditing(false)}
+          onSave={(newUids) => save(newUids)}
+        />
+      )}
+    </div>
+  );
+}
+
+function DispatcherPicker({ users, alreadyAssigned, onCancel, onSave }) {
+  const [picked, setPicked] = useState(new Set(alreadyAssigned || []));
+  const [search, setSearch] = useState('');
+
+  // Only ops users (and admins who often dispatch too) — both roles can
+  // be selected as dispatchers, since some Skyway admins also dispatch.
+  const candidates = (users || [])
+    .filter((u) => (u.uid || u.id))
+    .filter((u) => u.approved !== false)
+    .filter((u) => ['ops', 'admin'].includes(u.role))
+    .filter((u) => {
+      const q = search.trim().toLowerCase();
+      if (!q) return true;
+      return (u.name || '').toLowerCase().includes(q) || (u.email || '').toLowerCase().includes(q);
+    })
+    .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+
+  const toggle = (uid) => {
+    const next = new Set(picked);
+    if (next.has(uid)) next.delete(uid); else next.add(uid);
+    setPicked(next);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(2,6,23,0.7)' }}>
+      <div className="w-full max-w-md bg-slate-950 border border-slate-800 rounded-lg flex flex-col" style={{ maxHeight: '80vh' }}>
+        <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+          <p className="text-sm tracking-widest text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            SET DISPATCHERS
+          </p>
+          <button onClick={onCancel} className="text-slate-500 hover:text-slate-200"><X className="w-4 h-4" /></button>
+        </div>
+        <div className="px-4 pt-3">
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search ops users…"
+            className="w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-cyan-400"
+            style={{ fontFamily: 'DM Sans, sans-serif' }}
+          />
+        </div>
+        <div className="flex-1 overflow-y-auto px-2 py-2 min-h-[180px]">
+          {candidates.length === 0 ? (
+            <p className="text-center text-xs text-slate-600 py-8">No matching ops users.</p>
+          ) : candidates.map((u) => {
+            const uid = u.uid || u.id;
+            const checked = picked.has(uid);
+            return (
+              <button
+                key={uid}
+                onClick={() => toggle(uid)}
+                className={`w-full flex items-center gap-2 px-2 py-2 hover:bg-slate-900/50 text-left ${checked ? 'bg-cyan-500/10' : ''}`}
+              >
+                <div className={`w-4 h-4 border rounded ${checked ? 'border-cyan-400 bg-cyan-500' : 'border-slate-600'}`}>
+                  {checked && <span className="block text-white text-[10px] leading-4 text-center">✓</span>}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs text-slate-200 truncate">{u.name || u.email}</p>
+                  <p className="text-[10px] text-slate-500 truncate">{(u.role || '').toUpperCase()}{u.email ? ` · ${u.email}` : ''}</p>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+        <div className="px-4 py-3 border-t border-slate-800 flex items-center justify-between">
+          <p className="text-[11px] text-slate-500">{picked.size} selected</p>
+          <div className="flex gap-2">
+            <button onClick={onCancel} className="px-3 py-2 border border-slate-700 text-slate-300 text-xs tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>CANCEL</button>
+            <button onClick={() => onSave(Array.from(picked))} className="px-3 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs tracking-widest font-medium" style={{ fontFamily: 'JetBrains Mono, monospace' }}>SAVE</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ChatPanel({ tripId, currentUser }) {
   // Visual upgrade to the txt-message-style BubbleChat. Backed by the same
   // trips/{tripId}/messages collection the legacy ChatPanel used — no data
@@ -5910,6 +6080,8 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
             )}
           </div>
         )}
+
+        <TripDispatchersRow trip={trip} currentUser={currentUser} users={users} />
 
         {trip.info.notes && (
           <div className="mt-2 text-[11px] text-cyan-300/80 bg-cyan-500/5 border border-cyan-500/20 px-2 py-1" style={{ fontFamily: 'DM Sans, sans-serif' }}>
