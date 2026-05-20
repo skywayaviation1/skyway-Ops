@@ -169,26 +169,34 @@ export default async function handler(req, res) {
 
     if (tripId) {
       // ---- TRIP THREAD ----
+      // The trip doc may NOT exist for iCal-sourced trips that haven't
+      // had any per-trip metadata saved (dispatchers, etc.). In that
+      // case we fall back to the PIC/SIC names provided in the request
+      // payload by the client (which has them in memory from the iCal
+      // parse) — no 404. The server still owns the role-based fallback
+      // and self-skip logic.
       const tripSnap = await db.collection('trips').doc(tripId).get();
-      if (!tripSnap.exists) {
-        console.warn('[send-push] 404 trip not found', { tripId, tokenUid: decoded.uid });
-        return res.status(404).json({ error: 'trip not found', tripId });
-      }
-      const trip = tripSnap.data();
-      const info = trip.info || {};
+      const trip = tripSnap.exists ? tripSnap.data() : null;
+      const info = (trip && trip.info) || {};
+
+      // Prefer Firestore values when present; otherwise use what the
+      // client sent in the request. PIC/SIC names matter only for
+      // name-matched recipient resolution.
+      const picName = info.pic || req.body.tripPicName || '';
+      const sicName = info.sic || req.body.tripSicName || '';
 
       // Resolve recipients: PIC (name-matched) + SIC (name-matched) +
-      // every user with role: 'ops'. Caller (firebase-comms) is
-      // expected to also flag isAog for trips that are AOG-tagged.
+      // dispatchers. Caller (firebase-comms) is expected to also flag
+      // isAog for trips that are AOG-tagged.
       const usersSnap = await db.collection('users').get();
       const allUsers = [];
       usersSnap.forEach((d) => allUsers.push({ uid: d.id, ...d.data() }));
 
       const matchedUids = new Set();
       const why = {};
-      const picName = info.pic || '';
-      const sicName = info.sic || '';
-      const explicitDispatchers = Array.isArray(trip.dispatcherUids) ? trip.dispatcherUids : null;
+      const explicitDispatchers = (trip && Array.isArray(trip.dispatcherUids))
+        ? trip.dispatcherUids
+        : null;
       const useExplicitDispatchers = explicitDispatchers && explicitDispatchers.length > 0;
 
       for (const u of allUsers) {
@@ -219,7 +227,7 @@ export default async function handler(req, res) {
 
       recipients = Array.from(matchedUids);
       threadKind = 'trip';
-      title = `Trip · ${info.tail || trip.tail || 'Comms'}`;
+      title = `Trip · ${info.tail || (trip && trip.tail) || req.body.tripTail || 'Comms'}`;
       body = `${senderName}: ${rawText}`.slice(0, 220);
       url = `/?trip=${encodeURIComponent(tripId)}#chat`;
       isAogFlag = !!isAog; // client tags this true for trips with active AOG
