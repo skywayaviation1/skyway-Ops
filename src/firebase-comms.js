@@ -509,6 +509,11 @@ export async function sendLegacyTripMessage(tripId, sender, text, opts = {}) {
           body: JSON.stringify({
             idToken,
             tripId: id,
+            // pic/sic/tail are passed in so the server can resolve
+            // recipients for iCal trips that have no Firestore doc.
+            tripPicName: opts.tripPicName || '',
+            tripSicName: opts.tripSicName || '',
+            tripTail: opts.tripTail || '',
             message: { text: t, senderUid, senderName },
             isAog: opts.isAog || false,
           }),

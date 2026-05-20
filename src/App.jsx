@@ -1470,6 +1470,11 @@ function StatusButton({ step, status, onTrigger, onUntrigger, locked, isNext, au
 // stale dispatchers can't be reassigned and re-pinged.
 // ============================================================
 function TripDispatchersRow({ trip, currentUser, users }) {
+  // Defensive: if for any reason `users` isn't passed (legacy call site,
+  // stale cached parent component during a deploy rollover, etc.), render
+  // nothing rather than crash the trip view.
+  if (!Array.isArray(users)) return null;
+
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
@@ -1495,9 +1500,21 @@ function TripDispatchersRow({ trip, currentUser, users }) {
     setSaving(true); setErr('');
     try {
       const { db } = await import('./firebase.js');
-      const { doc, updateDoc } = await import('firebase/firestore');
+      const { doc, setDoc } = await import('firebase/firestore');
       const tid = trip.uid || trip.id;
-      await updateDoc(doc(db, 'trips', tid), { dispatcherUids: newUids });
+      // setDoc with merge: creates the doc if it doesn't exist (iCal trips
+      // have no Firestore doc by default), or merges in just this field
+      // for trips that already have one. Also stamps PIC/SIC/tail at the
+      // same time so the server-side push dispatch can resolve recipients
+      // without needing the iCal-parsed in-memory state.
+      await setDoc(doc(db, 'trips', tid), {
+        dispatcherUids: newUids,
+        info: {
+          pic: trip.info?.pic || '',
+          sic: trip.info?.sic || '',
+          tail: trip.info?.tail || '',
+        },
+      }, { merge: true });
       setEditing(false);
     } catch (e) {
       console.error('[dispatchers] save failed:', e);
@@ -1632,7 +1649,7 @@ function DispatcherPicker({ users, alreadyAssigned, onCancel, onSave }) {
   );
 }
 
-function ChatPanel({ tripId, currentUser }) {
+function ChatPanel({ tripId, trip, currentUser }) {
   // Visual upgrade to the txt-message-style BubbleChat. Backed by the same
   // trips/{tripId}/messages collection the legacy ChatPanel used — no data
   // migration needed. The user object passed in is the full currentUser
@@ -1660,9 +1677,19 @@ function ChatPanel({ tripId, currentUser }) {
     return () => { if (unsubscribe) unsubscribe(); };
   }, [tripId]);
 
+  // Build push metadata once — used by both send and attach paths so the
+  // server can resolve PIC/SIC name-matched recipients even when the trip
+  // has no Firestore doc (iCal-sourced trips don't, unless dispatchers
+  // were explicitly set on them).
+  const tripPushMeta = {
+    tripPicName: trip?.info?.pic || '',
+    tripSicName: trip?.info?.sic || '',
+    tripTail: trip?.info?.tail || '',
+  };
+
   const handleSend = async (text) => {
     const { sendLegacyTripMessage } = await import('./firebase-comms.js');
-    await sendLegacyTripMessage(tripId, currentUser, text);
+    await sendLegacyTripMessage(tripId, currentUser, text, tripPushMeta);
   };
 
   // Attachment upload for trip chat. Uploads to trip-attachments/{tripId}/
@@ -1673,6 +1700,7 @@ function ChatPanel({ tripId, currentUser }) {
     const att = await uploadTripAttachment(file, tripId);
     const { sendLegacyTripMessage } = await import('./firebase-comms.js');
     await sendLegacyTripMessage(tripId, currentUser, '', {
+      ...tripPushMeta,
       attachments: [{ name: att.name, url: att.url, kind: att.kind }],
     });
   };
@@ -6289,7 +6317,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
         ) : tab === 'plan' ? (
           <ForeFlightHandoff trip={trip} currentUser={currentUser} />
         ) : tab === 'chat' ? (
-          <ChatPanel tripId={trip.uid} currentUser={currentUser} />
+          <ChatPanel tripId={trip.uid} trip={trip} currentUser={currentUser} />
         ) : tab === 'notify' ? (
           <div className="p-6 max-w-2xl">
             <NotifyPanel
