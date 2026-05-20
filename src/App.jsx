@@ -2,6 +2,9 @@ import React, { useState, useEffect, useRef, useMemo, useCallback, Suspense, laz
 
 // Code-split: Comms screen loads only when the user opens the COMMS tab.
 const CommsScreenLazy = lazy(() => import('./CommsScreen.jsx'));
+
+// Code-split: PushSettings loads only when the user opens their profile.
+const PushSettingsLazy = lazy(() => import('./PushSettings.jsx'));
 import { createPortal } from 'react-dom';
 import {
   Plane, Calendar, MessageSquare, Users, Bell, MapPin,
@@ -10347,6 +10350,12 @@ function MyProfileModal({ currentUser, onClose, onSave }) {
           {error && (
             <div className="p-2 border border-red-500/30 bg-red-500/5 text-xs text-red-300">{error}</div>
           )}
+
+          <div className="pt-2">
+            <Suspense fallback={<div className="text-xs text-slate-500 py-2">Loading push settings…</div>}>
+              <PushSettingsLazy currentUser={currentUser} />
+            </Suspense>
+          </div>
 
           <div className="flex gap-2 pt-2">
             <button
