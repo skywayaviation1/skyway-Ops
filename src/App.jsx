@@ -1746,6 +1746,27 @@ function ChatPanel({ tripId, trip, currentUser }) {
 
   return (
     <div className="flex flex-col">
+      {/* Compact trip summary — replaces the full trip header that's now
+          hidden on chat tab. Scrolls with the chat content so when you
+          scroll the chat down, this summary scrolls off to give the chat
+          more room. The trip's tab strip (above) stays pinned. */}
+      {trip && (
+        <div className="px-5 py-3 border-b border-slate-800">
+          <div className="flex items-baseline gap-2 flex-wrap">
+            <span className="text-lg tracking-wide text-slate-100" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
+              {trip.info?.tail || ''}
+            </span>
+            <span className="text-xs text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {trip.info?.from || ''} → {trip.info?.to || ''}
+            </span>
+            {trip.info?.pic && (
+              <span className="text-[10px] text-slate-500 ml-auto" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                PIC {trip.info.pic}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
       <div className="px-5 py-3 border-b border-slate-800 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <MessageSquare className="w-4 h-4 text-cyan-400" />
@@ -5930,8 +5951,12 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   const paxComplete = totalExpected === 0 || totalVerified >= totalExpected;
 
   return (
-    <div className={`flex flex-col bg-slate-950 ${tab === 'chat' ? 'min-h-full overflow-visible' : 'h-full'}`}>
-      {/* Trip header */}
+    <div className="flex flex-col h-full bg-slate-950">
+      {/* Trip header — pinned at top of viewport for non-chat tabs.
+          For the chat tab, this is omitted here and rendered INSIDE
+          the chat tab's scroll area so it scrolls off when reading
+          a long thread (but the tab strip below stays pinned). */}
+      {tab !== 'chat' && (
       <div className="px-6 py-5 border-b border-slate-800 bg-gradient-to-b from-slate-900/50 to-transparent">
         <div className="flex items-center justify-between mb-3">
           <button
@@ -6147,6 +6172,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
           </div>
         )}
       </div>
+      )}
 
       {/* Tabs */}
       <div className="flex border-b border-slate-800 bg-slate-950 sticky top-0 z-10 overflow-x-auto">
@@ -6188,7 +6214,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       </div>
 
       {/* Tab content */}
-      <div className={tab === 'chat' ? 'flex-1' : 'flex-1 overflow-y-auto'}>
+      <div className="flex-1 overflow-y-auto">
         {loading ? (
           <div className="flex items-center justify-center py-16 text-slate-500">
             <Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading trip data...
@@ -22398,7 +22424,7 @@ export default function CharterOps() {
               )}
             </aside>
 
-            <main className={`flex-1 overflow-y-auto flex flex-col min-h-0 ${selectedId ? 'block' : 'hidden md:flex'}`}>
+            <main className={`flex-1 overflow-hidden flex flex-col min-h-0 ${selectedId ? 'block' : 'hidden md:flex'}`}>
               {selectedTrip ? (
                 <TripDetail
                   trip={selectedTrip}
@@ -22505,7 +22531,7 @@ export default function CharterOps() {
                 </div>
               )}
             </aside>
-            <main className={`flex-1 overflow-y-auto flex flex-col min-h-0 ${selectedId ? 'block' : 'hidden md:flex'}`}>
+            <main className={`flex-1 overflow-hidden flex flex-col min-h-0 ${selectedId ? 'block' : 'hidden md:flex'}`}>
               {selectedTrip ? (
                 <TripDetail
                   trip={selectedTrip}
