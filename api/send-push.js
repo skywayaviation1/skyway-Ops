@@ -227,14 +227,36 @@ export default async function handler(req, res) {
 
       recipients = Array.from(matchedUids);
       threadKind = 'trip';
-      title = `Trip · ${info.tail || (trip && trip.tail) || req.body.tripTail || 'Comms'}`;
-      body = `${senderName}: ${rawText}`.slice(0, 220);
-      url = `/?trip=${encodeURIComponent(tripId)}#chat`;
+
+      // Title includes tail + route so users can tell at a glance which
+      // trip a notification is from. From/To come from the trip doc if
+      // we have it, otherwise from the request payload (iCal trips
+      // without a Firestore doc).
+      const tail = info.tail || (trip && trip.tail) || req.body.tripTail || '';
+      const from = info.from || req.body.tripFrom || '';
+      const to = info.to || req.body.tripTo || '';
+      const tripLabel = [tail, from && to ? `${from}→${to}` : '']
+        .filter(Boolean).join(' · ');
+
+      // Status updates use a different body. The client sends kind:
+      // 'trip-status' along with a `statusLabel` field describing which
+      // step transitioned (CREW ONSITE, AIRCRAFT READY, etc).
+      const isStatusUpdate = req.body.kind === 'trip-status';
+      if (isStatusUpdate) {
+        title = tripLabel || 'Trip update';
+        const statusLabel = req.body.statusLabel || 'Status updated';
+        body = `${statusLabel} · by ${senderName}`.slice(0, 220);
+        url = `/?trip=${encodeURIComponent(tripId)}#status`;
+      } else {
+        title = tripLabel || `Trip · ${tail || 'Comms'}`;
+        body = `${senderName}: ${rawText}`.slice(0, 220);
+        url = `/?trip=${encodeURIComponent(tripId)}#chat`;
+      }
       isAogFlag = !!isAog; // client tags this true for trips with active AOG
       muteKey = `trip:${tripId}`;
 
       console.log('[send-push] trip dispatch resolving',
-        { tripId, picName, sicName, matched: recipients.length, why });
+        { tripId, kind: isStatusUpdate ? 'status' : 'chat', picName, sicName, matched: recipients.length, why });
 
       if (recipients.length === 0) {
         return res.status(200).json({ ok: true, dispatched: 0, reason: 'no-recipients-resolved' });
