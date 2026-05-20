@@ -1496,7 +1496,7 @@ function ChatPanel({ tripId, currentUser }) {
   };
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col">
       <div className="px-5 py-3 border-b border-slate-800 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <MessageSquare className="w-4 h-4 text-cyan-400" />
@@ -1507,16 +1507,15 @@ function ChatPanel({ tripId, currentUser }) {
           {messages.length} MSG
         </span>
       </div>
-      <div className="flex-1 overflow-hidden p-3">
-        <Suspense fallback={<div className="h-full flex items-center justify-center text-slate-500"><Loader2 className="w-4 h-4 animate-spin" /></div>}>
+      <div className="p-3">
+        <Suspense fallback={<div className="h-64 flex items-center justify-center text-slate-500"><Loader2 className="w-4 h-4 animate-spin" /></div>}>
           <BubbleChatLazyTrip
             messages={messages}
             currentUser={currentUser}
             onSend={handleSend}
             loading={loading}
             emptyText="No messages yet. Comms are visible to all crew on this trip."
-            className="h-full"
-            maxHeight="100%"
+            maxHeight="70vh"
           />
         </Suspense>
       </div>
@@ -5935,7 +5934,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEm
       </div>
 
       {/* Tab content */}
-      <div className={`flex-1 ${tab === 'chat' ? 'overflow-hidden flex flex-col min-h-0' : 'overflow-y-auto'}`}>
+      <div className="flex-1 overflow-y-auto">
         {loading ? (
           <div className="flex items-center justify-center py-16 text-slate-500">
             <Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading trip data...
