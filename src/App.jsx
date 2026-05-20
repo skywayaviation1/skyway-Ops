@@ -5314,7 +5314,7 @@ function PlanField({ label, value, onChange, type = 'text', placeholder }) {
 /* ============================================================
    Trip detail view
    ============================================================ */
-function TripDetail({ trip, currentUser, currentUserDisplayName, allTrips, opsEmail, onBack, onArchive }) {
+function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], allTrips, opsEmail, onBack, onArchive }) {
   const [tab, setTab] = useState(trip.info.isOps ? 'status' : 'chat');
   const [statuses, setStatuses] = useState({});
   const [passengers, setPassengers] = useState([]);
@@ -22346,6 +22346,7 @@ export default function CharterOps() {
                   trip={selectedTrip}
                   currentUser={currentUser}
                   currentUserDisplayName={userDisplayName}
+                  users={users}
                   allTrips={allTrips}
                   opsEmail={OPS_EMAIL}
                   onBack={() => setSelectedId(null)}
@@ -22452,6 +22453,7 @@ export default function CharterOps() {
                   trip={selectedTrip}
                   currentUser={currentUser}
                   currentUserDisplayName={userDisplayName}
+                  users={users}
                   allTrips={allTrips}
                   opsEmail={OPS_EMAIL}
                   onBack={() => setSelectedId(null)}
