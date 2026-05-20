@@ -358,7 +358,14 @@ export default async function handler(req, res) {
       }
     }));
 
-    return res.status(200).json({ ok: true, dispatched, suppressed, pruned, results });
+    const summary = { ok: true, dispatched, suppressed, pruned, results };
+    // Log dispatch outcome so we can see per-recipient sent/skipped + reason
+    // in Vercel logs (the resolving line above only shows who was MATCHED;
+    // this line shows what happened to each matched uid downstream).
+    const summaryTag = tripId ? 'trip' : 'conv';
+    console.log(`[send-push] ${summaryTag} dispatch result`,
+      { id: tripId || conversationId, dispatched, suppressed, pruned, results });
+    return res.status(200).json(summary);
   } catch (err) {
     console.error('[send-push]', err);
     return res.status(500).json({ error: err.message || 'Server error' });
