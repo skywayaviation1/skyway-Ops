@@ -348,14 +348,24 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
           touchZoom: false,
           keyboard: false,
         });
-        // CARTO dark tiles for high-contrast TV display. Two layers:
-        // base tiles without labels first, then labels on top.
-        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {
-          maxZoom: 12, subdomains: 'abcd',
+        // Satellite base + dark labels overlay. ESRI World Imagery gives
+        // real geography (coastlines, cities, terrain) that's readable
+        // from across the room. The CARTO dark_only_labels layer adds
+        // city/state names back on top in a style that doesn't clash
+        // with satellite. Subtly dimmed via CSS filter so the cyan
+        // overlay markers pop against it.
+        L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+          maxZoom: 12,
+          attribution: 'Tiles &copy; Esri',
         }).addTo(map);
         L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', {
-          maxZoom: 12, subdomains: 'abcd',
+          maxZoom: 12, subdomains: 'abcd', opacity: 0.8,
         }).addTo(map);
+        // Apply a subtle dim filter on the tile pane so the satellite
+        // imagery doesn't overwhelm the overlay markers. CSS filter on
+        // the leaflet-tile-pane affects only tiles, not overlays.
+        const tilePane = map.getPane('tilePane');
+        if (tilePane) tilePane.style.filter = 'brightness(0.65) contrast(1.1) saturate(0.85)';
         // Layer group for our route/marker overlays so we can clear and
         // redraw without disturbing the tile layers.
         const layer = L.layerGroup().addTo(map);
@@ -406,34 +416,65 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
     // use a simple two-point polyline. If you want true geodesic
     // curves, we'd need the leaflet-arc plugin.)
     sorted.forEach((r) => {
+      // For airborne routes: split into "flown" (origin → current FA
+      // position) and "remaining" (current → destination). The flown
+      // portion is solid bright cyan; the remaining portion is dashed
+      // faint cyan. This gives the classic flight-tracker look —
+      // breadcrumb behind the plane, dashed line ahead to destination.
+      //
+      // For all other phases: draw the full origin → destination line
+      // styled by phase.
+      if (r.phase === 'airborne') {
+        const fa = faPositions?.[r.tail.toUpperCase()];
+        const havePos = fa
+          && Number.isFinite(fa.latitude)
+          && Number.isFinite(fa.longitude);
+        if (havePos) {
+          // Flown portion: origin → current position
+          layer.addLayer(L.polyline(
+            [[r.from.lat, r.from.lng], [fa.latitude, fa.longitude]],
+            { color: '#22d3ee', weight: 4, opacity: 1, lineCap: 'round', lineJoin: 'round' }
+          ));
+          // Remaining portion: current → destination
+          layer.addLayer(L.polyline(
+            [[fa.latitude, fa.longitude], [r.to.lat, r.to.lng]],
+            { color: '#22d3ee', weight: 2.5, opacity: 0.5, dashArray: '6 6', lineCap: 'round', lineJoin: 'round' }
+          ));
+        } else {
+          // No FA position yet — draw the full route as a single
+          // bright cyan dashed line (we know it's airborne, just
+          // don't know exactly where yet).
+          layer.addLayer(L.polyline(
+            [[r.from.lat, r.from.lng], [r.to.lat, r.to.lng]],
+            { color: '#22d3ee', weight: 3, opacity: 0.8, dashArray: '6 6', lineCap: 'round', lineJoin: 'round' }
+          ));
+        }
+        return; // No tail label on the line — we draw it WITH the plane marker below
+      }
+
+      // Landed/completed routes: faint green so they're clearly "done"
+      // but the day's full activity is still visible at a glance.
+      if (r.phase === 'landed' || r.phase === 'completed') {
+        layer.addLayer(L.polyline(
+          [[r.from.lat, r.from.lng], [r.to.lat, r.to.lng]],
+          { color: '#10b981', weight: 2, opacity: 0.45, lineCap: 'round', lineJoin: 'round' }
+        ));
+        return;
+      }
+
+      // Pending / preflight: dashed amber or slate
       const style = {
         color: PHASE_COLORS[r.phase] || PHASE_COLORS.pending,
-        weight: r.phase === 'airborne' ? 4 : 2.5,
-        opacity: r.phase === 'completed' ? 0.4 : (r.phase === 'landed' ? 0.65 : 1),
-        dashArray: r.phase === 'pending' ? '6 6' : r.phase === 'preflight' ? '10 6' : null,
+        weight: 2.5,
+        opacity: 0.85,
+        dashArray: r.phase === 'pending' ? '6 6' : '10 6',
         lineCap: 'round',
         lineJoin: 'round',
       };
-      const line = L.polyline([
-        [r.from.lat, r.from.lng],
-        [r.to.lat, r.to.lng],
-      ], style);
-      layer.addLayer(line);
-
-      // For airborne flights, add a tail-number label at the midpoint
-      if (r.phase === 'airborne' && r.tail) {
-        const mid = [
-          (r.from.lat + r.to.lat) / 2,
-          (r.from.lng + r.to.lng) / 2,
-        ];
-        const icon = L.divIcon({
-          html: `<div style="background: rgba(2,6,23,0.85); border: 1px solid #22d3ee; color: #a5f3fc; padding: 2px 6px; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; white-space: nowrap; border-radius: 2px;">${r.tail}</div>`,
-          className: '',
-          iconSize: [60, 18],
-          iconAnchor: [30, 9],
-        });
-        layer.addLayer(L.marker(mid, { icon }));
-      }
+      layer.addLayer(L.polyline(
+        [[r.from.lat, r.from.lng], [r.to.lat, r.to.lng]],
+        style
+      ));
     });
 
     // Airport markers — small dots with codes
@@ -540,10 +581,13 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
         </div>
       )}
 
-      {/* Legend */}
+      {/* Legend — matches the actual line styles used on the map. */}
       <div className="absolute bottom-3 left-3 bg-slate-900/90 border border-slate-800 px-3 py-2 text-[11px] tracking-widest z-[1000]" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
         <div className="flex items-center gap-2 mb-1">
-          <svg width="22" height="4"><line x1="0" y1="2" x2="22" y2="2" stroke="#22d3ee" strokeWidth="4" /></svg>
+          <svg width="28" height="4">
+            <line x1="0" y1="2" x2="14" y2="2" stroke="#22d3ee" strokeWidth="4" />
+            <line x1="14" y1="2" x2="28" y2="2" stroke="#22d3ee" strokeWidth="2.5" strokeDasharray="3 3" strokeOpacity="0.5" />
+          </svg>
           <span className="text-cyan-200">AIRBORNE</span>
         </div>
         <div className="flex items-center gap-2 mb-1">
@@ -555,8 +599,8 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
           <span className="text-slate-400">PENDING</span>
         </div>
         <div className="flex items-center gap-2">
-          <svg width="22" height="4"><line x1="0" y1="2" x2="22" y2="2" stroke="#10b981" strokeWidth="2.5" /></svg>
-          <span className="text-emerald-300">LANDED</span>
+          <svg width="22" height="4"><line x1="0" y1="2" x2="22" y2="2" stroke="#10b981" strokeWidth="2" strokeOpacity="0.45" /></svg>
+          <span className="text-emerald-400/70">COMPLETED</span>
         </div>
       </div>
 
@@ -702,39 +746,60 @@ function FlightBoard({ allTrips }) {
   }, []);
 
   // Compute the effective phase for a trip using BOTH Firestore status
-  // steps AND FlightAware live data. FA is ground truth for "is the
-  // plane actually flying right now?" — if FA says airborne=true,
-  // override our status-step-derived phase. If FA says airborne=false
-  // AND wheels_up was logged, treat as landed (the flight terminated
-  // even if nobody tapped LANDED). For tails we have no FA data on,
-  // fall back to status-steps-only via tripPhase().
+  // steps AND FlightAware live data. FA reports one position per tail,
+  // but a tail may have MULTIPLE trips on a given day (multi-leg
+  // schedules). Only the trip whose origin matches FA's reported origin
+  // is the actually-airborne one — sibling legs on the same tail are
+  // future or past, not "all airborne."
+  //
+  // Matching rule: trip.info.from === fa.origin (with K-prefix tolerance,
+  // e.g. "FXE" matches "KFXE"). If we can't match by origin, we fall
+  // back to step-phase only.
   const effectivePhase = (trip, state) => {
     const tail = (trip.info?.tail || '').toUpperCase();
     const fa = faPositions[tail];
     const stepPhase = tripPhase(trip, state);
     if (!fa) return stepPhase;
-    if (fa.airborne === true) return 'airborne';
-    // FA says not airborne. If our steps say airborne, we've been wrong —
-    // the flight landed.
+    if (fa.airborne === true) {
+      // Origin-match check: which trip is FA actually tracking?
+      const tripFrom = (trip.info?.from || '').toUpperCase();
+      const faOrigin = (fa.origin || '').toUpperCase();
+      const matches = (
+        tripFrom === faOrigin ||
+        tripFrom === faOrigin.replace(/^K/, '') ||
+        ('K' + tripFrom) === faOrigin
+      );
+      if (matches) return 'airborne';
+      // FA's airborne flight isn't this trip — it's a sibling leg. This
+      // particular trip stays in its step phase (probably 'pending' if
+      // it's a future leg, or 'landed' if it's a past leg).
+      return stepPhase;
+    }
+    // FA says tail not airborne. If our steps say airborne, the flight
+    // landed (the staleness guard in tripPhase also handles this).
     if (stepPhase === 'airborne') return 'landed';
     return stepPhase;
   };
 
-  // Filter active trips to those that are still relevant — hide trips
-  // whose effective phase is `landed` or `completed`. The `active`
-  // memo already filters by today-only, but a trip that started today,
-  // flew, and landed (whether logged or determined via the 12h
-  // staleness guard) shouldn't keep cluttering the board. Without this,
-  // the morning's 6:59 AM repo would stay on the board all day.
+  // Filter active trips to those that are still relevant for the LIST —
+  // hide trips whose effective phase is `landed` or `completed`. The
+  // `active` memo already filters by today-only, but a trip that
+  // started today, flew, and landed shouldn't keep cluttering the list.
   //
-  // This memo also depends on faPositions so when FA reports a flight
-  // has landed, that trip drops off the board immediately.
+  // Note: the MAP uses `active` (or rather `mapTrips` below) which
+  // INCLUDES landed trips — so the day's full activity is visible
+  // on the map even when the list shows only what's still ongoing.
   const visible = useMemo(() => {
     return active.filter((t) => {
       const phase = effectivePhase(t, stateMap.get(t.uid));
       return phase !== 'landed' && phase !== 'completed';
     });
   }, [active, stateMap, faPositions]);
+
+  // Map shows all today's trips including landed/completed so the day's
+  // activity is visible at a glance. Completed routes render faded
+  // green; current routes render in their phase color.
+  const mapTrips = active;
 
   // Summary stats for the header. Uses effectivePhase so FA contradictions
   // count: a tail FA reports as airborne shows in the AIRBORNE counter
@@ -849,7 +914,7 @@ function FlightBoard({ allTrips }) {
         {/* Map */}
         <div className="bg-slate-950">
           <RouteMap
-            trips={visible}
+            trips={mapTrips}
             stateMap={stateMap}
             faPositions={faPositions}
             effectivePhase={effectivePhase}
