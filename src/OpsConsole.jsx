@@ -35,16 +35,20 @@ function hoursUntil(d) {
   return (t - Date.now()) / (3600 * 1000);
 }
 
-// Status steps — kept in sync with the STATUS tab list. If you add/rename
-// a step in App.jsx, mirror it here so the strip stays accurate.
+// Status steps — kept in sync with the STATUS tab list in App.jsx (the
+// `STATUS_STEPS` array there). Step IDs MUST match exactly; the truthy
+// check is on `statuses[id]` as a whole, not `.completedAt`, because the
+// stored shape is { at, by, gps } and the presence of the entry IS the
+// completion signal.
 const STATUS_STEPS = [
-  { id: 'crew_onsite',   label: 'CREW' },
-  { id: 'aircraft_ready', label: 'A/C' },
-  { id: 'pax_arrived',   label: 'PAX IN', revenueOnly: true },
-  { id: 'pax_boarded',   label: 'PAX BRD', revenueOnly: true },
-  { id: 'block_out',     label: 'BLOCK OUT' },
-  { id: 'block_in',      label: 'BLOCK IN' },
-  { id: 'trip_complete', label: 'DONE' },
+  { id: 'crew_onsite',     label: 'CREW' },
+  { id: 'aircraft_ready',  label: 'A/C' },
+  { id: 'catering_aboard', label: 'CTR',     revenueOnly: true },
+  { id: 'pax_arrived',     label: 'PAX IN',  revenueOnly: true },
+  { id: 'pax_boarded',     label: 'PAX BRD', revenueOnly: true },
+  { id: 'taxi_dep',        label: 'TAXI' },
+  { id: 'wheels_up',       label: 'UP' },
+  { id: 'landed',          label: 'DOWN' },
 ];
 
 // ------------- outstanding-items detector ---------------------------------
@@ -113,7 +117,27 @@ function StatusStrip({ trip, statuses }) {
   return (
     <div className="flex gap-1 mt-2">
       {visible.map((step) => {
-        const done = !!(statuses && statuses[step.id]?.completedAt);
+        // Step is complete if there's any entry under its id. The stored
+        // shape is { at, by, gps } — presence == complete. We do NOT
+        // check .completedAt (a field that doesn't exist in this data).
+        const entry = statuses && statuses[step.id];
+        const done = !!entry;
+        // Tooltip: "STEP_LABEL · logged 10:23 AM" or "STEP_LABEL · not yet"
+        let tip = step.label;
+        if (done) {
+          const at = entry.at;
+          if (at) {
+            try {
+              tip += ' · ' + new Date(at).toLocaleString('en-US', {
+                hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York',
+              });
+            } catch (_) { tip += ' · logged'; }
+          } else {
+            tip += ' · logged';
+          }
+        } else {
+          tip += ' · not yet';
+        }
         return (
           <div
             key={step.id}
@@ -123,7 +147,7 @@ function StatusStrip({ trip, statuses }) {
                 : 'bg-slate-900/40 border-slate-800 text-slate-600'
             }`}
             style={{ fontFamily: 'JetBrains Mono, monospace' }}
-            title={step.label}
+            title={tip}
           >
             {done ? '✓' : '·'}
           </div>
@@ -423,6 +447,14 @@ function OpsConsole({ currentUser, allTrips, onOpenTrip }) {
     const candidate = (allTrips || []).filter((t) => {
       const ts = t.start instanceof Date ? t.start.getTime() : new Date(t.start).getTime();
       if (!Number.isFinite(ts)) return false;
+      // Drop non-operational trips: CREW HOLD placeholders, MX, training.
+      // These are calendar entries, not real flight legs that ops needs to
+      // track on this console. The trip.info.isOps flag is true only for
+      // REVENUE/REPO/FERRY/OWNER (operational categories).
+      if (t.info && t.info.isOps === false) return false;
+      // Also drop legs where from === to and there's no pax — these are
+      // calendar placeholders even when isOps wasn't set (older imports).
+      if (t.info && t.info.from && t.info.from === t.info.to && !t.info.pax) return false;
       const s = stateMap.get(t.uid);
       if (s?.completed || s?.archived) return false;
       // In-window if:
