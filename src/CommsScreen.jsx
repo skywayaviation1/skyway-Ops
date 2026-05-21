@@ -8,11 +8,14 @@
 // Visual: the surrounding chrome stays dark to match the rest of the app;
 // the BubbleChat surface inside is light (the Option 1 decision).
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, Suspense, lazy } from 'react';
 import {
   MessageSquare, Plus, Search, X, ChevronLeft,
   Loader2, UserPlus, Bell,
 } from 'lucide-react';
+
+// Code-split: MuteToggle loads only when a chat pane is open.
+const MuteToggleLazy = lazy(() => import('./MuteToggle.jsx'));
 import BubbleChat from './BubbleChat.jsx';
 
 /* ============================================================
@@ -544,11 +547,23 @@ function CommsScreen({ currentUser, users, onJumpToEntity }) {
                     </p>
                   </div>
                 </div>
-                {selected.entityRef && onJumpToEntity && (
-                  <button onClick={() => onJumpToEntity(selected.entityRef)} className="text-[10px] text-cyan-400 hover:text-cyan-300 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                    OPEN →
-                  </button>
-                )}
+                <div className="flex items-center gap-1 shrink-0">
+                  {selected.entityRef && onJumpToEntity && (
+                    <button onClick={() => onJumpToEntity(selected.entityRef)} className="text-[10px] text-cyan-400 hover:text-cyan-300 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                      OPEN →
+                    </button>
+                  )}
+                  <Suspense fallback={null}>
+                    <MuteToggleLazy
+                      currentUser={currentUser}
+                      target={
+                        selected.kind === 'trip' && selected._legacyTripId
+                          ? { tripId: selected._legacyTripId, kind: 'trip' }
+                          : { id: selected.id, kind: selected.kind }
+                      }
+                    />
+                  </Suspense>
+                </div>
               </div>
               <div className="flex-1 overflow-hidden p-3">
                 <BubbleChat

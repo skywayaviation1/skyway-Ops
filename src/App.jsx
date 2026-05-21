@@ -8,6 +8,9 @@ const PushSettingsLazy = lazy(() => import('./PushSettings.jsx'));
 
 // Code-split: Ops Console loads only when ops/admin opens that section.
 const OpsConsoleLazy = lazy(() => import('./OpsConsole.jsx'));
+
+// Code-split: MuteToggle loads only when a chat surface renders.
+const MuteToggleLazy = lazy(() => import('./MuteToggle.jsx'));
 import { createPortal } from 'react-dom';
 import {
   Plane, Calendar, MessageSquare, Users, Bell, MapPin,
@@ -1778,9 +1781,17 @@ function ChatPanel({ tripId, trip, currentUser }) {
           <h3 className="text-sm tracking-wider" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>TRIP COMMS</h3>
           <Pill tone="cyan">SHARED</Pill>
         </div>
-        <span className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-          {messages.length} MSG
-        </span>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {messages.length} MSG
+          </span>
+          <Suspense fallback={null}>
+            <MuteToggleLazy
+              currentUser={currentUser}
+              target={{ tripId: tripId, kind: 'trip' }}
+            />
+          </Suspense>
+        </div>
       </div>
       <div className="p-3">
         <Suspense fallback={<div className="h-64 flex items-center justify-center text-slate-500"><Loader2 className="w-4 h-4 animate-spin" /></div>}>

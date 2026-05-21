@@ -321,6 +321,73 @@ export async function markRead(convId, userUid, lastSeenTs = Date.now()) {
 
 // Soft-delete: keep the doc for the operational record (your aviation context
 // argues against hard-delete in operational threads). UI hides the body.
+// ============================================================
+// MUTE HELPERS
+// ============================================================
+//
+// Mute docs live at users/{uid}/comms-mutes/{key} with shape:
+//   { muted: true|false, updatedAt }
+//
+// Key format:
+//   - DM / group / AOG conversation: convId (the conversations/{id} id)
+//   - Trip thread:                    'trip:{tripId}'
+//
+// The server side (api/send-push.js) reads this exact path + key format
+// when deciding whether to dispatch push to a recipient. If we change
+// the key shape here, the server has to change too. Source of truth.
+//
+// Subscribe returns the current mute state in real-time so the UI's
+// toggle stays in sync if the user mutes from another device.
+
+function muteKeyFor(target) {
+  if (!target) return null;
+  if (target.kind === 'trip' || target.tripId) {
+    const t = target.tripId || target.id;
+    return t ? `trip:${safeId(t)}` : null;
+  }
+  // DM / group / aog / sr — conversation doc id is the key.
+  return target.id ? safeId(target.id) : null;
+}
+
+/**
+ * Set the muted state for a conversation or trip thread for the given
+ * user. Mute toggles affect push notifications only — the conversation
+ * is still readable, unread badges still update, etc.
+ *
+ * target: { id, kind } for a conversation, or { tripId, kind: 'trip' }
+ *         for a trip thread.
+ * user:   currentUser-like object ({uid, id})
+ * muted:  boolean
+ */
+export async function setMuted(user, target, muted) {
+  const uid = user?.uid || user?.id;
+  if (!uid) throw new Error('setMuted: missing user uid');
+  const key = muteKeyFor(target);
+  if (!key) throw new Error('setMuted: missing target key');
+  await setDoc(
+    doc(db, 'users', uid, 'comms-mutes', key),
+    { muted: !!muted, updatedAt: serverTimestamp() },
+    { merge: true },
+  );
+}
+
+/**
+ * Subscribe to the mute state for one target so a toggle UI stays in
+ * sync. Calls onUpdate(boolean) on every change. Returns an unsubscribe
+ * function. If the user has never set a mute for this target, the doc
+ * won't exist and we return false (default).
+ */
+export function subscribeMuted(user, target, onUpdate) {
+  const uid = user?.uid || user?.id;
+  const key = muteKeyFor(target);
+  if (!uid || !key) { onUpdate(false); return () => {}; }
+  return onSnapshot(
+    doc(db, 'users', uid, 'comms-mutes', key),
+    (snap) => onUpdate(snap.exists() && snap.data().muted === true),
+    (err) => { console.warn('[mute] subscribe error:', err); onUpdate(false); },
+  );
+}
+
 export async function softDeleteMessage(convId, msgId, byUser) {
   await updateDoc(doc(db, 'conversations', safeId(convId), 'messages', safeId(msgId)), {
     deletedAt: serverTimestamp(),
