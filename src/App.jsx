@@ -5,6 +5,9 @@ const CommsScreenLazy = lazy(() => import('./CommsScreen.jsx'));
 
 // Code-split: PushSettings loads only when the user opens their profile.
 const PushSettingsLazy = lazy(() => import('./PushSettings.jsx'));
+
+// Code-split: Ops Console loads only when ops/admin opens that section.
+const OpsConsoleLazy = lazy(() => import('./OpsConsole.jsx'));
 import { createPortal } from 'react-dom';
 import {
   Plane, Calendar, MessageSquare, Users, Bell, MapPin,
@@ -22745,6 +22748,13 @@ export default function CharterOps() {
         {/* === OPS DASHBOARD SECTION === */}
         {section === 'ops' && (
           <div className="flex-1 overflow-y-auto scroll-area">
+            <Suspense fallback={<div className="flex items-center justify-center py-16 text-slate-500"><Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading ops console...</div>}>
+              <OpsConsoleLazy
+                currentUser={currentUser}
+                allTrips={allTrips}
+                onOpenTrip={(uid) => { setSelectedId(uid); setSection('schedule'); }}
+              />
+            </Suspense>
             <OpsDashboard
               trips={allTrips}
               currentUser={currentUser}

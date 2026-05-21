@@ -224,6 +224,49 @@ export async function attachTripSheetToLeg(legUpdate) {
 }
 
 /**
+ * Subscribe to ALL trip-state docs in one listener. Returns a Map keyed
+ * by tripId so callers can do O(1) lookups while iterating their own
+ * trips list. Used by the Ops Console which renders many trips at once;
+ * the per-trip subscribeToTripState pattern doesn't scale to dozens of
+ * listeners (each chews a websocket message slot).
+ *
+ * onUpdate(stateMap)  — Map<tripId, stateObject>
+ * Returns the unsubscribe function.
+ */
+export function subscribeAllTripStates(onUpdate) {
+  return onSnapshot(
+    collection(db, 'trip-state'),
+    (snap) => {
+      const map = new Map();
+      snap.forEach((d) => {
+        const data = d.data() || {};
+        map.set(d.id, {
+          tripId: d.id,
+          statuses: data.statuses || {},
+          passengers: Array.isArray(data.passengers) ? data.passengers : [],
+          brokerEmail: data.brokerEmail || '',
+          completed: data.completed === true,
+          archived: data.archived === true,
+          completedAt: data.completedAt || null,
+          archivedAt: data.archivedAt || null,
+          tripSheetUrl: data.tripSheetUrl || null,
+          tripSheetFilename: data.tripSheetFilename || null,
+          tripSheetUploadedAt: data.tripSheetUploadedAt || null,
+          dispatcherUids: Array.isArray(data.dispatcherUids) ? data.dispatcherUids : [],
+          hasCatering: data.hasCatering !== false,
+          paxOverride: typeof data.paxOverride === 'number' ? data.paxOverride : null,
+        });
+      });
+      onUpdate(map);
+    },
+    (err) => {
+      console.error('[trip-state] subscribeAll error:', err);
+      onUpdate(new Map());
+    },
+  );
+}
+
+/**
  * One-shot: return all trip-state docs that have a trip sheet PDF stored.
  * Used by the admin FBO backfill. Each item: { tripId, tripSheetUrl,
  * tripSheetFilename, hasFbo } so the caller can skip already-done ones.
