@@ -109,14 +109,27 @@ async function fetchTailState(ident, apiKey) {
       airborne: true,
       faFlightId: active.fa_flight_id,
       origin: active.origin?.code_icao || active.origin?.code || null,
+      originLat: active.origin?.latitude ?? null,
+      originLon: active.origin?.longitude ?? null,
       destination: active.destination?.code_icao || active.destination?.code || null,
+      destinationLat: active.destination?.latitude ?? null,
+      destinationLon: active.destination?.longitude ?? null,
+      destinationCity: active.destination?.city || null,
       actualOff: active.actual_off,
       actualOn: null,
       estimatedOn: active.estimated_on || null,
       scheduledOn: active.scheduled_on || null,
       scheduledIn: active.scheduled_in || null,
+      // Position-derived (from active.last_position or the secondary fetch)
       latitude: position?.latitude ?? null,
       longitude: position?.longitude ?? null,
+      heading: position?.heading ?? null,
+      // FA returns altitude in hundreds of feet — normalize to feet here
+      // so consumers don't have to remember.
+      altitude: position?.altitude != null ? position.altitude * 100 : null,
+      groundspeed: position?.groundspeed ?? null,
+      // Progress + flight phase info
+      progressPercent: active.progress_percent ?? null,
     };
   }
 
@@ -126,17 +139,27 @@ async function fetchTailState(ident, apiKey) {
     .sort((a, b) => new Date(b.actual_on) - new Date(a.actual_on));
   const lastLanded = completed[0];
   if (lastLanded) {
+    const dest = lastLanded.destination || {};
     return {
       ident,
       airborne: false,
       faFlightId: lastLanded.fa_flight_id,
       origin: lastLanded.origin?.code_icao || lastLanded.origin?.code || null,
-      destination: lastLanded.destination?.code_icao || lastLanded.destination?.code || null,
+      destination: dest.code_icao || dest.code || null,
+      destinationCity: dest.city || null,
       actualOff: lastLanded.actual_off || null,
       actualOn: lastLanded.actual_on,
       estimatedOn: null,
       scheduledOn: lastLanded.scheduled_on || null,
       scheduledIn: lastLanded.scheduled_in || null,
+      // For grounded tails, FA gives us the destination of the last
+      // completed flight — that's where the plane is sitting now.
+      // Both fleet board and TRACKING tab use these to draw the
+      // parked-aircraft marker on the map.
+      groundedAt: dest.code_icao || dest.code || null,
+      groundedLat: dest.latitude ?? null,
+      groundedLon: dest.longitude ?? null,
+      groundedSince: lastLanded.actual_on,
     };
   }
 
