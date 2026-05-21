@@ -693,6 +693,17 @@ function FlightBoard({ allTrips }) {
   // TrackingScreen; cost-controlled by the trackingEnabled toggle.
   // First call fires immediately, then interval-based.
   useEffect(() => {
+    // EMERGENCY DISABLE: this hardcoded gate is here because the
+    // FlightBoard's FA polling may have caused a rate-limit cascade
+    // that broke the existing TRACKING tab. Until we confirm the
+    // pipeline is healthy, the board polls nothing and uses status-
+    // step data only. Set BOARD_FA_POLLING to true once verified.
+    const BOARD_FA_POLLING = false;
+    if (!BOARD_FA_POLLING) {
+      setFaPositions({});
+      setFaDiag({ status: 'disabled', message: 'Board FA polling temporarily disabled — see TRACKING tab for live data' });
+      return;
+    }
     if (!trackingEnabled) {
       setFaPositions({});
       setFaDiag({ status: 'disabled', message: 'FA tracking disabled in admin' });
