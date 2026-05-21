@@ -185,40 +185,95 @@ function FlightRow({ trip, state, faPosition, phase }) {
     } catch (_) {}
   }
 
+  // Progress percent from FA (0-100). Used to draw the progress bar
+  // below the row for airborne flights. Fall back to time-based
+  // estimate if FA didn't provide one (this happens sometimes for
+  // short hops): elapsed / total = elapsed / (eta - departure).
+  let progressPct = null;
+  if (phase === 'airborne') {
+    if (Number.isFinite(faPosition?.progressPercent)) {
+      progressPct = Math.max(0, Math.min(100, faPosition.progressPercent));
+    } else if (faPosition?.estimatedOn && faPosition?.actualOff) {
+      try {
+        const departed = new Date(faPosition.actualOff).getTime();
+        const arriving = new Date(faPosition.estimatedOn).getTime();
+        const total = arriving - departed;
+        const elapsed = Date.now() - departed;
+        if (total > 0 && elapsed >= 0) {
+          progressPct = Math.max(0, Math.min(100, (elapsed / total) * 100));
+        }
+      } catch (_) {}
+    }
+  }
+
   return (
-    <div className={`grid grid-cols-[80px_120px_180px_110px_1fr_60px] gap-3 items-center px-3 py-2.5 border-b border-slate-800 ${phase === 'airborne' ? 'bg-cyan-500/5' : ''}`}>
-      {/* Status pill */}
-      <div className={`text-center text-[11px] tracking-widest font-semibold px-2 py-1 border ${pc.bg} ${pc.border} ${pc.txt}`}
-        style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-        {pc.label}
-      </div>
-      {/* Time */}
-      <div className="text-2xl tabular-nums text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-        {timeStr}
-      </div>
-      {/* Tail + Route */}
-      <div>
-        <div className="text-xl text-slate-100" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
-          {trip.info?.tail || '?'}
+    <div className={`border-b border-slate-800 ${phase === 'airborne' ? 'bg-cyan-500/5' : ''}`}>
+      <div className="grid grid-cols-[80px_120px_180px_110px_1fr_60px] gap-3 items-center px-3 py-2.5">
+        {/* Status pill */}
+        <div className={`text-center text-[11px] tracking-widest font-semibold px-2 py-1 border ${pc.bg} ${pc.border} ${pc.txt}`}
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {pc.label}
         </div>
-        <div className="text-sm text-slate-400 tabular-nums" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-          {trip.info?.from || '?'} → {trip.info?.to || '?'}
+        {/* Time */}
+        <div className="text-2xl tabular-nums text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {timeStr}
+        </div>
+        {/* Tail + Route */}
+        <div>
+          <div className="text-xl text-slate-100" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
+            {trip.info?.tail || '?'}
+          </div>
+          <div className="text-sm text-slate-400 tabular-nums" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {trip.info?.from || '?'} → {trip.info?.to || '?'}
+          </div>
+        </div>
+        {/* TYPE column — replaced with ETA/remaining for airborne flights */}
+        <div className="text-xs tracking-widest text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {etaCellContent || (trip.info?.legType === 'REVENUE' ? 'REVENUE' : 'REPO')}
+        </div>
+        {/* Crew */}
+        <div className="text-sm text-slate-300 truncate" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+          {trip.info?.pic
+            ? <>{trip.info.pic}{trip.info.sic && <span className="text-slate-500"> / {trip.info.sic}</span>}</>
+            : <span className="text-slate-600">— no crew —</span>}
+        </div>
+        {/* Pax */}
+        <div className="text-xl text-right text-slate-300 tabular-nums" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {trip.info?.pax > 0 ? trip.info.pax : '—'}
         </div>
       </div>
-      {/* TYPE column — replaced with ETA/remaining for airborne flights */}
-      <div className="text-xs tracking-widest text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-        {etaCellContent || (trip.info?.legType === 'REVENUE' ? 'REVENUE' : 'REPO')}
-      </div>
-      {/* Crew */}
-      <div className="text-sm text-slate-300 truncate" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-        {trip.info?.pic
-          ? <>{trip.info.pic}{trip.info.sic && <span className="text-slate-500"> / {trip.info.sic}</span>}</>
-          : <span className="text-slate-600">— no crew —</span>}
-      </div>
-      {/* Pax */}
-      <div className="text-xl text-right text-slate-300 tabular-nums" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-        {trip.info?.pax > 0 ? trip.info.pax : '—'}
-      </div>
+      {/* Progress bar — only renders for airborne flights with progress
+          data from FA. Shows the from/to airport codes at each end so
+          even glanceable from across the room you know what's flying. */}
+      {phase === 'airborne' && progressPct != null && (
+        <div className="px-3 pb-2 -mt-1">
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-cyan-400 tabular-nums w-8 text-right" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {trip.info?.from || ''}
+            </span>
+            <div className="flex-1 h-1.5 bg-slate-800/80 rounded-sm relative overflow-visible">
+              <div
+                className="h-full bg-gradient-to-r from-cyan-500 to-emerald-400 transition-all duration-1000"
+                style={{ width: `${progressPct}%` }}
+              />
+              {/* Plane icon at progress tip */}
+              <div
+                className="absolute top-1/2 w-2 h-2 -mt-1 rounded-full bg-cyan-300"
+                style={{
+                  left: `calc(${progressPct}% - 4px)`,
+                  boxShadow: '0 0 6px rgba(34,211,238,0.9)',
+                }}
+              />
+            </div>
+            <span className="text-[10px] text-cyan-400 tabular-nums w-8" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {trip.info?.to || ''}
+            </span>
+            <span className="text-[10px] text-cyan-300 tabular-nums w-8 text-right" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {Math.round(progressPct)}%
+            </span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -507,6 +562,10 @@ function FlightBoard({ allTrips }) {
   //     groundspeed, estimatedOn, progressPercent, ... }
   const [faPositions, setFaPositions] = useState({});
   const [trackingEnabled, setTrackingEnabled] = useState(true); // default true; subscription will confirm
+  // Visible diagnostic — rendered on the board so we can see WHY FA
+  // isn't showing data, without needing dev tools. Status is one of
+  // 'ok', 'error', 'disabled', 'idle'. Cleared on success.
+  const [faDiag, setFaDiag] = useState({ status: 'idle', message: 'Initializing…' });
 
   useEffect(() => {
     let unsub = () => {};
@@ -609,10 +668,12 @@ function FlightBoard({ allTrips }) {
   useEffect(() => {
     if (!trackingEnabled) {
       setFaPositions({});
+      setFaDiag({ status: 'disabled', message: 'FA tracking disabled in admin' });
       return;
     }
     if (fleetTails.length === 0) {
       setFaPositions({});
+      setFaDiag({ status: 'idle', message: 'No active tails to poll' });
       return;
     }
     let cancelled = false;
@@ -621,30 +682,45 @@ function FlightBoard({ allTrips }) {
       try {
         const { auth } = await import('./firebase.js');
         const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : null;
-        if (!idToken) return;
+        if (!idToken) {
+          if (!cancelled) setFaDiag({ status: 'error', message: 'Not signed in — cannot poll FA' });
+          return;
+        }
         const r = await fetch('/api/flightaware-positions', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ idToken, idents: fleetTails }),
         });
         if (!r.ok) {
-          console.warn('[board] FA positions returned', r.status);
+          const text = await r.text().catch(() => '');
+          if (!cancelled) setFaDiag({ status: 'error', message: `FA HTTP ${r.status}: ${text.slice(0, 80)}` });
           return;
         }
         const data = await r.json();
         const positions = Array.isArray(data?.positions) ? data.positions : [];
         if (cancelled) return;
         const map = {};
+        let airborneCount = 0;
         for (const p of positions) {
-          if (p && p.ident) map[String(p.ident).toUpperCase()] = p;
+          if (p && p.ident) {
+            map[String(p.ident).toUpperCase()] = p;
+            if (p.airborne) airborneCount++;
+          }
         }
         setFaPositions(map);
+        setFaDiag({
+          status: 'ok',
+          message: `Polled ${fleetTails.length} tails · ${airborneCount} airborne · ${new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: false })}`,
+        });
       } catch (e) {
-        if (!cancelled) console.warn('[board] FA poll failed:', e?.message);
+        if (!cancelled) setFaDiag({ status: 'error', message: 'FA poll exception: ' + (e?.message || 'unknown') });
       }
     }
     poll();
-    timer = setInterval(poll, 30_000);
+    // Poll every 15s per ops request. FlightAware caches at ~30s server
+    // side so we won't actually get more granular data than that, but
+    // 15s ensures we pick up updates as soon as the cache refreshes.
+    timer = setInterval(poll, 15_000);
     return () => {
       cancelled = true;
       if (timer) clearInterval(timer);
@@ -670,20 +746,36 @@ function FlightBoard({ allTrips }) {
     return stepPhase;
   };
 
+  // Filter active trips to those that are still relevant — hide trips
+  // whose effective phase is `landed` or `completed`. The `active`
+  // memo already filters by today-only, but a trip that started today,
+  // flew, and landed (whether logged or determined via the 12h
+  // staleness guard) shouldn't keep cluttering the board. Without this,
+  // the morning's 6:59 AM repo would stay on the board all day.
+  //
+  // This memo also depends on faPositions so when FA reports a flight
+  // has landed, that trip drops off the board immediately.
+  const visible = useMemo(() => {
+    return active.filter((t) => {
+      const phase = effectivePhase(t, stateMap.get(t.uid));
+      return phase !== 'landed' && phase !== 'completed';
+    });
+  }, [active, stateMap, faPositions]);
+
   // Summary stats for the header. Uses effectivePhase so FA contradictions
   // count: a tail FA reports as airborne shows in the AIRBORNE counter
   // even if status steps haven't caught up; a stale "airborne" tail FA
   // reports as not-flying gets demoted out of the counter.
   const stats = useMemo(() => {
     let airborne = 0, preflight = 0, pending = 0;
-    active.forEach((t) => {
+    visible.forEach((t) => {
       const phase = effectivePhase(t, stateMap.get(t.uid));
       if (phase === 'airborne') airborne++;
       else if (phase === 'preflight') preflight++;
       else if (phase === 'pending') pending++;
     });
-    return { airborne, preflight, pending, total: active.length };
-  }, [active, stateMap, faPositions]);
+    return { airborne, preflight, pending, total: visible.length };
+  }, [visible, stateMap, faPositions]);
 
   // Current time for the header
   let nowStr = '';
@@ -712,6 +804,21 @@ function FlightBoard({ allTrips }) {
               FLIGHT BOARD
             </h1>
             <p className="text-sm text-slate-400 mt-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{nowStr}</p>
+            {/* FA diagnostic — color-coded per status. Visible on the
+                board so we can see why live data is or isn't appearing
+                without needing dev tools. */}
+            <p
+              className={`text-[10px] mt-0.5 tracking-widest ${
+                faDiag.status === 'ok' ? 'text-emerald-400/70'
+                : faDiag.status === 'error' ? 'text-red-400'
+                : faDiag.status === 'disabled' ? 'text-amber-400'
+                : 'text-slate-500'
+              }`}
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              title={faDiag.message}
+            >
+              FA · {faDiag.message}
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-6" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
@@ -748,12 +855,12 @@ function FlightBoard({ allTrips }) {
             <div>CREW</div>
             <div className="text-right">PAX</div>
           </div>
-          {active.length === 0 ? (
+          {visible.length === 0 ? (
             <div className="p-12 text-center text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
               NO ACTIVE FLIGHTS
             </div>
           ) : (
-            active.map((t) => (
+            visible.map((t) => (
               <FlightRow
                 key={t.uid}
                 trip={t}
@@ -768,7 +875,7 @@ function FlightBoard({ allTrips }) {
         {/* Map */}
         <div className="bg-slate-950">
           <RouteMap
-            trips={active}
+            trips={visible}
             stateMap={stateMap}
             faPositions={faPositions}
             effectivePhase={effectivePhase}
