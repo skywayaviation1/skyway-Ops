@@ -11,6 +11,9 @@ const OpsConsoleLazy = lazy(() => import('./OpsConsole.jsx'));
 
 // Code-split: MuteToggle loads only when a chat surface renders.
 const MuteToggleLazy = lazy(() => import('./MuteToggle.jsx'));
+
+// Code-split: FlightBoard loads only when ?board=1 URL is hit.
+const FlightBoardLazy = lazy(() => import('./FlightBoard.jsx'));
 import { createPortal } from 'react-dom';
 import {
   Plane, Calendar, MessageSquare, Users, Bell, MapPin,
@@ -22348,6 +22351,19 @@ export default function CharterOps() {
       <div className="min-h-screen bg-slate-950 flex items-center justify-center text-slate-500">
         <Loader2 className="w-6 h-6 animate-spin" />
       </div>
+    );
+  }
+
+  // === FlightBoard TV display ===
+  // Triggered via URL: claude.ai/?board=1
+  // Bypasses the entire nav chrome and just renders the full-screen
+  // flight board. Designed to be opened on a TV/monitor in the dispatch
+  // area; auto-refreshes via existing Firestore listeners.
+  if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('board') === '1') {
+    return (
+      <Suspense fallback={<div className="h-screen w-screen bg-slate-950 flex items-center justify-center text-slate-500"><Loader2 className="w-8 h-8 animate-spin" /></div>}>
+        <FlightBoardLazy allTrips={allTrips} />
+      </Suspense>
     );
   }
 
