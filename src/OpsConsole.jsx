@@ -17,6 +17,27 @@ import {
   Users, MessageSquare, Send, Loader2, X, ExternalLink,
 } from 'lucide-react';
 
+// Inject the pulse keyframes once. Inline <style> rather than a CSS
+// import so this code-split chunk is self-contained — no separate CSS
+// file to worry about loading order on first ops-console open.
+const OPS_PULSE_STYLE = `
+@keyframes opsPulse {
+  0%, 100% { transform: scale(1);   opacity: 1; }
+  50%      { transform: scale(1.25); opacity: 0.7; }
+}
+`;
+function StyleInjector() {
+  useEffect(() => {
+    const id = 'ops-console-pulse-style';
+    if (document.getElementById(id)) return; // already injected
+    const el = document.createElement('style');
+    el.id = id;
+    el.textContent = OPS_PULSE_STYLE;
+    document.head.appendChild(el);
+  }, []);
+  return null;
+}
+
 // ------------- helpers ----------------------------------------------------
 
 function fmtTime(d) {
@@ -114,45 +135,101 @@ export function computeOutstanding(trip, state) {
 function StatusStrip({ trip, statuses }) {
   const isRevenue = trip?.info?.legType === 'REVENUE';
   const visible = STATUS_STEPS.filter((s) => !s.revenueOnly || isRevenue);
+  const total = visible.length;
+
+  // For each step, capture { id, label, done, at }. Tooltip text built up
+  // here once so the render below stays tidy.
+  const enriched = visible.map((step) => {
+    const entry = statuses && statuses[step.id];
+    const done = !!entry;
+    let tip = step.label;
+    if (done) {
+      const at = entry.at;
+      if (at) {
+        try {
+          tip += ' · ' + new Date(at).toLocaleString('en-US', {
+            hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York',
+          });
+        } catch (_) { tip += ' · logged'; }
+      } else { tip += ' · logged'; }
+    } else { tip += ' · not yet'; }
+    return { ...step, done, tip };
+  });
+
+  // Completed count = actual number of done steps in the visible set. This
+  // is honest if crews skip a step (the bar shows what's actually done,
+  // not "highest contiguous completed step" which would lie about gaps).
+  const doneCount = enriched.filter((s) => s.done).length;
+  const pct = total > 0 ? (doneCount / total) * 100 : 0;
+
+  // "Current" step = first non-done step. Used to position the pulsing
+  // indicator dot. If all steps are done, the dot sits at 100%.
+  const currentIdx = enriched.findIndex((s) => !s.done);
+  const currentPct = currentIdx === -1
+    ? 100
+    : (currentIdx / total) * 100 + (50 / total);  // center within its segment
+  const allDone = currentIdx === -1;
+
   return (
-    <div className="flex gap-1 mt-2">
-      {visible.map((step) => {
-        // Step is complete if there's any entry under its id. The stored
-        // shape is { at, by, gps } — presence == complete. We do NOT
-        // check .completedAt (a field that doesn't exist in this data).
-        const entry = statuses && statuses[step.id];
-        const done = !!entry;
-        // Tooltip: "STEP_LABEL · logged 10:23 AM" or "STEP_LABEL · not yet"
-        let tip = step.label;
-        if (done) {
-          const at = entry.at;
-          if (at) {
-            try {
-              tip += ' · ' + new Date(at).toLocaleString('en-US', {
-                hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York',
-              });
-            } catch (_) { tip += ' · logged'; }
-          } else {
-            tip += ' · logged';
-          }
-        } else {
-          tip += ' · not yet';
-        }
-        return (
+    <div className="mt-3">
+      {/* Progress bar with tick marks and a pulsing current-step dot. */}
+      <div className="relative">
+        <div className="h-2 bg-slate-800/80 rounded-sm overflow-hidden">
+          <div
+            className={`h-full transition-all duration-500 ${
+              allDone
+                ? 'bg-gradient-to-r from-emerald-400 to-emerald-300'
+                : 'bg-gradient-to-r from-cyan-500 to-emerald-400'
+            }`}
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+        {/* Tick marks between segments. n-1 ticks for n segments. */}
+        <div className="absolute top-0 left-0 w-full h-2 flex pointer-events-none">
+          {enriched.map((_, i) => (
+            i === 0 ? null : (
+              <div
+                key={i}
+                className="w-px bg-slate-950/70"
+                style={{ position: 'absolute', left: `${(i / total) * 100}%`, height: '100%' }}
+              />
+            )
+          ))}
+        </div>
+        {/* Pulsing current-step dot (only when there's a non-done step left). */}
+        {!allDone && (
+          <div
+            className="absolute -top-1 w-3 h-3 rounded-full bg-cyan-400"
+            style={{
+              left: `calc(${currentPct}% - 6px)`,
+              boxShadow: '0 0 8px rgba(34,211,238,0.85), 0 0 14px rgba(34,211,238,0.4)',
+              animation: 'opsPulse 2s ease-in-out infinite',
+            }}
+            title={enriched[currentIdx]?.tip}
+          />
+        )}
+      </div>
+
+      {/* Step labels under the bar. Done = bright emerald, current = cyan,
+          future = dim. Labels are tiny mono so they don't overwhelm. */}
+      <div className="flex mt-1.5">
+        {enriched.map((step, i) => (
           <div
             key={step.id}
-            className={`flex-1 px-1 py-1 text-[9px] tracking-widest text-center border ${
-              done
-                ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
-                : 'bg-slate-900/40 border-slate-800 text-slate-600'
+            className={`flex-1 text-[8px] tracking-widest text-center cursor-help ${
+              step.done
+                ? 'text-emerald-400'
+                : i === currentIdx
+                  ? 'text-cyan-300'
+                  : 'text-slate-600'
             }`}
             style={{ fontFamily: 'JetBrains Mono, monospace' }}
-            title={tip}
+            title={step.tip}
           >
-            {done ? '✓' : '·'}
+            {step.label}
           </div>
-        );
-      })}
+        ))}
+      </div>
     </div>
   );
 }
@@ -521,6 +598,7 @@ function OpsConsole({ currentUser, allTrips, onOpenTrip }) {
 
   return (
     <div className="p-4 max-w-screen-2xl mx-auto">
+      <StyleInjector />
       <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
         <div>
           <h1 className="text-lg tracking-widest text-slate-100" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
