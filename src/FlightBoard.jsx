@@ -583,16 +583,13 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
 function FlightBoard({ allTrips }) {
   const [stateMap, setStateMap] = useState(new Map());
   const [, setTick] = useState(0); // forces a tick every minute for time display
-  // FlightAware live data: keyed by tail. Each entry is the position
-  // object returned by /api/flightaware-positions:
-  //   { ident, airborne, latitude, longitude, heading, altitude,
-  //     groundspeed, estimatedOn, progressPercent, ... }
+  // FlightAware live data: keyed by tail. Read from Firestore, where the
+  // /api/flightaware-cron-poll.js cron writes positions every 2 minutes.
+  // The board does NOT make any direct FA API calls.
   const [faPositions, setFaPositions] = useState({});
-  const [trackingEnabled, setTrackingEnabled] = useState(true); // default true; subscription will confirm
-  // Visible diagnostic — rendered on the board so we can see WHY FA
-  // isn't showing data, without needing dev tools. Status is one of
-  // 'ok', 'error', 'disabled', 'idle'. Cleared on success.
-  const [faDiag, setFaDiag] = useState({ status: 'idle', message: 'Initializing…' });
+  // Visible diagnostic — rendered on the board so we can see if the
+  // cron is running and how fresh data is. Status: 'ok', 'error', 'idle'.
+  const [faDiag, setFaDiag] = useState({ status: 'idle', message: 'Loading fleet data…' });
 
   useEffect(() => {
     let unsub = () => {};
@@ -601,28 +598,6 @@ function FlightBoard({ allTrips }) {
       unsub = m.subscribeAllTripStates((map) => {
         setStateMap(map);
       });
-    })();
-    return () => { try { unsub(); } catch (_) {} };
-  }, []);
-
-  // Subscribe to the FlightAware tracking-enabled toggle. The board
-  // respects the same kill switch the existing TRACKING screen uses,
-  // so admins can turn off FA queries (e.g. to control cost) and the
-  // board stops polling without needing a config change.
-  useEffect(() => {
-    let unsub = () => {};
-    (async () => {
-      try {
-        const { db } = await import('./firebase.js');
-        const { doc, onSnapshot } = await import('firebase/firestore');
-        unsub = onSnapshot(doc(db, 'flightaware', 'config'), (snap) => {
-          if (snap.exists()) {
-            setTrackingEnabled(snap.data().trackingEnabled !== false);
-          }
-        });
-      } catch (e) {
-        console.warn('[board] FA config subscribe failed:', e);
-      }
     })();
     return () => { try { unsub(); } catch (_) {} };
   }, []);
@@ -688,87 +663,43 @@ function FlightBoard({ allTrips }) {
     return Array.from(set).sort();
   }, [active]);
 
-  // Poll FlightAware positions for the fleet tails every 30s while the
-  // board is open AND tracking is enabled. Same pattern as the existing
-  // TrackingScreen; cost-controlled by the trackingEnabled toggle.
-  // First call fires immediately, then interval-based.
+  // Subscribe to fleet positions written by the FA cron at
+  // /api/flightaware-cron-poll.js. The board does NOT make its own
+  // FA API calls anymore — it just reads what the cron wrote to
+  // Firestore. This eliminates double-polling between the board and
+  // the TRACKING tab, and means we can run unlimited TV displays at
+  // zero additional FA cost.
+  //
+  // The cron runs every 2 minutes; data freshness is bounded by that.
+  // The diagnostic line shows the last poll time for any tail in the
+  // fleet (visible signal that the cron is actually running).
   useEffect(() => {
-    // EMERGENCY DISABLE: this hardcoded gate is here because the
-    // FlightBoard's FA polling may have caused a rate-limit cascade
-    // that broke the existing TRACKING tab. Until we confirm the
-    // pipeline is healthy, the board polls nothing and uses status-
-    // step data only. Set BOARD_FA_POLLING to true once verified.
-    const BOARD_FA_POLLING = false;
-    if (!BOARD_FA_POLLING) {
-      setFaPositions({});
-      setFaDiag({ status: 'disabled', message: 'Board FA polling temporarily disabled — see TRACKING tab for live data' });
-      return;
-    }
-    if (!trackingEnabled) {
-      setFaPositions({});
-      setFaDiag({ status: 'disabled', message: 'FA tracking disabled in admin' });
-      return;
-    }
-    if (fleetTails.length === 0) {
-      setFaPositions({});
-      setFaDiag({ status: 'idle', message: 'No active tails to poll' });
-      return;
-    }
-    let cancelled = false;
-    let timer = null;
-    async function poll() {
-      try {
-        const { auth } = await import('./firebase.js');
-        const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : null;
-        if (!idToken) {
-          if (!cancelled) setFaDiag({ status: 'error', message: 'Not signed in — cannot poll FA' });
-          return;
-        }
-        const r = await fetch('/api/flightaware-positions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ idToken, idents: fleetTails }),
-        });
-        if (!r.ok) {
-          const text = await r.text().catch(() => '');
-          if (!cancelled) setFaDiag({ status: 'error', message: `FA HTTP ${r.status}: ${text.slice(0, 80)}` });
-          return;
-        }
-        const data = await r.json();
-        const positions = Array.isArray(data?.positions) ? data.positions : [];
-        if (cancelled) return;
-        const map = {};
-        let airborneCount = 0;
-        for (const p of positions) {
-          if (p && p.ident) {
-            map[String(p.ident).toUpperCase()] = p;
-            if (p.airborne) airborneCount++;
-          }
-        }
+    let unsub = () => {};
+    (async () => {
+      const m = await import('./firebase-data.js');
+      unsub = m.subscribeFleetPositions((map) => {
         setFaPositions(map);
-        // Log the raw response when nothing is airborne — helps diagnose
-        // why FA isn't seeing what crew/tracking-tab sees.
-        if (airborneCount === 0 && positions.length > 0) {
-          console.log('[board] FA returned 0 airborne. Raw positions:', positions);
+        // Build the diagnostic from the most recent poll time across
+        // all tails. The cron writes polledAt with each update so we
+        // can see how fresh the data is.
+        const polls = Object.values(map).map((p) => p?.polledAt || 0).filter(Boolean);
+        if (polls.length === 0) {
+          setFaDiag({ status: 'idle', message: 'No fleet data yet — waiting for cron' });
+        } else {
+          const newest = Math.max(...polls);
+          const ageMs = Date.now() - newest;
+          const ageMin = Math.floor(ageMs / 60_000);
+          let airborneCount = 0;
+          for (const p of Object.values(map)) if (p?.airborne) airborneCount++;
+          setFaDiag({
+            status: ageMin > 5 ? 'error' : 'ok',
+            message: `${airborneCount} airborne · updated ${ageMin === 0 ? 'just now' : `${ageMin}m ago`}`,
+          });
         }
-        setFaDiag({
-          status: 'ok',
-          message: `Polled ${fleetTails.length} tails · ${airborneCount} airborne · ${new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: false })}`,
-        });
-      } catch (e) {
-        if (!cancelled) setFaDiag({ status: 'error', message: 'FA poll exception: ' + (e?.message || 'unknown') });
-      }
-    }
-    poll();
-    // Poll every 15s per ops request. FlightAware caches at ~30s server
-    // side so we won't actually get more granular data than that, but
-    // 15s ensures we pick up updates as soon as the cache refreshes.
-    timer = setInterval(poll, 15_000);
-    return () => {
-      cancelled = true;
-      if (timer) clearInterval(timer);
-    };
-  }, [trackingEnabled, fleetTails.join(',')]);
+      });
+    })();
+    return () => { try { unsub(); } catch (_) {} };
+  }, []);
 
   // Compute the effective phase for a trip using BOTH Firestore status
   // steps AND FlightAware live data. FA is ground truth for "is the

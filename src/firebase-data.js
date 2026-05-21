@@ -224,6 +224,40 @@ export async function attachTripSheetToLeg(legUpdate) {
 }
 
 /**
+ * Subscribe to FlightAware fleet position data, written by the cron at
+ * /api/flightaware-cron-poll.js to `flightaware-state/{tail}`. This is
+ * how clients (FlightBoard, TRACKING tab) read live data WITHOUT making
+ * their own FA API calls — cuts cost roughly in half by eliminating
+ * client-initiated polling, and lets unlimited TV displays read the
+ * same data at zero additional cost.
+ *
+ * The cron polls every 2 minutes; data freshness is bounded by that
+ * cadence. For most operational use this is plenty — actual aircraft
+ * positions don't update faster than ~30-60s on FA's side anyway.
+ *
+ * onUpdate(positionMap)  — { [tail]: { ident, airborne, latitude, ... } }
+ * Returns the unsubscribe function.
+ */
+export function subscribeFleetPositions(onUpdate) {
+  return onSnapshot(
+    collection(db, 'flightaware-state'),
+    (snap) => {
+      const map = {};
+      snap.forEach((d) => {
+        const data = d.data() || {};
+        // Key by tail (uppercase to match how consumers compare)
+        map[d.id.toUpperCase()] = { ...data, ident: d.id };
+      });
+      onUpdate(map);
+    },
+    (err) => {
+      console.error('[fleet-positions] subscribe error:', err);
+      onUpdate({});
+    },
+  );
+}
+
+/**
  * Subscribe to ALL trip-state docs in one listener. Returns a Map keyed
  * by tripId so callers can do O(1) lookups while iterating their own
  * trips list. Used by the Ops Console which renders many trips at once;
