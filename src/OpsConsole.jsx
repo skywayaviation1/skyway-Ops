@@ -425,10 +425,17 @@ function OpsConsole({ currentUser, allTrips, onOpenTrip }) {
       if (!Number.isFinite(ts)) return false;
       const s = stateMap.get(t.uid);
       if (s?.completed || s?.archived) return false;
-      // In-window if: starts today, OR started in the past and not yet
-      // completed (still in progress from yesterday/earlier today).
+      // In-window if:
+      //   (a) starts today (Eastern), OR
+      //   (b) started in the last 24h and isn't marked complete (the trip
+      //       might still be in the air — flights are at most ~10-15h, so
+      //       24h covers any plausibly-still-flying case; anything older
+      //       is definitely landed even if nobody tapped MARK COMPLETE).
+      //
+      // Without the 24h cap, every past trip ever flown shows here because
+      // most legacy trips were never explicitly marked complete.
       const startsToday = ts >= todayStart && ts < todayEnd;
-      const inProgress = ts < now;  // started already, still not completed
+      const inProgress = ts < now && ts > now - (24 * 60 * 60 * 1000);
       return startsToday || inProgress;
     });
     candidate.sort((a, b) => {
