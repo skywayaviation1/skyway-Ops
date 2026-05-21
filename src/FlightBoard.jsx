@@ -457,32 +457,59 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
     // the plane so it's identifiable from across the room.
     if (faPositions) {
       Object.values(faPositions).forEach((p) => {
-        if (!p || !p.airborne) return;
-        const lat = p.latitude;
-        const lon = p.longitude;
-        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
-        const heading = Number.isFinite(p.heading) ? p.heading : 0;
-        const altStr = Number.isFinite(p.altitude)
-          ? (p.altitude >= 18000 ? `FL${Math.round(p.altitude / 100)}` : `${Math.round(p.altitude)}ft`)
-          : '';
-        const spdStr = Number.isFinite(p.groundspeed) ? `${Math.round(p.groundspeed)}kt` : '';
-        const planeSvg = `
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" style="transform: rotate(${heading}deg); transform-origin: center; filter: drop-shadow(0 0 4px rgba(34,211,238,0.7));">
-            <path d="M12 2 L13.5 10 L22 12 L22 14 L13.5 14 L13 19 L15 21 L15 22 L12 21 L9 22 L9 21 L11 19 L10.5 14 L2 14 L2 12 L10.5 10 Z"
-                  fill="#22d3ee" stroke="#0e7490" stroke-width="0.5"/>
-          </svg>`;
-        const labelHtml = `
-          <div style="position: absolute; left: 32px; top: -4px; background: rgba(2,6,23,0.9); border: 1px solid #22d3ee; padding: 2px 5px; white-space: nowrap;">
-            <div style="color: #a5f3fc; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700; line-height: 1;">${p.ident}</div>
-            <div style="color: #67e8f9; font-family: 'JetBrains Mono', monospace; font-size: 9px; line-height: 1.4; margin-top: 1px;">${altStr} ${spdStr}</div>
-          </div>`;
-        const icon = L.divIcon({
-          html: planeSvg + labelHtml,
-          className: '',
-          iconSize: [28, 28],
-          iconAnchor: [14, 14],
-        });
-        layer.addLayer(L.marker([lat, lon], { icon, interactive: false, zIndexOffset: 1000 }));
+        if (!p) return;
+        // === Airborne: cyan plane at lat/lng, rotated to heading ===
+        if (p.airborne === true) {
+          const lat = p.latitude;
+          const lon = p.longitude;
+          if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+          const heading = Number.isFinite(p.heading) ? p.heading : 0;
+          const altStr = Number.isFinite(p.altitude)
+            ? (p.altitude >= 18000 ? `FL${Math.round(p.altitude / 100)}` : `${Math.round(p.altitude)}ft`)
+            : '';
+          const spdStr = Number.isFinite(p.groundspeed) ? `${Math.round(p.groundspeed)}kt` : '';
+          const planeSvg = `
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" style="transform: rotate(${heading}deg); transform-origin: center; filter: drop-shadow(0 0 4px rgba(34,211,238,0.7));">
+              <path d="M12 2 L13.5 10 L22 12 L22 14 L13.5 14 L13 19 L15 21 L15 22 L12 21 L9 22 L9 21 L11 19 L10.5 14 L2 14 L2 12 L10.5 10 Z"
+                    fill="#22d3ee" stroke="#0e7490" stroke-width="0.5"/>
+            </svg>`;
+          const labelHtml = `
+            <div style="position: absolute; left: 32px; top: -4px; background: rgba(2,6,23,0.9); border: 1px solid #22d3ee; padding: 2px 5px; white-space: nowrap;">
+              <div style="color: #a5f3fc; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700; line-height: 1;">${p.ident}</div>
+              <div style="color: #67e8f9; font-family: 'JetBrains Mono', monospace; font-size: 9px; line-height: 1.4; margin-top: 1px;">${altStr} ${spdStr}</div>
+            </div>`;
+          const icon = L.divIcon({
+            html: planeSvg + labelHtml,
+            className: '',
+            iconSize: [28, 28],
+            iconAnchor: [14, 14],
+          });
+          layer.addLayer(L.marker([lat, lon], { icon, interactive: false, zIndexOffset: 1000 }));
+          return;
+        }
+        // === Grounded: small grey aircraft icon at last-known parking. ===
+        // This is what FA returns when the flight isn't yet detected as
+        // airborne. Helps us see fleet locations even when no one is
+        // flying yet, and is a visible signal that FA *sees* the tail
+        // even if it hasn't picked up takeoff yet.
+        if (p.airborne === false && Number.isFinite(p.groundedLat) && Number.isFinite(p.groundedLon)) {
+          const planeSvg = `
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+              <path d="M12 2 L13.5 10 L22 12 L22 14 L13.5 14 L13 19 L15 21 L15 22 L12 21 L9 22 L9 21 L11 19 L10.5 14 L2 14 L2 12 L10.5 10 Z"
+                    fill="#64748b" stroke="#1e293b" stroke-width="0.5"/>
+            </svg>`;
+          const labelHtml = `
+            <div style="position: absolute; left: 20px; top: -2px; color: #94a3b8; font-family: 'JetBrains Mono', monospace; font-size: 10px; white-space: nowrap; text-shadow: 0 0 4px #020617, 0 0 4px #020617;">
+              ${p.ident}${p.groundedAt ? ` · ${p.groundedAt}` : ''}
+            </div>`;
+          const icon = L.divIcon({
+            html: planeSvg + labelHtml,
+            className: '',
+            iconSize: [18, 18],
+            iconAnchor: [9, 9],
+          });
+          layer.addLayer(L.marker([p.groundedLat, p.groundedLon], { icon, interactive: false, zIndexOffset: 500 }));
+        }
       });
     }
 
@@ -708,6 +735,11 @@ function FlightBoard({ allTrips }) {
           }
         }
         setFaPositions(map);
+        // Log the raw response when nothing is airborne — helps diagnose
+        // why FA isn't seeing what crew/tracking-tab sees.
+        if (airborneCount === 0 && positions.length > 0) {
+          console.log('[board] FA returned 0 airborne. Raw positions:', positions);
+        }
         setFaDiag({
           status: 'ok',
           message: `Polled ${fleetTails.length} tails · ${airborneCount} airborne · ${new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: false })}`,
