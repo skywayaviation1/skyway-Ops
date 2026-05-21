@@ -96,17 +96,32 @@ const PHASE_COLORS = {
  * Given a trip and its state, return one of:
  *   'pending'    — not yet departed, no status logged
  *   'preflight'  — crew onsite / a/c ready / pax actions logged, not in air
- *   'airborne'   — wheels_up logged, landed not yet
- *   'landed'     — landed logged
+ *   'airborne'   — wheels_up logged recently, landed not yet
+ *   'landed'     — landed logged, OR wheels_up is so old the flight must be down
  *   'completed'  — trip marked complete
  *
- * Used both for the list pill and for picking the line color on the map.
+ * Important: the "airborne" classification has a STALENESS GUARD. A trip
+ * whose wheels_up timestamp is more than 12 hours ago, with no landed
+ * timestamp, is NOT airborne — the crew just forgot to tap LANDED. We
+ * treat it as 'landed' since the flight definitely terminated even if
+ * the data doesn't reflect it. Without this guard, yesterday's flights
+ * stay "airborne" forever on the board.
  */
 export function tripPhase(trip, state) {
   if (state?.completed) return 'completed';
   const s = state?.statuses || {};
   if (s.landed) return 'landed';
-  if (s.wheels_up) return 'airborne';
+  if (s.wheels_up) {
+    // Staleness guard: if wheels_up is older than the longest plausible
+    // flight time, the trip really landed but the flag wasn't updated.
+    const upAt = s.wheels_up.at || 0;
+    const ageMs = Date.now() - upAt;
+    const MAX_AIRBORNE_MS = 12 * 60 * 60 * 1000;  // 12h
+    if (upAt > 0 && ageMs > MAX_AIRBORNE_MS) {
+      return 'landed';  // treat as landed since it definitely is by now
+    }
+    return 'airborne';
+  }
   // Any pre-flight step counts as preflight
   for (const step of ['crew_onsite', 'aircraft_ready', 'catering_aboard', 'pax_arrived', 'pax_boarded', 'taxi_dep']) {
     if (s[step]) return 'preflight';
@@ -118,8 +133,10 @@ export function tripPhase(trip, state) {
 // FLIGHT LIST ROW
 // ====================================================================
 
-function FlightRow({ trip, state }) {
-  const phase = tripPhase(trip, state);
+function FlightRow({ trip, state, faPosition, phase }) {
+  // Phase is now computed by parent (uses both Firestore status + live
+  // FlightAware data). Fall back to local if not provided.
+  if (!phase) phase = tripPhase(trip, state);
   const phaseColors = {
     pending:    { bg: 'bg-slate-800/60',     border: 'border-slate-700',     label: 'PENDING',  txt: 'text-slate-400' },
     preflight:  { bg: 'bg-amber-500/15',     border: 'border-amber-500/40',  label: 'PRE-FLT',  txt: 'text-amber-300' },
@@ -136,6 +153,37 @@ function FlightRow({ trip, state }) {
       hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/New_York',
     }).replace(' ', '');
   } catch (_) {}
+
+  // For airborne flights, replace the TYPE column with live ETA + time
+  // remaining. Pulled from FlightAware's estimatedOn field.
+  let etaCellContent = null;
+  if (phase === 'airborne' && faPosition?.estimatedOn) {
+    try {
+      const etaDate = new Date(faPosition.estimatedOn);
+      const remainMs = etaDate.getTime() - Date.now();
+      const etaStr = etaDate.toLocaleString('en-US', {
+        hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/New_York',
+      }).replace(' ', '');
+      let remainStr = '';
+      if (remainMs > 0) {
+        const h = Math.floor(remainMs / 3600_000);
+        const m = Math.floor((remainMs % 3600_000) / 60_000);
+        remainStr = h > 0 ? `${h}h ${m}m` : `${m}m`;
+      } else {
+        remainStr = 'landing';
+      }
+      etaCellContent = (
+        <div>
+          <div className="text-sm text-cyan-200 tabular-nums" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            ETA {etaStr}
+          </div>
+          <div className="text-[10px] text-cyan-400/80 tabular-nums tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {remainStr} left
+          </div>
+        </div>
+      );
+    } catch (_) {}
+  }
 
   return (
     <div className={`grid grid-cols-[80px_120px_180px_110px_1fr_60px] gap-3 items-center px-3 py-2.5 border-b border-slate-800 ${phase === 'airborne' ? 'bg-cyan-500/5' : ''}`}>
@@ -157,9 +205,9 @@ function FlightRow({ trip, state }) {
           {trip.info?.from || '?'} → {trip.info?.to || '?'}
         </div>
       </div>
-      {/* Type */}
+      {/* TYPE column — replaced with ETA/remaining for airborne flights */}
       <div className="text-xs tracking-widest text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-        {trip.info?.legType === 'REVENUE' ? 'REVENUE' : 'REPO'}
+        {etaCellContent || (trip.info?.legType === 'REVENUE' ? 'REVENUE' : 'REPO')}
       </div>
       {/* Crew */}
       <div className="text-sm text-slate-300 truncate" style={{ fontFamily: 'DM Sans, sans-serif' }}>
@@ -179,16 +227,17 @@ function FlightRow({ trip, state }) {
 // ROUTE MAP
 // ====================================================================
 
-function RouteMap({ trips, stateMap }) {
+function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
   // Real US map via Leaflet + CARTO dark tiles. Same pattern as the
   // existing TrackingScreen so we get consistent rendering. Map shows:
   //   - All airport endpoints as small dots with code labels
-  //   - Great-circle route lines colored by phase (cyan=airborne,
-  //     amber=preflight, slate=pending, emerald=landed, dim=completed)
-  //   - Airborne flights get a tail-number label on the route line
+  //   - Route lines colored by phase (cyan=airborne, amber=preflight,
+  //     slate=pending, emerald=landed, dim=completed)
+  //   - Airborne flights get a tail-number label AND a live aircraft
+  //     marker at the FlightAware-reported lat/lng
   //
-  // Live aircraft positions and breadcrumb trails are NOT yet plotted
-  // here — that's the FlightAware integration that comes next turn.
+  // Breadcrumb trails (past positions of airborne flights) NOT yet
+  // plotted — separate fetch per tail; planned for follow-up.
 
   const containerRef = useRef(null);
   const mapRef = useRef(null);
@@ -208,17 +257,20 @@ function RouteMap({ trips, stateMap }) {
       const f = lookupCoords(fromCode);
       const o = lookupCoords(toCode);
       if (!f || !o) { miss++; return; }
+      const phase = effectivePhase
+        ? effectivePhase(t, stateMap.get(t.uid))
+        : tripPhase(t, stateMap.get(t.uid));
       r.push({
         uid: t.uid,
         from: f, to: o, fromCode, toCode,
-        phase: tripPhase(t, stateMap.get(t.uid)),
+        phase,
         tail: t.info?.tail || '',
       });
       apts.set(fromCode, { coords: f, code: fromCode });
       apts.set(toCode, { coords: o, code: toCode });
     });
     return { routes: r, airports: Array.from(apts.values()), missing: miss };
-  }, [trips, stateMap]);
+  }, [trips, stateMap, effectivePhase]);
 
   // Initialize the Leaflet map once.
   useEffect(() => {
@@ -340,14 +392,62 @@ function RouteMap({ trips, stateMap }) {
       layer.addLayer(L.marker([a.coords.lat, a.coords.lng], { icon, interactive: false }));
     });
 
+    // Live aircraft markers — for each FA-reported airborne tail, drop a
+    // plane icon at its actual lat/lng, rotated to its heading. This is
+    // what makes the board feel "live" — the marker moves every 30s as
+    // FA reports updated positions.
+    //
+    // The SVG plane icon is hand-rolled (avoids dependency on an icon
+    // library) and rotated via CSS transform. Tail number floats above
+    // the plane so it's identifiable from across the room.
+    if (faPositions) {
+      Object.values(faPositions).forEach((p) => {
+        if (!p || !p.airborne) return;
+        const lat = p.latitude;
+        const lon = p.longitude;
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+        const heading = Number.isFinite(p.heading) ? p.heading : 0;
+        const altStr = Number.isFinite(p.altitude)
+          ? (p.altitude >= 18000 ? `FL${Math.round(p.altitude / 100)}` : `${Math.round(p.altitude)}ft`)
+          : '';
+        const spdStr = Number.isFinite(p.groundspeed) ? `${Math.round(p.groundspeed)}kt` : '';
+        const planeSvg = `
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" style="transform: rotate(${heading}deg); transform-origin: center; filter: drop-shadow(0 0 4px rgba(34,211,238,0.7));">
+            <path d="M12 2 L13.5 10 L22 12 L22 14 L13.5 14 L13 19 L15 21 L15 22 L12 21 L9 22 L9 21 L11 19 L10.5 14 L2 14 L2 12 L10.5 10 Z"
+                  fill="#22d3ee" stroke="#0e7490" stroke-width="0.5"/>
+          </svg>`;
+        const labelHtml = `
+          <div style="position: absolute; left: 32px; top: -4px; background: rgba(2,6,23,0.9); border: 1px solid #22d3ee; padding: 2px 5px; white-space: nowrap;">
+            <div style="color: #a5f3fc; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700; line-height: 1;">${p.ident}</div>
+            <div style="color: #67e8f9; font-family: 'JetBrains Mono', monospace; font-size: 9px; line-height: 1.4; margin-top: 1px;">${altStr} ${spdStr}</div>
+          </div>`;
+        const icon = L.divIcon({
+          html: planeSvg + labelHtml,
+          className: '',
+          iconSize: [28, 28],
+          iconAnchor: [14, 14],
+        });
+        layer.addLayer(L.marker([lat, lon], { icon, interactive: false, zIndexOffset: 1000 }));
+      });
+    }
+
     // Fit map to show all routes/airports with padding, unless there's
-    // no data yet (then leave the default continental US view).
+    // no data yet (then leave the default continental US view). Include
+    // live FA positions in bounds so airborne aircraft stay visible
+    // even if they're flying past their destination airport.
     if (airports.length > 0) {
-      const bounds = L.latLngBounds(airports.map((a) => [a.coords.lat, a.coords.lng]));
-      // Add ~12% padding so markers aren't right at the edges
+      const allPoints = airports.map((a) => [a.coords.lat, a.coords.lng]);
+      if (faPositions) {
+        Object.values(faPositions).forEach((p) => {
+          if (p && p.airborne && Number.isFinite(p.latitude) && Number.isFinite(p.longitude)) {
+            allPoints.push([p.latitude, p.longitude]);
+          }
+        });
+      }
+      const bounds = L.latLngBounds(allPoints);
       map.fitBounds(bounds, { padding: [40, 40], maxZoom: 7, animate: false });
     }
-  }, [ready, routes, airports]);
+  }, [ready, routes, airports, faPositions]);
 
   return (
     <div className="relative w-full h-full bg-slate-950">
@@ -401,6 +501,12 @@ function RouteMap({ trips, stateMap }) {
 function FlightBoard({ allTrips }) {
   const [stateMap, setStateMap] = useState(new Map());
   const [, setTick] = useState(0); // forces a tick every minute for time display
+  // FlightAware live data: keyed by tail. Each entry is the position
+  // object returned by /api/flightaware-positions:
+  //   { ident, airborne, latitude, longitude, heading, altitude,
+  //     groundspeed, estimatedOn, progressPercent, ... }
+  const [faPositions, setFaPositions] = useState({});
+  const [trackingEnabled, setTrackingEnabled] = useState(true); // default true; subscription will confirm
 
   useEffect(() => {
     let unsub = () => {};
@@ -409,6 +515,28 @@ function FlightBoard({ allTrips }) {
       unsub = m.subscribeAllTripStates((map) => {
         setStateMap(map);
       });
+    })();
+    return () => { try { unsub(); } catch (_) {} };
+  }, []);
+
+  // Subscribe to the FlightAware tracking-enabled toggle. The board
+  // respects the same kill switch the existing TRACKING screen uses,
+  // so admins can turn off FA queries (e.g. to control cost) and the
+  // board stops polling without needing a config change.
+  useEffect(() => {
+    let unsub = () => {};
+    (async () => {
+      try {
+        const { db } = await import('./firebase.js');
+        const { doc, onSnapshot } = await import('firebase/firestore');
+        unsub = onSnapshot(doc(db, 'flightaware', 'config'), (snap) => {
+          if (snap.exists()) {
+            setTrackingEnabled(snap.data().trackingEnabled !== false);
+          }
+        });
+      } catch (e) {
+        console.warn('[board] FA config subscribe failed:', e);
+      }
     })();
     return () => { try { unsub(); } catch (_) {} };
   }, []);
@@ -448,9 +576,11 @@ function FlightBoard({ allTrips }) {
       if (t.info && t.info.from && t.info.from === t.info.to && !t.info.pax) return false;
       const s = stateMap.get(t.uid);
       if (s?.completed || s?.archived) return false;
-      const startsToday = ts >= todayStart && ts < todayEnd;
-      const inProgress = ts < now && ts > now - (24 * 60 * 60 * 1000);
-      return startsToday || inProgress;
+      // STRICT TODAY ONLY. Previous "today + last 24h in-progress" caught
+      // phantom airborne trips from yesterday (where wheels_up was logged
+      // but landed never was). The phase staleness guard in tripPhase()
+      // handles those separately. Here we just want today's calendar.
+      return ts >= todayStart && ts < todayEnd;
     });
     candidate.sort((a, b) => {
       const ta = a.start instanceof Date ? a.start.getTime() : new Date(a.start).getTime();
@@ -460,17 +590,100 @@ function FlightBoard({ allTrips }) {
     return candidate;
   }, [allTrips, stateMap]);
 
-  // Summary stats for the header
+  // Distinct fleet tails appearing in today's flights — what we'll poll
+  // FA for. Memo'd separately so the polling effect doesn't re-run on
+  // every state change, only when the set of tails actually changes.
+  const fleetTails = useMemo(() => {
+    const set = new Set();
+    active.forEach((t) => {
+      const tail = (t.info?.tail || '').toUpperCase().trim();
+      if (tail) set.add(tail);
+    });
+    return Array.from(set).sort();
+  }, [active]);
+
+  // Poll FlightAware positions for the fleet tails every 30s while the
+  // board is open AND tracking is enabled. Same pattern as the existing
+  // TrackingScreen; cost-controlled by the trackingEnabled toggle.
+  // First call fires immediately, then interval-based.
+  useEffect(() => {
+    if (!trackingEnabled) {
+      setFaPositions({});
+      return;
+    }
+    if (fleetTails.length === 0) {
+      setFaPositions({});
+      return;
+    }
+    let cancelled = false;
+    let timer = null;
+    async function poll() {
+      try {
+        const { auth } = await import('./firebase.js');
+        const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : null;
+        if (!idToken) return;
+        const r = await fetch('/api/flightaware-positions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ idToken, idents: fleetTails }),
+        });
+        if (!r.ok) {
+          console.warn('[board] FA positions returned', r.status);
+          return;
+        }
+        const data = await r.json();
+        const positions = Array.isArray(data?.positions) ? data.positions : [];
+        if (cancelled) return;
+        const map = {};
+        for (const p of positions) {
+          if (p && p.ident) map[String(p.ident).toUpperCase()] = p;
+        }
+        setFaPositions(map);
+      } catch (e) {
+        if (!cancelled) console.warn('[board] FA poll failed:', e?.message);
+      }
+    }
+    poll();
+    timer = setInterval(poll, 30_000);
+    return () => {
+      cancelled = true;
+      if (timer) clearInterval(timer);
+    };
+  }, [trackingEnabled, fleetTails.join(',')]);
+
+  // Compute the effective phase for a trip using BOTH Firestore status
+  // steps AND FlightAware live data. FA is ground truth for "is the
+  // plane actually flying right now?" — if FA says airborne=true,
+  // override our status-step-derived phase. If FA says airborne=false
+  // AND wheels_up was logged, treat as landed (the flight terminated
+  // even if nobody tapped LANDED). For tails we have no FA data on,
+  // fall back to status-steps-only via tripPhase().
+  const effectivePhase = (trip, state) => {
+    const tail = (trip.info?.tail || '').toUpperCase();
+    const fa = faPositions[tail];
+    const stepPhase = tripPhase(trip, state);
+    if (!fa) return stepPhase;
+    if (fa.airborne === true) return 'airborne';
+    // FA says not airborne. If our steps say airborne, we've been wrong —
+    // the flight landed.
+    if (stepPhase === 'airborne') return 'landed';
+    return stepPhase;
+  };
+
+  // Summary stats for the header. Uses effectivePhase so FA contradictions
+  // count: a tail FA reports as airborne shows in the AIRBORNE counter
+  // even if status steps haven't caught up; a stale "airborne" tail FA
+  // reports as not-flying gets demoted out of the counter.
   const stats = useMemo(() => {
     let airborne = 0, preflight = 0, pending = 0;
     active.forEach((t) => {
-      const phase = tripPhase(t, stateMap.get(t.uid));
+      const phase = effectivePhase(t, stateMap.get(t.uid));
       if (phase === 'airborne') airborne++;
       else if (phase === 'preflight') preflight++;
       else if (phase === 'pending') pending++;
     });
     return { airborne, preflight, pending, total: active.length };
-  }, [active, stateMap]);
+  }, [active, stateMap, faPositions]);
 
   // Current time for the header
   let nowStr = '';
@@ -541,14 +754,25 @@ function FlightBoard({ allTrips }) {
             </div>
           ) : (
             active.map((t) => (
-              <FlightRow key={t.uid} trip={t} state={stateMap.get(t.uid)} />
+              <FlightRow
+                key={t.uid}
+                trip={t}
+                state={stateMap.get(t.uid)}
+                faPosition={faPositions[(t.info?.tail || '').toUpperCase()]}
+                phase={effectivePhase(t, stateMap.get(t.uid))}
+              />
             ))
           )}
         </div>
 
         {/* Map */}
         <div className="bg-slate-950">
-          <RouteMap trips={active} stateMap={stateMap} />
+          <RouteMap
+            trips={active}
+            stateMap={stateMap}
+            faPositions={faPositions}
+            effectivePhase={effectivePhase}
+          />
         </div>
       </div>
     </div>
