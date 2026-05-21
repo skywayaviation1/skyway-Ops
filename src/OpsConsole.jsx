@@ -156,19 +156,39 @@ function StatusStrip({ trip, statuses }) {
     return { ...step, done, tip };
   });
 
-  // Completed count = actual number of done steps in the visible set. This
-  // is honest if crews skip a step (the bar shows what's actually done,
-  // not "highest contiguous completed step" which would lie about gaps).
-  const doneCount = enriched.filter((s) => s.done).length;
-  const pct = total > 0 ? (doneCount / total) * 100 : 0;
+  // ------------- POSITIONING MATH (read carefully — it has to be coherent)
+  //
+  // The bar is divided into `total` equal segments, each segment width
+  // is (100/total)%. A "done" segment is one where step.done is true.
+  //
+  // The progress FILL extends from 0% to the right edge of the rightmost
+  // done segment. Importantly: this rewards completed work even if a
+  // crew marks a later step before an earlier one (e.g. PAX BOARDED
+  // before PAX ARRIVED) — the fill goes to the end of PAX BOARDED's
+  // segment, not the end of PAX ARRIVED's.
+  //
+  // The DOT sits ON the right edge of the rightmost done segment, which
+  // is the same point where the fill ends. When nothing's done, dot is
+  // at 0%. When everything's done, dot is hidden and we just show the
+  // solid emerald bar (no dot needed).
+  //
+  // Both fill width and dot position derive from the SAME computation
+  // (lastDoneIdx) so they can never disagree.
 
-  // "Current" step = first non-done step. Used to position the pulsing
-  // indicator dot. If all steps are done, the dot sits at 100%.
+  // Find the index of the rightmost done step. -1 = nothing done.
+  let lastDoneIdx = -1;
+  for (let i = 0; i < enriched.length; i++) {
+    if (enriched[i].done) lastDoneIdx = i;
+  }
+  // Right edge of segment N (0-indexed) is at ((N + 1) / total) * 100 %
+  const fillPct = lastDoneIdx === -1 ? 0 : ((lastDoneIdx + 1) / total) * 100;
+  const doneCount = enriched.filter((s) => s.done).length;
+  const allDone = doneCount === total && total > 0;
+
+  // "Current" step for label coloring = first non-done step (the one
+  // that should be done next). This is independent from the dot/fill
+  // position — it just colors the appropriate label cyan.
   const currentIdx = enriched.findIndex((s) => !s.done);
-  const currentPct = currentIdx === -1
-    ? 100
-    : (currentIdx / total) * 100 + (50 / total);  // center within its segment
-  const allDone = currentIdx === -1;
 
   return (
     <div className="mt-3">
@@ -181,31 +201,31 @@ function StatusStrip({ trip, statuses }) {
                 ? 'bg-gradient-to-r from-emerald-400 to-emerald-300'
                 : 'bg-gradient-to-r from-cyan-500 to-emerald-400'
             }`}
-            style={{ width: `${pct}%` }}
+            style={{ width: `${fillPct}%` }}
           />
         </div>
         {/* Tick marks between segments. n-1 ticks for n segments. */}
-        <div className="absolute top-0 left-0 w-full h-2 flex pointer-events-none">
-          {enriched.map((_, i) => (
-            i === 0 ? null : (
-              <div
-                key={i}
-                className="w-px bg-slate-950/70"
-                style={{ position: 'absolute', left: `${(i / total) * 100}%`, height: '100%' }}
-              />
-            )
-          ))}
-        </div>
-        {/* Pulsing current-step dot (only when there's a non-done step left). */}
+        {enriched.map((_, i) => (
+          i === 0 ? null : (
+            <div
+              key={i}
+              className="absolute top-0 w-px bg-slate-950/70 pointer-events-none"
+              style={{ left: `${(i / total) * 100}%`, height: '8px' }}
+            />
+          )
+        ))}
+        {/* Pulsing current-step dot — sits AT the edge where the fill
+            ends. Same position as fillPct so they always agree. Only
+            rendered when not all done (no need for the dot if complete). */}
         {!allDone && (
           <div
             className="absolute -top-1 w-3 h-3 rounded-full bg-cyan-400"
             style={{
-              left: `calc(${currentPct}% - 6px)`,
+              left: `calc(${fillPct}% - 6px)`,
               boxShadow: '0 0 8px rgba(34,211,238,0.85), 0 0 14px rgba(34,211,238,0.4)',
               animation: 'opsPulse 2s ease-in-out infinite',
             }}
-            title={enriched[currentIdx]?.tip}
+            title={currentIdx >= 0 ? enriched[currentIdx].tip : 'In progress'}
           />
         )}
       </div>
