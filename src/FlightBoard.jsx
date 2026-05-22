@@ -311,8 +311,10 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
   const [ready, setReady] = useState(false);
   const [err, setErr] = useState(null);
   // Bumped when async airport-code lookups resolve, so routes that
-  // were waiting on coords can be re-rendered.
-  const [, setCoordsTick] = useState(0);
+  // were waiting on coords can be re-rendered. Also used as a memo
+  // dependency below so the missing-codes recompute when new dynamic
+  // coords arrive.
+  const [coordsTick, setCoordsTick] = useState(0);
   // Weather radar overlay state — defaults OFF so the satellite map is
   // uncluttered on clear days. Toggle via the WX button in the top
   // right corner of the map. RainViewer is the data source (free,
@@ -357,7 +359,7 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
       missing: codes.length,
       missingCodes: codes,
     };
-  }, [trips, stateMap, effectivePhase]);
+  }, [trips, stateMap, effectivePhase, coordsTick]);
 
   // Resolve missing airport codes via the server endpoint (OurAirports
   // comprehensive database). When the bundled DB and FA cache both miss,
