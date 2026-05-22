@@ -231,18 +231,32 @@ async function ensureCache() {
 
 /**
  * Look up coords for a code, with K-prefix tolerance.
+ *
+ * IMPORTANT priority: for 3-letter codes, the US ICAO form (K + code)
+ * takes precedence over a bare-code match. This is because OurAirports
+ * has some non-US airports whose 4-letter ICAO is a 3-letter code like
+ * "AGS" (rare but real). When a US operator types "AGS" they mean
+ * Augusta Regional (KAGS), not whatever foreign airport happens to use
+ * AGS as its ident. Without this priority, the IATA-as-key fallback
+ * in the cache build can land us on the wrong airport.
  */
 function lookupInCache(cache, rawCode) {
   if (!rawCode) return null;
   const code = String(rawCode).toUpperCase().trim();
-  if (cache.has(code)) return cache.get(code);
-  // US FAA codes are 3 letters; OurAirports keys them as 4-letter ICAO
-  // with K prefix (e.g. FAA "GSO" → ICAO "KGSO"). Try both ways.
-  if (code.length === 3 && cache.has('K' + code)) return cache.get('K' + code);
-  if (code.length === 4 && code.startsWith('K') && cache.has(code.slice(1))) {
-    return cache.get(code.slice(1));
+  // 3-letter: try K-prefix first (US FAA semantics), then bare
+  if (code.length === 3) {
+    if (cache.has('K' + code)) return cache.get('K' + code);
+    if (cache.has(code)) return cache.get(code);
+    return null;
   }
-  return null;
+  // 4-letter K-prefix: try as-is, then strip K
+  if (code.length === 4 && code.startsWith('K')) {
+    if (cache.has(code)) return cache.get(code);
+    if (cache.has(code.slice(1))) return cache.get(code.slice(1));
+    return null;
+  }
+  // Other lengths/forms: just exact match
+  return cache.has(code) ? cache.get(code) : null;
 }
 
 // ============================================================
