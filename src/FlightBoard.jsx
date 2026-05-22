@@ -387,10 +387,23 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
         });
         if (!r.ok) {
           console.warn('[board] airport-coords-lookup returned', r.status);
+          // Un-mark so a future render can retry (network blip, 500, etc).
+          for (const c of newCodes) askedRef.current.delete(c);
           return;
         }
         const data = await r.json();
         if (cancelled) return;
+        // If cache isn't populated yet, un-mark the codes so a later
+        // render (after the refresh cron runs) will try again. Don't
+        // hammer though — wait a moment first.
+        if (data.cacheReady === false) {
+          console.warn('[board] OurAirports cache not yet populated:', data.note);
+          setTimeout(() => {
+            for (const c of newCodes) askedRef.current.delete(c);
+            setCoordsTick((t) => t + 1);
+          }, 60_000); // re-try in a minute
+          return;
+        }
         const { addDynamicCoords } = await import('./airport-coords.js');
         let added = 0;
         for (const [code, entry] of Object.entries(data.coords || {})) {
@@ -406,6 +419,8 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
         }
       } catch (e) {
         console.warn('[board] airport-coords-lookup failed:', e?.message);
+        // Un-mark so we can retry on a future render
+        for (const c of newCodes) askedRef.current.delete(c);
       }
     })();
     return () => { cancelled = true; };
