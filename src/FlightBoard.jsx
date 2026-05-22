@@ -154,16 +154,21 @@ function FlightRow({ trip, state, faPosition, phase }) {
     }).replace(' ', '');
   } catch (_) {}
 
-  // For airborne flights, replace the TYPE column with live ETA + time
-  // remaining. Pulled from FlightAware's estimatedOn field.
+  // For airborne flights, replace the TYPE column with live timing
+  // info from FlightAware: actual wheels-up time, projected landing,
+  // and time remaining. All three matter operationally — dispatch
+  // needs UP for duty-time math, ETA for handler/customer comms, and
+  // remaining for quick "when can I call them" glances.
   let etaCellContent = null;
   if (phase === 'airborne' && faPosition?.estimatedOn) {
     try {
-      const etaDate = new Date(faPosition.estimatedOn);
-      const remainMs = etaDate.getTime() - Date.now();
-      const etaStr = etaDate.toLocaleString('en-US', {
+      const fmt = (iso) => new Date(iso).toLocaleString('en-US', {
         hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/New_York',
       }).replace(' ', '');
+      const etaDate = new Date(faPosition.estimatedOn);
+      const remainMs = etaDate.getTime() - Date.now();
+      const etaStr = fmt(faPosition.estimatedOn);
+      const upStr = faPosition.actualOff ? fmt(faPosition.actualOff) : null;
       let remainStr = '';
       if (remainMs > 0) {
         const h = Math.floor(remainMs / 3600_000);
@@ -173,7 +178,12 @@ function FlightRow({ trip, state, faPosition, phase }) {
         remainStr = 'landing';
       }
       etaCellContent = (
-        <div>
+        <div className="leading-tight">
+          {upStr && (
+            <div className="text-[11px] text-emerald-300 tabular-nums" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              UP {upStr}
+            </div>
+          )}
           <div className="text-sm text-cyan-200 tabular-nums" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
             ETA {etaStr}
           </div>
@@ -297,21 +307,31 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
   const layerRef = useRef(null);
+  const weatherLayerRef = useRef(null);   // holds the current RainViewer tile layer when on
   const [ready, setReady] = useState(false);
   const [err, setErr] = useState(null);
+  // Weather radar overlay state — defaults OFF so the satellite map is
+  // uncluttered on clear days. Toggle via the WX button in the top
+  // right corner of the map. RainViewer is the data source (free,
+  // worldwide, no API key; commercial-use license caveat noted).
+  const [weatherOn, setWeatherOn] = useState(false);
 
   // Build the routes + airport set in a memo so we don't redo it on
   // every render — only when trips or status change.
-  const { routes, airports, missing } = useMemo(() => {
+  const { routes, airports, missing, missingCodes } = useMemo(() => {
     const r = [];
     const apts = new Map();
-    let miss = 0;
+    const missingSet = new Set();  // collect specific codes, dedup
     trips.forEach((t) => {
       const fromCode = t.info?.from;
       const toCode = t.info?.to;
       const f = lookupCoords(fromCode);
       const o = lookupCoords(toCode);
-      if (!f || !o) { miss++; return; }
+      // Record specifically WHICH codes failed so we can surface them.
+      // A trip may have both ends unknown; we count each missing end.
+      if (!f && fromCode) missingSet.add(String(fromCode).toUpperCase());
+      if (!o && toCode) missingSet.add(String(toCode).toUpperCase());
+      if (!f || !o) return; // skip this trip — can't draw without both ends
       const phase = effectivePhase
         ? effectivePhase(t, stateMap.get(t.uid))
         : tripPhase(t, stateMap.get(t.uid));
@@ -324,7 +344,16 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
       apts.set(fromCode, { coords: f, code: fromCode });
       apts.set(toCode, { coords: o, code: toCode });
     });
-    return { routes: r, airports: Array.from(apts.values()), missing: miss };
+    const codes = Array.from(missingSet).sort();
+    if (codes.length > 0) {
+      console.log('[board] Missing airport coords:', codes.join(', '));
+    }
+    return {
+      routes: r,
+      airports: Array.from(apts.values()),
+      missing: codes.length,
+      missingCodes: codes,
+    };
   }, [trips, stateMap, effectivePhase]);
 
   // Initialize the Leaflet map once.
@@ -385,6 +414,73 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
       }
     };
   }, []);
+
+  // Weather radar overlay. RainViewer publishes a list of available
+  // radar timestamps via their free API; we fetch the latest one and
+  // add it as a Leaflet tile layer over the satellite base. Refreshes
+  // every 5 min while enabled. Removed cleanly when toggled off.
+  //
+  // Coverage: worldwide, varying resolution. North America has the
+  // best detail (composite NEXRAD-derived). Free for non-commercial
+  // use — commercial license would require RainViewer's paid plan
+  // or switching to OpenWeatherMap / AerisWeather.
+  useEffect(() => {
+    if (!ready || !mapRef.current) return;
+    if (!weatherOn) {
+      // Toggled off — remove existing layer
+      if (weatherLayerRef.current) {
+        try { mapRef.current.removeLayer(weatherLayerRef.current); } catch (_) {}
+        weatherLayerRef.current = null;
+      }
+      return;
+    }
+    let cancelled = false;
+    let refreshTimer = null;
+    async function loadRadar() {
+      try {
+        const r = await fetch('https://api.rainviewer.com/public/weather-maps.json');
+        if (!r.ok) {
+          console.warn('[wx] RainViewer index returned', r.status);
+          return;
+        }
+        const idx = await r.json();
+        // Use the most recent observed radar frame (not nowcast/forecast)
+        const past = Array.isArray(idx?.radar?.past) ? idx.radar.past : [];
+        const latest = past[past.length - 1];
+        if (!latest) {
+          console.warn('[wx] No radar frames available from RainViewer');
+          return;
+        }
+        if (cancelled || !mapRef.current) return;
+        const L = window.L;
+        // Remove old layer if we had one (refresh case)
+        if (weatherLayerRef.current) {
+          try { mapRef.current.removeLayer(weatherLayerRef.current); } catch (_) {}
+        }
+        // Add the new one. The path format is:
+        // /v2/radar/{timestamp}/{size}/{z}/{x}/{y}/{color}/{options}.png
+        // size=512 = high-res, color=2 = NWS palette (yellow-orange-red),
+        // options=1_1 = smooth + show snow.
+        const tileUrl = `${idx.host}${latest.path}/512/{z}/{x}/{y}/2/1_1.png`;
+        const wx = L.tileLayer(tileUrl, {
+          tileSize: 512,
+          zoomOffset: -1,
+          opacity: 0.55,
+          attribution: '<a href="https://www.rainviewer.com">RainViewer</a>',
+        });
+        wx.addTo(mapRef.current);
+        weatherLayerRef.current = wx;
+      } catch (e) {
+        console.warn('[wx] radar fetch failed:', e?.message);
+      }
+    }
+    loadRadar();
+    refreshTimer = setInterval(loadRadar, 5 * 60_000); // refresh every 5 minutes
+    return () => {
+      cancelled = true;
+      if (refreshTimer) clearInterval(refreshTimer);
+    };
+  }, [ready, weatherOn]);
 
   // ResizeObserver: when the container changes size (TV orientation,
   // window resize), invalidate Leaflet's internal size cache so the
@@ -581,6 +677,23 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
         </div>
       )}
 
+      {/* Weather radar toggle — top right. Active state shows a cyan
+          glow so it's visible from across the room which mode you're
+          in. Click toggles between off (clean satellite view) and on
+          (radar overlay at 55% opacity over the satellite). */}
+      <button
+        onClick={() => setWeatherOn((v) => !v)}
+        className={`absolute top-3 right-3 px-3 py-2 border text-[11px] tracking-widest z-[1000] ${
+          weatherOn
+            ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200'
+            : 'bg-slate-900/90 border-slate-700 text-slate-400 hover:text-slate-200 hover:border-slate-500'
+        }`}
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        title="Toggle weather radar overlay (RainViewer)"
+      >
+        WX RADAR · {weatherOn ? 'ON' : 'OFF'}
+      </button>
+
       {/* Legend — matches the actual line styles used on the map. */}
       <div className="absolute bottom-3 left-3 bg-slate-900/90 border border-slate-800 px-3 py-2 text-[11px] tracking-widest z-[1000]" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
         <div className="flex items-center gap-2 mb-1">
@@ -605,8 +718,9 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
       </div>
 
       {missing > 0 && (
-        <div className="absolute bottom-3 right-3 bg-amber-500/20 border border-amber-500/40 text-amber-300 px-2 py-1 text-[10px] z-[1000]" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-          {missing} route{missing === 1 ? '' : 's'} not mapped — airport coords missing
+        <div className="absolute bottom-3 right-3 max-w-md bg-amber-500/20 border border-amber-500/40 text-amber-300 px-2 py-1.5 text-[10px] z-[1000]" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          <div className="font-semibold">{missing} airport{missing === 1 ? '' : 's'} not in coords DB:</div>
+          <div className="text-amber-200 mt-0.5 break-all">{missingCodes.join(', ')}</div>
         </div>
       )}
     </div>
