@@ -419,6 +419,52 @@ export default async function handler(req, res) {
           polledAt: Date.now(),
         });
 
+        // OPPORTUNISTIC AIRPORT CACHE
+        //
+        // FA returns lat/lng for every origin/destination in its response.
+        // We dump those into `flightaware-airports/{code}` so the FlightBoard
+        // has accurate coords for any airport the fleet has ever flown to —
+        // no manual bundling of static airport databases needed. Cache fills
+        // naturally as the cron runs.
+        //
+        // We only write if (a) we have a code, (b) we have valid coords,
+        // and (c) the doc doesn't already exist OR coords have changed
+        // (rare; airports don't move, but FA can correct earlier wrong
+        // data). The exists check costs one read per cron tick per airport
+        // — cheap vs. constantly overwriting.
+        const airportWrites = [];
+        const seen = [
+          { code: current.origin, lat: current.originLat, lon: current.originLon, city: null },
+          { code: current.destination, lat: current.destinationLat, lon: current.destinationLon, city: current.destinationCity },
+          { code: current.groundedAt, lat: current.groundedLat, lon: current.groundedLon, city: null },
+        ];
+        for (const { code, lat, lon, city } of seen) {
+          if (!code) continue;
+          if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+          // Normalize code so cache key is consistent (some FA fields have
+          // ICAO prefix, others don't — we keep what FA gave us).
+          const key = String(code).toUpperCase().trim();
+          if (!key) continue;
+          airportWrites.push(
+            db.collection('flightaware-airports').doc(key).set(
+              {
+                code: key,
+                lat,
+                lon,
+                city: city || null,
+                source: 'flightaware-cron',
+                updatedAt: Date.now(),
+              },
+              { merge: true } // never wipe city if a previous write had it
+            )
+          );
+        }
+        // Best-effort writes; if any fail, log and move on. We don't want
+        // a Firestore hiccup to block the actual cron work.
+        if (airportWrites.length > 0) {
+          await Promise.allSettled(airportWrites);
+        }
+
         // Detect transitions
         if (previous) {
           // Transition 1: grounded → airborne (wheels up)
