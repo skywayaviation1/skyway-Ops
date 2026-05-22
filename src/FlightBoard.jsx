@@ -310,6 +310,9 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
   const weatherLayerRef = useRef(null);   // holds the current RainViewer tile layer when on
   const [ready, setReady] = useState(false);
   const [err, setErr] = useState(null);
+  // Bumped when async airport-code lookups resolve, so routes that
+  // were waiting on coords can be re-rendered.
+  const [, setCoordsTick] = useState(0);
   // Weather radar overlay state — defaults OFF so the satellite map is
   // uncluttered on clear days. Toggle via the WX button in the top
   // right corner of the map. RainViewer is the data source (free,
@@ -355,6 +358,58 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
       missingCodes: codes,
     };
   }, [trips, stateMap, effectivePhase]);
+
+  // Resolve missing airport codes via the server endpoint (OurAirports
+  // comprehensive database). When the bundled DB and FA cache both miss,
+  // this is the fallback that ensures the board has coords for every
+  // operational airport worldwide.
+  //
+  // We track which codes have already been asked about in a ref — both
+  // hits (now in the dynamic cache) and misses (truly unknown to
+  // OurAirports). This prevents re-asking the API for the same codes
+  // every time the trips list updates.
+  const askedRef = useRef(new Set());
+  useEffect(() => {
+    if (!missingCodes || missingCodes.length === 0) return;
+    // Filter to codes we haven't asked about yet
+    const newCodes = missingCodes.filter((c) => !askedRef.current.has(c));
+    if (newCodes.length === 0) return;
+    // Mark as asked BEFORE the fetch so concurrent re-renders don't queue
+    // duplicates while this fetch is in flight.
+    for (const c of newCodes) askedRef.current.add(c);
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch('/api/airport-coords-lookup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ codes: newCodes }),
+        });
+        if (!r.ok) {
+          console.warn('[board] airport-coords-lookup returned', r.status);
+          return;
+        }
+        const data = await r.json();
+        if (cancelled) return;
+        const { addDynamicCoords } = await import('./airport-coords.js');
+        let added = 0;
+        for (const [code, entry] of Object.entries(data.coords || {})) {
+          if (entry && Number.isFinite(entry.lat) && Number.isFinite(entry.lng)) {
+            addDynamicCoords(code, entry.lat, entry.lng);
+            added++;
+          }
+        }
+        if (added > 0) {
+          // Force re-render so routes that were waiting now draw
+          setCoordsTick((t) => t + 1);
+          console.log(`[board] Resolved ${added}/${newCodes.length} airports via OurAirports`);
+        }
+      } catch (e) {
+        console.warn('[board] airport-coords-lookup failed:', e?.message);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [missingCodes.join(',')]);
 
   // Initialize the Leaflet map once.
   useEffect(() => {
