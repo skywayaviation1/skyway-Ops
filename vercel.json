@@ -11,12 +11,19 @@
     {
       "path": "/api/aog-chat-nudge",
       "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/airport-coords-refresh",
+      "schedule": "0 6 * * 0"
     }
   ],
   "functions": {
     "api/mel-ingest.js": {
       "maxDuration": 300,
       "includeFiles": "node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs"
+    },
+    "api/airport-coords-refresh.js": {
+      "maxDuration": 60
     }
   },
   "rewrites": [
