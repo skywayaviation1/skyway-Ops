@@ -258,6 +258,40 @@ export function subscribeFleetPositions(onUpdate) {
 }
 
 /**
+ * Subscribe to the FlightAware-populated airport cache at
+ * `flightaware-airports/{code}`. Each doc is `{ code, lat, lon, city }`.
+ * Used by the FlightBoard to fill in coords for airports not in the
+ * bundled static database — the cache grows organically as the cron
+ * sees new airports.
+ *
+ * onUpdate(airportMap)  — { [code]: { lat, lng, city } }
+ *   (note: 'lng' for the consumer side; FA stores 'lon')
+ */
+export function subscribeAirportCache(onUpdate) {
+  return onSnapshot(
+    collection(db, 'flightaware-airports'),
+    (snap) => {
+      const map = {};
+      snap.forEach((d) => {
+        const data = d.data() || {};
+        if (Number.isFinite(data.lat) && Number.isFinite(data.lon)) {
+          map[d.id.toUpperCase()] = {
+            lat: data.lat,
+            lng: data.lon,
+            city: data.city || null,
+          };
+        }
+      });
+      onUpdate(map);
+    },
+    (err) => {
+      console.error('[airport-cache] subscribe error:', err);
+      onUpdate({});
+    },
+  );
+}
+
+/**
  * Subscribe to ALL trip-state docs in one listener. Returns a Map keyed
  * by tripId so callers can do O(1) lookups while iterating their own
  * trips list. Used by the Ops Console which renders many trips at once;

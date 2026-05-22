@@ -169,9 +169,32 @@ const COORDS = {
   TNCM: { lat: 18.0410, lng: -63.1089 },
 };
 
+// Dynamic supplement to the bundled coord database. Populated at
+// runtime from `flightaware-airports/*` (written by the FA cron whenever
+// it sees a new airport). This is how the board self-heals when our
+// bundled DB doesn't have an airport — instead of needing a code change,
+// the next time the cron flies a trip involving that airport, its
+// coords land here.
+//
+// Keys are uppercase airport codes (typically 4-letter ICAO from FA).
+// We don't gate on the airport actually being in our routes — every
+// airport FA has ever told us about ends up here.
+const DYNAMIC_COORDS = new Map();
+
+/**
+ * Add (or update) a coords entry from a dynamic source (typically the
+ * FA cron's cache). Called by the FlightBoard's subscription effect
+ * once the Firestore listener fires.
+ */
+export function addDynamicCoords(code, lat, lng) {
+  if (!code || !Number.isFinite(lat) || !Number.isFinite(lng)) return;
+  DYNAMIC_COORDS.set(String(code).toUpperCase().trim(), { lat, lng });
+}
+
 /**
  * Look up airport coordinates. Tries the code as given, then with
  * K-prefix removed (US ICAO → FAA), then with K-prefix added.
+ * Falls back to the dynamic cache populated from FlightAware.
  * Returns { lat, lng } or null if unknown.
  */
 export function lookupCoords(code) {
@@ -180,6 +203,10 @@ export function lookupCoords(code) {
   if (COORDS[c]) return COORDS[c];
   if (c.length === 4 && c.startsWith('K') && COORDS[c.slice(1)]) return COORDS[c.slice(1)];
   if (c.length === 3 && COORDS['K' + c]) return COORDS['K' + c];
+  // Dynamic fallback — same prefix tolerance.
+  if (DYNAMIC_COORDS.has(c)) return DYNAMIC_COORDS.get(c);
+  if (c.length === 4 && c.startsWith('K') && DYNAMIC_COORDS.has(c.slice(1))) return DYNAMIC_COORDS.get(c.slice(1));
+  if (c.length === 3 && DYNAMIC_COORDS.has('K' + c)) return DYNAMIC_COORDS.get('K' + c);
   return null;
 }
 

@@ -760,6 +760,33 @@ function FlightBoard({ allTrips }) {
     return () => { try { unsub(); } catch (_) {} };
   }, []);
 
+  // Subscribe to the FA-populated airport cache. As the cron sees new
+  // airports it writes coords to `flightaware-airports`. We feed each
+  // entry into the dynamic supplement table inside airport-coords.js,
+  // so lookupCoords() picks them up transparently. Force a re-tick on
+  // each update so the map redraws with newly-known airports.
+  useEffect(() => {
+    let unsub = () => {};
+    (async () => {
+      const fd = await import('./firebase-data.js');
+      const { addDynamicCoords } = await import('./airport-coords.js');
+      unsub = fd.subscribeAirportCache((map) => {
+        let added = 0;
+        for (const [code, { lat, lng }] of Object.entries(map)) {
+          addDynamicCoords(code, lat, lng);
+          added++;
+        }
+        if (added > 0) {
+          // Force a re-render so routes that were waiting on these coords
+          // can now draw. Without this, the lookup table updates but the
+          // map components don't know to redraw.
+          setTick((t) => t + 1);
+        }
+      });
+    })();
+    return () => { try { unsub(); } catch (_) {} };
+  }, []);
+
   // Re-tick once a minute so the "now" time in the header updates and
   // the active filter rolls over correctly past midnight.
   useEffect(() => {
