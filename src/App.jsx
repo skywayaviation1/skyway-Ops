@@ -14,6 +14,11 @@ const MuteToggleLazy = lazy(() => import('./MuteToggle.jsx'));
 
 // Code-split: FlightBoard loads only when ?board=1 URL is hit.
 const FlightBoardLazy = lazy(() => import('./FlightBoard.jsx'));
+
+// Code-split: Lodging tab loads only when a user opens it on a trip.
+// Trip detail is the most-touched screen — keeping this lazy means the
+// Lodging code doesn't bloat the initial bundle.
+const LodgingLazy = lazy(() => import('./Lodging.jsx'));
 import { createPortal } from 'react-dom';
 import {
   Plane, Calendar, MessageSquare, Users, Bell, MapPin,
@@ -21,7 +26,7 @@ import {
   Coffee, ArrowRight, Clock, Shield, X, ScanLine, ChevronLeft,
   Mail, Navigation, Loader2, Wifi, WifiOff, Settings as SettingsIcon,
   Download, Trash2, Plus, FileText, Zap, Radio, AlertCircle, Upload,
-  CheckCheck, UserCheck, Sparkles, Hash, Cloud, Wrench
+  CheckCheck, UserCheck, Sparkles, Hash, Cloud, Wrench, Hotel
 } from 'lucide-react';
 import { formatLocalTime, formatLocalDate } from './airports.js';
 import {
@@ -6343,6 +6348,11 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
             { id: 'notes', label: 'NOTES', icon: AlertCircle, hidden: !hasNotes },
             { id: 'weather', label: 'WEATHER', icon: Cloud, hidden: !['admin', 'ops', 'crew'].includes(currentUser?.role) },
             { id: 'plan', label: 'PLAN', icon: Navigation, hidden: !['admin', 'ops', 'crew'].includes(currentUser?.role) },
+            // LODGING: crew hotels for this trip. Visible to ops/admin
+            // always; visible to crew because crew want to see their own
+            // hotel info for the trip. Hidden on non-ops (HOLD/MX/etc)
+            // since they don't have crew lodging in the operational sense.
+            { id: 'lodging', label: 'LODGING', icon: Hotel, hidden: !trip.info.isOps },
             { id: 'chat', label: 'COMMS', icon: MessageSquare },
             { id: 'notify', label: 'NOTIFY', icon: Bell, hidden: !trip.info.isOps },
             { id: 'delay', label: 'DELAY', icon: AlertCircle, hidden: !trip.info.isOps },
@@ -6527,6 +6537,10 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
           <TripWeatherSection trip={trip} />
         ) : tab === 'plan' ? (
           <ForeFlightHandoff trip={trip} currentUser={currentUser} />
+        ) : tab === 'lodging' ? (
+          <Suspense fallback={<div className="p-8 text-center text-slate-500"><Loader2 className="w-5 h-5 animate-spin inline-block mr-2" />Loading lodging...</div>}>
+            <LodgingLazy trip={trip} currentUser={currentUser} users={users} />
+          </Suspense>
         ) : tab === 'chat' ? (
           <ChatPanel tripId={trip.uid} trip={trip} currentUser={currentUser} />
         ) : tab === 'notify' ? (
@@ -10968,6 +10982,10 @@ function FlightAwarePanel({ currentUser, allTrips }) {
   // Backfill state — tripMeta migration for existing trip-state docs
   const [backfillBusy, setBackfillBusy] = useState(false);
   const [backfillResult, setBackfillResult] = useState(null);
+  // Airport coords refresh — manually populates the OurAirports cache.
+  // Normally runs weekly via cron, but admin can trigger on demand.
+  const [airportRefreshBusy, setAirportRefreshBusy] = useState(false);
+  const [airportRefreshResult, setAirportRefreshResult] = useState(null);
 
   // Load existing alerts when panel mounts
   const loadAlerts = useCallback(async () => {
@@ -11047,6 +11065,38 @@ function FlightAwarePanel({ currentUser, allTrips }) {
       setBackfillBusy(false);
     }
   }, [allTrips, backfillBusy]);
+
+  // Manually trigger the OurAirports cache refresh. Normally runs
+  // weekly via Vercel cron; this is the ops/admin-only way to kick
+  // it off on demand. Takes 15-30 seconds while it fetches the CSV,
+  // parses 80K rows, and writes chunked docs to Firestore.
+  const handleAirportRefresh = useCallback(async () => {
+    if (airportRefreshBusy) return;
+    setAirportRefreshBusy(true);
+    setAirportRefreshResult(null);
+    try {
+      const { auth } = await import('./firebase.js');
+      const idToken = await auth.currentUser.getIdToken();
+      const r = await fetch('/api/airport-coords-refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok || data.ok === false) {
+        throw new Error(data.error || `HTTP ${r.status}`);
+      }
+      const secs = Math.round((data.elapsedMs || 0) / 1000);
+      setAirportRefreshResult({
+        ok: true,
+        msg: `Cached ${data.airports?.toLocaleString() || '?'} airports in ${secs}s. FlightBoard will pick up new coords within ~1 minute.`,
+      });
+    } catch (err) {
+      setAirportRefreshResult({ ok: false, msg: err.message || 'Refresh failed.' });
+    } finally {
+      setAirportRefreshBusy(false);
+    }
+  }, [airportRefreshBusy]);
 
 
   // Check endpoint registration status
@@ -11239,6 +11289,35 @@ function FlightAwarePanel({ currentUser, allTrips }) {
                 style={{ fontFamily: 'JetBrains Mono, monospace' }}
               >
                 {backfillResult.msg}
+              </div>
+            )}
+          </div>
+
+          {/* Airport coords refresh — populates the FlightBoard's
+              comprehensive airport database from OurAirports. */}
+          <div className="mb-4 border border-slate-800 bg-slate-900/30 p-3">
+            <div className="mb-2">
+              <div className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                AIRPORT COORDS CACHE
+              </div>
+            </div>
+            <button
+              onClick={handleAirportRefresh}
+              disabled={airportRefreshBusy}
+              className="w-full py-2 border border-amber-500/40 text-amber-300 hover:bg-amber-500/10 text-xs tracking-widest disabled:opacity-50"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              {airportRefreshBusy ? 'REFRESHING (15-30s)...' : 'REFRESH AIRPORT COORDS'}
+            </button>
+            <p className="text-[10px] text-slate-500 mt-2" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+              Downloads ~50,000 airports from OurAirports and caches them in Firestore. The FlightBoard map uses this to draw any airport in your fleet's routes. Runs automatically every Sunday at 6am UTC; click here to refresh on demand.
+            </p>
+            {airportRefreshResult && (
+              <div
+                className={`mt-2 px-2 py-1 text-[10px] border ${airportRefreshResult.ok ? 'border-emerald-500/40 text-emerald-300 bg-emerald-500/5' : 'border-amber-500/40 text-amber-300 bg-amber-500/5'}`}
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              >
+                {airportRefreshResult.msg}
               </div>
             )}
           </div>
