@@ -141,40 +141,59 @@ async function refreshFirestoreCache(db) {
   return map.size;
 }
 
+async function verifyOpsOrAdmin(idToken, db) {
+  // Matches the pattern used by flightaware-positions.js and other
+  // admin endpoints. Caller must be signed in AND have role ops/admin.
+  const decoded = await admin.auth(getAdmin()).verifyIdToken(idToken);
+  const profile = await db.collection('users').doc(decoded.uid).get();
+  if (!profile.exists) {
+    throw Object.assign(new Error('User profile not found'), { code: 'forbidden' });
+  }
+  const role = profile.data().role;
+  if (role !== 'admin' && role !== 'ops') {
+    throw Object.assign(new Error('Ops or admin role required'), { code: 'forbidden' });
+  }
+  return decoded;
+}
+
 // ============================================================
 // HTTP HANDLER
 // ============================================================
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Refresh-Token');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') {
     res.status(200).end();
     return;
   }
 
-  // Auth: allow Vercel cron (sends specific user-agent) or our shared
-  // token. Light protection — this endpoint isn't security-critical
-  // since the data is all public, but we don't want random callers
-  // burning compute.
+  // Vercel cron sends a specific user-agent and doesn't need an ID
+  // token. For all other callers, require an ops/admin ID token.
   const isCron = req.headers['user-agent']?.includes('vercel-cron');
-  const token = req.headers['x-refresh-token'] || req.query?.token;
-  const validToken = process.env.AIRPORT_REFRESH_TOKEN;
-  if (!isCron) {
-    if (!validToken) {
-      // No token configured — only cron can refresh
-      res.status(503).json({ error: 'Refresh token not configured; only cron can trigger.' });
-      return;
-    }
-    if (token !== validToken) {
-      res.status(401).json({ error: 'Invalid refresh token' });
-      return;
-    }
-  }
 
   const startedAt = Date.now();
   try {
     const db = getDb();
+    if (!isCron) {
+      if (req.method !== 'POST') {
+        res.status(405).json({ error: 'POST with idToken in body' });
+        return;
+      }
+      const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+      const idToken = body.idToken;
+      if (!idToken) {
+        res.status(401).json({ error: 'idToken required in body' });
+        return;
+      }
+      try {
+        await verifyOpsOrAdmin(idToken, db);
+      } catch (e) {
+        const status = e.code === 'forbidden' ? 403 : 401;
+        res.status(status).json({ error: e.message || 'Unauthorized' });
+        return;
+      }
+    }
     console.log('[airport-coords-refresh] Fetching OurAirports CSV...');
     const count = await refreshFirestoreCache(db);
     const elapsedMs = Date.now() - startedAt;
