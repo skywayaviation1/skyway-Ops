@@ -1,14 +1,12 @@
 // api/airport-coords-lookup.js
 //
-// Looks up airport coordinates from a server-side cache populated from
-// OurAirports (https://ourairports.com/data/airports.csv). The cache
-// lives in Firestore so we only fetch the upstream CSV once a month
-// regardless of how many lookups happen.
+// Reads airport coordinates from a Firestore-backed cache (populated by
+// api/airport-coords-refresh.js, which is the only thing that hits
+// OurAirports). This endpoint is fast — never fetches anything external,
+// never times out.
 //
 // The FlightBoard calls this whenever the bundled coord DB and the
-// FA-populated cache both miss for a given airport code. Coverage is
-// every airport in OurAirports (~80K worldwide) filtered to actual
-// runway airports (excludes heliports, closed fields).
+// FA-populated cache both miss for a given airport code.
 //
 // HONEST DATA QUALITY NOTE: OurAirports is community-maintained. Coords
 // are accurate enough for displaying routes at airline-route scale but
@@ -18,27 +16,17 @@
 // USAGE
 //   POST /api/airport-coords-lookup
 //   Body: { codes: ["KGSO", "KCLT", "MMUN"] }
-//   Returns: { coords: { KGSO: {lat, lng, name}, KCLT: {...}, MMUN: null } }
+//   Returns: {
+//     coords: { KGSO: {lat, lng, name}, KCLT: {...}, MMUN: null },
+//     cacheReady: true,
+//     cacheSize: 50000
+//   }
 //
-// If the Firestore cache is missing or stale (>30 days), this endpoint
-// will refresh it by re-fetching from OurAirports before responding.
-// First call after a 30-day refresh takes ~5-15 seconds; subsequent
-// calls are <100ms. Subsequent calls within the same Vercel function
-// instance use an in-memory cache for ~instant lookups.
+// If `cacheReady` is false, the refresh cron hasn't populated the cache
+// yet — callers should not keep retrying as if it's a transient failure.
 
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
-
-const OURAIRPORTS_CSV_URL = 'https://davidmegginson.github.io/ourairports-data/airports.csv';
-const REFRESH_INTERVAL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
-// Airport "type" values we DO include. Excludes 'heliport', 'closed' on
-// purpose — those aren't operational destinations for our use case.
-const INCLUDED_TYPES = new Set([
-  'large_airport',
-  'medium_airport',
-  'small_airport',
-  'seaplane_base',
-]);
 
 let adminApp = null;
 let _db = null;
@@ -59,138 +47,13 @@ function getDb() {
   return _db;
 }
 
-// In-process cache. Lives only for the duration of a Vercel function
-// instance (typically minutes to hours). Big perf win for repeated
-// lookups within the same instance — first lookup populates from
-// Firestore, subsequent lookups are O(1) Map access.
+// In-process cache, populated on first lookup of a Vercel function
+// instance from Firestore. Lasts for the lifetime of the instance.
 let memCache = null;     // Map<CODE, {lat,lng,name}>
-let memCacheLoadedAt = 0;
-
-// CSV parser tuned for the OurAirports format. Not a general-purpose
-// CSV parser — handles only the quoting style OurAirports uses (RFC
-// 4180-ish: quoted fields containing commas, escaped quotes via
-// doubled quotes). A few hand-rolled lines are simpler than pulling
-// in a CSV library.
-function parseCSVLine(line) {
-  const out = [];
-  let cur = '';
-  let inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i];
-    if (inQuotes) {
-      if (c === '"' && line[i + 1] === '"') { cur += '"'; i++; }
-      else if (c === '"') { inQuotes = false; }
-      else { cur += c; }
-    } else {
-      if (c === ',') { out.push(cur); cur = ''; }
-      else if (c === '"') { inQuotes = true; }
-      else { cur += c; }
-    }
-  }
-  out.push(cur);
-  return out;
-}
 
 /**
- * Fetch the OurAirports CSV, parse it, filter to operational airports,
- * and return a Map keyed by ICAO code (uppercase). IATA-only airports
- * are keyed by their IATA code too.
- *
- * This is the network-heavy step (~3 MB download). Only called by the
- * monthly refresh — should never run on a hot path.
- */
-async function fetchAndParseOurAirports() {
-  const r = await fetch(OURAIRPORTS_CSV_URL, {
-    headers: { 'User-Agent': 'SkywayOps/1.0 (operational dashboard; non-commercial use)' },
-  });
-  if (!r.ok) {
-    throw new Error(`OurAirports fetch failed: HTTP ${r.status}`);
-  }
-  const text = await r.text();
-  const lines = text.split('\n');
-  if (lines.length < 2) throw new Error('OurAirports CSV unexpectedly short');
-  // Header row tells us which column is which. OurAirports is known to
-  // change column order rarely but it does happen — finding by name is
-  // safer than indexing.
-  const header = parseCSVLine(lines[0]);
-  const idx = {
-    ident: header.indexOf('ident'),
-    type: header.indexOf('type'),
-    name: header.indexOf('name'),
-    latitude_deg: header.indexOf('latitude_deg'),
-    longitude_deg: header.indexOf('longitude_deg'),
-    iata_code: header.indexOf('iata_code'),
-    iso_country: header.indexOf('iso_country'),
-  };
-  if (idx.ident < 0 || idx.latitude_deg < 0 || idx.longitude_deg < 0) {
-    throw new Error('OurAirports CSV missing required columns');
-  }
-
-  const out = new Map();
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line || line.length === 0) continue;
-    const cols = parseCSVLine(line);
-    const type = cols[idx.type];
-    if (!INCLUDED_TYPES.has(type)) continue;
-    const ident = cols[idx.ident];
-    const lat = Number(cols[idx.latitude_deg]);
-    const lng = Number(cols[idx.longitude_deg]);
-    if (!ident || !Number.isFinite(lat) || !Number.isFinite(lng)) continue;
-    const name = cols[idx.name] || '';
-    const iata = cols[idx.iata_code] || null;
-    const iso = cols[idx.iso_country] || null;
-    const entry = { lat, lng, name, iata, iso };
-    // Key by ICAO ident (e.g. "KGSO")
-    out.set(ident.toUpperCase(), entry);
-    // Also key by IATA if present and different (e.g. "GSO" pointing
-    // to the same data). This is what makes "GSO" lookups work even
-    // though we received the data keyed by "KGSO".
-    if (iata && iata !== ident) {
-      // Only set if not already present — avoid IATA collisions
-      // overwriting a real ICAO entry.
-      const iatakey = iata.toUpperCase();
-      if (!out.has(iatakey)) out.set(iatakey, entry);
-    }
-  }
-  return out;
-}
-
-/**
- * Refresh the Firestore cache from OurAirports. Chunks the dataset by
- * the first character of the key so each Firestore doc stays under the
- * 1 MB limit. Returns total airport count written.
- */
-async function refreshFirestoreCache(db) {
-  const map = await fetchAndParseOurAirports();
-  // Group entries by first letter for chunking
-  const chunks = {};
-  for (const [code, entry] of map.entries()) {
-    const prefix = code[0] || '_';
-    if (!chunks[prefix]) chunks[prefix] = {};
-    chunks[prefix][code] = entry;
-  }
-  // Each chunk is a single Firestore doc at airport-cache-ourairports/{prefix}
-  // The whole-dataset metadata is at airport-cache-ourairports/_meta
-  const batch = db.batch();
-  const collRef = db.collection('airport-cache-ourairports');
-  for (const [prefix, codes] of Object.entries(chunks)) {
-    batch.set(collRef.doc(prefix), { entries: codes });
-  }
-  batch.set(collRef.doc('_meta'), {
-    refreshedAt: Date.now(),
-    totalCodes: map.size,
-    chunkPrefixes: Object.keys(chunks).sort(),
-    source: 'ourairports.com',
-  });
-  await batch.commit();
-  return map.size;
-}
-
-/**
- * Load the cache into memory from Firestore. Loops through every chunk
- * doc and merges. ~80 KB per Firestore read, ~30 reads total — well
- * within Firestore quotas.
+ * Load the full cache from Firestore. ~30 doc reads, ~3 MB total.
+ * Cached in-memory after first call.
  */
 async function loadCacheFromFirestore(db) {
   const snap = await db.collection('airport-cache-ourairports').get();
@@ -206,25 +69,10 @@ async function loadCacheFromFirestore(db) {
   return map;
 }
 
-/**
- * Get the in-memory cache, loading from Firestore (and refreshing from
- * OurAirports if Firestore is stale or empty) as needed.
- */
 async function ensureCache() {
-  // In-memory cache is valid for the lifetime of this function instance
-  if (memCache && memCache.size > 0) {
-    return memCache;
-  }
+  if (memCache && memCache.size > 0) return memCache;
   const db = getDb();
-  const metaSnap = await db.collection('airport-cache-ourairports').doc('_meta').get();
-  const meta = metaSnap.exists ? metaSnap.data() : null;
-  const isStale = !meta || (Date.now() - (meta.refreshedAt || 0)) > REFRESH_INTERVAL_MS;
-  if (isStale) {
-    console.log('[airport-coords] Cache stale or missing; refreshing from OurAirports');
-    await refreshFirestoreCache(db);
-  }
   memCache = await loadCacheFromFirestore(db);
-  memCacheLoadedAt = Date.now();
   console.log(`[airport-coords] In-memory cache loaded: ${memCache.size} airports`);
   return memCache;
 }
@@ -237,8 +85,7 @@ async function ensureCache() {
  * has some non-US airports whose 4-letter ICAO is a 3-letter code like
  * "AGS" (rare but real). When a US operator types "AGS" they mean
  * Augusta Regional (KAGS), not whatever foreign airport happens to use
- * AGS as its ident. Without this priority, the IATA-as-key fallback
- * in the cache build can land us on the wrong airport.
+ * AGS as its ident.
  */
 function lookupInCache(cache, rawCode) {
   if (!rawCode) return null;
@@ -263,7 +110,6 @@ function lookupInCache(cache, rawCode) {
 // HTTP HANDLER
 // ============================================================
 export default async function handler(req, res) {
-  // CORS — board may be loaded on any origin under the app
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -282,7 +128,6 @@ export default async function handler(req, res) {
       res.status(400).json({ error: 'codes array required' });
       return;
     }
-    // Hard cap to prevent abuse
     if (codes.length > 200) {
       res.status(400).json({ error: 'too many codes (max 200)' });
       return;
@@ -298,7 +143,11 @@ export default async function handler(req, res) {
     res.status(200).json({
       coords,
       cacheSize: cache.size,
+      cacheReady: cache.size > 0,
       source: 'ourairports.com',
+      note: cache.size === 0
+        ? 'Airport cache not yet populated. POST /api/airport-coords-refresh to populate it.'
+        : null,
     });
   } catch (e) {
     console.error('[airport-coords] handler error:', e);
