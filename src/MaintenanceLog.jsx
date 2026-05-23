@@ -16,6 +16,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Wrench, AlertTriangle, Plus, Loader2, X, FileText, ChevronRight, Search,
+  Download, Pencil,
 } from 'lucide-react';
 import { createAML, subscribeAMLEntries } from './firebase-aml.js';
 import SignaturePad from './SignaturePad.jsx';
@@ -29,8 +30,21 @@ export default function MaintenanceLog({ currentUser, users = [], allTrips = [] 
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
   const [deferEntry, setDeferEntry] = useState(null);
+  const [editEntry, setEditEntry] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [stageFilter, setStageFilter] = useState('all');
+
+  // Triggered when user clicks the PDF icon on a row. Loads the
+  // PDF generator on demand (large dependency) and downloads.
+  async function handleDownloadPdf(entry) {
+    try {
+      const { downloadAMLPdf } = await import('./aml-pdf.js');
+      await downloadAMLPdf(entry);
+    } catch (e) {
+      console.error('[aml-pdf] failed:', e);
+      window.alert(`PDF generation failed: ${e.message}`);
+    }
+  }
 
   useEffect(() => {
     const unsub = subscribeAMLEntries((list) => {
@@ -68,10 +82,12 @@ export default function MaintenanceLog({ currentUser, users = [], allTrips = [] 
   }, [entries, stageFilter, searchTerm]);
 
   // Permissions: crew + maint + ops + admin can all CREATE.
-  // Only ops/admin can approve a deferral (DOM-equivalent — Skyway
-  // doesn't have a separate 'dom' role; admin acts as DOM).
+  // Only ops/admin can approve a deferral or ground an aircraft (DOM-equivalent).
+  // Editing follows the same gate as creating, plus stage rules enforced in
+  // firebase-aml.updateAML.
   const canCreate = ['crew', 'maint', 'ops', 'admin'].includes(currentUser?.role);
   const canDefer = ['ops', 'admin'].includes(currentUser?.role);
+  const canEdit = ['crew', 'maint', 'ops', 'admin'].includes(currentUser?.role);
 
   return (
     <div className="max-w-6xl mx-auto p-4 space-y-4">
@@ -158,7 +174,10 @@ export default function MaintenanceLog({ currentUser, users = [], allTrips = [] 
               key={e.id}
               entry={e}
               canDefer={canDefer}
+              canEdit={canEdit}
               onDefer={(entry) => setDeferEntry(entry)}
+              onEdit={(entry) => setEditEntry(entry)}
+              onDownloadPdf={() => handleDownloadPdf(e)}
             />
           ))}
         </div>
@@ -181,6 +200,15 @@ export default function MaintenanceLog({ currentUser, users = [], allTrips = [] 
           onDeferred={() => setDeferEntry(null)}
         />
       )}
+
+      {editEntry && (
+        <EditAMLModal
+          aml={editEntry}
+          currentUser={currentUser}
+          onClose={() => setEditEntry(null)}
+          onSaved={() => setEditEntry(null)}
+        />
+      )}
     </div>
   );
 }
@@ -189,7 +217,7 @@ export default function MaintenanceLog({ currentUser, users = [], allTrips = [] 
 // AML ROW
 // ====================================================================
 
-function AMLRow({ entry, canDefer, onDefer }) {
+function AMLRow({ entry, canDefer, canEdit, onDefer, onEdit, onDownloadPdf }) {
   const stageColors = {
     CREATED:  { bg: 'bg-amber-500/15',  border: 'border-amber-500/40',  txt: 'text-amber-200',  label: 'OPEN' },
     DEFERRED: { bg: 'bg-cyan-500/15',   border: 'border-cyan-500/40',   txt: 'text-cyan-200',   label: 'MEL DEFERRED · AIRWORTHY' },
@@ -256,15 +284,36 @@ function AMLRow({ entry, canDefer, onDefer }) {
           <div className="text-xs text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
             {fmtDate(entry.createdAtClient)}
           </div>
-          {entry.stage === 'CREATED' && canDefer && (
+          <div className="flex items-center justify-end gap-1 mt-2 flex-wrap">
+            {/* PDF download — always available */}
             <button
-              onClick={() => onDefer(entry)}
-              className="mt-2 px-2 py-1 border border-red-500/40 bg-red-500/10 text-red-200 hover:bg-red-500/20 text-[10px] tracking-widest"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              onClick={onDownloadPdf}
+              className="p-1.5 border border-slate-700 hover:border-slate-500 text-slate-400 hover:text-slate-200"
+              title="Download as PDF"
             >
-              DEFER TO MEL
+              <Download className="w-3 h-3" />
             </button>
-          )}
+            {/* Edit — only when stage allows + user has permission */}
+            {canEdit && ['CREATED', 'DEFERRED', 'GROUNDED'].includes(entry.stage) && (
+              <button
+                onClick={() => onEdit(entry)}
+                className="p-1.5 border border-slate-700 hover:border-slate-500 text-slate-400 hover:text-slate-200"
+                title="Edit AML"
+              >
+                <Pencil className="w-3 h-3" />
+              </button>
+            )}
+            {/* Defer — only for OPEN + ops/admin */}
+            {entry.stage === 'CREATED' && canDefer && (
+              <button
+                onClick={() => onDefer(entry)}
+                className="px-2 py-1 border border-red-500/40 bg-red-500/10 text-red-200 hover:bg-red-500/20 text-[10px] tracking-widest"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              >
+                DEFER / GROUND
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -1212,6 +1261,250 @@ function DeferAMLModal({ aml, currentUser, onClose, onDeferred }) {
           >
             {saving ? <Loader2 className="w-4 h-4 inline-block mr-1 animate-spin" /> : <FileText className="w-4 h-4 inline-block mr-1 -mt-0.5" />}
             DEFER UNDER MEL (SR · NOT GROUNDED)
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ====================================================================
+// EDIT AML MODAL — stage-aware editing
+// ====================================================================
+
+function EditAMLModal({ aml, currentUser, onClose, onSaved }) {
+  const stage = aml.stage || 'CREATED';
+
+  // Which fields are editable for this stage?
+  const editableFields = {
+    CREATED:  ['discrepancy', 'aftt', 'hobbs', 'landings', 'serialNumber', 'tail', 'date'],
+    DEFERRED: ['melRemarks'],
+    GROUNDED: ['groundingReason'],
+  }[stage] || [];
+
+  // State for each editable field (mirror current values)
+  const [discrepancy, setDiscrepancy] = useState(aml.discrepancy || '');
+  const [aftt, setAftt] = useState(aml.aftt || '');
+  const [hobbs, setHobbs] = useState(aml.hobbs || '');
+  const [landings, setLandings] = useState(aml.landings || '');
+  const [serialNumber, setSerialNumber] = useState(aml.serialNumber || '');
+  const [tail, setTail] = useState(aml.tail || '');
+  const [date, setDate] = useState(aml.date || '');
+  const [melRemarks, setMelRemarks] = useState(aml.melRemarks || '');
+  const [groundingReason, setGroundingReason] = useState(aml.groundingReason || '');
+  const [reason, setReason] = useState('');
+
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+
+  if (editableFields.length === 0) {
+    return (
+      <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+        <div className="bg-slate-900 border border-slate-700 w-full max-w-md p-4">
+          <h3 className="text-lg tracking-wider mb-2" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
+            CANNOT EDIT
+          </h3>
+          <p className="text-sm text-slate-400">
+            AML records in stage <span className="text-slate-200 font-mono">{stage}</span> are locked. Editing a signed-off field would be a record falsification.
+          </p>
+          <div className="mt-4 flex justify-end">
+            <button onClick={onClose} className="px-4 py-2 bg-cyan-500 text-slate-950 text-sm tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              OK
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    setError(null);
+    try {
+      const { updateAML } = await import('./firebase-aml.js');
+      const updates = {};
+      if (editableFields.includes('discrepancy')) updates.discrepancy = discrepancy.trim();
+      if (editableFields.includes('aftt')) updates.aftt = aftt.trim() || null;
+      if (editableFields.includes('hobbs')) updates.hobbs = hobbs.trim() || null;
+      if (editableFields.includes('landings')) updates.landings = landings.trim() || null;
+      if (editableFields.includes('serialNumber')) updates.serialNumber = serialNumber.trim() || null;
+      if (editableFields.includes('tail')) updates.tail = tail.toUpperCase().trim();
+      if (editableFields.includes('date')) updates.date = date;
+      if (editableFields.includes('melRemarks')) updates.melRemarks = melRemarks.trim() || null;
+      if (editableFields.includes('groundingReason')) updates.groundingReason = groundingReason.trim() || null;
+
+      const result = await updateAML({
+        amlId: aml.id,
+        updates,
+        editor: {
+          uid: currentUser?.uid || null,
+          name: currentUser?.name || currentUser?.displayName || 'Unknown',
+        },
+        reason: reason.trim() || null,
+      });
+      if (!result.updated) {
+        setError('No changes detected');
+        return;
+      }
+      onSaved();
+    } catch (e) {
+      setError(e.message || 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+      <div className="bg-slate-900 border border-slate-700 w-full max-w-xl my-8">
+        <div className="border-b border-slate-800 px-4 py-3">
+          <h3 className="text-lg tracking-wider" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
+            EDIT AML
+          </h3>
+          <p className="text-[10px] text-slate-500 mt-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            STAGE {stage} · EDITS ARE AUDITED IN THE AML HISTORY
+          </p>
+        </div>
+
+        <div className="p-4 space-y-3 max-h-[75vh] overflow-y-auto">
+          <div className="bg-slate-800/40 border border-slate-700 p-3 text-[11px] text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            In stage <span className="text-slate-200">{stage}</span>, the following fields are editable:{' '}
+            <span className="text-cyan-300">{editableFields.join(', ')}</span>.
+            <br />Signed-off fields and downstream records (squawks, MEL deferrals, SR) are locked.
+          </div>
+
+          {editableFields.includes('date') && (
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="text-[10px] tracking-widest text-slate-400 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  DATE
+                </label>
+                <input
+                  type="date" value={date} onChange={(e) => setDate(e.target.value)}
+                  className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] tracking-widest text-slate-400 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  TAIL
+                </label>
+                <input
+                  type="text" value={tail} onChange={(e) => setTail(e.target.value.toUpperCase())}
+                  className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                />
+              </div>
+              <div>
+                <label className="text-[10px] tracking-widest text-slate-400 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  SERIAL #
+                </label>
+                <input
+                  type="text" value={serialNumber} onChange={(e) => setSerialNumber(e.target.value)}
+                  className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                />
+              </div>
+            </div>
+          )}
+
+          {editableFields.includes('aftt') && (
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="text-[10px] tracking-widest text-slate-400 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  AFTT
+                </label>
+                <input type="text" value={aftt} onChange={(e) => setAftt(e.target.value)}
+                  className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }} />
+              </div>
+              <div>
+                <label className="text-[10px] tracking-widest text-slate-400 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  HOBBS
+                </label>
+                <input type="text" value={hobbs} onChange={(e) => setHobbs(e.target.value)}
+                  className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }} />
+              </div>
+              <div>
+                <label className="text-[10px] tracking-widest text-slate-400 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  LANDINGS
+                </label>
+                <input type="text" value={landings} onChange={(e) => setLandings(e.target.value)}
+                  className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }} />
+              </div>
+            </div>
+          )}
+
+          {editableFields.includes('discrepancy') && (
+            <div>
+              <label className="text-[10px] tracking-widest text-slate-400 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                DISCREPANCY *
+              </label>
+              <textarea
+                value={discrepancy} onChange={(e) => setDiscrepancy(e.target.value)} rows={5}
+                className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 text-sm"
+              />
+            </div>
+          )}
+
+          {editableFields.includes('melRemarks') && (
+            <div>
+              <label className="text-[10px] tracking-widest text-slate-400 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                MEL REMARKS / NOTES
+              </label>
+              <textarea
+                value={melRemarks} onChange={(e) => setMelRemarks(e.target.value)} rows={3}
+                className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 text-sm"
+              />
+              <p className="text-[10px] text-slate-500 mt-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                The MEL deferral itself (ref, category, limit, due date) is locked once approved.
+                Only remarks can be amended.
+              </p>
+            </div>
+          )}
+
+          {editableFields.includes('groundingReason') && (
+            <div>
+              <label className="text-[10px] tracking-widest text-slate-400 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                GROUNDING RATIONALE
+              </label>
+              <textarea
+                value={groundingReason} onChange={(e) => setGroundingReason(e.target.value)} rows={3}
+                className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 text-sm"
+              />
+            </div>
+          )}
+
+          <div>
+            <label className="text-[10px] tracking-widest text-slate-400 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              EDIT REASON (optional)
+            </label>
+            <input
+              type="text" value={reason} onChange={(e) => setReason(e.target.value)}
+              placeholder="e.g. corrected typo in hobbs reading"
+              className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 text-sm"
+            />
+          </div>
+
+          {error && (
+            <div className="border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+              {error}
+            </div>
+          )}
+        </div>
+
+        <div className="border-t border-slate-800 px-4 py-3 flex items-center justify-end gap-2">
+          <button onClick={onClose} disabled={saving}
+            className="px-4 py-2 text-sm text-slate-400 hover:text-slate-200"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            CANCEL
+          </button>
+          <button onClick={handleSave} disabled={saving}
+            className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-700 text-slate-950 text-sm font-medium tracking-widest"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {saving ? <Loader2 className="w-4 h-4 inline animate-spin mr-1" /> : <Pencil className="w-4 h-4 inline -mt-0.5 mr-1" />}
+            {saving ? 'SAVING...' : 'SAVE CHANGES'}
           </button>
         </div>
       </div>

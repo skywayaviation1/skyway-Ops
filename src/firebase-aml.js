@@ -141,6 +141,8 @@ export async function appendAMLHistory(id, event) {
 
 /**
  * Update an AML's stage. Convenience wrapper around updateDoc.
+ * Used internally by deferAMLAsMELable/groundAML, available for
+ * future Part II/III/IV transitions.
  */
 export async function updateAMLStage(id, stage, extra = {}) {
   await updateDoc(doc(db, COLLECTION, id), {
@@ -148,6 +150,91 @@ export async function updateAMLStage(id, stage, extra = {}) {
     [`stageChangedAt_${stage}`]: serverTimestamp(),
     ...extra,
   });
+}
+
+/**
+ * Update editable fields on an AML. Strict about what's allowed to
+ * change based on stage:
+ *
+ *   - Before DEFERRED/GROUNDED: requester can edit anything they
+ *     entered. Discrepancy, meter times, aircraft fields.
+ *   - After DEFERRED/GROUNDED: only remarks/notes are editable, NOT
+ *     the discrepancy itself (that's been used to create the
+ *     downstream squawk/MEL/SR records and changing it after-the-fact
+ *     would be inconsistent).
+ *
+ * Once an AML is CLEARED or beyond, no field edits at all — the
+ * record is a regulatory document.
+ *
+ * The edit is appended to the history with the editor's identity.
+ *
+ * @param {Object} args
+ * @param {string} args.amlId
+ * @param {Object} args.updates     fields to set
+ * @param {Object} args.editor      { uid, name }
+ * @param {string} [args.reason]    why the edit (optional)
+ */
+export async function updateAML({ amlId, updates, editor, reason }) {
+  if (!amlId) throw new Error('updateAML: amlId required');
+  if (!editor?.name) throw new Error('updateAML: editor name required');
+  const ref = doc(db, COLLECTION, amlId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error('AML not found');
+  const current = snap.data();
+  const stage = current.stage || 'CREATED';
+
+  // Whitelist allowed fields per stage. This is the regulatory guardrail —
+  // editing a signed-off field would be a record falsification.
+  const allowedByStage = {
+    CREATED:  ['discrepancy', 'aftt', 'hobbs', 'landings', 'serialNumber', 'tail', 'date'],
+    DEFERRED: ['melRemarks'],
+    GROUNDED: ['groundingReason'],
+    CLEARED:  [],
+    RTS:      [],
+    CLOSED:   [],
+  };
+  const allowed = allowedByStage[stage] || [];
+  if (allowed.length === 0) {
+    throw new Error(`AML in stage ${stage} is locked; no edits permitted`);
+  }
+
+  // Filter to allowed fields, ignore the rest
+  const safeUpdates = {};
+  const changedFields = [];
+  for (const key of Object.keys(updates || {})) {
+    if (allowed.includes(key)) {
+      const before = current[key];
+      const after = updates[key];
+      if (before !== after) {
+        safeUpdates[key] = after;
+        changedFields.push({ field: key, before, after });
+      }
+    }
+  }
+  if (changedFields.length === 0) {
+    return { updated: false };
+  }
+
+  // Append history event
+  const history = Array.isArray(current.history) ? current.history : [];
+  history.push({
+    stage,                    // stays same — edit doesn't change stage
+    action: 'EDITED',
+    at: Date.now(),
+    by: editor.uid || null,
+    byName: editor.name,
+    note: reason || `Edited: ${changedFields.map((c) => c.field).join(', ')}`,
+    changes: changedFields,
+  });
+
+  await updateDoc(ref, {
+    ...safeUpdates,
+    history,
+    lastEditedAt: Date.now(),
+    lastEditedBy: editor.uid || null,
+    lastEditedByName: editor.name,
+  });
+  return { updated: true, changedFields };
 }
 
 /**
