@@ -20,6 +20,7 @@ const FlightBoardLazy = lazy(() => import('./FlightBoard.jsx'));
 // Lodging code doesn't bloat the initial bundle.
 const LodgingLazy = lazy(() => import('./Lodging.jsx'));
 const LodgingDashboardLazy = lazy(() => import('./LodgingDashboard.jsx'));
+const MaintenanceLogLazy = lazy(() => import('./MaintenanceLog.jsx'));
 import { createPortal } from 'react-dom';
 import {
   Plane, Calendar, MessageSquare, Users, Bell, MapPin,
@@ -17218,6 +17219,7 @@ function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, sync
     { id: 'reports',  label: 'REPORT',    icon: AlertCircle, roles: ['crew', 'ops', 'admin'] },
     { id: 'wallet',   label: 'WALLET',    icon: Mail, roles: ['crew', 'sales', 'ops', 'accounting', 'admin'] },
     { id: 'lodging',  label: 'LODGING',   icon: Hotel, roles: ['crew', 'ops', 'admin'] },
+    { id: 'maint-log',label: 'MAINT LOG', icon: Wrench, roles: ['crew', 'maint', 'ops', 'admin'] },
     { id: 'ops',      label: 'OPS',       icon: Zap,      roles: ['ops', 'admin'] },
     { id: 'maint',    label: 'MAINT',     icon: AlertTriangle, roles: ['maint', 'ops', 'admin'] },
     { id: 'users',    label: 'USERS',     icon: Users,    roles: ['ops', 'admin'] },
@@ -22862,6 +22864,19 @@ export default function CharterOps() {
                 users={users}
                 allTrips={allTrips}
                 onOpenTrip={(uid) => { setSelectedId(uid); setSection('schedule'); }}
+              />
+            </Suspense>
+          </div>
+        )}
+
+        {/* === MAINTENANCE LOG (AML) === */}
+        {section === 'maint-log' && (
+          <div className="flex-1 overflow-y-auto scroll-area">
+            <Suspense fallback={<div className="flex items-center justify-center py-16 text-slate-500"><Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading maintenance log...</div>}>
+              <MaintenanceLogLazy
+                currentUser={currentUser}
+                users={users}
+                allTrips={allTrips}
               />
             </Suspense>
           </div>
