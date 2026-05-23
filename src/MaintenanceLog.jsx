@@ -90,55 +90,60 @@ export default function MaintenanceLog({ currentUser, users = [], allTrips = [] 
   const canEdit = ['crew', 'maint', 'ops', 'admin'].includes(currentUser?.role);
 
   return (
-    <div className="max-w-6xl mx-auto p-4 space-y-4">
+    <div className="max-w-6xl mx-auto p-3 sm:p-4 space-y-3 sm:space-y-4">
       {/* Header */}
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="text-3xl tracking-wider" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="text-2xl sm:text-3xl tracking-wider" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
             AIRCRAFT MAINTENANCE LOG
           </h1>
-          <p className="text-sm text-slate-500 mt-1">
-            Scheduled and unscheduled maintenance activities. Form S-3-2/R-31.
+          <p className="text-xs sm:text-sm text-slate-500 mt-1">
+            Form S-3-2/R-31. Scheduled and unscheduled maintenance.
           </p>
         </div>
         {canCreate && (
           <button
             onClick={() => setShowCreate(true)}
-            className="px-3 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-sm font-medium tracking-widest"
+            className="shrink-0 px-3 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-sm font-medium tracking-widest"
             style={{ fontFamily: 'JetBrains Mono, monospace' }}
           >
-            <Plus className="w-4 h-4 inline-block mr-1 -mt-0.5" /> NEW AML
+            <Plus className="w-4 h-4 inline-block mr-1 -mt-0.5" />
+            <span className="hidden sm:inline">NEW AML</span>
+            <span className="sm:hidden">NEW</span>
           </button>
         )}
       </div>
 
-      {/* Filters + search */}
-      <div className="flex items-center gap-2 flex-wrap">
-        <div className="flex items-center gap-1">
-          {[
-            { id: 'all',      label: 'ALL' },
-            { id: 'CREATED',  label: 'OPEN' },
-            { id: 'DEFERRED', label: 'MEL DEFERRED' },
-            { id: 'GROUNDED', label: 'GROUNDED' },
-            { id: 'CLEARED',  label: 'CLEARED' },
-            { id: 'RTS',      label: 'RTS' },
-            { id: 'CLOSED',   label: 'CLOSED' },
-          ].map((f) => (
-            <button
-              key={f.id}
-              onClick={() => setStageFilter(f.id)}
-              className={`px-2.5 py-1.5 text-[10px] tracking-widest border ${
-                stageFilter === f.id
-                  ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200'
-                  : 'border-slate-700 text-slate-400 hover:text-slate-200 hover:border-slate-500'
-              }`}
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}
-            >
-              {f.label}
-            </button>
-          ))}
+      {/* Filters + search — filters scroll horizontally on mobile so
+          all chips remain reachable without wrap-juggling. */}
+      <div className="space-y-2">
+        <div className="overflow-x-auto -mx-3 sm:mx-0 px-3 sm:px-0">
+          <div className="flex items-center gap-1 min-w-max">
+            {[
+              { id: 'all',      label: 'ALL' },
+              { id: 'CREATED',  label: 'OPEN' },
+              { id: 'DEFERRED', label: 'MEL DEFERRED' },
+              { id: 'GROUNDED', label: 'GROUNDED' },
+              { id: 'CLEARED',  label: 'CLEARED' },
+              { id: 'RTS',      label: 'RTS' },
+              { id: 'CLOSED',   label: 'CLOSED' },
+            ].map((f) => (
+              <button
+                key={f.id}
+                onClick={() => setStageFilter(f.id)}
+                className={`px-2.5 py-1.5 text-[10px] tracking-widest border whitespace-nowrap ${
+                  stageFilter === f.id
+                    ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200'
+                    : 'border-slate-700 text-slate-400 hover:text-slate-200 hover:border-slate-500'
+                }`}
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
         </div>
-        <div className="flex-1 min-w-[200px] relative">
+        <div className="relative">
           <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-500 pointer-events-none" />
           <input
             value={searchTerm}
@@ -247,14 +252,26 @@ function AMLRow({ entry, canDefer, canEdit, onDefer, onEdit, onDownloadPdf }) {
 
   return (
     <div className="bg-slate-900/40 border border-slate-800 px-3 py-2.5">
-      <div className="grid grid-cols-[160px_120px_1fr_120px] gap-3 items-start">
-        {/* Stage pill */}
-        <div className={`text-center text-[10px] tracking-widest font-semibold px-2 py-1 border ${sc.bg} ${sc.border} ${sc.txt} whitespace-nowrap`}
+      {/* Mobile: header strip with stage + tail + date all on one row */}
+      <div className="flex items-center gap-2 sm:hidden mb-2">
+        <div className={`text-[9px] tracking-widest font-semibold px-2 py-1 border ${sc.bg} ${sc.border} ${sc.txt} whitespace-nowrap`}
           style={{ fontFamily: 'JetBrains Mono, monospace' }}>
           {sc.label}
         </div>
-        {/* Tail */}
-        <div>
+        <div className="text-lg text-slate-100 ml-auto" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
+          {entry.tail || '?'}
+        </div>
+      </div>
+
+      {/* Desktop: 4-column grid; Mobile: stacked */}
+      <div className="grid grid-cols-1 sm:grid-cols-[160px_120px_1fr_140px] gap-2 sm:gap-3 items-start">
+        {/* Stage pill — hidden on mobile (shown in header strip above) */}
+        <div className={`hidden sm:block text-center text-[10px] tracking-widest font-semibold px-2 py-1 border ${sc.bg} ${sc.border} ${sc.txt} whitespace-nowrap`}
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {sc.label}
+        </div>
+        {/* Tail — hidden on mobile (shown in header strip above) */}
+        <div className="hidden sm:block">
           <div className="text-xl text-slate-100" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
             {entry.tail || '?'}
           </div>
@@ -278,36 +295,48 @@ function AMLRow({ entry, canDefer, canEdit, onDefer, onEdit, onDownloadPdf }) {
               </>
             )}
           </div>
+          {/* Mobile: serial number under reporter (no separate column) */}
+          {entry.serialNumber && (
+            <div className="text-[10px] text-slate-500 mt-1 sm:hidden" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              SN {entry.serialNumber}
+            </div>
+          )}
         </div>
-        {/* Time + actions */}
-        <div className="text-right">
-          <div className="text-xs text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        {/* Time + actions — full width row on mobile, right column on desktop */}
+        <div className="sm:text-right">
+          <div className="text-xs text-slate-400 hidden sm:block" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
             {fmtDate(entry.createdAtClient)}
           </div>
-          <div className="flex items-center justify-end gap-1 mt-2 flex-wrap">
-            {/* PDF download — always available */}
+          <div className="flex items-center sm:justify-end gap-1.5 mt-2 flex-wrap">
+            {/* Mobile: date inline left of buttons */}
+            <div className="text-[10px] text-slate-500 sm:hidden mr-auto" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {fmtDate(entry.createdAtClient)}
+            </div>
+            {/* PDF download — bigger tap target on mobile */}
             <button
               onClick={onDownloadPdf}
-              className="p-1.5 border border-slate-700 hover:border-slate-500 text-slate-400 hover:text-slate-200"
+              className="p-2 sm:p-1.5 border border-slate-700 hover:border-slate-500 text-slate-400 hover:text-slate-200"
               title="Download as PDF"
+              aria-label="Download AML as PDF"
             >
-              <Download className="w-3 h-3" />
+              <Download className="w-4 h-4 sm:w-3 sm:h-3" />
             </button>
             {/* Edit — only when stage allows + user has permission */}
             {canEdit && ['CREATED', 'DEFERRED', 'GROUNDED'].includes(entry.stage) && (
               <button
                 onClick={() => onEdit(entry)}
-                className="p-1.5 border border-slate-700 hover:border-slate-500 text-slate-400 hover:text-slate-200"
+                className="p-2 sm:p-1.5 border border-slate-700 hover:border-slate-500 text-slate-400 hover:text-slate-200"
                 title="Edit AML"
+                aria-label="Edit AML"
               >
-                <Pencil className="w-3 h-3" />
+                <Pencil className="w-4 h-4 sm:w-3 sm:h-3" />
               </button>
             )}
             {/* Defer — only for OPEN + ops/admin */}
             {entry.stage === 'CREATED' && canDefer && (
               <button
                 onClick={() => onDefer(entry)}
-                className="px-2 py-1 border border-red-500/40 bg-red-500/10 text-red-200 hover:bg-red-500/20 text-[10px] tracking-widest"
+                className="px-3 py-2 sm:px-2 sm:py-1 border border-red-500/40 bg-red-500/10 text-red-200 hover:bg-red-500/20 text-[10px] tracking-widest"
                 style={{ fontFamily: 'JetBrains Mono, monospace' }}
               >
                 DEFER / GROUND
@@ -488,8 +517,8 @@ function CreateAMLModal({ currentUser, fleetTails, onClose, onCreated }) {
   );
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
-      <div className="bg-slate-900 border border-slate-700 w-full max-w-2xl my-8">
+    <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-start sm:items-center justify-center p-0 sm:p-4 overflow-y-auto">
+      <div className="bg-slate-900 border border-slate-700 w-full max-w-2xl sm:my-8 min-h-full sm:min-h-0">
         <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
           <div>
             <h3 className="text-lg tracking-wider" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
@@ -506,7 +535,7 @@ function CreateAMLModal({ currentUser, fleetTails, onClose, onCreated }) {
 
         <div className="p-4 space-y-3 max-h-[75vh] overflow-y-auto">
           {/* Date + tail + serial */}
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
               <label className="text-[10px] tracking-widest text-slate-400 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
                 DATE
@@ -562,7 +591,7 @@ function CreateAMLModal({ currentUser, fleetTails, onClose, onCreated }) {
             <label className="text-[10px] tracking-widest text-slate-400 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
               AIRCRAFT TACH / HOBBS METER TIMES
             </label>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <input
                 type="text"
                 value={aftt}
@@ -622,7 +651,7 @@ function CreateAMLModal({ currentUser, fleetTails, onClose, onCreated }) {
             <div className="text-[10px] tracking-widest text-slate-400 mb-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
               SIGNATURE FOR MAINTENANCE REQUEST
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="text-[10px] tracking-widest text-slate-500 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
                   NAME *
@@ -876,8 +905,8 @@ function DeferAMLModal({ aml, currentUser, onClose, onDeferred }) {
   );
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
-      <div className="bg-slate-900 border border-red-500/40 w-full max-w-3xl my-8">
+    <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-start sm:items-center justify-center p-0 sm:p-4 overflow-y-auto">
+      <div className="bg-slate-900 border border-red-500/40 w-full max-w-3xl sm:my-8 min-h-full sm:min-h-0">
         <div className="border-b border-slate-800 px-4 py-3">
           <h3 className="text-lg tracking-wider" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
             DOM REVIEW — DEFER OR GROUND
@@ -1041,7 +1070,7 @@ function DeferAMLModal({ aml, currentUser, onClose, onDeferred }) {
             <div className="text-[10px] tracking-widest text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
               DEFERRAL DETAILS
             </div>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div>
                 <label className="text-[10px] tracking-widest text-slate-500 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
                   MEL ITEM REF
@@ -1087,7 +1116,7 @@ function DeferAMLModal({ aml, currentUser, onClose, onDeferred }) {
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="text-[10px] tracking-widest text-slate-500 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
                   LIMIT DAYS {category === 'A' ? '(required for Cat A)' : '(override)'}
@@ -1129,7 +1158,7 @@ function DeferAMLModal({ aml, currentUser, onClose, onDeferred }) {
 
             {/* Service request fields — where the deferred work will
                 actually happen. Only used for PATH A. */}
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="text-[10px] tracking-widest text-slate-500 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
                   SERVICE LOCATION (airport)
@@ -1189,7 +1218,7 @@ function DeferAMLModal({ aml, currentUser, onClose, onDeferred }) {
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="text-[10px] tracking-widest text-slate-500 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
                   APPROVER NAME *
@@ -1299,7 +1328,7 @@ function EditAMLModal({ aml, currentUser, onClose, onSaved }) {
 
   if (editableFields.length === 0) {
     return (
-      <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+      <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-start sm:items-center justify-center p-0 sm:p-4 overflow-y-auto">
         <div className="bg-slate-900 border border-slate-700 w-full max-w-md p-4">
           <h3 className="text-lg tracking-wider mb-2" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
             CANNOT EDIT
@@ -1355,8 +1384,8 @@ function EditAMLModal({ aml, currentUser, onClose, onSaved }) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
-      <div className="bg-slate-900 border border-slate-700 w-full max-w-xl my-8">
+    <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-start sm:items-center justify-center p-0 sm:p-4 overflow-y-auto">
+      <div className="bg-slate-900 border border-slate-700 w-full max-w-xl sm:my-8 min-h-full sm:min-h-0">
         <div className="border-b border-slate-800 px-4 py-3">
           <h3 className="text-lg tracking-wider" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
             EDIT AML
@@ -1374,7 +1403,7 @@ function EditAMLModal({ aml, currentUser, onClose, onSaved }) {
           </div>
 
           {editableFields.includes('date') && (
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div>
                 <label className="text-[10px] tracking-widest text-slate-400 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
                   DATE
@@ -1408,7 +1437,7 @@ function EditAMLModal({ aml, currentUser, onClose, onSaved }) {
           )}
 
           {editableFields.includes('aftt') && (
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div>
                 <label className="text-[10px] tracking-widest text-slate-400 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
                   AFTT

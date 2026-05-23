@@ -21,6 +21,7 @@ const FlightBoardLazy = lazy(() => import('./FlightBoard.jsx'));
 const LodgingLazy = lazy(() => import('./Lodging.jsx'));
 const LodgingDashboardLazy = lazy(() => import('./LodgingDashboard.jsx'));
 const MaintenanceLogLazy = lazy(() => import('./MaintenanceLog.jsx'));
+const MELLookupLazy = lazy(() => import('./MELLookup.jsx'));
 import { createPortal } from 'react-dom';
 import {
   Plane, Calendar, MessageSquare, Users, Bell, MapPin,
@@ -28,7 +29,7 @@ import {
   Coffee, ArrowRight, Clock, Shield, X, ScanLine, ChevronLeft,
   Mail, Navigation, Loader2, Wifi, WifiOff, Settings as SettingsIcon,
   Download, Trash2, Plus, FileText, Zap, Radio, AlertCircle, Upload,
-  CheckCheck, UserCheck, Sparkles, Hash, Cloud, Wrench, Hotel
+  CheckCheck, UserCheck, Sparkles, Hash, Cloud, Wrench, Hotel, BookOpen
 } from 'lucide-react';
 import { formatLocalTime, formatLocalDate } from './airports.js';
 import {
@@ -17220,6 +17221,7 @@ function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, sync
     { id: 'wallet',   label: 'WALLET',    icon: Mail, roles: ['crew', 'sales', 'ops', 'accounting', 'admin'] },
     { id: 'lodging',  label: 'LODGING',   icon: Hotel, roles: ['crew', 'ops', 'admin'] },
     { id: 'maint-log',label: 'MAINT LOG', icon: Wrench, roles: ['crew', 'maint', 'ops', 'admin'] },
+    { id: 'mel',      label: 'MEL',       icon: BookOpen, roles: ['crew', 'maint', 'ops', 'admin'] },
     { id: 'ops',      label: 'OPS',       icon: Zap,      roles: ['ops', 'admin'] },
     { id: 'maint',    label: 'MAINT',     icon: AlertTriangle, roles: ['maint', 'ops', 'admin'] },
     { id: 'users',    label: 'USERS',     icon: Users,    roles: ['ops', 'admin'] },
@@ -22877,6 +22879,18 @@ export default function CharterOps() {
                 currentUser={currentUser}
                 users={users}
                 allTrips={allTrips}
+              />
+            </Suspense>
+          </div>
+        )}
+
+        {/* === MEL LOOKUP (READ-ONLY) === */}
+        {section === 'mel' && (
+          <div className="flex-1 overflow-y-auto scroll-area">
+            <Suspense fallback={<div className="flex items-center justify-center py-16 text-slate-500"><Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading MEL...</div>}>
+              <MELLookupLazy
+                currentUser={currentUser}
+                fleetTails={allTrips ? Array.from(new Set(allTrips.map(t => t.info?.tail).filter(Boolean))) : []}
               />
             </Suspense>
           </div>
