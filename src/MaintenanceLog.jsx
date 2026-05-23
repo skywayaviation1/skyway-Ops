@@ -18,6 +18,7 @@ import {
   Wrench, AlertTriangle, Plus, Loader2, X, FileText, ChevronRight, Search,
 } from 'lucide-react';
 import { createAML, subscribeAMLEntries } from './firebase-aml.js';
+import SignaturePad from './SignaturePad.jsx';
 
 // ====================================================================
 // MAIN
@@ -27,6 +28,7 @@ export default function MaintenanceLog({ currentUser, users = [], allTrips = [] 
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
+  const [deferEntry, setDeferEntry] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [stageFilter, setStageFilter] = useState('all');
 
@@ -66,27 +68,13 @@ export default function MaintenanceLog({ currentUser, users = [], allTrips = [] 
   }, [entries, stageFilter, searchTerm]);
 
   // Permissions: crew + maint + ops + admin can all CREATE.
-  // Only DOM (admin role here, since you don't have a separate DOM role)
-  // can sign off in later turns.
+  // Only ops/admin can approve a deferral (DOM-equivalent — Skyway
+  // doesn't have a separate 'dom' role; admin acts as DOM).
   const canCreate = ['crew', 'maint', 'ops', 'admin'].includes(currentUser?.role);
+  const canDefer = ['ops', 'admin'].includes(currentUser?.role);
 
   return (
     <div className="max-w-6xl mx-auto p-4 space-y-4">
-      {/* PROTOTYPE BANNER — visible until DOM signs off on digital workflow */}
-      <div className="border border-amber-500/40 bg-amber-500/10 px-3 py-2 flex items-start gap-2">
-        <AlertTriangle className="w-5 h-5 text-amber-300 shrink-0 mt-0.5" />
-        <div className="text-sm text-amber-100">
-          <div className="font-semibold mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            PROTOTYPE — NOT YET APPROVED FOR OPERATIONAL USE
-          </div>
-          <div className="text-xs text-amber-200/90">
-            Maintain paper AML records (or whatever system the DOM currently authorizes) alongside this digital log
-            until the Director of Maintenance has signed off on the electronic workflow under
-            AC 120-78A. The records below are for evaluation and review with the DOM only.
-          </div>
-        </div>
-      </div>
-
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
@@ -164,7 +152,14 @@ export default function MaintenanceLog({ currentUser, users = [], allTrips = [] 
         </div>
       ) : (
         <div className="space-y-2">
-          {filtered.map((e) => <AMLRow key={e.id} entry={e} />)}
+          {filtered.map((e) => (
+            <AMLRow
+              key={e.id}
+              entry={e}
+              canDefer={canDefer}
+              onDefer={(entry) => setDeferEntry(entry)}
+            />
+          ))}
         </div>
       )}
 
@@ -176,6 +171,15 @@ export default function MaintenanceLog({ currentUser, users = [], allTrips = [] 
           onCreated={() => setShowCreate(false)}
         />
       )}
+
+      {deferEntry && (
+        <DeferAMLModal
+          aml={deferEntry}
+          currentUser={currentUser}
+          onClose={() => setDeferEntry(null)}
+          onDeferred={() => setDeferEntry(null)}
+        />
+      )}
     </div>
   );
 }
@@ -184,7 +188,7 @@ export default function MaintenanceLog({ currentUser, users = [], allTrips = [] 
 // AML ROW
 // ====================================================================
 
-function AMLRow({ entry }) {
+function AMLRow({ entry, canDefer, onDefer }) {
   const stageColors = {
     CREATED:  { bg: 'bg-amber-500/15',  border: 'border-amber-500/40',  txt: 'text-amber-200',  label: 'OPEN' },
     DEFERRED: { bg: 'bg-red-500/15',    border: 'border-red-500/40',    txt: 'text-red-300',    label: 'DEFERRED · AOG' },
@@ -199,6 +203,17 @@ function AMLRow({ entry }) {
       month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true,
     });
   };
+  // Compute MEL due-date countdown if deferred
+  const melCountdown = (() => {
+    if (entry.stage !== 'DEFERRED' || !entry.melDueDate) return null;
+    const dueMs = new Date(entry.melDueDate + 'T23:59:59').getTime();
+    if (!Number.isFinite(dueMs)) return null;
+    const daysLeft = Math.ceil((dueMs - Date.now()) / 86400000);
+    if (daysLeft < 0) return { text: `${-daysLeft}d OVERDUE`, urgent: true };
+    if (daysLeft === 0) return { text: 'DUE TODAY', urgent: true };
+    if (daysLeft <= 2) return { text: `${daysLeft}d LEFT`, urgent: true };
+    return { text: `${daysLeft}d LEFT`, urgent: false };
+  })();
 
   return (
     <div className="bg-slate-900/40 border border-slate-800 px-3 py-2.5">
@@ -234,17 +249,93 @@ function AMLRow({ entry }) {
             )}
           </div>
         </div>
-        {/* Time */}
-        <div className="text-right text-xs text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-          {fmtDate(entry.createdAtClient)}
+        {/* Time + actions */}
+        <div className="text-right">
+          <div className="text-xs text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {fmtDate(entry.createdAtClient)}
+          </div>
+          {entry.stage === 'CREATED' && canDefer && (
+            <button
+              onClick={() => onDefer(entry)}
+              className="mt-2 px-2 py-1 border border-red-500/40 bg-red-500/10 text-red-200 hover:bg-red-500/20 text-[10px] tracking-widest"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              DEFER TO MEL
+            </button>
+          )}
         </div>
       </div>
+
       {/* Aircraft state at time of write */}
       {(entry.aftt || entry.hobbs || entry.landings) && (
         <div className="border-t border-slate-800 mt-2 pt-2 text-xs text-slate-400 flex items-center gap-4 flex-wrap" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
           {entry.aftt && <span><span className="text-slate-500">AFTT</span> {entry.aftt}</span>}
           {entry.hobbs && <span><span className="text-slate-500">HOBBS</span> {entry.hobbs}</span>}
           {entry.landings && <span><span className="text-slate-500">LDGS</span> {entry.landings}</span>}
+        </div>
+      )}
+
+      {/* MEL details — only shown for DEFERRED stage */}
+      {entry.stage === 'DEFERRED' && (
+        <div className="border-t border-red-500/20 mt-2 pt-2 bg-red-500/5 -mx-3 -mb-2.5 px-3 pb-2.5">
+          <div className="grid grid-cols-[1fr_auto] gap-3 items-start">
+            <div className="text-xs space-y-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              <div>
+                <span className="text-slate-500">MEL</span>{' '}
+                <span className="text-slate-200">{entry.melItemRef || '(no ref)'}</span>
+                {entry.ataCode && (
+                  <>
+                    <span className="text-slate-600 mx-1.5">·</span>
+                    <span className="text-slate-500">ATA</span>{' '}
+                    <span className="text-slate-200">{entry.ataCode}</span>
+                  </>
+                )}
+                <span className="text-slate-600 mx-1.5">·</span>
+                <span className="text-slate-500">CAT</span>{' '}
+                <span className="text-slate-200">{entry.melCategory}</span>
+                {entry.melLimitDays !== null && entry.melLimitDays !== undefined && (
+                  <>
+                    <span className="text-slate-600 mx-1.5">·</span>
+                    <span className="text-slate-500">LIMIT</span>{' '}
+                    <span className="text-slate-200">{entry.melLimitDays}d</span>
+                  </>
+                )}
+                {entry.melDueDate && (
+                  <>
+                    <span className="text-slate-600 mx-1.5">·</span>
+                    <span className="text-slate-500">DUE</span>{' '}
+                    <span className="text-slate-200">{entry.melDueDate}</span>
+                  </>
+                )}
+              </div>
+              {entry.melRemarks && (
+                <div className="text-slate-400">
+                  <span className="text-slate-500">REMARKS</span> {entry.melRemarks}
+                </div>
+              )}
+              <div className="text-slate-400">
+                <span className="text-slate-500">APPROVED BY</span>{' '}
+                {entry.deferralApprovedByName}
+                {entry.deferralApprovedByCert && (
+                  <>
+                    <span className="text-slate-600 mx-1.5">·</span>
+                    <span className="text-slate-500">CERT</span> {entry.deferralApprovedByCert}
+                  </>
+                )}
+              </div>
+            </div>
+            {melCountdown && (
+              <div className={`text-center px-2 py-1 border whitespace-nowrap ${
+                melCountdown.urgent
+                  ? 'bg-red-500/20 border-red-500/40 text-red-200'
+                  : 'bg-slate-800 border-slate-700 text-slate-300'
+              }`}
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                <div className="text-[9px] tracking-widest opacity-70">MEL DUE</div>
+                <div className="text-sm font-semibold mt-0.5">{melCountdown.text}</div>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -328,12 +419,6 @@ function CreateAMLModal({ currentUser, fleetTails, onClose, onCreated }) {
         </div>
 
         <div className="p-4 space-y-3 max-h-[75vh] overflow-y-auto">
-          {/* Banner inside the modal too, for safety */}
-          <div className="border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            <AlertTriangle className="w-3 h-3 inline-block mr-1 -mt-0.5" />
-            PROTOTYPE — maintain paper AML alongside this digital record.
-          </div>
-
           {/* Date + tail + serial */}
           <div className="grid grid-cols-3 gap-3">
             <div>
@@ -436,12 +521,13 @@ function CreateAMLModal({ currentUser, fleetTails, onClose, onCreated }) {
             />
           </div>
 
-          {/* MEL placeholder (Turn 2 will fill this in) */}
+          {/* MEL deferral happens on a separate step after the AML is
+              created. Once saved, the row will have a DEFER TO MEL
+              button if the discrepancy needs to be deferred. */}
           <div className="border border-slate-700 border-dashed bg-slate-800/30 p-3 text-xs text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            <div className="text-[10px] tracking-widest text-slate-500 mb-1">MEL DEFERRAL (TURN 2)</div>
+            <div className="text-[10px] tracking-widest text-slate-500 mb-1">NEXT STEP</div>
             <div>
-              If this discrepancy is to be deferred under the MEL, the deferral will be added in a separate step after creating the AML.
-              The MEL lookup, DOM approval, and AOG creation are coming next.
+              After submitting this AML, an authorized person can DEFER TO MEL from the row, or maintenance can begin work and clear it directly.
             </div>
           </div>
 
@@ -505,6 +591,406 @@ function CreateAMLModal({ currentUser, fleetTails, onClose, onCreated }) {
           >
             {saving ? <Loader2 className="w-4 h-4 inline-block mr-1 animate-spin" /> : <FileText className="w-4 h-4 inline-block mr-1 -mt-0.5" />}
             {saving ? 'SAVING...' : 'SUBMIT AML'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ====================================================================
+// DEFER AML MODAL — DOM approval workflow that creates squawk + MEL + AOG
+// ====================================================================
+
+function DeferAMLModal({ aml, currentUser, onClose, onDeferred }) {
+  // MEL search state
+  const [searching, setSearching] = useState(false);
+  const [searchQuery, setSearchQuery] = useState(aml.discrepancy || '');
+  const [searchResults, setSearchResults] = useState([]);
+  const [searchNote, setSearchNote] = useState('');
+  const [selectedMelItem, setSelectedMelItem] = useState(null);
+
+  // Deferral details
+  const [category, setCategory] = useState('');           // A | B | C | D
+  const [limitDays, setLimitDays] = useState('');         // override for Cat A
+  const [dueDate, setDueDate] = useState('');
+  const [ataCode, setAtaCode] = useState('');
+  const [melItemRef, setMelItemRef] = useState('');
+  const [remarks, setRemarks] = useState('');
+
+  // DOM approval
+  const [approverName, setApproverName] = useState(currentUser?.name || currentUser?.displayName || '');
+  const [approverCert, setApproverCert] = useState(currentUser?.certificateNumber || '');
+  const [signatureDataUrl, setSignatureDataUrl] = useState(null);
+
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+
+  // Default category limits (CFR 121/135 MEL standard)
+  const categoryLimits = { A: null, B: 3, C: 10, D: 120 };
+
+  // Auto-compute due date when category changes
+  useEffect(() => {
+    if (!category) return;
+    const days = (limitDays && Number(limitDays)) || categoryLimits[category];
+    if (!days || !Number.isFinite(days)) {
+      // Cat A with no manual days — due date not auto-computable
+      if (category === 'A') setDueDate('');
+      return;
+    }
+    const due = new Date(Date.now() + days * 86400000);
+    setDueDate(due.toISOString().slice(0, 10));
+  }, [category, limitDays]);
+
+  // Subscribe to active MEL revision so we have the items list to
+  // resolve AI candidates against. Loads on modal open.
+  const [melItems, setMelItems] = useState([]);
+  useEffect(() => {
+    let unsub = () => {};
+    let cancelled = false;
+    (async () => {
+      const m = await import('./firebase-mel.js');
+      if (cancelled) return;
+      unsub = m.subscribeActiveRevision(aml.tail, (rev) => {
+        setMelItems(rev?.items || []);
+      });
+    })();
+    return () => { cancelled = true; try { unsub(); } catch (_) {} };
+  }, [aml.tail]);
+
+  // Lookup MEL items via /api/mel-search (existing AI endpoint)
+  async function runMelSearch() {
+    if (!searchQuery.trim()) return;
+    setSearching(true);
+    setSearchNote('');
+    setSearchResults([]);
+    try {
+      const { auth } = await import('./firebase.js');
+      const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : null;
+      const r = await fetch('/api/mel-search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken, tail: aml.tail, query: searchQuery }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setSearchNote(`MEL search: ${data.error || r.status}`);
+        return;
+      }
+      // mel-search returns refs; resolve to full items via firebase-mel
+      const m = await import('./firebase-mel.js');
+      const resolved = m.resolveRefs(melItems, data.candidates || []);
+      setSearchResults(resolved);
+      setSearchNote(data.note || 'Suggestions only — read provisos before deferring.');
+    } catch (e) {
+      setSearchNote(`Search failed: ${e.message}`);
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  // When a MEL item is picked, populate ref + ATA from it
+  function pickMelItem(item) {
+    setSelectedMelItem(item);
+    setMelItemRef(item.ref || item.itemRef || '');
+    setAtaCode(item.ata || item.ataCode || '');
+    // Most MEL items have a category embedded; use it if present
+    if (item.category && ['A', 'B', 'C', 'D'].includes(item.category)) {
+      setCategory(item.category);
+    }
+  }
+
+  async function handleApprove() {
+    setSaving(true);
+    setError(null);
+    try {
+      if (!category) throw new Error('Category required');
+      if (!approverName.trim()) throw new Error('Approver name required');
+      const { deferAML } = await import('./firebase-aml.js');
+      await deferAML({
+        amlId: aml.id,
+        aml,
+        melCategory: category,
+        melLimitDays: limitDays ? Number(limitDays) : undefined,
+        melRemarks: remarks.trim() || null,
+        melItemRef: melItemRef.trim() || null,
+        ataCode: ataCode.trim() || null,
+        dueDate: dueDate || null,
+        approver: {
+          uid: currentUser?.uid || null,
+          name: approverName.trim(),
+          certificateNumber: approverCert.trim() || null,
+        },
+        approverSignature: signatureDataUrl,
+      });
+      onDeferred();
+    } catch (e) {
+      setError(e.message || 'Deferral failed');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const canApprove = (
+    category &&
+    approverName.trim() &&
+    !saving
+  );
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+      <div className="bg-slate-900 border border-red-500/40 w-full max-w-3xl my-8">
+        <div className="border-b border-slate-800 px-4 py-3">
+          <h3 className="text-lg tracking-wider" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
+            DEFER TO MEL — DOM APPROVAL
+          </h3>
+          <p className="text-[10px] text-slate-500 mt-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            APPROVAL CREATES SQUAWK · MEL DEFERRAL · AOG RECORD
+          </p>
+        </div>
+
+        <div className="p-4 space-y-4 max-h-[80vh] overflow-y-auto">
+          {/* AML summary */}
+          <div className="bg-slate-800/40 border border-slate-700 p-3 text-xs" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            <div className="text-[10px] tracking-widest text-slate-500 mb-1">DEFERRING THIS AML</div>
+            <div className="text-slate-300">
+              <span className="text-slate-100" style={{ fontWeight: 600 }}>{aml.tail}</span>
+              {aml.serialNumber && <span className="text-slate-500"> · SN {aml.serialNumber}</span>}
+            </div>
+            <div className="text-slate-300 mt-1" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+              {aml.discrepancy}
+            </div>
+            <div className="text-slate-500 mt-1">
+              BY {aml.requestedByName}
+              {aml.requestedByCert && ` · CERT ${aml.requestedByCert}`}
+            </div>
+          </div>
+
+          {/* MEL search */}
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-[10px] tracking-widest text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                MEL LOOKUP — SEARCH BY DISCREPANCY
+              </label>
+            </div>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="e.g. left wing landing light inop"
+                className="flex-1 bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 text-sm"
+              />
+              <button
+                onClick={runMelSearch}
+                disabled={searching || !searchQuery.trim()}
+                className="px-3 py-2 border border-cyan-500/40 text-cyan-200 hover:bg-cyan-500/10 text-[10px] tracking-widest disabled:opacity-50"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              >
+                {searching ? <Loader2 className="w-3 h-3 inline animate-spin" /> : <Search className="w-3 h-3 inline" />}
+                {' '}SEARCH
+              </button>
+            </div>
+            {searchNote && (
+              <p className="text-[10px] text-slate-500 mt-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                {searchNote}
+              </p>
+            )}
+            {searchResults.length > 0 && (
+              <div className="mt-2 space-y-1 max-h-48 overflow-y-auto">
+                {searchResults.map((r, i) => {
+                  const refStr = r.ref || r.itemRef || `result-${i}`;
+                  const isSelected = selectedMelItem && (selectedMelItem.ref === refStr || selectedMelItem.itemRef === refStr);
+                  return (
+                    <button
+                      key={i}
+                      onClick={() => pickMelItem(r)}
+                      className={`w-full text-left p-2 border text-xs ${
+                        isSelected
+                          ? 'bg-cyan-500/15 border-cyan-500/40 text-cyan-200'
+                          : 'bg-slate-800/40 border-slate-700 hover:bg-slate-800 text-slate-200'
+                      }`}
+                      style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                    >
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-semibold">{refStr}</span>
+                        {r.ata && <span className="text-slate-500">ATA {r.ata}</span>}
+                        {r.category && <span className="text-amber-300">CAT {r.category}</span>}
+                      </div>
+                      {r.title && <div className="text-slate-400 mt-0.5" style={{ fontFamily: 'DM Sans, sans-serif' }}>{r.title}</div>}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            <p className="text-[10px] text-slate-500 mt-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              Search results are AI suggestions only. Read the actual MEL provisos before deferring.
+              You can also enter the MEL reference manually below.
+            </p>
+          </div>
+
+          {/* Deferral details */}
+          <div className="border-t border-slate-800 pt-3 space-y-3">
+            <div className="text-[10px] tracking-widest text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              DEFERRAL DETAILS
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="text-[10px] tracking-widest text-slate-500 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  MEL ITEM REF
+                </label>
+                <input
+                  type="text"
+                  value={melItemRef}
+                  onChange={(e) => setMelItemRef(e.target.value)}
+                  placeholder="33-40-01"
+                  className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 text-sm"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                />
+              </div>
+              <div>
+                <label className="text-[10px] tracking-widest text-slate-500 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  ATA CODE
+                </label>
+                <input
+                  type="text"
+                  value={ataCode}
+                  onChange={(e) => setAtaCode(e.target.value)}
+                  placeholder="33"
+                  className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 text-sm"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                />
+              </div>
+              <div>
+                <label className="text-[10px] tracking-widest text-slate-500 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  CATEGORY *
+                </label>
+                <select
+                  value={category}
+                  onChange={(e) => setCategory(e.target.value)}
+                  className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 text-sm"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                >
+                  <option value="">Select...</option>
+                  <option value="A">A — As specified in MEL</option>
+                  <option value="B">B — 3 days</option>
+                  <option value="C">C — 10 days</option>
+                  <option value="D">D — 120 days</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-[10px] tracking-widest text-slate-500 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  LIMIT DAYS {category === 'A' ? '(required for Cat A)' : '(override)'}
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  value={limitDays}
+                  onChange={(e) => setLimitDays(e.target.value)}
+                  placeholder={categoryLimits[category] !== null && categoryLimits[category] !== undefined ? `Default: ${categoryLimits[category]}` : 'Required'}
+                  className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 text-sm"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] tracking-widest text-slate-500 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  DUE DATE (auto-computed)
+                </label>
+                <input
+                  type="date"
+                  value={dueDate}
+                  onChange={(e) => setDueDate(e.target.value)}
+                  className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 text-sm"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="text-[10px] tracking-widest text-slate-500 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                REMARKS / NOTES
+              </label>
+              <textarea
+                value={remarks}
+                onChange={(e) => setRemarks(e.target.value)}
+                rows={2}
+                placeholder="Any DOM remarks on the deferral, operational notes, etc."
+                className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 text-sm"
+              />
+            </div>
+          </div>
+
+          {/* DOM approval block */}
+          <div className="border-t border-slate-800 pt-3 space-y-3">
+            <div className="text-[10px] tracking-widest text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              DOM APPROVAL — RETURN TO SERVICE AUTHORIZATION
+            </div>
+            <div className="bg-slate-800/30 border border-slate-700 p-3 text-[11px] text-slate-400" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+              By approving, you certify the above deferral is authorized under Skyway's approved MEL manual.
+              The aircraft will be placed AOG with the MEL countdown active. All systems deactivated by this MEL must be reactivated and signed off when the discrepancy is cleared (Part II of the AML).
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-[10px] tracking-widest text-slate-500 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  APPROVER NAME *
+                </label>
+                <input
+                  type="text"
+                  value={approverName}
+                  onChange={(e) => setApproverName(e.target.value)}
+                  className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] tracking-widest text-slate-500 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  CERTIFICATE #
+                </label>
+                <input
+                  type="text"
+                  value={approverCert}
+                  onChange={(e) => setApproverCert(e.target.value)}
+                  className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                />
+              </div>
+            </div>
+
+            <SignaturePad
+              label="DOM SIGNATURE (OPTIONAL)"
+              onChange={setSignatureDataUrl}
+              height={100}
+            />
+
+            <p className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              Authenticated as {currentUser?.name || currentUser?.displayName || '(unknown)'} · {new Date().toLocaleString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, month: 'short', day: 'numeric' })}
+            </p>
+          </div>
+
+          {error && (
+            <div className="border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+              {error}
+            </div>
+          )}
+        </div>
+
+        <div className="border-t border-slate-800 px-4 py-3 flex items-center justify-end gap-2">
+          <button
+            onClick={onClose}
+            disabled={saving}
+            className="px-4 py-2 text-sm text-slate-400 hover:text-slate-200"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            CANCEL
+          </button>
+          <button
+            onClick={handleApprove}
+            disabled={!canApprove}
+            className="px-4 py-2 bg-red-500 hover:bg-red-400 disabled:bg-slate-700 disabled:text-slate-500 text-slate-950 text-sm font-medium tracking-widest"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            {saving ? <Loader2 className="w-4 h-4 inline-block mr-1 animate-spin" /> : <AlertTriangle className="w-4 h-4 inline-block mr-1 -mt-0.5" />}
+            {saving ? 'APPROVING...' : 'APPROVE & GROUND AIRCRAFT'}
           </button>
         </div>
       </div>

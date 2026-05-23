@@ -149,3 +149,114 @@ export async function updateAMLStage(id, stage, extra = {}) {
     ...extra,
   });
 }
+
+/**
+ * Defer an AML under the MEL. This is the operational step the DOM
+ * performs to ground the aircraft for an inoperative item while
+ * allowing it to fly under MEL limitations.
+ *
+ * This single call creates THREE linked records:
+ *
+ *   1. A maint-squawk (grounding=true, status=deferred)
+ *      — feeds the FleetStatus board and downstream AOG handling
+ *   2. A maint-mel entry (the MEL deferral with category/limit days)
+ *      — what gets cleared when the repair is performed
+ *   3. Updates the AML to stage=DEFERRED with refs to both above
+ *      — keeps the AML as the master record connecting the dots
+ *
+ * All three need to succeed for the deferral to be valid. If any
+ * fails the partial state is logged but the caller sees an error;
+ * since the writes are sequential, a partial failure means manual
+ * cleanup. Future improvement: wrap in a Firestore transaction.
+ *
+ * @param {Object} args
+ * @param {string} args.amlId               which AML to defer
+ * @param {Object} args.aml                 the AML doc (for tail/discrepancy)
+ * @param {string} args.melCategory         A | B | C | D
+ * @param {number} [args.melLimitDays]      manual override for Cat A
+ * @param {string} [args.melRemarks]        DOM remarks on the deferral
+ * @param {string} [args.melItemRef]        ATA item reference from MEL
+ * @param {string} [args.ataCode]           ATA chapter code
+ * @param {string} [args.dueDate]           ISO date (computed if not passed)
+ * @param {Object} args.approver            { uid, name, certificateNumber }
+ * @param {string} [args.approverSignature] base64 PNG drawn signature
+ */
+export async function deferAML(args) {
+  const {
+    amlId, aml, melCategory, melLimitDays, melRemarks,
+    melItemRef, ataCode, dueDate, approver, approverSignature,
+  } = args;
+  if (!amlId || !aml) throw new Error('deferAML: amlId + aml required');
+  if (!aml.tail) throw new Error('deferAML: aml missing tail');
+  if (!melCategory) throw new Error('deferAML: melCategory required');
+  if (!approver?.name) throw new Error('deferAML: approver name required');
+
+  // Lazy-import the maint data layer so we don't pull it into the
+  // primary bundle for users who never touch AML.
+  const maint = await import('./firebase-maint.js');
+
+  // 1. Squawk — reported as grounding because a MEL deferral by
+  //    definition means the system is inoperative.
+  const squawkId = await maint.createSquawk({
+    tail: aml.tail,
+    description: aml.discrepancy || '(see AML)',
+    grounding: true,
+    byUid: aml.requestedBy,
+    byName: aml.requestedByName,
+    byRole: 'aml',
+  });
+
+  // 2. MEL deferral entry
+  const melId = await maint.createMelDeferral({
+    tail: aml.tail,
+    squawkId,
+    description: aml.discrepancy || '(see AML)',
+    category: melCategory,
+    limitDays: melLimitDays,
+    remarks: melRemarks || null,
+    deferredAt: Date.now(),
+  });
+
+  // 3. Mark the squawk as deferred and link the MEL item
+  //    (triageSquawk transitions status to 'deferred' when melItemId set)
+  await maint.triageSquawk(squawkId, {
+    melItemId: melId,
+    grounding: true,
+    byUid: approver.uid,
+    byName: approver.name,
+    note: `Deferred under MEL by ${approver.name}`,
+  });
+
+  // 4. Update the AML with refs + DOM approval event
+  const ref = doc(db, COLLECTION, amlId);
+  const snap = await getDoc(ref);
+  const history = Array.isArray(snap.data().history) ? snap.data().history : [];
+  history.push({
+    stage: 'DEFERRED',
+    at: Date.now(),
+    by: approver.uid,
+    byName: approver.name,
+    byCert: approver.certificateNumber || null,
+    note: `Approved deferral under MEL ${melItemRef || ''} (Cat ${melCategory})`.trim(),
+    signatureDataUrl: approverSignature || null,
+  });
+  await updateDoc(ref, {
+    stage: 'DEFERRED',
+    melItemId: melId,
+    squawkId,
+    melItemRef: melItemRef || null,
+    ataCode: ataCode || null,
+    melCategory,
+    melLimitDays: melLimitDays || null,
+    melDueDate: dueDate || null,
+    melRemarks: melRemarks || null,
+    deferralApprovedBy: approver.uid,
+    deferralApprovedByName: approver.name,
+    deferralApprovedByCert: approver.certificateNumber || null,
+    deferralApprovedAt: Date.now(),
+    deferralSignatureDataUrl: approverSignature || null,
+    history,
+  });
+
+  return { squawkId, melId };
+}
