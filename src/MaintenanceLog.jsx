@@ -102,7 +102,8 @@ export default function MaintenanceLog({ currentUser, users = [], allTrips = [] 
           {[
             { id: 'all',      label: 'ALL' },
             { id: 'CREATED',  label: 'OPEN' },
-            { id: 'DEFERRED', label: 'DEFERRED' },
+            { id: 'DEFERRED', label: 'MEL DEFERRED' },
+            { id: 'GROUNDED', label: 'GROUNDED' },
             { id: 'CLEARED',  label: 'CLEARED' },
             { id: 'RTS',      label: 'RTS' },
             { id: 'CLOSED',   label: 'CLOSED' },
@@ -191,7 +192,8 @@ export default function MaintenanceLog({ currentUser, users = [], allTrips = [] 
 function AMLRow({ entry, canDefer, onDefer }) {
   const stageColors = {
     CREATED:  { bg: 'bg-amber-500/15',  border: 'border-amber-500/40',  txt: 'text-amber-200',  label: 'OPEN' },
-    DEFERRED: { bg: 'bg-red-500/15',    border: 'border-red-500/40',    txt: 'text-red-300',    label: 'DEFERRED · AOG' },
+    DEFERRED: { bg: 'bg-cyan-500/15',   border: 'border-cyan-500/40',   txt: 'text-cyan-200',   label: 'MEL DEFERRED · AIRWORTHY' },
+    GROUNDED: { bg: 'bg-red-500/15',    border: 'border-red-500/40',    txt: 'text-red-300',    label: 'GROUNDED · AOG' },
     CLEARED:  { bg: 'bg-cyan-500/15',   border: 'border-cyan-500/40',   txt: 'text-cyan-200',   label: 'CLEARED — AWAITING RTS' },
     RTS:      { bg: 'bg-emerald-500/15',border: 'border-emerald-500/40',txt: 'text-emerald-300',label: 'RTS APPROVED' },
     CLOSED:   { bg: 'bg-slate-700/40',  border: 'border-slate-600',     txt: 'text-slate-400',  label: 'CLOSED' },
@@ -277,7 +279,7 @@ function AMLRow({ entry, canDefer, onDefer }) {
 
       {/* MEL details — only shown for DEFERRED stage */}
       {entry.stage === 'DEFERRED' && (
-        <div className="border-t border-red-500/20 mt-2 pt-2 bg-red-500/5 -mx-3 -mb-2.5 px-3 pb-2.5">
+        <div className="border-t border-cyan-500/20 mt-2 pt-2 bg-cyan-500/5 -mx-3 -mb-2.5 px-3 pb-2.5">
           <div className="grid grid-cols-[1fr_auto] gap-3 items-start">
             <div className="text-xs space-y-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
               <div>
@@ -323,6 +325,12 @@ function AMLRow({ entry, canDefer, onDefer }) {
                   </>
                 )}
               </div>
+              {entry.serviceRequestId && (
+                <div className="text-slate-400">
+                  <span className="text-slate-500">SR</span>{' '}
+                  <span className="text-cyan-200">{entry.serviceRequestId}</span>
+                </div>
+              )}
             </div>
             {melCountdown && (
               <div className={`text-center px-2 py-1 border whitespace-nowrap ${
@@ -333,6 +341,35 @@ function AMLRow({ entry, canDefer, onDefer }) {
                 style={{ fontFamily: 'JetBrains Mono, monospace' }}>
                 <div className="text-[9px] tracking-widest opacity-70">MEL DUE</div>
                 <div className="text-sm font-semibold mt-0.5">{melCountdown.text}</div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Grounded detail strip */}
+      {entry.stage === 'GROUNDED' && (
+        <div className="border-t border-red-500/20 mt-2 pt-2 bg-red-500/5 -mx-3 -mb-2.5 px-3 pb-2.5">
+          <div className="text-xs space-y-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {entry.groundingReason && (
+              <div className="text-slate-300">
+                <span className="text-slate-500">REASON</span> {entry.groundingReason}
+              </div>
+            )}
+            <div className="text-slate-400">
+              <span className="text-slate-500">GROUNDED BY</span>{' '}
+              {entry.groundedByName}
+              {entry.groundedByCert && (
+                <>
+                  <span className="text-slate-600 mx-1.5">·</span>
+                  <span className="text-slate-500">CERT</span> {entry.groundedByCert}
+                </>
+              )}
+            </div>
+            {entry.squawkId && (
+              <div className="text-slate-400">
+                <span className="text-slate-500">SQUAWK</span>{' '}
+                <span className="text-red-200">{entry.squawkId}</span>
               </div>
             )}
           </div>
@@ -617,6 +654,11 @@ function DeferAMLModal({ aml, currentUser, onClose, onDeferred }) {
   const [ataCode, setAtaCode] = useState('');
   const [melItemRef, setMelItemRef] = useState('');
   const [remarks, setRemarks] = useState('');
+  // Where the maintenance work will happen (for Service Request creation)
+  const [serviceLocation, setServiceLocation] = useState('');
+  const [serviceFbo, setServiceFbo] = useState('');
+  // Grounding rationale (only used if DOM determines non-MEL'able)
+  const [groundingReason, setGroundingReason] = useState('');
 
   // DOM approval
   const [approverName, setApproverName] = useState(currentUser?.name || currentUser?.displayName || '');
@@ -700,14 +742,17 @@ function DeferAMLModal({ aml, currentUser, onClose, onDeferred }) {
     }
   }
 
-  async function handleApprove() {
+  // PATH A — deferred under MEL. Aircraft remains airworthy under
+  // MEL provisos; creates Service Request (not AOG).
+  async function handleDeferAsMELable() {
     setSaving(true);
     setError(null);
     try {
-      if (!category) throw new Error('Category required');
+      if (!category) throw new Error('Category required for MEL deferral');
+      if (!melItemRef.trim()) throw new Error('MEL item reference required — search and select, or enter manually');
       if (!approverName.trim()) throw new Error('Approver name required');
-      const { deferAML } = await import('./firebase-aml.js');
-      await deferAML({
+      const { deferAMLAsMELable } = await import('./firebase-aml.js');
+      await deferAMLAsMELable({
         amlId: aml.id,
         aml,
         melCategory: category,
@@ -716,6 +761,8 @@ function DeferAMLModal({ aml, currentUser, onClose, onDeferred }) {
         melItemRef: melItemRef.trim() || null,
         ataCode: ataCode.trim() || null,
         dueDate: dueDate || null,
+        location: serviceLocation.trim() || null,
+        fboName: serviceFbo.trim() || null,
         approver: {
           uid: currentUser?.uid || null,
           name: approverName.trim(),
@@ -731,8 +778,50 @@ function DeferAMLModal({ aml, currentUser, onClose, onDeferred }) {
     }
   }
 
-  const canApprove = (
+  // PATH B — non-MEL'able. Aircraft grounded; creates AOG squawk.
+  async function handleGroundAircraft() {
+    setSaving(true);
+    setError(null);
+    try {
+      if (!approverName.trim()) throw new Error('Approver name required');
+      // Confirm before grounding — this is consequential
+      if (!window.confirm(
+        `Confirm grounding aircraft ${aml.tail}?\n\n` +
+        `This will create an AOG squawk and mark the aircraft non-airworthy ` +
+        `until DOM signs off on a return to service.\n\n` +
+        `Reason: ${groundingReason.trim() || '(none stated)'}`
+      )) {
+        setSaving(false);
+        return;
+      }
+      const { groundAML } = await import('./firebase-aml.js');
+      await groundAML({
+        amlId: aml.id,
+        aml,
+        reason: groundingReason.trim() || null,
+        approver: {
+          uid: currentUser?.uid || null,
+          name: approverName.trim(),
+          certificateNumber: approverCert.trim() || null,
+        },
+        approverSignature: signatureDataUrl,
+      });
+      onDeferred();
+    } catch (e) {
+      setError(e.message || 'Grounding failed');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // Two different gates depending on action chosen at submit time.
+  const canDeferAsMELable = (
     category &&
+    melItemRef.trim() &&
+    approverName.trim() &&
+    !saving
+  );
+  const canGroundAircraft = (
     approverName.trim() &&
     !saving
   );
@@ -742,10 +831,10 @@ function DeferAMLModal({ aml, currentUser, onClose, onDeferred }) {
       <div className="bg-slate-900 border border-red-500/40 w-full max-w-3xl my-8">
         <div className="border-b border-slate-800 px-4 py-3">
           <h3 className="text-lg tracking-wider" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
-            DEFER TO MEL — DOM APPROVAL
+            DOM REVIEW — DEFER OR GROUND
           </h3>
           <p className="text-[10px] text-slate-500 mt-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            APPROVAL CREATES SQUAWK · MEL DEFERRAL · AOG RECORD
+            CHOOSE ONE: DEFER UNDER MEL (AIRWORTHY · SR CREATED) OR GROUND AIRCRAFT (AOG)
           </p>
         </div>
 
@@ -797,28 +886,97 @@ function DeferAMLModal({ aml, currentUser, onClose, onDeferred }) {
               </p>
             )}
             {searchResults.length > 0 && (
-              <div className="mt-2 space-y-1 max-h-48 overflow-y-auto">
+              <div className="mt-2 space-y-2 max-h-96 overflow-y-auto">
                 {searchResults.map((r, i) => {
                   const refStr = r.ref || r.itemRef || `result-${i}`;
                   const isSelected = selectedMelItem && (selectedMelItem.ref === refStr || selectedMelItem.itemRef === refStr);
+                  // Compose the item title from whatever fields are present
+                  const itemName = r.subitem
+                    ? `${r.item || ''} — ${r.subitem}. ${r.subitem_name || ''}`.trim()
+                    : (r.item || r.title || refStr);
+                  const systemName = [r.system, r.system_name].filter(Boolean).join(' ');
                   return (
-                    <button
+                    <div
                       key={i}
-                      onClick={() => pickMelItem(r)}
-                      className={`w-full text-left p-2 border text-xs ${
+                      className={`border ${
                         isSelected
-                          ? 'bg-cyan-500/15 border-cyan-500/40 text-cyan-200'
-                          : 'bg-slate-800/40 border-slate-700 hover:bg-slate-800 text-slate-200'
+                          ? 'bg-cyan-500/10 border-cyan-500/40'
+                          : 'bg-slate-800/40 border-slate-700'
                       }`}
-                      style={{ fontFamily: 'JetBrains Mono, monospace' }}
                     >
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-semibold">{refStr}</span>
-                        {r.ata && <span className="text-slate-500">ATA {r.ata}</span>}
-                        {r.category && <span className="text-amber-300">CAT {r.category}</span>}
+                      {/* Header row — click to select */}
+                      <button
+                        onClick={() => pickMelItem(r)}
+                        className="w-full text-left p-2.5 hover:bg-slate-800/60"
+                        style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                      >
+                        <div className="flex items-center gap-2 flex-wrap text-xs">
+                          <span className="font-semibold text-slate-100">{refStr}</span>
+                          {r.ata && <span className="text-slate-500">ATA {r.ata}</span>}
+                          {r.category && (
+                            <span className="text-amber-300 font-semibold">CAT {r.category}</span>
+                          )}
+                          {r.non_relief === true && (
+                            <span className="px-1.5 py-0.5 bg-red-500/20 border border-red-500/40 text-red-200 text-[9px] tracking-widest">
+                              NON-RELIEF
+                            </span>
+                          )}
+                          {isSelected && (
+                            <span className="ml-auto text-cyan-300 text-[10px]">✓ SELECTED</span>
+                          )}
+                        </div>
+                        {systemName && (
+                          <div className="text-[10px] text-slate-500 mt-1">
+                            {systemName}
+                          </div>
+                        )}
+                        <div className="text-sm text-slate-200 mt-1" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                          {itemName}
+                        </div>
+                        {/* Required-on-aircraft / for-dispatch */}
+                        {(r.number_installed || r.number_required) && (
+                          <div className="text-[10px] text-slate-500 mt-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                            {r.number_installed != null && <>INSTALLED {r.number_installed}</>}
+                            {r.number_required != null && <> · REQ FOR DISPATCH {r.number_required}</>}
+                          </div>
+                        )}
+                      </button>
+
+                      {/* Full details — always visible below the header */}
+                      <div className="border-t border-slate-700/50 px-2.5 py-2 text-xs space-y-2">
+                        {/* Provisos (the most important field for the DOM) */}
+                        {r.remarks ? (
+                          <div>
+                            <div className="text-[10px] tracking-widest text-slate-500 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                              PROVISOS / REMARKS
+                            </div>
+                            <div className="text-slate-200 whitespace-pre-wrap" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                              {r.remarks}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="text-[10px] text-slate-600 italic" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                            (no provisos extracted from MEL — verify against source document before deferring)
+                          </div>
+                        )}
+                        {/* M / O procedures required */}
+                        {(r.maint_required || r.ops_required) && (
+                          <div className="flex items-center gap-3 flex-wrap" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                            <span className="text-[10px] tracking-widest text-slate-500">REQUIRES:</span>
+                            {r.maint_required && (
+                              <span className="px-2 py-0.5 bg-amber-500/15 border border-amber-500/40 text-amber-200 text-[10px] tracking-widest">
+                                (M) MAINT PROCEDURE
+                              </span>
+                            )}
+                            {r.ops_required && (
+                              <span className="px-2 py-0.5 bg-cyan-500/15 border border-cyan-500/40 text-cyan-200 text-[10px] tracking-widest">
+                                (O) OPS PROCEDURE
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </div>
-                      {r.title && <div className="text-slate-400 mt-0.5" style={{ fontFamily: 'DM Sans, sans-serif' }}>{r.title}</div>}
-                    </button>
+                    </div>
                   );
                 })}
               </div>
@@ -872,10 +1030,10 @@ function DeferAMLModal({ aml, currentUser, onClose, onDeferred }) {
                   style={{ fontFamily: 'JetBrains Mono, monospace' }}
                 >
                   <option value="">Select...</option>
-                  <option value="A">A — As specified in MEL</option>
-                  <option value="B">B — 3 days</option>
-                  <option value="C">C — 10 days</option>
-                  <option value="D">D — 120 days</option>
+                  <option value="A">A — Per MEL provisos</option>
+                  <option value="B">B — 3 consecutive calendar days</option>
+                  <option value="C">C — 10 consecutive calendar days</option>
+                  <option value="D">D — 120 consecutive calendar days</option>
                 </select>
               </div>
             </div>
@@ -919,17 +1077,69 @@ function DeferAMLModal({ aml, currentUser, onClose, onDeferred }) {
                 className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 text-sm"
               />
             </div>
+
+            {/* Service request fields — where the deferred work will
+                actually happen. Only used for PATH A. */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-[10px] tracking-widest text-slate-500 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  SERVICE LOCATION (airport)
+                </label>
+                <input
+                  type="text"
+                  value={serviceLocation}
+                  onChange={(e) => setServiceLocation(e.target.value.toUpperCase())}
+                  placeholder="e.g. KFXE"
+                  className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 text-sm"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                />
+              </div>
+              <div>
+                <label className="text-[10px] tracking-widest text-slate-500 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  FBO / FACILITY
+                </label>
+                <input
+                  type="text"
+                  value={serviceFbo}
+                  onChange={(e) => setServiceFbo(e.target.value)}
+                  placeholder="e.g. Banyan Air Service"
+                  className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 text-sm"
+                />
+              </div>
+            </div>
+            <p className="text-[10px] text-slate-500 -mt-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              Location + FBO used for the Service Request (PATH A only). Leave blank if grounding.
+            </p>
           </div>
 
           {/* DOM approval block */}
           <div className="border-t border-slate-800 pt-3 space-y-3">
             <div className="text-[10px] tracking-widest text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              DOM APPROVAL — RETURN TO SERVICE AUTHORIZATION
+              DOM APPROVAL
             </div>
             <div className="bg-slate-800/30 border border-slate-700 p-3 text-[11px] text-slate-400" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-              By approving, you certify the above deferral is authorized under Skyway's approved MEL manual.
-              The aircraft will be placed AOG with the MEL countdown active. All systems deactivated by this MEL must be reactivated and signed off when the discrepancy is cleared (Part II of the AML).
+              <div className="mb-2">
+                <span className="font-semibold text-slate-300">Path A — Defer Under MEL:</span> Aircraft remains airworthy under MEL provisos. Creates a Service Request to track repair within the MEL time limit. All systems deactivated by the MEL must be reactivated and signed off when the discrepancy is cleared (Part II of the AML).
+              </div>
+              <div>
+                <span className="font-semibold text-red-300">Path B — Cannot Defer:</span> Aircraft is grounded (AOG) until repaired and DOM signs off on Return to Service. No MEL deferral created.
+              </div>
             </div>
+
+            {/* Grounding rationale — only relevant for Path B */}
+            <div>
+              <label className="text-[10px] tracking-widest text-slate-500 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                GROUNDING RATIONALE (only used if choosing PATH B)
+              </label>
+              <textarea
+                value={groundingReason}
+                onChange={(e) => setGroundingReason(e.target.value)}
+                rows={2}
+                placeholder="If grounding the aircraft, briefly state why this item is non-MEL'able or otherwise not deferrable."
+                className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 text-sm"
+              />
+            </div>
+
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="text-[10px] tracking-widest text-slate-500 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
@@ -974,7 +1184,7 @@ function DeferAMLModal({ aml, currentUser, onClose, onDeferred }) {
           )}
         </div>
 
-        <div className="border-t border-slate-800 px-4 py-3 flex items-center justify-end gap-2">
+        <div className="border-t border-slate-800 px-4 py-3 flex items-center justify-end gap-2 flex-wrap">
           <button
             onClick={onClose}
             disabled={saving}
@@ -984,13 +1194,24 @@ function DeferAMLModal({ aml, currentUser, onClose, onDeferred }) {
             CANCEL
           </button>
           <button
-            onClick={handleApprove}
-            disabled={!canApprove}
-            className="px-4 py-2 bg-red-500 hover:bg-red-400 disabled:bg-slate-700 disabled:text-slate-500 text-slate-950 text-sm font-medium tracking-widest"
+            onClick={handleGroundAircraft}
+            disabled={!canGroundAircraft}
+            className="px-4 py-2 bg-red-500/20 hover:bg-red-500/30 border border-red-500/60 disabled:bg-slate-800 disabled:border-slate-700 disabled:text-slate-500 text-red-200 text-sm font-medium tracking-widest"
             style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            title="Use when the discrepancy cannot be deferred under the MEL"
           >
             {saving ? <Loader2 className="w-4 h-4 inline-block mr-1 animate-spin" /> : <AlertTriangle className="w-4 h-4 inline-block mr-1 -mt-0.5" />}
-            {saving ? 'APPROVING...' : 'APPROVE & GROUND AIRCRAFT'}
+            GROUND AIRCRAFT (AOG)
+          </button>
+          <button
+            onClick={handleDeferAsMELable}
+            disabled={!canDeferAsMELable}
+            className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-700 disabled:text-slate-500 text-slate-950 text-sm font-medium tracking-widest"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            title="Use when the discrepancy can be deferred under the MEL with provisos"
+          >
+            {saving ? <Loader2 className="w-4 h-4 inline-block mr-1 animate-spin" /> : <FileText className="w-4 h-4 inline-block mr-1 -mt-0.5" />}
+            DEFER UNDER MEL (SR · NOT GROUNDED)
           </button>
         </div>
       </div>

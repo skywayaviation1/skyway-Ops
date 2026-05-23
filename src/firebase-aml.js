@@ -151,65 +151,51 @@ export async function updateAMLStage(id, stage, extra = {}) {
 }
 
 /**
- * Defer an AML under the MEL. This is the operational step the DOM
- * performs to ground the aircraft for an inoperative item while
- * allowing it to fly under MEL limitations.
+ * Defer an AML under the MEL. The aircraft REMAINS AIRWORTHY under
+ * MEL provisos — this is the correct behavior because deferring an
+ * item under the MEL means the operator has determined the aircraft
+ * can fly with that item inoperative (with whatever provisos the MEL
+ * specifies).
  *
- * This single call creates THREE linked records:
- *
- *   1. A maint-squawk (grounding=true, status=deferred)
- *      — feeds the FleetStatus board and downstream AOG handling
+ * This creates:
+ *   1. A Service Request (NOT a grounding squawk) so maintenance has
+ *      a tracked task to clear the deferral within the MEL time limit.
  *   2. A maint-mel entry (the MEL deferral with category/limit days)
- *      — what gets cleared when the repair is performed
- *   3. Updates the AML to stage=DEFERRED with refs to both above
- *      — keeps the AML as the master record connecting the dots
- *
- * All three need to succeed for the deferral to be valid. If any
- * fails the partial state is logged but the caller sees an error;
- * since the writes are sequential, a partial failure means manual
- * cleanup. Future improvement: wrap in a Firestore transaction.
+ *      — what gets cleared when the deferral is repaired.
+ *   3. Updates the AML to stage=DEFERRED with refs to both above.
  *
  * @param {Object} args
- * @param {string} args.amlId               which AML to defer
+ * @param {string} args.amlId
  * @param {Object} args.aml                 the AML doc (for tail/discrepancy)
  * @param {string} args.melCategory         A | B | C | D
  * @param {number} [args.melLimitDays]      manual override for Cat A
- * @param {string} [args.melRemarks]        DOM remarks on the deferral
+ * @param {string} [args.melRemarks]
  * @param {string} [args.melItemRef]        ATA item reference from MEL
- * @param {string} [args.ataCode]           ATA chapter code
- * @param {string} [args.dueDate]           ISO date (computed if not passed)
+ * @param {string} [args.ataCode]
+ * @param {string} [args.dueDate]           ISO date
+ * @param {string} [args.location]          airport code where aircraft is
+ * @param {string} [args.fboName]           FBO where service will happen
  * @param {Object} args.approver            { uid, name, certificateNumber }
  * @param {string} [args.approverSignature] base64 PNG drawn signature
  */
-export async function deferAML(args) {
+export async function deferAMLAsMELable(args) {
   const {
     amlId, aml, melCategory, melLimitDays, melRemarks,
-    melItemRef, ataCode, dueDate, approver, approverSignature,
+    melItemRef, ataCode, dueDate, location, fboName,
+    approver, approverSignature,
   } = args;
-  if (!amlId || !aml) throw new Error('deferAML: amlId + aml required');
-  if (!aml.tail) throw new Error('deferAML: aml missing tail');
-  if (!melCategory) throw new Error('deferAML: melCategory required');
-  if (!approver?.name) throw new Error('deferAML: approver name required');
+  if (!amlId || !aml) throw new Error('deferAMLAsMELable: amlId + aml required');
+  if (!aml.tail) throw new Error('deferAMLAsMELable: aml missing tail');
+  if (!melCategory) throw new Error('deferAMLAsMELable: melCategory required');
+  if (!approver?.name) throw new Error('deferAMLAsMELable: approver name required');
 
-  // Lazy-import the maint data layer so we don't pull it into the
-  // primary bundle for users who never touch AML.
   const maint = await import('./firebase-maint.js');
+  const service = await import('./firebase-service.js');
 
-  // 1. Squawk — reported as grounding because a MEL deferral by
-  //    definition means the system is inoperative.
-  const squawkId = await maint.createSquawk({
-    tail: aml.tail,
-    description: aml.discrepancy || '(see AML)',
-    grounding: true,
-    byUid: aml.requestedBy,
-    byName: aml.requestedByName,
-    byRole: 'aml',
-  });
-
-  // 2. MEL deferral entry
+  // 1. MEL deferral entry (this is the MEL log that tracks the countdown)
   const melId = await maint.createMelDeferral({
     tail: aml.tail,
-    squawkId,
+    squawkId: null,           // no squawk — aircraft is airworthy
     description: aml.discrepancy || '(see AML)',
     category: melCategory,
     limitDays: melLimitDays,
@@ -217,17 +203,24 @@ export async function deferAML(args) {
     deferredAt: Date.now(),
   });
 
-  // 3. Mark the squawk as deferred and link the MEL item
-  //    (triageSquawk transitions status to 'deferred' when melItemId set)
-  await maint.triageSquawk(squawkId, {
-    melItemId: melId,
-    grounding: true,
-    byUid: approver.uid,
-    byName: approver.name,
-    note: `Deferred under MEL by ${approver.name}`,
+  // 2. Service Request so maintenance has a tracked task to clear
+  //    the deferral within the time limit. NOT an AOG record —
+  //    aircraft remains airworthy under MEL provisos.
+  const srId = await service.createServiceRequest({
+    tail: aml.tail,
+    location: location || aml.tail,   // best-guess fallback
+    fboName: fboName || '',
+    serviceDescription: `Clear MEL deferral${melItemRef ? ` ${melItemRef}` : ''}: ${aml.discrepancy || '(see AML)'}`.slice(0, 4000),
+    serviceType: `MEL Cat ${melCategory}${dueDate ? ` · Due ${dueDate}` : ''}`,
+    requestedDate: dueDate || new Date().toISOString().slice(0, 10),
+    recipients: [],
+    requester: {
+      uid: approver.uid,
+      displayName: approver.name,
+    },
   });
 
-  // 4. Update the AML with refs + DOM approval event
+  // 3. Update AML
   const ref = doc(db, COLLECTION, amlId);
   const snap = await getDoc(ref);
   const history = Array.isArray(snap.data().history) ? snap.data().history : [];
@@ -237,13 +230,13 @@ export async function deferAML(args) {
     by: approver.uid,
     byName: approver.name,
     byCert: approver.certificateNumber || null,
-    note: `Approved deferral under MEL ${melItemRef || ''} (Cat ${melCategory})`.trim(),
+    note: `Approved deferral under MEL ${melItemRef || ''} (Cat ${melCategory}) — aircraft remains airworthy. SR ${srId} created.`.trim(),
     signatureDataUrl: approverSignature || null,
   });
   await updateDoc(ref, {
     stage: 'DEFERRED',
     melItemId: melId,
-    squawkId,
+    serviceRequestId: srId,
     melItemRef: melItemRef || null,
     ataCode: ataCode || null,
     melCategory,
@@ -258,5 +251,65 @@ export async function deferAML(args) {
     history,
   });
 
-  return { squawkId, melId };
+  return { melId, serviceRequestId: srId };
+}
+
+/**
+ * Ground the aircraft for an AML that CANNOT be deferred under the
+ * MEL. This is the path the DOM takes when the discrepancy isn't a
+ * MEL'able item, or doesn't meet the provisos for deferral.
+ *
+ * This creates:
+ *   1. A maint-squawk record with grounding=true. Feeds the existing
+ *      FleetStatus board and AOG infrastructure.
+ *   2. Updates the AML to stage=GROUNDED with the grounding rationale.
+ *
+ * NO MEL deferral entry, NO Service Request — those are only for the
+ * MEL'able path. The aircraft is AOG until repaired and DOM signs off
+ * on the return-to-service.
+ */
+export async function groundAML(args) {
+  const { amlId, aml, reason, approver, approverSignature } = args;
+  if (!amlId || !aml) throw new Error('groundAML: amlId + aml required');
+  if (!aml.tail) throw new Error('groundAML: aml missing tail');
+  if (!approver?.name) throw new Error('groundAML: approver name required');
+
+  const maint = await import('./firebase-maint.js');
+
+  // 1. Grounding squawk
+  const squawkId = await maint.createSquawk({
+    tail: aml.tail,
+    description: aml.discrepancy || '(see AML)',
+    grounding: true,
+    byUid: approver.uid,
+    byName: approver.name,
+    byRole: 'aml',
+  });
+
+  // 2. Update AML
+  const ref = doc(db, COLLECTION, amlId);
+  const snap = await getDoc(ref);
+  const history = Array.isArray(snap.data().history) ? snap.data().history : [];
+  history.push({
+    stage: 'GROUNDED',
+    at: Date.now(),
+    by: approver.uid,
+    byName: approver.name,
+    byCert: approver.certificateNumber || null,
+    note: `Aircraft grounded — discrepancy non-MEL'able. ${reason || ''}`.trim(),
+    signatureDataUrl: approverSignature || null,
+  });
+  await updateDoc(ref, {
+    stage: 'GROUNDED',
+    squawkId,
+    groundingReason: reason || null,
+    groundedBy: approver.uid,
+    groundedByName: approver.name,
+    groundedByCert: approver.certificateNumber || null,
+    groundedAt: Date.now(),
+    groundingSignatureDataUrl: approverSignature || null,
+    history,
+  });
+
+  return { squawkId };
 }
