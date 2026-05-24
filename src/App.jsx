@@ -4797,6 +4797,193 @@ function AdminDutyDashboard({ currentUser, users, allTrips }) {
   );
 }
 
+// ====================================================================
+// FLIGHT BOARD MINI — compact home-screen view of active fleet
+// ====================================================================
+//
+// Glanceable summary of today's active flights. Shows up to 6 rows
+// (preflight / airborne / landed status) so a user opening the app
+// can see what's flying without going to TRACKING. Click any row to
+// jump to TRACKING for the full board with the live map.
+//
+// Subscribes to the same data sources as FlightBoard:
+//   - subscribeAllTripStates: phase via wheels_up/landed/completed flags
+//   - subscribeFleetPositions: live FlightAware data for airborne ETA
+//
+// Filtering matches FlightBoard's "active" definition: today's trips
+// (Eastern), plus anything in-progress within the last 24h.
+
+function FlightBoardMini({ allTrips, onOpen }) {
+  const [stateMap, setStateMap] = useState(new Map());
+  const [faPositions, setFaPositions] = useState({});
+  const [, setTick] = useState(0);
+
+  // Trip-state subscription (statuses, completion flags)
+  useEffect(() => {
+    let unsub = () => {};
+    (async () => {
+      const m = await import('./firebase-data.js');
+      unsub = m.subscribeAllTripStates((map) => setStateMap(map));
+    })();
+    return () => { try { unsub(); } catch (_) {} };
+  }, []);
+
+  // FA position subscription (for airborne ETA)
+  useEffect(() => {
+    let unsub = () => {};
+    (async () => {
+      const m = await import('./firebase-data.js');
+      unsub = m.subscribeFleetPositions((map) => setFaPositions(map));
+    })();
+    return () => { try { unsub(); } catch (_) {} };
+  }, []);
+
+  // Re-tick every minute so countdowns / time-since stay fresh
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 60_000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Compute today's active set — same logic as FlightBoard
+  const active = useMemo(() => {
+    if (!Array.isArray(allTrips)) return [];
+    const now = Date.now();
+    // Today's window in Eastern, plus anything still operating within
+    // the last 24h
+    const earliestStart = now - 24 * 3600 * 1000;
+    return allTrips
+      .filter((t) => {
+        const start = t.start ? new Date(t.start).getTime() : 0;
+        if (start === 0) return false;
+        // Drop completed and far-past
+        const st = stateMap.get(t.uid);
+        if (st?.completed) return false;
+        if (start < earliestStart) return false;
+        // Cap at 24h ahead so we don't load tomorrow's stuff
+        if (start > now + 24 * 3600 * 1000) return false;
+        return true;
+      })
+      .sort((a, b) => new Date(a.start || 0) - new Date(b.start || 0))
+      .slice(0, 6);
+  }, [allTrips, stateMap]);
+
+  if (active.length === 0) {
+    return (
+      <div className="border border-slate-800 bg-slate-900/30 p-4 text-center">
+        <div className="text-[10px] tracking-widest text-slate-500 mb-2"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          FLIGHT BOARD
+        </div>
+        <p className="text-xs text-slate-500" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+          No active flights right now.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="border border-slate-800 bg-slate-900/30">
+      <div className="px-3 py-2 border-b border-slate-800 flex items-center justify-between">
+        <div className="text-[10px] tracking-widest text-slate-400"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          FLIGHT BOARD · {active.length} ACTIVE
+        </div>
+        {onOpen && (
+          <button
+            onClick={() => onOpen('tracking')}
+            className="text-[10px] tracking-widest text-cyan-400 hover:text-cyan-300"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            OPEN BOARD →
+          </button>
+        )}
+      </div>
+      <div className="divide-y divide-slate-800">
+        {active.map((t) => (
+          <MiniFlightRow
+            key={t.uid}
+            trip={t}
+            state={stateMap.get(t.uid)}
+            faPosition={faPositions[(t.info?.tail || '').toUpperCase()]}
+            onOpen={onOpen}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MiniFlightRow({ trip, state, faPosition, onOpen }) {
+  // Use the shared phase computation from FlightBoard.jsx so home and
+  // tracking page agree on what 'airborne' means etc.
+  const [phase, setPhase] = useState('pending');
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { tripPhase } = await import('./FlightBoard.jsx');
+      if (!cancelled) setPhase(tripPhase(trip, state));
+    })();
+    return () => { cancelled = true; };
+  }, [trip, state]);
+
+  const phaseColors = {
+    pending:    { bg: 'bg-slate-800/60',     txt: 'text-slate-400',  label: 'PENDING' },
+    preflight:  { bg: 'bg-amber-500/20',     txt: 'text-amber-300',  label: 'PRE-FLT' },
+    airborne:   { bg: 'bg-cyan-500/25',      txt: 'text-cyan-200',   label: 'AIRBORNE' },
+    landed:     { bg: 'bg-emerald-500/20',   txt: 'text-emerald-300',label: 'LANDED' },
+    completed:  { bg: 'bg-slate-700/40',     txt: 'text-slate-400',  label: 'DONE' },
+  };
+  const pc = phaseColors[phase] || phaseColors.pending;
+
+  // Departure or ETA depending on phase
+  let timeStr = '';
+  try {
+    if (phase === 'airborne' && faPosition?.estimatedOn) {
+      const eta = new Date(faPosition.estimatedOn);
+      const remainMs = eta.getTime() - Date.now();
+      if (remainMs > 0) {
+        const h = Math.floor(remainMs / 3600_000);
+        const m = Math.floor((remainMs % 3600_000) / 60_000);
+        timeStr = h > 0 ? `ETA ${h}h${m}m` : `ETA ${m}m`;
+      } else {
+        timeStr = 'LANDING';
+      }
+    } else if (trip.start) {
+      timeStr = new Date(trip.start).toLocaleString('en-US', {
+        hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/New_York',
+      }).replace(' ', '');
+    }
+  } catch (_) {}
+
+  return (
+    <button
+      onClick={() => onOpen && onOpen('tracking')}
+      className="w-full px-3 py-2 flex items-center gap-2 hover:bg-slate-800/40 text-left"
+    >
+      {/* Phase pill */}
+      <div className={`text-[9px] tracking-widest font-semibold px-1.5 py-0.5 ${pc.bg} ${pc.txt} whitespace-nowrap`}
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        {pc.label}
+      </div>
+      {/* Tail */}
+      <div className="text-sm text-slate-100 font-semibold whitespace-nowrap"
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        {(trip.info?.tail || '?').toUpperCase()}
+      </div>
+      {/* Route */}
+      <div className="text-xs text-slate-300 truncate flex-1"
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        {(trip.info?.from || '???').toUpperCase()} → {(trip.info?.to || '???').toUpperCase()}
+      </div>
+      {/* Time / ETA */}
+      <div className={`text-[10px] tracking-widest whitespace-nowrap ${phase === 'airborne' ? 'text-cyan-300' : 'text-slate-400'}`}
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        {timeStr}
+      </div>
+    </button>
+  );
+}
+
 function PilotHomeScreen({ currentUser, trips, tripStates, config, users, onSelectTrip, onSwitchSection }) {
   // Filter to MY trips (PIC/SIC match)
   const myTrips = useMemo(() => {
@@ -4867,6 +5054,10 @@ function PilotHomeScreen({ currentUser, trips, tripStates, config, users, onSele
           <StatCard label="NEXT 12H" value={buckets.imminent.length} tone={buckets.imminent.length > 0 ? 'amber' : 'muted'} />
           <StatCard label="UPCOMING" value={buckets.upcoming.length} tone="muted" />
         </div>
+
+        {/* Mini flight board — fleet-wide view of active flights right now.
+            Clicking any row navigates to the full TRACKING board. */}
+        <FlightBoardMini allTrips={trips} onOpen={onSwitchSection} />
 
         {/* Focus card — the most relevant trip right now */}
         {focusTrip ? (
@@ -22027,9 +22218,10 @@ export default function CharterOps() {
   // ~150 lines later via useMemo — referencing it here would hit TDZ in
   // production minified builds. profile is the auth profile and gives us
   // the role we need for the initial section decision.
-  const [section, setSection] = useState(
-    profile?.role === 'crew' ? 'home' : 'schedule'
-  );
+  // Default landing section for ALL roles is HOME — gives everyone the
+  // personalized landing experience (focus trip, mini flight board, etc).
+  // Users can navigate to SCHEDULE or any other tab from there.
+  const [section, setSection] = useState('home');
   // FlightAware live tracking kill switch — synced from Firestore so admin can
   // disable it cluster-wide if costs spike. Default: enabled.
   const [trackingEnabled, setTrackingEnabled] = useState(true);
