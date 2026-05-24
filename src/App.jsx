@@ -22023,10 +22023,19 @@ export function SplashScreen() {
   return (
     <button
       onClick={() => setShow(false)}
-      className="fixed inset-0 z-[100] bg-slate-950 focus:outline-none cursor-pointer w-full h-full"
+      className="fixed inset-0 z-[100] focus:outline-none cursor-pointer w-full h-full"
       style={{
+        // Solid dark background fills any letterbox area on aspect
+        // ratios that don't match the splash image. Color picked to
+        // blend with the image's top edge (deep aviation blue).
+        backgroundColor: '#03254c',
         backgroundImage: 'url(/splash.jpg)',
-        backgroundSize: 'cover',
+        // 'contain' guarantees the WHOLE image is visible — including
+        // the LET'S GO button graphic at the bottom — at the cost of
+        // small letterbox bars on aspect ratios that don't match. On
+        // typical phone portrait, the bars are tiny or invisible.
+        // 'cover' would crop the button off on shorter screens.
+        backgroundSize: 'contain',
         backgroundPosition: 'center',
         backgroundRepeat: 'no-repeat',
       }}
