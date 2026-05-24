@@ -810,7 +810,12 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
  * Subscribes to all trip states for status data. Re-renders on any change.
  * Filters to today's trips (Eastern) + anything still in progress.
  */
-function FlightBoard({ allTrips }) {
+// `compact` prop (default false) collapses the board for embedding —
+// removes the full-viewport sizing, hides the dashboard-style header
+// (logo + stats grid), stacks list/map vertically, and caps total
+// height so the board fits as a card on a regular page. The TRACKING
+// route renders without the prop, getting the full dashboard layout.
+function FlightBoard({ allTrips, compact = false }) {
   const [stateMap, setStateMap] = useState(new Map());
   const [, setTick] = useState(0); // forces a tick every minute for time display
   // FlightAware live data: keyed by tail. Read from Firestore, where the
@@ -1039,8 +1044,12 @@ function FlightBoard({ allTrips }) {
   } catch (_) {}
 
   return (
-    <div className="h-screen w-screen bg-slate-950 flex flex-col overflow-hidden">
-      {/* Top banner */}
+    <div className={compact
+      ? 'w-full bg-slate-950 flex flex-col border border-slate-800'
+      : 'h-screen w-screen bg-slate-950 flex flex-col overflow-hidden'
+    }>
+      {/* Top banner — hidden in compact mode (home page has its own greeting + stats) */}
+      {!compact && (
       <div className="px-6 py-4 border-b-2 border-cyan-500/30 bg-gradient-to-r from-slate-950 via-cyan-950/40 to-slate-950 flex items-center justify-between">
         <div className="flex items-center gap-5">
           <img
@@ -1092,11 +1101,40 @@ function FlightBoard({ allTrips }) {
           </div>
         </div>
       </div>
+      )}
 
-      {/* Split: list + map */}
-      <div className="flex-1 grid grid-cols-[58%_42%] overflow-hidden">
+      {/* Compact mode shows a small header strip so the embedded board
+          has its own identity on the home page. Includes the FA diagnostic
+          since it's still useful for trusting the data. */}
+      {compact && (
+        <div className="px-3 py-2 border-b border-slate-800 flex items-center justify-between">
+          <div className="text-[10px] tracking-widest text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            FLIGHT BOARD · {stats.total} TODAY · {stats.airborne} AIRBORNE
+          </div>
+          <div className={`text-[10px] tracking-widest ${
+            faDiag.status === 'ok' ? 'text-emerald-400/70'
+            : faDiag.status === 'error' ? 'text-red-400'
+            : faDiag.status === 'disabled' ? 'text-amber-400'
+            : 'text-slate-500'
+          }`}
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            title={faDiag.message}
+          >
+            FA · {faDiag.status.toUpperCase()}
+          </div>
+        </div>
+      )}
+
+      {/* Split: list + map. Stacks vertically in compact mode. */}
+      <div className={compact
+        ? 'grid grid-cols-1 md:grid-cols-[60%_40%]'
+        : 'flex-1 grid grid-cols-[58%_42%] overflow-hidden'
+      }>
         {/* Flight list */}
-        <div className="border-r border-slate-800 overflow-y-auto">
+        <div className={compact
+          ? 'border-b md:border-b-0 md:border-r border-slate-800 overflow-y-auto max-h-96'
+          : 'border-r border-slate-800 overflow-y-auto'
+        }>
           {/* Column headers */}
           <div className="grid grid-cols-[80px_120px_180px_110px_1fr_60px] gap-3 px-3 py-2 border-b border-slate-700 text-[10px] tracking-widest text-slate-500 sticky top-0 bg-slate-950 z-10"
             style={{ fontFamily: 'JetBrains Mono, monospace' }}>
@@ -1125,7 +1163,7 @@ function FlightBoard({ allTrips }) {
         </div>
 
         {/* Map */}
-        <div className="bg-slate-950">
+        <div className={compact ? 'bg-slate-950 h-64 md:h-auto' : 'bg-slate-950'}>
           <RouteMap
             trips={mapTrips}
             stateMap={stateMap}
