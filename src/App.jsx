@@ -6545,6 +6545,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
           </div>
         ) : tab === 'notes' ? (
           <div className="p-4 sm:p-6 max-w-2xl space-y-6">
+            {/* USER-AUTHORED NOTES (header + log) */}
             <UserNotesSection
               tripUid={trip.uid}
               currentUser={currentUser}
@@ -6552,16 +6553,15 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
               headerNoteMeta={headerNoteMeta}
               notes={userNotes}
             />
-            {/* Trip-sheet notes shown below user notes as read-only context.
-                Hidden entirely when nothing was parsed from the sheet. */}
-            {tripSheetNotes && (tripSheetNotes.crew || tripSheetNotes.customer || tripSheetNotes.pax || tripSheetNotes.specialItems) && (
-              <div className="border-t border-slate-800 pt-4 space-y-3">
-                <div className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                  FROM UPLOADED TRIP SHEET (READ-ONLY)
-                </div>
-                <TripNotesPanel notes={tripSheetNotes} />
+
+            {/* TRIP-SHEET PARSED NOTES — always shown so the section is visible
+                even when the sheet hasn't been uploaded yet (empty state). */}
+            <div className="border-t border-slate-800 pt-4 space-y-3">
+              <div className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                FROM UPLOADED TRIP SHEET (READ-ONLY)
               </div>
-            )}
+              <TripNotesPanel notes={tripSheetNotes} />
+            </div>
           </div>
         ) : tab === 'weather' ? (
           <TripWeatherSection trip={trip} />
