@@ -349,9 +349,9 @@ function AddLodgingModal({ trip, currentUser, users, isOpsOrAdmin, onClose }) {
   const canSave = hotelName.trim() && forUid && checkInDate && checkOutDate;
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
-      <div className="bg-slate-900 border border-slate-700 w-full max-w-lg my-8">
-        <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
+    <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-start sm:items-center justify-center p-0 sm:p-4 overflow-y-auto">
+      <div className="bg-slate-900 border border-slate-700 w-full max-w-lg sm:my-8 flex flex-col min-h-screen sm:min-h-0 sm:max-h-[90vh]">
+        <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3 shrink-0">
           <h3 className="text-lg tracking-wider" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
             ADD LODGING
           </h3>
@@ -360,7 +360,7 @@ function AddLodgingModal({ trip, currentUser, users, isOpsOrAdmin, onClose }) {
           </button>
         </div>
 
-        <div className="p-4 space-y-3">
+        <div className="p-4 space-y-3 flex-1 overflow-y-auto">
           {/* Crewmember */}
           <div>
             <label className="text-[10px] tracking-widest text-slate-400 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
@@ -517,7 +517,7 @@ function AddLodgingModal({ trip, currentUser, users, isOpsOrAdmin, onClose }) {
           )}
         </div>
 
-        <div className="border-t border-slate-800 px-4 py-3 flex items-center justify-end gap-2">
+        <div className="border-t border-slate-800 px-4 py-3 flex items-center justify-end gap-2 shrink-0">
           <button
             onClick={onClose}
             disabled={saving}
@@ -682,12 +682,12 @@ function FindHotelsModal({ trip, currentUser, users, isOpsOrAdmin, onClose }) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
-      <div className="bg-slate-900 border-2 border-amber-500/60 w-full max-w-3xl my-8">
+    <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-start sm:items-center justify-center p-0 sm:p-4 overflow-y-auto">
+      <div className="bg-slate-900 border-2 border-amber-500/60 w-full max-w-3xl sm:my-8 flex flex-col min-h-screen sm:min-h-0 sm:max-h-[90vh]">
         {/* Demo banner — runs across the top of EVERY step so the user
             never loses sight of what mode they're in. */}
         {DEMO_MODE && (
-          <div className="bg-amber-500/20 border-b border-amber-500/40 px-4 py-2 flex items-center gap-2">
+          <div className="bg-amber-500/20 border-b border-amber-500/40 px-4 py-2 flex items-center gap-2 shrink-0">
             <AlertTriangle className="w-4 h-4 text-amber-300 shrink-0" />
             <span className="text-xs text-amber-100" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
               DEMO MODE — NO REAL BOOKINGS WILL BE MADE. Hotels and prices are mock data for testing the UI.
@@ -695,7 +695,7 @@ function FindHotelsModal({ trip, currentUser, users, isOpsOrAdmin, onClose }) {
           </div>
         )}
 
-        <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
+        <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3 shrink-0">
           <div className="flex items-center gap-3">
             {step !== 'search' && (
               <button
@@ -722,7 +722,7 @@ function FindHotelsModal({ trip, currentUser, users, isOpsOrAdmin, onClose }) {
           </button>
         </div>
 
-        <div className="p-4 max-h-[70vh] overflow-y-auto">
+        <div className="p-4 flex-1 overflow-y-auto">
           {error && (
             <div className="border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300 mb-3">
               {error}
@@ -927,7 +927,7 @@ function FindHotelsModal({ trip, currentUser, users, isOpsOrAdmin, onClose }) {
           )}
         </div>
 
-        <div className="border-t border-slate-800 px-4 py-3 flex items-center justify-end gap-2">
+        <div className="border-t border-slate-800 px-4 py-3 flex items-center justify-end gap-2 shrink-0">
           {step === 'search' && (
             <>
               <button

@@ -1,6 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import App, { ExternalTechPage, SplashScreen } from './App.jsx';
+import App, { ExternalTechPage } from './App.jsx';
 import { ServiceTechPage } from './ServiceRequests.jsx';
 import './index.css';
 
@@ -130,7 +130,6 @@ if (isExternalTechRoute) {
 } else {
   rootEl.render(
     <React.StrictMode>
-      <SplashScreen />
       <App />
     </React.StrictMode>
   );

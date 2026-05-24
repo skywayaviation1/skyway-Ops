@@ -21989,66 +21989,6 @@ function ExtChatTab({ aog, token, onPosted }) {
   );
 }
 
-// ====================================================================
-// PWA SPLASH SCREEN — shown on every cold launch in standalone mode
-// ====================================================================
-//
-// When the app is launched from the home screen (PWA installed mode),
-// show a full-bleed splash image before anything else. Tapping anywhere
-// dismisses it. Browser visits skip this entirely.
-//
-// "Cold launch" detection: this component starts with show=true, so
-// it appears whenever the JS context is fresh. Tapping dismisses for
-// the lifetime of the context. Subsequent foreground/background
-// cycles on iOS keep the suspended context alive, so the splash
-// doesn't re-appear until the OS actually kills the app.
-//
-// Rendered at root level (in main.jsx) so it sits above the auth
-// flow — users see the splash before any login screen.
-
-export function SplashScreen() {
-  // Detect PWA standalone mode synchronously on first render — avoids a
-  // flash where the splash briefly shows in browser mode and then hides.
-  const [show, setShow] = useState(() => {
-    if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
-    const isStandalone = (
-      ('standalone' in navigator && navigator.standalone === true) ||
-      (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches)
-    );
-    return isStandalone;
-  });
-
-  if (!show) return null;
-
-  return (
-    <button
-      onClick={() => setShow(false)}
-      className="fixed inset-0 z-[100] focus:outline-none cursor-pointer w-full h-full"
-      style={{
-        // Solid dark background fills any letterbox area on aspect
-        // ratios that don't match the splash image. Color picked to
-        // blend with the image's top edge (deep aviation blue).
-        backgroundColor: '#03254c',
-        backgroundImage: 'url(/splash.jpg)',
-        // 'contain' guarantees the WHOLE image is visible — including
-        // the LET'S GO button graphic at the bottom — at the cost of
-        // small letterbox bars on aspect ratios that don't match. On
-        // typical phone portrait, the bars are tiny or invisible.
-        // 'cover' would crop the button off on shorter screens.
-        backgroundSize: 'contain',
-        backgroundPosition: 'center',
-        backgroundRepeat: 'no-repeat',
-      }}
-      aria-label="Enter app"
-    >
-      {/* Whole splash is the tap target. The LET'S GO graphic is part
-          of the image; the entire screen functions as the button so
-          users can tap anywhere — sidesteps button-position drift on
-          different aspect ratios. */}
-      <span className="sr-only">Tap anywhere to enter Skyway Aviation Ops</span>
-    </button>
-  );
-}
 
 // ====================================================================
 // IOS INSTALL BANNER — surfaces Add to Home Screen for iOS Safari users
