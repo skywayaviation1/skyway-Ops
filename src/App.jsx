@@ -6132,11 +6132,47 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
 
   return (
     <div className="flex flex-col h-full bg-slate-950">
-      {/* Trip header — pinned at top of viewport for non-chat tabs.
-          For the chat tab, this is omitted here and rendered INSIDE
-          the chat tab's scroll area so it scrolls off when reading
-          a long thread (but the tab strip below stays pinned). */}
-      {tab !== 'chat' && (
+      {/* Trip header rendering — three modes:
+          - chat tab: no header here (chat renders its own header inside)
+          - lodging tab: COMPACT one-line header so lodging UI has room
+          - everything else: full multi-row trip card
+
+          The compact header for lodging matches the request: trip card
+          data collapses to a single header bar so hotel search + results
+          stay accessible without scrolling past a huge card. */}
+      {tab === 'lodging' && (
+        <div className="px-3 py-2 border-b border-slate-800 bg-slate-900/40 flex items-center gap-2 flex-wrap">
+          <button
+            onClick={onBack}
+            className="text-slate-500 hover:text-slate-300 md:hidden shrink-0"
+            aria-label="Back"
+          >
+            <ChevronLeft className="w-4 h-4" />
+          </button>
+          <span
+            className="text-base text-slate-100 font-semibold whitespace-nowrap"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            {trip.info.tail}
+          </span>
+          <span
+            className="text-sm text-slate-300 whitespace-nowrap"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            {trip.info.from} → {trip.info.to}
+          </span>
+          <span className="text-xs text-slate-500 whitespace-nowrap" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {formatLocalDate(trip.start, trip.info.from) || fmtDateZ(trip.start)}
+          </span>
+          {trip.info.pic && (
+            <span className="text-xs text-slate-400 ml-auto whitespace-nowrap" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+              PIC {trip.info.pic}
+            </span>
+          )}
+        </div>
+      )}
+
+      {tab !== 'chat' && tab !== 'lodging' && (
       <div className="px-6 py-5 border-b border-slate-800 bg-gradient-to-b from-slate-900/50 to-transparent">
         <div className="flex items-center justify-between mb-3">
           <button
