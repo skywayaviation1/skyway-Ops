@@ -5557,10 +5557,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   const [tripSheetUploadedBy, setTripSheetUploadedBy] = useState(null);
   const [preloadedPax, setPreloadedPax] = useState([]);
   const [tripSheetNotes, setTripSheetNotes] = useState(null);
-  // User-authored notes — header + entries log
-  const [headerNote, setHeaderNote] = useState('');
-  const [headerNoteMeta, setHeaderNoteMeta] = useState({ updatedAt: null, updatedByName: null });
-  const [userNotes, setUserNotes] = useState([]);
+  const [tripSheetNotesEdited, setTripSheetNotesEdited] = useState({ at: null, byName: null });
   const [fromFbo, setFromFbo] = useState(null);
   const [toFbo, setToFbo] = useState(null);
   const [pendingScanPax, setPendingScanPax] = useState(null); // pre-loaded pax being checked in
@@ -5610,15 +5607,12 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
           setTripSheetUploadedBy(state.tripSheetUploadedBy || null);
           setPreloadedPax(Array.isArray(state.preloadedPax) ? state.preloadedPax : []);
           setTripSheetNotes(state.tripSheetNotes || null);
+          setTripSheetNotesEdited({
+            at: state.tripSheetNotesEditedAt || null,
+            byName: state.tripSheetNotesEditedByName || null,
+          });
           setFromFbo(state.fromFbo || null);
           setToFbo(state.toFbo || null);
-          // User-authored notes
-          setHeaderNote(state.headerNote || '');
-          setHeaderNoteMeta({
-            updatedAt: state.headerNoteUpdatedAt || null,
-            updatedByName: state.headerNoteUpdatedByName || null,
-          });
-          setUserNotes(Array.isArray(state.notes) ? state.notes : []);
           setCompleted(state.completed === true);
           setLoading(false);
         });
@@ -6544,24 +6538,13 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
             />
           </div>
         ) : tab === 'notes' ? (
-          <div className="p-4 sm:p-6 max-w-2xl space-y-6">
-            {/* USER-AUTHORED NOTES (header + log) */}
-            <UserNotesSection
+          <div className="p-4 sm:p-6 max-w-2xl">
+            <TripNotesPanel
               tripUid={trip.uid}
               currentUser={currentUser}
-              headerNote={headerNote}
-              headerNoteMeta={headerNoteMeta}
-              notes={userNotes}
+              notes={tripSheetNotes}
+              editedMeta={tripSheetNotesEdited}
             />
-
-            {/* TRIP-SHEET PARSED NOTES — always shown so the section is visible
-                even when the sheet hasn't been uploaded yet (empty state). */}
-            <div className="border-t border-slate-800 pt-4 space-y-3">
-              <div className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                FROM UPLOADED TRIP SHEET (READ-ONLY)
-              </div>
-              <TripNotesPanel notes={tripSheetNotes} />
-            </div>
           </div>
         ) : tab === 'weather' ? (
           <TripWeatherSection trip={trip} />
@@ -8391,364 +8374,182 @@ function SigBlock({ role, sig, canSign, isActive, defaultName, onSignStart, onSi
   );
 }
 
-// ====================================================================
-// USER NOTES SECTION — user-authored notes on a trip
-// ====================================================================
+
+// TripNotesPanel — editable per-field. Renders all four trip-sheet
+// note buckets (crew / customer / pax / specialItems) regardless of
+// whether they were parsed from an uploaded sheet. Each bucket can be
+// edited in place. Saves persist to trip-state/{tripId}.tripSheetNotes
+// (the same field the upload parser writes to). Edit metadata is
+// tracked separately so the UI can show when the parsed text was
+// overridden.
 //
-// Header note (collaborative, last-write-wins, anyone with trip access)
-// + entries log (append-only, each entry by an identified author,
-// author or admin can edit/delete).
+// Anyone with trip access can edit. Last write wins — no per-field
+// locks. Charter ops volume doesn't justify the complexity of finer-
+// grained collaboration.
+function TripNotesPanel({ tripUid, currentUser, notes, editedMeta }) {
+  // The four bucket definitions. Order matches the original layout.
+  const BUCKETS = [
+    { key: 'crew',         label: 'CREW NOTES (ACTION)', tone: 'amber',   placeholder: 'e.g. Pax requesting early boarding, dietary restrictions...' },
+    { key: 'customer',     label: 'CUSTOMER NOTES',      tone: 'cyan',    placeholder: 'Notes from the customer / broker about this trip.' },
+    { key: 'pax',          label: 'PAX NOTES',           tone: 'neutral', placeholder: 'Passenger-facing info.' },
+    { key: 'specialItems', label: 'SPECIAL ITEMS',       tone: 'neutral', placeholder: 'Catering, pets, equipment, ground transport details, etc.' },
+  ];
 
-function UserNotesSection({ tripUid, currentUser, headerNote, headerNoteMeta, notes }) {
-  // Header editing state
-  const [editingHeader, setEditingHeader] = useState(false);
-  const [headerDraft, setHeaderDraft] = useState(headerNote || '');
-  const [headerSaving, setHeaderSaving] = useState(false);
-  // Keep draft in sync if headerNote updates from elsewhere while NOT editing
-  useEffect(() => {
-    if (!editingHeader) setHeaderDraft(headerNote || '');
-  }, [headerNote, editingHeader]);
-
-  // New entry state
-  const [newBody, setNewBody] = useState('');
-  const [adding, setAdding] = useState(false);
+  // Per-bucket edit drafts. A key is present in drafts only when that
+  // bucket is being edited.
+  const [drafts, setDrafts] = useState({});
+  const [savingKey, setSavingKey] = useState(null);
   const [error, setError] = useState(null);
 
-  // Per-entry edit state — { [noteId]: draftBody }
-  const [editDrafts, setEditDrafts] = useState({});
-  const [editBusy, setEditBusy] = useState(null);
-
-  const author = {
-    uid: currentUser?.uid || null,
-    name: currentUser?.name || currentUser?.displayName || 'Unknown',
-    role: currentUser?.role || null,
+  const isEditing = (key) => Object.prototype.hasOwnProperty.call(drafts, key);
+  const startEdit = (key) => {
+    setError(null);
+    setDrafts((d) => ({ ...d, [key]: (notes && notes[key]) || '' }));
+  };
+  const cancelEdit = (key) => {
+    setDrafts((d) => { const next = { ...d }; delete next[key]; return next; });
+  };
+  const setDraft = (key, value) => {
+    setDrafts((d) => ({ ...d, [key]: value }));
   };
 
-  async function saveHeader() {
-    setHeaderSaving(true);
+  async function saveEdit(key) {
+    setSavingKey(key);
     setError(null);
     try {
-      const { setTripHeaderNote } = await import('./firebase-data.js');
-      await setTripHeaderNote(tripUid, headerDraft, author);
-      setEditingHeader(false);
+      const draftValue = drafts[key];
+      const cleaned = String(draftValue || '').trim();
+      // Build next notes object — preserve other buckets, update this one
+      const nextNotes = { ...(notes || {}), [key]: cleaned || null };
+      // If all four buckets are empty/null, set the whole object to null
+      // so we don't litter trip-state with empty {crew:null, ...} blobs
+      const allEmpty = BUCKETS.every((b) => !nextNotes[b.key]);
+      const authorName = currentUser?.name || currentUser?.displayName || 'Unknown';
+      const { saveTripState } = await import('./firebase-data.js');
+      await saveTripState(tripUid, {
+        tripSheetNotes: allEmpty ? null : nextNotes,
+        tripSheetNotesEditedAt: Date.now(),
+        tripSheetNotesEditedByName: authorName,
+      });
+      cancelEdit(key);
     } catch (e) {
       setError(e.message || 'Save failed');
     } finally {
-      setHeaderSaving(false);
+      setSavingKey(null);
     }
   }
 
-  async function addNote() {
-    if (!newBody.trim()) return;
-    setAdding(true);
-    setError(null);
-    try {
-      const { addTripNote } = await import('./firebase-data.js');
-      await addTripNote(tripUid, newBody, author);
-      setNewBody('');
-    } catch (e) {
-      setError(e.message || 'Add failed');
-    } finally {
-      setAdding(false);
-    }
-  }
-
-  async function saveEntryEdit(noteId) {
-    const body = editDrafts[noteId];
-    if (body == null) return;
-    setEditBusy(noteId);
-    setError(null);
-    try {
-      const { editTripNote } = await import('./firebase-data.js');
-      await editTripNote(tripUid, noteId, body, author);
-      setEditDrafts((d) => { const next = { ...d }; delete next[noteId]; return next; });
-    } catch (e) {
-      setError(e.message || 'Save failed');
-    } finally {
-      setEditBusy(null);
-    }
-  }
-
-  async function deleteEntry(noteId) {
-    if (!window.confirm('Delete this note? This cannot be undone.')) return;
-    setEditBusy(noteId);
-    setError(null);
-    try {
-      const { deleteTripNote } = await import('./firebase-data.js');
-      await deleteTripNote(tripUid, noteId, author);
-    } catch (e) {
-      setError(e.message || 'Delete failed');
-    } finally {
-      setEditBusy(null);
-    }
-  }
-
-  function startEdit(noteId, currentBody) {
-    setEditDrafts((d) => ({ ...d, [noteId]: currentBody || '' }));
-  }
-  function cancelEdit(noteId) {
-    setEditDrafts((d) => { const next = { ...d }; delete next[noteId]; return next; });
-  }
-
-  function canEditDelete(note) {
-    if (!note) return false;
-    if (author.role === 'admin') return true;
-    if (note.authorUid && author.uid && note.authorUid === author.uid) return true;
-    return false;
-  }
-
-  // Sort entries newest-first for display
-  const sortedNotes = [...(notes || [])].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-
-  // Format helpers
-  const fmt = (ms) => {
+  // Edit metadata formatter
+  const fmtEdit = (ms) => {
     if (!ms) return '';
-    const d = new Date(ms);
-    return d.toLocaleString('en-US', {
+    return new Date(ms).toLocaleString('en-US', {
       month: 'short', day: 'numeric',
       hour: 'numeric', minute: '2-digit', hour12: true,
     });
   };
 
+  const toneToClasses = (tone) => {
+    if (tone === 'amber') return { border: 'border-amber-500/40 bg-amber-500/5', label: 'text-amber-300', button: 'text-amber-300 hover:text-amber-200' };
+    if (tone === 'cyan')  return { border: 'border-cyan-500/40 bg-cyan-500/5',   label: 'text-cyan-300',  button: 'text-cyan-300 hover:text-cyan-200' };
+    return { border: 'border-slate-700 bg-slate-900/40', label: 'text-slate-400', button: 'text-slate-300 hover:text-slate-100' };
+  };
+
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="text-xs text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          TRIP NOTES
+        </div>
+        {editedMeta?.at && (
+          <div className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            LAST EDITED {fmtEdit(editedMeta.at)}
+            {editedMeta.byName && <> · {editedMeta.byName}</>}
+          </div>
+        )}
+      </div>
+
       {error && (
         <div className="border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">
           {error}
         </div>
       )}
 
-      {/* HEADER NOTE — collaborative, last-write-wins */}
-      <div>
-        <div className="flex items-center justify-between mb-2">
-          <div className="text-[10px] tracking-widest text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            HEADER NOTE
-          </div>
-          {!editingHeader && (
-            <button
-              onClick={() => { setHeaderDraft(headerNote || ''); setEditingHeader(true); }}
-              className="text-[10px] tracking-widest text-cyan-400 hover:text-cyan-300"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}
-            >
-              {headerNote ? 'EDIT' : '+ ADD'}
-            </button>
-          )}
-        </div>
+      {BUCKETS.map((b) => {
+        const tone = toneToClasses(b.tone);
+        const editing = isEditing(b.key);
+        const value = notes && notes[b.key];
+        const draftValue = drafts[b.key];
 
-        {editingHeader ? (
-          <div className="space-y-2">
-            <textarea
-              value={headerDraft}
-              onChange={(e) => setHeaderDraft(e.target.value)}
-              rows={4}
-              placeholder="Trip-level note that everyone should see. Last edit wins — coordinate before overwriting."
-              className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 text-sm"
-              style={{ fontFamily: 'DM Sans, sans-serif' }}
-            />
-            <div className="flex items-center gap-2 justify-end">
-              <button
-                onClick={() => { setEditingHeader(false); setHeaderDraft(headerNote || ''); }}
-                disabled={headerSaving}
-                className="px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200"
-                style={{ fontFamily: 'JetBrains Mono, monospace' }}
-              >
-                CANCEL
-              </button>
-              <button
-                onClick={saveHeader}
-                disabled={headerSaving}
-                className="px-3 py-1.5 bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-700 text-slate-950 text-xs font-medium tracking-widest"
-                style={{ fontFamily: 'JetBrains Mono, monospace' }}
-              >
-                {headerSaving ? <Loader2 className="w-3 h-3 inline animate-spin mr-1" /> : null}
-                SAVE
-              </button>
+        return (
+          <div key={b.key} className={`p-3 border ${tone.border}`}>
+            <div className="flex items-center justify-between mb-1">
+              <div className={`text-[10px] tracking-widest ${tone.label}`} style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+                {b.label}
+              </div>
+              {!editing && (
+                <button
+                  onClick={() => startEdit(b.key)}
+                  className={`text-[10px] tracking-widest ${tone.button}`}
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                >
+                  {value ? 'EDIT' : '+ ADD'}
+                </button>
+              )}
             </div>
-          </div>
-        ) : headerNote ? (
-          <div
-            className="border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-200 whitespace-pre-wrap cursor-pointer hover:border-slate-700"
-            style={{ fontFamily: 'DM Sans, sans-serif' }}
-            onClick={() => { setHeaderDraft(headerNote || ''); setEditingHeader(true); }}
-            title="Click to edit"
-          >
-            {headerNote}
-            {headerNoteMeta?.updatedAt && (
-              <div className="text-[10px] text-slate-500 mt-2 pt-2 border-t border-slate-800" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                LAST EDITED {fmt(headerNoteMeta.updatedAt)}
-                {headerNoteMeta.updatedByName && <> · {headerNoteMeta.updatedByName}</>}
+
+            {editing ? (
+              <div className="space-y-2">
+                <textarea
+                  value={draftValue}
+                  onChange={(e) => setDraft(b.key, e.target.value)}
+                  rows={3}
+                  placeholder={b.placeholder}
+                  className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 text-sm"
+                  style={{ fontFamily: 'DM Sans, sans-serif' }}
+                  autoFocus
+                />
+                <div className="flex items-center gap-2 justify-end">
+                  <button
+                    onClick={() => cancelEdit(b.key)}
+                    disabled={savingKey === b.key}
+                    className="px-3 py-1 text-[10px] text-slate-400 hover:text-slate-200 tracking-widest"
+                    style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                  >
+                    CANCEL
+                  </button>
+                  <button
+                    onClick={() => saveEdit(b.key)}
+                    disabled={savingKey === b.key}
+                    className="px-3 py-1 bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-700 text-slate-950 text-[10px] font-medium tracking-widest"
+                    style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                  >
+                    {savingKey === b.key ? <Loader2 className="w-3 h-3 inline animate-spin mr-1" /> : null}
+                    SAVE
+                  </button>
+                </div>
+              </div>
+            ) : value ? (
+              <div
+                className="text-sm text-slate-100 whitespace-pre-wrap cursor-pointer"
+                style={{ fontFamily: 'DM Sans, sans-serif' }}
+                onClick={() => startEdit(b.key)}
+                title="Click to edit"
+              >
+                {value}
+              </div>
+            ) : (
+              <div
+                className="text-sm text-slate-600 italic cursor-pointer"
+                style={{ fontFamily: 'DM Sans, sans-serif' }}
+                onClick={() => startEdit(b.key)}
+              >
+                {b.placeholder} Click to add.
               </div>
             )}
           </div>
-        ) : (
-          <div
-            className="border border-dashed border-slate-800 p-3 text-sm text-slate-600 italic cursor-pointer hover:border-slate-700"
-            style={{ fontFamily: 'DM Sans, sans-serif' }}
-            onClick={() => { setHeaderDraft(''); setEditingHeader(true); }}
-          >
-            No header note. Click to add a trip-level summary everyone can read.
-          </div>
-        )}
-      </div>
-
-      {/* ENTRIES LOG */}
-      <div>
-        <div className="text-[10px] tracking-widest text-slate-400 mb-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-          NOTES LOG ({sortedNotes.length})
-        </div>
-
-        {/* New entry composer */}
-        <div className="border border-slate-800 bg-slate-900/40 p-3 space-y-2 mb-3">
-          <textarea
-            value={newBody}
-            onChange={(e) => setNewBody(e.target.value)}
-            rows={2}
-            placeholder="Add a note — timestamps and signs with your name automatically."
-            className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 text-sm"
-            style={{ fontFamily: 'DM Sans, sans-serif' }}
-          />
-          <div className="flex items-center justify-end">
-            <button
-              onClick={addNote}
-              disabled={!newBody.trim() || adding}
-              className="px-3 py-1.5 bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-700 disabled:text-slate-500 text-slate-950 text-xs font-medium tracking-widest"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}
-            >
-              {adding ? <Loader2 className="w-3 h-3 inline animate-spin mr-1" /> : <Plus className="w-3 h-3 inline -mt-0.5 mr-1" />}
-              ADD NOTE
-            </button>
-          </div>
-        </div>
-
-        {/* Existing entries */}
-        {sortedNotes.length === 0 ? (
-          <div className="border border-dashed border-slate-800 p-6 text-center text-sm text-slate-600">
-            No notes yet.
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {sortedNotes.map((note) => {
-              const isEditing = note.id in editDrafts;
-              const canModify = canEditDelete(note);
-              return (
-                <div key={note.id} className="border border-slate-800 bg-slate-900/40 p-3">
-                  <div className="flex items-center gap-2 flex-wrap mb-2 text-[10px]" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                    <span className="text-slate-300 font-medium">{note.authorName || 'Unknown'}</span>
-                    {note.authorRole && <span className="text-slate-500 uppercase">{note.authorRole}</span>}
-                    <span className="text-slate-600">·</span>
-                    <span className="text-slate-500">{fmt(note.createdAt)}</span>
-                    {note.updatedAt && (
-                      <>
-                        <span className="text-slate-600">·</span>
-                        <span className="text-slate-500 italic">edited {fmt(note.updatedAt)}{note.updatedByName && note.updatedByName !== note.authorName ? ` by ${note.updatedByName}` : ''}</span>
-                      </>
-                    )}
-                    {canModify && !isEditing && (
-                      <div className="ml-auto flex items-center gap-1">
-                        <button
-                          onClick={() => startEdit(note.id, note.body)}
-                          className="px-2 py-0.5 text-[10px] tracking-widest text-slate-400 hover:text-slate-200 border border-slate-700 hover:border-slate-500"
-                          style={{ fontFamily: 'JetBrains Mono, monospace' }}
-                        >
-                          EDIT
-                        </button>
-                        <button
-                          onClick={() => deleteEntry(note.id)}
-                          disabled={editBusy === note.id}
-                          className="px-2 py-0.5 text-[10px] tracking-widest text-red-400/80 hover:text-red-300 border border-red-700/40 hover:border-red-500/60"
-                          style={{ fontFamily: 'JetBrains Mono, monospace' }}
-                        >
-                          {editBusy === note.id ? '...' : 'DELETE'}
-                        </button>
-                      </div>
-                    )}
-                  </div>
-
-                  {isEditing ? (
-                    <div className="space-y-2">
-                      <textarea
-                        value={editDrafts[note.id]}
-                        onChange={(e) => setEditDrafts((d) => ({ ...d, [note.id]: e.target.value }))}
-                        rows={3}
-                        className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 text-sm"
-                        style={{ fontFamily: 'DM Sans, sans-serif' }}
-                      />
-                      <div className="flex items-center gap-2 justify-end">
-                        <button
-                          onClick={() => cancelEdit(note.id)}
-                          disabled={editBusy === note.id}
-                          className="px-3 py-1 text-[10px] text-slate-400 hover:text-slate-200 tracking-widest"
-                          style={{ fontFamily: 'JetBrains Mono, monospace' }}
-                        >
-                          CANCEL
-                        </button>
-                        <button
-                          onClick={() => saveEntryEdit(note.id)}
-                          disabled={editBusy === note.id}
-                          className="px-3 py-1 bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-700 text-slate-950 text-[10px] font-medium tracking-widest"
-                          style={{ fontFamily: 'JetBrains Mono, monospace' }}
-                        >
-                          {editBusy === note.id ? <Loader2 className="w-3 h-3 inline animate-spin mr-1" /> : null}
-                          SAVE
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="text-sm text-slate-200 whitespace-pre-wrap" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-                      {note.body}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
+        );
+      })}
     </div>
-  );
-}
-
-function TripNotesPanel({ notes }) {
-  if (!notes || (!notes.crew && !notes.customer && !notes.pax && !notes.specialItems)) {
-    return (
-      <div className="text-center py-12 border border-dashed border-slate-800">
-        <AlertCircle className="w-8 h-8 text-slate-700 mx-auto mb-2" />
-        <p className="text-sm text-slate-500">No notes parsed from trip sheet</p>
-        <p className="text-xs text-slate-600 mt-1">Upload a JetInsight trip sheet on the SHEET tab to see notes here.</p>
-      </div>
-    );
-  }
-
-  const renderNote = (label, body, tone) => {
-    if (!body) return null;
-    const toneClass = tone === 'amber'
-      ? 'border-amber-500/40 bg-amber-500/5'
-      : tone === 'cyan'
-      ? 'border-cyan-500/40 bg-cyan-500/5'
-      : 'border-slate-700 bg-slate-900/40';
-    const labelColor = tone === 'amber' ? 'text-amber-300' : tone === 'cyan' ? 'text-cyan-300' : 'text-slate-400';
-    return (
-      <div className={`p-3 border ${toneClass}`}>
-        <div className={`text-[10px] tracking-widest ${labelColor} mb-1`} style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
-          {label}
-        </div>
-        <div className="text-sm text-slate-100 whitespace-pre-wrap" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-          {body}
-        </div>
-      </div>
-    );
-  };
-
-  return (
-    <>
-      <div className="text-xs text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-        FROM TRIP SHEET
-      </div>
-      {renderNote('CREW NOTES (ACTION)', notes.crew, 'amber')}
-      {renderNote('CUSTOMER NOTES', notes.customer, 'cyan')}
-      {renderNote('PAX NOTES', notes.pax, 'neutral')}
-      {renderNote('SPECIAL ITEMS', notes.specialItems, 'neutral')}
-    </>
   );
 }
 

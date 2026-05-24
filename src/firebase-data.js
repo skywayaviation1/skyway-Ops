@@ -17,7 +17,6 @@ import {
   deleteDoc,
   collection,
   onSnapshot,
-  arrayUnion,
 } from 'firebase/firestore';
 
 function sanitizeKey(s) {
@@ -85,14 +84,11 @@ export function subscribeToTripState(tripId, onUpdate) {
           preloadedPax: Array.isArray(data.preloadedPax) ? data.preloadedPax : [],
           // Notes parsed from trip sheet (crew/pax/customer/specialItems)
           tripSheetNotes: data.tripSheetNotes || null,
+          tripSheetNotesEditedAt: data.tripSheetNotesEditedAt || null,
+          tripSheetNotesEditedByName: data.tripSheetNotesEditedByName || null,
           // FBO names parsed from the trip sheet for THIS leg's two airports.
           fromFbo: data.fromFbo || null,
           toFbo: data.toFbo || null,
-          // User-authored notes (NEW)
-          headerNote: data.headerNote || '',
-          headerNoteUpdatedAt: data.headerNoteUpdatedAt || null,
-          headerNoteUpdatedByName: data.headerNoteUpdatedByName || null,
-          notes: Array.isArray(data.notes) ? data.notes : [],
         });
       } else {
         // No state yet — emit empty defaults
@@ -104,13 +100,10 @@ export function subscribeToTripState(tripId, onUpdate) {
           tripSheetUploadedBy: null, tripSheetFilename: null,
           preloadedPax: [],
           tripSheetNotes: null,
+          tripSheetNotesEditedAt: null,
+          tripSheetNotesEditedByName: null,
           fromFbo: null,
           toFbo: null,
-          // User-authored notes (NEW)
-          headerNote: '',
-          headerNoteUpdatedAt: null,
-          headerNoteUpdatedByName: null,
-          notes: [],
         });
       }
     },
@@ -163,6 +156,11 @@ export async function saveTripState(tripId, state) {
   if (has('tripSheetFilename'))    patch.tripSheetFilename = state.tripSheetFilename || null;
   if (has('preloadedPax'))         patch.preloadedPax = Array.isArray(state.preloadedPax) ? state.preloadedPax : [];
   if (has('tripSheetNotes'))       patch.tripSheetNotes = state.tripSheetNotes || null;
+  // Audit trail for in-place edits of the trip-sheet-parsed notes.
+  // Set whenever the UI edits tripSheetNotes so the panel can show who
+  // overrode the original parsed values and when.
+  if (has('tripSheetNotesEditedAt'))     patch.tripSheetNotesEditedAt = state.tripSheetNotesEditedAt || null;
+  if (has('tripSheetNotesEditedByName')) patch.tripSheetNotesEditedByName = state.tripSheetNotesEditedByName || null;
   if (has('fromFbo'))              patch.fromFbo = state.fromFbo || null;
   if (has('toFbo'))                patch.toFbo = state.toFbo || null;
   // tripMeta — route/tail/start info, used by the FlightAware webhook to match
@@ -435,159 +433,3 @@ export async function deleteManualTrip(tripUid) {
   await deleteDoc(doc(db, 'manual-trips', safeId));
 }
 
-// ====================================================================
-// TRIP NOTES — user-authored notes on each trip
-// ====================================================================
-//
-// Two pieces:
-//   - headerNote: a single shared free-form string capturing the
-//     current state of the trip. Anyone with access can edit it;
-//     last-write-wins. We track who edited it last and when.
-//   - notes: an append-only array of timestamped entries with author.
-//     Each entry has { id, body, authorUid, authorName, createdAt,
-//     updatedAt? }. Authors can edit/delete their own entries; admins
-//     can edit/delete any.
-//
-// Both live on the existing trip-state/{tripId} document. Inline rather
-// than a sub-collection because volume is low (charter trips have on
-// the order of single-digit notes, not hundreds) and inline is much
-// simpler to read/render in a single live listener.
-
-/**
- * Generate a short unique-ish id for a note entry. Not cryptographically
- * unique — collision is fine because we also have createdAt + authorUid.
- */
-function nid() {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-/**
- * Set or update the trip's header note. Whoever calls this wins;
- * suitable for "current state of the trip" content where one person
- * is reasonably expected to update at a time.
- */
-export async function setTripHeaderNote(tripId, body, author) {
-  if (!tripId) throw new Error('setTripHeaderNote: tripId required');
-  const safeId = sanitizeKey(tripId);
-  const ref = doc(db, 'trip-state', safeId);
-  const patch = {
-    headerNote: String(body || '').slice(0, 20000),
-    headerNoteUpdatedAt: Date.now(),
-    headerNoteUpdatedByUid: author?.uid || null,
-    headerNoteUpdatedByName: author?.name || author?.displayName || 'Unknown',
-    updatedAt: Date.now(),
-  };
-  try {
-    await updateDoc(ref, patch);
-  } catch (err) {
-    if (err && (err.code === 'not-found' || /No document to update/i.test(String(err.message || '')))) {
-      await setDoc(ref, patch);
-    } else {
-      throw err;
-    }
-  }
-}
-
-/**
- * Append a new note entry to a trip. Uses arrayUnion so concurrent
- * adds from different users don't clobber each other.
- */
-export async function addTripNote(tripId, body, author) {
-  if (!tripId) throw new Error('addTripNote: tripId required');
-  if (!body?.trim()) throw new Error('addTripNote: body required');
-  if (!author?.name) throw new Error('addTripNote: author name required');
-  const safeId = sanitizeKey(tripId);
-  const ref = doc(db, 'trip-state', safeId);
-  const entry = {
-    id: nid(),
-    body: String(body).slice(0, 20000),
-    authorUid: author.uid || null,
-    authorName: author.name,
-    authorRole: author.role || null,
-    createdAt: Date.now(),
-  };
-  try {
-    await updateDoc(ref, {
-      notes: arrayUnion(entry),
-      updatedAt: Date.now(),
-    });
-  } catch (err) {
-    if (err && (err.code === 'not-found' || /No document to update/i.test(String(err.message || '')))) {
-      await setDoc(ref, {
-        notes: [entry],
-        updatedAt: Date.now(),
-      });
-    } else {
-      throw err;
-    }
-  }
-  return entry.id;
-}
-
-/**
- * Edit an existing note entry. Permission check: caller must be the
- * original author OR have admin role. The check happens client-side
- * (Firestore rules should enforce it server-side too in production).
- *
- * @param {Object} editor  { uid, role, name }
- */
-export async function editTripNote(tripId, noteId, newBody, editor) {
-  if (!tripId || !noteId) throw new Error('editTripNote: tripId + noteId required');
-  if (!editor?.name) throw new Error('editTripNote: editor required');
-  const safeId = sanitizeKey(tripId);
-  const ref = doc(db, 'trip-state', safeId);
-  const snap = await getDoc(ref);
-  if (!snap.exists()) throw new Error('Trip state not found');
-  const notes = Array.isArray(snap.data().notes) ? snap.data().notes : [];
-  const idx = notes.findIndex((n) => n.id === noteId);
-  if (idx < 0) throw new Error('Note not found');
-  const note = notes[idx];
-
-  // Permission: own note or admin
-  const isOwn = note.authorUid && editor.uid && note.authorUid === editor.uid;
-  const isAdmin = editor.role === 'admin';
-  if (!isOwn && !isAdmin) {
-    throw new Error('Not permitted to edit this note');
-  }
-
-  const updated = {
-    ...note,
-    body: String(newBody || '').slice(0, 20000),
-    updatedAt: Date.now(),
-    updatedByUid: editor.uid || null,
-    updatedByName: editor.name,
-  };
-  const nextNotes = [...notes];
-  nextNotes[idx] = updated;
-  await updateDoc(ref, {
-    notes: nextNotes,
-    updatedAt: Date.now(),
-  });
-}
-
-/**
- * Delete a note entry. Same permission rules as edit.
- */
-export async function deleteTripNote(tripId, noteId, deleter) {
-  if (!tripId || !noteId) throw new Error('deleteTripNote: tripId + noteId required');
-  if (!deleter?.name) throw new Error('deleteTripNote: deleter required');
-  const safeId = sanitizeKey(tripId);
-  const ref = doc(db, 'trip-state', safeId);
-  const snap = await getDoc(ref);
-  if (!snap.exists()) throw new Error('Trip state not found');
-  const notes = Array.isArray(snap.data().notes) ? snap.data().notes : [];
-  const note = notes.find((n) => n.id === noteId);
-  if (!note) throw new Error('Note not found');
-
-  const isOwn = note.authorUid && deleter.uid && note.authorUid === deleter.uid;
-  const isAdmin = deleter.role === 'admin';
-  if (!isOwn && !isAdmin) {
-    throw new Error('Not permitted to delete this note');
-  }
-
-  const nextNotes = notes.filter((n) => n.id !== noteId);
-  await updateDoc(ref, {
-    notes: nextNotes,
-    updatedAt: Date.now(),
-  });
-}
