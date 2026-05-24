@@ -29,7 +29,7 @@ import {
   Coffee, ArrowRight, Clock, Shield, X, ScanLine, ChevronLeft,
   Mail, Navigation, Loader2, Wifi, WifiOff, Settings as SettingsIcon,
   Download, Trash2, Plus, FileText, Zap, Radio, AlertCircle, Upload,
-  CheckCheck, UserCheck, Sparkles, Hash, Cloud, Wrench, Hotel, BookOpen
+  CheckCheck, UserCheck, Sparkles, Hash, Cloud, Wrench, Hotel, BookOpen, Search
 } from 'lucide-react';
 import { formatLocalTime, formatLocalDate } from './airports.js';
 import {
@@ -12841,10 +12841,17 @@ function MelLibraryTab({ currentUser, fleetTails, onAssignToDeferral }) {
                   <pre className="text-xs text-slate-400 whitespace-pre-wrap font-sans bg-slate-950 border border-slate-800 p-3">{p.text}</pre>
                 </div>
               ))}
-              <button onClick={() => assign(sel)} disabled={sel.non_relief} className="mt-3 flex items-center gap-2 px-3 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs tracking-widest disabled:opacity-40" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                <ArrowRight className="w-4 h-4" /> {sel.non_relief ? 'NO RELIEF (cannot defer)' : 'APPLY TO DEFERRAL'}
-              </button>
-              <p className="text-[10px] text-slate-600 mt-2">Pre-fills the deferral form. You confirm against the actual MEL provisos above — this tool does not determine deferrability.</p>
+              {/* "Apply to Deferral" only shows when there's a deferral form available to receive the pre-fill.
+                  Under the new architecture this is wired only when MelLibraryTab is embedded inside the deferral workflow,
+                  not when it's accessed standalone via MAINT > MEL > LIBRARY. */}
+              {onAssignToDeferral && (
+                <>
+                  <button onClick={() => assign(sel)} disabled={sel.non_relief} className="mt-3 flex items-center gap-2 px-3 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs tracking-widest disabled:opacity-40" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    <ArrowRight className="w-4 h-4" /> {sel.non_relief ? 'NO RELIEF (cannot defer)' : 'APPLY TO DEFERRAL'}
+                  </button>
+                  <p className="text-[10px] text-slate-600 mt-2">Pre-fills the deferral form. You confirm against the actual MEL provisos above — this tool does not determine deferrability.</p>
+                </>
+              )}
             </div>
           ) : results === null ? (
             <div className="space-y-3">
@@ -13030,7 +13037,7 @@ function SquawksTab({ currentUser, fleetTails }) {
       <div className="flex gap-2 mb-4">
         <button onClick={() => setView('squawks')} className={`text-xs px-3 py-1.5 tracking-widest ${view === 'squawks' ? 'bg-red-500/20 text-red-300 border border-red-500/40' : 'bg-slate-900 text-slate-500 border border-slate-800 hover:text-slate-300'}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>SQUAWKS ({openSq.length})</button>
         <button onClick={() => setView('mel')} className={`text-xs px-3 py-1.5 tracking-widest ${view === 'mel' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40' : 'bg-slate-900 text-slate-500 border border-slate-800 hover:text-slate-300'}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>MEL / DEFERRED ({openMel.length})</button>
-        <button onClick={() => setView('library')} className={`text-xs px-3 py-1.5 tracking-widest ${view === 'library' ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40' : 'bg-slate-900 text-slate-500 border border-slate-800 hover:text-slate-300'}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>MEL LIBRARY</button>
+        {/* MEL LIBRARY button removed — that admin surface lives at MAINT > MEL > LIBRARY now. */}
       </div>
 
       {view === 'squawks' && (
@@ -13204,13 +13211,8 @@ function SquawksTab({ currentUser, fleetTails }) {
         </div>
       )}
 
-      {view === 'library' && (
-        <MelLibraryTab
-          currentUser={currentUser}
-          fleetTails={fleetTails}
-          onAssignToDeferral={applyMelToDeferral}
-        />
-      )}
+      {/* view === 'library' branch removed — MelLibraryTab now lives at
+          MAINT > MEL > LIBRARY (admin only). */}
     </div>
   );
 }
@@ -13384,8 +13386,113 @@ function TimesTab({ currentUser, fleetTails }) {
 /* ============================================================
    MAINT SCREEN
    ============================================================ */
-function MaintScreen({ currentUser, users, fleetTails }) {
-  const [mainTab, setMainTab] = useState('fleet'); // fleet | squawks | times | aog | service | projects
+// ====================================================================
+// MEL TAB — combined pilot lookup + admin library
+// ====================================================================
+//
+// What used to be two separate places:
+//   1. Top-level MEL nav → pilot read-only lookup (MELLookup component)
+//   2. MAINT > Squawks > Library sub-view → MEL revision admin
+//
+// Are now combined here under MAINT > MEL with an internal toggle.
+// Pilots see only Lookup. Maint/ops/admin see both, defaulting to Lookup.
+//
+// This keeps everyday browsing fast (the common case is reading provisos,
+// not uploading revisions) while still giving administrators the
+// revision-management UI they need.
+
+function MelTab({ currentUser, fleetTails }) {
+  const role = currentUser?.role;
+  const isAdmin = ['maint', 'ops', 'admin'].includes(role);
+  // Default to Lookup — even admins read MEL more often than they manage it.
+  const [view, setView] = useState('lookup');
+
+  // For non-admins there's no choice — render the lookup directly with no
+  // toggle, no extra chrome.
+  if (!isAdmin) {
+    return (
+      <Suspense fallback={<div className="py-12 text-center text-slate-500"><Loader2 className="w-5 h-5 animate-spin mx-auto mb-2" /> Loading MEL...</div>}>
+        <MELLookupLazy currentUser={currentUser} fleetTails={fleetTails} />
+      </Suspense>
+    );
+  }
+
+  // Admin view: two-way toggle between lookup and library.
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => setView('lookup')}
+          className={`px-3 py-1.5 text-[10px] tracking-widest border ${
+            view === 'lookup'
+              ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200'
+              : 'border-slate-700 text-slate-400 hover:text-slate-200'
+          }`}
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        >
+          <Search className="w-3 h-3 inline mr-1 -mt-0.5" /> LOOKUP
+        </button>
+        <button
+          onClick={() => setView('library')}
+          className={`px-3 py-1.5 text-[10px] tracking-widest border ${
+            view === 'library'
+              ? 'bg-amber-500/20 border-amber-400 text-amber-200'
+              : 'border-slate-700 text-slate-400 hover:text-slate-200'
+          }`}
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        >
+          <FileText className="w-3 h-3 inline mr-1 -mt-0.5" /> LIBRARY (ADMIN)
+        </button>
+      </div>
+
+      {view === 'lookup' && (
+        <Suspense fallback={<div className="py-12 text-center text-slate-500"><Loader2 className="w-5 h-5 animate-spin mx-auto mb-2" /> Loading MEL lookup...</div>}>
+          <MELLookupLazy currentUser={currentUser} fleetTails={fleetTails} />
+        </Suspense>
+      )}
+      {view === 'library' && (
+        <MelLibraryTab currentUser={currentUser} fleetTails={fleetTails} />
+      )}
+    </div>
+  );
+}
+
+function MaintScreen({ currentUser, users, allTrips, fleetTails }) {
+  // Reordered MAINT sub-tabs (Option B restructure):
+  //   fleet → squawks → aog → service → aml-log → mel → times → projects
+  // 'mel' here is the new combined surface — pilot lookup + (for maint/ops/admin)
+  // the MEL Library admin. The old MEL admin lived inside SquawksTab as
+  // view='library'; that's been stripped out (now squawks-only there).
+  const [mainTab, setMainTab] = useState('fleet');
+
+  // Sub-tab definitions with role gates. AML LOG and MEL are visible to
+  // crew through admin so pilots can read MEL items even though they
+  // can't manage revisions.
+  const subTabs = [
+    { id: 'fleet',    label: 'FLEET STATUS',   icon: Plane,          color: 'emerald', roles: ['crew', 'maint', 'ops', 'admin'] },
+    { id: 'squawks',  label: 'SQUAWKS',        icon: AlertTriangle,  color: 'red',     roles: ['crew', 'maint', 'ops', 'admin'] },
+    { id: 'aog',      label: 'AOG EVENTS',     icon: AlertTriangle,  color: 'red',     roles: ['maint', 'ops', 'admin'] },
+    { id: 'service',  label: 'REQUEST SERVICE',icon: Wrench,         color: 'cyan',    roles: ['maint', 'ops', 'admin'] },
+    { id: 'aml-log',  label: 'AML LOG',        icon: Wrench,         color: 'amber',   roles: ['crew', 'maint', 'ops', 'admin'] },
+    { id: 'mel',      label: 'MEL',            icon: BookOpen,       color: 'cyan',    roles: ['crew', 'maint', 'ops', 'admin'] },
+    { id: 'times',    label: 'TIMES',          icon: Clock,          color: 'cyan',    roles: ['maint', 'ops', 'admin'] },
+    { id: 'projects', label: 'PROJECTS',       icon: FileText,       color: 'cyan',    roles: ['maint', 'ops', 'admin'] },
+  ].filter((t) => t.roles.includes(currentUser?.role));
+
+  // Build fleet tails list for AML / MEL lookup — prefer fleetTails prop,
+  // fall back to active-trip tails.
+  const fleetTailsForChildren = (fleetTails && fleetTails.length)
+    ? fleetTails
+    : (allTrips ? Array.from(new Set(allTrips.map(t => t.info?.tail).filter(Boolean))) : []);
+
+  // Color → Tailwind class map for the active-tab indicator. Keep this
+  // close to the original styling so the visual feel doesn't change.
+  const colorClasses = {
+    emerald: 'text-emerald-300 border-emerald-500',
+    red:     'text-red-300 border-red-500',
+    cyan:    'text-cyan-300 border-cyan-500',
+    amber:   'text-amber-300 border-amber-500',
+  };
 
   return (
     <div className="flex-1 overflow-y-auto scroll-area">
@@ -13395,88 +13502,61 @@ function MaintScreen({ currentUser, users, fleetTails }) {
             MAINTENANCE
           </h2>
         </div>
-        <div className="flex gap-1 mb-4 border-b border-slate-800">
-          <button
-            onClick={() => setMainTab('fleet')}
-            className={`text-xs px-4 py-2 tracking-widest ${
-              mainTab === 'fleet'
-                ? 'text-emerald-300 border-b-2 border-emerald-500'
-                : 'text-slate-500 hover:text-slate-300 border-b-2 border-transparent'
-            }`}
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}
-          >
-            <Plane className="w-3 h-3 inline mr-1" /> FLEET STATUS
-          </button>
-          <button
-            onClick={() => setMainTab('squawks')}
-            className={`text-xs px-4 py-2 tracking-widest ${
-              mainTab === 'squawks'
-                ? 'text-red-300 border-b-2 border-red-500'
-                : 'text-slate-500 hover:text-slate-300 border-b-2 border-transparent'
-            }`}
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}
-          >
-            <AlertTriangle className="w-3 h-3 inline mr-1" /> SQUAWKS &amp; MEL
-          </button>
-          <button
-            onClick={() => setMainTab('times')}
-            className={`text-xs px-4 py-2 tracking-widest ${
-              mainTab === 'times'
-                ? 'text-cyan-300 border-b-2 border-cyan-500'
-                : 'text-slate-500 hover:text-slate-300 border-b-2 border-transparent'
-            }`}
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}
-          >
-            <Clock className="w-3 h-3 inline mr-1" /> TIMES
-          </button>
-          <button
-            onClick={() => setMainTab('aog')}
-            className={`text-xs px-4 py-2 tracking-widest ${
-              mainTab === 'aog'
-                ? 'text-red-300 border-b-2 border-red-500'
-                : 'text-slate-500 hover:text-slate-300 border-b-2 border-transparent'
-            }`}
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}
-          >
-            <AlertTriangle className="w-3 h-3 inline mr-1" /> AOG EVENTS
-          </button>
-          <button
-            onClick={() => setMainTab('service')}
-            className={`text-xs px-4 py-2 tracking-widest ${
-              mainTab === 'service'
-                ? 'text-cyan-300 border-b-2 border-cyan-500'
-                : 'text-slate-500 hover:text-slate-300 border-b-2 border-transparent'
-            }`}
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}
-          >
-            <Wrench className="w-3 h-3 inline mr-1" /> REQUEST SERVICE
-          </button>
-          <button
-            onClick={() => setMainTab('projects')}
-            className={`text-xs px-4 py-2 tracking-widest ${
-              mainTab === 'projects'
-                ? 'text-cyan-300 border-b-2 border-cyan-500'
-                : 'text-slate-500 hover:text-slate-300 border-b-2 border-transparent'
-            }`}
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}
-          >
-            <FileText className="w-3 h-3 inline mr-1" /> PROJECTS
-          </button>
+        {/* Sub-tabs — horizontal scroll on mobile, all visible on desktop */}
+        <div className="overflow-x-auto -mx-4 md:mx-0 px-4 md:px-0 mb-4 border-b border-slate-800">
+          <div className="flex gap-1 min-w-max">
+            {subTabs.map((t) => {
+              const Icon = t.icon;
+              const cls = colorClasses[t.color] || colorClasses.cyan;
+              const active = mainTab === t.id;
+              return (
+                <button
+                  key={t.id}
+                  onClick={() => setMainTab(t.id)}
+                  className={`text-xs px-3 md:px-4 py-2 tracking-widest whitespace-nowrap ${
+                    active
+                      ? `${cls} border-b-2`
+                      : 'text-slate-500 hover:text-slate-300 border-b-2 border-transparent'
+                  }`}
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                >
+                  <Icon className="w-3 h-3 inline mr-1" /> {t.label}
+                </button>
+              );
+            })}
+          </div>
         </div>
+
+        {/* Sub-tab content */}
         {mainTab === 'fleet' && (
           <FleetStatusTab currentUser={currentUser} fleetTails={fleetTails} />
         )}
         {mainTab === 'squawks' && (
           <SquawksTab currentUser={currentUser} fleetTails={fleetTails} />
         )}
-        {mainTab === 'times' && (
-          <TimesTab currentUser={currentUser} fleetTails={fleetTails} />
-        )}
         {mainTab === 'aog' && (
           <AogEventsTab currentUser={currentUser} fleetTails={fleetTails} />
         )}
         {mainTab === 'service' && (
           <AogEventsTab currentUser={currentUser} fleetTails={fleetTails} mode="service" />
+        )}
+        {mainTab === 'aml-log' && (
+          <Suspense fallback={<div className="py-12 text-center text-slate-500"><Loader2 className="w-5 h-5 animate-spin mx-auto mb-2" /> Loading AML log...</div>}>
+            <MaintenanceLogLazy
+              currentUser={currentUser}
+              users={users}
+              allTrips={allTrips}
+            />
+          </Suspense>
+        )}
+        {mainTab === 'mel' && (
+          <MelTab
+            currentUser={currentUser}
+            fleetTails={fleetTailsForChildren}
+          />
+        )}
+        {mainTab === 'times' && (
+          <TimesTab currentUser={currentUser} fleetTails={fleetTails} />
         )}
         {mainTab === 'projects' && (
           <MxProjectsTab currentUser={currentUser} users={users} fleetTails={fleetTails} />
@@ -17220,8 +17300,9 @@ function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, sync
     { id: 'reports',  label: 'REPORT',    icon: AlertCircle, roles: ['crew', 'ops', 'admin'] },
     { id: 'wallet',   label: 'WALLET',    icon: Mail, roles: ['crew', 'sales', 'ops', 'accounting', 'admin'] },
     { id: 'lodging',  label: 'LODGING',   icon: Hotel, roles: ['crew', 'ops', 'admin'] },
-    { id: 'maint-log',label: 'MAINT LOG', icon: Wrench, roles: ['crew', 'maint', 'ops', 'admin'] },
-    { id: 'mel',      label: 'MEL',       icon: BookOpen, roles: ['crew', 'maint', 'ops', 'admin'] },
+    // MAINT LOG and MEL were promoted into MAINT sub-tabs to clean up
+    // the top nav (16 → 14). Their content lives at MAINT > AML LOG and
+    // MAINT > MEL respectively. Role gating moves into MaintScreen.
     { id: 'ops',      label: 'OPS',       icon: Zap,      roles: ['ops', 'admin'] },
     { id: 'maint',    label: 'MAINT',     icon: AlertTriangle, roles: ['maint', 'ops', 'admin'] },
     { id: 'users',    label: 'USERS',     icon: Users,    roles: ['ops', 'admin'] },
@@ -22871,30 +22952,8 @@ export default function CharterOps() {
           </div>
         )}
 
-        {/* === MAINTENANCE LOG (AML) === */}
-        {section === 'maint-log' && (
-          <div className="flex-1 overflow-y-auto scroll-area">
-            <Suspense fallback={<div className="flex items-center justify-center py-16 text-slate-500"><Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading maintenance log...</div>}>
-              <MaintenanceLogLazy
-                currentUser={currentUser}
-                users={users}
-                allTrips={allTrips}
-              />
-            </Suspense>
-          </div>
-        )}
-
-        {/* === MEL LOOKUP (READ-ONLY) === */}
-        {section === 'mel' && (
-          <div className="flex-1 overflow-y-auto scroll-area">
-            <Suspense fallback={<div className="flex items-center justify-center py-16 text-slate-500"><Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading MEL...</div>}>
-              <MELLookupLazy
-                currentUser={currentUser}
-                fleetTails={allTrips ? Array.from(new Set(allTrips.map(t => t.info?.tail).filter(Boolean))) : []}
-              />
-            </Suspense>
-          </div>
-        )}
+        {/* MAINT LOG and MEL section renders removed — they now render
+            as sub-tabs inside MAINT (see MaintScreen above). */}
 
         {/* === OPS DASHBOARD SECTION === */}
         {section === 'ops' && (
@@ -22927,6 +22986,7 @@ export default function CharterOps() {
           <MaintScreen
             currentUser={currentUser}
             users={users}
+            allTrips={allTrips}
             fleetTails={Array.isArray(config?.fleetTails) ? config.fleetTails : ['N20UF', 'N168ZZ', 'N286N', 'N444AM', 'N651TW', 'N551FP', 'N85AH', 'N525CR']}
           />
         )}
