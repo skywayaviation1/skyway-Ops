@@ -24,7 +24,7 @@
 
 import { db } from './firebase.js';
 import {
-  collection, doc, addDoc, setDoc, updateDoc, serverTimestamp,
+  collection, doc, addDoc, setDoc, updateDoc, deleteDoc, serverTimestamp,
   query, where, orderBy, onSnapshot, getDoc,
 } from 'firebase/firestore';
 
@@ -153,6 +153,63 @@ export async function updateAMLStage(id, stage, extra = {}) {
 }
 
 /**
+ * Delete an AML record. ADMIN ONLY operation — gated by caller's role,
+ * not enforced server-side here. Because AMLs are regulatory records
+ * (§43.9 / §43.11), this should only be used to remove records
+ * created in error.
+ *
+ * Safety: if the AML has downstream records (squawk, MEL deferral,
+ * service request), refuses to delete unless those have been
+ * explicitly cleared/closed/deleted first. That prevents an orphaned
+ * MEL or SR sitting on an aircraft after its parent AML is gone.
+ *
+ * Hard-deletes the document. The history is captured in the deletion
+ * audit record stored under `aml-deletions/{id}` so we don't completely
+ * lose the trail.
+ *
+ * @param {Object} args
+ * @param {string} args.amlId
+ * @param {Object} args.deleter      { uid, name, role }
+ * @param {string} [args.reason]
+ * @param {boolean} [args.force]     if true, skip downstream check (super-admin)
+ */
+export async function deleteAML({ amlId, deleter, reason, force }) {
+  if (!amlId) throw new Error('deleteAML: amlId required');
+  if (!deleter?.name) throw new Error('deleteAML: deleter required');
+  const ref = doc(db, COLLECTION, amlId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error('AML not found');
+  const data = snap.data();
+
+  // Downstream safety check
+  if (!force) {
+    const downstream = [];
+    if (data.squawkId)         downstream.push(`squawk ${data.squawkId}`);
+    if (data.melItemId)        downstream.push(`MEL deferral ${data.melItemId}`);
+    if (data.serviceRequestId) downstream.push(`service request ${data.serviceRequestId}`);
+    if (downstream.length > 0) {
+      throw new Error(
+        `AML has downstream records: ${downstream.join(', ')}. Clear/close those before deleting, or pass force=true.`
+      );
+    }
+  }
+
+  // Write audit trail BEFORE deleting — so we keep a record of what
+  // was deleted, who deleted it, and when.
+  await setDoc(doc(db, 'aml-deletions', amlId), {
+    deletedAt: Date.now(),
+    deletedBy: deleter.uid || null,
+    deletedByName: deleter.name,
+    deletedByRole: deleter.role || null,
+    reason: reason || null,
+    originalRecord: data,
+  });
+
+  await deleteDoc(ref);
+  return { ok: true };
+}
+
+/**
  * Update editable fields on an AML. Strict about what's allowed to
  * change based on stage:
  *
@@ -187,7 +244,7 @@ export async function updateAML({ amlId, updates, editor, reason }) {
   // editing a signed-off field would be a record falsification.
   const allowedByStage = {
     CREATED:  ['discrepancy', 'aftt', 'hobbs', 'landings', 'serialNumber', 'tail', 'date'],
-    DEFERRED: ['melRemarks'],
+    DEFERRED: ['melRemarks', 'melItemRef', 'melItemDescription', 'melPartDeferred'],
     GROUNDED: ['groundingReason'],
     CLEARED:  [],
     RTS:      [],
@@ -268,7 +325,8 @@ export async function updateAML({ amlId, updates, editor, reason }) {
 export async function deferAMLAsMELable(args) {
   const {
     amlId, aml, melCategory, melLimitDays, melRemarks,
-    melItemRef, ataCode, dueDate, location, fboName,
+    melItemRef, melItemDescription, partDeferred,
+    ataCode, dueDate, location, fboName,
     approver, approverSignature,
   } = args;
   if (!amlId || !aml) throw new Error('deferAMLAsMELable: amlId + aml required');
@@ -279,11 +337,15 @@ export async function deferAMLAsMELable(args) {
   const maint = await import('./firebase-maint.js');
   const service = await import('./firebase-service.js');
 
-  // 1. MEL deferral entry (this is the MEL log that tracks the countdown)
+  // 1. MEL deferral entry — now carries the structured ref + part info
+  //    so the FleetStatus board can show specifically what's deferred.
   const melId = await maint.createMelDeferral({
     tail: aml.tail,
     squawkId: null,           // no squawk — aircraft is airworthy
     description: aml.discrepancy || '(see AML)',
+    melItemRef: melItemRef || null,
+    melItemDescription: melItemDescription || null,
+    partDeferred: partDeferred || null,
     category: melCategory,
     limitDays: melLimitDays,
     remarks: melRemarks || null,
@@ -293,11 +355,14 @@ export async function deferAMLAsMELable(args) {
   // 2. Service Request so maintenance has a tracked task to clear
   //    the deferral within the time limit. NOT an AOG record —
   //    aircraft remains airworthy under MEL provisos.
+  const srTitle = melItemRef
+    ? `Clear MEL ${melItemRef}${partDeferred ? ` (${partDeferred})` : ''}`
+    : 'Clear MEL deferral';
   const srId = await service.createServiceRequest({
     tail: aml.tail,
     location: location || aml.tail,   // best-guess fallback
     fboName: fboName || '',
-    serviceDescription: `Clear MEL deferral${melItemRef ? ` ${melItemRef}` : ''}: ${aml.discrepancy || '(see AML)'}`.slice(0, 4000),
+    serviceDescription: `${srTitle}: ${aml.discrepancy || '(see AML)'}`.slice(0, 4000),
     serviceType: `MEL Cat ${melCategory}${dueDate ? ` · Due ${dueDate}` : ''}`,
     requestedDate: dueDate || new Date().toISOString().slice(0, 10),
     recipients: [],
@@ -317,7 +382,7 @@ export async function deferAMLAsMELable(args) {
     by: approver.uid,
     byName: approver.name,
     byCert: approver.certificateNumber || null,
-    note: `Approved deferral under MEL ${melItemRef || ''} (Cat ${melCategory}) — aircraft remains airworthy. SR ${srId} created.`.trim(),
+    note: `Approved deferral under MEL ${melItemRef || ''}${partDeferred ? ` (${partDeferred})` : ''} (Cat ${melCategory}) — aircraft remains airworthy. SR ${srId} created.`.trim(),
     signatureDataUrl: approverSignature || null,
   });
   await updateDoc(ref, {
@@ -325,6 +390,8 @@ export async function deferAMLAsMELable(args) {
     melItemId: melId,
     serviceRequestId: srId,
     melItemRef: melItemRef || null,
+    melItemDescription: melItemDescription || null,
+    melPartDeferred: partDeferred || null,
     ataCode: ataCode || null,
     melCategory,
     melLimitDays: melLimitDays || null,

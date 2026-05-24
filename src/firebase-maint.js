@@ -36,6 +36,7 @@ import {
   setDoc,
   getDoc,
   updateDoc,
+  deleteDoc,
   collection,
   query,
   where,
@@ -281,6 +282,16 @@ export async function createMelDeferral(input) {
     tail,
     squawkId: input.squawkId || null,
     description: String(input.description).slice(0, 4000),
+    // MEL item reference (e.g. "33-40-01") + the specific part being
+    // deferred when an item has sub-parts (e.g. "Left wing landing light").
+    // These are populated from the AML deferral so the FleetStatus board
+    // can show "MEL 33-40-01 left wing landing light" rather than just
+    // the freeform discrepancy text.
+    melItemRef: input.melItemRef ? String(input.melItemRef).slice(0, 200) : null,
+    partDeferred: input.partDeferred ? String(input.partDeferred).slice(0, 500) : null,
+    melItemDescription: input.melItemDescription
+      ? String(input.melItemDescription).slice(0, 4000)
+      : null,
     category: cat,
     deferredAt: Number.isFinite(input.deferredAt) ? input.deferredAt : now,
     limitDays,                          // null for Cat A without manual days
@@ -307,6 +318,61 @@ export async function clearMelDeferral(melId, opts = {}) {
     clearedByName: opts.byName || 'Unknown',
     updatedAt: now,
   });
+}
+
+/**
+ * Delete a squawk record. ADMIN ONLY — caller is responsible for role
+ * check; this function only enforces presence and writes a deletion
+ * audit record so we can trace why a squawk disappeared.
+ *
+ * Use this for squawks created in error. A real AOG that has been
+ * resolved should be CLOSED (status='closed'), not deleted — closing
+ * preserves the operational history.
+ *
+ * @param {string} squawkId
+ * @param {Object} deleter  { uid, name, role }
+ * @param {string} [reason]
+ */
+export async function deleteSquawk(squawkId, deleter, reason) {
+  if (!squawkId) throw new Error('deleteSquawk: squawkId required');
+  if (!deleter?.name) throw new Error('deleteSquawk: deleter required');
+  const ref = doc(db, 'maint-squawks', squawkId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error('Squawk not found');
+  const data = snap.data();
+  // Audit before delete
+  await setDoc(doc(db, 'maint-squawk-deletions', squawkId), {
+    deletedAt: Date.now(),
+    deletedBy: deleter.uid || null,
+    deletedByName: deleter.name,
+    deletedByRole: deleter.role || null,
+    reason: reason || null,
+    originalRecord: data,
+  });
+  await deleteDoc(ref);
+}
+
+/**
+ * Delete a MEL deferral record. ADMIN ONLY. Use only for deferrals
+ * created in error — a real deferral that was satisfied should be
+ * CLEARED (clearMelDeferral), not deleted.
+ */
+export async function deleteMelDeferral(melId, deleter, reason) {
+  if (!melId) throw new Error('deleteMelDeferral: melId required');
+  if (!deleter?.name) throw new Error('deleteMelDeferral: deleter required');
+  const ref = doc(db, 'maint-mel', melId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error('MEL deferral not found');
+  const data = snap.data();
+  await setDoc(doc(db, 'maint-mel-deletions', melId), {
+    deletedAt: Date.now(),
+    deletedBy: deleter.uid || null,
+    deletedByName: deleter.name,
+    deletedByRole: deleter.role || null,
+    reason: reason || null,
+    originalRecord: data,
+  });
+  await deleteDoc(ref);
 }
 
 export function subscribeMel(onUpdate, opts = {}) {
@@ -351,7 +417,19 @@ export function deriveAircraftStatus(tail, squawks = [], melItems = []) {
   if (melOpen.length > 0) {
     return {
       status: 'RESTRICTED',
-      reasons: melOpen.map((m) => `MEL ${m.category}: ${m.description}`),
+      reasons: melOpen.map((m) => {
+        // Prefer the structured fields when available — they show the
+        // actual MEL item ref + part being deferred, which is more
+        // useful at-a-glance than the freeform discrepancy text.
+        if (m.melItemRef) {
+          const head = `MEL ${m.melItemRef}`;
+          const part = m.partDeferred ? ` (${m.partDeferred})` : '';
+          const cat = ` [Cat ${m.category}]`;
+          return `${head}${part}${cat}`;
+        }
+        // Fallback to legacy format for older deferrals without ref/part
+        return `MEL ${m.category}: ${m.description}`;
+      }),
       melOpen: melOpen.length,
     };
   }

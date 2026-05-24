@@ -16,7 +16,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Wrench, AlertTriangle, Plus, Loader2, X, FileText, ChevronRight, Search,
-  Download, Pencil,
+  Download, Pencil, Trash2,
 } from 'lucide-react';
 import { createAML, subscribeAMLEntries } from './firebase-aml.js';
 import SignaturePad from './SignaturePad.jsx';
@@ -88,6 +88,57 @@ export default function MaintenanceLog({ currentUser, users = [], allTrips = [] 
   const canCreate = ['crew', 'maint', 'ops', 'admin'].includes(currentUser?.role);
   const canDefer = ['ops', 'admin'].includes(currentUser?.role);
   const canEdit = ['crew', 'maint', 'ops', 'admin'].includes(currentUser?.role);
+  // Delete is strictly admin — these are regulatory records.
+  const canDelete = currentUser?.role === 'admin';
+
+  // Handler: delete an AML. Walks through downstream records (squawk,
+  // MEL deferral, service request) and asks the admin whether to delete
+  // each. Anything not deleted blocks the AML delete unless the admin
+  // confirms force.
+  async function handleDeleteAml(entry) {
+    if (!canDelete) return;
+    // First confirm intent. AML delete is irreversible from the UI
+    // (the deletion audit is kept in Firestore but isn't surfaced here).
+    const downstream = [];
+    if (entry.squawkId)         downstream.push({ type: 'squawk', id: entry.squawkId });
+    if (entry.melItemId)        downstream.push({ type: 'mel',    id: entry.melItemId });
+    if (entry.serviceRequestId) downstream.push({ type: 'sr',     id: entry.serviceRequestId });
+    let msg = `Delete AML for ${entry.tail}?\n\nDiscrepancy: ${(entry.discrepancy || '').slice(0, 200)}\n`;
+    if (downstream.length > 0) {
+      msg += `\nThis AML has linked records that will ALSO be deleted:\n`;
+      for (const d of downstream) {
+        msg += `  • ${d.type.toUpperCase()} ${d.id}\n`;
+      }
+    }
+    msg += '\nThis cannot be undone (a deletion audit record is preserved).';
+    if (!window.confirm(msg)) return;
+    const reason = window.prompt('Optional reason for deletion (logged in audit record):', '') || '';
+    try {
+      // Delete downstream first
+      const maint = await import('./firebase-maint.js');
+      const service = await import('./firebase-service.js');
+      const deleter = {
+        uid: currentUser?.uid || null,
+        name: currentUser?.name || currentUser?.displayName || 'admin',
+        role: currentUser?.role || 'admin',
+      };
+      if (entry.squawkId) {
+        await maint.deleteSquawk(entry.squawkId, deleter, reason);
+      }
+      if (entry.melItemId) {
+        await maint.deleteMelDeferral(entry.melItemId, deleter, reason);
+      }
+      if (entry.serviceRequestId) {
+        await service.deleteServiceRequest(entry.serviceRequestId);
+      }
+      const { deleteAML } = await import('./firebase-aml.js');
+      // force=true because we deleted downstream above
+      await deleteAML({ amlId: entry.id, deleter, reason, force: true });
+    } catch (e) {
+      console.error('[aml-delete] failed:', e);
+      window.alert(`Delete failed: ${e.message}`);
+    }
+  }
 
   return (
     <div className="max-w-6xl mx-auto p-3 sm:p-4 space-y-3 sm:space-y-4">
@@ -180,8 +231,10 @@ export default function MaintenanceLog({ currentUser, users = [], allTrips = [] 
               entry={e}
               canDefer={canDefer}
               canEdit={canEdit}
+              canDelete={canDelete}
               onDefer={(entry) => setDeferEntry(entry)}
               onEdit={(entry) => setEditEntry(entry)}
+              onDelete={() => handleDeleteAml(e)}
               onDownloadPdf={() => handleDownloadPdf(e)}
             />
           ))}
@@ -222,7 +275,7 @@ export default function MaintenanceLog({ currentUser, users = [], allTrips = [] 
 // AML ROW
 // ====================================================================
 
-function AMLRow({ entry, canDefer, canEdit, onDefer, onEdit, onDownloadPdf }) {
+function AMLRow({ entry, canDefer, canEdit, canDelete, onDefer, onEdit, onDelete, onDownloadPdf }) {
   const stageColors = {
     CREATED:  { bg: 'bg-amber-500/15',  border: 'border-amber-500/40',  txt: 'text-amber-200',  label: 'OPEN' },
     DEFERRED: { bg: 'bg-cyan-500/15',   border: 'border-cyan-500/40',   txt: 'text-cyan-200',   label: 'MEL DEFERRED · AIRWORTHY' },
@@ -332,6 +385,17 @@ function AMLRow({ entry, canDefer, canEdit, onDefer, onEdit, onDownloadPdf }) {
                 <Pencil className="w-4 h-4 sm:w-3 sm:h-3" />
               </button>
             )}
+            {/* Delete — admin only */}
+            {canDelete && (
+              <button
+                onClick={onDelete}
+                className="p-2 sm:p-1.5 border border-red-700/40 hover:border-red-500/60 text-red-400/70 hover:text-red-300"
+                title="Delete AML (admin)"
+                aria-label="Delete AML"
+              >
+                <Trash2 className="w-4 h-4 sm:w-3 sm:h-3" />
+              </button>
+            )}
             {/* Defer — only for OPEN + ops/admin */}
             {entry.stage === 'CREATED' && canDefer && (
               <button
@@ -388,6 +452,17 @@ function AMLRow({ entry, canDefer, canEdit, onDefer, onEdit, onDownloadPdf }) {
                   </>
                 )}
               </div>
+              {entry.melPartDeferred && (
+                <div className="text-slate-300">
+                  <span className="text-slate-500">PART</span>{' '}
+                  <span className="text-cyan-200">{entry.melPartDeferred}</span>
+                </div>
+              )}
+              {entry.melItemDescription && (
+                <div className="text-slate-400" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                  <span className="text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>ITEM</span> {entry.melItemDescription}
+                </div>
+              )}
               {entry.melRemarks && (
                 <div className="text-slate-400">
                   <span className="text-slate-500">REMARKS</span> {entry.melRemarks}
@@ -731,6 +806,15 @@ function DeferAMLModal({ aml, currentUser, onClose, onDeferred }) {
   const [dueDate, setDueDate] = useState('');
   const [ataCode, setAtaCode] = useState('');
   const [melItemRef, setMelItemRef] = useState('');
+  // Full MEL item description captured from the MEL at deferral time.
+  // Stored on the AML and the MEL deferral so the record survives even
+  // if the MEL revision is later superseded.
+  const [melItemDescription, setMelItemDescription] = useState('');
+  // Which specific part is being deferred (e.g. when an MEL item has
+  // multiple sub-parts: "left wing landing light" vs "right wing").
+  // Free text — pilot may pick a sub-item name from the MEL or type
+  // their own description.
+  const [partDeferred, setPartDeferred] = useState('');
   const [remarks, setRemarks] = useState('');
   // Where the maintenance work will happen (for Service Request creation)
   const [serviceLocation, setServiceLocation] = useState('');
@@ -818,6 +902,23 @@ function DeferAMLModal({ aml, currentUser, onClose, onDeferred }) {
     if (item.category && ['A', 'B', 'C', 'D'].includes(item.category)) {
       setCategory(item.category);
     }
+    // Compose full description from the MEL item fields. Anything the
+    // pilot/DOM reads later — on AML view, on the status board, in
+    // the PDF export — comes from this stored text. Captured at
+    // deferral time so it survives MEL revisions.
+    const desc = [
+      item.system_name || item.system,
+      item.item,
+      item.subitem_name ? `(${item.subitem_name})` : null,
+    ].filter(Boolean).join(' · ');
+    setMelItemDescription(desc);
+    // Pre-fill partDeferred with subitem name when available — pilot
+    // can adjust. If item has no subitems, leave blank for free entry.
+    if (item.subitem_name) {
+      setPartDeferred(item.subitem_name);
+    } else {
+      setPartDeferred('');
+    }
   }
 
   // PATH A — deferred under MEL. Aircraft remains airworthy under
@@ -828,6 +929,7 @@ function DeferAMLModal({ aml, currentUser, onClose, onDeferred }) {
     try {
       if (!category) throw new Error('Category required for MEL deferral');
       if (!melItemRef.trim()) throw new Error('MEL item reference required — search and select, or enter manually');
+      if (!partDeferred.trim()) throw new Error('Part being deferred required — name the specific component');
       if (!approverName.trim()) throw new Error('Approver name required');
       const { deferAMLAsMELable } = await import('./firebase-aml.js');
       await deferAMLAsMELable({
@@ -837,6 +939,8 @@ function DeferAMLModal({ aml, currentUser, onClose, onDeferred }) {
         melLimitDays: limitDays ? Number(limitDays) : undefined,
         melRemarks: remarks.trim() || null,
         melItemRef: melItemRef.trim() || null,
+        melItemDescription: melItemDescription.trim() || null,
+        partDeferred: partDeferred.trim() || null,
         ataCode: ataCode.trim() || null,
         dueDate: dueDate || null,
         location: serviceLocation.trim() || null,
@@ -896,6 +1000,7 @@ function DeferAMLModal({ aml, currentUser, onClose, onDeferred }) {
   const canDeferAsMELable = (
     category &&
     melItemRef.trim() &&
+    partDeferred.trim() &&
     approverName.trim() &&
     !saving
   );
@@ -1116,6 +1221,43 @@ function DeferAMLModal({ aml, currentUser, onClose, onDeferred }) {
               </div>
             </div>
 
+            {/* MEL item description — populated when an item is picked
+                from search results. Editable so the DOM can refine it
+                before approval. */}
+            <div>
+              <label className="text-[10px] tracking-widest text-slate-500 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                MEL ITEM DESCRIPTION
+              </label>
+              <textarea
+                value={melItemDescription}
+                onChange={(e) => setMelItemDescription(e.target.value)}
+                rows={2}
+                placeholder="System · Item · (Sub-item) — auto-fills when you pick an item from search above"
+                className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 text-sm"
+              />
+            </div>
+
+            {/* WHICH PART is being deferred — when an MEL item covers
+                multiple sub-parts (e.g. left vs right wing light, one
+                of two pumps, one of three radios). Critical for
+                downstream maintenance to know what to actually fix. */}
+            <div>
+              <label className="text-[10px] tracking-widest text-slate-500 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                PART BEING DEFERRED *
+              </label>
+              <input
+                type="text"
+                value={partDeferred}
+                onChange={(e) => setPartDeferred(e.target.value)}
+                placeholder="e.g. Left wing landing light · #2 fuel pump · Captain's PFD"
+                className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 text-sm"
+              />
+              <p className="text-[10px] text-slate-500 mt-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                Be specific. If the MEL item covers multiple components, name the one that's inop.
+              </p>
+            </div>
+          {/* The rest of the deferral details block continues below */}
+
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="text-[10px] tracking-widest text-slate-500 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
@@ -1307,7 +1449,11 @@ function EditAMLModal({ aml, currentUser, onClose, onSaved }) {
   // Which fields are editable for this stage?
   const editableFields = {
     CREATED:  ['discrepancy', 'aftt', 'hobbs', 'landings', 'serialNumber', 'tail', 'date'],
-    DEFERRED: ['melRemarks'],
+    // MEL details can be amended after deferral — refs, descriptions,
+    // and remarks are sometimes corrected after the fact when more
+    // information becomes available. Category/limit/due date are NOT
+    // editable here; those would be a re-deferral.
+    DEFERRED: ['melRemarks', 'melItemRef', 'melItemDescription', 'melPartDeferred'],
     GROUNDED: ['groundingReason'],
   }[stage] || [];
 
@@ -1320,8 +1466,62 @@ function EditAMLModal({ aml, currentUser, onClose, onSaved }) {
   const [tail, setTail] = useState(aml.tail || '');
   const [date, setDate] = useState(aml.date || '');
   const [melRemarks, setMelRemarks] = useState(aml.melRemarks || '');
+  const [melItemRef, setMelItemRef] = useState(aml.melItemRef || '');
+  const [melItemDescription, setMelItemDescription] = useState(aml.melItemDescription || '');
+  const [melPartDeferred, setMelPartDeferred] = useState(aml.melPartDeferred || '');
   const [groundingReason, setGroundingReason] = useState(aml.groundingReason || '');
   const [reason, setReason] = useState('');
+
+  // For the "regenerate from MEL" button — load this tail's MEL items
+  // so we can re-resolve the ref and pull a fresh description.
+  const [melItems, setMelItems] = useState([]);
+  const [regenBusy, setRegenBusy] = useState(false);
+  const [regenNote, setRegenNote] = useState('');
+  useEffect(() => {
+    if (stage !== 'DEFERRED' || !aml.tail) return;
+    let unsub = () => {};
+    (async () => {
+      const m = await import('./firebase-mel.js');
+      unsub = m.subscribeActiveRevision(aml.tail, (rev) => {
+        setMelItems(rev?.items || []);
+      });
+    })();
+    return () => { try { unsub(); } catch (_) {} };
+  }, [stage, aml.tail]);
+
+  // Regenerate MEL description from the current MEL revision based on
+  // the entered MEL ref. Useful when the description was originally
+  // typed manually or when the MEL revision has changed.
+  function regenerateFromMel() {
+    setRegenBusy(true);
+    setRegenNote('');
+    try {
+      if (!melItemRef.trim()) {
+        setRegenNote('Enter the MEL item ref first');
+        return;
+      }
+      if (melItems.length === 0) {
+        setRegenNote('No active MEL found for this tail');
+        return;
+      }
+      const norm = (s) => String(s || '').toUpperCase().replace(/\s+/g, ' ').trim();
+      const want = norm(melItemRef);
+      const match = melItems.find((it) => norm(it.ref) === want);
+      if (!match) {
+        setRegenNote(`No MEL item matches ref "${melItemRef}"`);
+        return;
+      }
+      const desc = [
+        match.system_name || match.system,
+        match.item,
+        match.subitem_name ? `(${match.subitem_name})` : null,
+      ].filter(Boolean).join(' · ');
+      setMelItemDescription(desc);
+      setRegenNote(`Regenerated from active MEL ${desc ? `(${desc.length} chars)` : ''}`);
+    } finally {
+      setRegenBusy(false);
+    }
+  }
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
@@ -1360,6 +1560,9 @@ function EditAMLModal({ aml, currentUser, onClose, onSaved }) {
       if (editableFields.includes('tail')) updates.tail = tail.toUpperCase().trim();
       if (editableFields.includes('date')) updates.date = date;
       if (editableFields.includes('melRemarks')) updates.melRemarks = melRemarks.trim() || null;
+      if (editableFields.includes('melItemRef')) updates.melItemRef = melItemRef.trim() || null;
+      if (editableFields.includes('melItemDescription')) updates.melItemDescription = melItemDescription.trim() || null;
+      if (editableFields.includes('melPartDeferred')) updates.melPartDeferred = melPartDeferred.trim() || null;
       if (editableFields.includes('groundingReason')) updates.groundingReason = groundingReason.trim() || null;
 
       const result = await updateAML({
@@ -1477,18 +1680,78 @@ function EditAMLModal({ aml, currentUser, onClose, onSaved }) {
             </div>
           )}
 
-          {editableFields.includes('melRemarks') && (
-            <div>
-              <label className="text-[10px] tracking-widest text-slate-400 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                MEL REMARKS / NOTES
-              </label>
-              <textarea
-                value={melRemarks} onChange={(e) => setMelRemarks(e.target.value)} rows={3}
-                className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 text-sm"
-              />
-              <p className="text-[10px] text-slate-500 mt-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                The MEL deferral itself (ref, category, limit, due date) is locked once approved.
-                Only remarks can be amended.
+          {editableFields.includes('melItemRef') && (
+            <div className="space-y-3 border border-cyan-500/30 bg-cyan-500/5 p-3">
+              <div className="text-[10px] tracking-widest text-cyan-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                MEL DEFERRAL DETAILS
+              </div>
+              <div>
+                <label className="text-[10px] tracking-widest text-slate-400 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  MEL ITEM REF
+                </label>
+                <input
+                  type="text"
+                  value={melItemRef}
+                  onChange={(e) => setMelItemRef(e.target.value)}
+                  placeholder="33-40-01"
+                  className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 text-sm"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                />
+              </div>
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-[10px] tracking-widest text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    MEL ITEM DESCRIPTION
+                  </label>
+                  <button
+                    onClick={regenerateFromMel}
+                    disabled={regenBusy || !melItemRef.trim()}
+                    className="text-[10px] tracking-widest text-cyan-300 hover:text-cyan-200 disabled:opacity-50"
+                    style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                    type="button"
+                    title="Re-pull description from the active MEL for this tail"
+                  >
+                    {regenBusy ? '...' : '↻ REGENERATE FROM MEL'}
+                  </button>
+                </div>
+                <textarea
+                  value={melItemDescription}
+                  onChange={(e) => setMelItemDescription(e.target.value)}
+                  rows={2}
+                  placeholder="System · Item · (Sub-item)"
+                  className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 text-sm"
+                />
+                {regenNote && (
+                  <p className="text-[10px] text-cyan-300 mt-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    {regenNote}
+                  </p>
+                )}
+              </div>
+              <div>
+                <label className="text-[10px] tracking-widest text-slate-400 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  PART BEING DEFERRED
+                </label>
+                <input
+                  type="text"
+                  value={melPartDeferred}
+                  onChange={(e) => setMelPartDeferred(e.target.value)}
+                  placeholder="e.g. Left wing landing light"
+                  className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 text-sm"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] tracking-widest text-slate-400 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  MEL REMARKS / NOTES
+                </label>
+                <textarea
+                  value={melRemarks} onChange={(e) => setMelRemarks(e.target.value)} rows={3}
+                  className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 text-sm"
+                />
+              </div>
+              <p className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                Note: category, limit days, and due date are locked once approved.
+                The linked Service Request will NOT auto-update when you edit these fields here —
+                if the deferral details change materially, consider deleting and re-deferring.
               </p>
             </div>
           )}
