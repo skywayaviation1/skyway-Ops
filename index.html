@@ -13,7 +13,38 @@
     <title>Skyway Aviation Ops</title>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <!-- Loading state. Shown before React mounts; replaced when
+           the app boots. Inline styles so this works without any
+           CSS file. Background matches the app's dark theme. -->
+      <div style="
+        position: fixed;
+        inset: 0;
+        background: #020617;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        gap: 24px;
+      ">
+        <img
+          src="/skyway-logo.png"
+          alt="Skyway Aviation"
+          style="max-width: 260px; width: 60vw; height: auto;"
+        />
+        <div style="
+          width: 28px;
+          height: 28px;
+          border: 2px solid rgba(56, 189, 248, 0.2);
+          border-top-color: #38bdf8;
+          border-radius: 50%;
+          animation: spin 0.8s linear infinite;
+        "></div>
+      </div>
+      <style>
+        @keyframes spin { to { transform: rotate(360deg); } }
+      </style>
+    </div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
