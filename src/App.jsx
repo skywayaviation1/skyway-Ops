@@ -21989,6 +21989,147 @@ function ExtChatTab({ aog, token, onPosted }) {
   );
 }
 
+// ====================================================================
+// PWA SPLASH SCREEN — shown on every cold launch in standalone mode
+// ====================================================================
+//
+// When the app is launched from the home screen (PWA installed mode),
+// show a full-bleed splash image before anything else. Tapping anywhere
+// dismisses it. Browser visits skip this entirely.
+//
+// "Cold launch" detection: this component starts with show=true, so
+// it appears whenever the JS context is fresh. Tapping dismisses for
+// the lifetime of the context. Subsequent foreground/background
+// cycles on iOS keep the suspended context alive, so the splash
+// doesn't re-appear until the OS actually kills the app.
+//
+// Rendered at root level (in main.jsx) so it sits above the auth
+// flow — users see the splash before any login screen.
+
+export function SplashScreen() {
+  // Detect PWA standalone mode synchronously on first render — avoids a
+  // flash where the splash briefly shows in browser mode and then hides.
+  const [show, setShow] = useState(() => {
+    if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
+    const isStandalone = (
+      ('standalone' in navigator && navigator.standalone === true) ||
+      (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches)
+    );
+    return isStandalone;
+  });
+
+  if (!show) return null;
+
+  return (
+    <button
+      onClick={() => setShow(false)}
+      className="fixed inset-0 z-[100] bg-slate-950 focus:outline-none cursor-pointer w-full h-full"
+      style={{
+        backgroundImage: 'url(/splash.jpg)',
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+        backgroundRepeat: 'no-repeat',
+      }}
+      aria-label="Enter app"
+    >
+      {/* Whole splash is the tap target. The LET'S GO graphic is part
+          of the image; the entire screen functions as the button so
+          users can tap anywhere — sidesteps button-position drift on
+          different aspect ratios. */}
+      <span className="sr-only">Tap anywhere to enter Skyway Aviation Ops</span>
+    </button>
+  );
+}
+
+// ====================================================================
+// IOS INSTALL BANNER — surfaces Add to Home Screen for iOS Safari users
+// ====================================================================
+//
+// iOS Safari does NOT show any native install prompt. The Share →
+// Add to Home Screen flow is the only path, and most users don't
+// know it exists. This banner appears once per user (until dismissed)
+// when:
+//   - User is on iOS (iPhone/iPad)
+//   - User is in Safari (not Chrome iOS, not in-app browsers)
+//   - User isn't already in standalone mode (i.e. not installed)
+//
+// Detection heuristics:
+//   - iOS: `/iPad|iPhone|iPod/.test(navigator.userAgent)`
+//   - Safari (not Chrome iOS): no "CriOS" or "FxiOS" in UA
+//   - Standalone: navigator.standalone === true (iOS-specific) OR
+//     matchMedia('(display-mode: standalone)').matches
+//
+// The dismissal is stored in localStorage with a key so users who
+// genuinely don't want the app installed aren't nagged forever.
+
+function IosInstallBanner() {
+  const [show, setShow] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof navigator === 'undefined') return;
+    // Bail if previously dismissed
+    try {
+      if (localStorage.getItem('skyway_pwa_banner_dismissed') === '1') return;
+    } catch (_) {}
+    // Bail if already installed (standalone mode)
+    const isStandalone = (
+      ('standalone' in navigator && navigator.standalone === true) ||
+      (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches)
+    );
+    if (isStandalone) return;
+    // iOS detection — userAgent works for iPhone/iPod; iPad on iOS 13+
+    // reports as macOS but has touch, so detect that too.
+    const ua = navigator.userAgent || '';
+    const isIos = /iPad|iPhone|iPod/.test(ua) ||
+      (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+    if (!isIos) return;
+    // Safari only — exclude Chrome iOS (CriOS), Firefox iOS (FxiOS),
+    // Edge iOS (EdgiOS), and in-app browsers (FBAN/FBAV for Facebook,
+    // Instagram, etc — they can't even add to home screen)
+    const isSafari = /Safari/.test(ua) &&
+      !/CriOS|FxiOS|EdgiOS|FBAN|FBAV|Instagram/.test(ua);
+    if (!isSafari) return;
+    setShow(true);
+  }, []);
+
+  function dismiss() {
+    setShow(false);
+    try { localStorage.setItem('skyway_pwa_banner_dismissed', '1'); } catch (_) {}
+  }
+
+  if (!show) return null;
+
+  return (
+    <div className="bg-cyan-500/20 border-b border-cyan-500/40 px-4 py-2.5 flex items-center gap-3">
+      <div className="flex-1 min-w-0">
+        <div className="text-[11px] tracking-widest text-cyan-200" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+          INSTALL SKYWAY
+        </div>
+        <div className="text-xs text-slate-200 mt-0.5" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+          Tap{' '}
+          <span className="inline-flex items-center align-middle">
+            {/* iOS Share icon — rough svg approximation */}
+            <svg viewBox="0 0 24 24" className="w-4 h-4 inline mx-1 text-cyan-300" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7" />
+              <polyline points="16 6 12 2 8 6" />
+              <line x1="12" y1="2" x2="12" y2="15" />
+            </svg>
+          </span>
+          {' '}then "Add to Home Screen" to install.
+        </div>
+      </div>
+      <button
+        onClick={dismiss}
+        className="text-xs text-slate-400 hover:text-slate-200 tracking-widest px-2 py-1"
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        aria-label="Dismiss install banner"
+      >
+        DISMISS
+      </button>
+    </div>
+  );
+}
+
 export default function CharterOps() {
   // Auth & users
   const { authState, profile, user, signOut } = useAuth();
@@ -22712,6 +22853,11 @@ export default function CharterOps() {
       `}</style>
 
       <div className="grid-bg h-full flex flex-col">
+        {/* iOS install banner — dismissible, shown only on iOS Safari
+            when the app isn't already installed. Surfaces the Share →
+            Add to Home Screen flow because iOS Safari has no built-in
+            install prompt (unlike Chrome/Android). */}
+        <IosInstallBanner />
         {currentUser?._impersonating && (
           <div className="bg-amber-500 text-slate-950 px-4 py-2 flex items-center justify-between gap-3 flex-wrap">
             <div className="text-xs" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>

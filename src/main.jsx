@@ -1,6 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import App, { ExternalTechPage } from './App.jsx';
+import App, { ExternalTechPage, SplashScreen } from './App.jsx';
 import { ServiceTechPage } from './ServiceRequests.jsx';
 import './index.css';
 
@@ -81,6 +81,36 @@ const isServiceTechRoute =
   typeof window !== 'undefined' &&
   window.location.pathname.replace(/\/+$/, '') === '/service-tech';
 
+/* ============================================================
+   PWA SERVICE WORKER REGISTRATION
+   ------------------------------------------------------------
+   Register the FCM service worker eagerly on page load (not on
+   demand when push is enabled) so the app meets PWA install
+   criteria. Without an active SW, Chrome/Android won't show the
+   "Install app" affordance.
+
+   The SW handles push notifications when present, but its mere
+   existence is what unlocks installability. We do NOT add app
+   caching here — Vercel handles cache headers, and adding a
+   cache strategy is a tarpit (stale code after deploys etc.).
+
+   Failures are swallowed: SW registration shouldn't block app
+   startup. The app works fine without it; users just don't get
+   the "Install" prompt.
+   ============================================================ */
+if (typeof window !== 'undefined' && 'serviceWorker' in navigator
+    && !isExternalTechRoute && !isServiceTechRoute) {
+  // Register after the page has finished loading so we don't compete
+  // with initial render for the network.
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/firebase-messaging-sw.js', { scope: '/' })
+      .catch((err) => {
+        // Don't surface to user. SW is non-critical for app function.
+        console.warn('[pwa] service worker registration skipped:', err && err.message);
+      });
+  });
+}
+
 const rootEl = ReactDOM.createRoot(document.getElementById('root'));
 
 if (isExternalTechRoute) {
@@ -100,6 +130,7 @@ if (isExternalTechRoute) {
 } else {
   rootEl.render(
     <React.StrictMode>
+      <SplashScreen />
       <App />
     </React.StrictMode>
   );
