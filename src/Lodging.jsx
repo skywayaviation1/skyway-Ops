@@ -22,6 +22,7 @@
 // needed when search is added.
 
 import React, { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Hotel, Plane, Plus, Loader2, X, Search, Star, AlertTriangle, ChevronLeft } from 'lucide-react';
 import { searchProperties, getPropertyDetail, bookRoom, DEMO_MODE } from './rapid-mock.js';
 
@@ -348,8 +349,13 @@ function AddLodgingModal({ trip, currentUser, users, isOpsOrAdmin, onClose }) {
 
   const canSave = hotelName.trim() && forUid && checkInDate && checkOutDate;
 
-  return (
-    <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-start sm:items-center justify-center p-0 sm:p-4 overflow-y-auto">
+  // Render via portal directly to document.body so the modal escapes any
+  // ancestor stacking context / containing block. Without this, the
+  // modal can render inside the trip detail's scroll container and end
+  // up visually behind sticky headers — the modal title and X get hidden
+  // behind the top app bar / trip tab strip even though z-50 should win.
+  return createPortal(
+    <div className="fixed inset-0 z-[100] bg-slate-950/80 backdrop-blur-sm flex items-start sm:items-center justify-center p-0 sm:p-4 overflow-y-auto">
       <div className="bg-slate-900 border border-slate-700 w-full max-w-lg sm:my-8 flex flex-col min-h-screen sm:min-h-0 sm:max-h-[90vh]">
         <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3 shrink-0">
           <h3 className="text-lg tracking-wider" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
@@ -537,7 +543,8 @@ function AddLodgingModal({ trip, currentUser, users, isOpsOrAdmin, onClose }) {
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
@@ -681,8 +688,13 @@ function FindHotelsModal({ trip, currentUser, users, isOpsOrAdmin, onClose }) {
     }
   }
 
-  return (
-    <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-start sm:items-center justify-center p-0 sm:p-4 overflow-y-auto">
+  // Render via portal directly to document.body so the modal escapes any
+  // ancestor stacking context / containing block. Without this, the
+  // modal can render inside the trip detail's scroll container and end
+  // up visually behind sticky headers — the modal title and X get hidden
+  // behind the top app bar / trip tab strip even though z-50 should win.
+  return createPortal(
+    <div className="fixed inset-0 z-[100] bg-slate-950/80 backdrop-blur-sm flex items-start sm:items-center justify-center p-0 sm:p-4 overflow-y-auto">
       <div className="bg-slate-900 border-2 border-amber-500/60 w-full max-w-3xl sm:my-8 flex flex-col min-h-screen sm:min-h-0 sm:max-h-[90vh]">
         {/* Demo banner — runs across the top of EVERY step so the user
             never loses sight of what mode they're in. */}
@@ -960,6 +972,7 @@ function FindHotelsModal({ trip, currentUser, users, isOpsOrAdmin, onClose }) {
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
