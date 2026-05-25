@@ -11,7 +11,7 @@
 import React, { useEffect, useMemo, useState, Suspense, lazy } from 'react';
 import {
   MessageSquare, Plus, Search, X, ChevronLeft,
-  Loader2, UserPlus, Bell,
+  Loader2, UserPlus, Bell, Settings, Trash2, Check,
 } from 'lucide-react';
 
 // Code-split: MuteToggle loads only when a chat pane is open.
@@ -314,6 +314,332 @@ function NewConversationDialog({ open, onClose, users, currentUser, isAdmin, onD
 /* ============================================================
    CommsScreen — main
    ============================================================ */
+/* ============================================================
+   MANAGE GROUP DIALOG — admin only, current group only
+   ------------------------------------------------------------
+   Lets an admin:
+     - rename the group
+     - add new members (multi-select from non-members)
+     - remove existing members (one at a time, with confirm)
+
+   All actions are admin-gated in the data layer too. This dialog
+   just surfaces what the data layer already supports. DMs and
+   trip-linked conversations don't have manageable membership;
+   the gear that opens this dialog is hidden for those kinds.
+   ============================================================ */
+function ManageGroupDialog({ open, onClose, conv, users, currentUser, usersByUid }) {
+  const [tab, setTab] = useState('members'); // members | add | rename
+  const [search, setSearch] = useState('');
+  const [picked, setPicked] = useState(new Set());
+  const [titleDraft, setTitleDraft] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [removingUid, setRemovingUid] = useState(null);
+
+  // Reset state every time dialog opens for a (possibly different) group
+  useEffect(() => {
+    if (open) {
+      setTab('members');
+      setSearch('');
+      setPicked(new Set());
+      setTitleDraft(conv?.title || '');
+      setBusy(false);
+      setErr('');
+      setRemovingUid(null);
+    }
+  }, [open, conv?.id, conv?.title]);
+
+  if (!open || !conv) return null;
+
+  const myUid = currentUser.uid || currentUser.id;
+  const memberUids = Array.isArray(conv.participants) ? conv.participants : [];
+
+  // Members list with user objects resolved
+  const memberList = memberUids
+    .map((uid) => ({
+      uid,
+      user: usersByUid[uid] || null,
+    }))
+    .sort((a, b) => {
+      const na = (a.user?.name || a.uid).toLowerCase();
+      const nb = (b.user?.name || b.uid).toLowerCase();
+      return na.localeCompare(nb);
+    });
+
+  // Candidates for "add" tab: everyone not already in the group, excluding
+  // unapproved users. Search-filterable. Sort by name.
+  const memberSet = new Set(memberUids);
+  const addCandidates = (users || [])
+    .filter((u) => {
+      const uid = u.uid || u.id;
+      if (!uid) return false;
+      if (memberSet.has(uid)) return false;
+      if (u.approved === false) return false;
+      return true;
+    })
+    .filter((u) => {
+      const q = search.trim().toLowerCase();
+      if (!q) return true;
+      return (u.name || '').toLowerCase().includes(q) || (u.email || '').toLowerCase().includes(q);
+    })
+    .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+
+  const togglePick = (uid) => {
+    const next = new Set(picked);
+    if (next.has(uid)) next.delete(uid); else next.add(uid);
+    setPicked(next);
+  };
+
+  async function doAdd() {
+    if (busy || picked.size === 0) return;
+    setBusy(true); setErr('');
+    try {
+      const M = await import('./firebase-comms.js');
+      await M.addGroupMembers(conv, Array.from(picked), currentUser);
+      // Tab back to members so the user sees the result. Conv will refresh
+      // via the inbox subscription; we just close on success for clarity.
+      setPicked(new Set());
+      setTab('members');
+    } catch (e) {
+      setErr(e.message || 'Could not add members');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function doRemove(uid) {
+    if (busy) return;
+    const u = usersByUid[uid];
+    const name = u?.name || uid;
+    const isSelf = uid === myUid;
+    const msg = isSelf
+      ? `Remove yourself from this group? You'll lose access to the conversation. (You can add yourself back as admin.)`
+      : `Remove ${name} from this group?`;
+    if (!window.confirm(msg)) return;
+    setBusy(true); setErr(''); setRemovingUid(uid);
+    try {
+      const M = await import('./firebase-comms.js');
+      await M.removeGroupMember(conv, uid, currentUser);
+    } catch (e) {
+      setErr(e.message || 'Could not remove member');
+    } finally {
+      setBusy(false);
+      setRemovingUid(null);
+    }
+  }
+
+  async function doRename() {
+    if (busy) return;
+    const t = titleDraft.trim();
+    if (!t) { setErr('Title is required'); return; }
+    if (t === (conv.title || '')) { setTab('members'); return; }
+    setBusy(true); setErr('');
+    try {
+      const M = await import('./firebase-comms.js');
+      await M.renameGroup(conv, t, currentUser);
+      setTab('members');
+    } catch (e) {
+      setErr(e.message || 'Could not rename');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[100] bg-slate-950/80 backdrop-blur-sm flex items-start sm:items-center justify-center p-0 sm:p-4 overflow-y-auto">
+      <div className="bg-slate-900 border border-slate-700 w-full max-w-lg sm:my-8 flex flex-col min-h-screen sm:min-h-0 sm:max-h-[90vh]">
+        <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3 shrink-0">
+          <div>
+            <h3 className="text-lg tracking-wider text-slate-100" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
+              MANAGE GROUP
+            </h3>
+            <p className="text-xs text-slate-500 mt-0.5">{conv.title || 'Group'}</p>
+          </div>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-200">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Tab strip */}
+        <div className="flex border-b border-slate-800 shrink-0">
+          {[
+            { id: 'members', label: 'MEMBERS' },
+            { id: 'add',     label: 'ADD' },
+            { id: 'rename',  label: 'RENAME' },
+          ].map((t) => (
+            <button
+              key={t.id}
+              onClick={() => { setTab(t.id); setErr(''); }}
+              className={`flex-1 px-3 py-2 text-[10px] tracking-widest ${
+                tab === t.id
+                  ? 'text-cyan-300 border-b-2 border-cyan-400'
+                  : 'text-slate-500 hover:text-slate-300'
+              }`}
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {err && (
+          <div className="border-b border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300 shrink-0">
+            {err}
+          </div>
+        )}
+
+        <div className="flex-1 overflow-y-auto p-4">
+          {/* === MEMBERS tab === */}
+          {tab === 'members' && (
+            <div className="space-y-2">
+              {memberList.length === 0 ? (
+                <div className="text-center text-sm text-slate-500 py-8">No members in this group.</div>
+              ) : memberList.map(({ uid, user }) => {
+                const name = user?.name || uid;
+                const role = user?.role || '';
+                const isSelf = uid === myUid;
+                return (
+                  <div key={uid} className="flex items-center gap-3 p-2 border border-slate-800 hover:border-slate-700">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm text-slate-100 truncate" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                        {name}{isSelf && <span className="text-cyan-400 ml-2">(you)</span>}
+                      </div>
+                      {role && (
+                        <div className="text-[10px] text-slate-500 tracking-widest uppercase" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                          {role}
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => doRemove(uid)}
+                      disabled={busy}
+                      className="text-[10px] tracking-widest text-red-400/80 hover:text-red-300 border border-red-700/40 hover:border-red-500/60 px-2 py-1 disabled:opacity-40"
+                      style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                    >
+                      {removingUid === uid ? <Loader2 className="w-3 h-3 inline animate-spin" /> : <Trash2 className="w-3 h-3 inline -mt-0.5" />}
+                      {' '}REMOVE
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* === ADD tab === */}
+          {tab === 'add' && (
+            <div className="space-y-3">
+              <div className="relative">
+                <Search className="w-4 h-4 absolute left-2 top-1/2 -translate-y-1/2 text-slate-500" />
+                <input
+                  type="text"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search by name or email..."
+                  className="w-full bg-slate-800 border border-slate-700 pl-8 pr-3 py-2 text-sm text-slate-100"
+                  style={{ fontFamily: 'DM Sans, sans-serif' }}
+                />
+              </div>
+              {addCandidates.length === 0 ? (
+                <div className="text-center text-sm text-slate-500 py-8">
+                  {search ? 'No matches.' : 'Everyone is already in this group.'}
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  {addCandidates.map((u) => {
+                    const uid = u.uid || u.id;
+                    const checked = picked.has(uid);
+                    return (
+                      <button
+                        key={uid}
+                        onClick={() => togglePick(uid)}
+                        className={`w-full flex items-center gap-3 p-2 border text-left ${
+                          checked
+                            ? 'border-cyan-500/60 bg-cyan-500/10'
+                            : 'border-slate-800 hover:border-slate-700'
+                        }`}
+                      >
+                        <div className={`w-4 h-4 border flex items-center justify-center shrink-0 ${
+                          checked ? 'border-cyan-400 bg-cyan-500' : 'border-slate-600'
+                        }`}>
+                          {checked && <Check className="w-3 h-3 text-slate-950" />}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm text-slate-100 truncate" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                            {u.name || u.email || uid}
+                          </div>
+                          {u.role && (
+                            <div className="text-[10px] text-slate-500 tracking-widest uppercase" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                              {u.role}
+                            </div>
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* === RENAME tab === */}
+          {tab === 'rename' && (
+            <div className="space-y-2">
+              <label className="block text-[10px] tracking-widest text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                GROUP TITLE
+              </label>
+              <input
+                type="text"
+                value={titleDraft}
+                onChange={(e) => setTitleDraft(e.target.value)}
+                placeholder="e.g. Ops Team, Maintenance, Trip XYZ Crew"
+                maxLength={80}
+                className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-sm text-slate-100"
+                style={{ fontFamily: 'DM Sans, sans-serif' }}
+                autoFocus
+              />
+              <p className="text-[10px] text-slate-500">80 character limit.</p>
+            </div>
+          )}
+        </div>
+
+        {/* Footer actions — different per tab */}
+        <div className="border-t border-slate-800 px-4 py-3 flex items-center justify-end gap-2 shrink-0">
+          <button
+            onClick={onClose}
+            disabled={busy}
+            className="px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200 tracking-widest"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            CLOSE
+          </button>
+          {tab === 'add' && (
+            <button
+              onClick={doAdd}
+              disabled={busy || picked.size === 0}
+              className="px-3 py-1.5 bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-700 disabled:text-slate-500 text-slate-950 text-xs font-medium tracking-widest"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              {busy ? <Loader2 className="w-3 h-3 inline animate-spin mr-1" /> : null}
+              ADD {picked.size > 0 ? `(${picked.size})` : ''}
+            </button>
+          )}
+          {tab === 'rename' && (
+            <button
+              onClick={doRename}
+              disabled={busy || !titleDraft.trim() || titleDraft.trim() === (conv.title || '')}
+              className="px-3 py-1.5 bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-700 disabled:text-slate-500 text-slate-950 text-xs font-medium tracking-widest"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              {busy ? <Loader2 className="w-3 h-3 inline animate-spin mr-1" /> : null}
+              SAVE
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function CommsScreen({ currentUser, users, onJumpToEntity }) {
   const [conversations, setConversations] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -323,6 +649,7 @@ function CommsScreen({ currentUser, users, onJumpToEntity }) {
   const [typingNames, setTypingNames] = useState([]);
   const [search, setSearch] = useState('');
   const [showNew, setShowNew] = useState(false);
+  const [showManage, setShowManage] = useState(false);
   const [mobileShowChat, setMobileShowChat] = useState(false);
 
   const isAdmin = currentUser?.role === 'admin';
@@ -464,6 +791,18 @@ function CommsScreen({ currentUser, users, onJumpToEntity }) {
         onGroupCreated={(id) => { setSelectedId(id); setMobileShowChat(true); }}
       />
 
+      {/* Manage group dialog — admin only, opened from the chat header gear.
+          Receives the currently-selected conversation so add/remove operate
+          on it directly. */}
+      <ManageGroupDialog
+        open={showManage}
+        onClose={() => setShowManage(false)}
+        conv={selected}
+        users={users}
+        currentUser={currentUser}
+        usersByUid={usersByUid}
+      />
+
       <div className="border-b border-slate-800 bg-slate-950 px-4 py-3 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <MessageSquare className="w-4 h-4 text-cyan-400" />
@@ -551,6 +890,20 @@ function CommsScreen({ currentUser, users, onJumpToEntity }) {
                   {selected.entityRef && onJumpToEntity && (
                     <button onClick={() => onJumpToEntity(selected.entityRef)} className="text-[10px] text-cyan-400 hover:text-cyan-300 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
                       OPEN →
+                    </button>
+                  )}
+                  {/* Manage group button — admin only, group conversations only.
+                      DMs have fixed 2-person membership; trip-linked threads
+                      have implicit membership tied to the trip. Only "group"
+                      conversations have managed membership. */}
+                  {isAdmin && selected.kind === 'group' && (
+                    <button
+                      onClick={() => setShowManage(true)}
+                      className="text-slate-500 hover:text-slate-200 p-1"
+                      title="Manage group members"
+                      aria-label="Manage group members"
+                    >
+                      <Settings className="w-4 h-4" />
                     </button>
                   )}
                   <Suspense fallback={null}>
