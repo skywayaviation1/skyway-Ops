@@ -505,9 +505,14 @@ function parseJetInsightTripSheet(text) {
   //   Leg 1: Pax: 0 SDF 04/30/2026 - 18:24 EDT (22:24 Z) → 1:06 → CLE 04/30/2026 - 19:30 EDT (23:30 Z)
   // PDF text extraction loses the arrow chars and reorders some content. To be robust,
   // we parse departure and arrival info SEPARATELY, then pair them up by leg number.
+  //
+  // 2026-05 update: JetInsight changed the pax format from "Pax: 0" to "Pax: 0/1"
+  // (apparently "confirmed/booked" or "actual/manifested"). The regex now accepts
+  // either form; we capture only the first number as the operative count.
   const legSummaries = [];
   // First pass: find "Leg N: Pax: M FROM date - time tz (zulu Z)" — the departure half
-  const depRe = /Leg\s+(\d+)\s*:\s*Pax\s*:\s*(\d+)\s+([A-Z0-9]{3,4})\s+(\d{1,2}\/\d{1,2}\/\d{4})\s*-\s*(\d{1,2}:\d{2})\s+([A-Z]{2,4})\s*\((\d{1,2}:\d{2})\s*Z\)/gi;
+  // Pax format: single number ("0") OR slash-separated pair ("0/1") — capture first only
+  const depRe = /Leg\s+(\d+)\s*:\s*Pax\s*:\s*(\d+)(?:\s*\/\s*\d+)?\s+([A-Z0-9]{3,4})\s+(\d{1,2}\/\d{1,2}\/\d{4})\s*-\s*(\d{1,2}:\d{2})\s+([A-Z]{2,4})\s*\((\d{1,2}:\d{2})\s*Z\)/gi;
   const departures = [];
   let dm;
   while ((dm = depRe.exec(text)) !== null) {
