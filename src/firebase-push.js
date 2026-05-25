@@ -132,10 +132,34 @@ export async function enablePush(user, opts = {}) {
   if (!messaging) throw new Error('FCM messaging unsupported on this browser.');
 
   const { getToken } = await import('firebase/messaging');
-  const token = await getToken(messaging, {
-    vapidKey: vapid,
-    serviceWorkerRegistration: reg,
-  });
+  let token;
+  try {
+    token = await getToken(messaging, {
+      vapidKey: vapid,
+      serviceWorkerRegistration: reg,
+    });
+  } catch (err) {
+    // FCM throws a generic "auth credential" error when the VAPID key in
+    // VITE_FIREBASE_VAPID_KEY doesn't match what's configured in the
+    // Firebase Console for this project. Translate to something actionable.
+    const msg = String(err && err.message || '');
+    const code = err && err.code;
+    if (code === 'messaging/token-subscribe-failed' ||
+        /authentication credential|OAuth 2 access token|token-subscribe-failed/i.test(msg)) {
+      const e = new Error(
+        'Push notifications can\'t be enabled because the Firebase project\'s ' +
+        'Web Push VAPID key is missing or doesn\'t match. An admin needs to: ' +
+        '(1) generate a Web Push key pair in Firebase Console → Project Settings → ' +
+        'Cloud Messaging → Web Push certificates, (2) copy the key, (3) set it as ' +
+        'VITE_FIREBASE_VAPID_KEY in Vercel env vars, (4) redeploy.'
+      );
+      e.code = 'vapid-mismatch';
+      e.original = err;
+      throw e;
+    }
+    // Some other failure — rethrow with context
+    throw err;
+  }
   if (!token) throw new Error('FCM did not return a token. (Permission may be blocked at the OS level.)');
 
   // Save the token. We key by token (not by deviceId) because the same
