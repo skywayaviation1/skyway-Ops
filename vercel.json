@@ -24,6 +24,9 @@
     },
     "api/airport-coords-refresh.js": {
       "maxDuration": 60
+    },
+    "api/parse-receipt.js": {
+      "maxDuration": 60
     }
   },
   "rewrites": [
