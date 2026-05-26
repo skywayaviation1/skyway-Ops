@@ -20046,6 +20046,10 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
   const [selectedId, setSelectedId] = useState(null);
   const [showUploader, setShowUploader] = useState(false);
   const [uploadError, setUploadError] = useState(null);
+  // Stage tracker shown in the uploader panel — gives the user a visible
+  // signal that something is happening even though the parse takes ~15s.
+  // null | 'compressing' | 'uploading' | 'parsing'
+  const [uploadStage, setUploadStage] = useState(null);
   // Month filter for totals panel — null = current month, or 'YYYY-MM' string
   const [statsMonth, setStatsMonth] = useState(null);
 
@@ -20140,8 +20144,14 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
 
   const handleUpload = async (file) => {
     setUploadError(null);
-    setShowUploader(false);
+    // Keep the uploader panel OPEN during the work so the stage banner is
+    // visible. We close it after success — or leave it open with the error
+    // on failure.
     try {
+      // ---- Stage 1: compress the image (skipped for PDFs) -------------
+      setUploadStage('compressing');
+      const compressed = await compressImageForReceipt(file);
+
       const m = await import('./firebase-expenses.js');
       const id = m.newExpenseId();
       const draft = {
@@ -20161,14 +20171,25 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
       await m.saveExpense(draft);
       setSelectedId(id);
 
-      const { url, path, contentType, sizeBytes } = await m.uploadReceipt(file, currentUserUid);
+      // ---- Stage 2: upload to Firebase Storage + base64 in PARALLEL ---
+      // The base64 is needed for the parse-receipt API call. We DON'T need
+      // to wait for the Storage upload before starting the AI parse — they
+      // operate on the same bytes. Running in parallel saves ~3-8 seconds
+      // on a typical photo.
+      setUploadStage('uploading');
+      const [uploadResult, base64] = await Promise.all([
+        m.uploadReceipt(compressed, currentUserUid),
+        fileToBase64(compressed),
+      ]);
+      const { url, path, contentType, sizeBytes } = uploadResult;
       await m.saveExpense({
         ...draft, receiptUrl: url, receiptPath: path,
         receiptContentType: contentType, receiptSizeBytes: sizeBytes,
-        receiptFilename: file.name,
+        receiptFilename: compressed.name || file.name,
       });
 
-      const base64 = await fileToBase64(file);
+      // ---- Stage 3: parse via Claude vision ---------------------------
+      setUploadStage('parsing');
       // Auth: this endpoint is gated to verified users (it spends our
       // Anthropic key). Attach the caller's Firebase ID token.
       let idToken = null;
@@ -20176,27 +20197,58 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
         const { auth } = await import('./firebase.js');
         if (auth.currentUser) idToken = await auth.currentUser.getIdToken();
       } catch (e) { /* idToken stays null -> server returns 401 below */ }
-      const r = await fetch('/api/parse-receipt', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ idToken, imageBase64: base64, mediaType: contentType || 'image/jpeg' }),
-      });
-      const data = await r.json();
+
+      // Use an AbortController so we can surface a clearer error if the
+      // request hangs longer than the Vercel function's 60s window.
+      const ac = new AbortController();
+      const t = setTimeout(() => ac.abort(), 65000);
+      let r, data;
+      try {
+        r = await fetch('/api/parse-receipt', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ idToken, imageBase64: base64, mediaType: contentType || 'image/jpeg' }),
+          signal: ac.signal,
+        });
+        data = await r.json();
+      } catch (fetchErr) {
+        clearTimeout(t);
+        // Network-layer failure (Safari "Load failed", abort, offline, etc.)
+        // Save what we have and let the user fill in manually rather than
+        // losing the upload entirely.
+        const friendly = fetchErr.name === 'AbortError'
+          ? 'AI parse took too long. The receipt was uploaded — edit fields manually.'
+          : `Network error reaching the AI parser (${fetchErr.message || 'connection dropped'}). Receipt uploaded — edit fields manually.`;
+        await m.saveExpense({
+          ...draft,
+          receiptUrl: url, receiptPath: path, receiptContentType: contentType,
+          receiptSizeBytes: sizeBytes, receiptFilename: compressed.name || file.name,
+          notes: friendly,
+          status: 'draft',
+        });
+        setUploadError(friendly);
+        setShowUploader(false);
+        setUploadStage(null);
+        return;
+      }
+      clearTimeout(t);
       if (!r.ok) {
         await m.saveExpense({
           ...draft,
           receiptUrl: url, receiptPath: path, receiptContentType: contentType,
-          receiptSizeBytes: sizeBytes, receiptFilename: file.name,
-          notes: `AI parse failed: ${data.error}. Edit fields manually.`,
+          receiptSizeBytes: sizeBytes, receiptFilename: compressed.name || file.name,
+          notes: `AI parse failed: ${data?.error || 'Unknown error'}. Edit fields manually.`,
           status: 'draft',
         });
+        setShowUploader(false);
+        setUploadStage(null);
         return;
       }
       const p = data.parsed;
       await m.saveExpense({
         ...draft,
         receiptUrl: url, receiptPath: path, receiptContentType: contentType,
-        receiptSizeBytes: sizeBytes, receiptFilename: file.name,
+        receiptSizeBytes: sizeBytes, receiptFilename: compressed.name || file.name,
         vendor: p.vendor, transactionDate: p.transactionDate, totalAmount: p.totalAmount,
         currency: p.currency, subtotal: p.subtotal, tax: p.tax, tip: p.tip,
         category: p.category, lineItems: p.lineItems,
@@ -20205,9 +20257,13 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
         confidence: p.confidence,
         status: 'draft',
       });
+      // All done — close the panel and clear stage
+      setShowUploader(false);
+      setUploadStage(null);
     } catch (err) {
       console.error('[expenses] upload failed:', err);
       setUploadError(err.message || 'Upload failed');
+      setUploadStage(null);
     }
   };
 
@@ -20472,7 +20528,25 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
             <p className="text-[10px] text-slate-500 mb-3">
               Take a photo or pick from your camera roll. AI will extract vendor, date, amount, and category.
             </p>
-            <div className="grid grid-cols-2 gap-2">
+            {/* Progress banner — visible while an upload is in flight so the
+                user knows the app is working instead of staring at a static
+                screen. Each stage is named so they can see what's happening. */}
+            {uploadStage && (
+              <div className="mb-3 p-3 border border-cyan-500/40 bg-cyan-500/5 flex items-center gap-3">
+                <Loader2 className="w-4 h-4 animate-spin text-cyan-300 shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs text-cyan-200" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
+                    {uploadStage === 'compressing' && 'Preparing image…'}
+                    {uploadStage === 'uploading' && 'Uploading receipt…'}
+                    {uploadStage === 'parsing' && 'AI is reading the receipt…'}
+                  </div>
+                  <div className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    {uploadStage === 'parsing' ? 'Takes ~10–20 seconds — keep this tab open' : 'Please wait'}
+                  </div>
+                </div>
+              </div>
+            )}
+            <div className={`grid grid-cols-2 gap-2 ${uploadStage ? 'opacity-40 pointer-events-none' : ''}`}>
               {/* TAKE PHOTO — forces the camera on mobile */}
               <label className="block text-center py-2 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 cursor-pointer text-sm" style={{ fontFamily: 'DM Sans, sans-serif' }}>
                 <Camera className="w-4 h-4 inline mr-1" /> CAMERA
@@ -20480,6 +20554,7 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
                   type="file"
                   accept="image/*"
                   capture="environment"
+                  disabled={!!uploadStage}
                   onChange={(e) => {
                     const f = e.target.files?.[0];
                     if (f) handleUpload(f);
@@ -20494,6 +20569,7 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
                 <input
                   type="file"
                   accept="image/*,application/pdf"
+                  disabled={!!uploadStage}
                   onChange={(e) => {
                     const f = e.target.files?.[0];
                     if (f) handleUpload(f);
@@ -20505,12 +20581,13 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
             </div>
             <button
               onClick={() => setShowUploader(false)}
-              className="mt-2 w-full py-1 text-[10px] text-slate-500 hover:text-slate-300 tracking-widest"
+              disabled={!!uploadStage}
+              className="mt-2 w-full py-1 text-[10px] text-slate-500 hover:text-slate-300 tracking-widest disabled:opacity-40"
               style={{ fontFamily: 'JetBrains Mono, monospace' }}
             >
-              CANCEL
+              {uploadStage ? 'WORKING…' : 'CANCEL'}
             </button>
-            {uploadError && (
+            {uploadError && !uploadStage && (
               <div className="mt-2 p-2 border border-red-500/30 bg-red-500/5 text-xs text-red-300">{uploadError}</div>
             )}
           </div>
@@ -20682,6 +20759,104 @@ async function fileToBase64(file) {
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
   });
+}
+
+// Compress a receipt image client-side before upload + parse.
+//
+// Why: an unmodified iPhone photo is 5-15MB. That blob:
+//   1) takes 5-10 seconds to upload to Firebase Storage over LTE/5G
+//   2) becomes ~7-20MB when base64-encoded for the parse-receipt API
+//   3) the resulting fetch body sometimes exceeds Safari's mobile limits,
+//      producing the cryptic "Load failed" TypeError users were seeing
+//   4) Claude has to read more pixels than it needs — receipts are text-
+//      heavy, fully legible at 2048px max edge
+//
+// We resize to 2048px max edge and re-encode at JPEG quality 0.85. A
+// typical 10MB photo becomes ~400-800KB without losing receipt legibility.
+// Returns a new Blob (with .name, .type, .size) ready to use everywhere
+// a File is expected.
+//
+// PDFs and unknown blobs pass through unchanged — only image inputs are
+// compressed. Returns the original on any error so a compression failure
+// never blocks the upload.
+async function compressImageForReceipt(file, opts = {}) {
+  if (!file) return file;
+  const isImage = (file.type || '').startsWith('image/');
+  // Skip PDFs and anything we don't recognize as an image. HEIC is included
+  // in image/* and will go through the canvas path — Safari decodes HEIC
+  // natively for createImageBitmap, other browsers may fail (we'll fall
+  // back to the original in that case).
+  if (!isImage) return file;
+  // Tiny files don't benefit — skip the round-trip cost.
+  if (file.size < 500 * 1024) return file;
+
+  const maxEdge = opts.maxEdge || 2048;
+  const quality = opts.quality || 0.85;
+
+  try {
+    // createImageBitmap is the fastest path and handles HEIC on iOS Safari.
+    // Fall back to <img> + onload for older browsers.
+    let bitmap;
+    if (typeof createImageBitmap === 'function') {
+      try {
+        bitmap = await createImageBitmap(file);
+      } catch (_) {
+        // HEIC sometimes fails here on non-Safari browsers. Fall through.
+      }
+    }
+    if (!bitmap) {
+      const url = URL.createObjectURL(file);
+      const img = await new Promise((resolve, reject) => {
+        const i = new Image();
+        i.onload = () => resolve(i);
+        i.onerror = () => reject(new Error('Could not decode image'));
+        i.src = url;
+      }).finally(() => URL.revokeObjectURL(url));
+      bitmap = img;
+    }
+
+    const srcW = bitmap.width || bitmap.naturalWidth;
+    const srcH = bitmap.height || bitmap.naturalHeight;
+    if (!srcW || !srcH) return file; // can't read dims — abort compression
+
+    // If already under max edge, just re-encode at quality 0.85 — that
+    // alone usually shaves 50-70% for typical iPhone photos.
+    const scale = Math.min(1, maxEdge / Math.max(srcW, srcH));
+    const dstW = Math.round(srcW * scale);
+    const dstH = Math.round(srcH * scale);
+
+    const canvas = document.createElement('canvas');
+    canvas.width = dstW;
+    canvas.height = dstH;
+    const ctx = canvas.getContext('2d');
+    // Fill white — JPEG doesn't support transparency, prevents black bg
+    // on receipts that came in as PNG with alpha.
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, dstW, dstH);
+    ctx.drawImage(bitmap, 0, 0, dstW, dstH);
+    if (bitmap.close) bitmap.close(); // free bitmap memory
+
+    const blob = await new Promise((resolve) =>
+      canvas.toBlob(resolve, 'image/jpeg', quality)
+    );
+    if (!blob) return file;
+    // If compression somehow made it BIGGER (small PNG, etc.), use original
+    if (blob.size >= file.size) return file;
+
+    // Wrap as a File so downstream code that reads .name still works.
+    const newName = (file.name || 'receipt').replace(/\.[^.]+$/, '') + '.jpg';
+    try {
+      return new File([blob], newName, { type: 'image/jpeg', lastModified: Date.now() });
+    } catch (_) {
+      // Some older browsers don't have File constructor — fall back to Blob
+      // with a .name shim. uploadReceipt only reads .type and .size.
+      blob.name = newName;
+      return blob;
+    }
+  } catch (e) {
+    console.warn('[expenses] compression failed, using original:', e);
+    return file;
+  }
 }
 
 function ExpenseRow({ expense, selected, onClick }) {
