@@ -30,7 +30,7 @@
 // Caller is responsible for ordering messages ascending by timestamp.
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Paperclip, Image as ImageIcon, ArrowUp, Loader2, Trash2 } from 'lucide-react';
+import { Paperclip, Image as ImageIcon, ArrowUp, Loader2, Trash2, Reply, CornerDownRight, X as XIcon } from 'lucide-react';
 
 /* ------------------------------------------------------------------
    Pure helpers — easy to unit-test.
@@ -122,12 +122,13 @@ function BubbleChat({
   messages = [],
   currentUser = null,
   typingUsers = [],          // names of OTHER users currently typing
-  onSend = null,             // async (text) => void
+  onSend = null,             // async (text, opts?) => void — opts can include { replyTo }
   onAttach = null,           // async (file) => void — optional; hides attach buttons when absent
   onSendGif = null,          // async () => void — opens GIF picker; hides button when absent
   onTyping = null,           // (boolean) => void — optional, debounced internally
   onDelete = null,           // async (message) => void — optional; hides delete control when absent
   canDelete = null,          // (message) => boolean — optional; defaults to "mine || isAdmin?"
+  usersByUid = {},           // { [uid]: { name, ... } } — used to resolve read-receipt names
   loading = false,
   emptyText = 'No messages yet — start the conversation.',
   headerTitle = null,        // optional; parent often supplies its own chrome
@@ -137,6 +138,12 @@ function BubbleChat({
 }) {
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
+  // Reply draft: the message currently being replied to, or null. Cleared
+  // after a successful send or when the user taps the X on the preview.
+  const [replyDraft, setReplyDraft] = useState(null);
+  // Which message has its read-receipts panel expanded. One at a time;
+  // tap a message to expand, tap again or tap another to switch.
+  const [expandedReceiptsId, setExpandedReceiptsId] = useState(null);
   const scrollerRef = useRef(null);
   const composerRef = useRef(null);
   const atBottomRef = useRef(true);
@@ -180,14 +187,33 @@ function BubbleChat({
     const t = text.trim();
     if (!t || sending || !onSend) return;
     setSending(true);
+    // Snapshot the reply draft into the message payload. We build the
+    // snippet from text first, then fall back to attachment description
+    // so replies to image-only messages still get a useful preview.
+    let replyTo = null;
+    if (replyDraft) {
+      const att = Array.isArray(replyDraft.attachments) && replyDraft.attachments[0];
+      const snippet = replyDraft.text
+        ? replyDraft.text
+        : att ? (att.kind === 'gif' ? 'GIF' : att.kind === 'image' ? 'Photo' : (att.name || 'Attachment'))
+        : '';
+      replyTo = {
+        id: replyDraft.id,
+        senderName: replyDraft.author || 'Unknown',
+        snippet,
+        hasAttachment: !!att,
+      };
+    }
     try {
-      await onSend(t);
+      await onSend(t, { replyTo });
       setText('');
+      setReplyDraft(null);   // clear preview banner on success
       atBottomRef.current = true;
       // refocus the composer on desktop; on mobile the keyboard is already up
       composerRef.current && composerRef.current.focus();
     } catch (e) {
-      // Keep the text so the user can retry; surface a minimal hint.
+      // Keep the text AND the reply draft so the user can retry; surface
+      // a minimal hint.
       console.error('[BubbleChat] send failed:', e);
       window.alert('Couldn’t send — try again.');
     } finally {
@@ -201,6 +227,25 @@ function BubbleChat({
       e.preventDefault();
       send();
     }
+    if (e.key === 'Escape' && replyDraft) {
+      setReplyDraft(null);
+    }
+  };
+
+  // Begin replying to a message. Stores a SNAPSHOT (not a live reference)
+  // so the reply preview keeps working even if the original is soft-deleted
+  // between now and when the user actually sends.
+  const startReply = (msg) => {
+    if (!msg || msg.deletedAt) return;
+    setReplyDraft({
+      id: msg.id,
+      author: msg.author,
+      text: msg.text,
+      attachments: msg.attachments,
+    });
+    setExpandedReceiptsId(null); // close any open receipts panel
+    // Defer focus by a tick so React commits the new state first
+    setTimeout(() => { composerRef.current && composerRef.current.focus(); }, 0);
   };
 
   const onFile = async (e) => {
@@ -249,6 +294,17 @@ function BubbleChat({
                 const allowDelete = !isDeleted && onDelete && (
                   canDelete ? canDelete(msg) : mine
                 );
+                const allowReply = !isDeleted && onSend;
+                // Resolve read-receipt names (excluding self). Only meaningful
+                // for own messages in conversations with 3+ readers (groups).
+                const otherReaders = mine && !isDeleted && Array.isArray(msg.readBy)
+                  ? msg.readBy.filter((u) => u && u !== myUid)
+                  : [];
+                const readerNames = otherReaders.map((uid) => {
+                  const u = usersByUid[uid];
+                  return (u && (u.name || u.email)) || 'Unknown user';
+                });
+                const isReceiptsExpanded = expandedReceiptsId === msg.id;
                 return (
                 <div key={msg.id} className={`group flex flex-col max-w-[78%] ${mine ? 'ml-auto items-end' : 'mr-auto items-start'} mb-0.5`}>
                   {showSender && (
@@ -260,6 +316,30 @@ function BubbleChat({
                     </div>
                   ) : (
                     <>
+                      {/* Reply quote snippet — shown ABOVE the message bubble
+                          when this message is a reply. Uses a paler shade of
+                          the bubble color so the relationship is visually clear
+                          without dominating. */}
+                      {msg.replyTo && msg.replyTo.id && (
+                        <div className={`mb-0.5 max-w-full ${mine ? 'self-end' : 'self-start'}`}>
+                          <div className={`px-3 py-1.5 text-[11.5px] border-l-2 rounded-r-md ${
+                            mine
+                              ? 'bg-blue-50 border-blue-400 text-slate-700'
+                              : 'bg-slate-50 border-slate-400 text-slate-600'
+                          }`}>
+                            <div className="font-medium text-[10px] tracking-wider uppercase opacity-70" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                              <CornerDownRight className="w-3 h-3 inline -mt-0.5 mr-1" />
+                              {msg.replyTo.senderName || 'Unknown'}
+                            </div>
+                            <div className="truncate" style={{ maxWidth: 280 }}>
+                              {msg.replyTo.hasAttachment && !msg.replyTo.snippet ? '📎 Attachment' :
+                               msg.replyTo.hasAttachment ? `📎 ${msg.replyTo.snippet}` :
+                               (msg.replyTo.snippet || '(empty message)')}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
                       {Array.isArray(msg.attachments) && msg.attachments.map((a, ai) => {
                         const isImage = a.kind === 'image' || a.kind === 'gif';
                         // Images and GIFs render inline. The user wants to
@@ -324,37 +404,91 @@ function BubbleChat({
                         );
                       })}
                       {msg.text && (
-                        <div className={`relative px-3 py-2 rounded-2xl text-[13.5px] leading-snug whitespace-pre-wrap break-words ${
-                          mine ? 'bg-blue-600 text-white rounded-br-md' : 'bg-slate-100 text-slate-900 rounded-bl-md'
-                        } ${msg.pending ? 'opacity-60' : ''}`}>
+                        <div
+                          className={`relative px-3 py-2 rounded-2xl text-[13.5px] leading-snug whitespace-pre-wrap break-words ${
+                            mine ? 'bg-blue-600 text-white rounded-br-md' : 'bg-slate-100 text-slate-900 rounded-bl-md'
+                          } ${msg.pending ? 'opacity-60' : ''} ${mine && readerNames.length > 0 ? 'cursor-pointer' : ''}`}
+                          onClick={() => {
+                            // Tap own message → toggle read-receipts panel
+                            // (only meaningful when ≥1 other person has read).
+                            if (mine && readerNames.length > 0) {
+                              setExpandedReceiptsId(isReceiptsExpanded ? null : msg.id);
+                            }
+                          }}
+                        >
                           {msg.text}
-                          {allowDelete && (
-                            <button
-                              onClick={async () => {
-                                if (!window.confirm('Delete this message? Anyone in the chat will see it disappear.')) return;
-                                try { await onDelete(msg); } catch (e) {
-                                  console.error('[BubbleChat] delete failed:', e);
-                                  window.alert('Couldn’t delete — try again.');
-                                }
-                              }}
-                              className={`absolute -top-2 ${mine ? '-left-2' : '-right-2'} w-6 h-6 rounded-full bg-white border border-slate-300 text-slate-500 hover:text-red-500 hover:border-red-300 flex items-center justify-center opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity`}
-                              title="Delete message"
-                              aria-label="Delete message"
+                          {/* Hover/long-press action buttons. On mobile (no
+                              hover), they're revealed by tapping the bubble
+                              first (the click handler above expands the
+                              receipts panel, and the focus-within selector
+                              also reveals these). To make them tappable on
+                              mobile, we also show them when the receipts
+                              panel is open. */}
+                          {(allowReply || allowDelete) && (
+                            <div
+                              className={`absolute top-0 ${mine ? '-left-1 -translate-x-full' : '-right-1 translate-x-full'} flex flex-col gap-1 pr-1 pl-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 ${isReceiptsExpanded ? 'opacity-100' : ''} transition-opacity`}
                             >
-                              <Trash2 className="w-3 h-3" />
-                            </button>
+                              {allowReply && (
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); startReply(msg); }}
+                                  className="w-6 h-6 rounded-full bg-white border border-slate-300 text-slate-500 hover:text-blue-500 hover:border-blue-300 flex items-center justify-center"
+                                  title="Reply"
+                                  aria-label="Reply"
+                                >
+                                  <Reply className="w-3 h-3" />
+                                </button>
+                              )}
+                              {allowDelete && (
+                                <button
+                                  onClick={async (e) => {
+                                    e.stopPropagation();
+                                    if (!window.confirm('Delete this message? Anyone in the chat will see it disappear.')) return;
+                                    try { await onDelete(msg); } catch (err) {
+                                      console.error('[BubbleChat] delete failed:', err);
+                                      window.alert('Couldn’t delete — try again.');
+                                    }
+                                  }}
+                                  className="w-6 h-6 rounded-full bg-white border border-slate-300 text-slate-500 hover:text-red-500 hover:border-red-300 flex items-center justify-center"
+                                  title="Delete message"
+                                  aria-label="Delete message"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                </button>
+                              )}
+                            </div>
                           )}
                         </div>
+                      )}
+                      {/* For attachment-only messages (no text bubble), still
+                          show a small reply action on hover so the user can
+                          reply to a photo or GIF. */}
+                      {!msg.text && Array.isArray(msg.attachments) && msg.attachments.length > 0 && allowReply && (
+                        <button
+                          onClick={() => startReply(msg)}
+                          className="mt-1 text-[10px] text-slate-400 hover:text-blue-500 underline opacity-0 group-hover:opacity-100 transition-opacity"
+                        >
+                          Reply
+                        </button>
                       )}
                     </>
                   )}
                   {showTime && (
                     <div className={`text-[10.5px] text-slate-500 mx-2 mt-0.5 flex items-center gap-1 ${mine ? 'flex-row-reverse' : ''}`}>
                       <span>{formatTimeLabel(msg.timestamp)}</span>
-                      {mine && !isDeleted && Array.isArray(msg.readBy) && msg.readBy.some((u) => u && u !== myUid) && (
-                        <span className="text-blue-500" title="Read">✓✓</span>
+                      {mine && !isDeleted && readerNames.length > 0 && (
+                        <span className="text-blue-500" title={`Read by ${readerNames.join(', ')}`}>✓✓</span>
                       )}
                       {mine && msg.pending && <span className="text-slate-400">sending…</span>}
+                    </div>
+                  )}
+                  {/* Read-receipts panel — appears below the message when
+                      expanded. Lists the names of everyone other than the
+                      sender who has read the message. Only relevant for own
+                      messages (you don't see who's read someone else's). */}
+                  {mine && isReceiptsExpanded && readerNames.length > 0 && (
+                    <div className="mx-2 mt-1 px-2 py-1 bg-blue-50 border border-blue-100 rounded text-[10px] text-blue-700 max-w-[260px]">
+                      <span className="font-medium tracking-wider" style={{ fontFamily: 'JetBrains Mono, monospace' }}>READ BY</span>
+                      <span className="ml-1.5">{readerNames.join(', ')}</span>
                     </div>
                   )}
                 </div>
@@ -380,7 +514,38 @@ function BubbleChat({
         )}
       </div>
 
-      <div className="border-t border-slate-200 bg-slate-50 px-2 py-2 flex items-end gap-1.5 flex-shrink-0">
+      <div className="border-t border-slate-200 bg-slate-50 flex-shrink-0">
+        {/* Reply preview banner — appears above the composer when the user
+            has tapped Reply on a message. Shows the snippet they're
+            replying to with an X to cancel. The actual replyTo payload is
+            built when send() fires. */}
+        {replyDraft && (
+          <div className="px-3 pt-2 pb-1 border-b border-slate-200 bg-white flex items-start gap-2">
+            <Reply className="w-3.5 h-3.5 text-blue-500 mt-1 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <div className="text-[10px] text-blue-600 tracking-wider uppercase" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                Replying to {replyDraft.author || 'Unknown'}
+              </div>
+              <div className="text-[12px] text-slate-600 truncate">
+                {replyDraft.text || (Array.isArray(replyDraft.attachments) && replyDraft.attachments[0]
+                  ? (replyDraft.attachments[0].kind === 'gif' ? '📎 GIF'
+                     : replyDraft.attachments[0].kind === 'image' ? '📎 Photo'
+                     : `📎 ${replyDraft.attachments[0].name || 'Attachment'}`)
+                  : '(empty message)')}
+              </div>
+            </div>
+            <button
+              onClick={() => setReplyDraft(null)}
+              className="p-1 text-slate-400 hover:text-slate-700 rounded-full hover:bg-slate-100 shrink-0"
+              title="Cancel reply"
+              aria-label="Cancel reply"
+            >
+              <XIcon className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
+        <div className="px-2 py-2 flex items-end gap-1.5">
         {onAttach && (
           <>
             <label className="p-1.5 text-slate-500 hover:text-slate-800 cursor-pointer rounded-full hover:bg-slate-100" title="Attach file">
@@ -428,6 +593,7 @@ function BubbleChat({
         >
           {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowUp className="w-4 h-4" />}
         </button>
+        </div>
       </div>
     </div>
   );

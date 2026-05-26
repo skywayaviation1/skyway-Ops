@@ -731,13 +731,17 @@ function CommsScreen({ currentUser, users, onJumpToEntity }) {
 
   const selected = conversations.find((c) => c.id === selectedId) || null;
 
-  const handleSend = async (text) => {
+  const handleSend = async (text, opts = {}) => {
     if (!selected) return;
     const M = await import('./firebase-comms.js');
     if (selected.kind === 'trip' && selected._legacyTripId) {
+      // Legacy trip messages don't support replies (different schema).
+      // Drop the opts; the trip thread is being phased out anyway.
       await M.sendLegacyTripMessage(selected._legacyTripId, currentUser, text);
     } else {
-      await M.sendMessage(selected.id, currentUser, text);
+      await M.sendMessage(selected.id, currentUser, text, {
+        replyTo: opts.replyTo || null,
+      });
     }
   };
 
@@ -966,6 +970,7 @@ function CommsScreen({ currentUser, users, onJumpToEntity }) {
                 <BubbleChat
                   messages={messages}
                   currentUser={currentUser}
+                  usersByUid={usersByUid}
                   typingUsers={typingNames}
                   onSend={handleSend}
                   onAttach={selected.kind === 'trip' ? null : handleAttach}

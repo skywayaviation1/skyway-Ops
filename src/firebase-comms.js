@@ -134,6 +134,10 @@ function normalizeMessage(d) {
     timestamp: tsToMs(data.timestamp),
     attachments: Array.isArray(data.attachments) ? data.attachments : undefined,
     readBy: Array.isArray(data.readBy) ? data.readBy : undefined,
+    // replyTo: snapshot of the message being replied to. Captured at
+    // send time so it survives if the original gets soft-deleted.
+    // Shape: { id, senderName, snippet, hasAttachment }
+    replyTo: data.replyTo && typeof data.replyTo === 'object' ? data.replyTo : undefined,
     deletedAt: data.deletedAt ? tsToMs(data.deletedAt) : null,
   };
 }
@@ -265,6 +269,18 @@ export async function sendMessage(convId, sender, text, opts = {}) {
   const senderUid = sender.uid || sender.id || null;
   const senderName = sender.name || sender.displayName || sender.email || 'Unknown';
   const now = Date.now();
+  // replyTo: { id, senderName, snippet, hasAttachment } — snapshot taken
+  // at send time, NOT a live reference. Survives if the original is
+  // deleted later. Snippet length capped so we don't bloat docs.
+  let replyTo = null;
+  if (opts.replyTo && opts.replyTo.id) {
+    replyTo = {
+      id: String(opts.replyTo.id).slice(0, 200),
+      senderName: String(opts.replyTo.senderName || '').slice(0, 100),
+      snippet: String(opts.replyTo.snippet || '').slice(0, 200),
+      hasAttachment: opts.replyTo.hasAttachment === true,
+    };
+  }
   const msgRef = await addDoc(collection(db, 'conversations', id, 'messages'), {
     senderUid,
     author: senderName,
@@ -272,6 +288,7 @@ export async function sendMessage(convId, sender, text, opts = {}) {
     timestamp: serverTimestamp(),
     attachments: opts.attachments || null,
     readBy: senderUid ? [senderUid] : [],
+    replyTo,
   });
   await updateDoc(doc(db, 'conversations', id), {
     lastMessage: { text: t.slice(0, 240), senderUid, senderName, at: now, kind: 'text' },
