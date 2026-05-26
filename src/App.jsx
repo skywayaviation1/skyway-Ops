@@ -20050,6 +20050,12 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
   // signal that something is happening even though the parse takes ~15s.
   // null | 'compressing' | 'uploading' | 'parsing'
   const [uploadStage, setUploadStage] = useState(null);
+  // Local-only copy of the freshly-uploaded expense. Firestore snapshots
+  // take 100-500ms to round-trip on the new doc — without this, mobile
+  // users see a brief flash back to the list view after parse completes
+  // because `selected` resolves to null in the gap before the snapshot
+  // arrives. Cleared once the real doc shows up in the subscribed list.
+  const [localDraft, setLocalDraft] = useState(null);
   // Month filter for totals panel — null = current month, or 'YYYY-MM' string
   const [statsMonth, setStatsMonth] = useState(null);
 
@@ -20168,6 +20174,11 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
         createdAt: Date.now(),
         updatedAt: Date.now(),
       };
+      // Set the local draft FIRST so `selected` resolves immediately —
+      // before the Firestore round-trip completes. Otherwise mobile users
+      // see a brief flash back to the list view because `selected` would
+      // be null while the snapshot is in flight.
+      setLocalDraft(draft);
       await m.saveExpense(draft);
       setSelectedId(id);
 
@@ -20182,11 +20193,13 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
         fileToBase64(compressed),
       ]);
       const { url, path, contentType, sizeBytes } = uploadResult;
-      await m.saveExpense({
+      const afterUpload = {
         ...draft, receiptUrl: url, receiptPath: path,
         receiptContentType: contentType, receiptSizeBytes: sizeBytes,
         receiptFilename: compressed.name || file.name,
-      });
+      };
+      setLocalDraft(afterUpload);
+      await m.saveExpense(afterUpload);
 
       // ---- Stage 3: parse via Claude vision ---------------------------
       setUploadStage('parsing');
@@ -20219,13 +20232,9 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
         const friendly = fetchErr.name === 'AbortError'
           ? 'AI parse took too long. The receipt was uploaded — edit fields manually.'
           : `Network error reaching the AI parser (${fetchErr.message || 'connection dropped'}). Receipt uploaded — edit fields manually.`;
-        await m.saveExpense({
-          ...draft,
-          receiptUrl: url, receiptPath: path, receiptContentType: contentType,
-          receiptSizeBytes: sizeBytes, receiptFilename: compressed.name || file.name,
-          notes: friendly,
-          status: 'draft',
-        });
+        const errDraft = { ...afterUpload, notes: friendly, status: 'draft' };
+        setLocalDraft(errDraft);
+        await m.saveExpense(errDraft);
         setUploadError(friendly);
         setShowUploader(false);
         setUploadStage(null);
@@ -20233,22 +20242,16 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
       }
       clearTimeout(t);
       if (!r.ok) {
-        await m.saveExpense({
-          ...draft,
-          receiptUrl: url, receiptPath: path, receiptContentType: contentType,
-          receiptSizeBytes: sizeBytes, receiptFilename: compressed.name || file.name,
-          notes: `AI parse failed: ${data?.error || 'Unknown error'}. Edit fields manually.`,
-          status: 'draft',
-        });
+        const errDraft = { ...afterUpload, notes: `AI parse failed: ${data?.error || 'Unknown error'}. Edit fields manually.`, status: 'draft' };
+        setLocalDraft(errDraft);
+        await m.saveExpense(errDraft);
         setShowUploader(false);
         setUploadStage(null);
         return;
       }
       const p = data.parsed;
-      await m.saveExpense({
-        ...draft,
-        receiptUrl: url, receiptPath: path, receiptContentType: contentType,
-        receiptSizeBytes: sizeBytes, receiptFilename: compressed.name || file.name,
+      const finalDraft = {
+        ...afterUpload,
         vendor: p.vendor, transactionDate: p.transactionDate, totalAmount: p.totalAmount,
         currency: p.currency, subtotal: p.subtotal, tax: p.tax, tip: p.tip,
         category: p.category, lineItems: p.lineItems,
@@ -20256,7 +20259,9 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
         parsedAt: Date.now(), parsedBy: 'claude-vision',
         confidence: p.confidence,
         status: 'draft',
-      });
+      };
+      setLocalDraft(finalDraft);
+      await m.saveExpense(finalDraft);
       // All done — close the panel and clear stage
       setShowUploader(false);
       setUploadStage(null);
@@ -20450,7 +20455,27 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
     }
   };
 
-  const selected = filteredExpenses.find(e => e.id === selectedId) || expenses.find(e => e.id === selectedId);
+  // Clear the local draft once the real doc shows up in the subscribed
+  // expenses list — at that point we no longer need the fallback.
+  useEffect(() => {
+    if (localDraft && expenses.some(e => e.id === localDraft.id)) {
+      // The subscribed list has the doc; the local fallback is no longer needed.
+      // Keep it briefly to avoid flicker between local copy and snapshot, then drop.
+      const t = setTimeout(() => setLocalDraft(null), 500);
+      return () => clearTimeout(t);
+    }
+  }, [localDraft, expenses]);
+
+  // Resolves the currently-selected expense. Falls back through:
+  //   1) the filtered list (normal case)
+  //   2) the full unfiltered list (covers filter-excluded selections, e.g.
+  //      a fresh "draft" while filter is set to "approved")
+  //   3) the local in-memory draft from an in-flight upload (covers the
+  //      gap between saveExpense() and the Firestore snapshot arrival)
+  const selected =
+    filteredExpenses.find(e => e.id === selectedId) ||
+    expenses.find(e => e.id === selectedId) ||
+    (localDraft && localDraft.id === selectedId ? localDraft : null);
 
   return (
     <div className="flex-1 overflow-hidden flex flex-col md:flex-row">
