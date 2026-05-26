@@ -37,9 +37,32 @@ function PushSettings({ currentUser, onClose }) {
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
 
+  // The browser's Notification.permission stays 'granted' forever once the
+  // user grants it — disablePush() can't actually revoke it (only the
+  // browser settings can). So we can't use `perm === 'granted'` as the
+  // source of truth for "is push currently enabled on this device."
+  //
+  // Instead we track a local 'enabled' flag persisted in localStorage,
+  // updated whenever enablePush / disablePush succeed. Initial value
+  // reads from localStorage (or falls back to: granted but unknown = treat
+  // as enabled for backward compat with users who enabled before this fix).
+  const PUSH_ENABLED_KEY = 'skyway_push_enabled';
+  const [enabled, setEnabled] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      const stored = localStorage.getItem(PUSH_ENABLED_KEY);
+      if (stored === '1') return true;
+      if (stored === '0') return false;
+      // Unknown: if browser perm is granted, assume previously enabled
+      return notificationPermissionState() === 'granted';
+    } catch (_) {
+      return false;
+    }
+  });
+
   // Quiet hours local state (mirrors what's in the user profile)
   const q = currentUser?.quietHours || {};
-  const [enabled, setEnabled] = useState(!!q.enabled);
+  const [enabledQH, setEnabledQH] = useState(!!q.enabled);
   const [startHour, setStartHour] = useState(Number.isFinite(q.startHour) ? q.startHour : 22);
   const [endHour, setEndHour] = useState(Number.isFinite(q.endHour) ? q.endHour : 6);
   const [aogOverride, setAogOverride] = useState(currentUser?.aogOverridesQuietHours !== false);
@@ -56,6 +79,8 @@ function PushSettings({ currentUser, onClose }) {
         onForegroundMessage: () => {}, // host app can wire this for toasts
       });
       setPerm(notificationPermissionState());
+      setEnabled(true);
+      try { localStorage.setItem(PUSH_ENABLED_KEY, '1'); } catch (_) {}
       setMsg('Push enabled on this device.');
     } catch (e) {
       setErr(e.message || 'Could not enable push');
@@ -66,7 +91,9 @@ function PushSettings({ currentUser, onClose }) {
     setBusy(true); setMsg(''); setErr('');
     try {
       await disablePush(currentUser);
-      setMsg('Push disabled on this device.');
+      setEnabled(false);
+      try { localStorage.setItem(PUSH_ENABLED_KEY, '0'); } catch (_) {}
+      setMsg('Push disabled on this device. To fully revoke notification permission, use your browser/OS settings.');
     } catch (e) {
       setErr(e.message || 'Could not disable');
     } finally { setBusy(false); }
@@ -79,7 +106,7 @@ function PushSettings({ currentUser, onClose }) {
     setBusy(true); setErr('');
     try {
       await updateDoc(doc(db, 'users', uid), {
-        quietHours: { enabled, startHour, endHour, tz },
+        quietHours: { enabled: enabledQH, startHour, endHour, tz },
         aogOverridesQuietHours: aogOverride,
       });
       setSavedTick(true);
@@ -114,11 +141,15 @@ function PushSettings({ currentUser, onClose }) {
           <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
           <span>You blocked notifications for this site. Re-enable in your browser settings → Notifications.</span>
         </div>
-      ) : perm === 'granted' ? (
+      ) : enabled ? (
         <div className="mb-4">
           <div className="text-xs text-emerald-400 flex items-center gap-1.5 mb-2"><Bell className="w-3.5 h-3.5" /> Push is enabled on this device.</div>
-          <button onClick={handleDisable} disabled={busy} className="text-xs text-slate-400 hover:text-slate-200 underline">
-            Disable on this device
+          <button
+            onClick={handleDisable}
+            disabled={busy}
+            className="text-xs text-slate-400 hover:text-slate-200 underline disabled:opacity-40"
+          >
+            {busy ? 'Disabling...' : 'Disable on this device'}
           </button>
         </div>
       ) : (
@@ -126,10 +157,20 @@ function PushSettings({ currentUser, onClose }) {
           <p className="text-xs text-slate-400 mb-2">
             Get a notification on your phone's lock screen when someone messages you.
           </p>
-          <button onClick={handleEnable} disabled={busy} className="flex items-center gap-2 px-3 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs tracking-widest font-medium" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          <button
+            onClick={handleEnable}
+            disabled={busy}
+            className="flex items-center gap-2 px-3 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs tracking-widest font-medium disabled:opacity-40"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
             {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Bell className="w-3.5 h-3.5" />}
-            ENABLE PUSH
+            {perm === 'granted' ? 'RE-ENABLE PUSH' : 'ENABLE PUSH'}
           </button>
+          {perm === 'granted' && (
+            <p className="text-[10px] text-slate-500 mt-2">
+              Notification permission is still granted in your browser, so re-enabling won't prompt again.
+            </p>
+          )}
         </div>
       )}
 
@@ -138,14 +179,14 @@ function PushSettings({ currentUser, onClose }) {
         <div className="flex items-center justify-between mb-2">
           <p className="text-[11px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>QUIET HOURS</p>
           <label className="flex items-center gap-1.5 cursor-pointer">
-            <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} className="accent-cyan-400" />
+            <input type="checkbox" checked={enabledQH} onChange={(e) => setEnabledQH(e.target.checked)} className="accent-cyan-400" />
             <span className="text-xs text-slate-300">on</span>
           </label>
         </div>
         <p className="text-[11px] text-slate-500 mb-2">
           No push during these hours (tz: {tz}). AOG messages can still punch through — toggle below.
         </p>
-        <div className={`grid grid-cols-2 gap-2 mb-3 ${enabled ? '' : 'opacity-40 pointer-events-none'}`}>
+        <div className={`grid grid-cols-2 gap-2 mb-3 ${enabledQH ? '' : 'opacity-40 pointer-events-none'}`}>
           <label className="text-[10px] text-slate-500 tracking-widest">
             FROM
             <select value={startHour} onChange={(e) => setStartHour(Number(e.target.value))} className="w-full mt-0.5 bg-slate-900/60 border border-slate-700 px-2 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-cyan-400">
