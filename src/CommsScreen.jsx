@@ -16,6 +16,8 @@ import {
 
 // Code-split: MuteToggle loads only when a chat pane is open.
 const MuteToggleLazy = lazy(() => import('./MuteToggle.jsx'));
+// GifPicker only loads when the user actually opens it.
+const GifPickerLazy = lazy(() => import('./GifPicker.jsx'));
 import BubbleChat from './BubbleChat.jsx';
 
 /* ============================================================
@@ -650,6 +652,7 @@ function CommsScreen({ currentUser, users, onJumpToEntity }) {
   const [search, setSearch] = useState('');
   const [showNew, setShowNew] = useState(false);
   const [showManage, setShowManage] = useState(false);
+  const [showGif, setShowGif] = useState(false);
   const [mobileShowChat, setMobileShowChat] = useState(false);
 
   const isAdmin = currentUser?.role === 'admin';
@@ -765,6 +768,35 @@ function CommsScreen({ currentUser, users, onJumpToEntity }) {
     });
   };
 
+  // GIF pick: sent as a message attachment with kind: 'gif'. We DON'T
+  // upload to Firebase Storage — the URL points to Tenor's CDN. That
+  // means: zero storage cost, but if Tenor ever removes the GIF the
+  // image will break later. Tenor URLs are stable in practice.
+  const handleGifPick = async (gif) => {
+    if (!selected) {
+      setShowGif(false);
+      return;
+    }
+    if (selected.kind === 'trip' && selected._legacyTripId) {
+      setShowGif(false);
+      return;
+    }
+    setShowGif(false); // close picker immediately for snappy UX
+    try {
+      const M = await import('./firebase-comms.js');
+      await M.sendMessage(selected.id, currentUser, '', {
+        attachments: [{
+          name: gif.name || 'GIF',
+          url: gif.url,
+          kind: 'gif',
+        }],
+      });
+    } catch (e) {
+      console.error('[comms] gif send failed:', e);
+      window.alert('Could not send GIF — please try again.');
+    }
+  };
+
   // Delete: sender or admin (rules layer enforces; UI gates too).
   // (isAdmin is already declared at component scope above.)
   const myDeleteUid = currentUser?.uid || currentUser?.id;
@@ -802,6 +834,18 @@ function CommsScreen({ currentUser, users, onJumpToEntity }) {
         currentUser={currentUser}
         usersByUid={usersByUid}
       />
+
+      {/* GIF picker — lazy-loaded the first time the user opens it. Sends
+          the chosen GIF as a message attachment with kind: 'gif'. */}
+      <Suspense fallback={null}>
+        {showGif && (
+          <GifPickerLazy
+            open={showGif}
+            onClose={() => setShowGif(false)}
+            onPick={handleGifPick}
+          />
+        )}
+      </Suspense>
 
       <div className="border-b border-slate-800 bg-slate-950 px-4 py-3 flex items-center justify-between">
         <div className="flex items-center gap-2">
@@ -925,6 +969,7 @@ function CommsScreen({ currentUser, users, onJumpToEntity }) {
                   typingUsers={typingNames}
                   onSend={handleSend}
                   onAttach={selected.kind === 'trip' ? null : handleAttach}
+                  onSendGif={selected.kind === 'trip' ? null : () => setShowGif(true)}
                   onTyping={selected.kind === 'trip' ? null : handleTyping}
                   onDelete={handleDelete}
                   canDelete={canDelete}

@@ -124,6 +124,7 @@ function BubbleChat({
   typingUsers = [],          // names of OTHER users currently typing
   onSend = null,             // async (text) => void
   onAttach = null,           // async (file) => void — optional; hides attach buttons when absent
+  onSendGif = null,          // async () => void — opens GIF picker; hides button when absent
   onTyping = null,           // (boolean) => void — optional, debounced internally
   onDelete = null,           // async (message) => void — optional; hides delete control when absent
   canDelete = null,          // (message) => boolean — optional; defaults to "mine || isAdmin?"
@@ -259,13 +260,69 @@ function BubbleChat({
                     </div>
                   ) : (
                     <>
-                      {Array.isArray(msg.attachments) && msg.attachments.map((a, ai) => (
-                        <a key={ai} href={a.url || '#'} target="_blank" rel="noreferrer"
-                           className={`mb-1 px-3 py-2 rounded-2xl text-[13px] inline-flex items-center gap-2 ${mine ? 'bg-blue-600 text-white rounded-br-md' : 'bg-slate-100 text-slate-900 rounded-bl-md'}`}>
-                          {a.kind === 'image' ? <ImageIcon className="w-3.5 h-3.5" /> : <Paperclip className="w-3.5 h-3.5" />}
-                          <span className="truncate max-w-[180px]">{a.name || (a.kind === 'image' ? 'Photo' : 'Attachment')}</span>
-                        </a>
-                      ))}
+                      {Array.isArray(msg.attachments) && msg.attachments.map((a, ai) => {
+                        const isImage = a.kind === 'image' || a.kind === 'gif';
+                        // Images and GIFs render inline. The user wants to
+                        // see the picture in the message, not as a pill
+                        // they have to tap. Click the image to open the
+                        // full original in a new tab.
+                        if (isImage && a.url) {
+                          return (
+                            <a
+                              key={ai}
+                              href={a.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="mb-1 block max-w-[260px] sm:max-w-[320px]"
+                              title={a.name || (a.kind === 'gif' ? 'GIF' : 'Photo')}
+                            >
+                              <img
+                                src={a.url}
+                                alt={a.name || (a.kind === 'gif' ? 'GIF' : 'Photo')}
+                                loading="lazy"
+                                className={`block w-full h-auto rounded-2xl ${
+                                  mine ? 'rounded-br-md' : 'rounded-bl-md'
+                                } border border-slate-200/60`}
+                                style={{ maxHeight: 360, objectFit: 'cover' }}
+                                onError={(e) => {
+                                  // If the image fails to load (deleted from
+                                  // storage, network issue, etc.), gracefully
+                                  // fall back to a small placeholder so the
+                                  // message bubble doesn't appear empty.
+                                  e.currentTarget.style.display = 'none';
+                                  const fallback = e.currentTarget.nextSibling;
+                                  if (fallback) fallback.style.display = 'inline-flex';
+                                }}
+                              />
+                              <span
+                                style={{ display: 'none' }}
+                                className={`px-3 py-2 rounded-2xl text-[13px] items-center gap-2 ${
+                                  mine ? 'bg-blue-600 text-white rounded-br-md' : 'bg-slate-100 text-slate-900 rounded-bl-md'
+                                }`}
+                              >
+                                <ImageIcon className="w-3.5 h-3.5" />
+                                <span className="truncate max-w-[180px]">
+                                  {a.name || (a.kind === 'gif' ? 'GIF (unavailable)' : 'Image (unavailable)')}
+                                </span>
+                              </span>
+                            </a>
+                          );
+                        }
+                        // Non-image files keep the pill UI — opens the file
+                        // in a new tab when tapped.
+                        return (
+                          <a
+                            key={ai}
+                            href={a.url || '#'}
+                            target="_blank"
+                            rel="noreferrer"
+                            className={`mb-1 px-3 py-2 rounded-2xl text-[13px] inline-flex items-center gap-2 ${mine ? 'bg-blue-600 text-white rounded-br-md' : 'bg-slate-100 text-slate-900 rounded-bl-md'}`}
+                          >
+                            <Paperclip className="w-3.5 h-3.5" />
+                            <span className="truncate max-w-[180px]">{a.name || 'Attachment'}</span>
+                          </a>
+                        );
+                      })}
                       {msg.text && (
                         <div className={`relative px-3 py-2 rounded-2xl text-[13.5px] leading-snug whitespace-pre-wrap break-words ${
                           mine ? 'bg-blue-600 text-white rounded-br-md' : 'bg-slate-100 text-slate-900 rounded-bl-md'
@@ -335,6 +392,17 @@ function BubbleChat({
               <input type="file" accept="image/*" className="hidden" onChange={onFile} />
             </label>
           </>
+        )}
+        {onSendGif && (
+          <button
+            type="button"
+            onClick={onSendGif}
+            className="px-1.5 py-1 text-[10px] font-bold text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-md tracking-wider"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            title="Send a GIF"
+          >
+            GIF
+          </button>
         )}
         <textarea
           ref={composerRef}
