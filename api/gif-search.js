@@ -60,25 +60,51 @@ async function authorize(req) {
   return false;
 }
 
-// KLIPY's `files` object can have a few shapes depending on what format
-// sizes are available. Public docs say "Access via files in each result"
-// but don't pin the exact keys. To stay robust we:
-//   1. Try well-known keys first (gif, md, hd, sm, xs)
-//   2. Fall back to scanning for any URL-bearing nested object
-// If neither finds anything, we drop the result.
-function pickFormat(files, prefer = ['gif', 'md', 'hd', 'lg']) {
-  if (!files || typeof files !== 'object') return null;
-  // First try the preferred keys in order
-  for (const k of prefer) {
-    const v = files[k];
-    if (v && typeof v === 'object' && v.url) return v;
-    if (typeof v === 'string') return { url: v };
+// KLIPY's media live at `item.file.{size}.{format}` where:
+//   size   = 'hd' | 'md' | 'sm' | 'xs'   (largest to smallest)
+//   format = 'gif' | 'webp' | 'jpg' | 'mp4' | 'webm'
+//   each leaf = { url, width, height, size }
+//
+// We pick by walking preferred sizes, then preferred formats within each
+// size, and return the first { url, width, height } we find. The field is
+// `file` (singular) — earlier guesses at `files` were wrong.
+//
+// Why prefer webp over gif for browser embed:
+//   - webp is roughly 1/10th the byte size of gif (see real numbers in the
+//     KLIPY response: 576KB gif vs 60KB webp for the same content)
+//   - all browsers we care about support webp animation
+//   - the chat embeds <img> tags which handle webp natively
+// We DO use gif as a fallback in case any future content lacks webp.
+function pickFile(fileObj, sizesPrefer, formatsPrefer) {
+  if (!fileObj || typeof fileObj !== 'object') return null;
+  for (const size of sizesPrefer) {
+    const sizeObj = fileObj[size];
+    if (!sizeObj || typeof sizeObj !== 'object') continue;
+    for (const fmt of formatsPrefer) {
+      const leaf = sizeObj[fmt];
+      if (leaf && typeof leaf === 'object' && leaf.url) {
+        return {
+          url: String(leaf.url),
+          width: Number(leaf.width) || 0,
+          height: Number(leaf.height) || 0,
+        };
+      }
+    }
   }
-  // Generic fallback: first nested object that has a `url` field
-  for (const k of Object.keys(files)) {
-    const v = files[k];
-    if (v && typeof v === 'object' && v.url) return v;
-    if (typeof v === 'string' && /^https?:\/\//.test(v)) return { url: v };
+  // Last-ditch: walk any size/format combination for any url
+  for (const size of Object.keys(fileObj)) {
+    const sizeObj = fileObj[size];
+    if (!sizeObj || typeof sizeObj !== 'object') continue;
+    for (const fmt of Object.keys(sizeObj)) {
+      const leaf = sizeObj[fmt];
+      if (leaf && typeof leaf === 'object' && leaf.url) {
+        return {
+          url: String(leaf.url),
+          width: Number(leaf.width) || 0,
+          height: Number(leaf.height) || 0,
+        };
+      }
+    }
   }
   return null;
 }
@@ -89,20 +115,24 @@ function normalize(items) {
   const out = [];
   for (const item of items) {
     if (!item || typeof item !== 'object') continue;
-    // KLIPY uses `files` for media; ad placements have a different shape
-    // (they include an `ad` flag or different keys). We filter ads out
-    // here — the chat composer doesn't want ads served.
+    // Filter ad placements — chat composer doesn't surface ads.
     if (item.ad === true || item.is_ad === true) continue;
-    const full = pickFormat(item.files, ['gif', 'lg', 'hd', 'md']);
-    const preview = pickFormat(item.files, ['sm', 'xs', 'thumbnail', 'md']) || full;
+    // Full-size for embedding in the chat: prefer webp (much smaller),
+    // fall back to gif. Use hd→md size since the grid renders at most
+    // ~320px wide; even md is plenty for a chat bubble.
+    const full = pickFile(item.file, ['hd', 'md', 'sm', 'xs'], ['webp', 'gif']);
+    // Preview for the picker grid: prefer smallest size for fast loading.
+    // The grid shows lots of GIFs at once; using `xs` keeps the picker
+    // snappy. Same format preference.
+    const preview = pickFile(item.file, ['xs', 'sm', 'md', 'hd'], ['webp', 'gif']) || full;
     if (!full?.url) continue;
     out.push({
       id: String(item.id || item.slug || `${out.length}-${full.url.slice(-12)}`),
       name: String(item.title || item.alt || item.description || 'GIF').slice(0, 120),
       url: full.url,
       previewUrl: preview?.url || full.url,
-      width: Number(full.width || full.w || 0),
-      height: Number(full.height || full.h || 0),
+      width: full.width,
+      height: full.height,
     });
   }
   return out;
