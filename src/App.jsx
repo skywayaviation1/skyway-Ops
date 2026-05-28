@@ -596,7 +596,13 @@ function parseJetInsightTripSheet(text) {
       paxByLeg[leg.legNumber] = [];
       return;
     }
-    const paxRe = /([A-Za-z][A-Za-z\s\-'.]+?)\s*\(\s*(Male|Female|M|F)\s*-\s*(\d{1,2}\/\d{1,2}\/\d{2,4})\s*-\s*(\d+)\s*lbs?\s*\)(?:\s*\(([^)]+)\))?/gi;
+    // Name (Gender - DOB - NNN lbs [- anything else] ) [(Primary)]
+    // JetInsight sometimes prints additional fields inside the parens after
+    // the weight, e.g. "(Male - 2/6/38 - 210 lbs - bags: 50 lbs)". We capture
+    // the weight, then tolerate any further " - ..." content up to the close
+    // paren so those passengers aren't dropped. The trailing optional
+    // "(Primary)" group is matched after the (possibly longer) first group.
+    const paxRe = /([A-Za-z][A-Za-z\s\-'.]+?)\s*\(\s*(Male|Female|M|F)\s*-\s*(\d{1,2}\/\d{1,2}\/\d{2,4})\s*-\s*(\d+)\s*lbs?\b[^)]*\)(?:\s*\(([^)]+)\))?/gi;
     const list = [];
     let pm;
     while ((pm = paxRe.exec(block.body)) !== null) {
