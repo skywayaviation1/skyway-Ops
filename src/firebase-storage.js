@@ -297,3 +297,55 @@ export async function uploadMelRevisionPdf(file, tail) {
   const url = await getDownloadURL(snapshot.ref);
   return { url, path, storagePath: path, filename: safeName, sizeBytes: file.size };
 }
+
+// Uploads a crew member's personal pilot document (certificate, medical,
+// passport, driver's license) to Firebase Storage. These are PII/sensitive
+// so they go under a per-user path and use private cache control.
+//
+// NOTE: Real access control must be enforced by Firebase Storage Rules —
+// path-scoping alone is convenience, not security. See deploy notes.
+export async function uploadPilotDoc(file, uid, docType) {
+  if (!file) throw new Error('No file provided');
+  if (!uid) throw new Error('Missing uid');
+  if (file.size > 15 * 1024 * 1024) {
+    throw new Error('File too large — limit is 15MB');
+  }
+  const safeUid = String(uid).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 200);
+  const safeType = String(docType || 'doc').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40);
+  const baseName = String(file.name || 'doc')
+    .replace(/[^a-zA-Z0-9._-]/g, '_')
+    .replace(/_{2,}/g, '_')
+    .slice(0, 80) || 'doc';
+  const filename = `${Date.now()}_${baseName}`;
+  const path = `pilot-docs/${safeUid}/${safeType}/${filename}`;
+  const storageRef = ref(storage, path);
+
+  const isImage = String(file.type || '').startsWith('image/');
+  const snapshot = await uploadBytes(storageRef, file, {
+    contentType: file.type || 'application/octet-stream',
+    cacheControl: 'private, max-age=3600',
+  });
+  const url = await getDownloadURL(snapshot.ref);
+  return {
+    url,
+    path,
+    storagePath: path,
+    name: baseName,
+    kind: isImage ? 'image' : 'file',
+    sizeBytes: file.size,
+    contentType: file.type || 'application/octet-stream',
+  };
+}
+
+// Deletes a stored pilot doc by path. Best-effort — a missing file
+// (already deleted) resolves rather than throwing.
+export async function deletePilotDoc(path) {
+  if (!path) return;
+  try {
+    await deleteObject(ref(storage, path));
+  } catch (e) {
+    if (e?.code !== 'storage/object-not-found') {
+      console.warn('[pilot-docs] storage delete failed:', e);
+    }
+  }
+}
