@@ -22,6 +22,8 @@ const LodgingLazy = lazy(() => import('./Lodging.jsx'));
 const LodgingDashboardLazy = lazy(() => import('./LodgingDashboard.jsx'));
 const MaintenanceLogLazy = lazy(() => import('./MaintenanceLog.jsx'));
 const MELLookupLazy = lazy(() => import('./MELLookup.jsx'));
+const PilotDocsTabLazy = lazy(() => import('./PilotDocs.jsx').then(m => ({ default: m.PilotDocsTab })));
+const AllCrewDocsLazy = lazy(() => import('./PilotDocs.jsx').then(m => ({ default: m.AllCrewDocs })));
 import { createPortal } from 'react-dom';
 import {
   Plane, Calendar, MessageSquare, Users, Bell, MapPin,
@@ -785,9 +787,7 @@ async function sendEmailViaApi({ to, subject, text, source, tripId, statusKey })
     if (r.ok) {
       const data = await r.json().catch(() => ({}));
       if (data.delivery === 'inline') {
-        console.log('[sendEmailViaApi] sent inline', data.resendId || '(no resend id)', '→', (to || []).join(','));
       } else {
-        console.log('[sendEmailViaApi] queued (Resend failed, will retry)', data.queueId || '(no id)', 'reason:', data.reason || '?', '→', (to || []).join(','));
       }
       // Return a Response-like shim so existing .ok checks pass.
       // Important: callers that previously did `await r.json()` for a Resend id
@@ -5699,7 +5699,6 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
     setStatuses(nextStatuses);
     await persist({ statuses: nextStatuses, passengers, brokerEmail, autoNotify, completed, hasCatering, paxOverride });
 
-    console.log('[email] updateStatus fired for step:', step.id, '· legType:', trip.info?.legType, '· autoNotify:', autoNotify, '· sendNotif:', sendNotif);
 
     // Parse broker email field — supports comma-separated list of recipients
     // (e.g. "broker@x.com, ops@flightsupport.com")
@@ -5714,7 +5713,6 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       .map(e => e.trim())
       .filter(e => e.length > 0);
 
-    console.log('[email] recipients:', recipients, '· opsEmail:', opsEmail, '· brokerEmails:', brokerEmails);
 
     if (recipients.length === 0) {
       console.warn('[email] Skipping send — no valid recipients. opsEmail:', opsEmail || '(empty)', 'brokerEmail:', brokerEmail || '(empty)');
@@ -5729,7 +5727,6 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
     }
 
     try {
-      console.log('[email] Sending to:', recipients.join(', '), '· subject:', emailContent.subject);
       const r = await sendEmailViaApi({
         to: recipients,
         subject: emailContent.subject,
@@ -5744,7 +5741,6 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       const updatedStatuses = { ...nextStatuses, [step.id]: { ...newStatus, notified: true } };
       setStatuses(updatedStatuses);
       await persist({ statuses: updatedStatuses, passengers, brokerEmail, autoNotify, completed, hasCatering, paxOverride });
-      console.log('[email] Sent successfully · resend id:', respData.id || '(no id)');
     } catch (err) {
       console.error('[email] Network error:', err);
     }
@@ -6266,7 +6262,6 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
                       addedBy: currentUser?.name || 'auto',
                     });
                     if (manifestIdResult) {
-                      console.log('[manifest] leg auto-added to', manifestIdResult);
                     }
                   } catch (err) {
                     console.error('[manifest] auto-add failed:', err);
@@ -6850,10 +6845,7 @@ function TripSheetPanel({
     try {
       // 1. Extract text and parse
       const text = await extractPdfText(file);
-      console.log('[trip-sheet] extracted text length:', text.length);
-      console.log('[trip-sheet] first 500 chars:', text.slice(0, 500));
       const parsed = parseJetInsightTripSheet(text);
-      console.log('[trip-sheet] parsed:', parsed);
       if (!parsed || !parsed.legs || parsed.legs.length === 0) {
         // Surface the actual text in the error so we can debug
         const preview = text.slice(0, 200).replace(/\s+/g, ' ');
@@ -7498,7 +7490,6 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
       // so we don't keep checking, but allow the SCHEDULE CHANGED banner to
       // surface any future trips.
       populatedRef.current = true;
-      console.log('[manifest] no scheduled trips for', draft.tail, draft.date);
       return;
     }
     populatedRef.current = true;
@@ -7507,7 +7498,6 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
       const tb = b.start instanceof Date ? b.start.getTime() : new Date(b.start).getTime();
       return ta - tb;
     });
-    console.log('[manifest] pre-populating', sorted.length, 'legs for', draft.tail, draft.date);
     (async () => {
       const m = await import('./firebase-manifests.js');
       const dataModule = await import('./firebase-data.js');
@@ -7543,7 +7533,6 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
     if (!draft || !Array.isArray(draft.legs)) return;
     const tripUids = draft.legs.filter(l => l.tripUid).map(l => l.tripUid);
     if (tripUids.length === 0) return;
-    console.log('[manifest] live-sync subscribing to', tripUids.length, 'trip-states:', tripUids);
 
     let cancelled = false;
     const unsubs = [];
@@ -7560,7 +7549,6 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
             .slice(0, 7)
             .map(p => `${p.firstName || ''} ${p.lastName || ''}`.trim())
             .filter(Boolean);
-          console.log('[manifest] live-sync got pax for', tripUid, '→', incomingNames.length, 'names');
           // Update the matching leg's passengers, but only if the names array
           // is genuinely different. Persist the change to Firestore too.
           let changedManifest = null;
@@ -7582,7 +7570,6 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
           if (changedManifest) {
             try {
               await manifestModule.saveManifest(changedManifest);
-              console.log('[manifest] persisted pax update for leg', tripUid);
             } catch (err) {
               console.error('[manifest] live-sync persist failed:', err);
             }
@@ -7976,7 +7963,6 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
                     alert('No legs are linked to scheduled trips — nothing to refresh.');
                     return;
                   }
-                  console.log('[manifest] refresh pax — fetching for', tripUids.length, 'legs');
                   const paxByTripUid = {};
                   await Promise.all(tripUids.map(async (uid) => {
                     paxByTripUid[uid] = await dataModule.fetchPreloadedPax(uid);
@@ -7997,7 +7983,6 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
                   setDraft(next);
                   try {
                     await manifestModule.saveManifest(next);
-                    console.log('[manifest] refresh pax — saved');
                   } catch (err) {
                     console.error('[manifest] refresh pax save failed:', err);
                   }
@@ -9533,14 +9518,16 @@ function ProviderLogo({ domain, fallback, size = 40, theme = 'light', className 
 }
 
 function WalletScreen({ currentUser, users }) {
-  const [tab, setTab] = useState('cards'); // 'cards' | 'travel'
+  const [tab, setTab] = useState('cards'); // 'cards' | 'travel' | 'docs' | 'crewdocs'
+  // Admin and ops act as the chief-pilot-equivalent who can see all crew docs.
+  const canSeeAllDocs = ['admin', 'ops'].includes(currentUser?.role);
   return (
     <div className="flex-1 overflow-y-auto scroll-area">
       <div className="max-w-5xl mx-auto p-4">
-        <div className="flex items-center gap-2 mb-4 border-b border-slate-800">
+        <div className="flex items-center gap-2 mb-4 border-b border-slate-800 overflow-x-auto">
           <button
             onClick={() => setTab('cards')}
-            className={`px-4 py-2 text-sm tracking-widest border-b-2 transition-colors ${
+            className={`px-4 py-2 text-sm tracking-widest border-b-2 transition-colors whitespace-nowrap ${
               tab === 'cards'
                 ? 'border-cyan-400 text-cyan-300'
                 : 'border-transparent text-slate-500 hover:text-slate-300'
@@ -9551,7 +9538,7 @@ function WalletScreen({ currentUser, users }) {
           </button>
           <button
             onClick={() => setTab('travel')}
-            className={`px-4 py-2 text-sm tracking-widest border-b-2 transition-colors ${
+            className={`px-4 py-2 text-sm tracking-widest border-b-2 transition-colors whitespace-nowrap ${
               tab === 'travel'
                 ? 'border-cyan-400 text-cyan-300'
                 : 'border-transparent text-slate-500 hover:text-slate-300'
@@ -9560,10 +9547,44 @@ function WalletScreen({ currentUser, users }) {
           >
             TRAVEL
           </button>
+          <button
+            onClick={() => setTab('docs')}
+            className={`px-4 py-2 text-sm tracking-widest border-b-2 transition-colors whitespace-nowrap ${
+              tab === 'docs'
+                ? 'border-cyan-400 text-cyan-300'
+                : 'border-transparent text-slate-500 hover:text-slate-300'
+            }`}
+            style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}
+          >
+            MY DOCS
+          </button>
+          {canSeeAllDocs && (
+            <button
+              onClick={() => setTab('crewdocs')}
+              className={`px-4 py-2 text-sm tracking-widest border-b-2 transition-colors whitespace-nowrap ${
+                tab === 'crewdocs'
+                  ? 'border-cyan-400 text-cyan-300'
+                  : 'border-transparent text-slate-500 hover:text-slate-300'
+              }`}
+              style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}
+            >
+              ALL CREW DOCS
+            </button>
+          )}
         </div>
 
         {tab === 'cards' && <CardsTab currentUser={currentUser} />}
         {tab === 'travel' && <TravelTab currentUser={currentUser} users={users} />}
+        {tab === 'docs' && (
+          <Suspense fallback={<div className="p-8 text-center text-slate-500"><Loader2 className="w-5 h-5 animate-spin mx-auto" /></div>}>
+            <PilotDocsTabLazy currentUser={currentUser} />
+          </Suspense>
+        )}
+        {tab === 'crewdocs' && canSeeAllDocs && (
+          <Suspense fallback={<div className="p-8 text-center text-slate-500"><Loader2 className="w-5 h-5 animate-spin mx-auto" /></div>}>
+            <AllCrewDocsLazy currentUser={currentUser} users={users} />
+          </Suspense>
+        )}
 
         {/* Logo.dev configuration banner — only shown to admins when token is missing */}
         {!LOGO_DEV_CONFIGURED && currentUser?.role === 'admin' && (
@@ -19553,8 +19574,6 @@ function TrackingScreen({ currentUser, allTrips, trackingEnabled }) {
         }
         mapboxgl.accessToken = token;
 
-        console.log('[tracking] initializing map, container:', mapContainerRef.current);
-        console.log('[tracking] mapbox token first 12 chars:', token.substring(0, 12));
         const map = new mapboxgl.Map({
           container: mapContainerRef.current,
           // streets-v12 is one of Mapbox's default-included styles; works with
@@ -19567,16 +19586,12 @@ function TrackingScreen({ currentUser, allTrips, trackingEnabled }) {
           attributionControl: false,
         });
         // Log the style load explicitly so we can see if it errors
-        map.on('styledata', () => console.log('[tracking] style loaded'));
-        map.on('styledataloading', () => console.log('[tracking] style loading...'));
         map.addControl(new mapboxgl.NavigationControl({ showCompass: false }), 'top-right');
         map.on('load', () => {
-          console.log('[tracking] map loaded');
           if (!cancelled) {
             setMapReady(true);
             // Force a resize in case the container was sized after mount
             setTimeout(() => {
-              try { map.resize(); console.log('[tracking] map resized'); } catch {}
             }, 100);
           }
         });
@@ -20364,7 +20379,6 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
         console.error('[expenses] review email failed:', r.status, data.error || '');
         alert(`Status updated, but the email failed to send (${data.error || r.status}). The submitter can still see the request in the app.`);
       } else {
-        console.log('[expenses] review email sent to', recipient);
       }
     } catch (err) {
       console.error('[expenses] review email error:', err);
