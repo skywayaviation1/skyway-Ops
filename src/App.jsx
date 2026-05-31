@@ -6719,19 +6719,29 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
 
     // Candidate set: same tail, within ±24h, sorted chronologically.
     // CRITICAL: skip non-flight events (crew holds, MX blocks, training).
-    // The iCal parser sometimes inserts HOLD blocks between flights (e.g.
-    // "crew at CHO 9am-5pm" between two legs); these appear as same-airport
-    // legs (CHO→CHO) and should never reach the broker view.
+    // A subtle gotcha: the iCal parser collapses HOLD into legType='REPO'
+    // (since HOLD blocks share the REPO status-flow UI), so we MUST check
+    // the original `category` field, NOT the legType-fallback. Otherwise
+    // HOLD legs slip through and show as REPOSITIONING on the broker page
+    // (e.g. PBI→PBI crew-hold blocks between flights).
     const candidates = (allTrips || [])
       .filter((t) => t && t.info && (t.info.tail || '').toUpperCase() === tail)
       .filter((t) => {
-        // isFlight === false (or category in HOLD/MX/TRAINING) means this is
-        // a scheduling block, not a real leg the broker should see.
+        // Primary signal: isFlight is set by the iCal parser specifically
+        // to distinguish HOLD/MX/TRAINING from real flights.
         if (t.info.isFlight === false) return false;
-        const cat = String(t.info.legType || t.info.category || '').toUpperCase();
-        if (['HOLD', 'MX', 'TRAINING'].includes(cat)) return false;
-        // Defensive: same-airport "flight" with no real route is a hold too
-        if (t.info.from && t.info.to && t.info.from === t.info.to) return false;
+        // Secondary: check the RAW category field (not legType-fallback).
+        const rawCat = String(t.info.category || '').toUpperCase();
+        if (['HOLD', 'MX', 'TRAINING'].includes(rawCat)) return false;
+        // Defensive: same-airport "flight" with no real route. Normalize
+        // both sides (uppercase, strip leading K) before comparing because
+        // raw codes can be ICAO ("KPBI") on one side and IATA ("PBI") on
+        // the other for the same airport.
+        const norm = (c) => {
+          const u = String(c || '').toUpperCase().trim();
+          return u.length === 4 && u.startsWith('K') ? u.slice(1) : u;
+        };
+        if (t.info.from && t.info.to && norm(t.info.from) === norm(t.info.to)) return false;
         return true;
       })
       .filter((t) => {
@@ -6799,6 +6809,18 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
       return !!anchorBroker && b === anchorBroker;
     }
 
+    // Airport-code comparison that handles ICAO/IATA mix (e.g. KPBI vs PBI).
+    const sameAirport = (a, b) => {
+      const norm = (c) => {
+        const u = String(c || '').toUpperCase().trim();
+        return u.length === 4 && u.startsWith('K') ? u.slice(1) : u;
+      };
+      return !!a && !!b && norm(a) === norm(b);
+    };
+
+    const anchorFrom = trip.info?.from;
+    const anchorTo = trip.info?.to;
+
     const included = [];
     ordered.forEach((t, i) => {
       if (t.uid === trip.uid) {
@@ -6806,11 +6828,19 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
         included.push({ t, showPax: true });
         return;
       }
-      // Repo legs: include only if immediately adjacent to anchor on
-      // either side. Other repo legs (e.g., a repo before someone else's
-      // earlier charter) are NOT this broker's concern.
+      // Repo legs: include ONLY if they actually connect to the anchor's
+      // route geographically. This is what the broker actually wants to
+      // see:
+      //   - A leg ENDING at the anchor's FROM airport (the empty
+      //     positioning flight that brought the aircraft TO the pickup)
+      //   - A leg STARTING at the anchor's TO airport (the empty return
+      //     positioning flight leaving the dropoff)
+      // Adjacency in time alone isn't enough — that'd include unrelated
+      // earlier-day flights.
       if (isRepo(t)) {
-        if (i === anchorIdx - 1 || i === anchorIdx + 1) {
+        const isPriorPositioning = i < anchorIdx && sameAirport(t.info?.to, anchorFrom);
+        const isReturnPositioning = i > anchorIdx && sameAirport(t.info?.from, anchorTo);
+        if (isPriorPositioning || isReturnPositioning) {
           included.push({ t, showPax: false });
         }
         return;
