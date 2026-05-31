@@ -337,7 +337,7 @@ function legPhase(leg) {
   return 'pending';
 }
 
-function LiveMap({ position, legs }) {
+function LiveMap({ position, legs, trail }) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
   const layerRef = useRef(null);          // overlay group we can clear/redraw
@@ -487,19 +487,38 @@ function LiveMap({ position, legs }) {
             && position.airborne === true
             && Number.isFinite(position.latitude)
             && Number.isFinite(position.longitude);
-          if (havePos) {
-            // Flown portion: origin → current position
+          // Prefer the ACTUAL flown breadcrumb when FlightAware has the
+          // track log available. Falls back to a straight origin → current
+          // line when the track isn't yet populated (e.g. flight just
+          // departed and FA hasn't gathered enough points yet).
+          const haveTrail = Array.isArray(trail) && trail.length >= 2;
+          if (haveTrail) {
+            // Flown portion = actual breadcrumb. Solid cyan, slightly heavier
+            // weight to make it pop against the satellite imagery.
+            layer.addLayer(L.polyline(trail, {
+              color: '#22d3ee', weight: 4, opacity: 1,
+              lineCap: 'round', lineJoin: 'round',
+            }));
+            // Remaining portion = last trail point → destination, dashed.
+            // We use the last trail point (not `position.lat/lng`) so the
+            // breadcrumb and the ahead-line meet exactly at the same pixel.
+            const lastPt = trail[trail.length - 1];
+            layer.addLayer(L.polyline(
+              [lastPt, [r.oCoord.lat, r.oCoord.lng]],
+              { color: '#22d3ee', weight: 2.5, opacity: 0.5, dashArray: '6 6', lineCap: 'round', lineJoin: 'round' }
+            ));
+          } else if (havePos) {
+            // No trail yet — straight origin → current position line.
             layer.addLayer(L.polyline(
               [[r.fCoord.lat, r.fCoord.lng], [position.latitude, position.longitude]],
               { color: '#22d3ee', weight: 4, opacity: 1, lineCap: 'round', lineJoin: 'round' }
             ));
-            // Remaining: current → destination, dashed faint cyan
             layer.addLayer(L.polyline(
               [[position.latitude, position.longitude], [r.oCoord.lat, r.oCoord.lng]],
               { color: '#22d3ee', weight: 2.5, opacity: 0.5, dashArray: '6 6', lineCap: 'round', lineJoin: 'round' }
             ));
           } else {
-            // Airborne but no FA position yet — full route as dashed cyan
+            // Airborne but no FA position or trail yet — full route as dashed cyan.
             layer.addLayer(L.polyline(
               [[r.fCoord.lat, r.fCoord.lng], [r.oCoord.lat, r.oCoord.lng]],
               { color: '#22d3ee', weight: 3, opacity: 0.8, dashArray: '6 6', lineCap: 'round', lineJoin: 'round' }
@@ -571,12 +590,17 @@ function LiveMap({ position, legs }) {
         layer.addLayer(aircraftMarkerRef.current);
       }
 
-      // Fit map to all airports + plane position so the whole trip is visible.
+      // Fit map to airports + plane position + actual flown trail so
+      // the breadcrumb path stays fully visible even if it bows north or
+      // south of a direct line.
       const points = Array.from(aptSet.values()).map((a) => [a.coords.lat, a.coords.lng]);
       if (position && position.airborne === true
           && Number.isFinite(position.latitude)
           && Number.isFinite(position.longitude)) {
         points.push([position.latitude, position.longitude]);
+      }
+      if (Array.isArray(trail) && trail.length >= 2) {
+        for (const pt of trail) points.push(pt);
       }
       if (points.length >= 2) {
         try {
@@ -587,7 +611,7 @@ function LiveMap({ position, legs }) {
       }
     })();
     return () => { cancelled = true; };
-  }, [ready, position, legs, coordsTick]);
+  }, [ready, position, legs, trail, coordsTick]);
 
   if (mapErr) {
     return (
@@ -649,7 +673,19 @@ function Leg({ leg, isActive, position }) {
   // trip-state doc). No need for the legacy statuses[leg.legNumber] map.
   const legStatuses = leg.status || {};
   const hasPilots = !!(leg.pic || leg.sic);
-  const paxList = Array.isArray(leg.pax) ? leg.pax : [];
+  // Normalize pax to the structured-record shape so the renderer works
+  // regardless of which payload version is persisted on the trip-state
+  // doc. Old links were saved with `pax: ['Paul Smith', 'Nicole Smith']`
+  // (string array). New links save `[{name, status, checkedInAt, walkUp}]`.
+  // If we see strings, wrap them as pending records — better than showing
+  // an empty list when the link wasn't rotated after the upgrade.
+  const paxList = Array.isArray(leg.pax)
+    ? leg.pax.map((p) => {
+        if (typeof p === 'string') return { name: p, status: 'pending', checkedInAt: null, walkUp: false };
+        if (p && typeof p === 'object' && p.name) return p;
+        return null;
+      }).filter(Boolean)
+    : [];
   const checkedInCount = paxList.filter((p) => p?.status === 'checked_in').length;
   // REVENUE legs show the pax check-in milestones too (CATERING, PAX ARRIVED, PAX BOARDED)
   const isRevenue = String(leg.category || '').toUpperCase() === 'REVENUE';
@@ -783,12 +819,12 @@ function PositionCard({ position }) {
 }
 
 export default function TripTrackPage({ token }) {
-  const [state, setState] = useState({ loading: true, err: null, trip: null, position: null });
+  const [state, setState] = useState({ loading: true, err: null, trip: null, position: null, trail: null });
   const [refreshing, setRefreshing] = useState(false);
 
   const load = async () => {
     if (!token) {
-      setState({ loading: false, err: 'No tracking token provided.', trip: null, position: null });
+      setState({ loading: false, err: 'No tracking token provided.', trip: null, position: null, trail: null });
       return;
     }
     try {
@@ -796,12 +832,12 @@ export default function TripTrackPage({ token }) {
       const data = await r.json();
       if (!r.ok || !data.ok) {
         const reason = data?.reason || 'unable to load trip';
-        setState({ loading: false, err: reason, trip: null, position: null });
+        setState({ loading: false, err: reason, trip: null, position: null, trail: null });
         return;
       }
-      setState({ loading: false, err: null, trip: data.trip, position: data.position });
+      setState({ loading: false, err: null, trip: data.trip, position: data.position, trail: data.trail || null });
     } catch (e) {
-      setState({ loading: false, err: 'Could not reach the tracking service.', trip: null, position: null });
+      setState({ loading: false, err: 'Could not reach the tracking service.', trip: null, position: null, trail: null });
     }
   };
 
@@ -852,7 +888,7 @@ export default function TripTrackPage({ token }) {
     );
   }
 
-  const { trip, position } = state;
+  const { trip, position, trail } = state;
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
@@ -907,7 +943,7 @@ export default function TripTrackPage({ token }) {
         <HeroCard trip={trip} position={position} />
 
         {/* Map — Leaflet + OpenStreetMap via CARTO dark tiles, no API key. */}
-        <LiveMap position={position} legs={trip.legs} />
+        <LiveMap position={position} legs={trip.legs} trail={trail} />
 
         {/* Legs */}
         <section>
