@@ -5589,6 +5589,8 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   // and show a small spinner. Result message shows briefly after success/fail.
   const [updatingEta, setUpdatingEta] = useState(false);
   const [etaResult, setEtaResult] = useState(null); // { ok: bool, msg: string }
+  // SHARE WITH BROKER flow
+  const [shareDialogOpen, setShareDialogOpen] = useState(false);
   const geo = useGeolocation();
 
   // Reset tab when switching trips
@@ -6235,6 +6237,20 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
                 )}
               </button>
             )}
+            {/* SHARE WITH BROKER — ops/admin only. Generates a token-gated
+                public tracking URL and (optionally) emails it to the broker.
+                Available for any trip, regardless of airborne status (works
+                pre-departure for the broker to bookmark). */}
+            {(currentUser?.role === 'ops' || currentUser?.role === 'admin') && (
+              <button
+                onClick={() => setShareDialogOpen(true)}
+                className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] uppercase tracking-[0.15em] border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                title="Generate and send a tracking link to the broker"
+              >
+                SHARE WITH BROKER
+              </button>
+            )}
             <button
               onClick={async () => {
                 const next = !completed;
@@ -6643,7 +6659,270 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
           </div>
         ) : null}
       </div>
+      {/* SHARE WITH BROKER — generates a token, optionally emails it, and
+          gives ops the URL to text/forward manually. */}
+      {shareDialogOpen && (
+        <ShareTripWithBrokerDialog
+          trip={trip}
+          defaultEmail={brokerEmail}
+          currentUser={currentUser}
+          onClose={() => setShareDialogOpen(false)}
+        />
+      )}
     </div>
+  );
+}
+
+// ============================================================
+// SHARE TRIP WITH BROKER — modal that generates a public token
+// for a trip and optionally emails it. Backed by /api/trip-share.
+// ============================================================
+function ShareTripWithBrokerDialog({ trip, defaultEmail, currentUser, onClose }) {
+  const [url, setUrl] = useState('');
+  const [tokenIssuedAt, setTokenIssuedAt] = useState(null);
+  const [revoked, setRevoked] = useState(false);
+  // Email-send form
+  const [emailTo, setEmailTo] = useState(defaultEmail || '');
+  const [emailMessage, setEmailMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [info, setInfo] = useState(''); // success/info banner
+  const [copied, setCopied] = useState(false);
+
+  // Helper: call the authenticated /api/trip-share endpoint. Always sends
+  // the current Firebase ID token so the server can authorize the action.
+  async function callShare(action, extra = {}) {
+    setErr('');
+    setInfo('');
+    setBusy(true);
+    try {
+      const { auth } = await import('./firebase.js');
+      const u = auth.currentUser;
+      const idToken = u ? await u.getIdToken() : null;
+      if (!idToken) throw new Error('Not signed in');
+      const r = await fetch('/api/trip-share', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken, action, tripId: trip.uid, ...extra }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || `Server returned ${r.status}`);
+      return data;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // On open: generate (or fetch) the current token + URL so ops can copy
+  // immediately without an extra click. If a link already exists, this
+  // returns the same one (server-side: generate is idempotent on first call).
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await callShare('generate');
+        if (cancelled) return;
+        setUrl(data.url || '');
+        setTokenIssuedAt(data.issuedAt || null);
+        setRevoked(!!data.revoked);
+      } catch (e) {
+        if (cancelled) return;
+        setErr(e.message || 'Could not generate link');
+      }
+    })();
+    return () => { cancelled = true; };
+    // Run once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleCopy = async () => {
+    if (!url) return;
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (_) {
+      // Fall back: select text in input for manual copy. Some PWAs/mobile
+      // browsers block clipboard.writeText without user gesture context.
+      setInfo('Copy not supported — long-press the link to copy it.');
+    }
+  };
+
+  const handleEmail = async () => {
+    const to = emailTo.trim();
+    if (!to || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) {
+      setErr('Enter a valid broker email');
+      return;
+    }
+    try {
+      const data = await callShare('email', { to, message: emailMessage.trim() });
+      setInfo(`Email sent to ${to}.`);
+      if (data.url) setUrl(data.url);
+    } catch (e) {
+      setErr(e.message || 'Could not send email');
+    }
+  };
+
+  const handleRotate = async () => {
+    if (!window.confirm('Rotate the link? Any tracking links you previously sent will stop working. A new URL will be generated.')) return;
+    try {
+      const data = await callShare('rotate');
+      setUrl(data.url || '');
+      setTokenIssuedAt(data.issuedAt || null);
+      setRevoked(false);
+      setInfo('Link rotated. Old URLs are now dead.');
+    } catch (e) {
+      setErr(e.message || 'Could not rotate link');
+    }
+  };
+
+  const handleRevoke = async () => {
+    if (!window.confirm('Revoke the link entirely? Anyone who has the URL will see "access denied". You can generate a new one later if needed.')) return;
+    try {
+      await callShare('revoke');
+      setRevoked(true);
+      setInfo('Link revoked.');
+    } catch (e) {
+      setErr(e.message || 'Could not revoke link');
+    }
+  };
+
+  return createPortal(
+    <div className="fixed inset-0 z-[100] bg-slate-950/80 backdrop-blur-sm flex items-start sm:items-center justify-center p-0 sm:p-4 overflow-y-auto">
+      <div className="bg-slate-900 border border-slate-700 w-full max-w-lg sm:my-8 flex flex-col min-h-screen sm:min-h-0 sm:max-h-[90vh]">
+        <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3 shrink-0">
+          <div>
+            <h3 className="text-lg tracking-wider text-slate-100" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
+              SHARE TRIP WITH BROKER
+            </h3>
+            <p className="text-xs text-slate-500 mt-0.5">
+              {trip.info?.tail || 'Trip'} · {trip.info?.from || '—'} → {trip.info?.to || '—'}
+            </p>
+          </div>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-200" disabled={busy}>
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {err && (
+            <div className="p-2 border border-red-500/30 bg-red-500/10 text-xs text-red-300">{err}</div>
+          )}
+          {info && (
+            <div className="p-2 border border-emerald-500/30 bg-emerald-500/10 text-xs text-emerald-300">{info}</div>
+          )}
+
+          {/* TRACKING URL */}
+          <div>
+            <label className="block text-[10px] tracking-widest text-slate-400 mb-1.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              TRACKING URL
+            </label>
+            {revoked && (
+              <div className="mb-2 p-2 border border-amber-500/30 bg-amber-500/10 text-xs text-amber-300">
+                This link has been revoked. Generate a new one with ROTATE.
+              </div>
+            )}
+            <div className="flex items-stretch gap-1.5">
+              <input
+                type="text"
+                value={url}
+                readOnly
+                onFocus={(e) => e.target.select()}
+                className="flex-1 bg-slate-800 border border-slate-700 px-2 py-2 text-[11px] text-slate-100 font-mono"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                placeholder={busy ? 'Generating…' : ''}
+              />
+              <button
+                onClick={handleCopy}
+                disabled={!url || busy}
+                className="px-3 py-2 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 text-[10px] tracking-widest disabled:opacity-40"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              >
+                {copied ? 'COPIED!' : 'COPY'}
+              </button>
+            </div>
+            <p className="text-[10px] text-slate-500 mt-1.5">
+              Auto-expires 24 hours after the trip's last leg lands. Anyone with this URL can view live position + itinerary (no login required).
+            </p>
+          </div>
+
+          {/* EMAIL TO BROKER */}
+          <div className="border-t border-slate-800 pt-4">
+            <label className="block text-[10px] tracking-widest text-slate-400 mb-1.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              EMAIL TO BROKER
+            </label>
+            <input
+              type="email"
+              value={emailTo}
+              onChange={(e) => setEmailTo(e.target.value)}
+              placeholder="broker@example.com"
+              className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-sm text-slate-100"
+              style={{ fontFamily: 'DM Sans, sans-serif' }}
+              disabled={busy || revoked}
+            />
+            <textarea
+              value={emailMessage}
+              onChange={(e) => setEmailMessage(e.target.value)}
+              placeholder="Optional message (will appear above the tracking link)..."
+              rows={3}
+              className="w-full mt-2 bg-slate-800 border border-slate-700 px-3 py-2 text-sm text-slate-100"
+              style={{ fontFamily: 'DM Sans, sans-serif' }}
+              disabled={busy || revoked}
+              maxLength={500}
+            />
+            <button
+              onClick={handleEmail}
+              disabled={busy || !emailTo.trim() || revoked}
+              className="mt-2 w-full px-3 py-2 bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-700 disabled:text-slate-500 text-slate-950 text-xs font-medium tracking-widest"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              {busy ? <Loader2 className="w-3 h-3 inline animate-spin mr-1" /> : null}
+              SEND EMAIL
+            </button>
+          </div>
+
+          {/* MANAGE */}
+          <div className="border-t border-slate-800 pt-4">
+            <label className="block text-[10px] tracking-widest text-slate-400 mb-1.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              MANAGE
+            </label>
+            <div className="flex gap-2">
+              <button
+                onClick={handleRotate}
+                disabled={busy}
+                className="flex-1 px-2 py-1.5 border border-slate-600 text-slate-300 hover:bg-slate-800 text-[10px] tracking-widest disabled:opacity-40"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              >
+                ROTATE LINK
+              </button>
+              <button
+                onClick={handleRevoke}
+                disabled={busy || revoked}
+                className="flex-1 px-2 py-1.5 border border-red-700/40 text-red-400 hover:bg-red-500/10 text-[10px] tracking-widest disabled:opacity-40"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              >
+                REVOKE
+              </button>
+            </div>
+            <p className="text-[10px] text-slate-500 mt-2">
+              ROTATE: generate a new URL and break old ones. REVOKE: kill the link entirely.
+            </p>
+          </div>
+        </div>
+
+        <div className="border-t border-slate-800 px-4 py-3 shrink-0 flex justify-end">
+          <button
+            onClick={onClose}
+            disabled={busy}
+            className="px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200 tracking-widest"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            CLOSE
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
   );
 }
 

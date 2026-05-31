@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App, { ExternalTechPage } from './App.jsx';
 import { ServiceTechPage } from './ServiceRequests.jsx';
+import TripTrackPage from './TripTrack.jsx';
 import './index.css';
 
 /* ============================================================
@@ -81,6 +82,14 @@ const isServiceTechRoute =
   typeof window !== 'undefined' &&
   window.location.pathname.replace(/\/+$/, '') === '/service-tech';
 
+// PUBLIC TRIP TRACKING ROUTE — broker-facing live tracking page. Like the
+// tech routes above, decided before App ever mounts so an external broker
+// never touches the authed app's Firebase flow.
+const isTripTrackRoute =
+  typeof window !== 'undefined' &&
+  (window.location.pathname.replace(/\/+$/, '') === '/trip-track'
+   || window.location.pathname.replace(/\/+$/, '') === '/trip-track.html');
+
 /* ============================================================
    PWA SERVICE WORKER REGISTRATION
    ------------------------------------------------------------
@@ -99,7 +108,7 @@ const isServiceTechRoute =
    the "Install" prompt.
    ============================================================ */
 if (typeof window !== 'undefined' && 'serviceWorker' in navigator
-    && !isExternalTechRoute && !isServiceTechRoute) {
+    && !isExternalTechRoute && !isServiceTechRoute && !isTripTrackRoute) {
   // Register after the page has finished loading so we don't compete
   // with initial render for the network.
   window.addEventListener('load', () => {
@@ -125,6 +134,13 @@ if (isExternalTechRoute) {
   rootEl.render(
     <React.StrictMode>
       <ServiceTechPage token={params.get('token') || ''} />
+    </React.StrictMode>
+  );
+} else if (isTripTrackRoute) {
+  const params = new URLSearchParams(window.location.search);
+  rootEl.render(
+    <React.StrictMode>
+      <TripTrackPage token={params.get('token') || ''} />
     </React.StrictMode>
   );
 } else {
