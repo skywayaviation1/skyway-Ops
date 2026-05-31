@@ -99,6 +99,12 @@ function sanitizeTrip(tripId, data, legs) {
       arrival: leg.arrival || null,        // ISO
       category: leg.category || 'REVENUE', // REVENUE/REPO/FERRY
       pic: leg.picName || null,            // NAME ONLY — no contact info
+      sic: leg.sicName || null,            // NAME ONLY — no contact info
+      // Pax visibility enforced HERE as the last line of defense — even if
+      // somehow a leg got persisted with showPax:false but a pax array
+      // attached (or vice versa), we honor showPax strictly.
+      pax: leg.showPax === true && Array.isArray(leg.pax) ? leg.pax : [],
+      showPax: leg.showPax === true,
     })),
     statuses: cleanStatuses,
     completed: data.completed === true,

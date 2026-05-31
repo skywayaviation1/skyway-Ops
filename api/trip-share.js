@@ -88,6 +88,13 @@ async function ensureTokenIssued(tripId, opts = {}) {
         arrival: leg.arrival || null,
         category: leg.category ? String(leg.category).slice(0, 16) : 'REVENUE',
         picName: leg.picName ? String(leg.picName).slice(0, 80) : null,
+        sicName: leg.sicName ? String(leg.sicName).slice(0, 80) : null,
+        // Pax visibility flag (per privacy spec). Even if pax array is
+        // present, the broker page must honor showPax — defensive defense.
+        showPax: leg.showPax === true,
+        pax: Array.isArray(leg.pax)
+          ? leg.pax.slice(0, 30).map((p) => String(p || '').slice(0, 80)).filter(Boolean)
+          : [],
       })),
       updatedAt: now,
     };
