@@ -88,90 +88,286 @@ function loadLeaflet() {
   return _leafletLoading;
 }
 
+// Phase colors matched to FlightBoard's RouteMap so the broker view feels
+// like the same product. Cyan = airborne, amber = preflight, slate = pending,
+// emerald = landed, dim slate = completed.
+const BROKER_PHASE_COLORS = {
+  pending:    '#64748b',
+  preflight:  '#f59e0b',
+  airborne:   '#22d3ee',
+  landed:     '#10b981',
+  completed:  '#475569',
+};
+
+// Derive a phase per leg from its status timeline. Same shape as
+// FlightBoard.tripPhase but adapted to the keys the broker payload uses
+// (the server sanitizer whitelists: crewArrived, ready, taxiing, airborne,
+// departed, landed, arrived).
+function legPhase(leg) {
+  const s = leg?.status || {};
+  if (s.landed || s.arrived) return 'landed';
+  if (s.airborne || s.departed) {
+    const upAt = s.airborne?.at || s.departed?.at || 0;
+    // 12h staleness guard: forgotten LANDED tap shouldn't leave a leg
+    // permanently airborne. After 12h with no landed, treat as landed.
+    if (upAt > 0 && (Date.now() - upAt) > 12 * 60 * 60 * 1000) return 'landed';
+    return 'airborne';
+  }
+  if (s.crewArrived || s.ready || s.taxiing) return 'preflight';
+  return 'pending';
+}
+
 function LiveMap({ position, legs }) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
+  const layerRef = useRef(null);          // overlay group we can clear/redraw
   const aircraftMarkerRef = useRef(null);
   const [mapErr, setMapErr] = useState('');
+  const [ready, setReady] = useState(false);
+  // Bumped when async airport lookups resolve so routes that needed coords
+  // get redrawn.
+  const [coordsTick, setCoordsTick] = useState(0);
 
+  // ====================================================================
   // Initial map setup — runs once.
+  // ====================================================================
   useEffect(() => {
     let cancelled = false;
     loadLeaflet().then((L) => {
       if (cancelled || !containerRef.current) return;
-      // Initial center: aircraft if airborne, else CONUS center.
-      let center = [39.8283, -98.5795];
-      let zoom = 4;
-      if (position?.airborne && position.latitude && position.longitude) {
-        center = [position.latitude, position.longitude];
-        zoom = 6;
-      }
       const map = L.map(containerRef.current, {
-        center, zoom,
+        center: [38, -95],          // CONUS center; we fit-bounds below
+        zoom: 4,
         zoomControl: true,
         attributionControl: true,
         worldCopyJump: false,
       });
-      // Dark basemap from CARTO — free, no API key, matches our dark UI.
-      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-        maxZoom: 18,
-        subdomains: 'abcd',
-        attribution: '&copy; OpenStreetMap &copy; CARTO',
+      // Satellite base + dark labels overlay — same combination FlightBoard
+      // uses on the ops dashboard. The dimmed tilePane keeps the satellite
+      // from overwhelming the cyan overlays.
+      L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+        maxZoom: 12,
+        attribution: 'Tiles &copy; Esri',
       }).addTo(map);
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', {
+        maxZoom: 12, subdomains: 'abcd', opacity: 0.8,
+        attribution: '&copy; CARTO',
+      }).addTo(map);
+      const tilePane = map.getPane('tilePane');
+      if (tilePane) tilePane.style.filter = 'brightness(0.65) contrast(1.1) saturate(0.85)';
+      // Overlay layer group — we clear and redraw routes/markers on data updates
+      // without disturbing the tile layers underneath.
+      const layer = L.layerGroup().addTo(map);
       mapRef.current = map;
+      layerRef.current = layer;
+      if (!cancelled) setReady(true);
     }).catch((e) => {
       setMapErr(e.message || 'Map failed to load');
     });
     return () => {
       cancelled = true;
-      // Tear down the map instance so re-renders don't double up. Leaflet
-      // throws if you call init twice on the same container without remove().
       if (mapRef.current) {
         try { mapRef.current.remove(); } catch (_) {}
         mapRef.current = null;
+        layerRef.current = null;
       }
       aircraftMarkerRef.current = null;
     };
-    // Intentionally only on mount; live updates handled by the next effect.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Update aircraft marker when position changes. A heading-rotated cyan
-  // arrow renders as a divIcon (SVG inline) so we don't need to ship any
-  // marker image assets. When the aircraft goes back on the ground, the
-  // marker is removed.
+  // ====================================================================
+  // Resolve any missing airport codes via the same server endpoint
+  // FlightBoard uses (OurAirports). This lets broker pages show non-US
+  // / smaller airports that aren't in the bundled coords DB.
+  // ====================================================================
+  const askedRef = useRef(new Set());
   useEffect(() => {
-    const L = typeof window !== 'undefined' ? window.L : null;
-    const map = mapRef.current;
-    if (!L || !map) return;
-    if (position?.airborne && position.latitude && position.longitude) {
-      const pos = [position.latitude, position.longitude];
-      const heading = Number.isFinite(position.heading) ? position.heading : 0;
-      // Build an SVG arrow rotated by heading. White stroke around cyan
-      // fill so the marker pops on any tile color underneath.
-      const html = `
-        <div style="transform: rotate(${heading}deg); transform-origin: 50% 50%;">
-          <svg width="28" height="28" viewBox="-14 -14 28 28">
-            <path d="M 0,-11 L 6,9 L 0,5 L -6,9 Z"
-              fill="#06b6d4" stroke="#ffffff" stroke-width="1.5"
-              stroke-linejoin="round" />
-          </svg>
-        </div>`;
-      const icon = L.divIcon({
-        html, className: '', iconSize: [28, 28], iconAnchor: [14, 14],
+    if (!Array.isArray(legs) || legs.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      const { lookupCoords } = await import('./airport-coords.js');
+      // Find codes referenced by this trip that aren't yet known.
+      const missing = [];
+      legs.forEach((leg) => {
+        [leg.from, leg.to].forEach((code) => {
+          if (!code) return;
+          const c = String(code).toUpperCase().trim();
+          if (!lookupCoords(c) && !askedRef.current.has(c)) missing.push(c);
+        });
       });
-      if (!aircraftMarkerRef.current) {
-        aircraftMarkerRef.current = L.marker(pos, { icon, interactive: false }).addTo(map);
-      } else {
-        aircraftMarkerRef.current.setLatLng(pos);
-        aircraftMarkerRef.current.setIcon(icon);
+      if (missing.length === 0) return;
+      for (const c of missing) askedRef.current.add(c);
+      try {
+        const r = await fetch('/api/airport-coords-lookup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ codes: missing }),
+        });
+        if (!r.ok) {
+          // Un-mark so a future render can retry on network blip
+          for (const c of missing) askedRef.current.delete(c);
+          return;
+        }
+        const data = await r.json();
+        if (cancelled) return;
+        if (data.cacheReady === false) {
+          // OurAirports cache cold-starting; retry in a minute
+          setTimeout(() => {
+            for (const c of missing) askedRef.current.delete(c);
+            setCoordsTick((t) => t + 1);
+          }, 60_000);
+          return;
+        }
+        const { addDynamicCoords } = await import('./airport-coords.js');
+        let added = 0;
+        for (const [code, coords] of Object.entries(data.coords || {})) {
+          if (coords && Number.isFinite(coords.lat) && Number.isFinite(coords.lon || coords.lng)) {
+            addDynamicCoords(code, coords.lat, coords.lon ?? coords.lng);
+            added++;
+          }
+        }
+        if (added > 0 && !cancelled) setCoordsTick((t) => t + 1);
+      } catch (e) {
+        for (const c of missing) askedRef.current.delete(c);
       }
-      map.panTo(pos);
-    } else if (aircraftMarkerRef.current) {
-      try { aircraftMarkerRef.current.remove(); } catch (_) {}
+    })();
+    return () => { cancelled = true; };
+  }, [legs]);
+
+  // ====================================================================
+  // Draw routes + airport markers + plane on every data change.
+  // ====================================================================
+  useEffect(() => {
+    if (!ready || !mapRef.current || !layerRef.current) return;
+    const L = window.L;
+    const layer = layerRef.current;
+    let cancelled = false;
+    (async () => {
+      const { lookupCoords } = await import('./airport-coords.js');
+      if (cancelled) return;
+      layer.clearLayers();
       aircraftMarkerRef.current = null;
-    }
-  }, [position]);
+
+      // Build resolved leg list (only legs whose airports we have coords for)
+      const resolved = [];
+      const aptSet = new Map();
+      (legs || []).forEach((leg) => {
+        const f = lookupCoords(leg.from);
+        const o = lookupCoords(leg.to);
+        if (!f || !o) return;
+        resolved.push({ ...leg, fCoord: f, oCoord: o, phase: legPhase(leg) });
+        aptSet.set(String(leg.from).toUpperCase(), { coords: f, code: leg.from });
+        aptSet.set(String(leg.to).toUpperCase(), { coords: o, code: leg.to });
+      });
+
+      // Draw routes — colored by phase, mirroring FlightBoard's rules.
+      resolved.forEach((r) => {
+        if (r.phase === 'airborne') {
+          const havePos = position
+            && position.airborne === true
+            && Number.isFinite(position.latitude)
+            && Number.isFinite(position.longitude);
+          if (havePos) {
+            // Flown portion: origin → current position
+            layer.addLayer(L.polyline(
+              [[r.fCoord.lat, r.fCoord.lng], [position.latitude, position.longitude]],
+              { color: '#22d3ee', weight: 4, opacity: 1, lineCap: 'round', lineJoin: 'round' }
+            ));
+            // Remaining: current → destination, dashed faint cyan
+            layer.addLayer(L.polyline(
+              [[position.latitude, position.longitude], [r.oCoord.lat, r.oCoord.lng]],
+              { color: '#22d3ee', weight: 2.5, opacity: 0.5, dashArray: '6 6', lineCap: 'round', lineJoin: 'round' }
+            ));
+          } else {
+            // Airborne but no FA position yet — full route as dashed cyan
+            layer.addLayer(L.polyline(
+              [[r.fCoord.lat, r.fCoord.lng], [r.oCoord.lat, r.oCoord.lng]],
+              { color: '#22d3ee', weight: 3, opacity: 0.8, dashArray: '6 6', lineCap: 'round', lineJoin: 'round' }
+            ));
+          }
+          return;
+        }
+        if (r.phase === 'landed' || r.phase === 'completed') {
+          layer.addLayer(L.polyline(
+            [[r.fCoord.lat, r.fCoord.lng], [r.oCoord.lat, r.oCoord.lng]],
+            { color: '#10b981', weight: 2, opacity: 0.45, lineCap: 'round', lineJoin: 'round' }
+          ));
+          return;
+        }
+        // Pending / preflight
+        layer.addLayer(L.polyline(
+          [[r.fCoord.lat, r.fCoord.lng], [r.oCoord.lat, r.oCoord.lng]],
+          {
+            color: BROKER_PHASE_COLORS[r.phase] || BROKER_PHASE_COLORS.pending,
+            weight: 2.5, opacity: 0.85,
+            dashArray: r.phase === 'pending' ? '6 6' : '10 6',
+            lineCap: 'round', lineJoin: 'round',
+          }
+        ));
+      });
+
+      // Airport dots + labels
+      Array.from(aptSet.values()).forEach((a) => {
+        const icon = L.divIcon({
+          html: `<div style="width: 6px; height: 6px; background: #94a3b8; border: 1px solid #1e293b; border-radius: 50%;"></div><div style="position: absolute; left: 10px; top: -4px; color: #94a3b8; font-family: 'JetBrains Mono', monospace; font-size: 10px; white-space: nowrap; text-shadow: 0 0 4px #020617, 0 0 4px #020617;">${a.code}</div>`,
+          className: '',
+          iconSize: [60, 12],
+          iconAnchor: [3, 6],
+        });
+        layer.addLayer(L.marker([a.coords.lat, a.coords.lng], { icon, interactive: false }));
+      });
+
+      // Live aircraft marker — cyan plane rotated to heading. Same SVG +
+      // label style as FlightBoard's RouteMap for visual continuity.
+      if (position && position.airborne === true
+          && Number.isFinite(position.latitude)
+          && Number.isFinite(position.longitude)) {
+        const heading = Number.isFinite(position.heading) ? position.heading : 0;
+        const altStr = Number.isFinite(position.altitude)
+          ? (position.altitude >= 18000 ? `FL${Math.round(position.altitude / 100)}` : `${Math.round(position.altitude)}ft`)
+          : '';
+        const spdStr = Number.isFinite(position.groundspeed) ? `${Math.round(position.groundspeed)}kt` : '';
+        const planeSvg = `
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" style="transform: rotate(${heading}deg); transform-origin: center; filter: drop-shadow(0 0 4px rgba(34,211,238,0.7));">
+            <path d="M12 2 L13.5 10 L22 12 L22 14 L13.5 14 L13 19 L15 21 L15 22 L12 21 L9 22 L9 21 L11 19 L10.5 14 L2 14 L2 12 L10.5 10 Z"
+                  fill="#22d3ee" stroke="#0e7490" stroke-width="0.5"/>
+          </svg>`;
+        const tailLabel = position.ident || '';
+        const labelHtml = `
+          <div style="position: absolute; left: 32px; top: -4px; background: rgba(2,6,23,0.9); border: 1px solid #22d3ee; padding: 2px 5px; white-space: nowrap;">
+            <div style="color: #a5f3fc; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700; line-height: 1;">${tailLabel}</div>
+            <div style="color: #67e8f9; font-family: 'JetBrains Mono', monospace; font-size: 9px; line-height: 1.4; margin-top: 1px;">${altStr} ${spdStr}</div>
+          </div>`;
+        const icon = L.divIcon({
+          html: planeSvg + labelHtml,
+          className: '',
+          iconSize: [28, 28],
+          iconAnchor: [14, 14],
+        });
+        aircraftMarkerRef.current = L.marker(
+          [position.latitude, position.longitude],
+          { icon, interactive: false, zIndexOffset: 1000 }
+        );
+        layer.addLayer(aircraftMarkerRef.current);
+      }
+
+      // Fit map to all airports + plane position so the whole trip is visible.
+      const points = Array.from(aptSet.values()).map((a) => [a.coords.lat, a.coords.lng]);
+      if (position && position.airborne === true
+          && Number.isFinite(position.latitude)
+          && Number.isFinite(position.longitude)) {
+        points.push([position.latitude, position.longitude]);
+      }
+      if (points.length >= 2) {
+        try {
+          mapRef.current.fitBounds(points, { padding: [40, 40], maxZoom: 8 });
+        } catch (_) {}
+      } else if (points.length === 1) {
+        mapRef.current.setView(points[0], 6);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [ready, position, legs, coordsTick]);
 
   if (mapErr) {
     return (
@@ -184,7 +380,7 @@ function LiveMap({ position, legs }) {
 
   return (
     <div className="border border-slate-700 overflow-hidden">
-      <div ref={containerRef} style={{ width: '100%', height: 320 }} />
+      <div ref={containerRef} style={{ width: '100%', height: 360 }} />
     </div>
   );
 }
