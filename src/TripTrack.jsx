@@ -9,7 +9,7 @@
 //   - Tail + aircraft type
 //   - All legs of the trip (repositioning legs labeled clearly)
 //   - For each leg: from → to, FBO names, scheduled times, actual times, PIC name
-//   - Live position on a map (Google Maps) when the aircraft is airborne
+//   - Live position on a map (Leaflet + OpenStreetMap tiles) when airborne
 //   - Post-flight track for completed legs (toggle to show)
 //   - Status timeline per leg (departed / airborne / landed / etc.)
 //
@@ -19,7 +19,7 @@
 //   - Internal notes
 //   - Pricing / fees / fuel costs
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Plane, MapPin, Clock, AlertCircle, RefreshCw, Loader2,
   ArrowRight, CheckCircle2, Circle,
@@ -60,96 +60,115 @@ function StatusDot({ on, label, ts }) {
   );
 }
 
-// Lightweight Google Maps loader — same key the main app already uses.
-// We only load the script once.
-let _mapsLoading = null;
-function loadGoogleMaps(apiKey) {
+// Lightweight Leaflet loader (no API key needed). Pinned to a specific
+// version + integrity hashes — same approach used by FlightBoard.jsx.
+// We only load the script + CSS once per page; further calls reuse the
+// in-flight promise.
+let _leafletLoading = null;
+function loadLeaflet() {
   if (typeof window === 'undefined') return Promise.reject(new Error('no window'));
-  if (window.google && window.google.maps) return Promise.resolve(window.google.maps);
-  if (_mapsLoading) return _mapsLoading;
-  _mapsLoading = new Promise((resolve, reject) => {
-    const s = document.createElement('script');
-    s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&libraries=geometry`;
-    s.async = true;
-    s.onload = () => resolve(window.google.maps);
-    s.onerror = () => reject(new Error('Google Maps failed to load'));
-    document.head.appendChild(s);
+  if (window.L) return Promise.resolve(window.L);
+  if (_leafletLoading) return _leafletLoading;
+  _leafletLoading = new Promise((resolve, reject) => {
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+    link.integrity = 'sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=';
+    link.crossOrigin = '';
+    document.head.appendChild(link);
+    const script = document.createElement('script');
+    script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+    script.integrity = 'sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=';
+    script.crossOrigin = '';
+    script.async = true;
+    script.onload = () => window.L ? resolve(window.L) : reject(new Error('Leaflet failed to load'));
+    script.onerror = () => reject(new Error('Failed to load Leaflet'));
+    document.head.appendChild(script);
   });
-  return _mapsLoading;
+  return _leafletLoading;
 }
 
-function LiveMap({ position, legs, apiKey }) {
+function LiveMap({ position, legs }) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
   const aircraftMarkerRef = useRef(null);
-  const legPolylinesRef = useRef([]);
   const [mapErr, setMapErr] = useState('');
 
+  // Initial map setup — runs once.
   useEffect(() => {
     let cancelled = false;
-    loadGoogleMaps(apiKey).then((maps) => {
+    loadLeaflet().then((L) => {
       if (cancelled || !containerRef.current) return;
-      // Initial center: aircraft if airborne, else midpoint of all legs, else CONUS center.
-      let center = { lat: 39.8283, lng: -98.5795 };
+      // Initial center: aircraft if airborne, else CONUS center.
+      let center = [39.8283, -98.5795];
+      let zoom = 4;
       if (position?.airborne && position.latitude && position.longitude) {
-        center = { lat: position.latitude, lng: position.longitude };
-      } else if (legs && legs.length) {
-        // No coordinates for airports on the public payload, so we stay at CONUS.
-        // Future enhancement: include lat/lng for from/to airports.
+        center = [position.latitude, position.longitude];
+        zoom = 6;
       }
-      mapRef.current = new maps.Map(containerRef.current, {
-        center,
-        zoom: 5,
-        mapTypeControl: false,
-        streetViewControl: false,
-        fullscreenControl: false,
-        styles: [
-          { elementType: 'geometry', stylers: [{ color: '#0f172a' }] },
-          { elementType: 'labels.text.fill', stylers: [{ color: '#475569' }] },
-          { elementType: 'labels.text.stroke', stylers: [{ color: '#0f172a' }] },
-          { featureType: 'water', stylers: [{ color: '#020617' }] },
-          { featureType: 'road', stylers: [{ color: '#1e293b' }] },
-          { featureType: 'poi', stylers: [{ visibility: 'off' }] },
-        ],
+      const map = L.map(containerRef.current, {
+        center, zoom,
+        zoomControl: true,
+        attributionControl: true,
+        worldCopyJump: false,
       });
+      // Dark basemap from CARTO — free, no API key, matches our dark UI.
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+        maxZoom: 18,
+        subdomains: 'abcd',
+        attribution: '&copy; OpenStreetMap &copy; CARTO',
+      }).addTo(map);
+      mapRef.current = map;
     }).catch((e) => {
       setMapErr(e.message || 'Map failed to load');
     });
-    return () => { cancelled = true; };
-  }, [apiKey]);
-
-  // Update aircraft marker when position changes
-  useEffect(() => {
-    if (!mapRef.current || !window.google?.maps) return;
-    const maps = window.google.maps;
-    if (position?.airborne && position.latitude && position.longitude) {
-      const pos = { lat: position.latitude, lng: position.longitude };
-      if (!aircraftMarkerRef.current) {
-        aircraftMarkerRef.current = new maps.Marker({
-          position: pos,
-          map: mapRef.current,
-          icon: {
-            path: 'M 0,-12 L 4,4 L 0,1 L -4,4 Z',
-            fillColor: '#06b6d4',
-            fillOpacity: 1,
-            strokeColor: '#ffffff',
-            strokeWeight: 1.5,
-            scale: 1.8,
-            rotation: position.heading || 0,
-            anchor: new maps.Point(0, 0),
-          },
-        });
-      } else {
-        aircraftMarkerRef.current.setPosition(pos);
-        const icon = aircraftMarkerRef.current.getIcon();
-        if (icon) {
-          icon.rotation = position.heading || 0;
-          aircraftMarkerRef.current.setIcon(icon);
-        }
+    return () => {
+      cancelled = true;
+      // Tear down the map instance so re-renders don't double up. Leaflet
+      // throws if you call init twice on the same container without remove().
+      if (mapRef.current) {
+        try { mapRef.current.remove(); } catch (_) {}
+        mapRef.current = null;
       }
-      mapRef.current.panTo(pos);
+      aircraftMarkerRef.current = null;
+    };
+    // Intentionally only on mount; live updates handled by the next effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Update aircraft marker when position changes. A heading-rotated cyan
+  // arrow renders as a divIcon (SVG inline) so we don't need to ship any
+  // marker image assets. When the aircraft goes back on the ground, the
+  // marker is removed.
+  useEffect(() => {
+    const L = typeof window !== 'undefined' ? window.L : null;
+    const map = mapRef.current;
+    if (!L || !map) return;
+    if (position?.airborne && position.latitude && position.longitude) {
+      const pos = [position.latitude, position.longitude];
+      const heading = Number.isFinite(position.heading) ? position.heading : 0;
+      // Build an SVG arrow rotated by heading. White stroke around cyan
+      // fill so the marker pops on any tile color underneath.
+      const html = `
+        <div style="transform: rotate(${heading}deg); transform-origin: 50% 50%;">
+          <svg width="28" height="28" viewBox="-14 -14 28 28">
+            <path d="M 0,-11 L 6,9 L 0,5 L -6,9 Z"
+              fill="#06b6d4" stroke="#ffffff" stroke-width="1.5"
+              stroke-linejoin="round" />
+          </svg>
+        </div>`;
+      const icon = L.divIcon({
+        html, className: '', iconSize: [28, 28], iconAnchor: [14, 14],
+      });
+      if (!aircraftMarkerRef.current) {
+        aircraftMarkerRef.current = L.marker(pos, { icon, interactive: false }).addTo(map);
+      } else {
+        aircraftMarkerRef.current.setLatLng(pos);
+        aircraftMarkerRef.current.setIcon(icon);
+      }
+      map.panTo(pos);
     } else if (aircraftMarkerRef.current) {
-      aircraftMarkerRef.current.setMap(null);
+      try { aircraftMarkerRef.current.remove(); } catch (_) {}
       aircraftMarkerRef.current = null;
     }
   }, [position]);
@@ -262,11 +281,6 @@ function PositionCard({ position }) {
 export default function TripTrackPage({ token }) {
   const [state, setState] = useState({ loading: true, err: null, trip: null, position: null });
   const [refreshing, setRefreshing] = useState(false);
-  const apiKey = useMemo(() => {
-    if (typeof window === 'undefined') return '';
-    // The same key the main app uses, embedded at build time.
-    return import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '';
-  }, []);
 
   const load = async () => {
     if (!token) {
@@ -376,13 +390,8 @@ export default function TripTrackPage({ token }) {
         {/* Live position */}
         {position && <PositionCard position={position} />}
 
-        {/* Map */}
-        {apiKey
-          ? <LiveMap position={position} legs={trip.legs} apiKey={apiKey} />
-          : <div className="border border-slate-700 bg-slate-900/40 p-3 text-xs text-slate-500">
-              Map unavailable (no API key).
-            </div>
-        }
+        {/* Map — Leaflet + OpenStreetMap via CARTO dark tiles, no API key. */}
+        <LiveMap position={position} legs={trip.legs} />
 
         {/* Legs */}
         <section>
