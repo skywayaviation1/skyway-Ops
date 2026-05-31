@@ -6828,19 +6828,14 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
         included.push({ t, showPax: true });
         return;
       }
-      // Repo legs: include ONLY if they actually connect to the anchor's
-      // route geographically. This is what the broker actually wants to
-      // see:
-      //   - A leg ENDING at the anchor's FROM airport (the empty
-      //     positioning flight that brought the aircraft TO the pickup)
-      //   - A leg STARTING at the anchor's TO airport (the empty return
-      //     positioning flight leaving the dropoff)
-      // Adjacency in time alone isn't enough — that'd include unrelated
-      // earlier-day flights.
+      // Repo legs: include ONLY the empty positioning flight that BROUGHT
+      // the aircraft to the charter's departure airport. The return
+      // repositioning AFTER the charter is the operator's business, not
+      // the broker's — and showing it adds clutter without helping the
+      // broker.
       if (isRepo(t)) {
         const isPriorPositioning = i < anchorIdx && sameAirport(t.info?.to, anchorFrom);
-        const isReturnPositioning = i > anchorIdx && sameAirport(t.info?.from, anchorTo);
-        if (isPriorPositioning || isReturnPositioning) {
+        if (isPriorPositioning) {
           included.push({ t, showPax: false });
         }
         return;
@@ -6864,39 +6859,22 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
         const full = [first, last].filter(Boolean).join(' ');
         return full || null;
       }).filter(Boolean);
-      // Statuses on the trip-state doc are keyed by the SOURCE leg number
-      // (e.g. statuses[1] for the leg's original numbering). On the broker
-      // page we renumber legs sequentially, so we pull whatever leg-1 status
-      // exists for THIS trip-state doc (each trip-state doc corresponds to
-      // one leg, so statuses are usually under key "1").
-      // For safety, if the doc has multiple leg keys, we pick the first
-      // non-empty one rather than guess.
-      let legStatus = {};
-      const statusBag = state.statuses || {};
-      // Most common shape: { "1": { taxiing: {at:...}, airborne: {at:...} } }
-      if (statusBag && typeof statusBag === 'object') {
-        // Try the obvious key first
-        if (statusBag['1'] && Object.keys(statusBag['1']).length > 0) {
-          legStatus = statusBag['1'];
-        } else {
-          // Pick the first non-empty status bag
-          for (const k of Object.keys(statusBag)) {
-            const v = statusBag[k];
-            if (v && typeof v === 'object' && Object.keys(v).length > 0) {
-              legStatus = v;
-              break;
-            }
-          }
-        }
-      }
-      // Sanitize each timestamp field — keep only `at` (number ms). Strip
-      // any byUid / byName info that might be there; broker doesn't need
-      // to know which crew member tapped the button.
+      // Each trip-state doc represents ONE leg, so `statuses` is a flat
+      // map of { step_id: { timestamp, coords, author, notified } }.
+      // Whitelist the steps we want to expose to the broker and reduce
+      // each entry to just the timestamp (broker doesn't need to know
+      // which crew member tapped the button or the GPS coordinates).
+      const statusBag = (state.statuses && typeof state.statuses === 'object') ? state.statuses : {};
       const cleanStatus = {};
-      for (const key of ['crewArrived', 'ready', 'taxiing', 'airborne', 'departed', 'landed', 'arrived']) {
-        const v = legStatus[key];
-        if (v && typeof v === 'object' && typeof v.at === 'number') {
-          cleanStatus[key] = { at: v.at };
+      const BROKER_STATUS_KEYS = [
+        'crew_onsite', 'aircraft_ready', 'catering_aboard',
+        'pax_arrived', 'pax_boarded', 'taxi_dep',
+        'wheels_up', 'landed',
+      ];
+      for (const key of BROKER_STATUS_KEYS) {
+        const v = statusBag[key];
+        if (v && typeof v === 'object' && Number.isFinite(v.timestamp)) {
+          cleanStatus[key] = { at: v.timestamp };
         }
       }
 

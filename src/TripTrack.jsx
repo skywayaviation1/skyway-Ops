@@ -24,20 +24,26 @@ import {
   Plane, MapPin, Clock, AlertCircle, RefreshCw, Loader2,
   ArrowRight, CheckCircle2, Circle,
 } from 'lucide-react';
+import { formatLocalTime, formatLocalDate } from './airports.js';
 
 const POLL_MS = 120000; // refresh live position every 2 minutes
 
-function fmtTime(iso) {
+// Format an ISO timestamp as the LOCAL time at the given airport. Brokers
+// expect to see times in the trip's own time zone — not whatever timezone
+// their phone happens to be in. Falls back to device-local time with a
+// short TZ abbreviation if the airport isn't in our timezone database
+// (formatLocalTime handles that fallback internally).
+function fmtAirportTime(iso, iataCode) {
   if (!iso) return '—';
   try {
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return '—';
-    return d.toLocaleString(undefined, {
-      month: 'short', day: 'numeric',
-      hour: 'numeric', minute: '2-digit',
-      timeZoneName: 'short',
-    });
-  } catch { return '—'; }
+    const { time, tz } = formatLocalTime(d, iataCode);
+    const date = formatLocalDate(d, iataCode);
+    return `${date} · ${time}${tz ? ' ' + tz : ''}`;
+  } catch {
+    return '—';
+  }
 }
 
 function categoryBadge(cat) {
@@ -48,14 +54,14 @@ function categoryBadge(cat) {
   return { text: 'CHARTER LEG', cls: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40' };
 }
 
-function StatusDot({ on, label, ts }) {
+function StatusDot({ on, label, ts, iataCode }) {
   return (
     <div className="flex items-center gap-2 text-xs">
       {on
         ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
         : <Circle className="w-3.5 h-3.5 text-slate-600 shrink-0" />}
       <span className={on ? 'text-slate-200' : 'text-slate-500'}>{label}</span>
-      {on && ts && <span className="text-slate-500 text-[10px] ml-auto">{fmtTime(ts)}</span>}
+      {on && ts && <span className="text-slate-500 text-[10px] ml-auto">{fmtAirportTime(ts, iataCode)}</span>}
     </div>
   );
 }
@@ -99,21 +105,21 @@ const BROKER_PHASE_COLORS = {
   completed:  '#475569',
 };
 
-// Derive a phase per leg from its status timeline. Same shape as
-// FlightBoard.tripPhase but adapted to the keys the broker payload uses
-// (the server sanitizer whitelists: crewArrived, ready, taxiing, airborne,
-// departed, landed, arrived).
+// Derive a phase per leg from its status timeline. Uses the same status
+// step IDs the ops app records (crew_onsite / aircraft_ready / taxi_dep /
+// wheels_up / landed), with FlightBoard's 12-hour staleness guard.
 function legPhase(leg) {
   const s = leg?.status || {};
-  if (s.landed || s.arrived) return 'landed';
-  if (s.airborne || s.departed) {
-    const upAt = s.airborne?.at || s.departed?.at || 0;
+  if (s.landed) return 'landed';
+  if (s.wheels_up) {
+    const upAt = s.wheels_up.at || 0;
     // 12h staleness guard: forgotten LANDED tap shouldn't leave a leg
     // permanently airborne. After 12h with no landed, treat as landed.
     if (upAt > 0 && (Date.now() - upAt) > 12 * 60 * 60 * 1000) return 'landed';
     return 'airborne';
   }
-  if (s.crewArrived || s.ready || s.taxiing) return 'preflight';
+  if (s.crew_onsite || s.aircraft_ready || s.taxi_dep ||
+      s.catering_aboard || s.pax_arrived || s.pax_boarded) return 'preflight';
   return 'pending';
 }
 
@@ -428,12 +434,12 @@ function Leg({ leg, statuses }) {
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3 text-xs">
         <div>
           <div className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>DEPARTURE</div>
-          <div className="text-slate-200">{fmtTime(leg.departure)}</div>
+          <div className="text-slate-200">{fmtAirportTime(leg.departure, leg.from)}</div>
           {leg.fromFbo && <div className="text-slate-500 mt-0.5">{leg.fromFbo}</div>}
         </div>
         <div>
           <div className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>ARRIVAL</div>
-          <div className="text-slate-200">{fmtTime(leg.arrival)}</div>
+          <div className="text-slate-200">{fmtAirportTime(leg.arrival, leg.to)}</div>
           {leg.toFbo && <div className="text-slate-500 mt-0.5">{leg.toFbo}</div>}
         </div>
       </div>
@@ -455,11 +461,11 @@ function Leg({ leg, statuses }) {
       )}
 
       <div className="space-y-1 pt-2 border-t border-slate-800">
-        <StatusDot on={!!legStatuses.crewArrived?.at} label="Crew on site" ts={legStatuses.crewArrived?.at} />
-        <StatusDot on={!!legStatuses.ready?.at} label="Aircraft ready" ts={legStatuses.ready?.at} />
-        <StatusDot on={!!legStatuses.taxiing?.at} label="Taxiing" ts={legStatuses.taxiing?.at} />
-        <StatusDot on={!!legStatuses.airborne?.at || !!legStatuses.departed?.at} label="Airborne" ts={legStatuses.airborne?.at || legStatuses.departed?.at} />
-        <StatusDot on={!!legStatuses.landed?.at || !!legStatuses.arrived?.at} label="Landed" ts={legStatuses.landed?.at || legStatuses.arrived?.at} />
+        <StatusDot on={!!legStatuses.crew_onsite?.at}    label="Crew on site"    ts={legStatuses.crew_onsite?.at}    iataCode={leg.from} />
+        <StatusDot on={!!legStatuses.aircraft_ready?.at} label="Aircraft ready"  ts={legStatuses.aircraft_ready?.at} iataCode={leg.from} />
+        <StatusDot on={!!legStatuses.taxi_dep?.at}       label="Taxiing"         ts={legStatuses.taxi_dep?.at}       iataCode={leg.from} />
+        <StatusDot on={!!legStatuses.wheels_up?.at}      label="Airborne"        ts={legStatuses.wheels_up?.at}      iataCode={leg.from} />
+        <StatusDot on={!!legStatuses.landed?.at}         label="Landed"          ts={legStatuses.landed?.at}         iataCode={leg.to} />
       </div>
     </div>
   );
@@ -494,7 +500,7 @@ function PositionCard({ position }) {
         </div>
         <div>
           <div className="text-slate-500 text-[10px]">ETA</div>
-          <div className="text-slate-100">{fmtTime(position.estimatedOn)}</div>
+          <div className="text-slate-100">{fmtAirportTime(position.estimatedOn, position.destination)}</div>
         </div>
       </div>
     </div>
