@@ -87,8 +87,8 @@ function sanitizeTrip(tripId, data, legs) {
   return {
     tripId,
     tripCode: data.tripCode || null,
-    tail: data.tail || (legs[0] && legs[0].tail) || null,
-    aircraftType: data.aircraftType || null,
+    tail: (data.publicTripData?.tail) || data.tail || (legs[0] && legs[0].tail) || null,
+    aircraftType: (data.publicTripData?.aircraftType) || data.aircraftType || null,
     legs: legs.map((leg) => ({
       legNumber: leg.legNumber,
       from: leg.from || null,
@@ -196,6 +196,12 @@ async function fetchTrackLog(faFlightId) {
 // Derive legs from the trip-state doc. trip-state stores the upload result
 // with tripMeta containing per-leg info; we reconstruct a clean leg list.
 function legsFromTrip(data) {
+  // The publicTripData snapshot persisted by the share endpoint is the
+  // authoritative source — it's gathered from the client which has the full
+  // multi-leg context. The trip-state doc itself doesn't carry legs.
+  if (data.publicTripData && Array.isArray(data.publicTripData.legs) && data.publicTripData.legs.length) {
+    return data.publicTripData.legs;
+  }
   if (Array.isArray(data.legs) && data.legs.length) return data.legs;
   if (data.tripMeta && Array.isArray(data.tripMeta.legs)) return data.tripMeta.legs;
   return [];

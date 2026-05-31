@@ -62,18 +62,47 @@ function publicUrl(req, token) {
 async function ensureTokenIssued(tripId, opts = {}) {
   const ref = db().collection('trip-state').doc(tripId);
   const snap = await ref.get();
-  if (!snap.exists) throw new Error('Trip not found');
-  const data = snap.data() || {};
+  const data = snap.exists ? (snap.data() || {}) : {};
   // Generate-fresh (rotate) or reuse the existing issuedAt.
   const now = Date.now();
   const reuse = !opts.rotate && typeof data.linkTokenIssuedAt === 'number' && !data.linkRevoked;
   const issuedAt = reuse ? data.linkTokenIssuedAt : now;
+  // Validate + sanitize the publicTripData payload from the client. We accept
+  // it (with shape checks) because the trip-state doc itself doesn't carry
+  // legs — each leg is its own doc — so the broker page needs this snapshot
+  // to show the itinerary.
+  const incoming = opts.publicTripData;
+  let publicTripData = null;
+  if (incoming && typeof incoming === 'object' && Array.isArray(incoming.legs)) {
+    publicTripData = {
+      tail: String(incoming.tail || '').slice(0, 16),
+      aircraftType: incoming.aircraftType ? String(incoming.aircraftType).slice(0, 80) : null,
+      legs: incoming.legs.slice(0, 20).map((leg, i) => ({
+        tripId: leg.tripId ? String(leg.tripId).slice(0, 200) : null,
+        legNumber: Number.isFinite(leg.legNumber) ? leg.legNumber : (i + 1),
+        from: leg.from ? String(leg.from).slice(0, 8) : null,
+        to: leg.to ? String(leg.to).slice(0, 8) : null,
+        fromFbo: leg.fromFbo ? String(leg.fromFbo).slice(0, 120) : null,
+        toFbo: leg.toFbo ? String(leg.toFbo).slice(0, 120) : null,
+        departure: leg.departure || null,   // ISO string
+        arrival: leg.arrival || null,
+        category: leg.category ? String(leg.category).slice(0, 16) : 'REVENUE',
+        picName: leg.picName ? String(leg.picName).slice(0, 80) : null,
+      })),
+      updatedAt: now,
+    };
+  }
+  // Write whichever fields are needed. Always upsert so trips that have never
+  // had their state touched still get a token.
+  const patch = {};
   if (!reuse) {
-    await ref.set({
-      linkTokenIssuedAt: issuedAt,
-      linkRevoked: false,
-      linkUpdatedAt: now,
-    }, { merge: true });
+    patch.linkTokenIssuedAt = issuedAt;
+    patch.linkRevoked = false;
+    patch.linkUpdatedAt = now;
+  }
+  if (publicTripData) patch.publicTripData = publicTripData;
+  if (Object.keys(patch).length > 0) {
+    await ref.set(patch, { merge: true });
   }
   const token = signTripToken(tripId, issuedAt);
   return { token, issuedAt, reused: reuse };
@@ -137,11 +166,11 @@ export default async function handler(req, res) {
 
   try {
     if (action === 'generate') {
-      const r = await ensureTokenIssued(tripId, { rotate: false });
+      const r = await ensureTokenIssued(tripId, { rotate: false, publicTripData: body?.publicTripData });
       return res.status(200).json({ ok: true, url: publicUrl(req, r.token), token: r.token, reused: r.reused });
     }
     if (action === 'rotate') {
-      const r = await ensureTokenIssued(tripId, { rotate: true });
+      const r = await ensureTokenIssued(tripId, { rotate: true, publicTripData: body?.publicTripData });
       return res.status(200).json({ ok: true, url: publicUrl(req, r.token), token: r.token, rotated: true });
     }
     if (action === 'revoke') {
