@@ -126,6 +126,11 @@ function sanitizeTrip(tripId, data, legs) {
       // attached (or vice versa), we honor showPax strictly.
       pax: leg.showPax === true && Array.isArray(leg.pax) ? leg.pax : [],
       showPax: leg.showPax === true,
+      // Per-leg status timeline — drives the map polyline color (cyan if
+      // airborne, emerald if landed, etc.) and the status circles below
+      // each leg in the itinerary. Already validated/whitelisted upstream
+      // in trip-share.js so we can trust the field names here.
+      status: leg.status && typeof leg.status === 'object' ? leg.status : {},
     })),
     statuses: outStatuses,
     completed: data.completed === true,
