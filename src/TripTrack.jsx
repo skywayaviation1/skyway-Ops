@@ -46,6 +46,220 @@ function fmtAirportTime(iso, iataCode) {
   }
 }
 
+// Compact time-only version (no date) for the hero card + status badges
+// where the full date is redundant. Same TZ-aware fallback behavior.
+function fmtAirportTimeShort(iso, iataCode) {
+  if (!iso) return '—';
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '—';
+    const { time, tz } = formatLocalTime(d, iataCode);
+    return `${time}${tz ? ' ' + tz : ''}`;
+  } catch {
+    return '—';
+  }
+}
+
+// ====================================================================
+// HERO CARD — overall trip status at the top of the broker page
+// ====================================================================
+// Computes the single most important state and renders it large for the
+// broker to see at a glance.
+function HeroCard({ trip, position }) {
+  const legs = Array.isArray(trip?.legs) ? trip.legs : [];
+  if (legs.length === 0) return null;
+
+  // Find the "active" leg in priority order:
+  //   1. A leg with wheels_up and not yet landed → IN FLIGHT
+  //   2. A leg with any preflight status logged → ON THE GROUND
+  //   3. All legs landed → COMPLETED
+  //   4. Nothing started → SCHEDULED (first leg)
+  let mode = 'scheduled';
+  let activeLeg = legs[0];
+  const airborneLeg = legs.find((l) => l.status?.wheels_up && !l.status?.landed);
+  if (airborneLeg) {
+    mode = 'airborne';
+    activeLeg = airborneLeg;
+  } else {
+    const preflightLeg = legs.find((l) =>
+      l.status && (l.status.crew_onsite || l.status.aircraft_ready || l.status.taxi_dep
+                || l.status.catering_aboard || l.status.pax_arrived || l.status.pax_boarded)
+      && !l.status.wheels_up && !l.status.landed
+    );
+    if (preflightLeg) {
+      mode = 'preflight';
+      activeLeg = preflightLeg;
+    } else if (legs.every((l) => l.status?.landed)) {
+      mode = 'completed';
+      activeLeg = legs[legs.length - 1];
+    }
+  }
+
+  // Visual palette per mode
+  const palette = {
+    airborne:  { label: 'IN FLIGHT',    badgeBg: 'bg-cyan-500/20',    badgeBorder: 'border-cyan-400/50',   text: 'text-cyan-300',  glow: 'shadow-[0_0_24px_rgba(34,211,238,0.15)]' },
+    preflight: { label: 'ON THE GROUND',badgeBg: 'bg-amber-500/20',   badgeBorder: 'border-amber-400/50',  text: 'text-amber-200', glow: '' },
+    scheduled: { label: 'SCHEDULED',    badgeBg: 'bg-slate-700/40',   badgeBorder: 'border-slate-600/50',  text: 'text-slate-200', glow: '' },
+    completed: { label: 'COMPLETED',    badgeBg: 'bg-emerald-500/20', badgeBorder: 'border-emerald-400/50',text: 'text-emerald-300', glow: '' },
+  }[mode];
+
+  // Subtitle line varies by mode
+  let subtitle = null;
+  if (mode === 'airborne') {
+    // ETA preferred from FA position; fall back to scheduled arrival
+    const eta = position?.estimatedOn || activeLeg.arrival;
+    subtitle = (
+      <>
+        {activeLeg.from} → {activeLeg.to}
+        {eta && (
+          <span className="text-slate-400 font-normal"> · ETA {fmtAirportTimeShort(eta, activeLeg.to)}</span>
+        )}
+      </>
+    );
+  } else if (mode === 'preflight') {
+    subtitle = (
+      <>
+        Preparing for departure · {activeLeg.from} → {activeLeg.to}
+        {activeLeg.departure && (
+          <span className="text-slate-400 font-normal"> · STD {fmtAirportTimeShort(activeLeg.departure, activeLeg.from)}</span>
+        )}
+      </>
+    );
+  } else if (mode === 'completed') {
+    subtitle = <>All legs completed · {legs.length === 1 ? '1 leg' : `${legs.length} legs`}</>;
+  } else { /* scheduled */
+    subtitle = (
+      <>
+        First departure {activeLeg.from} → {activeLeg.to}
+        {activeLeg.departure && (
+          <span className="text-slate-400 font-normal"> · {fmtAirportTimeShort(activeLeg.departure, activeLeg.from)}</span>
+        )}
+      </>
+    );
+  }
+
+  return (
+    <div className={`border ${palette.badgeBorder} ${palette.badgeBg} p-4 ${palette.glow}`}>
+      <div className="flex items-center gap-2 mb-2">
+        <div className={`text-[10px] tracking-[0.2em] font-mono ${palette.text}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {palette.label}
+        </div>
+        {mode === 'airborne' && (
+          <div className="flex items-center gap-1">
+            <span className="relative flex h-1.5 w-1.5">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-cyan-400"></span>
+            </span>
+            <span className="text-[9px] text-cyan-400 font-mono tracking-wider">LIVE</span>
+          </div>
+        )}
+        {trip.tail && (
+          <div className="ml-auto text-[10px] text-slate-500 font-mono tracking-wider" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {trip.tail}{trip.aircraftType ? ` · ${trip.aircraftType}` : ''}
+          </div>
+        )}
+      </div>
+      <div className={`text-2xl ${palette.text}`} style={{ fontFamily: 'Bebas Neue, sans-serif', letterSpacing: '0.04em' }}>
+        {subtitle}
+      </div>
+      {mode === 'airborne' && position && (
+        <div className="mt-3 grid grid-cols-3 gap-3 text-xs">
+          <div>
+            <div className="text-slate-500 text-[10px] tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>ALT</div>
+            <div className="text-slate-100 font-mono">
+              {Number.isFinite(position.altitude)
+                ? (position.altitude >= 18000 ? `FL${Math.round(position.altitude/100)}` : `${Math.round(position.altitude).toLocaleString()} ft`)
+                : '—'}
+            </div>
+          </div>
+          <div>
+            <div className="text-slate-500 text-[10px] tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>SPEED</div>
+            <div className="text-slate-100 font-mono">
+              {Number.isFinite(position.groundspeed) ? `${Math.round(position.groundspeed)} kt` : '—'}
+            </div>
+          </div>
+          <div>
+            <div className="text-slate-500 text-[10px] tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>HEADING</div>
+            <div className="text-slate-100 font-mono">
+              {Number.isFinite(position.heading) ? `${Math.round(position.heading)}°` : '—'}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ====================================================================
+// LIVE badge — small "LIVE" indicator with pulsing dot for the active leg
+// ====================================================================
+function LiveBadge() {
+  return (
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 border border-cyan-400/50 bg-cyan-500/20">
+      <span className="relative flex h-1.5 w-1.5">
+        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
+        <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-cyan-400"></span>
+      </span>
+      <span className="text-[9px] text-cyan-300 font-mono tracking-wider" style={{ fontFamily: 'JetBrains Mono, monospace' }}>LIVE</span>
+    </span>
+  );
+}
+
+// ====================================================================
+// Per-leg progress bar
+// ====================================================================
+// Strategy:
+//   - Pre-departure (no wheels_up): 0% (or scheduled-time-based if we want a "departing soon" feel — keeping it simple at 0)
+//   - Airborne: linear from wheels_up → ETA (estimatedOn || scheduled arrival)
+//   - Landed: 100%
+//
+// Returns null when there's nothing useful to show (a future leg with no
+// timestamps yet) so the UI doesn't render a 0% bar everywhere.
+function LegProgress({ leg, position }) {
+  const status = leg?.status || {};
+  // Landed = full bar
+  if (status.landed) {
+    return (
+      <div className="w-full h-1 bg-slate-800 overflow-hidden">
+        <div className="h-full bg-emerald-500" style={{ width: '100%' }} />
+      </div>
+    );
+  }
+  // Airborne = compute % between wheels_up and arrival/ETA
+  if (status.wheels_up) {
+    const start = status.wheels_up.at;
+    // Prefer FA ETA if it pertains to this leg (matches the destination code),
+    // otherwise fall back to scheduled arrival.
+    let end = null;
+    if (position?.estimatedOn && position.destination
+        && String(position.destination).toUpperCase() === String(leg.to).toUpperCase()) {
+      end = new Date(position.estimatedOn).getTime();
+    }
+    if (!end && leg.arrival) end = new Date(leg.arrival).getTime();
+    if (start && end && end > start) {
+      const now = Date.now();
+      const pct = Math.max(2, Math.min(98, ((now - start) / (end - start)) * 100));
+      return (
+        <div className="w-full h-1 bg-slate-800 overflow-hidden">
+          <div className="h-full bg-cyan-400 transition-all duration-1000" style={{ width: `${pct}%` }} />
+        </div>
+      );
+    }
+    // Airborne but no ETA — show indeterminate bar
+    return (
+      <div className="w-full h-1 bg-slate-800 overflow-hidden">
+        <div className="h-full bg-cyan-400/50" style={{ width: '50%' }} />
+      </div>
+    );
+  }
+  // Nothing yet — empty bar
+  return (
+    <div className="w-full h-1 bg-slate-800 overflow-hidden">
+      <div className="h-full bg-slate-700" style={{ width: '0%' }} />
+    </div>
+  );
+}
+
 function categoryBadge(cat) {
   const c = String(cat || 'REVENUE').toUpperCase();
   if (c === 'REPO' || c === 'FERRY' || c === 'REPOSITIONING') {
@@ -391,81 +605,142 @@ function LiveMap({ position, legs }) {
   );
 }
 
-function Leg({ leg, statuses }) {
+// Per-passenger row — name, status indicator, optional check-in timestamp,
+// and a "NEW" badge for walk-ups (pax not on the original manifest).
+function PaxRow({ pax, iataCode }) {
+  const status = pax?.status || 'pending';
+  let icon;
+  let textClass;
+  if (status === 'checked_in') {
+    icon = <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />;
+    textClass = 'text-slate-100';
+  } else if (status === 'no_show') {
+    icon = <AlertCircle className="w-3.5 h-3.5 text-red-400 shrink-0" />;
+    textClass = 'text-slate-400 line-through';
+  } else if (status === 'skipped') {
+    icon = <Circle className="w-3.5 h-3.5 text-slate-600 shrink-0" />;
+    textClass = 'text-slate-500 line-through';
+  } else { // pending
+    icon = <Circle className="w-3.5 h-3.5 text-slate-600 shrink-0" />;
+    textClass = 'text-slate-300';
+  }
+  return (
+    <div className="flex items-center gap-2 text-xs py-0.5">
+      {icon}
+      <span className={textClass} style={{ fontFamily: 'DM Sans, sans-serif' }}>{pax.name}</span>
+      {pax.walkUp && (
+        <span className="inline-flex items-center px-1 py-px border border-amber-500/50 bg-amber-500/15 text-amber-300 text-[9px] tracking-wider font-mono"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          NEW
+        </span>
+      )}
+      {pax.checkedInAt && status === 'checked_in' && (
+        <span className="text-slate-500 text-[10px] ml-auto" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {fmtAirportTimeShort(pax.checkedInAt, iataCode)}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function Leg({ leg, isActive, position }) {
   const cat = categoryBadge(leg.category);
-  const legStatuses = (statuses && statuses[leg.legNumber]) || {};
+  // Status lives directly on the leg (server-attached per-leg from each
+  // trip-state doc). No need for the legacy statuses[leg.legNumber] map.
+  const legStatuses = leg.status || {};
   const hasPilots = !!(leg.pic || leg.sic);
   const paxList = Array.isArray(leg.pax) ? leg.pax : [];
+  const checkedInCount = paxList.filter((p) => p?.status === 'checked_in').length;
+  // REVENUE legs show the pax check-in milestones too (CATERING, PAX ARRIVED, PAX BOARDED)
+  const isRevenue = String(leg.category || '').toUpperCase() === 'REVENUE';
+
   return (
-    <div className="border border-slate-700 bg-slate-900/40 p-4 mb-3">
-      <div className="flex items-start justify-between mb-3 flex-wrap gap-2">
-        <div>
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              LEG {leg.legNumber}
-            </span>
-            <span className={`text-[10px] tracking-widest border px-1.5 py-0.5 ${cat.cls}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              {cat.text}
-            </span>
+    <div className={`border ${isActive ? 'border-cyan-400/60 shadow-[0_0_24px_rgba(34,211,238,0.12)]' : 'border-slate-700'} bg-slate-900/40 mb-3 overflow-hidden`}>
+      {/* Progress bar runs across the top edge of the card */}
+      <LegProgress leg={leg} position={position} />
+
+      <div className="p-4">
+        <div className="flex items-start justify-between mb-3 flex-wrap gap-2">
+          <div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                LEG {leg.legNumber}
+              </span>
+              <span className={`text-[10px] tracking-widest border px-1.5 py-0.5 ${cat.cls}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                {cat.text}
+              </span>
+              {isActive && <LiveBadge />}
+            </div>
+            <div className="mt-2 flex items-center gap-2 text-2xl" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
+              <span className="tracking-wider">{leg.from || '???'}</span>
+              <ArrowRight className="w-5 h-5 text-cyan-400" />
+              <span className="tracking-wider">{leg.to || '???'}</span>
+            </div>
           </div>
-          <div className="mt-2 flex items-center gap-2 text-lg" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
-            <span className="tracking-wider">{leg.from || '???'}</span>
-            <ArrowRight className="w-4 h-4 text-cyan-400" />
-            <span className="tracking-wider">{leg.to || '???'}</span>
+          {hasPilots && (
+            <div className="text-right">
+              <div className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>CREW</div>
+              {leg.pic && (
+                <div className="text-sm text-slate-200" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                  <span className="text-slate-500 text-[10px] mr-1">PIC</span>{leg.pic}
+                </div>
+              )}
+              {leg.sic && (
+                <div className="text-sm text-slate-200" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                  <span className="text-slate-500 text-[10px] mr-1">SIC</span>{leg.sic}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3 text-xs">
+          <div>
+            <div className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>DEPARTURE</div>
+            <div className="text-slate-200">{fmtAirportTime(leg.departure, leg.from)}</div>
+            {leg.fromFbo && <div className="text-slate-500 mt-0.5">{leg.fromFbo}</div>}
+          </div>
+          <div>
+            <div className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>ARRIVAL</div>
+            <div className="text-slate-200">{fmtAirportTime(leg.arrival, leg.to)}</div>
+            {leg.toFbo && <div className="text-slate-500 mt-0.5">{leg.toFbo}</div>}
           </div>
         </div>
-        {hasPilots && (
-          <div className="text-right">
-            <div className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>CREW</div>
-            {leg.pic && (
-              <div className="text-sm text-slate-200" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-                <span className="text-slate-500 text-[10px] mr-1">PIC</span>{leg.pic}
+
+        {/* Passenger list with per-pax check-in indicators — shown ONLY
+            when showPax=true (this broker's leg, not a repo leg). */}
+        {leg.showPax && paxList.length > 0 && (
+          <div className="mb-3 pb-3 border-b border-slate-800">
+            <div className="flex items-center gap-2 mb-1.5">
+              <div className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                PASSENGERS
               </div>
-            )}
-            {leg.sic && (
-              <div className="text-sm text-slate-200" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-                <span className="text-slate-500 text-[10px] mr-1">SIC</span>{leg.sic}
+              <div className="text-[10px] text-slate-400 font-mono" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                {checkedInCount} / {paxList.length} CHECKED IN
               </div>
-            )}
+            </div>
+            <div>
+              {paxList.map((p, i) => <PaxRow key={i} pax={p} iataCode={leg.from} />)}
+            </div>
           </div>
         )}
-      </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3 text-xs">
-        <div>
-          <div className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>DEPARTURE</div>
-          <div className="text-slate-200">{fmtAirportTime(leg.departure, leg.from)}</div>
-          {leg.fromFbo && <div className="text-slate-500 mt-0.5">{leg.fromFbo}</div>}
+        {/* Crew/aircraft milestones — same five steps for all legs. */}
+        <div className="space-y-1 pt-2 border-t border-slate-800">
+          <StatusDot on={!!legStatuses.crew_onsite?.at}    label="Crew on site"    ts={legStatuses.crew_onsite?.at}    iataCode={leg.from} />
+          <StatusDot on={!!legStatuses.aircraft_ready?.at} label="Aircraft ready"  ts={legStatuses.aircraft_ready?.at} iataCode={leg.from} />
+          {/* Revenue legs get catering + pax arrived / boarded milestones */}
+          {isRevenue && (
+            <>
+              <StatusDot on={!!legStatuses.catering_aboard?.at} label="Catering on board" ts={legStatuses.catering_aboard?.at} iataCode={leg.from} />
+              <StatusDot on={!!legStatuses.pax_arrived?.at}     label="Passengers arrived" ts={legStatuses.pax_arrived?.at}    iataCode={leg.from} />
+              <StatusDot on={!!legStatuses.pax_boarded?.at}     label="Passengers boarded" ts={legStatuses.pax_boarded?.at}    iataCode={leg.from} />
+            </>
+          )}
+          <StatusDot on={!!legStatuses.taxi_dep?.at}  label="Taxiing"  ts={legStatuses.taxi_dep?.at}  iataCode={leg.from} />
+          <StatusDot on={!!legStatuses.wheels_up?.at} label="Airborne" ts={legStatuses.wheels_up?.at} iataCode={leg.from} />
+          <StatusDot on={!!legStatuses.landed?.at}    label="Landed"   ts={legStatuses.landed?.at}    iataCode={leg.to} />
         </div>
-        <div>
-          <div className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>ARRIVAL</div>
-          <div className="text-slate-200">{fmtAirportTime(leg.arrival, leg.to)}</div>
-          {leg.toFbo && <div className="text-slate-500 mt-0.5">{leg.toFbo}</div>}
-        </div>
-      </div>
-
-      {/* Passenger names — shown ONLY when the server marked this leg as
-          showPax=true (i.e., this broker's own charter leg). Repo legs and
-          other brokers' legs receive an empty pax array regardless. */}
-      {leg.showPax && paxList.length > 0 && (
-        <div className="mb-3 pb-3 border-b border-slate-800">
-          <div className="text-[10px] tracking-widest text-slate-500 mb-1.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            PASSENGERS ({paxList.length})
-          </div>
-          <ul className="text-xs text-slate-200 space-y-0.5" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-            {paxList.map((name, i) => (
-              <li key={i}>{name}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      <div className="space-y-1 pt-2 border-t border-slate-800">
-        <StatusDot on={!!legStatuses.crew_onsite?.at}    label="Crew on site"    ts={legStatuses.crew_onsite?.at}    iataCode={leg.from} />
-        <StatusDot on={!!legStatuses.aircraft_ready?.at} label="Aircraft ready"  ts={legStatuses.aircraft_ready?.at} iataCode={leg.from} />
-        <StatusDot on={!!legStatuses.taxi_dep?.at}       label="Taxiing"         ts={legStatuses.taxi_dep?.at}       iataCode={leg.from} />
-        <StatusDot on={!!legStatuses.wheels_up?.at}      label="Airborne"        ts={legStatuses.wheels_up?.at}      iataCode={leg.from} />
-        <StatusDot on={!!legStatuses.landed?.at}         label="Landed"          ts={legStatuses.landed?.at}         iataCode={leg.to} />
       </div>
     </div>
   );
@@ -624,8 +899,12 @@ export default function TripTrackPage({ token }) {
       </header>
 
       <main className="max-w-3xl mx-auto p-4 space-y-4">
-        {/* Live position */}
-        {position && <PositionCard position={position} />}
+        {/* Hero card — overall trip state. Replaces the old "AIRBORNE NOW"
+            position strip with a cleaner top-of-page status that always
+            renders something useful (in flight / on the ground / scheduled
+            / completed) instead of going blank when the aircraft is on
+            the ground. */}
+        <HeroCard trip={trip} position={position} />
 
         {/* Map — Leaflet + OpenStreetMap via CARTO dark tiles, no API key. */}
         <LiveMap position={position} legs={trip.legs} />
@@ -633,9 +912,20 @@ export default function TripTrackPage({ token }) {
         {/* Legs */}
         <section>
           <h2 className="text-lg tracking-wider mb-2" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>ITINERARY</h2>
-          {(trip.legs || []).map((leg) => (
-            <Leg key={leg.legNumber} leg={leg} statuses={trip.statuses} />
-          ))}
+          {(trip.legs || []).map((leg) => {
+            // The "active" leg is whichever one is currently airborne (or
+            // mid-preflight if none airborne yet). Drives the LIVE badge,
+            // border glow, and progress bar emphasis.
+            const isAirborneLeg = !!(leg.status?.wheels_up && !leg.status?.landed);
+            return (
+              <Leg
+                key={leg.legNumber}
+                leg={leg}
+                isActive={isAirborneLeg}
+                position={isAirborneLeg ? position : null}
+              />
+            );
+          })}
         </section>
 
         <footer className="text-[10px] text-slate-600 text-center py-6 border-t border-slate-800" style={{ fontFamily: 'JetBrains Mono, monospace' }}>

@@ -47,26 +47,27 @@ export async function fetchPreloadedPax(tripId) {
 }
 
 /**
- * One-shot fetch combining preloadedPax + statuses for a trip.
- * Used by SHARE WITH BROKER to grab everything needed for the broker
- * snapshot in a single read per leg. Returns
- *   { preloadedPax: [], statuses: {} }
- * Empty object fields if the doc doesn't exist or fields are missing.
+ * One-shot fetch combining preloadedPax + statuses + scanned passengers
+ * for a trip. Used by SHARE WITH BROKER to grab everything needed for
+ * the broker snapshot in a single read per leg.
+ *   { preloadedPax: [], passengers: [], statuses: {} }
+ * Empty arrays/object if the doc doesn't exist or fields are missing.
  */
 export async function fetchTripStateForShare(tripId) {
-  if (!tripId) return { preloadedPax: [], statuses: {} };
+  if (!tripId) return { preloadedPax: [], passengers: [], statuses: {} };
   const safeId = sanitizeKey(tripId);
   try {
     const snap = await getDoc(doc(db, 'trip-state', safeId));
-    if (!snap.exists()) return { preloadedPax: [], statuses: {} };
+    if (!snap.exists()) return { preloadedPax: [], passengers: [], statuses: {} };
     const data = snap.data();
     return {
       preloadedPax: Array.isArray(data.preloadedPax) ? data.preloadedPax : [],
+      passengers: Array.isArray(data.passengers) ? data.passengers : [],
       statuses: (data.statuses && typeof data.statuses === 'object') ? data.statuses : {},
     };
   } catch (err) {
     console.error('[firebase-data] fetchTripStateForShare failed:', tripId, err);
-    return { preloadedPax: [], statuses: {} };
+    return { preloadedPax: [], passengers: [], statuses: {} };
   }
 }
 

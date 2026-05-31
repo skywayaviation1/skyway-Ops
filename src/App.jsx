@@ -6851,14 +6851,69 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
 
     // Renumber legs sequentially as they appear in the final included list.
     const legs = included.map(({ t, showPax }, i) => {
-      const state = stateByUid[t.uid] || { preloadedPax: [], statuses: {} };
-      const pax = (state.preloadedPax || []).map((p) => {
-        // For pax display, name only — no DOB, no weight, no gender.
+      const state = stateByUid[t.uid] || { preloadedPax: [], passengers: [], statuses: {} };
+
+      // Build per-pax records that the broker page can render with
+      // individual check-in indicators. Join logic:
+      //   - For each preloadedPax (on the original manifest), look for a
+      //     scanned passenger with matching preloadedRefId. If found,
+      //     pull verifiedAt / checkInStatus from that record.
+      //   - For each scanned passenger with no preloadedRefId, emit a
+      //     WALK-UP record (passenger added at the gate, not on manifest).
+      //
+      // The broker payload includes JUST what's needed to render: name,
+      // status, and the check-in timestamp. No DOB, weight, gender, GPS,
+      // or audit identifier — those are PII the broker doesn't need.
+      const scanned = Array.isArray(state.passengers) ? state.passengers : [];
+      const scannedByRef = new Map();
+      const walkUps = [];
+      for (const sp of scanned) {
+        if (sp.preloadedRefId) {
+          scannedByRef.set(sp.preloadedRefId, sp);
+        } else {
+          walkUps.push(sp);
+        }
+      }
+      const paxRecords = [];
+      // Preloaded pax first (manifest order)
+      for (const p of (state.preloadedPax || [])) {
         const first = String(p?.firstName || '').trim();
         const last = String(p?.lastName || '').trim();
-        const full = [first, last].filter(Boolean).join(' ');
-        return full || null;
-      }).filter(Boolean);
+        const name = [first, last].filter(Boolean).join(' ');
+        if (!name) continue;
+        const scan = p.id ? scannedByRef.get(p.id) : null;
+        // Status mapping for the broker:
+        //   matched / manual_override / child_verified → 'checked_in'
+        //   skipped                                    → 'skipped'
+        //   anything else                              → 'pending'
+        const cs = p.checkInStatus || '';
+        let status = 'pending';
+        if (cs === 'matched' || cs === 'manual_override' || cs === 'child_verified') status = 'checked_in';
+        else if (cs === 'skipped') status = 'skipped';
+        // Pax marked no-show at boarding time get a distinct status so the
+        // broker can see they weren't on the actual flight.
+        if (scan?.noShow) status = 'no_show';
+        paxRecords.push({
+          name,
+          status,
+          checkedInAt: scan?.verifiedAt || null,
+          walkUp: false,
+        });
+      }
+      // Walk-ups appended at the end with a flag so the renderer can
+      // badge them.
+      for (const sp of walkUps) {
+        const first = String(sp?.firstName || '').trim();
+        const last = String(sp?.lastName || '').trim();
+        const name = [first, last].filter(Boolean).join(' ');
+        if (!name) continue;
+        paxRecords.push({
+          name,
+          status: sp.noShow ? 'no_show' : 'checked_in',
+          checkedInAt: sp.verifiedAt || sp.scannedAt || null,
+          walkUp: true,
+        });
+      }
       // Each trip-state doc represents ONE leg, so `statuses` is a flat
       // map of { step_id: { timestamp, coords, author, notified } }.
       // Whitelist the steps we want to expose to the broker and reduce
@@ -6891,7 +6946,7 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
         picName: t.info?.pic || null,
         sicName: t.info?.sic || null,
         showPax,
-        pax: showPax ? pax : [],
+        pax: showPax ? paxRecords : [],
         status: cleanStatus,
       };
     });
