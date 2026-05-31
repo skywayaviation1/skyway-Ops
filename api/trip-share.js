@@ -95,6 +95,18 @@ async function ensureTokenIssued(tripId, opts = {}) {
         pax: Array.isArray(leg.pax)
           ? leg.pax.slice(0, 30).map((p) => String(p || '').slice(0, 80)).filter(Boolean)
           : [],
+        // Per-leg status timeline. Whitelist the known keys + only the
+        // numeric `at` timestamp per entry. Reject anything else.
+        status: leg.status && typeof leg.status === 'object'
+          ? ['crewArrived', 'ready', 'taxiing', 'airborne', 'departed', 'landed', 'arrived']
+              .reduce((acc, key) => {
+                const v = leg.status[key];
+                if (v && typeof v === 'object' && typeof v.at === 'number') {
+                  acc[key] = { at: v.at };
+                }
+                return acc;
+              }, {})
+          : {},
       })),
       updatedAt: now,
     };

@@ -84,6 +84,27 @@ function sanitizeTrip(tripId, data, legs) {
       };
     }
   }
+  // If publicTripData has per-leg status, that's the AUTHORITATIVE source —
+  // each leg's trip-state doc contributed its own status timeline at share
+  // time. Rebuild a statuses map keyed by the broker-facing legNumber.
+  // Fall back to the anchor's cleanStatuses (legacy single-doc behavior).
+  let outStatuses = cleanStatuses;
+  if (data.publicTripData && Array.isArray(data.publicTripData.legs)) {
+    const byLeg = {};
+    data.publicTripData.legs.forEach((leg) => {
+      if (!leg || !Number.isFinite(leg.legNumber)) return;
+      const s = leg.status && typeof leg.status === 'object' ? leg.status : {};
+      const clean = {};
+      for (const key of ['crewArrived', 'ready', 'taxiing', 'airborne', 'departed', 'landed', 'arrived']) {
+        const v = s[key];
+        if (v && typeof v === 'object' && typeof v.at === 'number') {
+          clean[key] = { at: v.at, completed: true };
+        }
+      }
+      byLeg[leg.legNumber] = clean;
+    });
+    outStatuses = byLeg;
+  }
   return {
     tripId,
     tripCode: data.tripCode || null,
@@ -106,7 +127,7 @@ function sanitizeTrip(tripId, data, legs) {
       pax: leg.showPax === true && Array.isArray(leg.pax) ? leg.pax : [],
       showPax: leg.showPax === true,
     })),
-    statuses: cleanStatuses,
+    statuses: outStatuses,
     completed: data.completed === true,
     completedAt: data.completedAt || null,
   };
@@ -135,45 +156,37 @@ function lastLegLandedAt(statuses) {
 // need a Firebase idToken.
 async function fetchPosition(tail) {
   if (!tail) return null;
-  const internalSecret = process.env.INTERNAL_API_SECRET;
-  if (!internalSecret) return null; // can't safely call without secret
-  const proto = 'https';
-  // VERCEL_URL is the deployment URL; VERCEL_PROJECT_PRODUCTION_URL is the
-  // canonical prod domain when set.
-  const host = process.env.VERCEL_PROJECT_PRODUCTION_URL ||
-               process.env.VERCEL_URL ||
-               'skyway-ops.vercel.app';
   try {
-    const r = await fetch(`${proto}://${host}/api/flightaware-positions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-internal-secret': internalSecret,
-      },
-      body: JSON.stringify({ idents: [tail] }),
-    });
-    if (!r.ok) return null;
-    const data = await r.json();
-    const pos = (data.positions || [])[0];
-    if (!pos) return null;
-    // Whitelist what we return to the broker.
+    // Read from the same collection the FlightBoard subscribes to. The
+    // FA cron at /api/flightaware-cron-poll.js writes here every 2 minutes
+    // for every fleet tail. Reading from Firestore is faster, more reliable,
+    // and free of the self-HTTP-call awkwardness of the previous version.
+    const safeTail = String(tail).toUpperCase().replace(/[^A-Z0-9-]/g, '');
+    if (!safeTail) return null;
+    const snap = await db().collection('flightaware-state').doc(safeTail).get();
+    if (!snap.exists) return null;
+    const pos = snap.data() || {};
+    // Whitelist what we return to the broker. The Firestore doc may have
+    // many fields (polledAt, raw FA payload bits, etc.); brokers only need
+    // these.
     return {
-      ident: pos.ident,
+      ident: pos.ident || safeTail,
       airborne: pos.airborne === true,
-      latitude: pos.latitude ?? null,
-      longitude: pos.longitude ?? null,
-      heading: pos.heading ?? null,
-      altitude: pos.altitude ?? null,
-      groundspeed: pos.groundspeed ?? null,
-      origin: pos.origin ?? null,
-      destination: pos.destination ?? null,
-      destinationCity: pos.destinationCity ?? null,
-      estimatedOn: pos.estimatedOn ?? null,
-      actualOff: pos.actualOff ?? null,
-      faFlightId: pos.faFlightId ?? null,
+      latitude: Number.isFinite(pos.latitude) ? pos.latitude : null,
+      longitude: Number.isFinite(pos.longitude) ? pos.longitude : null,
+      heading: Number.isFinite(pos.heading) ? pos.heading : null,
+      altitude: Number.isFinite(pos.altitude) ? pos.altitude : null,
+      groundspeed: Number.isFinite(pos.groundspeed) ? pos.groundspeed : null,
+      origin: pos.origin || null,
+      destination: pos.destination || null,
+      destinationCity: pos.destinationCity || null,
+      estimatedOn: pos.estimatedOn || null,
+      actualOff: pos.actualOff || null,
+      faFlightId: pos.faFlightId || null,
+      polledAt: pos.polledAt || null,
     };
   } catch (e) {
-    console.warn('[trip-public] position fetch failed:', e.message);
+    console.error('[trip-public] fetchPosition failed:', e?.message || e);
     return null;
   }
 }
