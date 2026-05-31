@@ -47,6 +47,30 @@ export async function fetchPreloadedPax(tripId) {
 }
 
 /**
+ * One-shot fetch combining preloadedPax + statuses for a trip.
+ * Used by SHARE WITH BROKER to grab everything needed for the broker
+ * snapshot in a single read per leg. Returns
+ *   { preloadedPax: [], statuses: {} }
+ * Empty object fields if the doc doesn't exist or fields are missing.
+ */
+export async function fetchTripStateForShare(tripId) {
+  if (!tripId) return { preloadedPax: [], statuses: {} };
+  const safeId = sanitizeKey(tripId);
+  try {
+    const snap = await getDoc(doc(db, 'trip-state', safeId));
+    if (!snap.exists()) return { preloadedPax: [], statuses: {} };
+    const data = snap.data();
+    return {
+      preloadedPax: Array.isArray(data.preloadedPax) ? data.preloadedPax : [],
+      statuses: (data.statuses && typeof data.statuses === 'object') ? data.statuses : {},
+    };
+  } catch (err) {
+    console.error('[firebase-data] fetchTripStateForShare failed:', tripId, err);
+    return { preloadedPax: [], statuses: {} };
+  }
+}
+
+/**
  * Subscribe to a trip's state. Calls onUpdate({statuses, passengers, brokerEmail, autoNotify})
  * whenever ANY user changes ANY field of this trip's state.
  * Returns unsubscribe function.

@@ -6718,8 +6718,22 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
     const WINDOW = 24 * 3600 * 1000;
 
     // Candidate set: same tail, within ±24h, sorted chronologically.
+    // CRITICAL: skip non-flight events (crew holds, MX blocks, training).
+    // The iCal parser sometimes inserts HOLD blocks between flights (e.g.
+    // "crew at CHO 9am-5pm" between two legs); these appear as same-airport
+    // legs (CHO→CHO) and should never reach the broker view.
     const candidates = (allTrips || [])
       .filter((t) => t && t.info && (t.info.tail || '').toUpperCase() === tail)
+      .filter((t) => {
+        // isFlight === false (or category in HOLD/MX/TRAINING) means this is
+        // a scheduling block, not a real leg the broker should see.
+        if (t.info.isFlight === false) return false;
+        const cat = String(t.info.legType || t.info.category || '').toUpperCase();
+        if (['HOLD', 'MX', 'TRAINING'].includes(cat)) return false;
+        // Defensive: same-airport "flight" with no real route is a hold too
+        if (t.info.from && t.info.to && t.info.from === t.info.to) return false;
+        return true;
+      })
       .filter((t) => {
         if (!t.start) return false;
         const ms = new Date(t.start).getTime();
@@ -6736,20 +6750,21 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
       return true;
     }).sort((a, b) => new Date(a.start || 0).getTime() - new Date(b.start || 0).getTime());
 
-    // Fetch preloadedPax for every candidate (so we can match against
-    // anchor pax). Done in parallel.
-    let fetchPreloadedPax;
+    // Fetch preloadedPax + statuses for every candidate (so we can match
+    // pax against anchor AND show per-leg status timelines on the broker
+    // page). Done in parallel.
+    let fetchTripStateForShare;
     try {
-      ({ fetchPreloadedPax } = await import('./firebase-data.js'));
+      ({ fetchTripStateForShare } = await import('./firebase-data.js'));
     } catch (e) {
-      console.warn('[share] could not load fetchPreloadedPax — pax matching disabled');
+      console.warn('[share] could not load fetchTripStateForShare — pax + status disabled');
     }
-    const paxByUid = {};
-    if (fetchPreloadedPax) {
+    const stateByUid = {};
+    if (fetchTripStateForShare) {
       await Promise.all(
         ordered.map(async (t) => {
-          try { paxByUid[t.uid] = await fetchPreloadedPax(t.uid) || []; }
-          catch (_) { paxByUid[t.uid] = []; }
+          try { stateByUid[t.uid] = await fetchTripStateForShare(t.uid); }
+          catch (_) { stateByUid[t.uid] = { preloadedPax: [], statuses: {} }; }
         })
       );
     }
@@ -6757,7 +6772,7 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
     // Anchor identifiers.
     const anchorIdx = ordered.findIndex((t) => t.uid === trip.uid);
     const anchorBroker = String(trip.info?.broker || '').trim().toLowerCase();
-    const anchorPax = (paxByUid[trip.uid] || []).map(paxKey).filter(Boolean);
+    const anchorPax = ((stateByUid[trip.uid] || {}).preloadedPax || []).map(paxKey).filter(Boolean);
     const anchorPaxSet = new Set(anchorPax);
 
     // Decide for each candidate whether to INCLUDE it, and whether to
@@ -6776,7 +6791,7 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
       return cat === 'REPO' || cat === 'FERRY';
     }
     function paxOverlap(t) {
-      const list = (paxByUid[t.uid] || []).map(paxKey).filter(Boolean);
+      const list = ((stateByUid[t.uid] || {}).preloadedPax || []).map(paxKey).filter(Boolean);
       return list.some((k) => anchorPaxSet.has(k));
     }
     function sameBroker(t) {
@@ -6811,13 +6826,50 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
 
     // Renumber legs sequentially as they appear in the final included list.
     const legs = included.map(({ t, showPax }, i) => {
-      const pax = (paxByUid[t.uid] || []).map((p) => {
+      const state = stateByUid[t.uid] || { preloadedPax: [], statuses: {} };
+      const pax = (state.preloadedPax || []).map((p) => {
         // For pax display, name only — no DOB, no weight, no gender.
         const first = String(p?.firstName || '').trim();
         const last = String(p?.lastName || '').trim();
         const full = [first, last].filter(Boolean).join(' ');
         return full || null;
       }).filter(Boolean);
+      // Statuses on the trip-state doc are keyed by the SOURCE leg number
+      // (e.g. statuses[1] for the leg's original numbering). On the broker
+      // page we renumber legs sequentially, so we pull whatever leg-1 status
+      // exists for THIS trip-state doc (each trip-state doc corresponds to
+      // one leg, so statuses are usually under key "1").
+      // For safety, if the doc has multiple leg keys, we pick the first
+      // non-empty one rather than guess.
+      let legStatus = {};
+      const statusBag = state.statuses || {};
+      // Most common shape: { "1": { taxiing: {at:...}, airborne: {at:...} } }
+      if (statusBag && typeof statusBag === 'object') {
+        // Try the obvious key first
+        if (statusBag['1'] && Object.keys(statusBag['1']).length > 0) {
+          legStatus = statusBag['1'];
+        } else {
+          // Pick the first non-empty status bag
+          for (const k of Object.keys(statusBag)) {
+            const v = statusBag[k];
+            if (v && typeof v === 'object' && Object.keys(v).length > 0) {
+              legStatus = v;
+              break;
+            }
+          }
+        }
+      }
+      // Sanitize each timestamp field — keep only `at` (number ms). Strip
+      // any byUid / byName info that might be there; broker doesn't need
+      // to know which crew member tapped the button.
+      const cleanStatus = {};
+      for (const key of ['crewArrived', 'ready', 'taxiing', 'airborne', 'departed', 'landed', 'arrived']) {
+        const v = legStatus[key];
+        if (v && typeof v === 'object' && typeof v.at === 'number') {
+          cleanStatus[key] = { at: v.at };
+        }
+      }
+
       return {
         tripId: t.uid,
         legNumber: i + 1,
@@ -6832,6 +6884,7 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
         sicName: t.info?.sic || null,
         showPax,
         pax: showPax ? pax : [],
+        status: cleanStatus,
       };
     });
 
