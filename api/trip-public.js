@@ -196,22 +196,34 @@ async function fetchPosition(tail) {
   }
 }
 
-// On-demand post-flight track log for a given leg's FA flight id.
-async function fetchTrackLog(faFlightId) {
-  if (!faFlightId) return null;
+// On-demand actual-flight-path lookup for the airborne leg. Uses the
+// ident-based track-log endpoint which auto-picks the current/most-recent
+// flight for the tail — exactly what we want for the live leg. For
+// LANDED legs the same endpoint returns the most recent completed flight,
+// which is usually still the right leg if the broker opens the page
+// shortly after landing; for older completed legs the result may not
+// match. Future improvement: persist faFlightId per leg at upload time
+// and look up by flightId for historical accuracy.
+async function fetchActualPath(tail) {
+  if (!tail) return null;
   const internalSecret = process.env.INTERNAL_API_SECRET;
   if (!internalSecret) return null;
   const host = process.env.VERCEL_PROJECT_PRODUCTION_URL ||
                process.env.VERCEL_URL ||
                'skyway-ops.vercel.app';
   try {
-    const r = await fetch(`https://${host}/api/flightaware-track-log?faFlightId=${encodeURIComponent(faFlightId)}`, {
-      method: 'GET',
-      headers: { 'x-internal-secret': internalSecret },
-    });
+    const r = await fetch(
+      `https://${host}/api/flightaware-track-log?ident=${encodeURIComponent(tail)}`,
+      { method: 'GET', headers: { 'x-internal-secret': internalSecret } }
+    );
     if (!r.ok) return null;
     const data = await r.json();
-    return Array.isArray(data.positions) ? data.positions : null;
+    const pts = Array.isArray(data.points) ? data.points : [];
+    // Reduce to just [lat, lon] tuples in chronological order. Drop any
+    // points missing coordinates (FA sometimes emits placeholder records).
+    return pts
+      .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon))
+      .map((p) => [p.lat, p.lon]);
   } catch (e) {
     return null;
   }
@@ -255,21 +267,22 @@ export default async function handler(req, res) {
   const legs = legsFromTrip(data);
   const sanitized = sanitizeTrip(tripId, data, legs);
 
-  if (action === 'track') {
-    // Per-leg post-flight track log lookup.
-    const legNumber = parseInt(req.query.legNumber || '1', 10);
-    const leg = legs.find((l) => l.legNumber === legNumber);
-    if (!leg) return res.status(404).json({ ok: false, reason: 'leg not found' });
-    const log = await fetchTrackLog(leg.faFlightId);
-    return res.status(200).json({ ok: true, legNumber, track: log });
-  }
-
-  // Default: live position + sanitized trip
+  // Default: live position + actual flight path + sanitized trip.
   const position = await fetchPosition(sanitized.tail);
+  // Fetch the actual flown breadcrumb only when there's an airborne leg
+  // (otherwise the call wastes a FlightAware AeroAPI billing unit for a
+  // straight line on a completed flight). The endpoint is cached for 60s
+  // server-side so repeated polls don't burn the quota.
+  let trail = null;
+  const hasAirborneLeg = sanitized.legs.some((l) => l.status?.wheels_up && !l.status?.landed);
+  if (hasAirborneLeg && sanitized.tail) {
+    trail = await fetchActualPath(sanitized.tail);
+  }
   return res.status(200).json({
     ok: true,
     trip: sanitized,
     position,
+    trail,
     // DIAGNOSTIC: tells us what's actually in the trip-state doc.
     // Remove once the issue is identified.
     _diag: {
@@ -277,6 +290,7 @@ export default async function handler(req, res) {
       hasPublicTripData: !!data.publicTripData,
       publicTripDataLegs: Array.isArray(data.publicTripData?.legs) ? data.publicTripData.legs.length : 0,
       publicTripDataTail: data.publicTripData?.tail || null,
+      trailPoints: Array.isArray(trail) ? trail.length : 0,
     },
   });
 }
