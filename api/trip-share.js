@@ -98,7 +98,7 @@ async function ensureTokenIssued(tripId, opts = {}) {
         // Per-leg status timeline. Whitelist the known keys + only the
         // numeric `at` timestamp per entry. Reject anything else.
         status: leg.status && typeof leg.status === 'object'
-          ? ['crewArrived', 'ready', 'taxiing', 'airborne', 'departed', 'landed', 'arrived']
+          ? ['crew_onsite', 'aircraft_ready', 'catering_aboard', 'pax_arrived', 'pax_boarded', 'taxi_dep', 'wheels_up', 'landed']
               .reduce((acc, key) => {
                 const v = leg.status[key];
                 if (v && typeof v === 'object' && typeof v.at === 'number') {

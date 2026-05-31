@@ -95,7 +95,7 @@ function sanitizeTrip(tripId, data, legs) {
       if (!leg || !Number.isFinite(leg.legNumber)) return;
       const s = leg.status && typeof leg.status === 'object' ? leg.status : {};
       const clean = {};
-      for (const key of ['crewArrived', 'ready', 'taxiing', 'airborne', 'departed', 'landed', 'arrived']) {
+      for (const key of ['crew_onsite', 'aircraft_ready', 'catering_aboard', 'pax_arrived', 'pax_boarded', 'taxi_dep', 'wheels_up', 'landed']) {
         const v = s[key];
         if (v && typeof v === 'object' && typeof v.at === 'number') {
           clean[key] = { at: v.at, completed: true };
