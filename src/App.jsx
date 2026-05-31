@@ -6664,6 +6664,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       {shareDialogOpen && (
         <ShareTripWithBrokerDialog
           trip={trip}
+          allTrips={allTrips}
           defaultEmail={brokerEmail}
           currentUser={currentUser}
           onClose={() => setShareDialogOpen(false)}
@@ -6677,7 +6678,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
 // SHARE TRIP WITH BROKER — modal that generates a public token
 // for a trip and optionally emails it. Backed by /api/trip-share.
 // ============================================================
-function ShareTripWithBrokerDialog({ trip, defaultEmail, currentUser, onClose }) {
+function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, onClose }) {
   const [url, setUrl] = useState('');
   const [tokenIssuedAt, setTokenIssuedAt] = useState(null);
   const [revoked, setRevoked] = useState(false);
@@ -6688,6 +6689,52 @@ function ShareTripWithBrokerDialog({ trip, defaultEmail, currentUser, onClose })
   const [err, setErr] = useState('');
   const [info, setInfo] = useState(''); // success/info banner
   const [copied, setCopied] = useState(false);
+
+  // Compute the public trip data we want to ship to the server. The trip-state
+  // doc itself doesn't store legs — each leg is its own doc — so we have to
+  // gather sibling legs from allTrips by matching tail + same calendar day.
+  // This is the data the BROKER will see; it's a sanitized snapshot.
+  function buildPublicTripData() {
+    const tail = (trip.info?.tail || '').toUpperCase();
+    if (!tail) return null;
+    // Match siblings: same tail + within ±24h of this trip's start.
+    const tripStartMs = trip.start ? new Date(trip.start).getTime() : Date.now();
+    const WINDOW = 24 * 3600 * 1000;
+    const siblings = (allTrips || [])
+      .filter((t) => t && t.info && (t.info.tail || '').toUpperCase() === tail)
+      .filter((t) => {
+        if (!t.start) return false;
+        const ms = new Date(t.start).getTime();
+        return Number.isFinite(ms) && Math.abs(ms - tripStartMs) <= WINDOW;
+      })
+      .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+    // Make sure THE current trip is included even if filter dropped it (e.g.
+    // no .start somehow). Dedupe by uid.
+    const seen = new Set();
+    const ordered = [trip, ...siblings].filter((t) => {
+      if (!t || !t.uid) return false;
+      if (seen.has(t.uid)) return false;
+      seen.add(t.uid);
+      return true;
+    }).sort((a, b) => new Date(a.start || 0).getTime() - new Date(b.start || 0).getTime());
+    const legs = ordered.map((t, i) => ({
+      tripId: t.uid,
+      legNumber: i + 1,
+      from: t.info?.from || null,
+      to: t.info?.to || null,
+      fromFbo: t.info?.fromFbo || null,
+      toFbo: t.info?.toFbo || null,
+      departure: t.start || null,
+      arrival: t.end || null,
+      category: t.info?.legType || t.info?.category || 'REVENUE',
+      picName: t.info?.pic || null,
+    }));
+    return {
+      tail,
+      aircraftType: trip.info?.aircraftType || trip.info?.tripType || null,
+      legs,
+    };
+  }
 
   // Helper: call the authenticated /api/trip-share endpoint. Always sends
   // the current Firebase ID token so the server can authorize the action.
@@ -6714,13 +6761,15 @@ function ShareTripWithBrokerDialog({ trip, defaultEmail, currentUser, onClose })
   }
 
   // On open: generate (or fetch) the current token + URL so ops can copy
-  // immediately without an extra click. If a link already exists, this
-  // returns the same one (server-side: generate is idempotent on first call).
+  // immediately without an extra click. We also POST the freshly-computed
+  // publicTripData so the broker page has real legs to show — the trip-state
+  // doc itself doesn't carry leg data and the broker endpoint can't infer it.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const data = await callShare('generate');
+        const publicTripData = buildPublicTripData();
+        const data = await callShare('generate', { publicTripData });
         if (cancelled) return;
         setUrl(data.url || '');
         setTokenIssuedAt(data.issuedAt || null);
@@ -6766,7 +6815,8 @@ function ShareTripWithBrokerDialog({ trip, defaultEmail, currentUser, onClose })
   const handleRotate = async () => {
     if (!window.confirm('Rotate the link? Any tracking links you previously sent will stop working. A new URL will be generated.')) return;
     try {
-      const data = await callShare('rotate');
+      const publicTripData = buildPublicTripData();
+      const data = await callShare('rotate', { publicTripData });
       setUrl(data.url || '');
       setTokenIssuedAt(data.issuedAt || null);
       setRevoked(false);
