@@ -92,8 +92,20 @@ async function ensureTokenIssued(tripId, opts = {}) {
         // Pax visibility flag (per privacy spec). Even if pax array is
         // present, the broker page must honor showPax — defensive defense.
         showPax: leg.showPax === true,
+        // Per-pax records: each entry is an object the broker page can
+        // render with individual check-in indicators. Whitelist the four
+        // fields we care about; reject anything else (covers PII leakage
+        // if a future caller mistakenly forwards DOB/weight/etc).
         pax: Array.isArray(leg.pax)
-          ? leg.pax.slice(0, 30).map((p) => String(p || '').slice(0, 80)).filter(Boolean)
+          ? leg.pax.slice(0, 30).map((p) => {
+              if (!p || typeof p !== 'object') return null;
+              const name = String(p.name || '').slice(0, 80).trim();
+              if (!name) return null;
+              const status = ['checked_in', 'pending', 'skipped', 'no_show'].includes(p.status)
+                ? p.status : 'pending';
+              const checkedInAt = Number.isFinite(p.checkedInAt) ? p.checkedInAt : null;
+              return { name, status, checkedInAt, walkUp: p.walkUp === true };
+            }).filter(Boolean)
           : [],
         // Per-leg status timeline. Whitelist the known keys + only the
         // numeric `at` timestamp per entry. Reject anything else.
