@@ -23392,11 +23392,75 @@ export default function CharterOps() {
       setSyncStatus({ status: 'ok', message: `Loaded ${newTrips.length} trips` });
       log('success', `Parsed ${events.length} events → ${newTrips.length} trips`);
       setShowSettings(false);
+
+      // Auto-write tripMeta for active trips (next 48h, plus last 12h
+      // for trips that may have already departed). Without tripMeta, the
+      // FlightAware cron-poll matcher can't find the trip-state doc and
+      // wheels_up / landed status updates silently fail to auto-fire.
+      // Previously this required ops to either open each leg in the app
+      // OR an admin to manually click the BACKFILL TRIP META button.
+      // Fire-and-forget — don't block the user on this.
+      autoBackfillActiveTripMeta(newTrips).catch((e) => {
+        console.warn('[ical] tripMeta auto-backfill failed:', e?.message || e);
+      });
     } catch (e) {
       setSyncStatus({ status: 'error', message: e.message });
       log('error', `Parse error: ${e.message}`);
     }
   };
+
+  /**
+   * Fire the tripMeta backfill for trips in the active window (last 12h
+   * through next 48h). Idempotent: if a trip-state doc already has the
+   * correct tripMeta, the backfill endpoint shallow-merges, no harm done.
+   * Requires the user to be signed in (the backfill endpoint validates
+   * idToken). Skips silently if there's no auth.
+   */
+  async function autoBackfillActiveTripMeta(allTripsLocal) {
+    try {
+      const { auth } = await import('./firebase.js');
+      const u = auth.currentUser;
+      if (!u) return;
+      const idToken = await u.getIdToken();
+      const now = Date.now();
+      const WINDOW_PAST = 12 * 60 * 60 * 1000;     // 12h ago
+      const WINDOW_FUTURE = 48 * 60 * 60 * 1000;   // 48h ahead
+      const trips = (allTripsLocal || [])
+        .filter((t) => t?.uid && t?.info?.tail && t?.info?.from && t?.start)
+        .filter((t) => {
+          // Only sync trips in the active window. Don't waste writes on
+          // last week's history or trips two weeks out.
+          const ms = t.start instanceof Date ? t.start.getTime() : new Date(t.start).getTime();
+          return Number.isFinite(ms) && ms > (now - WINDOW_PAST) && ms < (now + WINDOW_FUTURE);
+        })
+        // Only flight legs, not crew-hold blocks
+        .filter((t) => t.info.isFlight !== false)
+        .map((t) => ({
+          uid: t.uid,
+          tail: t.info.tail,
+          from: t.info.from,
+          to: t.info.to || '',
+          start: t.start instanceof Date ? t.start.toISOString() : (t.start || null),
+          legType: t.info.legType || 'REVENUE',
+        }));
+      if (trips.length === 0) return;
+      const r = await fetch('/api/flightaware-backfill-tripmeta', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken, trips }),
+      });
+      if (!r.ok) {
+        console.warn('[ical] tripMeta auto-backfill HTTP', r.status);
+        return;
+      }
+      const data = await r.json().catch(() => ({}));
+      if (data.created > 0 || data.updated > 0) {
+        log('info', `Auto-synced tripMeta: ${data.updated || 0} updated, ${data.created || 0} created`);
+      }
+    } catch (err) {
+      console.warn('[ical] tripMeta auto-backfill exception:', err?.message || err);
+    }
+  }
 
   // Multi-proxy sync with full diagnostic logging
   const loadFromUrl = async (url) => {
