@@ -242,5 +242,17 @@ export default async function handler(req, res) {
 
   // Default: live position + sanitized trip
   const position = await fetchPosition(sanitized.tail);
-  return res.status(200).json({ ok: true, trip: sanitized, position });
+  return res.status(200).json({
+    ok: true,
+    trip: sanitized,
+    position,
+    // DIAGNOSTIC: tells us what's actually in the trip-state doc.
+    // Remove once the issue is identified.
+    _diag: {
+      docFields: Object.keys(data || {}).sort(),
+      hasPublicTripData: !!data.publicTripData,
+      publicTripDataLegs: Array.isArray(data.publicTripData?.legs) ? data.publicTripData.legs.length : 0,
+      publicTripDataTail: data.publicTripData?.tail || null,
+    },
+  });
 }

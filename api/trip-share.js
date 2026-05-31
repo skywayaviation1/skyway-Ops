@@ -105,7 +105,7 @@ async function ensureTokenIssued(tripId, opts = {}) {
     await ref.set(patch, { merge: true });
   }
   const token = signTripToken(tripId, issuedAt);
-  return { token, issuedAt, reused: reuse };
+  return { token, issuedAt, reused: reuse, persistedPublicTripData: !!publicTripData };
 }
 
 async function sendBrokerEmail(req, { to, url, tripCode, tail, message, fromOpsName }) {
@@ -157,6 +157,18 @@ export default async function handler(req, res) {
     try { body = JSON.parse(body); } catch { return res.status(400).json({ ok: false, error: 'invalid JSON' }); }
   }
 
+  // DIAGNOSTIC: log what came in so we can verify publicTripData is being
+  // sent by the client. Safe to leave in — body is small, no PII.
+  const ptd = body?.publicTripData;
+  console.log('[trip-share] incoming', {
+    action: body?.action,
+    tripId: body?.tripId,
+    hasPublicTripData: !!ptd,
+    ptdHasLegs: Array.isArray(ptd?.legs),
+    ptdLegCount: Array.isArray(ptd?.legs) ? ptd.legs.length : 0,
+    ptdTail: ptd?.tail || null,
+  });
+
   const auth = await authorize(req, body);
   if (!auth.ok) return res.status(401).json({ ok: false, error: 'Unauthorized' });
 
@@ -167,11 +179,31 @@ export default async function handler(req, res) {
   try {
     if (action === 'generate') {
       const r = await ensureTokenIssued(tripId, { rotate: false, publicTripData: body?.publicTripData });
-      return res.status(200).json({ ok: true, url: publicUrl(req, r.token), token: r.token, reused: r.reused });
+      return res.status(200).json({
+        ok: true,
+        url: publicUrl(req, r.token),
+        token: r.token,
+        reused: r.reused,
+        // DIAGNOSTIC: confirms what the server received + persisted
+        _diag: {
+          received_publicTripData: !!body?.publicTripData,
+          received_legCount: Array.isArray(body?.publicTripData?.legs) ? body.publicTripData.legs.length : 0,
+          received_tail: body?.publicTripData?.tail || null,
+          persisted: r.persistedPublicTripData === true,
+        },
+      });
     }
     if (action === 'rotate') {
       const r = await ensureTokenIssued(tripId, { rotate: true, publicTripData: body?.publicTripData });
-      return res.status(200).json({ ok: true, url: publicUrl(req, r.token), token: r.token, rotated: true });
+      return res.status(200).json({
+        ok: true, url: publicUrl(req, r.token), token: r.token, rotated: true,
+        _diag: {
+          received_publicTripData: !!body?.publicTripData,
+          received_legCount: Array.isArray(body?.publicTripData?.legs) ? body.publicTripData.legs.length : 0,
+          received_tail: body?.publicTripData?.tail || null,
+          persisted: r.persistedPublicTripData === true,
+        },
+      });
     }
     if (action === 'revoke') {
       await db().collection('trip-state').doc(tripId).set({
