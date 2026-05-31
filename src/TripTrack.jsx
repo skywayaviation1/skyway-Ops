@@ -192,6 +192,8 @@ function LiveMap({ position, legs }) {
 function Leg({ leg, statuses }) {
   const cat = categoryBadge(leg.category);
   const legStatuses = (statuses && statuses[leg.legNumber]) || {};
+  const hasPilots = !!(leg.pic || leg.sic);
+  const paxList = Array.isArray(leg.pax) ? leg.pax : [];
   return (
     <div className="border border-slate-700 bg-slate-900/40 p-4 mb-3">
       <div className="flex items-start justify-between mb-3 flex-wrap gap-2">
@@ -210,10 +212,19 @@ function Leg({ leg, statuses }) {
             <span className="tracking-wider">{leg.to || '???'}</span>
           </div>
         </div>
-        {leg.pic && (
+        {hasPilots && (
           <div className="text-right">
-            <div className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>PIC</div>
-            <div className="text-sm text-slate-200" style={{ fontFamily: 'DM Sans, sans-serif' }}>{leg.pic}</div>
+            <div className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>CREW</div>
+            {leg.pic && (
+              <div className="text-sm text-slate-200" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                <span className="text-slate-500 text-[10px] mr-1">PIC</span>{leg.pic}
+              </div>
+            )}
+            {leg.sic && (
+              <div className="text-sm text-slate-200" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                <span className="text-slate-500 text-[10px] mr-1">SIC</span>{leg.sic}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -230,6 +241,22 @@ function Leg({ leg, statuses }) {
           {leg.toFbo && <div className="text-slate-500 mt-0.5">{leg.toFbo}</div>}
         </div>
       </div>
+
+      {/* Passenger names — shown ONLY when the server marked this leg as
+          showPax=true (i.e., this broker's own charter leg). Repo legs and
+          other brokers' legs receive an empty pax array regardless. */}
+      {leg.showPax && paxList.length > 0 && (
+        <div className="mb-3 pb-3 border-b border-slate-800">
+          <div className="text-[10px] tracking-widest text-slate-500 mb-1.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            PASSENGERS ({paxList.length})
+          </div>
+          <ul className="text-xs text-slate-200 space-y-0.5" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+            {paxList.map((name, i) => (
+              <li key={i}>{name}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <div className="space-y-1 pt-2 border-t border-slate-800">
         <StatusDot on={!!legStatuses.crewArrived?.at} label="Crew on site" ts={legStatuses.crewArrived?.at} />
@@ -354,25 +381,33 @@ export default function TripTrackPage({ token }) {
     <div className="min-h-screen bg-slate-950 text-slate-100">
       {/* Header */}
       <header className="border-b border-slate-800 bg-slate-900/50 px-4 py-4 sticky top-0 z-10 backdrop-blur">
-        <div className="max-w-3xl mx-auto flex items-center justify-between">
-          <div>
-            <div className="flex items-center gap-2">
-              <Plane className="w-5 h-5 text-cyan-400" />
-              <span className="text-xl tracking-wider" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
-                {trip.tail || 'TRIP'}
-              </span>
-              {trip.tripCode && (
-                <span className="text-[10px] text-slate-500 tracking-widest ml-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                  {trip.tripCode}
+        <div className="max-w-3xl mx-auto flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <img
+              src="/skyway-logo-nav.png"
+              srcSet="/skyway-logo-nav.png 1x, /skyway-logo-nav@2x.png 2x"
+              alt="Skyway Aviation"
+              className="h-7 w-auto shrink-0"
+            />
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <Plane className="w-5 h-5 text-cyan-400 shrink-0" />
+                <span className="text-xl tracking-wider truncate" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
+                  {trip.tail || 'TRIP'}
                 </span>
-              )}
-            </div>
-            <div className="text-[10px] text-slate-500 mt-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              SKYWAY AVIATION SERVICES
-              {trip.aircraftType ? ` · ${trip.aircraftType.toUpperCase()}` : ''}
+                {trip.tripCode && (
+                  <span className="text-[10px] text-slate-500 tracking-widest ml-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    {trip.tripCode}
+                  </span>
+                )}
+              </div>
+              <div className="text-[10px] text-slate-500 mt-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                SKYWAY AVIATION SERVICES
+                {trip.aircraftType ? ` · ${trip.aircraftType.toUpperCase()}` : ''}
+              </div>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             {refreshing && <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-400" />}
             <button
               onClick={load}

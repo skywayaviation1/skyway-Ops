@@ -6694,41 +6694,147 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
   // doc itself doesn't store legs — each leg is its own doc — so we have to
   // gather sibling legs from allTrips by matching tail + same calendar day.
   // This is the data the BROKER will see; it's a sanitized snapshot.
-  function buildPublicTripData() {
+  // Build the snapshot of legs the broker will see. Rules:
+  //   - Anchor leg = the trip the share dialog was opened from (always shown)
+  //   - Always include the immediately-preceding REPO leg (positioning flight)
+  //   - Include any other leg in the ±24h window that shares broker email
+  //     AND at least one matching passenger with the anchor (multi-leg
+  //     charter with same broker + same pax)
+  //   - Each leg gets a `showPax` flag: true ONLY when the leg's broker
+  //     matches the anchor's broker AND its pax overlap. False for repo
+  //     legs, false for other brokers' legs (privacy: don't leak another
+  //     broker's pax to this broker).
+  //
+  // Because trip-state docs (where preloadedPax lives) aren't in the
+  // in-memory `allTrips` list, we have to fetch them. This is async and
+  // happens at share-time, not at dialog mount — the parent has already
+  // populated `allTrips` so the candidate set is local; only the pax data
+  // requires a Firestore round-trip per candidate (typically 1-3 candidates).
+  async function buildPublicTripData() {
     const tail = (trip.info?.tail || '').toUpperCase();
     if (!tail) return null;
-    // Match siblings: same tail + within ±24h of this trip's start.
-    const tripStartMs = trip.start ? new Date(trip.start).getTime() : Date.now();
+
+    const anchorStartMs = trip.start ? new Date(trip.start).getTime() : Date.now();
     const WINDOW = 24 * 3600 * 1000;
-    const siblings = (allTrips || [])
+
+    // Candidate set: same tail, within ±24h, sorted chronologically.
+    const candidates = (allTrips || [])
       .filter((t) => t && t.info && (t.info.tail || '').toUpperCase() === tail)
       .filter((t) => {
         if (!t.start) return false;
         const ms = new Date(t.start).getTime();
-        return Number.isFinite(ms) && Math.abs(ms - tripStartMs) <= WINDOW;
+        return Number.isFinite(ms) && Math.abs(ms - anchorStartMs) <= WINDOW;
       })
       .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
-    // Make sure THE current trip is included even if filter dropped it (e.g.
-    // no .start somehow). Dedupe by uid.
+
+    // Make sure anchor is in there (dedupe by uid).
     const seen = new Set();
-    const ordered = [trip, ...siblings].filter((t) => {
+    const ordered = [trip, ...candidates].filter((t) => {
       if (!t || !t.uid) return false;
       if (seen.has(t.uid)) return false;
       seen.add(t.uid);
       return true;
     }).sort((a, b) => new Date(a.start || 0).getTime() - new Date(b.start || 0).getTime());
-    const legs = ordered.map((t, i) => ({
-      tripId: t.uid,
-      legNumber: i + 1,
-      from: t.info?.from || null,
-      to: t.info?.to || null,
-      fromFbo: t.info?.fromFbo || null,
-      toFbo: t.info?.toFbo || null,
-      departure: t.start || null,
-      arrival: t.end || null,
-      category: t.info?.legType || t.info?.category || 'REVENUE',
-      picName: t.info?.pic || null,
-    }));
+
+    // Fetch preloadedPax for every candidate (so we can match against
+    // anchor pax). Done in parallel.
+    let fetchPreloadedPax;
+    try {
+      ({ fetchPreloadedPax } = await import('./firebase-data.js'));
+    } catch (e) {
+      console.warn('[share] could not load fetchPreloadedPax — pax matching disabled');
+    }
+    const paxByUid = {};
+    if (fetchPreloadedPax) {
+      await Promise.all(
+        ordered.map(async (t) => {
+          try { paxByUid[t.uid] = await fetchPreloadedPax(t.uid) || []; }
+          catch (_) { paxByUid[t.uid] = []; }
+        })
+      );
+    }
+
+    // Anchor identifiers.
+    const anchorIdx = ordered.findIndex((t) => t.uid === trip.uid);
+    const anchorBroker = String(trip.info?.broker || '').trim().toLowerCase();
+    const anchorPax = (paxByUid[trip.uid] || []).map(paxKey).filter(Boolean);
+    const anchorPaxSet = new Set(anchorPax);
+
+    // Decide for each candidate whether to INCLUDE it, and whether to
+    // SHOW its pax.
+    function paxKey(p) {
+      if (!p) return '';
+      const f = String(p.firstName || '').trim().toLowerCase();
+      const l = String(p.lastName || '').trim().toLowerCase();
+      return f && l ? `${f} ${l}` : (f || l);
+    }
+    function brokerOf(t) {
+      return String(t.info?.broker || '').trim().toLowerCase();
+    }
+    function isRepo(t) {
+      const cat = String(t.info?.legType || t.info?.category || '').toUpperCase();
+      return cat === 'REPO' || cat === 'FERRY';
+    }
+    function paxOverlap(t) {
+      const list = (paxByUid[t.uid] || []).map(paxKey).filter(Boolean);
+      return list.some((k) => anchorPaxSet.has(k));
+    }
+    function sameBroker(t) {
+      const b = brokerOf(t);
+      return !!anchorBroker && b === anchorBroker;
+    }
+
+    const included = [];
+    ordered.forEach((t, i) => {
+      if (t.uid === trip.uid) {
+        // Anchor — always included, always shows pax
+        included.push({ t, showPax: true });
+        return;
+      }
+      // Repo legs: include only if immediately adjacent to anchor on
+      // either side. Other repo legs (e.g., a repo before someone else's
+      // earlier charter) are NOT this broker's concern.
+      if (isRepo(t)) {
+        if (i === anchorIdx - 1 || i === anchorIdx + 1) {
+          included.push({ t, showPax: false });
+        }
+        return;
+      }
+      // Revenue legs: include ONLY when they share broker + overlap pax
+      // with the anchor (multi-leg same-broker charter). Otherwise skip
+      // entirely — we don't show other brokers' charter legs to this
+      // broker at all.
+      if (sameBroker(t) && paxOverlap(t)) {
+        included.push({ t, showPax: true });
+      }
+    });
+
+    // Renumber legs sequentially as they appear in the final included list.
+    const legs = included.map(({ t, showPax }, i) => {
+      const pax = (paxByUid[t.uid] || []).map((p) => {
+        // For pax display, name only — no DOB, no weight, no gender.
+        const first = String(p?.firstName || '').trim();
+        const last = String(p?.lastName || '').trim();
+        const full = [first, last].filter(Boolean).join(' ');
+        return full || null;
+      }).filter(Boolean);
+      return {
+        tripId: t.uid,
+        legNumber: i + 1,
+        from: t.info?.from || null,
+        to: t.info?.to || null,
+        fromFbo: t.info?.fromFbo || null,
+        toFbo: t.info?.toFbo || null,
+        departure: t.start || null,
+        arrival: t.end || null,
+        category: t.info?.legType || t.info?.category || 'REVENUE',
+        picName: t.info?.pic || null,
+        sicName: t.info?.sic || null,
+        showPax,
+        pax: showPax ? pax : [],
+      };
+    });
+
     return {
       tail,
       aircraftType: trip.info?.aircraftType || trip.info?.tripType || null,
@@ -6768,7 +6874,7 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
     let cancelled = false;
     (async () => {
       try {
-        const publicTripData = buildPublicTripData();
+        const publicTripData = await buildPublicTripData();
         const data = await callShare('generate', { publicTripData });
         if (cancelled) return;
         setUrl(data.url || '');
@@ -6815,7 +6921,7 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
   const handleRotate = async () => {
     if (!window.confirm('Rotate the link? Any tracking links you previously sent will stop working. A new URL will be generated.')) return;
     try {
-      const publicTripData = buildPublicTripData();
+      const publicTripData = await buildPublicTripData();
       const data = await callShare('rotate', { publicTripData });
       setUrl(data.url || '');
       setTokenIssuedAt(data.issuedAt || null);
