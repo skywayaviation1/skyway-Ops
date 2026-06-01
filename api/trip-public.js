@@ -67,7 +67,7 @@ async function loadValidTrip(token) {
 // What's stripped: passenger names, pricing, internal notes, broker email
 // (the broker knows their own email), crew contact info, fees/fuel, anything
 // not explicitly whitelisted.
-function sanitizeTrip(tripId, data, legs) {
+function sanitizeTrip(tripId, data, legs, liveStatuses = {}) {
   // Status timeline — we want the broker to see the high-level events but
   // not internal ops notes. Keep timestamps and labels only.
   const statuses = data.statuses && typeof data.statuses === 'object' ? data.statuses : {};
@@ -84,24 +84,39 @@ function sanitizeTrip(tripId, data, legs) {
       };
     }
   }
+
+  // Merge each leg's snapshot status with its LIVE counterpart. Per status
+  // key, live wins if present. This lets us pick up landed/wheels_up events
+  // that fired after the link was shared without requiring ops to rotate
+  // or re-open the share dialog.
+  const mergeStatusForLeg = (legTripId, snapshotStatus) => {
+    const snap = snapshotStatus && typeof snapshotStatus === 'object' ? snapshotStatus : {};
+    const live = (legTripId && liveStatuses[legTripId]) || {};
+    const merged = {};
+    const allKeys = new Set([...Object.keys(snap), ...Object.keys(live)]);
+    for (const k of allKeys) {
+      // Live takes priority if it has a valid timestamp. Otherwise fall
+      // back to the snapshot value.
+      if (live[k] && Number.isFinite(live[k].at)) {
+        merged[k] = { at: live[k].at, completed: true };
+      } else if (snap[k] && Number.isFinite(snap[k].at)) {
+        merged[k] = { at: snap[k].at, completed: true };
+      }
+    }
+    return merged;
+  };
+
   // If publicTripData has per-leg status, that's the AUTHORITATIVE source —
   // each leg's trip-state doc contributed its own status timeline at share
-  // time. Rebuild a statuses map keyed by the broker-facing legNumber.
-  // Fall back to the anchor's cleanStatuses (legacy single-doc behavior).
+  // time. We overlay LIVE statuses on top so brokers see post-share-time
+  // events (e.g. landed) automatically.
   let outStatuses = cleanStatuses;
   if (data.publicTripData && Array.isArray(data.publicTripData.legs)) {
     const byLeg = {};
     data.publicTripData.legs.forEach((leg) => {
       if (!leg || !Number.isFinite(leg.legNumber)) return;
-      const s = leg.status && typeof leg.status === 'object' ? leg.status : {};
-      const clean = {};
-      for (const key of ['crew_onsite', 'aircraft_ready', 'catering_aboard', 'pax_arrived', 'pax_boarded', 'taxi_dep', 'wheels_up', 'landed']) {
-        const v = s[key];
-        if (v && typeof v === 'object' && typeof v.at === 'number') {
-          clean[key] = { at: v.at, completed: true };
-        }
-      }
-      byLeg[leg.legNumber] = clean;
+      const merged = mergeStatusForLeg(leg.tripId, leg.status);
+      byLeg[leg.legNumber] = merged;
     });
     outStatuses = byLeg;
   }
@@ -126,11 +141,9 @@ function sanitizeTrip(tripId, data, legs) {
       // attached (or vice versa), we honor showPax strictly.
       pax: leg.showPax === true && Array.isArray(leg.pax) ? leg.pax : [],
       showPax: leg.showPax === true,
-      // Per-leg status timeline — drives the map polyline color (cyan if
-      // airborne, emerald if landed, etc.) and the status circles below
-      // each leg in the itinerary. Already validated/whitelisted upstream
-      // in trip-share.js so we can trust the field names here.
-      status: leg.status && typeof leg.status === 'object' ? leg.status : {},
+      // Per-leg status timeline — MERGED snapshot + live. Live wins where
+      // present so brokers see post-share-time events (landed, etc.).
+      status: mergeStatusForLeg(leg.tripId, leg.status),
     })),
     statuses: outStatuses,
     completed: data.completed === true,
@@ -243,6 +256,58 @@ function legsFromTrip(data) {
   return [];
 }
 
+// Fetch live statuses from each leg's own trip-state doc. The publicTripData
+// snapshot persisted at share-time is structurally authoritative (which legs
+// exist, route, FBO, crew, pax assignments) but its `status` field is a
+// FROZEN COPY of statuses-at-share-time. If status changes after the link
+// is shared (typically: landed event fires while broker is watching), the
+// snapshot never updates — the broker keeps seeing "in flight" forever.
+//
+// This helper batch-reads each leg's trip-state doc and returns a map of
+// `{ legTripId: { wheels_up: {at: ...}, landed: {at: ...}, ... } }` so the
+// sanitizer can overlay live data on top of the snapshot.
+//
+// Defensive on failures: any doc that can't be read (deleted, permission
+// error, network blip) just returns no live data for that leg and we fall
+// back to the snapshot. Never throw — broker page should still render.
+async function fetchLiveStatuses(legs) {
+  if (!Array.isArray(legs) || legs.length === 0) return {};
+  const tripIds = legs.map((l) => l?.tripId).filter(Boolean);
+  if (tripIds.length === 0) return {};
+  const out = {};
+  // Whitelist of status keys we forward to the broker. Same list the
+  // sanitizer uses; keeping them in sync is critical for the overlay to
+  // do anything useful.
+  const KEYS = ['crew_onsite', 'aircraft_ready', 'catering_aboard', 'pax_arrived', 'pax_boarded', 'taxi_dep', 'wheels_up', 'landed'];
+  await Promise.all(tripIds.map(async (tid) => {
+    try {
+      const snap = await db().collection('trip-state').doc(tid).get();
+      if (!snap.exists) return;
+      const sd = snap.data() || {};
+      const bag = (sd.statuses && typeof sd.statuses === 'object') ? sd.statuses : {};
+      // Each leg's trip-state doc has statuses as a flat map keyed by
+      // step id, e.g. { crew_onsite: { timestamp, author, ... }, ... }.
+      // We normalize to { key: { at: ms } } so the broker side can read
+      // a single shape.
+      const clean = {};
+      for (const key of KEYS) {
+        const v = bag[key];
+        if (v && typeof v === 'object') {
+          const at = Number.isFinite(v.timestamp) ? v.timestamp
+                    : Number.isFinite(v.at) ? v.at
+                    : null;
+          if (at !== null) clean[key] = { at };
+        }
+      }
+      if (Object.keys(clean).length > 0) out[tid] = clean;
+    } catch (e) {
+      // Swallow — broker page renders fine without live overlay for this leg.
+      console.warn('[trip-public] fetchLiveStatuses failed for', tid, e?.message);
+    }
+  }));
+  return out;
+}
+
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
   // Allow cross-origin GETs from anywhere (broker email clients, etc.)
@@ -265,7 +330,32 @@ export default async function handler(req, res) {
   }
 
   const legs = legsFromTrip(data);
-  const sanitized = sanitizeTrip(tripId, data, legs);
+
+  // Re-read per-leg trip-state docs to overlay LIVE statuses on top of the
+  // share-time snapshot. Without this overlay, a landed event that fires
+  // AFTER the link was shared never reaches the broker — they see "in flight"
+  // forever. This is one of two places the data flows from ops → broker;
+  // the other is the share dialog which only fires on explicit ROTATE /
+  // share open. Brokers can't depend on ops re-opening the dialog every
+  // time a status changes.
+  const liveStatuses = await fetchLiveStatuses(legs);
+
+  const sanitized = sanitizeTrip(tripId, data, legs, liveStatuses);
+
+  // Re-check the 24h post-landing expiry against the live data we just
+  // pulled. The earlier check used the anchor's stale `data.statuses` —
+  // if a leg's `landed` event has fired more than 24h ago but the snapshot
+  // doesn't know about it, we'd be serving a "completed" trip indefinitely.
+  // Pull the latest landed timestamp across all legs from the LIVE data and
+  // bounce the request if past grace.
+  let lastLanded = landedAt;
+  for (const tid of Object.keys(liveStatuses)) {
+    const lt = liveStatuses[tid]?.landed?.at;
+    if (Number.isFinite(lt) && (!lastLanded || lt > lastLanded)) lastLanded = lt;
+  }
+  if (lastLanded && (Date.now() - lastLanded) > GRACE_HOURS_AFTER_LAST_LEG * 3600 * 1000) {
+    return res.status(410).json({ ok: false, reason: 'link expired after trip completion' });
+  }
 
   // Default: live position + actual flight path + sanitized trip.
   const position = await fetchPosition(sanitized.tail);
