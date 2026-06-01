@@ -73,7 +73,13 @@ function HeroCard({ trip, position }) {
   //   1. A leg with wheels_up and not yet landed → IN FLIGHT
   //   2. A leg with any preflight status logged → ON THE GROUND
   //   3. All legs landed → COMPLETED
-  //   4. Nothing started → SCHEDULED (first leg)
+  //   4. A future leg hasn't departed yet → SCHEDULED (the NEXT leg)
+  //
+  // The subtle bug this avoids: a 2-leg trip where leg 1 has landed and
+  // leg 2 hasn't started yet. The naive "all landed → completed, else
+  // scheduled with legs[0]" reports SCHEDULED for leg 1 (already flown).
+  // We need to look forward — pick the first NOT-LANDED leg as the active
+  // one when in scheduled state.
   let mode = 'scheduled';
   let activeLeg = legs[0];
   const airborneLeg = legs.find((l) => l.status?.wheels_up && !l.status?.landed);
@@ -92,6 +98,20 @@ function HeroCard({ trip, position }) {
     } else if (legs.every((l) => l.status?.landed)) {
       mode = 'completed';
       activeLeg = legs[legs.length - 1];
+    } else {
+      // Scheduled — but find the FIRST leg that hasn't landed yet (the
+      // upcoming one). Falling back to legs[0] would point at an already-
+      // flown earlier leg in multi-leg trips.
+      const upcomingLeg = legs.find((l) => !l.status?.landed);
+      if (upcomingLeg) {
+        mode = 'scheduled';
+        activeLeg = upcomingLeg;
+      } else {
+        // All landed (shouldn't reach here — the every-landed check above
+        // should have caught it — but defensively pick the last leg).
+        mode = 'completed';
+        activeLeg = legs[legs.length - 1];
+      }
     }
   }
 
@@ -128,9 +148,14 @@ function HeroCard({ trip, position }) {
   } else if (mode === 'completed') {
     subtitle = <>All legs completed · {legs.length === 1 ? '1 leg' : `${legs.length} legs`}</>;
   } else { /* scheduled */
+    // "First departure" reads wrong when leg 1 has already landed and we're
+    // showing leg 2 as the next upcoming. Use "Next departure" if any earlier
+    // leg has already landed; "First departure" only when nothing has flown yet.
+    const anyPriorLanded = legs.some((l) => l.legNumber < activeLeg.legNumber && l.status?.landed);
+    const departureLabel = anyPriorLanded ? 'Next departure' : 'First departure';
     subtitle = (
       <>
-        First departure {activeLeg.from} → {activeLeg.to}
+        {departureLabel} {activeLeg.from} → {activeLeg.to}
         {activeLeg.departure && (
           <span className="text-slate-400 font-normal"> · {fmtAirportTimeShort(activeLeg.departure, activeLeg.from)}</span>
         )}
