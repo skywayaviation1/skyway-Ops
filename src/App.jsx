@@ -6689,6 +6689,28 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
   const [err, setErr] = useState('');
   const [info, setInfo] = useState(''); // success/info banner
   const [copied, setCopied] = useState(false);
+  // Theme preference for the broker page — persists across sessions in
+  // localStorage. Default is the new "premium" view; ops can flip back
+  // to "classic" (ops-console style) per personal preference.
+  const [brokerTheme, setBrokerTheme] = useState(() => {
+    try {
+      return localStorage.getItem('skyway:brokerTheme') === 'classic' ? 'classic' : 'premium';
+    } catch { return 'premium'; }
+  });
+  const setBrokerThemeAndSave = (t) => {
+    setBrokerTheme(t);
+    try { localStorage.setItem('skyway:brokerTheme', t); } catch {}
+  };
+  // The URL the server returns is theme-agnostic. We append ?theme=classic
+  // for the share when ops has opted into the classic view; premium is the
+  // default so we leave the URL clean for premium links.
+  const themedUrl = (rawUrl) => {
+    if (!rawUrl) return rawUrl;
+    if (brokerTheme !== 'classic') return rawUrl;
+    const sep = rawUrl.includes('?') ? '&' : '?';
+    return `${rawUrl}${sep}theme=classic`;
+  };
+  const effectiveUrl = themedUrl(url);
 
   // Compute the public trip data we want to ship to the server. The trip-state
   // doc itself doesn't store legs — each leg is its own doc — so we have to
@@ -7007,9 +7029,9 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
   }, []);
 
   const handleCopy = async () => {
-    if (!url) return;
+    if (!effectiveUrl) return;
     try {
-      await navigator.clipboard.writeText(url);
+      await navigator.clipboard.writeText(effectiveUrl);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch (_) {
@@ -7026,7 +7048,7 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
       return;
     }
     try {
-      const data = await callShare('email', { to, message: emailMessage.trim() });
+      const data = await callShare('email', { to, message: emailMessage.trim(), theme: brokerTheme });
       setInfo(`Email sent to ${to}.`);
       if (data.url) setUrl(data.url);
     } catch (e) {
@@ -7094,10 +7116,35 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
                 This link has been revoked. Generate a new one with ROTATE.
               </div>
             )}
+            {/* Theme picker — controls which broker view is sent. Default is
+                the new premium aesthetic; classic is the ops-console look. */}
+            <div className="mb-2 flex items-center gap-2">
+              <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                BROKER VIEW
+              </span>
+              <div className="flex border border-slate-700">
+                <button
+                  type="button"
+                  onClick={() => setBrokerThemeAndSave('premium')}
+                  className={`px-2.5 py-1 text-[10px] tracking-widest ${brokerTheme === 'premium' ? 'bg-amber-500/15 text-amber-200 border-r border-slate-700' : 'text-slate-500 hover:text-slate-300 border-r border-slate-700'}`}
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                >
+                  PREMIUM
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBrokerThemeAndSave('classic')}
+                  className={`px-2.5 py-1 text-[10px] tracking-widest ${brokerTheme === 'classic' ? 'bg-cyan-500/15 text-cyan-200' : 'text-slate-500 hover:text-slate-300'}`}
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                >
+                  CLASSIC
+                </button>
+              </div>
+            </div>
             <div className="flex items-stretch gap-1.5">
               <input
                 type="text"
-                value={url}
+                value={effectiveUrl}
                 readOnly
                 onFocus={(e) => e.target.select()}
                 className="flex-1 bg-slate-800 border border-slate-700 px-2 py-2 text-[11px] text-slate-100 font-mono"
@@ -21523,6 +21570,13 @@ function ExpenseDetail({ expense, currentUser, canApprove, isAccounting, onBack,
   const [showImg, setShowImg] = useState(true);
   const [showReviewPrompt, setShowReviewPrompt] = useState(false);
   const [reviewQuestion, setReviewQuestion] = useState('');
+  // Card-prompt modal — opens when user tries to submit without paidWith
+  // set. Crew picks a canonical card OR types a custom name (e.g. a one-off
+  // vendor card). On confirm we save paidWith + submit in one go.
+  const [cardPromptOpen, setCardPromptOpen] = useState(false);
+  const [cardPromptChoice, setCardPromptChoice] = useState('');
+  const [cardPromptCustom, setCardPromptCustom] = useState('');
+  const [cardPromptBusy, setCardPromptBusy] = useState(false);
 
   useEffect(() => { setDraft(expense); }, [expense.id, expense.updatedAt]);
 
@@ -21548,6 +21602,43 @@ function ExpenseDetail({ expense, currentUser, canApprove, isAccounting, onBack,
       notes: draft.notes,
     });
     setEditing(false);
+  };
+
+  // Submit gate. If the expense already has a `paidWith` value, submit
+  // immediately. Otherwise open the modal so the crew can pick a card
+  // (or type a custom one) without leaving the screen.
+  const tryStartSubmit = () => {
+    if (expense.paidWith) {
+      onSubmit(expense);
+      return;
+    }
+    // Open the prompt. Reset state in case it was used before.
+    setCardPromptChoice('');
+    setCardPromptCustom('');
+    setCardPromptOpen(true);
+  };
+
+  // Modal "Confirm" — persists the chosen card AND submits in one go.
+  const confirmCardAndSubmit = async () => {
+    let resolved = cardPromptChoice;
+    if (cardPromptChoice === '__other__') {
+      resolved = cardPromptCustom.trim();
+      if (!resolved) return; // shouldn't be reachable — button is disabled
+    }
+    if (!resolved) return;
+    setCardPromptBusy(true);
+    try {
+      // Persist paidWith first so the submit picks up the value.
+      await onUpdate(expense, { paidWith: resolved });
+      // Submit using the updated expense object.
+      await onSubmit({ ...expense, paidWith: resolved });
+      setCardPromptOpen(false);
+    } catch (err) {
+      console.error('[expense] submit with card failed:', err);
+      // Leave modal open so user can retry; could show inline error here.
+    } finally {
+      setCardPromptBusy(false);
+    }
   };
 
   return (
@@ -21660,10 +21751,46 @@ function ExpenseDetail({ expense, currentUser, canApprove, isAccounting, onBack,
             </select>
           </FieldRow>
           <FieldRow label="PAID WITH">
-            <select value={draft.paidWith || ''} onChange={(e) => set('paidWith')(e.target.value)} className="w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400">
-              <option value="">— Select card —</option>
-              {PAID_WITH_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-            </select>
+            {/* The PAID WITH select offers the canonical cards (Capital One / Amex /
+                Personal) plus an "Other" branch that reveals a text input so crew
+                can name a card not in the list (e.g. ramp's fuel card, a vendor
+                purchase card). Whatever they type lands in `paidWith` as a plain
+                string and renders via paidWithLabel's fallback. */}
+            {(() => {
+              const isCanonical = !draft.paidWith
+                || PAID_WITH_OPTIONS.some(o => o.value === draft.paidWith);
+              const selectValue = !draft.paidWith ? '' : isCanonical ? draft.paidWith : '__other__';
+              return (
+                <>
+                  <select
+                    value={selectValue}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v === '__other__') {
+                        // Start with empty string so the input renders and crew can type
+                        set('paidWith')('');
+                      } else {
+                        set('paidWith')(v);
+                      }
+                    }}
+                    className="w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
+                  >
+                    <option value="">— Select card —</option>
+                    {PAID_WITH_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                    <option value="__other__">Other (type a name)</option>
+                  </select>
+                  {!isCanonical && (
+                    <input
+                      autoFocus
+                      value={draft.paidWith || ''}
+                      onChange={(e) => set('paidWith')(e.target.value)}
+                      placeholder="e.g. Visa ending 4421, Shell fleet card, …"
+                      className="mt-2 w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
+                    />
+                  )}
+                </>
+              );
+            })()}
           </FieldRow>
           <div className="grid grid-cols-3 gap-2">
             <FieldRow label="SUBTOTAL"><input type="number" step="0.01" value={draft.subtotal ?? ''} onChange={(e) => set('subtotal')(e.target.value)} className="w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400" /></FieldRow>
@@ -21754,10 +21881,15 @@ function ExpenseDetail({ expense, currentUser, canApprove, isAccounting, onBack,
         {canEdit && !editing && (
           <button onClick={() => setEditing(true)} className="px-3 py-2 border border-slate-700 text-sm text-slate-200 hover:border-cyan-500/40">EDIT</button>
         )}
-        {/* Submitter actions */}
+        {/* Submitter actions.
+            Before this fix, the submit button was disabled when paidWith was
+            empty, leaving crew confused ("why won't this go?"). Now we let
+            them click and we ASK which card via a modal. Same flow for both
+            buttons (draft/rejected and needs_review) so they get the same
+            prompt. */}
         {isOwner && (status === 'draft' || status === 'rejected') && !editing && (
           <button
-            onClick={() => onSubmit(expense)}
+            onClick={() => tryStartSubmit()}
             disabled={!expense.vendor || !expense.totalAmount}
             className="px-3 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed"
             style={{ fontFamily: 'DM Sans, sans-serif' }}
@@ -21767,7 +21899,7 @@ function ExpenseDetail({ expense, currentUser, canApprove, isAccounting, onBack,
         )}
         {isOwner && status === 'needs_review' && !editing && (
           <button
-            onClick={() => onSubmit(expense)}
+            onClick={() => tryStartSubmit()}
             disabled={!expense.vendor || !expense.totalAmount}
             className="px-3 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed"
             style={{ fontFamily: 'DM Sans, sans-serif' }}
@@ -21903,6 +22035,97 @@ function ExpenseDetail({ expense, currentUser, canApprove, isAccounting, onBack,
           </button>
         )}
       </div>
+
+      {/* Card-prompt modal — appears when SUBMIT FOR APPROVAL is clicked
+          without a card tagged. Lets crew pick a canonical card OR type a
+          custom name. On confirm we persist paidWith + submit in one
+          transaction-ish flow. */}
+      {cardPromptOpen && (
+        <div
+          className="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-50"
+          onClick={() => !cardPromptBusy && setCardPromptOpen(false)}
+        >
+          <div
+            className="bg-slate-900 border border-slate-700 max-w-md w-full p-5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3 mb-3">
+              <AlertCircle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+              <div>
+                <div className="text-base text-slate-100 font-medium" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                  Which card paid for this?
+                </div>
+                <div className="text-xs text-slate-400 mt-1">
+                  We need this to push the expense through to QuickBooks. Pick a card or type a custom name.
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-2 mb-4">
+              {PAID_WITH_OPTIONS.map((o) => (
+                <label
+                  key={o.value}
+                  className={`flex items-center gap-2 px-3 py-2 border cursor-pointer ${cardPromptChoice === o.value ? 'border-cyan-500 bg-cyan-500/10' : 'border-slate-700 hover:border-slate-600'}`}
+                >
+                  <input
+                    type="radio"
+                    name="cardPromptChoice"
+                    value={o.value}
+                    checked={cardPromptChoice === o.value}
+                    onChange={() => setCardPromptChoice(o.value)}
+                    className="accent-cyan-400"
+                  />
+                  <span className="text-sm text-slate-200" style={{ fontFamily: 'DM Sans, sans-serif' }}>{o.label}</span>
+                </label>
+              ))}
+              <label
+                className={`flex items-center gap-2 px-3 py-2 border cursor-pointer ${cardPromptChoice === '__other__' ? 'border-cyan-500 bg-cyan-500/10' : 'border-slate-700 hover:border-slate-600'}`}
+              >
+                <input
+                  type="radio"
+                  name="cardPromptChoice"
+                  value="__other__"
+                  checked={cardPromptChoice === '__other__'}
+                  onChange={() => setCardPromptChoice('__other__')}
+                  className="accent-cyan-400"
+                />
+                <span className="text-sm text-slate-200" style={{ fontFamily: 'DM Sans, sans-serif' }}>Other — type a name</span>
+              </label>
+              {cardPromptChoice === '__other__' && (
+                <input
+                  autoFocus
+                  value={cardPromptCustom}
+                  onChange={(e) => setCardPromptCustom(e.target.value)}
+                  placeholder="e.g. Visa ending 4421, Shell fleet card, …"
+                  className="w-full bg-slate-950/80 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
+                />
+              )}
+            </div>
+
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setCardPromptOpen(false)}
+                disabled={cardPromptBusy}
+                className="px-3 py-2 border border-slate-700 text-sm text-slate-300 hover:border-slate-500 disabled:opacity-40"
+              >
+                CANCEL
+              </button>
+              <button
+                onClick={confirmCardAndSubmit}
+                disabled={
+                  cardPromptBusy
+                  || !cardPromptChoice
+                  || (cardPromptChoice === '__other__' && !cardPromptCustom.trim())
+                }
+                className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+                style={{ fontFamily: 'DM Sans, sans-serif' }}
+              >
+                {cardPromptBusy ? 'SUBMITTING…' : 'CONFIRM & SUBMIT'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
