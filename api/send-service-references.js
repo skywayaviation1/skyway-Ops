@@ -18,6 +18,7 @@
 // maintenance records. The email body says so explicitly.
 
 import admin from 'firebase-admin';
+import { applySkywaySignature, ensureCharterCc, textToHtml } from './_email-signature.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -178,6 +179,7 @@ export default async function handler(req, res) {
   }
 
   try {
+    const text = lines.join('\n').slice(0, 20000);
     const upstream = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: {
@@ -187,8 +189,10 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         from: 'Skyway Ops <noreply@send.flyskyway.com>',
         to: recipients,
+        cc: ensureCharterCc([], recipients),
         subject: subject.slice(0, 200),
-        text: lines.join('\n').slice(0, 20000),
+        text,
+        html: applySkywaySignature(textToHtml(text)),
         attachments,
       }),
     });

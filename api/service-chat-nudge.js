@@ -9,6 +9,7 @@
 
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
+import { applySkywaySignature, ensureCharterCc, textToHtml } from './_email-signature.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -78,21 +79,25 @@ export default async function handler(req, res) {
 
       if (apiKey) {
         try {
+          const emailText =
+            `An external maintenance technician has been waiting ${mins} ` +
+            `minutes for a reply on the service request for ${a.tail} ` +
+            `(${a.location || '—'}${a.fboName ? ' / ' + a.fboName : ''}).\n\n` +
+            `From: ${who}\n\n` +
+            `Latest message:\n${preview}\n\n` +
+            `Open the service request in Skyway Ops → Tech Chat to reply.\n` +
+            `— Skyway Ops (automatic reminder)`;
+          const recipients = ['Jake@flyskyway.com', 'MX@flyskyway.com'];
           await fetch('https://api.resend.com/emails', {
             method: 'POST',
             headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
             body: JSON.stringify({
               from: 'Skyway Ops <noreply@send.flyskyway.com>',
-              to: ['Jake@flyskyway.com', 'MX@flyskyway.com'],
+              to: recipients,
+              cc: ensureCharterCc([], recipients),
               subject: `[SERVICE CHAT WAITING ${mins}m] ${a.tail || ''} — tech needs a reply`,
-              text:
-                `An external maintenance technician has been waiting ${mins} ` +
-                `minutes for a reply on the service request for ${a.tail} ` +
-                `(${a.location || '—'}${a.fboName ? ' / ' + a.fboName : ''}).\n\n` +
-                `From: ${who}\n\n` +
-                `Latest message:\n${preview}\n\n` +
-                `Open the service request in Skyway Ops → Tech Chat to reply.\n` +
-                `— Skyway Ops (automatic reminder)`,
+              text: emailText,
+              html: applySkywaySignature(textToHtml(emailText)),
             }),
           });
         } catch (e) {

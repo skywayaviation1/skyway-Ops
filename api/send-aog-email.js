@@ -9,6 +9,7 @@
 //     idToken: <Firebase idToken> }
 
 import admin from 'firebase-admin';
+import { applySkywaySignature, ensureCharterCc, textToHtml } from './_email-signature.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -214,6 +215,7 @@ export default async function handler(req, res) {
   }
 
   try {
+    const truncatedText = text.slice(0, 20000);
     const upstream = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: {
@@ -223,8 +225,10 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         from: 'Skyway Ops <noreply@send.flyskyway.com>',
         to: recipients,
+        cc: ensureCharterCc([], recipients),
         subject: subject.slice(0, 200),
-        text: text.slice(0, 20000),
+        text: truncatedText,
+        html: applySkywaySignature(textToHtml(truncatedText)),
       }),
     });
     const data = await upstream.json().catch(() => ({}));

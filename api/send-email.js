@@ -16,6 +16,7 @@
 //   x-internal-secret: <INTERNAL_API_SECRET> (server-to-server)
 
 import admin from 'firebase-admin';
+import { applySkywaySignature, ensureCharterCc, textToHtml } from './_email-signature.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -112,6 +113,12 @@ export default async function handler(req, res) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
 
+    // Build a branded HTML body from the plain text caller passed us, and
+    // auto-CC charters@flyskyway.com so any reply (despite the do-not-reply
+    // notice in the wrapper) lands in the company's monitored inbox.
+    const html = applySkywaySignature(textToHtml(text));
+    const ccList = ensureCharterCc([], validRecipients);
+
     const upstream = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: {
@@ -121,8 +128,10 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         from: 'Skyway Ops <noreply@send.flyskyway.com>',
         to: validRecipients,
+        cc: ccList,
         subject: String(subject).slice(0, 200),
         text: String(text).slice(0, 10000),
+        html,
       }),
       signal: controller.signal,
     });

@@ -18,6 +18,7 @@
 export const config = { runtime: 'nodejs' };
 
 import PDFDocument from 'pdfkit';
+import { applySkywaySignature, ensureCharterCc, textToHtml } from './_email-signature.js';
 
 const RECIPIENTS = [
   'jake@flyskyway.com',
@@ -95,8 +96,10 @@ export default async function handler(req, res) {
           body: JSON.stringify({
             from: 'Skyway Ops <noreply@send.flyskyway.com>',
             to: RECIPIENTS,
+            cc: ensureCharterCc([], RECIPIENTS),
             subject,
             text,
+            html: applySkywaySignature(textToHtml(text)),
             attachments: [{ filename, content: pdfBase64 }],
           }),
         });

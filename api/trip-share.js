@@ -139,7 +139,7 @@ async function ensureTokenIssued(tripId, opts = {}) {
   return { token, issuedAt, reused: reuse, persistedPublicTripData: !!publicTripData };
 }
 
-async function sendBrokerEmail(req, { to, url, tripCode, tail, message, fromOpsName }) {
+async function sendBrokerEmail(req, { to, url, tripCode, tail, message, fromOpsName, idToken }) {
   const host = req.headers.host || 'skyway-ops.vercel.app';
   const proto = host.includes('localhost') ? 'http' : 'https';
   const headers = { 'Content-Type': 'application/json' };
@@ -147,6 +147,36 @@ async function sendBrokerEmail(req, { to, url, tripCode, tail, message, fromOpsN
   if (process.env.VERCEL_AUTOMATION_BYPASS_SECRET) headers['x-vercel-protection-bypass'] = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
 
   const subject = `Skyway tracking link${tripCode ? ` — ${tripCode}` : ''}${tail ? ` (${tail})` : ''}`;
+
+  // Build an HTML body with a real clickable link, escaped trip metadata,
+  // and the optional ops message. email-enqueue will wrap this with the
+  // Skyway header/footer (logo + DO NOT REPLY + contact info) before sending.
+  const esc = (s) => String(s || '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+  const htmlParts = [
+    `<p style="margin:0 0 16px 0; font-size:15px; color:#1f2937;">You have a live tracking link for your upcoming Skyway charter.</p>`,
+  ];
+  if (tripCode || tail) {
+    htmlParts.push('<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 16px 0;">');
+    if (tripCode) htmlParts.push(`<tr><td style="padding:2px 12px 2px 0; color:#6b7280; font-size:13px;">Trip</td><td style="padding:2px 0; color:#1f2937; font-size:14px; font-weight:500;">${esc(tripCode)}</td></tr>`);
+    if (tail) htmlParts.push(`<tr><td style="padding:2px 12px 2px 0; color:#6b7280; font-size:13px;">Aircraft</td><td style="padding:2px 0; color:#1f2937; font-size:14px; font-weight:500;">${esc(tail)}</td></tr>`);
+    htmlParts.push('</table>');
+  }
+  htmlParts.push(`<p style="margin:0 0 12px 0; font-size:14px; color:#1f2937;">Track aircraft position, repositioning leg, and live status:</p>`);
+  htmlParts.push(
+    `<p style="margin:0 0 24px 0;">` +
+    `<a href="${esc(url)}" style="display:inline-block; background:#1ec0e9; color:#0a0a0a; padding:12px 24px; font-weight:600; text-decoration:none; font-size:14px; letter-spacing:0.02em;">TRACK FLIGHT</a>` +
+    `</p>`
+  );
+  htmlParts.push(`<p style="margin:0 0 16px 0; font-size:12px; color:#6b7280; word-break:break-all;">Or paste this link: <a href="${esc(url)}" style="color:#1ec0e9; text-decoration:none;">${esc(url)}</a></p>`);
+  if (message) {
+    htmlParts.push(`<div style="margin:24px 0 16px 0; padding:12px 16px; background:#f9fafb; border-left:3px solid #1ec0e9; font-size:14px; color:#1f2937; white-space:pre-wrap;">${esc(message)}</div>`);
+  }
+  htmlParts.push(`<p style="margin:24px 0 0 0; font-size:12px; color:#6b7280;">The link expires 24 hours after the final leg lands.</p>`);
+  const html = htmlParts.join('\n');
+
+  // Plain text fallback for mail clients that don't render HTML.
   const lines = [
     `You have a live tracking link for your upcoming Skyway charter.`,
     ``,
@@ -158,24 +188,40 @@ async function sendBrokerEmail(req, { to, url, tripCode, tail, message, fromOpsN
     ``,
     message ? `${message}` : null,
     message ? `` : null,
-    `The link expires 24 hours after the final leg lands. If you need anything in the meantime, reach out at charters@flyskyway.com or 727-605-5000.`,
-    ``,
-    `— ${fromOpsName || 'Skyway Aviation Services'}`,
+    `The link expires 24 hours after the final leg lands.`,
   ].filter((l) => l !== null);
   const text = lines.join('\n');
 
-  // Use the email queue (reliable retry) — fall back to direct send.
-  const body = JSON.stringify({ to, subject, text, source: 'trip-share' });
+  // email-enqueue REQUIRES auth — either `x-internal-secret` header
+  // (server-to-server) OR `idToken` in the body (user-authenticated). We
+  // try internal secret first (set in Vercel env), and fall back to the
+  // user's idToken (which we already validated at the top of this handler).
+  // Without idToken fallback, if INTERNAL_API_SECRET is missing or mismatched
+  // on the target side, enqueue 401s and the broker email silently fails.
+  const body = JSON.stringify({
+    to: [to],
+    subject,
+    html,
+    text,
+    source: 'trip-share',
+    // Always include idToken when available — email-enqueue accepts EITHER
+    // auth mode, and the broker share flow is always user-initiated so we
+    // always have one. This is the belt-and-suspenders fix for silent
+    // delivery failures.
+    ...(idToken ? { idToken } : {}),
+  });
   try {
     const r = await fetch(`${proto}://${host}/api/email-enqueue`, { method: 'POST', headers, body });
-    if (r.ok) return true;
-    const r2 = await fetch(`${proto}://${host}/api/send-email`, {
-      method: 'POST', headers, body: JSON.stringify({ to, subject, text }),
-    });
-    return r2.ok;
+    if (r.ok) return { sent: true };
+    // Read the response body for diagnostics so this doesn't fail silently
+    // again in the future. If enqueue rejected our payload, we want to know
+    // why instead of opaque "false."
+    const errBody = await r.json().catch(() => ({}));
+    console.error('[trip-share] email-enqueue rejected:', r.status, errBody);
+    return { sent: false, error: errBody.error || `email-enqueue HTTP ${r.status}` };
   } catch (e) {
     console.error('[trip-share] email send failed:', e.message);
-    return false;
+    return { sent: false, error: e.message || 'email send failed' };
   }
 }
 
@@ -248,7 +294,12 @@ export default async function handler(req, res) {
         return res.status(400).json({ ok: false, error: 'valid email "to" required' });
       }
       const r = await ensureTokenIssued(tripId, { rotate: false });
-      const url = publicUrl(req, r.token);
+      let url = publicUrl(req, r.token);
+      // Append the broker-page theme if ops opted into the classic view.
+      // Premium is the default — leave the URL clean in that case.
+      if (body?.theme === 'classic') {
+        url = `${url}${url.includes('?') ? '&' : '?'}theme=classic`;
+      }
 
       // Pull trip code + tail for the subject line.
       const snap = await db().collection('trip-state').doc(tripId).get();
@@ -256,11 +307,24 @@ export default async function handler(req, res) {
       const tripCode = data?.tripCode || data?.tripMeta?.tripCode || null;
       const tail = data?.tail || data?.tripMeta?.tail || null;
 
-      const sent = await sendBrokerEmail(req, {
+      // Forward the user's idToken to email-enqueue so it can authenticate
+      // EVEN IF the internal-secret env var is missing or mismatched. The
+      // user already authed at the top of this handler; reusing their token
+      // is safe.
+      const userIdToken = req.headers['authorization']?.replace(/^Bearer\s+/i, '') || body?.idToken || null;
+
+      const result = await sendBrokerEmail(req, {
         to, url, tripCode, tail,
         message: body?.message || null,
         fromOpsName: body?.fromOpsName || 'Skyway Ops',
+        idToken: userIdToken,
       });
+
+      // If the send failed, return a non-200 with the error reason so the
+      // UI can surface a real message instead of falsely claiming success.
+      if (!result.sent) {
+        return res.status(502).json({ ok: false, error: result.error || 'email delivery failed', url });
+      }
 
       // Record share history for audit
       await db().collection('trip-state').doc(tripId).set({
@@ -269,7 +333,7 @@ export default async function handler(req, res) {
         lastSharedBy: auth.uid || null,
       }, { merge: true });
 
-      return res.status(200).json({ ok: true, sent, url });
+      return res.status(200).json({ ok: true, sent: true, url });
     }
     return res.status(400).json({ ok: false, error: `Unknown action: ${action}` });
   } catch (e) {

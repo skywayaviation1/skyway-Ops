@@ -20,6 +20,7 @@
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import { verifyServiceToken } from './_service-token.js';
+import { applySkywaySignature, ensureCharterCc, textToHtml } from './_email-signature.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -127,14 +128,18 @@ async function notifyTeam(data, subject, text) {
       .split(',').map(s => s.trim()).filter(Boolean);
     const to = Array.from(new Set([...recips, ...opsAlert]));
     if (to.length === 0) return;
+    const html = applySkywaySignature(textToHtml(text));
+    const ccList = ensureCharterCc([], to);
     await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         from: 'Skyway Ops <noreply@send.flyskyway.com>',
         to,
+        cc: ccList,
         subject: subject.slice(0, 200),
         text: text.slice(0, 20000),
+        html,
       }),
     });
   } catch (e) {
@@ -356,22 +361,26 @@ export default async function handler(req, res) {
         try {
           const apiKey = process.env.RESEND_API_KEY;
           if (apiKey) {
+            const emailText =
+              `An external maintenance technician started a chat on the service request for ` +
+              `${data.tail} (${data.location}${data.fboName ? ' / ' + data.fboName : ''}).\n\n` +
+              `From: ${author}${msg.company ? ` — ${msg.company}` : ''}\n\n` +
+              `Message:\n${text}\n\n` +
+              `Reply in Skyway Ops (open the service request → Tech Chat), or use this ` +
+              `quick-reply link which opens the conversation:\n${techLink}\n\n` +
+              `You'll get another email if the tech is left waiting more ` +
+              `than 5 minutes.\n— Skyway Ops`;
+            const recipients = ['Jake@flyskyway.com', 'MX@flyskyway.com'];
             await fetch('https://api.resend.com/emails', {
               method: 'POST',
               headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 from: 'Skyway Ops <noreply@send.flyskyway.com>',
-                to: ['Jake@flyskyway.com', 'MX@flyskyway.com'],
+                to: recipients,
+                cc: ensureCharterCc([], recipients),
                 subject: `[SERVICE CHAT STARTED] ${data.tail} at ${data.location} — tech is waiting`,
-                text:
-                  `An external maintenance technician started a chat on the service request for ` +
-                  `${data.tail} (${data.location}${data.fboName ? ' / ' + data.fboName : ''}).\n\n` +
-                  `From: ${author}${msg.company ? ` — ${msg.company}` : ''}\n\n` +
-                  `Message:\n${text}\n\n` +
-                  `Reply in Skyway Ops (open the service request → Tech Chat), or use this ` +
-                  `quick-reply link which opens the conversation:\n${techLink}\n\n` +
-                  `You'll get another email if the tech is left waiting more ` +
-                  `than 5 minutes.\n— Skyway Ops`,
+                text: emailText,
+                html: applySkywaySignature(textToHtml(emailText)),
               }),
             });
           }

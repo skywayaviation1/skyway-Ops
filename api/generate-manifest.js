@@ -27,6 +27,7 @@
 export const config = { runtime: 'nodejs' };
 
 import PDFDocument from 'pdfkit';
+import { applySkywaySignature, ensureCharterCc, textToHtml } from './_email-signature.js';
 
 const FORM_REV = 'S-5/R-37/10-30-23';
 
@@ -93,6 +94,7 @@ export default async function handler(req, res) {
           `Form revision: ${FORM_REV}`,
         ].join('\n');
 
+        const recipients = ['Loadmanifest@flyskyway.com'];
         const upstream = await fetch('https://api.resend.com/emails', {
           method: 'POST',
           headers: {
@@ -101,9 +103,11 @@ export default async function handler(req, res) {
           },
           body: JSON.stringify({
             from: 'Skyway Ops <noreply@send.flyskyway.com>',
-            to: ['Loadmanifest@flyskyway.com'],
+            to: recipients,
+            cc: ensureCharterCc([], recipients),
             subject,
             text,
+            html: applySkywaySignature(textToHtml(text)),
             attachments: [{ filename, content: pdfBase64 }],
           }),
         });

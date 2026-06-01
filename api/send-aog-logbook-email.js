@@ -11,6 +11,7 @@
 //   }
 
 import admin from 'firebase-admin';
+import { applySkywaySignature, ensureCharterCc } from './_email-signature.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -220,11 +221,14 @@ export default async function handler(req, res) {
   const html = buildHtmlBody(aog, entry);
   const subject = buildSubject(aog, entry);
 
+  // Wrap the body with Skyway brand header/footer (logo + DO NOT REPLY + contact)
+  // and auto-CC charters@ so any reply lands in the monitored inbox.
   const payload = {
     from: 'Skyway Ops <noreply@send.flyskyway.com>',
     to: recipients,
+    cc: ensureCharterCc([], recipients),
     subject: subject.slice(0, 200),
-    html,
+    html: applySkywaySignature(html),
   };
 
   if (pdfBase64 && pdfFilename) {

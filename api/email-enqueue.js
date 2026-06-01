@@ -31,6 +31,7 @@
 
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
+import { applySkywaySignature, ensureCharterCc, textToHtml } from './_email-signature.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -53,12 +54,6 @@ function getDb() {
 
 function genId() {
   return 'q_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 10);
-}
-
-function textToHtml(text) {
-  const safe = String(text)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  return `<div style="font-family: -apple-system, sans-serif; white-space: pre-wrap; line-height: 1.5;">${safe}</div>`;
 }
 
 export default async function handler(req, res) {
@@ -112,6 +107,20 @@ export default async function handler(req, res) {
   const validCc = Array.isArray(cc)
     ? cc.filter(e => typeof e === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e.trim()))
     : [];
+  // Auto-CC charters@flyskyway.com on every outgoing email so any broker
+  // replies land in the monitored inbox (despite the do-not-reply notice).
+  // The helper handles the "to is charter@" case internally (no self-CC).
+  const finalCc = ensureCharterCc(validCc, validTo);
+
+  // Build the final HTML body. Either:
+  //   - caller passed html → we wrap it with Skyway header/footer
+  //   - caller passed text → convert to a basic html wrapper, THEN wrap
+  // Both paths end up running through the same signature wrapper so every
+  // email leaving Skyway carries the brand + do-not-reply notice.
+  const rawHtml = html
+    ? String(html).slice(0, 200000)
+    : textToHtml(text).slice(0, 200000);
+  const wrappedHtml = applySkywaySignature(rawHtml);
 
   try {
     getAdmin();
@@ -124,9 +133,9 @@ export default async function handler(req, res) {
     // email out NOW, not in 60 seconds when the queue cron next runs.
     const sendResult = await sendViaResendInline({
       to: validTo,
-      cc: validCc,
+      cc: finalCc,
       subject: String(subject).slice(0, 200),
-      html: html ? String(html).slice(0, 200000) : textToHtml(text).slice(0, 200000),
+      html: wrappedHtml,
       from: from || null,
     });
 
@@ -135,9 +144,9 @@ export default async function handler(req, res) {
     // delivery success.
     const baseRecord = {
       to: validTo,
-      cc: validCc,
+      cc: finalCc,
       subject: String(subject).slice(0, 200),
-      html: html ? String(html).slice(0, 200000) : textToHtml(text).slice(0, 200000),
+      html: wrappedHtml,
       from: from || null,
       attempts: 1,
       maxAttempts: body.maxAttempts || 5,
