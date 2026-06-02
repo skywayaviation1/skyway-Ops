@@ -33,6 +33,10 @@ const AllCrewDocsLazy = lazy(() => import('./PilotDocs.jsx').then(m => ({ defaul
 // since it renders nothing (returns null) for airports without significant
 // NOTAMs, which is most of them. Import cost is minimal.
 import FAANotamBadge from './FAANotamBadge.jsx';
+// Simplified duty console — pilots start/end their own duty period with
+// editable times, edit past periods from a history strip. Replaces the
+// previous DutyCardInner+forms which had broken pair-confirmation flows.
+import DutySimple from './DutySimple.jsx';
 import { createPortal } from 'react-dom';
 import {
   Plane, Calendar, MessageSquare, Users, Bell, MapPin,
@@ -4003,7 +4007,15 @@ function DutyCard({ currentUser, config, myTrips, users }) {
   if (currentUser?.role !== 'crew') return null;
   return (
     <DutyErrorBoundary>
-      <DutyCardInner currentUser={currentUser} myTrips={myTrips} users={users} />
+      {/* SIMPLIFIED DUTY UI — single-pilot model. Replaces DutyCardInner
+          which had partner-pairing, linked confirmation, FBO auto-trigger,
+          and rest-override flows that proved buggy in practice. DutySimple
+          lets the pilot start/end duty with editable times and edit any
+          past period from the history strip. The old DutyCardInner +
+          related forms (InCardDutyEdit, RestOverrideForm, DutyOffForm)
+          remain in this file as dead code — safe to remove after a
+          stability window. */}
+      <DutySimple currentUser={currentUser} />
     </DutyErrorBoundary>
   );
 }
