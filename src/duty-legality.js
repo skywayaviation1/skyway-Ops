@@ -673,11 +673,18 @@ export function evaluateLegality(periods, outsideFlying, atTime, options = {}) {
   //   duty until self-attested.
   // - declined: the pilot rejected the pair confirmation. Period exists
   //   only as an audit record.
+  // - admin-attested: admin attested on the pilot's behalf via the
+  //   "force confirm" escape hatch in addPartnerToActiveDuty. This
+  //   IS legally on duty (admin is asserting the pilot was actually
+  //   fit and present), so it counts the same as self-attested for
+  //   the engine. The distinction is preserved in the audit trail.
   // Periods missing confirmStatus (legacy docs from before the pair flow
   // was added) are treated as self-attested (the default for all old
   // docs is implicitly self — the pilot filled the form themselves).
   const safePeriods = rawPeriods.filter(p =>
-    !p || !p.confirmStatus || p.confirmStatus === 'self-attested'
+    !p || !p.confirmStatus ||
+    p.confirmStatus === 'self-attested' ||
+    p.confirmStatus === 'admin-attested'
   );
   const safeOutside = Array.isArray(outsideFlying) ? outsideFlying : [];
   const proposed = options.proposedAssignment || null;

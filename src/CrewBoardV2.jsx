@@ -16,10 +16,11 @@
 // legality, render. Re-evaluates every 60s.
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, Clock, CheckCircle2, Shield, Users, Download } from 'lucide-react';
+import { AlertTriangle, Clock, CheckCircle2, Shield, Users, Download, Settings } from 'lucide-react';
 import { subscribeRecentForAllPilots, subscribePeriodsForPilot, fetchOutsideFlyingForPilot } from './firebase-duty-v2.js';
 import { evaluateCurrent, evaluateProposed } from './duty-legality.js';
 import { DutyExportModal } from './DutyExport.jsx';
+import CrewManagePanel from './CrewManagePanel.jsx';
 
 const MS_HR = 3600 * 1000;
 
@@ -38,7 +39,7 @@ function fmtTime(t) {
   return d.toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' });
 }
 
-export default function CrewBoardV2() {
+export default function CrewBoardV2({ currentUser, users = [] } = {}) {
   const [periods, setPeriods] = useState([]);
   const [loading, setLoading] = useState(true);
   const [now, setNow] = useState(Date.now());
@@ -46,6 +47,16 @@ export default function CrewBoardV2() {
   // The modal owns its own pilot-picker / date-range / format state;
   // we just toggle visibility here.
   const [exportOpen, setExportOpen] = useState(false);
+  // Which pilot row has the management panel expanded. Single-expand:
+  // opening another row collapses the previous. Null = all collapsed.
+  const [managePilotUid, setManagePilotUid] = useState(null);
+
+  // Admin and ops users get management controls. During admin
+  // impersonation (currentUser._impersonating === true) the original
+  // admin retains management ability. Crew users see only the
+  // read-only board.
+  const role = (currentUser?.role || '').toLowerCase();
+  const canManage = role === 'admin' || role === 'ops' || currentUser?._impersonating === true;
 
   useEffect(() => {
     const unsub = subscribeRecentForAllPilots(30, (list) => {
@@ -158,15 +169,31 @@ export default function CrewBoardV2() {
 
       <div className="border border-slate-800 bg-slate-900/30 divide-y divide-slate-800">
         <div className="grid items-center gap-3 px-3 py-2 text-[10px] tracking-widest text-slate-500"
-          style={{ fontFamily: 'JetBrains Mono, monospace', gridTemplateColumns: '1fr 100px 100px 1fr 120px' }}>
+          style={{
+            fontFamily: 'JetBrains Mono, monospace',
+            gridTemplateColumns: canManage
+              ? '1fr 100px 100px 1fr 120px 60px'
+              : '1fr 100px 100px 1fr 120px',
+          }}>
           <div>PILOT</div>
           <div>STATE</div>
           <div>ELAPSED</div>
           <div>CONTEXT</div>
           <div className="text-right">LEGALITY</div>
+          {canManage && <div className="text-right">ADMIN</div>}
         </div>
         {sortedRows.map(row => (
-          <CrewRow key={row.uid} row={row} now={now} />
+          <CrewRow
+            key={row.uid}
+            row={row}
+            now={now}
+            canManage={canManage}
+            currentUser={currentUser}
+            crewUsers={users}
+            expanded={managePilotUid === row.uid}
+            onToggle={() => setManagePilotUid(managePilotUid === row.uid ? null : row.uid)}
+            allPeriods={periods}
+          />
         ))}
         {sortedRows.length === 0 && (
           <div className="px-3 py-4 text-[10px] text-slate-600 text-center">No crew data in past 30 days.</div>
@@ -183,8 +210,8 @@ export default function CrewBoardV2() {
   );
 }
 
-function CrewRow({ row, now }) {
-  const { name, active, sorted, state, legality } = row;
+function CrewRow({ row, now, canManage, currentUser, crewUsers, expanded, onToggle, allPeriods }) {
+  const { name, active, sorted, state, legality, uid } = row;
   const elapsed = active?.dutyOnAt ? now - active.dutyOnAt : 0;
   const elapsedHrs = elapsed / MS_HR;
   let elapsedTone = 'text-slate-300';
@@ -211,41 +238,89 @@ function CrewRow({ row, now }) {
     ? (lastClosed.dutyOffAt + 10 * MS_HR) - now
     : null;
 
+  // Find the partner period (if any) — needed by the manage panel.
+  // Look up directly in allPeriods rather than per-pilot list because
+  // the partner is, by definition, a DIFFERENT pilot's period.
+  const partnerPeriod = active?.partnerPeriodId
+    ? (allPeriods || []).find(p => p.id === active.partnerPeriodId)
+    : null;
+
+  // Grid template — adds a fixed-width MANAGE column on the right for
+  // admin/ops viewers. Crew users get the original 5-column layout.
+  const gridCols = canManage
+    ? '1fr 100px 100px 1fr 120px 60px'
+    : '1fr 100px 100px 1fr 120px';
+
   return (
-    <div className="grid items-center gap-3 px-3 py-2"
-      style={{ gridTemplateColumns: '1fr 100px 100px 1fr 120px' }}>
-      <div className="text-sm text-slate-200 truncate" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-        {name}
+    <div>
+      <div className="grid items-center gap-3 px-3 py-2"
+        style={{ gridTemplateColumns: gridCols }}>
+        <div className="text-sm text-slate-200 truncate" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+          {name}
+        </div>
+        <div className={`text-[11px] tracking-widest ${stateTone}`}
+          style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+          {pulse && <span className="inline-block w-1.5 h-1.5 bg-current rounded-full animate-pulse mr-1"></span>}
+          {state}
+        </div>
+        <div className={`text-sm tabular-nums ${elapsedTone}`}
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {active ? fmtElapsed(elapsed) : (restRemainingMs > 0 ? `${fmtElapsed(restRemainingMs)} rest` : '—')}
+        </div>
+        <div className="text-[11px] text-slate-500 truncate" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {active
+            ? [
+                active.tail && `Tail ${active.tail}`,
+                active.tripId && `Trip ${active.tripId}`,
+                active.location && `@ ${active.location}`,
+                active.role,
+              ].filter(Boolean).join(' · ')
+            : lastClosed
+              ? `Last off ${fmtTime(lastClosed.dutyOffAt)}`
+              : '—'}
+        </div>
+        <div className={`text-right text-[10px] tracking-widest ${legalityTone}`}
+          style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
+          {legality.status === 'illegal'
+            ? 'ILLEGAL'
+            : legality.status === 'warning'
+              ? `WARN (${legality.warnings.length})`
+              : 'LEGAL'}
+        </div>
+        {/* Admin manage toggle — only renders when canManage. The button
+            is intentionally small/quiet so it doesn't compete with the
+            status info; ops/admins expecting it know where to look. */}
+        {canManage && (
+          <div className="text-right">
+            <button
+              onClick={onToggle}
+              disabled={!active}
+              className={`text-[9px] tracking-widest px-1.5 py-1 border ${
+                expanded
+                  ? 'border-cyan-400 text-cyan-300 bg-cyan-500/10'
+                  : 'border-slate-700 text-slate-500 hover:border-cyan-400 hover:text-cyan-300'
+              } disabled:opacity-30 disabled:cursor-not-allowed`}
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              title={active ? 'Manage this duty period' : 'No active duty to manage'}
+            >
+              {expanded ? 'CLOSE' : 'MANAGE'}
+            </button>
+          </div>
+        )}
       </div>
-      <div className={`text-[11px] tracking-widest ${stateTone}`}
-        style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
-        {pulse && <span className="inline-block w-1.5 h-1.5 bg-current rounded-full animate-pulse mr-1"></span>}
-        {state}
-      </div>
-      <div className={`text-sm tabular-nums ${elapsedTone}`}
-        style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-        {active ? fmtElapsed(elapsed) : (restRemainingMs > 0 ? `${fmtElapsed(restRemainingMs)} rest` : '—')}
-      </div>
-      <div className="text-[11px] text-slate-500 truncate" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-        {active
-          ? [
-              active.tail && `Tail ${active.tail}`,
-              active.tripId && `Trip ${active.tripId}`,
-              active.location && `@ ${active.location}`,
-              active.role,
-            ].filter(Boolean).join(' · ')
-          : lastClosed
-            ? `Last off ${fmtTime(lastClosed.dutyOffAt)}`
-            : '—'}
-      </div>
-      <div className={`text-right text-[10px] tracking-widest ${legalityTone}`}
-        style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
-        {legality.status === 'illegal'
-          ? 'ILLEGAL'
-          : legality.status === 'warning'
-            ? `WARN (${legality.warnings.length})`
-            : 'LEGAL'}
-      </div>
+
+      {/* Expanded admin panel — rendered inline below the row when expanded.
+          Crew users never see this (canManage gates the toggle button so
+          this branch is unreachable for them). */}
+      {canManage && expanded && active && (
+        <CrewManagePanel
+          period={active}
+          partnerPeriod={partnerPeriod}
+          currentUser={currentUser}
+          crewUsers={crewUsers}
+          onClose={onToggle}
+        />
+      )}
     </div>
   );
 }

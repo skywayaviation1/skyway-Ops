@@ -11112,7 +11112,7 @@ function QuickBooksConnectionPanel({ currentUser }) {
   );
 }
 
-function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, onLoadFromText, syncStatus, currentUser, allTrips }) {
+function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, onLoadFromText, syncStatus, currentUser, allTrips, users = [] }) {
   const [icalUrl, setIcalUrl] = useState(config.icalUrl || '');
   const [icalText, setIcalText] = useState('');
   const [crewName, setCrewName] = useState(config.crewName || '');
@@ -11372,7 +11372,7 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
                     CREW · LOADING…
                   </div>
                 }>
-                  <CrewBoardV2Lazy />
+                  <CrewBoardV2Lazy currentUser={currentUser} users={users} />
                 </Suspense>
               </div>
             </section>
@@ -23227,7 +23227,7 @@ export default function CharterOps() {
                 LOADING CREW BOARD
               </div>
             }>
-              <CrewBoardV2Lazy />
+              <CrewBoardV2Lazy currentUser={currentUser} users={users} />
             </Suspense>
           </div>
         )}
@@ -23247,6 +23247,7 @@ export default function CharterOps() {
           syncStatus={syncStatus}
           currentUser={currentUser}
           allTrips={allTrips}
+          users={users}
           onClose={() => setShowSettings(false)}
           onLoadDemo={loadDemo}
           onLoadFromUrl={loadFromUrl}

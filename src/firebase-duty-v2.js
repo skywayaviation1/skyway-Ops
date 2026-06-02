@@ -948,3 +948,285 @@ export async function assertPairLegalForDispatch({ pic, sic, proposed, requireBo
   };
 }
 
+// =====================================================================
+// ADMIN PARTNER MANAGEMENT
+// =====================================================================
+//
+// Three operations exposed to ops/admin for fixing crew pairings after
+// the fact:
+//
+//   1. addPartnerToActiveDuty(picPeriodId, sicOpts, opts)
+//      The PIC went on duty solo (or with a now-declined SIC) and ops
+//      needs to enroll a new SIC. Creates a duty period for the SIC,
+//      cross-links it with the PIC's, and writes audit entries to both.
+//
+//      Default attestation path: SIC's period is created with
+//      confirmStatus='pending'. The SIC opens DutyV2 and taps CONFIRM
+//      to attest fit-for-duty. Same flow as PIC→SIC pair start.
+//
+//      Escape hatch: pass opts.forceAttest=true with opts.forceAttestReason
+//      to record the SIC as legally on duty without their interaction.
+//      This sets confirmStatus='admin-attested' (NOT 'self-attested')
+//      so the record is clearly distinguishable from a pilot's own
+//      attestation in the audit trail. Use only when the SIC is
+//      verifiably on duty but unreachable (phone dead, mid-flight, etc).
+//
+//   2. removePartnerFromDuty(picPeriodId, opts)
+//      Clears the partner link on the PIC's period and closes the SIC's
+//      period (zero-length close if pending, normal close if active).
+//      Used when a paired duty needs to revert to single-pilot.
+//
+//   3. changePartner(picPeriodId, newSicOpts, opts)
+//      Convenience: remove existing partner + add new one. Atomic from
+//      the caller's perspective (failures inside surface as exceptions
+//      but the underlying writes are sequential — see honest note in
+//      the implementation comment).
+
+/**
+ * Add a partner (SIC) to a PIC's currently-active duty period.
+ *
+ * picPeriodId: the existing duty period id for the PIC.
+ * sicOpts: { pilotUid, pilotName, priorRestMs (optional, inherits from PIC) }
+ * opts:
+ *   {
+ *     editedBy: string,            admin's display name for audit
+ *     forceAttest: boolean,        default false — see escape hatch above
+ *     forceAttestReason: string,   required if forceAttest=true
+ *   }
+ */
+export async function addPartnerToActiveDuty(picPeriodId, sicOpts, opts = {}) {
+  if (!picPeriodId) throw new Error('picPeriodId required');
+  if (!sicOpts?.pilotUid) throw new Error('SIC pilotUid required');
+  if (opts.forceAttest && !opts.forceAttestReason) {
+    throw new Error('forceAttestReason required when forceAttest=true');
+  }
+
+  // Load PIC's period
+  const picRef = doc(db, COLL, picPeriodId);
+  const picSnap = await getDoc(picRef);
+  if (!picSnap.exists()) throw new Error('PIC duty period not found');
+  const pic = picSnap.data();
+  if (pic.status !== 'on') {
+    throw new Error('PIC duty period is not active — cannot add partner');
+  }
+  if (pic.pilotUid === sicOpts.pilotUid) {
+    throw new Error('cannot pair a pilot with themselves');
+  }
+
+  // Check whether PIC already has an active partner. If the existing
+  // partner is pending or self-attested, refuse — admin must explicitly
+  // remove first to avoid silently overwriting a legitimate pairing.
+  // If the existing partner is declined, we can quietly re-pair.
+  if (pic.partnerPeriodId) {
+    const oldPartnerSnap = await getDoc(doc(db, COLL, pic.partnerPeriodId));
+    if (oldPartnerSnap.exists()) {
+      const old = oldPartnerSnap.data();
+      if (old.status === 'on' && old.confirmStatus !== 'declined') {
+        throw new Error(
+          `PIC already has an active partner (${old.pilotName}). ` +
+          `Use removePartnerFromDuty or changePartner first.`
+        );
+      }
+    }
+  }
+
+  // Refuse if the proposed SIC has another open period (a different trip)
+  const sicOpenQ = query(
+    collection(db, COLL),
+    where('pilotUid', '==', sicOpts.pilotUid),
+    where('status', '==', 'on'),
+  );
+  const sicOpen = await getDocs(sicOpenQ);
+  if (!sicOpen.empty) {
+    throw new Error('Proposed SIC already has an open duty period elsewhere');
+  }
+
+  // Build SIC doc inheriting from PIC's duty
+  const now = Date.now();
+  const sicId = `${sicOpts.pilotUid}_${pic.dutyOnAt}`;
+  const adminName = opts.editedBy || 'admin';
+
+  // Determine confirmStatus + fitForDuty based on attestation path.
+  // 'pending' is the default safe path — SIC must confirm. 'admin-attested'
+  // is the escape hatch — admin attests on SIC's behalf with a documented
+  // reason. The legality engine treats 'admin-attested' as legally on
+  // duty (per check in evaluateLegality), but the record is marked
+  // separately from self-attested so a ramp inspector can see who
+  // confirmed each period.
+  const confirmStatus = opts.forceAttest ? 'admin-attested' : 'pending';
+  const fitForDuty = opts.forceAttest ? true : null;
+
+  const sicDoc = {
+    id: sicId,
+    pilotUid: sicOpts.pilotUid,
+    pilotName: sicOpts.pilotName || 'Unknown',
+    location: pic.location || '',
+    tail: pic.tail || null,
+    tripId: pic.tripId || null,
+    role: 'SIC',
+    crewType: 'two',
+    assignmentType: pic.assignmentType,
+    fitForDuty,
+    priorRestMs: Number.isFinite(sicOpts.priorRestMs)
+      ? sicOpts.priorRestMs
+      : (Number.isFinite(pic.priorRestMs) ? pic.priorRestMs : null),
+    dutyOnAt: pic.dutyOnAt,
+    dutyOffAt: null,
+    flightTimeMs: 0,
+    excursionReason: null,
+    overrideStatus: 'none',
+    overrideRequestedBy: null,
+    overrideRequestedAt: null,
+    overrideRequestReason: null,
+    overrideApprovedBy: null,
+    overrideApprovedAt: null,
+    overrideApprovalNotes: null,
+    confirmStatus,
+    partnerPeriodId: picPeriodId,
+    pendingCreatedBy: pic.pilotUid,
+    confirmedAt: opts.forceAttest ? now : null,
+    declinedAt: null,
+    declinedReason: null,
+    adminEdits: [{
+      by: adminName,
+      at: now,
+      field: 'created',
+      from: null,
+      to: confirmStatus,
+      note: opts.forceAttest
+        ? `Admin added partner with FORCE ATTEST. Reason: ${opts.forceAttestReason}`
+        : `Admin added partner — SIC must confirm to activate`,
+    }],
+    createdAt: now,
+    updatedAt: now,
+    status: 'on',
+    over14: false,
+  };
+
+  // Write SIC doc and update PIC link in a single batch.
+  const picEdits = Array.isArray(pic.adminEdits) ? pic.adminEdits : [];
+  const batch = writeBatch(db);
+  batch.set(doc(db, COLL, sicId), sicDoc);
+  batch.update(picRef, {
+    partnerPeriodId: sicId,
+    updatedAt: now,
+    adminEdits: [...picEdits, {
+      by: adminName,
+      at: now,
+      field: 'partnerPeriodId',
+      from: pic.partnerPeriodId || null,
+      to: sicId,
+      note: `Admin enrolled ${sicDoc.pilotName} as SIC` +
+        (opts.forceAttest ? ' (force-attested)' : ' (pending SIC confirmation)'),
+    }],
+  });
+  await batch.commit();
+
+  return { sicPeriod: sicDoc, picPeriodId };
+}
+
+/**
+ * Remove a partner link from a PIC's duty period. The SIC's period is
+ * closed (zero-length if it was still pending, otherwise normal close
+ * with dutyOffAt=now). Both docs get audit entries.
+ *
+ * If the SIC's period was already 'off' (e.g. SIC declined), this just
+ * clears the PIC's partnerPeriodId without touching the SIC doc.
+ */
+export async function removePartnerFromDuty(picPeriodId, opts = {}) {
+  if (!picPeriodId) throw new Error('picPeriodId required');
+  const adminName = opts.editedBy || 'admin';
+  const note = opts.note || 'Admin removed partner';
+  const now = Date.now();
+
+  const picRef = doc(db, COLL, picPeriodId);
+  const picSnap = await getDoc(picRef);
+  if (!picSnap.exists()) throw new Error('PIC duty period not found');
+  const pic = picSnap.data();
+  if (!pic.partnerPeriodId) {
+    throw new Error('PIC duty period has no partner to remove');
+  }
+
+  const sicId = pic.partnerPeriodId;
+  const sicRef = doc(db, COLL, sicId);
+  const sicSnap = await getDoc(sicRef);
+  const batch = writeBatch(db);
+
+  // Update PIC: clear partnerPeriodId
+  const picEdits = Array.isArray(pic.adminEdits) ? pic.adminEdits : [];
+  batch.update(picRef, {
+    partnerPeriodId: null,
+    updatedAt: now,
+    adminEdits: [...picEdits, {
+      by: adminName,
+      at: now,
+      field: 'partnerPeriodId',
+      from: sicId,
+      to: null,
+      note,
+    }],
+  });
+
+  // Update SIC if it still exists and is open
+  if (sicSnap.exists()) {
+    const sic = sicSnap.data();
+    if (sic.status === 'on') {
+      const sicEdits = Array.isArray(sic.adminEdits) ? sic.adminEdits : [];
+      // Pending SICs get a zero-length close — they were never actually
+      // on duty. Self/admin-attested SICs were on duty so we close at
+      // now (preserves elapsed time for legality records).
+      const isPending = sic.confirmStatus === 'pending';
+      const dutyOffAt = isPending ? sic.dutyOnAt : now;
+      batch.update(sicRef, {
+        status: 'off',
+        dutyOffAt,
+        partnerPeriodId: null,
+        updatedAt: now,
+        adminEdits: [...sicEdits, {
+          by: adminName,
+          at: now,
+          field: 'status',
+          from: 'on',
+          to: 'off',
+          note: `Admin removed pairing — ${isPending ? 'pending duty cancelled' : 'duty closed at admin removal'}`,
+        }],
+      });
+    } else {
+      // SIC already off — just clear the back-link for symmetry
+      const sicEdits = Array.isArray(sic.adminEdits) ? sic.adminEdits : [];
+      batch.update(sicRef, {
+        partnerPeriodId: null,
+        updatedAt: now,
+        adminEdits: [...sicEdits, {
+          by: adminName,
+          at: now,
+          field: 'partnerPeriodId',
+          from: picPeriodId,
+          to: null,
+          note: 'Admin cleared back-link from closed SIC period',
+        }],
+      });
+    }
+  }
+
+  await batch.commit();
+}
+
+/**
+ * Convenience: remove existing partner and add a new one in sequence.
+ *
+ * HONEST NOTE: this is two separate batch commits, not one atomic
+ * transaction. If the removePartnerFromDuty succeeds but the
+ * addPartnerToActiveDuty fails, the PIC ends up partner-less and the
+ * caller must retry the add. The caller should surface the error and
+ * not assume rollback.
+ */
+export async function changePartner(picPeriodId, newSicOpts, opts = {}) {
+  await removePartnerFromDuty(picPeriodId, {
+    editedBy: opts.editedBy,
+    note: `Admin removing old partner before swap to ${newSicOpts?.pilotName || 'new SIC'}`,
+  });
+  return await addPartnerToActiveDuty(picPeriodId, newSicOpts, opts);
+}
+
+
