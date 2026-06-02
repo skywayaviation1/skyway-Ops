@@ -30,6 +30,10 @@
 
 import React, { useMemo, useState, useEffect, Suspense, lazy } from 'react';
 import { Loader2, Calendar, FileText, Mail, AlertCircle, Plane, Clock, Cloud, AlertTriangle, Receipt, Wrench, Wind, Users } from 'lucide-react';
+// Live crew duty board (V2). Reads duty-periods-v2 collection,
+// evaluates legality per pilot, shows on-duty / resting / available /
+// illegal / warning state.
+const CrewBoardV2Lazy = lazy(() => import('./CrewBoardV2.jsx'));
 
 const FlightBoardLazy = lazy(() => import('./FlightBoard.jsx'));
 
@@ -214,7 +218,8 @@ export default function OpsCommandCenter({ currentUser, trips, users, onSelectTr
   const [expenses, setExpenses] = useState([]);
   const [fleet, setFleet] = useState([]); // maintenance fleet records (for AOG state)
   const [mel, setMel] = useState([]);
-  const [activeDuty, setActiveDuty] = useState([]); // pilots currently on duty
+  // Duty state removed — CrewBoardV2 subscribes to duty-periods-v2 directly
+  // and renders the crew status section itself. No need for parent state.
 
   useEffect(() => {
     let cancelled = false;
@@ -239,12 +244,10 @@ export default function OpsCommandCenter({ currentUser, trips, users, onSelectTr
     })();
     (async () => {
       try {
-        const m = await import('./firebase-duty.js');
-        if (cancelled) return;
-        if (m.subscribeToActiveDuty) {
-          unsubs.push(m.subscribeToActiveDuty((list) => setActiveDuty(list)));
-        }
-      } catch (e) { console.warn('[OpsCommandCenter] duty subscribe failed:', e?.message); }
+        // (Duty subscription removed during V2 migration. CrewBoardV2
+        // mounts in this dashboard and subscribes to duty-periods-v2
+        // directly. Nothing to do here.)
+      } catch (_) {}
     })();
     return () => {
       cancelled = true;
@@ -580,25 +583,19 @@ export default function OpsCommandCenter({ currentUser, trips, users, onSelectTr
             Lists pilots currently on duty with elapsed time, FAR 117
             14-hour limit warning, and PIC/SIC pair. Hidden when no one
             is on duty (no false-positive empty state to scroll past). */}
-        {activeDuty.length > 0 && (
-          <section>
-            <div className="flex items-baseline justify-between mb-3">
-              <h2 className="text-xs tracking-[0.2em] text-slate-300"
-                style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}>
-                CREW · ON DUTY
-              </h2>
-              <span className="text-[10px] text-slate-500"
-                style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                {activeDuty.length} {activeDuty.length === 1 ? 'PILOT' : 'PILOTS'}
-              </span>
-            </div>
-            <CrewDutyPanel
-              activeDuty={activeDuty}
-              now={now}
-              onSwitchSection={onSwitchSection}
-            />
-          </section>
-        )}
+        {/* CREW · DUTY STATUS — V2 board. Pulls from duty-periods-v2
+            (new schema). Replaces the old activeDuty-driven CrewDutyPanel
+            which read from the legacy duty-state collection. The legacy
+            subscription/state remains in this file as dead code so we
+            can revert quickly if needed; safe to remove after stability. */}
+        <Suspense fallback={
+          <div className="border border-slate-800 bg-slate-900/30 p-3 text-[10px] tracking-widest text-slate-500"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            CREW · LOADING…
+          </div>
+        }>
+          <CrewBoardV2Lazy />
+        </Suspense>
 
         {/* === Embedded flight board (compact) ===
             Same component the TRACKING screen uses, in compact mode.
@@ -1145,112 +1142,3 @@ function ActionTile({ icon: Icon, label, count, accent = 'muted', subtitle, onCl
   );
 }
 
-// ====================================================================
-// CrewDutyPanel — pilots currently on duty
-// ====================================================================
-//
-// Shows every active duty period (status='on' in duty-state collection)
-// with PIC name, SIC name, duty elapsed time, and a color-coded warning
-// when approaching the FAR 117 14-hour limit.
-//
-// Color thresholds:
-//   < 10h: green (well within limits)
-//   10-12h: amber (approaching, monitor)
-//   12-14h: red (last quarter of legal duty, plan landing soon)
-//   > 14h: critical red (over the legal limit — requires reason on file)
-//
-// Linked-duty pairs (PIC and SIC both flying the same trip) appear as
-// a SINGLE row with both names. Standalone duty periods (when only one
-// pilot signed on) show with the partner field empty.
-function CrewDutyPanel({ activeDuty, now, onSwitchSection }) {
-  // FAR 117 — 14h max duty. Match the constant in firebase-duty.js.
-  const DUTY_MAX_HRS = 14;
-  const WARN_HRS = 10;
-  const URGENT_HRS = 12;
-
-  // Sort by elapsed time descending — pilots closest to the limit appear
-  // at the top where the dispatcher will see them first.
-  const sorted = useMemo(() => {
-    const list = (Array.isArray(activeDuty) ? activeDuty : []).slice();
-    list.sort((a, b) => {
-      const ea = now - (a.dutyOnAt || now);
-      const eb = now - (b.dutyOnAt || now);
-      return eb - ea;
-    });
-    return list;
-  }, [activeDuty, now]);
-
-  return (
-    <div className="border border-slate-800 bg-slate-900/30">
-      {/* Header row */}
-      <div className="grid items-center gap-3 px-3 py-2 border-b border-slate-800 text-[10px] tracking-widest text-slate-500"
-        style={{ fontFamily: 'JetBrains Mono, monospace', gridTemplateColumns: '1fr 1fr 120px 120px' }}>
-        <div>PIC</div>
-        <div>SIC</div>
-        <div className="text-right">DUTY ON</div>
-        <div className="text-right">ELAPSED</div>
-      </div>
-      {sorted.map((d) => {
-        const elapsedMs = now - (d.dutyOnAt || now);
-        const elapsedHrs = elapsedMs / 3600000;
-        let tone = 'green';
-        let pulse = false;
-        if (elapsedHrs >= DUTY_MAX_HRS) { tone = 'critical'; pulse = true; }
-        else if (elapsedHrs >= URGENT_HRS) { tone = 'red'; pulse = true; }
-        else if (elapsedHrs >= WARN_HRS) { tone = 'amber'; }
-
-        const elapsedStr = formatElapsed(elapsedMs);
-        const dutyOnStr = d.dutyOnAt
-          ? new Date(d.dutyOnAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
-          : '—';
-
-        const toneClasses = {
-          green:    'text-emerald-400',
-          amber:    'text-amber-400',
-          red:      'text-red-400',
-          critical: 'text-red-500',
-        }[tone];
-
-        return (
-          <div
-            key={d.id}
-            className="grid items-center gap-3 px-3 py-2 border-b border-slate-800 last:border-b-0 hover:bg-slate-900/40"
-            style={{ gridTemplateColumns: '1fr 1fr 120px 120px' }}
-          >
-            <div className="text-sm text-slate-200 truncate" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-              {d.pilotName || '—'}
-              {d.over14 && (
-                <span className="ml-2 text-[10px] text-red-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                  OVER 14
-                </span>
-              )}
-            </div>
-            <div className="text-sm text-slate-300 truncate" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-              {d.sicName || (
-                <span className="text-slate-700">— single pilot —</span>
-              )}
-            </div>
-            <div className="text-right text-sm text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              {dutyOnStr}
-            </div>
-            <div className={`text-right text-sm flex items-center justify-end gap-1.5 ${toneClasses}`}
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              {pulse && <span className="w-1.5 h-1.5 bg-current rounded-full animate-pulse"></span>}
-              {elapsedStr}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-// Format an elapsed milliseconds duration as "Xh Ym" — compact form
-// used in the duty panel. Negative or invalid inputs return "—".
-function formatElapsed(ms) {
-  if (!Number.isFinite(ms) || ms < 0) return '—';
-  const totalMin = Math.floor(ms / 60000);
-  const hrs = Math.floor(totalMin / 60);
-  const min = totalMin % 60;
-  return `${hrs}h ${String(min).padStart(2, '0')}m`;
-}
