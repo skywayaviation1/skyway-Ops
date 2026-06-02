@@ -25,6 +25,11 @@ import {
   ArrowRight, CheckCircle2, Circle,
 } from 'lucide-react';
 import { formatLocalTime, formatLocalDate } from './airports.js';
+// FAA NOTAM badge — renders silently when no significant NOTAMs are active,
+// shows a colored badge with click-to-expand panel when there are. We pass
+// no getIdToken since the broker page is anonymous; the endpoint accepts
+// unauthenticated reads for now (NOTAM data is public FAA info).
+import FAANotamBadge from './FAANotamBadge.jsx';
 
 const POLL_MS = 120000; // refresh live position every 2 minutes
 
@@ -732,10 +737,16 @@ function Leg({ leg, isActive, position }) {
               </span>
               {isActive && <LiveBadge />}
             </div>
-            <div className="mt-2 flex items-center gap-2 text-2xl" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
-              <span className="tracking-wider">{leg.from || '???'}</span>
+            <div className="mt-2 flex items-center gap-2 text-2xl flex-wrap" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
+              <span className="inline-flex items-center gap-1.5">
+                <span className="tracking-wider">{leg.from || '???'}</span>
+                {leg.from && <FAANotamBadge icao={leg.from} />}
+              </span>
               <ArrowRight className="w-5 h-5 text-cyan-400" />
-              <span className="tracking-wider">{leg.to || '???'}</span>
+              <span className="inline-flex items-center gap-1.5">
+                <span className="tracking-wider">{leg.to || '???'}</span>
+                {leg.to && <FAANotamBadge icao={leg.to} />}
+              </span>
             </div>
           </div>
           {hasPilots && (
