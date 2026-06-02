@@ -823,8 +823,45 @@ function buildStatusEmail(step, trip, brokerEmail) {
   const greeting = `Hi ${greetingFromEmail(brokerEmail)},`;
   const tail = trip.info.tail || '';
   const route = `${trip.info.from || ''}-${trip.info.to || ''}`;
-  const signature = '\n\n— Skyway Aviation\nPrivate Jet & Helicopter Charter Services';
   const isRepo = trip.info.legType === 'REPO';
+
+  // Time of the event in the LOCAL timezone of the departure airport (where
+  // the crew is when the event happens). Falls back to "now" if the step
+  // didn't carry a timestamp — should never happen because we always set
+  // step.timestamp when marking a step done, but be defensive.
+  // For the LANDED event (when added later) this should switch to the arrival
+  // airport instead, but the current status flow doesn't email on landed.
+  const eventDate = step?.timestamp ? new Date(step.timestamp) : new Date();
+  const local = formatLocalTime(eventDate, trip.info.from);
+  // Combined string like "10:23 PM EDT". When the airport isn't in the
+  // timezone DB, `tz` is empty and we just get the time without an abbrev.
+  const localTimeStr = local.tz ? `${local.time} ${local.tz}` : local.time;
+
+  // Signature with PIC/SIC names when available. Crew names are pulled from
+  // JetInsight on import and stored on trip.info.pic / trip.info.sic.
+  // Falls back to the company line when neither is set — never returns an
+  // empty signature.
+  const sigLines = [
+    '',
+    '',
+    '— Skyway Aviation',
+    'Private Jet & Helicopter Charter Services',
+  ];
+  if (trip.info.pic || trip.info.sic) {
+    // Insert "Your flight crew:" + names ABOVE the company line for a more
+    // personal sign-off. Example:
+    //   Your flight crew:
+    //   Captain — Maxwell Stanley Hagberg
+    //   First Officer — Cole Joseph Zangerle
+    //
+    //   — Skyway Aviation
+    //   Private Jet & Helicopter Charter Services
+    const crewLines = ['', 'Your flight crew:'];
+    if (trip.info.pic) crewLines.push(`Captain — ${trip.info.pic}`);
+    if (trip.info.sic) crewLines.push(`First Officer — ${trip.info.sic}`);
+    sigLines.splice(2, 0, ...crewLines);
+  }
+  const signature = sigLines.join('\n');
 
   switch (step.id) {
     case 'crew_onsite':
@@ -833,7 +870,7 @@ function buildStatusEmail(step, trip, brokerEmail) {
           subject: `Crew Preparing Aircraft for Repositioning — ${tail} ${route}`,
           text:
             `${greeting}\n\n` +
-            `Our crew has arrived at the FBO and is preparing the aircraft for the repositioning ` +
+            `Our crew has arrived at the FBO at ${localTimeStr} and is preparing the aircraft for the repositioning ` +
             `flight from ${trip.info.from || ''} to ${trip.info.to || ''}. ` +
             `We will notify you when the aircraft is ready and again when it begins taxi for departure.` +
             signature,
@@ -843,7 +880,7 @@ function buildStatusEmail(step, trip, brokerEmail) {
         subject: `Crew Arrival Notification — ${tail} ${route}`,
         text:
           `${greeting}\n\n` +
-          `This email is to inform you that our crew has arrived at the FBO (local time) ` +
+          `This email is to inform you that our crew has arrived at the FBO at ${localTimeStr} ` +
           `and is preparing the aircraft for your passengers. We will notify you as soon as ` +
           `the aircraft is ready for boarding.` +
           signature,
@@ -855,7 +892,8 @@ function buildStatusEmail(step, trip, brokerEmail) {
           subject: `Aircraft Ready for Repositioning — ${tail} ${route}`,
           text:
             `${greeting}\n\n` +
-            `${tail} is ready for the repositioning flight from ${trip.info.from || ''} to ${trip.info.to || ''}. ` +
+            `${tail} is ready for the repositioning flight from ${trip.info.from || ''} to ${trip.info.to || ''} ` +
+            `as of ${localTimeStr}. ` +
             `We will send a final notification once the aircraft begins taxi for departure.` +
             signature,
         };
@@ -864,8 +902,8 @@ function buildStatusEmail(step, trip, brokerEmail) {
         subject: `Aircraft Ready for Passengers — ${tail} ${route}`,
         text:
           `${greeting}\n\n` +
-          `The aircraft is now ready for your passengers. We will advise you once they have ` +
-          `checked in.\n\n` +
+          `The aircraft is now ready for your passengers as of ${localTimeStr}. ` +
+          `We will advise you once they have checked in.\n\n` +
           `If catering has been arranged for this flight, you will receive a separate notification ` +
           `once it has been loaded onboard.` +
           signature,
@@ -876,7 +914,7 @@ function buildStatusEmail(step, trip, brokerEmail) {
         subject: `Catering Loaded — ${tail} ${route}`,
         text:
           `${greeting}\n\n` +
-          `Catering has been loaded onboard the aircraft.` +
+          `Catering has been loaded onboard the aircraft at ${localTimeStr}.` +
           signature,
       };
 
@@ -885,7 +923,7 @@ function buildStatusEmail(step, trip, brokerEmail) {
         subject: `Passengers Arrived — ${tail} ${route}`,
         text:
           `${greeting}\n\n` +
-          `Passengers have arrived at the FBO. We will notify you once IDs have been ` +
+          `Passengers have arrived at the FBO at ${localTimeStr}. We will notify you once IDs have been ` +
           `verified and they have boarded the aircraft.` +
           signature,
       };
@@ -895,7 +933,7 @@ function buildStatusEmail(step, trip, brokerEmail) {
         subject: `Passengers Checked In — ${tail} ${route}`,
         text:
           `${greeting}\n\n` +
-          `Passengers have checked in, IDs have been verified, and they are now boarding the aircraft.\n\n` +
+          `Passengers have checked in at ${localTimeStr}, IDs have been verified, and they are now boarding the aircraft.\n\n` +
           `The next update will be our taxi notification.` +
           signature,
       };
@@ -906,7 +944,7 @@ function buildStatusEmail(step, trip, brokerEmail) {
           subject: `Aircraft Taxiing for Repositioning — ${tail} ${route}`,
           text:
             `${greeting}\n\n` +
-            `${tail} is now taxiing for the repositioning flight from ${trip.info.from || ''} to ${trip.info.to || ''}. ` +
+            `${tail} began taxiing at ${localTimeStr} for the repositioning flight from ${trip.info.from || ''} to ${trip.info.to || ''}. ` +
             `We will provide the aircraft's ETA once it is airborne.` +
             signature,
         };
@@ -915,7 +953,7 @@ function buildStatusEmail(step, trip, brokerEmail) {
         subject: `Aircraft Taxiing for Departure — ${tail} ${route}`,
         text:
           `${greeting}\n\n` +
-          `The aircraft is now taxiing for departure. We will provide the aircraft's ETA once ` +
+          `The aircraft began taxiing for departure at ${localTimeStr}. We will provide the aircraft's ETA once ` +
           `it is airborne.` +
           signature,
       };
@@ -926,7 +964,7 @@ function buildStatusEmail(step, trip, brokerEmail) {
           subject: `Wheels Up (Repositioning) — ${tail} ${route}`,
           text:
             `${greeting}\n\n` +
-            `${tail} is wheels up from ${trip.info.from || ''} and en route to ${trip.info.to || ''} ` +
+            `${tail} is wheels up at ${localTimeStr} from ${trip.info.from || ''} and en route to ${trip.info.to || ''} ` +
             `for the repositioning flight. We will notify you upon landing.` +
             signature,
         };
@@ -935,18 +973,23 @@ function buildStatusEmail(step, trip, brokerEmail) {
         subject: `Wheels Up — ${tail} ${route}`,
         text:
           `${greeting}\n\n` +
-          `${tail} is wheels up from ${trip.info.from || ''} and en route to ${trip.info.to || ''}. ` +
+          `${tail} is wheels up at ${localTimeStr} from ${trip.info.from || ''} and en route to ${trip.info.to || ''}. ` +
           `We will notify you upon landing.` +
           signature,
       };
 
-    case 'landed':
+    case 'landed': {
+      // Landed time is local to the ARRIVAL airport, not the departure one.
+      // Re-format using trip.info.to so the broker sees the destination's
+      // local time instead of the time at the departure FBO.
+      const localArr = formatLocalTime(eventDate, trip.info.to);
+      const arrTimeStr = localArr.tz ? `${localArr.time} ${localArr.tz}` : localArr.time;
       if (isRepo) {
         return {
           subject: `Landed (Repositioning) — ${tail} ${route}`,
           text:
             `${greeting}\n\n` +
-            `${tail} has landed at ${trip.info.to || ''}. The repositioning flight is complete.` +
+            `${tail} has landed at ${trip.info.to || ''} at ${arrTimeStr}. The repositioning flight is complete.` +
             signature,
         };
       }
@@ -954,10 +997,11 @@ function buildStatusEmail(step, trip, brokerEmail) {
         subject: `Landed — ${tail} ${route}`,
         text:
           `${greeting}\n\n` +
-          `${tail} has landed at ${trip.info.to || ''}. Thank you for choosing Skyway Aviation. ` +
+          `${tail} has landed at ${trip.info.to || ''} at ${arrTimeStr}. Thank you for choosing Skyway Aviation. ` +
           `We look forward to serving you again.` +
           signature,
       };
+    }
 
     default:
       // Unknown status — don't send an email
