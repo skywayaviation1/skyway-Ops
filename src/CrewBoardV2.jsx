@@ -21,6 +21,7 @@ import { subscribeRecentForAllPilots, subscribePeriodsForPilot, fetchOutsideFlyi
 import { evaluateCurrent, evaluateProposed } from './duty-legality.js';
 import { DutyExportModal } from './DutyExport.jsx';
 import CrewManagePanel from './CrewManagePanel.jsx';
+import CrewStatsPanel from './CrewStatsPanel.jsx';
 
 const MS_HR = 3600 * 1000;
 
@@ -39,7 +40,7 @@ function fmtTime(t) {
   return d.toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' });
 }
 
-export default function CrewBoardV2({ currentUser, users = [] } = {}) {
+export default function CrewBoardV2({ currentUser, users = [], trips = [] } = {}) {
   const [periods, setPeriods] = useState([]);
   const [loading, setLoading] = useState(true);
   const [now, setNow] = useState(Date.now());
@@ -140,6 +141,18 @@ export default function CrewBoardV2({ currentUser, users = [] } = {}) {
 
   return (
     <div className="space-y-2">
+      {/* Admin-only stats panel — collapsible, defaults open. Gated by
+          canManage; pilots/crew never see this. Receives the same
+          subscribed periods array plus trips for the 24h scheduled-vs-
+          actual comparison. If trips aren't passed, the panel still
+          shows trailing-window averages and last-24h actual flight. */}
+      <CrewStatsPanel
+        periods={periods}
+        trips={trips}
+        users={users}
+        canManage={canManage}
+      />
+
       <div className="flex items-baseline justify-between gap-3">
         <h2 className="text-xs tracking-[0.2em] text-slate-300"
           style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}>

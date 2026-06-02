@@ -594,7 +594,7 @@ export default function OpsCommandCenter({ currentUser, trips, users, onSelectTr
             CREW · LOADING…
           </div>
         }>
-          <CrewBoardV2Lazy currentUser={currentUser} users={users} />
+          <CrewBoardV2Lazy currentUser={currentUser} users={users} trips={trips} />
         </Suspense>
 
         {/* === Embedded flight board (compact) ===

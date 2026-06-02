@@ -11372,7 +11372,7 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
                     CREW · LOADING…
                   </div>
                 }>
-                  <CrewBoardV2Lazy currentUser={currentUser} users={users} />
+                  <CrewBoardV2Lazy currentUser={currentUser} users={users} trips={allTrips} />
                 </Suspense>
               </div>
             </section>
@@ -23227,7 +23227,7 @@ export default function CharterOps() {
                 LOADING CREW BOARD
               </div>
             }>
-              <CrewBoardV2Lazy currentUser={currentUser} users={users} />
+              <CrewBoardV2Lazy currentUser={currentUser} users={users} trips={allTrips} />
             </Suspense>
           </div>
         )}
