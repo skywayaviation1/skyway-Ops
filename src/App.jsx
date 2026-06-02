@@ -6655,6 +6655,19 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
   const [error, setError] = useState(null);
   const [submitInfo, setSubmitInfo] = useState(null);
 
+  // Duty-period link state — populated by the auto-fill flow. The
+  // candidate list is the set of duty periods that match this
+  // manifest's tail+date; we fetch on demand (when admin clicks
+  // FIND DUTY PERIODS) rather than subscribing in real-time.
+  const [dutyCandidates, setDutyCandidates] = useState([]);
+  const [dutyFetched, setDutyFetched] = useState(false);
+  const [dutyFetching, setDutyFetching] = useState(false);
+  const [dutyFetchError, setDutyFetchError] = useState(null);
+  // Auto-fill preview state — when the admin clicks AUTO-FILL on a
+  // candidate, a preview modal opens showing before/after for the
+  // four fields. Confirm applies; cancel discards.
+  const [autoFillPreview, setAutoFillPreview] = useState(null);
+
   const isCrew = currentUser?.role === 'crew';
   const isOps = currentUser?.role === 'ops';
   const isAdmin = currentUser?.role === 'admin';
@@ -7276,11 +7289,59 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
         <ManifestField label="TIME IN" value={draft.timeIn} onChange={setField('timeIn')} readOnly={readOnly} mono />
         <ManifestField label="TIME TOTAL" value={draft.timeTotal} onChange={setField('timeTotal')} readOnly={readOnly} mono />
       </div>
+
+      {/* Auto-fill from duty system. When this manifest's tail+date
+          maps to a confirmed duty period (or two, for paired crews),
+          the admin/crew can populate the duty time + flight time
+          fields in one click instead of typing each. The fetch is
+          on-demand to keep the manifest page lean. */}
+      {!readOnly && (
+        <ManifestDutyLink
+          manifest={draft}
+          candidates={dutyCandidates}
+          fetched={dutyFetched}
+          fetching={dutyFetching}
+          fetchError={dutyFetchError}
+          onFetch={async () => {
+            setDutyFetching(true); setDutyFetchError(null);
+            try {
+              const fbMod = await import('./firebase-duty-v2.js');
+              const linkMod = await import('./manifest-duty-link.js');
+              const range = linkMod.manifestDateToMsRange(draft.date, null);
+              const raw = await fbMod.fetchPeriodsByTailInRange(
+                draft.tail, range.startMs, range.endMs
+              );
+              const filtered = linkMod.filterToManifestDate(raw, draft.date, null);
+              setDutyCandidates(filtered);
+              setDutyFetched(true);
+            } catch (e) {
+              setDutyFetchError(e.message || 'Failed to fetch duty periods');
+            } finally {
+              setDutyFetching(false);
+            }
+          }}
+          onPreview={(period, opts) => setAutoFillPreview({ period, opts })}
+        />
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <ManifestField label="DUTY TIME IN" value={draft.dutyTimeIn} onChange={setField('dutyTimeIn')} readOnly={readOnly} mono />
         <ManifestField label="DUTY TIME OUT" value={draft.dutyTimeOut} onChange={setField('dutyTimeOut')} readOnly={readOnly} mono />
         <ManifestField label="DUTY TIME TOTAL" value={draft.dutyTimeTotal} onChange={setField('dutyTimeTotal')} readOnly={readOnly} mono />
       </div>
+
+      {/* Auto-fill preview modal — renders nothing when null */}
+      {autoFillPreview && (
+        <ManifestDutyAutoFillModal
+          preview={autoFillPreview}
+          currentDraft={draft}
+          onCancel={() => setAutoFillPreview(null)}
+          onApply={(patch) => {
+            setDraft(d => ({ ...d, ...patch }));
+            setAutoFillPreview(null);
+          }}
+        />
+      )}
 
       <div className="space-y-3">
         <div className="flex items-center justify-between">
@@ -7510,6 +7571,347 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// =====================================================================
+// MANIFEST <-> DUTY AUTO-FILL UI
+// =====================================================================
+//
+// Two components used by ManifestDetail to surface and apply duty-period
+// data into the manifest's crew-time fields:
+//
+//   ManifestDutyLink — the always-visible row showing fetch status
+//     and (after a successful fetch) the list of matching duty periods
+//     for this tail+date. Each candidate gets an AUTO-FILL button.
+//
+//   ManifestDutyAutoFillModal — the confirmation modal that opens when
+//     the admin clicks AUTO-FILL. Shows before/after for each field
+//     plus a timezone toggle for the HHMM time fields. Confirm applies
+//     the patch to the manifest draft; cancel discards.
+//
+// Both components are read-only relative to the duty-period docs —
+// they NEVER write back to duty-periods-v2. The manifest is a
+// SEPARATE record that captures crew times at sign-time. If duty is
+// later edited in the Duty tab, the manifest does NOT auto-update;
+// the admin must re-run auto-fill (a behavior we want, because the
+// signed manifest is its own legal record).
+
+function ManifestDutyLink({ manifest, candidates, fetched, fetching, fetchError, onFetch, onPreview }) {
+  if (!manifest?.tail || !manifest?.date) return null;
+
+  // Initial state — never fetched. Show the FIND button.
+  if (!fetched && !fetching) {
+    return (
+      <div className="flex items-center justify-between gap-3 px-3 py-2 border border-slate-700 bg-slate-900/40">
+        <div className="text-[11px] text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          AUTO-FILL FROM DUTY
+          <span className="text-slate-600 ml-2">
+            · {manifest.tail} · {manifest.date}
+          </span>
+        </div>
+        <button
+          onClick={onFetch}
+          className="text-[10px] tracking-widest px-3 py-1.5 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 hover:border-cyan-400"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        >
+          FIND DUTY PERIODS
+        </button>
+      </div>
+    );
+  }
+
+  if (fetching) {
+    return (
+      <div className="px-3 py-2 border border-slate-700 bg-slate-900/40 text-[11px] text-slate-400"
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        Searching duty periods for {manifest.tail} on {manifest.date}…
+      </div>
+    );
+  }
+
+  if (fetchError) {
+    return (
+      <div className="px-3 py-2 border border-red-500/40 bg-red-500/10 text-[11px] text-red-300"
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        Fetch failed: {fetchError}
+        <button
+          onClick={onFetch}
+          className="ml-2 text-cyan-300 underline"
+        >
+          retry
+        </button>
+      </div>
+    );
+  }
+
+  // Fetched, no candidates
+  if (!candidates || candidates.length === 0) {
+    return (
+      <div className="flex items-center justify-between gap-3 px-3 py-2 border border-slate-700 bg-slate-900/40">
+        <div className="text-[11px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          No matching duty period for {manifest.tail} on {manifest.date}.
+          <span className="text-slate-600 ml-1">
+            Pilot must start (and end) duty in the Duty tab first.
+          </span>
+        </div>
+        <button
+          onClick={onFetch}
+          className="text-[10px] tracking-widest px-2 py-1 border border-slate-700 text-slate-400 hover:border-cyan-400 hover:text-cyan-300"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        >
+          RECHECK
+        </button>
+      </div>
+    );
+  }
+
+  // Have candidates — list them with AUTO-FILL per candidate
+  return (
+    <div className="border border-cyan-500/30 bg-cyan-500/5">
+      <div className="flex items-center justify-between gap-3 px-3 py-2 border-b border-cyan-500/20">
+        <div className="text-[11px] text-cyan-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          DUTY PERIODS FOUND · {candidates.length}
+        </div>
+        <button
+          onClick={onFetch}
+          className="text-[9px] tracking-widest text-slate-500 hover:text-cyan-300"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        >
+          REFRESH
+        </button>
+      </div>
+      <div className="divide-y divide-cyan-500/10">
+        {candidates.map(period => (
+          <ManifestDutyCandidateRow
+            key={period.id}
+            period={period}
+            onPreview={(opts) => onPreview(period, opts)}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ManifestDutyCandidateRow({ period, onPreview }) {
+  const fmtTime = (ms) => ms ? new Date(ms).toLocaleString('en-US', {
+    hour: 'numeric', minute: '2-digit', hour12: true, timeZoneName: 'short',
+  }) : '(open)';
+  const isOpen = !period.dutyOffAt;
+  const flightHrs = period.flightTimeMs ? (period.flightTimeMs / 3600000).toFixed(1) : '—';
+
+  return (
+    <div className="flex items-center justify-between gap-3 px-3 py-2">
+      <div className="min-w-0">
+        <div className="text-[12px] text-slate-100 truncate"
+          style={{ fontFamily: 'DM Sans, sans-serif' }}>
+          {period.pilotName}
+          <span className="text-[9px] text-cyan-500 ml-1.5 tracking-widest"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {period.role || '?'}
+          </span>
+          {period.confirmStatus === 'admin-attested' && (
+            <span className="text-[9px] text-amber-400 ml-1.5 tracking-widest"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              ADMIN-ATTESTED
+            </span>
+          )}
+        </div>
+        <div className="text-[10px] text-slate-500 truncate"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {fmtTime(period.dutyOnAt)} → {isOpen ? '(still on duty)' : fmtTime(period.dutyOffAt)}
+          {!isOpen && <span className="ml-2">· {flightHrs}h flight</span>}
+        </div>
+      </div>
+      <button
+        onClick={() => onPreview({})}
+        disabled={isOpen}
+        className="text-[10px] tracking-widest px-2.5 py-1 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 hover:border-cyan-400 disabled:opacity-30 disabled:cursor-not-allowed shrink-0"
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        title={isOpen ? 'Pilot is still on duty — end duty first' : 'Preview auto-fill'}
+      >
+        {isOpen ? 'STILL ON DUTY' : 'AUTO-FILL'}
+      </button>
+    </div>
+  );
+}
+
+function ManifestDutyAutoFillModal({ preview, currentDraft, onCancel, onApply }) {
+  const { period } = preview;
+  // Timezone choice — defaults to browser local. Admin can switch to
+  // Zulu (UTC) for aviation-standard output. Persists in localStorage
+  // so once set, subsequent auto-fills remember.
+  const [tzMode, setTzMode] = useState(() => {
+    try { return localStorage.getItem('skyway-manifest-fill-tz') || 'local'; }
+    catch { return 'local'; }
+  });
+
+  const linkMod = useMemo(() => null, []);
+  // Compute the formatted values — load the helper synchronously via
+  // dynamic import isn't possible here; we'll require the caller has
+  // already loaded it OR inline the formatter. Inline is simpler.
+  const fields = useMemo(() => {
+    const MS_HR = 3600 * 1000;
+    if (!period) return {};
+    const fmtTime = (ms) => {
+      if (!Number.isFinite(ms)) return '';
+      const tzOpt = tzMode === 'utc' ? { timeZone: 'UTC' } : {};
+      const fmt = new Intl.DateTimeFormat('en-US', {
+        ...tzOpt, hour: '2-digit', minute: '2-digit', hour12: false,
+      });
+      const parts = fmt.formatToParts(new Date(ms));
+      const o = {};
+      for (const p of parts) o[p.type] = p.value;
+      const hh = o.hour === '24' ? '00' : o.hour;
+      const mm = o.minute;
+      return tzMode === 'utc' ? `${hh}${mm}Z` : `${hh}${mm}`;
+    };
+    const fmtDur = (ms) => {
+      if (!Number.isFinite(ms) || ms <= 0) return '00:00';
+      const totalMin = Math.round(ms / 60000);
+      return `${String(Math.floor(totalMin / 60)).padStart(2, '0')}:${String(totalMin % 60).padStart(2, '0')}`;
+    };
+    const fmtDec = (ms) => Number.isFinite(ms) && ms > 0 ? (ms / MS_HR).toFixed(1) : '0.0';
+    return {
+      dutyTimeIn: fmtTime(period.dutyOnAt),
+      dutyTimeOut: fmtTime(period.dutyOffAt),
+      dutyTimeTotal: (period.dutyOnAt && period.dutyOffAt)
+        ? fmtDur(period.dutyOffAt - period.dutyOnAt) : '',
+      timeTotal: Number.isFinite(period.flightTimeMs) ? fmtDec(period.flightTimeMs) : '',
+    };
+  }, [period, tzMode]);
+
+  const handleTz = (mode) => {
+    setTzMode(mode);
+    try { localStorage.setItem('skyway-manifest-fill-tz', mode); } catch { /* ignore */ }
+  };
+
+  const rows = [
+    { key: 'dutyTimeIn',    label: 'DUTY TIME IN' },
+    { key: 'dutyTimeOut',   label: 'DUTY TIME OUT' },
+    { key: 'dutyTimeTotal', label: 'DUTY TIME TOTAL' },
+    { key: 'timeTotal',     label: 'TIME TOTAL (flight)' },
+  ];
+
+  const apply = () => {
+    // Only patch fields that have a value AND differ from current.
+    // Preserves user-entered text if the duty period can't provide
+    // a value (e.g. dutyTimeOut empty for an open period — shouldn't
+    // happen since open periods are disabled in the candidate row,
+    // but defensive coding).
+    const patch = {};
+    for (const r of rows) {
+      const v = fields[r.key];
+      if (v != null && v !== '' && v !== currentDraft[r.key]) {
+        patch[r.key] = v;
+      }
+    }
+    onApply(patch);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+      onClick={onCancel}>
+      <div className="bg-slate-950 border border-slate-700 max-w-lg w-full"
+        onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between p-4 border-b border-slate-800">
+          <h3 className="text-sm tracking-widest text-slate-200"
+            style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
+            AUTO-FILL PREVIEW
+          </h3>
+          <button onClick={onCancel} className="text-slate-400 hover:text-slate-100 text-lg leading-none">×</button>
+        </div>
+
+        <div className="p-4 space-y-3" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {/* Source info */}
+          <div className="text-[10px] text-slate-500">
+            From <span className="text-slate-300">{period.pilotName}</span>
+            's duty period · {period.role || 'crew'}
+          </div>
+
+          {/* Timezone toggle */}
+          <div className="flex items-center gap-2 text-[10px]">
+            <span className="text-slate-500 tracking-widest">FORMAT TIMES IN:</span>
+            <button
+              onClick={() => handleTz('local')}
+              className={`px-2 py-1 border tracking-widest ${
+                tzMode === 'local'
+                  ? 'border-cyan-400 text-cyan-300 bg-cyan-500/10'
+                  : 'border-slate-700 text-slate-400'
+              }`}
+            >
+              LOCAL
+            </button>
+            <button
+              onClick={() => handleTz('utc')}
+              className={`px-2 py-1 border tracking-widest ${
+                tzMode === 'utc'
+                  ? 'border-cyan-400 text-cyan-300 bg-cyan-500/10'
+                  : 'border-slate-700 text-slate-400'
+              }`}
+            >
+              ZULU
+            </button>
+          </div>
+
+          {/* Before/after table */}
+          <div className="border border-slate-800">
+            <div className="grid items-center gap-2 px-2 py-1.5 text-[9px] tracking-widest text-slate-500 bg-slate-900/50"
+              style={{ gridTemplateColumns: '1fr 1fr 1fr' }}>
+              <div>FIELD</div>
+              <div>CURRENT</div>
+              <div className="text-cyan-400">→ NEW</div>
+            </div>
+            {rows.map(r => {
+              const cur = currentDraft[r.key] || '';
+              const next = fields[r.key] || '';
+              const willOverwrite = cur && cur !== next;
+              const noChange = cur === next;
+              return (
+                <div key={r.key}
+                  className="grid items-center gap-2 px-2 py-1.5 text-[11px] border-t border-slate-800/50"
+                  style={{ gridTemplateColumns: '1fr 1fr 1fr' }}>
+                  <div className="text-slate-400 text-[10px]">{r.label}</div>
+                  <div className="text-slate-300 tabular-nums">
+                    {cur || <span className="text-slate-700">(empty)</span>}
+                  </div>
+                  <div className={`tabular-nums ${noChange ? 'text-slate-600' : willOverwrite ? 'text-amber-300' : 'text-cyan-300'}`}>
+                    {next || <span className="text-slate-700">—</span>}
+                    {noChange && <span className="text-slate-700 text-[9px] ml-1">no change</span>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Overwrite warning */}
+          {rows.some(r => currentDraft[r.key] && currentDraft[r.key] !== fields[r.key] && fields[r.key]) && (
+            <div className="text-[10px] text-amber-300 flex items-start gap-1.5">
+              <span>⚠</span>
+              <span>Existing field values will be overwritten (amber rows above). Cancel if you want to keep them.</span>
+            </div>
+          )}
+        </div>
+
+        <div className="flex gap-2 p-4 border-t border-slate-800">
+          <button
+            onClick={apply}
+            className="flex-1 py-2 bg-cyan-600 hover:bg-cyan-500 text-white text-sm tracking-widest font-bold"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            APPLY
+          </button>
+          <button
+            onClick={onCancel}
+            className="px-3 py-2 border border-slate-700 text-slate-300 text-sm tracking-widest"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            CANCEL
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

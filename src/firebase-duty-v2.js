@@ -248,6 +248,53 @@ export async function fetchOutsideFlyingForPilotInRange(pilotUid, startMs, endMs
   return list;
 }
 
+/**
+ * Find duty periods for a specific aircraft tail within a UTC ms range.
+ * Used by the manifest auto-fill feature to look up the crew duty
+ * record for "this tail on this date." Excludes pending and declined
+ * periods (callers always want confirmed records for manifest fill).
+ *
+ * Returns periods sorted by dutyOnAt ASC (chronological). A two-pilot
+ * crew will return two periods with near-identical dutyOnAt values
+ * (PIC's then SIC's, by id sort tie-break).
+ *
+ * Requires a Firestore composite index on (tail, dutyOnAt). On the
+ * first call, Firestore will emit a console error with a one-click
+ * "create index" link — same UX as the export feature's index.
+ */
+export async function fetchPeriodsByTailInRange(tail, startMs, endMs) {
+  if (!tail) return [];
+  const start = Number.isFinite(startMs) ? startMs : 0;
+  const end = Number.isFinite(endMs) ? endMs : Date.now();
+  const q = query(
+    collection(db, COLL),
+    where('tail', '==', tail),
+    where('dutyOnAt', '>=', start),
+    where('dutyOnAt', '<=', end),
+  );
+  const snap = await getDocs(q);
+  const list = [];
+  snap.forEach(d => list.push({ id: d.id, ...d.data() }));
+  // Exclude pending/declined — they're not legally on duty and shouldn't
+  // be used to fill manifest crew time fields. Legacy periods without
+  // a confirmStatus are treated as self-attested (the default before
+  // the pair flow existed).
+  const valid = list.filter(p =>
+    !p.confirmStatus
+    || p.confirmStatus === 'self-attested'
+    || p.confirmStatus === 'admin-attested'
+  );
+  valid.sort((a, b) => {
+    const dt = (a.dutyOnAt || 0) - (b.dutyOnAt || 0);
+    if (dt !== 0) return dt;
+    // Tie-break by role so PIC comes before SIC in two-pilot crews
+    if (a.role === 'PIC' && b.role !== 'PIC') return -1;
+    if (a.role !== 'PIC' && b.role === 'PIC') return 1;
+    return String(a.id || '').localeCompare(String(b.id || ''));
+  });
+  return valid;
+}
+
 // -----------------------------------------------------------------
 // Writes — duty periods
 // -----------------------------------------------------------------
