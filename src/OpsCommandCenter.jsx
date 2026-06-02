@@ -29,7 +29,7 @@
 // `users` is passed so we can look up crew details if needed.
 
 import React, { useMemo, useState, useEffect, Suspense, lazy } from 'react';
-import { Loader2, Calendar, FileText, Mail, AlertCircle, Plane, Clock, Cloud, AlertTriangle, Receipt, Wrench, Wind } from 'lucide-react';
+import { Loader2, Calendar, FileText, Mail, AlertCircle, Plane, Clock, Cloud, AlertTriangle, Receipt, Wrench, Wind, Users } from 'lucide-react';
 
 const FlightBoardLazy = lazy(() => import('./FlightBoard.jsx'));
 
@@ -205,14 +205,16 @@ export default function OpsCommandCenter({ currentUser, trips, users, onSelectTr
     return () => clearInterval(id);
   }, []);
 
-  // ---- 1b. Live subscriptions: squawks + expenses + fleet ----
-  // These drive the Action Items panel. All are pre-existing Firestore
-  // subscriptions used elsewhere in the app — we tap them here too. The
-  // imports are dynamic so they don't bloat the initial bundle.
+  // ---- 1b. Live subscriptions: squawks + expenses + fleet + duty ----
+  // These drive the Action Items panel and Crew Duty panel. All are
+  // pre-existing Firestore subscriptions used elsewhere in the app —
+  // we tap them here too. The imports are dynamic so they don't bloat
+  // the initial bundle.
   const [squawks, setSquawks] = useState([]);
   const [expenses, setExpenses] = useState([]);
   const [fleet, setFleet] = useState([]); // maintenance fleet records (for AOG state)
   const [mel, setMel] = useState([]);
+  const [activeDuty, setActiveDuty] = useState([]); // pilots currently on duty
 
   useEffect(() => {
     let cancelled = false;
@@ -234,6 +236,15 @@ export default function OpsCommandCenter({ currentUser, trips, users, onSelectTr
           unsubs.push(m.subscribeToAllExpenses((list) => setExpenses(list)));
         }
       } catch (e) { console.warn('[OpsCommandCenter] expense subscribe failed:', e?.message); }
+    })();
+    (async () => {
+      try {
+        const m = await import('./firebase-duty.js');
+        if (cancelled) return;
+        if (m.subscribeToActiveDuty) {
+          unsubs.push(m.subscribeToActiveDuty((list) => setActiveDuty(list)));
+        }
+      } catch (e) { console.warn('[OpsCommandCenter] duty subscribe failed:', e?.message); }
     })();
     return () => {
       cancelled = true;
@@ -565,6 +576,30 @@ export default function OpsCommandCenter({ currentUser, trips, users, onSelectTr
           />
         </section>
 
+        {/* === Crew duty / availability ===
+            Lists pilots currently on duty with elapsed time, FAR 117
+            14-hour limit warning, and PIC/SIC pair. Hidden when no one
+            is on duty (no false-positive empty state to scroll past). */}
+        {activeDuty.length > 0 && (
+          <section>
+            <div className="flex items-baseline justify-between mb-3">
+              <h2 className="text-xs tracking-[0.2em] text-slate-300"
+                style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}>
+                CREW · ON DUTY
+              </h2>
+              <span className="text-[10px] text-slate-500"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                {activeDuty.length} {activeDuty.length === 1 ? 'PILOT' : 'PILOTS'}
+              </span>
+            </div>
+            <CrewDutyPanel
+              activeDuty={activeDuty}
+              now={now}
+              onSwitchSection={onSwitchSection}
+            />
+          </section>
+        )}
+
         {/* === Embedded flight board (compact) ===
             Same component the TRACKING screen uses, in compact mode.
             Ops users see the live flight rows + map without leaving home. */}
@@ -880,6 +915,104 @@ function WeatherCard({ code, entry, now }) {
           no weather reporting
         </div>
       )}
+
+      {/* TAF — expandable forecast section. Hidden by default to keep the
+          grid compact; click to expand. Shows first 3-4 forecast periods
+          since beyond ~12h it's rarely operationally relevant.
+          We render this even when METAR is missing because some stations
+          publish TAFs without current METAR (rare but possible). */}
+      <TafSection taf={data?.taf} now={now} />
+    </div>
+  );
+}
+
+// TafSection: collapsible forecast summary for a WeatherCard. Each period
+// shows a flight category pill + the time window + the dominant change
+// (wind/vis/cig). Designed to be SCANNABLE — not a full TAF reader.
+function TafSection({ taf, now }) {
+  const [expanded, setExpanded] = useState(false);
+
+  const periods = useMemo(() => {
+    if (!taf || !Array.isArray(taf.periods)) return [];
+    // Filter to FUTURE periods (skip past forecast windows) and take the
+    // next ~4 that span up to ~18 hours ahead. AWC TAFs come with several
+    // dozen periods but most are very short windows — limiting keeps it
+    // readable.
+    const nowSec = Math.floor(now / 1000);
+    const future = taf.periods.filter((p) => {
+      // timeTo > now means the window hasn't ended yet
+      const t = typeof p.timeTo === 'number' ? p.timeTo : (typeof p.timeTo === 'string' ? Math.floor(new Date(p.timeTo).getTime() / 1000) : null);
+      return t == null || t > nowSec;
+    });
+    return future.slice(0, 4);
+  }, [taf, now]);
+
+  if (!periods.length) return null;
+
+  return (
+    <div className="mt-2 pt-2 border-t border-slate-800">
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className="text-[9px] text-slate-600 hover:text-slate-400 tracking-widest flex items-center gap-1.5"
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}
+      >
+        TAF · {periods.length} {periods.length === 1 ? 'PERIOD' : 'PERIODS'}
+        <span className="text-slate-700">{expanded ? '▾' : '▸'}</span>
+      </button>
+      {expanded && (
+        <div className="mt-2 space-y-1 text-[10px]" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {periods.map((p, i) => (
+            <TafPeriodRow key={i} period={p} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// One TAF period row — time window + flight category + wind summary.
+function TafPeriodRow({ period }) {
+  const styles = flightCategoryStyles(period.flightCategory);
+
+  // Time window — show "Zulu Day/Hour" format which is how dispatchers
+  // read TAFs. e.g. "020600Z–021800Z". timeFrom/timeTo come as unix
+  // seconds OR ISO strings depending on AWC's response.
+  const fmtZ = (t) => {
+    if (t == null) return '—';
+    const ms = typeof t === 'number' ? t * 1000 : new Date(t).getTime();
+    if (!Number.isFinite(ms)) return '—';
+    const d = new Date(ms);
+    const day = String(d.getUTCDate()).padStart(2, '0');
+    const hr = String(d.getUTCHours()).padStart(2, '0');
+    return `${day}${hr}Z`;
+  };
+  const winFrom = fmtZ(period.timeFrom);
+  const winTo = fmtZ(period.timeTo);
+
+  // Wind: same format as METAR display
+  const windStr = (() => {
+    const w = period.windKt;
+    const g = period.windGustKt;
+    const d = period.windDir;
+    if (w == null) return null;
+    if (w === 0) return 'CALM';
+    let s;
+    if (d == null) s = `${w}kt`;
+    else s = `${String(d).padStart(3, '0')}° ${w}kt`;
+    if (g) s += ` G${g}`;
+    return s;
+  })();
+
+  return (
+    <div className="flex items-baseline gap-2 text-slate-500">
+      <span className="text-slate-600 tabular-nums w-[80px]">{winFrom}-{winTo}</span>
+      {period.flightCategory && (
+        <span className={`${styles.text} font-medium`}>{period.flightCategory}</span>
+      )}
+      {windStr && <span className="text-slate-400">{windStr}</span>}
+      {period.changeIndicator && (
+        <span className="text-slate-600 uppercase">{period.changeIndicator}</span>
+      )}
     </div>
   );
 }
@@ -1010,4 +1143,114 @@ function ActionTile({ icon: Icon, label, count, accent = 'muted', subtitle, onCl
       </div>
     </button>
   );
+}
+
+// ====================================================================
+// CrewDutyPanel — pilots currently on duty
+// ====================================================================
+//
+// Shows every active duty period (status='on' in duty-state collection)
+// with PIC name, SIC name, duty elapsed time, and a color-coded warning
+// when approaching the FAR 117 14-hour limit.
+//
+// Color thresholds:
+//   < 10h: green (well within limits)
+//   10-12h: amber (approaching, monitor)
+//   12-14h: red (last quarter of legal duty, plan landing soon)
+//   > 14h: critical red (over the legal limit — requires reason on file)
+//
+// Linked-duty pairs (PIC and SIC both flying the same trip) appear as
+// a SINGLE row with both names. Standalone duty periods (when only one
+// pilot signed on) show with the partner field empty.
+function CrewDutyPanel({ activeDuty, now, onSwitchSection }) {
+  // FAR 117 — 14h max duty. Match the constant in firebase-duty.js.
+  const DUTY_MAX_HRS = 14;
+  const WARN_HRS = 10;
+  const URGENT_HRS = 12;
+
+  // Sort by elapsed time descending — pilots closest to the limit appear
+  // at the top where the dispatcher will see them first.
+  const sorted = useMemo(() => {
+    const list = (Array.isArray(activeDuty) ? activeDuty : []).slice();
+    list.sort((a, b) => {
+      const ea = now - (a.dutyOnAt || now);
+      const eb = now - (b.dutyOnAt || now);
+      return eb - ea;
+    });
+    return list;
+  }, [activeDuty, now]);
+
+  return (
+    <div className="border border-slate-800 bg-slate-900/30">
+      {/* Header row */}
+      <div className="grid items-center gap-3 px-3 py-2 border-b border-slate-800 text-[10px] tracking-widest text-slate-500"
+        style={{ fontFamily: 'JetBrains Mono, monospace', gridTemplateColumns: '1fr 1fr 120px 120px' }}>
+        <div>PIC</div>
+        <div>SIC</div>
+        <div className="text-right">DUTY ON</div>
+        <div className="text-right">ELAPSED</div>
+      </div>
+      {sorted.map((d) => {
+        const elapsedMs = now - (d.dutyOnAt || now);
+        const elapsedHrs = elapsedMs / 3600000;
+        let tone = 'green';
+        let pulse = false;
+        if (elapsedHrs >= DUTY_MAX_HRS) { tone = 'critical'; pulse = true; }
+        else if (elapsedHrs >= URGENT_HRS) { tone = 'red'; pulse = true; }
+        else if (elapsedHrs >= WARN_HRS) { tone = 'amber'; }
+
+        const elapsedStr = formatElapsed(elapsedMs);
+        const dutyOnStr = d.dutyOnAt
+          ? new Date(d.dutyOnAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+          : '—';
+
+        const toneClasses = {
+          green:    'text-emerald-400',
+          amber:    'text-amber-400',
+          red:      'text-red-400',
+          critical: 'text-red-500',
+        }[tone];
+
+        return (
+          <div
+            key={d.id}
+            className="grid items-center gap-3 px-3 py-2 border-b border-slate-800 last:border-b-0 hover:bg-slate-900/40"
+            style={{ gridTemplateColumns: '1fr 1fr 120px 120px' }}
+          >
+            <div className="text-sm text-slate-200 truncate" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+              {d.pilotName || '—'}
+              {d.over14 && (
+                <span className="ml-2 text-[10px] text-red-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  OVER 14
+                </span>
+              )}
+            </div>
+            <div className="text-sm text-slate-300 truncate" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+              {d.sicName || (
+                <span className="text-slate-700">— single pilot —</span>
+              )}
+            </div>
+            <div className="text-right text-sm text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {dutyOnStr}
+            </div>
+            <div className={`text-right text-sm flex items-center justify-end gap-1.5 ${toneClasses}`}
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {pulse && <span className="w-1.5 h-1.5 bg-current rounded-full animate-pulse"></span>}
+              {elapsedStr}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Format an elapsed milliseconds duration as "Xh Ym" — compact form
+// used in the duty panel. Negative or invalid inputs return "—".
+function formatElapsed(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return '—';
+  const totalMin = Math.floor(ms / 60000);
+  const hrs = Math.floor(totalMin / 60);
+  const min = totalMin % 60;
+  return `${hrs}h ${String(min).padStart(2, '0')}m`;
 }
