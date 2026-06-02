@@ -666,7 +666,19 @@ function check_quarterly13(periods, atTime) {
  *   }
  */
 export function evaluateLegality(periods, outsideFlying, atTime, options = {}) {
-  const safePeriods = Array.isArray(periods) ? periods : [];
+  const rawPeriods = Array.isArray(periods) ? periods : [];
+  // Exclude pending and declined periods from legality evaluation.
+  // - pending: the pilot was auto-enrolled by a PIC's paired-duty start
+  //   but has not yet confirmed fit-for-duty themselves. Not legally on
+  //   duty until self-attested.
+  // - declined: the pilot rejected the pair confirmation. Period exists
+  //   only as an audit record.
+  // Periods missing confirmStatus (legacy docs from before the pair flow
+  // was added) are treated as self-attested (the default for all old
+  // docs is implicitly self — the pilot filled the form themselves).
+  const safePeriods = rawPeriods.filter(p =>
+    !p || !p.confirmStatus || p.confirmStatus === 'self-attested'
+  );
   const safeOutside = Array.isArray(outsideFlying) ? outsideFlying : [];
   const proposed = options.proposedAssignment || null;
   // Crew type: if a proposed assignment specifies it, use that; otherwise

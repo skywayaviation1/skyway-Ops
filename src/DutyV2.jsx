@@ -30,12 +30,15 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Play, Square, AlertTriangle, CheckCircle2, Edit3, Plus, X,
-  ChevronDown, ChevronUp, Clock, Plane, MapPin, Shield,
+  ChevronDown, ChevronUp, Clock, Plane, MapPin, Shield, Users, UserCheck,
 } from 'lucide-react';
 import {
   subscribePeriodsForPilot,
   subscribeOutsideFlyingForPilot,
   startDuty as fbStartDuty,
+  startDutyPair as fbStartDutyPair,
+  confirmPendingDuty as fbConfirmPendingDuty,
+  declinePendingDuty as fbDeclinePendingDuty,
   endDuty as fbEndDuty,
   editPeriod as fbEditPeriod,
   requestOverride as fbRequestOverride,
@@ -81,9 +84,70 @@ function fromLocalInputValue(s) {
   return Number.isFinite(t) ? t : null;
 }
 
+// =====================================================================
+// FUZZY NAME MATCH — find a crew user from a trip's SIC name string
+// =====================================================================
+//
+// Trip data has `info.sic` as a free-text name string from JetInsight,
+// e.g. "Nicholas Riley Albritton". We want to find the matching user
+// account so we can create a paired duty period for them.
+//
+// Algorithm — keep it deliberately simple and conservative:
+//   1. Tokenize both names: split on whitespace, lowercase, strip
+//      punctuation, drop tokens of length 1 (middle initials etc).
+//   2. Score each candidate user by COUNT of overlapping tokens
+//      between input and user's display name.
+//   3. Return best match only if:
+//        - score >= 2  (must share at least 2 name tokens — typically
+//          first + last; resists false matches on just a last name)
+//        - AND the gap between best and second-best score is >= 1
+//          (i.e. one match is clearly better than another)
+//   4. Otherwise return null and let the PIC pick from dropdown.
+//
+// This is intentionally biased toward "ask the PIC" over "guess wrong."
+// The penalty for a wrong auto-match is that the PIC creates a duty
+// period for the wrong pilot, who would then have to decline. Better
+// to show a dropdown than risk wrong matches.
+
+function tokenizeName(s) {
+  if (!s) return [];
+  return String(s)
+    .toLowerCase()
+    .replace(/[^\p{L}\s]/gu, ' ')           // strip punctuation, keep letters
+    .split(/\s+/)
+    .filter(t => t.length >= 2);            // drop initials and empty tokens
+}
+
+function nameOf(user) {
+  return user?.name || user?.displayName || user?.email || '';
+}
+
+export function matchUserByName(nameString, candidateUsers) {
+  const target = tokenizeName(nameString);
+  if (target.length < 2) return null;          // need at least 2 tokens to match
+  if (!Array.isArray(candidateUsers) || candidateUsers.length === 0) return null;
+
+  const targetSet = new Set(target);
+  const scored = candidateUsers.map(u => {
+    const tokens = tokenizeName(nameOf(u));
+    const overlap = tokens.filter(t => targetSet.has(t)).length;
+    return { user: u, score: overlap, total: tokens.length };
+  });
+  scored.sort((a, b) => b.score - a.score);
+
+  const best = scored[0];
+  const second = scored[1];
+  if (!best || best.score < 2) return null;       // not enough overlap
+  if (second && best.score - second.score < 1) {
+    // ambiguous — two users tied (e.g. two pilots named "John")
+    return null;
+  }
+  return { user: best.user, confidence: best.score };
+}
+
 // ---- Top-level component ----
 
-export default function DutyV2({ currentUser }) {
+export default function DutyV2({ currentUser, myTrips = [], users = [] }) {
   const uid = currentUser?.uid || currentUser?.id;
   const name = currentUser?.name || currentUser?.displayName || 'Unknown';
 
@@ -112,14 +176,35 @@ export default function DutyV2({ currentUser }) {
   }, [uid]);
 
   // The current period is the one with status='on'. There should be
+  // The current period is the one with status='on'. There should be
   // at most one at any time (startDuty enforces this).
+  //
+  // PAIRING NOTE: a pending period (confirmStatus='pending', created
+  // for this pilot by a partner's startDutyPair) has status='on' but
+  // is NOT a real active duty period yet. We separate the two so the
+  // UI can render a confirmation card for pending and an OnDutyCard
+  // only for self-attested.
   const current = useMemo(
-    () => periods.find(p => p.status === 'on') || null,
+    () => periods.find(p => p.status === 'on' && p.confirmStatus !== 'pending' && p.confirmStatus !== 'declined') || null,
     [periods]
   );
+  const pending = useMemo(
+    () => periods.find(p => p.status === 'on' && p.confirmStatus === 'pending') || null,
+    [periods]
+  );
+  // Look up the partner's pending/active period so the PIC can see
+  // "SIC has not yet confirmed" on their own card. Optional — not
+  // critical for compliance, but useful for situational awareness.
+  const partnerPeriod = useMemo(() => {
+    if (!current?.partnerPeriodId) return null;
+    return periods.find(p => p.id === current.partnerPeriodId) || null;
+  }, [periods, current?.partnerPeriodId]);
 
   // Compute legality for the pilot's current state. This drives the
-  // top-of-card status pill and the warnings panel.
+  // top-of-card status pill and the warnings panel. Note: the engine
+  // automatically excludes pending/declined periods, so a SIC sitting
+  // on a pending invite sees their PRE-pair legality (which is correct
+  // — they're not legally on duty until they confirm).
   const legality = useMemo(
     () => evaluateCurrent(periods, outside, now,
       // crewType defaults to 'two' here; will be re-evaluated per period
@@ -137,10 +222,50 @@ export default function DutyV2({ currentUser }) {
   const doStart = async (opts) => {
     setBusy(true); setError(null);
     try {
-      await fbStartDuty({ pilotUid: uid, pilotName: name, ...opts });
+      // If the form's submission includes a partner, this is a paired
+      // duty start: PIC immediately on-duty, SIC gets a pending record.
+      // Otherwise normal single-pilot flow.
+      if (opts.partner && opts.partner.pilotUid) {
+        const partner = opts.partner;
+        const picOpts = { ...opts, pilotUid: uid, pilotName: name };
+        delete picOpts.partner;
+        const sicOpts = {
+          pilotUid: partner.pilotUid,
+          pilotName: partner.pilotName,
+          // SIC inherits dutyOnAt + priorRest as defaults; SIC adjusts on confirm
+          priorRestMs: opts.priorRestMs,
+        };
+        await fbStartDutyPair(picOpts, sicOpts);
+      } else {
+        await fbStartDuty({ pilotUid: uid, pilotName: name, ...opts });
+      }
       setOpenForm(null);
     } catch (e) {
       setError(e.message || 'Failed to start duty');
+    } finally { setBusy(false); }
+  };
+
+  // SIC confirms a pending pair — flips confirmStatus and attests fit-for-duty.
+  const doConfirmPending = async (opts) => {
+    if (!pending?.id) return;
+    setBusy(true); setError(null);
+    try {
+      await fbConfirmPendingDuty(pending.id, { ...opts, confirmedBy: name });
+      setOpenForm(null);
+    } catch (e) {
+      setError(e.message || 'Failed to confirm');
+    } finally { setBusy(false); }
+  };
+
+  // SIC declines — marks period declined, drops out of active duty queries.
+  const doDeclinePending = async (reason) => {
+    if (!pending?.id) return;
+    setBusy(true); setError(null);
+    try {
+      await fbDeclinePendingDuty(pending.id, { reason });
+      setOpenForm(null);
+    } catch (e) {
+      setError(e.message || 'Failed to decline');
     } finally { setBusy(false); }
   };
 
@@ -211,8 +336,22 @@ export default function DutyV2({ currentUser }) {
       {/* Legality status panel — always visible */}
       <LegalityPanel legality={legality} />
 
-      {/* Active state card */}
-      {current ? (
+      {/* Active state card — three branches:
+          1. PENDING: someone (the PIC) auto-enrolled this pilot. They
+             see a confirmation card with one CONFIRM tap.
+          2. CURRENT (self-attested on duty): normal on-duty card.
+          3. Neither: off-duty / available card. */}
+      {pending ? (
+        <PendingConfirmCard
+          period={pending}
+          now={now}
+          busy={busy}
+          openForm={openForm}
+          setOpenForm={setOpenForm}
+          onConfirm={doConfirmPending}
+          onDecline={doDeclinePending}
+        />
+      ) : current ? (
         <OnDutyCard
           period={current}
           now={now}
@@ -220,6 +359,7 @@ export default function DutyV2({ currentUser }) {
           openForm={openForm}
           setOpenForm={setOpenForm}
           legality={legality}
+          partnerPeriod={partnerPeriod}
           onEnd={doEnd}
           onEdit={doEdit}
           onRequestOverride={doRequestOverride}
@@ -232,6 +372,9 @@ export default function DutyV2({ currentUser }) {
           periods={periods}
           now={now}
           onStart={doStart}
+          myTrips={myTrips}
+          users={users}
+          currentUserUid={uid}
         />
       )}
 
@@ -246,7 +389,7 @@ export default function DutyV2({ currentUser }) {
 
       {/* History strip */}
       <DutyHistoryStrip
-        periods={periods.filter(p => p.id !== current?.id)}
+        periods={periods.filter(p => p.id !== current?.id && p.id !== pending?.id)}
         busy={busy}
         openForm={openForm}
         setOpenForm={setOpenForm}
@@ -301,7 +444,7 @@ function LegalityPanel({ legality }) {
   );
 }
 
-function OffDutyCard({ busy, openForm, setOpenForm, periods, now, onStart }) {
+function OffDutyCard({ busy, openForm, setOpenForm, periods, now, onStart, myTrips, users, currentUserUid }) {
   const starting = openForm === 'start';
   // Show rest-status info: if most-recent closed period ended within
   // 10 hours, the pilot is technically still resting.
@@ -339,13 +482,16 @@ function OffDutyCard({ busy, openForm, setOpenForm, periods, now, onStart }) {
           busy={busy}
           onCancel={() => setOpenForm(null)}
           onConfirm={onStart}
+          myTrips={myTrips}
+          users={users}
+          currentUserUid={currentUserUid}
         />
       )}
     </div>
   );
 }
 
-function OnDutyCard({ period, now, busy, openForm, setOpenForm, legality, onEnd, onEdit, onRequestOverride }) {
+function OnDutyCard({ period, now, busy, openForm, setOpenForm, legality, partnerPeriod, onEnd, onEdit, onRequestOverride }) {
   const elapsed = now - (period.dutyOnAt || now);
   const elapsedHrs = elapsed / MS_HR;
   // Color tone based on hours
@@ -359,6 +505,14 @@ function OnDutyCard({ period, now, busy, openForm, setOpenForm, legality, onEnd,
   const ending = openForm === 'end';
   const editingOn = openForm === `edit:${period.id}:dutyOnAt`;
   const requestingOverride = openForm === 'override';
+
+  // Partner status — visible to the PIC after a paired-duty start.
+  // If the partner's period is still pending, the PIC sees a banner
+  // reminding them their SIC has not yet confirmed fit-for-duty.
+  // If declined, banner shows the SIC declined and the PIC is now solo.
+  const partnerStatus = partnerPeriod?.confirmStatus;
+  const partnerNeedsConfirm = partnerStatus === 'pending';
+  const partnerDeclined = partnerStatus === 'declined';
 
   return (
     <div className={`border ${tone.border} ${tone.bg} p-4`}>
@@ -398,6 +552,29 @@ function OnDutyCard({ period, now, busy, openForm, setOpenForm, legality, onEnd,
         {period.tripId && <div><span className="text-slate-600">Trip:</span> <span className="text-slate-300">{period.tripId}</span></div>}
         {period.role && <div><span className="text-slate-600">Role:</span> <span className="text-slate-300">{period.role}</span></div>}
       </div>
+
+      {/* Partner status banner — only visible when this is a paired duty.
+          Three states: confirmed (subtle info), pending (amber warning),
+          declined (red, partner backed out — PIC is now effectively solo). */}
+      {partnerPeriod && (
+        <div className={`text-[11px] mb-3 px-2.5 py-2 border ${
+          partnerNeedsConfirm
+            ? 'border-amber-500/40 bg-amber-500/5 text-amber-300'
+            : partnerDeclined
+              ? 'border-red-500/40 bg-red-500/5 text-red-300'
+              : 'border-cyan-500/30 bg-cyan-500/5 text-cyan-300'
+        }`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {partnerNeedsConfirm && (
+            <>⏳ <strong>{partnerPeriod.pilotName}</strong> has not confirmed pending duty yet.</>
+          )}
+          {partnerDeclined && (
+            <>✗ <strong>{partnerPeriod.pilotName}</strong> declined the pair. You are flying single-pilot.</>
+          )}
+          {!partnerNeedsConfirm && !partnerDeclined && (
+            <>✓ Paired with <strong>{partnerPeriod.pilotName}</strong> ({partnerPeriod.role || 'SIC'})</>
+          )}
+        </div>
+      )}
 
       {/* Edit duty-on time inline */}
       {!editingOn && !ending && !requestingOverride && (
@@ -477,10 +654,167 @@ function OnDutyCard({ period, now, busy, openForm, setOpenForm, legality, onEnd,
 }
 
 // =====================================================================
+// PendingConfirmCard — SIC sees this when PIC auto-enrolled them
+// =====================================================================
+//
+// Shown to the SIC when their partner (PIC) has called startDutyPair
+// and created a pending duty period for them. The SIC reviews the
+// PIC's details, adjusts prior rest if needed, attests fit-for-duty,
+// and taps CONFIRM. Or they can DECLINE if for any reason they aren't
+// actually flying this trip.
+//
+// Confirming flips confirmStatus → 'self-attested' and the legality
+// engine immediately starts counting this period. Declining sets
+// confirmStatus → 'declined' and the doc remains as an audit trail.
+
+function PendingConfirmCard({ period, now, busy, openForm, setOpenForm, onConfirm, onDecline }) {
+  // Inherit prior rest from PIC's submission as the default. SIC can
+  // override if their actual rest was different.
+  const inheritedPriorRestHrs = period.priorRestMs
+    ? (period.priorRestMs / MS_HR).toFixed(1)
+    : '10';
+  const [priorRestHours, setPriorRestHours] = useState(inheritedPriorRestHrs);
+  const [fitForDuty, setFitForDuty] = useState(false);
+  const [declining, setDeclining] = useState(false);
+  const [declineReason, setDeclineReason] = useState('');
+
+  const priorRestMs = (() => {
+    const n = parseFloat(priorRestHours);
+    return Number.isFinite(n) && n >= 0 ? n * MS_HR : null;
+  })();
+
+  // Time since PIC initiated — informational
+  const elapsedSinceInitiated = now - (period.createdAt || period.dutyOnAt || now);
+
+  return (
+    <div className="border border-cyan-500/50 bg-cyan-500/5 p-4">
+      <div className="flex items-baseline justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <Users className="w-4 h-4 text-cyan-400" />
+          <span className="text-[10px] tracking-widest text-cyan-300" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
+            PENDING DUTY CONFIRMATION
+          </span>
+        </div>
+        <span className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {elapsedSinceInitiated >= 0 && elapsedSinceInitiated < 86400000
+            ? `${fmtElapsed(elapsedSinceInitiated)} ago`
+            : ''}
+        </span>
+      </div>
+
+      <div className="text-sm text-slate-200 mb-3">
+        Your captain started a paired duty period. Review and confirm to go on duty.
+      </div>
+
+      {/* PIC's details, pre-filled */}
+      <div className="border border-slate-700 bg-slate-950/50 p-3 mb-3 text-[11px] space-y-1"
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        <div><span className="text-slate-500 inline-block w-24">DUTY ON:</span> <span className="text-slate-100">{fmtTime(period.dutyOnAt)}</span></div>
+        <div><span className="text-slate-500 inline-block w-24">LOCATION:</span> <span className="text-slate-100">{period.location || '—'}</span></div>
+        {period.tail && <div><span className="text-slate-500 inline-block w-24">TAIL:</span> <span className="text-slate-100">{period.tail}</span></div>}
+        {period.tripId && <div><span className="text-slate-500 inline-block w-24">TRIP:</span> <span className="text-slate-100">{period.tripId}</span></div>}
+        <div><span className="text-slate-500 inline-block w-24">ASSIGNMENT:</span> <span className="text-slate-100">{period.assignmentType === 'regular' ? 'Regular (14h)' : 'Unscheduled'}</span></div>
+        <div><span className="text-slate-500 inline-block w-24">YOUR ROLE:</span> <span className="text-slate-100">{period.role || 'SIC'}</span></div>
+      </div>
+
+      {!declining ? (
+        <>
+          {/* Prior rest — pre-filled but adjustable */}
+          <div className="mb-3">
+            <Label>PRIOR REST (hours) — adjust if different from PIC's value</Label>
+            <input
+              type="number"
+              step="0.5"
+              min="0"
+              max="48"
+              value={priorRestHours}
+              onChange={(e) => setPriorRestHours(e.target.value)}
+              className="w-full bg-slate-950/80 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            />
+            <div className="text-[10px] text-slate-500 mt-1">
+              Inherited {inheritedPriorRestHrs}h from your PIC's submission. Change if your actual rest was different.
+            </div>
+          </div>
+
+          {/* Fit-for-duty attestation — this is YOUR legal attestation */}
+          <label className="flex items-center gap-2 p-3 border border-amber-500/30 bg-amber-500/5 cursor-pointer mb-3">
+            <input
+              type="checkbox"
+              checked={fitForDuty}
+              onChange={(e) => setFitForDuty(e.target.checked)}
+              className="w-4 h-4 accent-amber-500"
+            />
+            <span className="text-[11px] text-amber-200">
+              <strong>FIT FOR DUTY.</strong> I am not fatigued, ill, medicated, or otherwise impaired,
+              and I have had the rest period indicated above.
+            </span>
+          </label>
+
+          <div className="flex gap-2">
+            <button
+              onClick={() => onConfirm({ fitForDuty: true, priorRestMs })}
+              disabled={busy || !fitForDuty}
+              className="flex-1 py-3 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold tracking-widest disabled:opacity-40 flex items-center justify-center gap-2"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              <UserCheck className="w-4 h-4" />
+              {busy ? 'CONFIRMING…' : 'CONFIRM DUTY ON'}
+            </button>
+            <button
+              onClick={() => setDeclining(true)}
+              disabled={busy}
+              className="px-4 py-3 border border-red-500/40 text-red-300 hover:bg-red-500/10 text-sm tracking-widest disabled:opacity-40"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              DECLINE
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          {/* Decline confirmation */}
+          <div className="text-[11px] text-amber-300 mb-2">
+            Declining tells your PIC they need to find another SIC or fly single-pilot.
+            This action is logged. You can optionally include a reason.
+          </div>
+          <textarea
+            value={declineReason}
+            onChange={(e) => setDeclineReason(e.target.value)}
+            placeholder="Optional: why you're declining (e.g. wrong trip, not flying today, need different rest)"
+            rows={2}
+            className="w-full bg-slate-950/80 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400 mb-2"
+            style={{ fontFamily: 'DM Sans, sans-serif' }}
+          />
+          <div className="flex gap-2">
+            <button
+              onClick={() => onDecline(declineReason.trim() || null)}
+              disabled={busy}
+              className="flex-1 py-2.5 bg-red-600 hover:bg-red-500 text-white text-sm font-bold tracking-widest disabled:opacity-40"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              {busy ? 'DECLINING…' : 'CONFIRM DECLINE'}
+            </button>
+            <button
+              onClick={() => setDeclining(false)}
+              disabled={busy}
+              className="px-4 py-2.5 border border-slate-700 text-sm text-slate-300 hover:border-slate-500 disabled:opacity-40"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              BACK
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// =====================================================================
 // Forms
 // =====================================================================
 
-function StartDutyForm({ busy, onCancel, onConfirm }) {
+function StartDutyForm({ busy, onCancel, onConfirm, myTrips = [], users = [], currentUserUid }) {
   const [dutyOnAt, setDutyOnAt] = useState(() => toLocalInputValue(roundToFive()));
   const [location, setLocation] = useState('');
   const [tail, setTail] = useState('');
@@ -496,11 +830,101 @@ function StartDutyForm({ busy, onCancel, onConfirm }) {
   const [fitForDuty, setFitForDuty] = useState(false);
   const [priorRestHours, setPriorRestHours] = useState('10');
 
+  // ---- Partner selection state ----
+  //
+  // When the role is PIC and crewType is 'two', show a partner picker
+  // for the SIC. The picker has three modes:
+  //   - 'none'   — single-pilot day, no SIC partner (default if crewType=single)
+  //   - 'auto'   — system found a confident match from the trip's info.sic
+  //                name string and pre-selected the user
+  //   - 'manual' — user is picking from dropdown
+  //
+  // partnerUid is the actually-selected user UID (or null for none).
+  // partnerLocked indicates whether the picker was auto-resolved from
+  // a trip match (so we show a "auto-detected" hint).
+  const [partnerUid, setPartnerUid] = useState(null);
+  const [partnerSourceTripId, setPartnerSourceTripId] = useState(null);
+
+  // Eligible crew users to show in the dropdown — exclude self.
+  // Only users whose role is 'crew' (per Skyway's role model).
+  const crewUsers = useMemo(
+    () => (users || []).filter(u => {
+      const uuid = u.uid || u.id;
+      if (!uuid || uuid === currentUserUid) return false;
+      const role = (u.role || '').toLowerCase();
+      // Include crew + admin-impersonated-as-crew. Skyway accounts where
+      // role isn't set are excluded — they probably aren't pilots.
+      return role === 'crew' || role === 'pilot';
+    }),
+    [users, currentUserUid]
+  );
+
+  // Look up trip metadata when the user types a trip ID. We accept either
+  // a JetInsight tripId (string match against trip.id) or a short label
+  // (substring match against trip.uid). Use the FIRST exact match.
+  const matchedTrip = useMemo(() => {
+    const q = tripId.trim();
+    if (!q) return null;
+    return (myTrips || []).find(t => {
+      const id = t.id || t.uid || '';
+      const tripUid = (t.info && (t.info.uid || t.info.tripId)) || '';
+      return id === q || tripUid === q || id.includes(q) || tripUid.includes(q);
+    }) || null;
+  }, [tripId, myTrips]);
+
+  // When matchedTrip changes AND role=PIC AND crewType=two, attempt to
+  // auto-detect the partner from trip.info.sic name string. Only set
+  // partnerUid if there's a HIGH-CONFIDENCE match (≥2 token overlap,
+  // not ambiguous with another user). Otherwise leave it null so the
+  // PIC sees the dropdown.
+  //
+  // Trip data may also use trip.info.pic if the current user is filling
+  // out a duty period as SIC — but in practice the PIC is the one who
+  // initiates paired duty, so we look for the SIC field.
+  useEffect(() => {
+    // Reset partnerUid when trip changes — don't keep stale selection
+    if (!matchedTrip) {
+      // Clear auto-detected partner only if it was auto-set from a previous trip
+      if (partnerSourceTripId && partnerSourceTripId !== tripId) {
+        setPartnerUid(null);
+        setPartnerSourceTripId(null);
+      }
+      return;
+    }
+    if (role !== 'PIC' || crewType !== 'two') return;
+    // Auto-populate location and tail from the trip if not already filled
+    if (matchedTrip.info?.from && !location) {
+      setLocation(matchedTrip.info.from);
+    }
+    if (matchedTrip.info?.tail && !tail) {
+      setTail(matchedTrip.info.tail);
+    }
+    const sicName = matchedTrip.info?.sic;
+    if (!sicName) return;
+    const match = matchUserByName(sicName, crewUsers);
+    if (match) {
+      setPartnerUid(match.user.uid || match.user.id);
+      setPartnerSourceTripId(tripId);
+    }
+    // If no confident match, leave partnerUid null — PIC will see dropdown.
+  }, [matchedTrip, role, crewType, crewUsers, tripId]);
+
+  // Resolved partner object — for display
+  const partnerUser = useMemo(
+    () => partnerUid ? crewUsers.find(u => (u.uid || u.id) === partnerUid) : null,
+    [partnerUid, crewUsers]
+  );
+
   const onAtMs = fromLocalInputValue(dutyOnAt);
   const priorRestMs = (() => {
     const n = parseFloat(priorRestHours);
     return Number.isFinite(n) && n >= 0 ? n * MS_HR : null;
   })();
+
+  // Show partner picker only when this pilot is PIC of a 2-pilot crew.
+  // SIC starting solo (without their PIC) is allowed but unusual — they
+  // get a single-pilot record. PIC always sees the partner picker.
+  const showPartnerPicker = role === 'PIC' && crewType === 'two';
 
   const canSubmit = Boolean(
     location.trim() &&
@@ -513,7 +937,7 @@ function StartDutyForm({ busy, onCancel, onConfirm }) {
 
   const submit = () => {
     if (!canSubmit) return;
-    onConfirm({
+    const payload = {
       location: location.trim(),
       tail: tail.trim() || null,
       tripId: tripId.trim() || null,
@@ -523,7 +947,16 @@ function StartDutyForm({ busy, onCancel, onConfirm }) {
       fitForDuty: true,
       priorRestMs,
       dutyOnAt: onAtMs,
-    });
+    };
+    // If partner is selected, include it so the handler routes to
+    // startDutyPair instead of startDuty. Otherwise normal solo flow.
+    if (showPartnerPicker && partnerUid && partnerUser) {
+      payload.partner = {
+        pilotUid: partnerUid,
+        pilotName: partnerUser.name || partnerUser.displayName || 'Unknown',
+      };
+    }
+    onConfirm(payload);
   };
 
   return (
@@ -565,6 +998,12 @@ function StartDutyForm({ busy, onCancel, onConfirm }) {
             placeholder="L32LW0"
             className="w-full bg-slate-950/80 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
           />
+          {matchedTrip && (
+            <div className="text-[10px] text-cyan-400 mt-1">
+              ✓ {matchedTrip.info?.from || ''}→{matchedTrip.info?.to || ''}
+              {matchedTrip.info?.tail && ` · ${matchedTrip.info.tail}`}
+            </div>
+          )}
         </div>
       </div>
 
@@ -582,6 +1021,17 @@ function StartDutyForm({ busy, onCancel, onConfirm }) {
           />
         </div>
       </div>
+
+      {showPartnerPicker && (
+        <PartnerPicker
+          crewUsers={crewUsers}
+          partnerUid={partnerUid}
+          setPartnerUid={setPartnerUid}
+          partnerUser={partnerUser}
+          autoDetected={Boolean(partnerSourceTripId && partnerSourceTripId === tripId)}
+          matchedTripSicName={matchedTrip?.info?.sic || null}
+        />
+      )}
 
       <div>
         <Label>ASSIGNMENT TYPE</Label>
@@ -629,6 +1079,13 @@ function StartDutyForm({ busy, onCancel, onConfirm }) {
         </span>
       </label>
 
+      {showPartnerPicker && partnerUser && (
+        <div className="text-[10px] text-cyan-300 bg-cyan-500/5 border border-cyan-500/30 p-2">
+          When you confirm, <strong>{partnerUser.name || partnerUser.displayName}</strong> will
+          receive a pending-duty card to confirm their own fit-for-duty.
+        </div>
+      )}
+
       <div className="flex gap-2 pt-1">
         <button
           onClick={submit}
@@ -645,6 +1102,76 @@ function StartDutyForm({ busy, onCancel, onConfirm }) {
           CANCEL
         </button>
       </div>
+    </div>
+  );
+}
+
+// =====================================================================
+// PartnerPicker — SIC selection for paired-duty start
+// =====================================================================
+//
+// Behavior:
+//   - If auto-detected (the parent already set partnerUid from a trip
+//     SIC name match), show a "✓ AUTO-DETECTED" pill + the partner's
+//     name, with a CHANGE button to switch to manual mode.
+//   - If partnerUid is null, show a dropdown of all eligible crew users.
+//   - Always provide a "NONE (single-pilot)" option for cases where
+//     the PIC is flying solo despite the 2-pilot crew toggle.
+
+function PartnerPicker({ crewUsers, partnerUid, setPartnerUid, partnerUser, autoDetected, matchedTripSicName }) {
+  return (
+    <div>
+      <Label>SIC (PARTNER FOR THIS DUTY)</Label>
+      {autoDetected && partnerUser ? (
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between p-2.5 border border-cyan-500/40 bg-cyan-500/5">
+            <div className="flex items-center gap-2">
+              <UserCheck className="w-4 h-4 text-cyan-400" />
+              <div>
+                <div className="text-sm text-slate-100">
+                  {partnerUser.name || partnerUser.displayName}
+                </div>
+                <div className="text-[10px] text-cyan-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  AUTO-DETECTED FROM TRIP
+                </div>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setPartnerUid(null)}
+              className="text-[10px] text-slate-400 hover:text-cyan-300 px-2 py-1 border border-slate-700 hover:border-cyan-400"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              CHANGE
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-1.5">
+          <select
+            value={partnerUid || ''}
+            onChange={(e) => setPartnerUid(e.target.value || null)}
+            className="w-full bg-slate-950/80 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
+          >
+            <option value="">— NONE (single pilot today) —</option>
+            {crewUsers.map(u => (
+              <option key={u.uid || u.id} value={u.uid || u.id}>
+                {u.name || u.displayName || u.email}
+              </option>
+            ))}
+          </select>
+          {matchedTripSicName && !partnerUid && (
+            <div className="text-[10px] text-amber-400">
+              Trip says SIC is "{matchedTripSicName}" but couldn't find a clear match. Pick manually above.
+            </div>
+          )}
+          {!matchedTripSicName && (
+            <div className="text-[10px] text-slate-500">
+              No SIC found in trip data. Pick partner manually or leave as single pilot.
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -3294,8 +3294,12 @@ function DutyCard({ currentUser, config, myTrips, users }) {
   if (currentUser?.role !== 'crew') return null;
   return (
     <DutyErrorBoundary>
-      {/* DutyV2 — Part 135 duty/rest tracking with legality engine. */}
-      <DutyV2 currentUser={currentUser} />
+      {/* DutyV2 — Part 135 duty/rest tracking with legality engine.
+          myTrips and users are passed through to enable PIC→SIC pair
+          enrollment: when a PIC enters a trip ID on the start form, the
+          system fuzzy-matches trip.info.sic against `users` to pre-select
+          the SIC partner for paired-duty start. */}
+      <DutyV2 currentUser={currentUser} myTrips={myTrips} users={users} />
     </DutyErrorBoundary>
   );
 }

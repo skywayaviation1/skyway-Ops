@@ -80,7 +80,7 @@
 import { db } from './firebase.js';
 import {
   collection, doc, query, where, onSnapshot, getDoc, getDocs,
-  setDoc, updateDoc, addDoc, orderBy, limit, Timestamp
+  setDoc, updateDoc, addDoc, orderBy, limit, Timestamp, writeBatch
 } from 'firebase/firestore';
 
 const COLL = 'duty-periods-v2';
@@ -250,6 +250,24 @@ export async function startDuty(opts) {
     overrideApprovedBy: null,
     overrideApprovedAt: null,
     overrideApprovalNotes: null,
+    // --- Pair-confirmation fields (added for PIC→SIC sync flow) ---
+    // confirmStatus: 'self-attested' means this pilot personally filled
+    //   the start-duty form. 'pending' means another pilot (the PIC)
+    //   created this record for them and they have not yet confirmed.
+    //   'declined' means the SIC opened the pending card and rejected.
+    //   The legality engine treats pending and declined as if the
+    //   period doesn't exist — only self-attested periods count.
+    confirmStatus: 'self-attested',
+    // partnerPeriodId cross-links the two periods of a paired crew.
+    // Lets the UI show "your partner: Captain Foo" on the SIC's card
+    // and (later) cascade end-duty if the PIC ends first.
+    partnerPeriodId: null,
+    // pendingCreatedBy records WHO initiated the pending record for
+    // audit ("PIC X started SIC Y's duty period at HH:MM").
+    pendingCreatedBy: null,
+    confirmedAt: null,
+    declinedAt: null,
+    declinedReason: null,
     adminEdits: [],
     createdAt: now,
     updatedAt: now,
@@ -258,6 +276,255 @@ export async function startDuty(opts) {
   };
   await setDoc(doc(db, COLL, id), docData);
   return docData;
+}
+
+// =====================================================================
+// PAIRED DUTY START (PIC → SIC sync)
+// =====================================================================
+//
+// startDutyPair atomically creates two linked duty periods: one for the
+// PIC (self-attested, immediately active) and one for the SIC (pending,
+// awaiting SIC confirmation). The SIC opens DutyV2 and sees a "your
+// partner is starting duty" card; they confirm or decline.
+//
+// Why a separate function rather than letting startDuty take a partner
+// option:
+//   1. Atomic-ish: refuses if EITHER pilot has an open period. Without
+//      a single entry point, you could half-succeed (PIC starts, SIC
+//      fails) and leave a confusing partial state.
+//   2. Different validation: the SIC record is created with fitForDuty
+//      = null (not true). The SIC must attest themselves on confirm.
+//   3. Cross-links: each doc gets the OTHER's id in partnerPeriodId,
+//      computed before either write. Hard to do cleanly from inside
+//      startDuty without a second pass.
+//
+// HONEST CAVEAT: Firestore does not provide true atomic writes across
+// docs unless we use a transaction. Below we use a writeBatch which is
+// atomic from the SERVER'S perspective — both docs commit or neither
+// does. Network/auth failures can still cause one-sided state, but the
+// failure surface is the same as a single setDoc.
+//
+// picOpts and sicOpts are both the same shape as startDuty's opts.
+// SIC's fitForDuty is FORCED to null regardless of input. priorRestMs
+// can be inherited from PIC's value by the UI before calling here.
+//
+// Returns: { picPeriod, sicPeriod }
+
+export async function startDutyPair(picOpts, sicOpts) {
+  if (!picOpts?.pilotUid) throw new Error('PIC pilotUid required');
+  if (!sicOpts?.pilotUid) throw new Error('SIC pilotUid required');
+  if (picOpts.pilotUid === sicOpts.pilotUid) {
+    throw new Error('PIC and SIC must be different pilots');
+  }
+  if (picOpts.fitForDuty !== true) {
+    throw new Error('PIC fit-for-duty attestation required');
+  }
+  if (!['unscheduled', 'regular'].includes(picOpts.assignmentType)) {
+    throw new Error('assignmentType must be "unscheduled" or "regular"');
+  }
+
+  // Refuse if EITHER pilot has an open period. Two separate queries
+  // because Firestore doesn't support OR across `in` queries on the
+  // same field combined with another filter.
+  for (const [label, uid] of [['PIC', picOpts.pilotUid], ['SIC', sicOpts.pilotUid]]) {
+    const existing = await getDocs(query(
+      collection(db, COLL),
+      where('pilotUid', '==', uid),
+      where('status', '==', 'on')
+    ));
+    if (!existing.empty) {
+      throw new Error(`${label} already has an open duty period. End it before starting a paired duty.`);
+    }
+  }
+
+  const dutyOnAt = Number.isFinite(picOpts.dutyOnAt) ? picOpts.dutyOnAt : Date.now();
+  const now = Date.now();
+  const picId = `${picOpts.pilotUid}_${dutyOnAt}`;
+  // SIC id uses the SAME dutyOnAt so the two docs share a clear pairing
+  // timestamp. Tiebreaker via uid prevents collision if PIC tries to
+  // pair themselves (which we already rejected above).
+  const sicId = `${sicOpts.pilotUid}_${dutyOnAt}`;
+
+  // PIC doc — fully active, self-attested.
+  const picDoc = {
+    id: picId,
+    pilotUid: picOpts.pilotUid,
+    pilotName: picOpts.pilotName || 'Unknown',
+    location: picOpts.location || '',
+    tail: picOpts.tail || null,
+    tripId: picOpts.tripId || null,
+    role: 'PIC',
+    crewType: 'two',                      // pairing implies two-pilot crew
+    assignmentType: picOpts.assignmentType,
+    fitForDuty: true,
+    priorRestMs: Number.isFinite(picOpts.priorRestMs) ? picOpts.priorRestMs : null,
+    dutyOnAt,
+    dutyOffAt: null,
+    flightTimeMs: 0,
+    excursionReason: null,
+    overrideStatus: 'none',
+    overrideRequestedBy: null,
+    overrideRequestedAt: null,
+    overrideRequestReason: null,
+    overrideApprovedBy: null,
+    overrideApprovedAt: null,
+    overrideApprovalNotes: null,
+    confirmStatus: 'self-attested',
+    partnerPeriodId: sicId,
+    pendingCreatedBy: null,
+    confirmedAt: null,
+    declinedAt: null,
+    declinedReason: null,
+    adminEdits: [],
+    createdAt: now,
+    updatedAt: now,
+    status: 'on',
+    over14: false,
+  };
+
+  // SIC doc — pending, fit-for-duty is NULL (forcing SIC to attest
+  // themselves on confirm). Other fields inherit from PIC's submission.
+  // priorRestMs is inherited as a default; the SIC can adjust it on the
+  // confirmation card before clicking CONFIRM.
+  const sicDoc = {
+    id: sicId,
+    pilotUid: sicOpts.pilotUid,
+    pilotName: sicOpts.pilotName || 'Unknown',
+    location: picOpts.location || '',      // same FBO
+    tail: picOpts.tail || null,
+    tripId: picOpts.tripId || null,
+    role: 'SIC',
+    crewType: 'two',
+    assignmentType: picOpts.assignmentType,
+    // Critical: fitForDuty is NULL on a pending record. The SIC must
+    // confirm to set it true. Legality engine ignores pending periods.
+    fitForDuty: null,
+    priorRestMs: Number.isFinite(sicOpts.priorRestMs)
+      ? sicOpts.priorRestMs
+      : (Number.isFinite(picOpts.priorRestMs) ? picOpts.priorRestMs : null),
+    dutyOnAt,
+    dutyOffAt: null,
+    flightTimeMs: 0,
+    excursionReason: null,
+    overrideStatus: 'none',
+    overrideRequestedBy: null,
+    overrideRequestedAt: null,
+    overrideRequestReason: null,
+    overrideApprovedBy: null,
+    overrideApprovedAt: null,
+    overrideApprovalNotes: null,
+    confirmStatus: 'pending',              // <-- key flag
+    partnerPeriodId: picId,
+    pendingCreatedBy: picOpts.pilotUid,    // audit: which PIC initiated
+    confirmedAt: null,
+    declinedAt: null,
+    declinedReason: null,
+    adminEdits: [],
+    createdAt: now,
+    updatedAt: now,
+    status: 'on',                          // appears in subscribe-on-duty
+                                            // queries; legality engine
+                                            // excludes by confirmStatus
+    over14: false,
+  };
+
+  // Batched write — both commit or both don't.
+  const batch = writeBatch(db);
+  batch.set(doc(db, COLL, picId), picDoc);
+  batch.set(doc(db, COLL, sicId), sicDoc);
+  await batch.commit();
+
+  return { picPeriod: picDoc, sicPeriod: sicDoc };
+}
+
+// =====================================================================
+// PENDING CONFIRMATION (SIC's side of the pair flow)
+// =====================================================================
+//
+// When the SIC opens DutyV2 and sees the pending card, they tap CONFIRM
+// to attest fit-for-duty. That flips confirmStatus → 'self-attested'
+// (legality engine now counts the period), sets fitForDuty=true, records
+// confirmedAt, and optionally lets the SIC adjust priorRestMs and
+// dutyOnAt (if they actually started a few minutes earlier/later than
+// what the PIC entered).
+//
+// opts:
+//   {
+//     fitForDuty: true,           required — without this we refuse
+//     priorRestMs: number,        optional override
+//     dutyOnAt: number (ms),      optional override
+//     confirmedBy: string,        SIC's name for audit
+//   }
+
+export async function confirmPendingDuty(periodId, opts = {}) {
+  if (!periodId) throw new Error('periodId required');
+  if (opts.fitForDuty !== true) {
+    throw new Error('fit-for-duty attestation required to confirm');
+  }
+  const ref = doc(db, COLL, periodId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error('duty period not found');
+  const cur = snap.data();
+  if (cur.confirmStatus !== 'pending') {
+    throw new Error(`cannot confirm — current status is "${cur.confirmStatus}"`);
+  }
+
+  const now = Date.now();
+  const patch = {
+    confirmStatus: 'self-attested',
+    fitForDuty: true,
+    confirmedAt: now,
+    updatedAt: now,
+  };
+  // SIC may correct prior rest if different from PIC's value
+  if (Number.isFinite(opts.priorRestMs)) {
+    patch.priorRestMs = opts.priorRestMs;
+  }
+  // SIC may correct duty-on time (rare; usually accepts PIC's time)
+  if (Number.isFinite(opts.dutyOnAt) && opts.dutyOnAt !== cur.dutyOnAt) {
+    patch.dutyOnAt = opts.dutyOnAt;
+    // adminEdits records the change for audit
+    const edits = Array.isArray(cur.adminEdits) ? cur.adminEdits : [];
+    edits.push({
+      by: opts.confirmedBy || 'pilot-self-confirm',
+      at: now,
+      field: 'dutyOnAt',
+      from: cur.dutyOnAt,
+      to: opts.dutyOnAt,
+      note: 'SIC adjusted duty-on time during pair confirmation',
+    });
+    patch.adminEdits = edits;
+  }
+  await updateDoc(ref, patch);
+  return { ...cur, ...patch };
+}
+
+// SIC declines the pending pair. Doc is marked declined; status flipped
+// to 'off' so it falls out of active-duty queries. Legality engine
+// already ignores declined periods. Reason is optional and logged.
+//
+// The PIC's period is unaffected — the PIC is still on duty (they
+// self-attested). The PIC will need to find another SIC or accept
+// single-pilot duty for the day.
+
+export async function declinePendingDuty(periodId, opts = {}) {
+  if (!periodId) throw new Error('periodId required');
+  const ref = doc(db, COLL, periodId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error('duty period not found');
+  const cur = snap.data();
+  if (cur.confirmStatus !== 'pending') {
+    throw new Error(`cannot decline — current status is "${cur.confirmStatus}"`);
+  }
+  const now = Date.now();
+  await updateDoc(ref, {
+    confirmStatus: 'declined',
+    status: 'off',                        // remove from active-duty board
+    declinedAt: now,
+    declinedReason: opts.reason || null,
+    fitForDuty: false,
+    updatedAt: now,
+  });
 }
 
 /**
