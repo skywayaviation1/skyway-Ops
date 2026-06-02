@@ -5652,8 +5652,15 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   const [preloadedPax, setPreloadedPax] = useState([]);
   const [tripSheetNotes, setTripSheetNotes] = useState(null);
   const [tripSheetNotesEdited, setTripSheetNotesEdited] = useState({ at: null, byName: null });
-  const [fromFbo, setFromFbo] = useState(null);
-  const [toFbo, setToFbo] = useState(null);
+  // FBO state. We seed from trip.info.fromFbo / trip.info.toFbo (parsed
+  // from JetInsight iCal at sync time) so a freshly-loaded trip without
+  // an explicit trip-state write still shows its FBO. The Firestore
+  // subscription below OVERRIDES with whatever trip-state says, but only
+  // when that value is non-null — so an admin who manually clears the
+  // FBO can do so, while an empty trip-state doc doesn't blank out the
+  // iCal-parsed value.
+  const [fromFbo, setFromFbo] = useState(trip.info?.fromFbo || null);
+  const [toFbo, setToFbo] = useState(trip.info?.toFbo || null);
   const [pendingScanPax, setPendingScanPax] = useState(null); // pre-loaded pax being checked in
   const [loading, setLoading] = useState(true);
   // UPDATE ETA flow: tracks whether we're mid-call so we can disable the button
@@ -5707,8 +5714,14 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
             at: state.tripSheetNotesEditedAt || null,
             byName: state.tripSheetNotesEditedByName || null,
           });
-          setFromFbo(state.fromFbo || null);
-          setToFbo(state.toFbo || null);
+          // FBO sourcing: state (trip-state doc) wins when set, fall back
+          // to trip.info (iCal-parsed). Same logic as buildPublicTripData
+          // so the broker page and ops UI show the same value. Tradeoff:
+          // if an admin clears an FBO via trip-state (writes null), the
+          // iCal value still shows until the next iCal sync replaces it.
+          // Rare event; preferable to FBOs disappearing for the common case.
+          setFromFbo(state.fromFbo || trip.info?.fromFbo || null);
+          setToFbo(state.toFbo || trip.info?.toFbo || null);
           setCompleted(state.completed === true);
           setLoading(false);
         });
@@ -7051,8 +7064,13 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
         legNumber: i + 1,
         from: t.info?.from || null,
         to: t.info?.to || null,
-        fromFbo: t.info?.fromFbo || null,
-        toFbo: t.info?.toFbo || null,
+        // FBO sourcing — trip-state (manually-set or backfilled) wins
+        // over t.info (iCal-parsed). The iCal feed often doesn't include
+        // FBO details in the DESCRIPTION field, so admin manually sets
+        // them in trip-state. Without this preference, manually-set
+        // FBOs never reach the broker page.
+        fromFbo: state.fromFbo || t.info?.fromFbo || null,
+        toFbo:   state.toFbo   || t.info?.toFbo   || null,
         departure: t.start || null,
         arrival: t.end || null,
         category: t.info?.legType || t.info?.category || 'REVENUE',
