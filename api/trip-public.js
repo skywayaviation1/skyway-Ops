@@ -67,7 +67,7 @@ async function loadValidTrip(token) {
 // What's stripped: passenger names, pricing, internal notes, broker email
 // (the broker knows their own email), crew contact info, fees/fuel, anything
 // not explicitly whitelisted.
-function sanitizeTrip(tripId, data, legs, liveStatuses = {}) {
+function sanitizeTrip(tripId, data, legs, liveLegData = {}) {
   // Status timeline — we want the broker to see the high-level events but
   // not internal ops notes. Keep timestamps and labels only.
   const statuses = data.statuses && typeof data.statuses === 'object' ? data.statuses : {};
@@ -91,7 +91,7 @@ function sanitizeTrip(tripId, data, legs, liveStatuses = {}) {
   // or re-open the share dialog.
   const mergeStatusForLeg = (legTripId, snapshotStatus) => {
     const snap = snapshotStatus && typeof snapshotStatus === 'object' ? snapshotStatus : {};
-    const live = (legTripId && liveStatuses[legTripId]) || {};
+    const live = (legTripId && liveLegData[legTripId]?.statuses) || {};
     const merged = {};
     const allKeys = new Set([...Object.keys(snap), ...Object.keys(live)]);
     for (const k of allKeys) {
@@ -104,6 +104,20 @@ function sanitizeTrip(tripId, data, legs, liveStatuses = {}) {
       }
     }
     return merged;
+  };
+
+  // Pick the pax array for a leg. If we have LIVE pax data (the leg's own
+  // trip-state doc was successfully read and showPax was true at share
+  // time), use that — it reflects up-to-the-second check-in state. Fall
+  // back to the snapshot otherwise.
+  // showPax is a SHARE-TIME policy decision (ops chose to expose pax or
+  // not) so we always honor the snapshot's showPax flag regardless of
+  // what's in the live data.
+  const paxForLeg = (leg) => {
+    if (leg.showPax !== true) return [];
+    const live = leg.tripId ? liveLegData[leg.tripId]?.pax : undefined;
+    if (Array.isArray(live)) return live;
+    return Array.isArray(leg.pax) ? leg.pax : [];
   };
 
   // If publicTripData has per-leg status, that's the AUTHORITATIVE source —
@@ -136,10 +150,9 @@ function sanitizeTrip(tripId, data, legs, liveStatuses = {}) {
       category: leg.category || 'REVENUE', // REVENUE/REPO/FERRY
       pic: leg.picName || null,            // NAME ONLY — no contact info
       sic: leg.sicName || null,            // NAME ONLY — no contact info
-      // Pax visibility enforced HERE as the last line of defense — even if
-      // somehow a leg got persisted with showPax:false but a pax array
-      // attached (or vice versa), we honor showPax strictly.
-      pax: leg.showPax === true && Array.isArray(leg.pax) ? leg.pax : [],
+      // Pax list — LIVE overlay if available, snapshot fallback. showPax
+      // policy from the snapshot is enforced as the last line of defense.
+      pax: paxForLeg(leg),
       showPax: leg.showPax === true,
       // Per-leg status timeline — MERGED snapshot + live. Live wins where
       // present so brokers see post-share-time events (landed, etc.).
@@ -256,21 +269,93 @@ function legsFromTrip(data) {
   return [];
 }
 
-// Fetch live statuses from each leg's own trip-state doc. The publicTripData
+// Build broker-facing pax records from a leg's live trip-state doc data.
+// This is the same join logic that lives in App.jsx buildPublicTripData,
+// but applied SERVER-SIDE on each broker page poll so check-in status
+// updates after the share-time snapshot was taken.
+//
+// Returns the pax array shape the broker page expects:
+//   [{ name, status, checkedInAt, walkUp }, ...]
+//
+// Status mapping (matches client code):
+//   matched / manual_override / child_verified  → 'checked_in'
+//   skipped                                     → 'skipped'
+//   else                                        → 'pending'
+//   scanned record with noShow:true             → 'no_show' (overrides above)
+function buildPaxRecordsFromLiveData(preloadedPax, scannedPassengers) {
+  const preloaded = Array.isArray(preloadedPax) ? preloadedPax : [];
+  const scanned = Array.isArray(scannedPassengers) ? scannedPassengers : [];
+  const scannedByRef = new Map();
+  const walkUps = [];
+  for (const sp of scanned) {
+    if (sp && sp.preloadedRefId) {
+      scannedByRef.set(sp.preloadedRefId, sp);
+    } else if (sp) {
+      walkUps.push(sp);
+    }
+  }
+  const records = [];
+  for (const p of preloaded) {
+    const first = String(p?.firstName || '').trim();
+    const last = String(p?.lastName || '').trim();
+    const name = [first, last].filter(Boolean).join(' ');
+    if (!name) continue;
+    const scan = p.id ? scannedByRef.get(p.id) : null;
+    const cs = p.checkInStatus || '';
+    let status = 'pending';
+    if (cs === 'matched' || cs === 'manual_override' || cs === 'child_verified') status = 'checked_in';
+    else if (cs === 'skipped') status = 'skipped';
+    if (scan?.noShow) status = 'no_show';
+    records.push({
+      name,
+      status,
+      checkedInAt: scan?.verifiedAt || null,
+      walkUp: false,
+    });
+  }
+  for (const sp of walkUps) {
+    const first = String(sp?.firstName || '').trim();
+    const last = String(sp?.lastName || '').trim();
+    const name = [first, last].filter(Boolean).join(' ');
+    if (!name) continue;
+    records.push({
+      name,
+      status: sp.noShow ? 'no_show' : 'checked_in',
+      checkedInAt: sp.verifiedAt || sp.scannedAt || null,
+      walkUp: true,
+    });
+  }
+  return records;
+}
+
+// Fetch LIVE data from each leg's own trip-state doc. The publicTripData
 // snapshot persisted at share-time is structurally authoritative (which legs
-// exist, route, FBO, crew, pax assignments) but its `status` field is a
-// FROZEN COPY of statuses-at-share-time. If status changes after the link
-// is shared (typically: landed event fires while broker is watching), the
-// snapshot never updates — the broker keeps seeing "in flight" forever.
+// exist, route, FBO, crew assignments) but two pieces of data CHANGE during
+// the trip and need to be re-read on every broker poll:
+//   1) statuses — wheels_up, landed, etc. fire after share-time
+//   2) pax check-in — crew scans IDs at the gate after share-time
 //
-// This helper batch-reads each leg's trip-state doc and returns a map of
-// `{ legTripId: { wheels_up: {at: ...}, landed: {at: ...}, ... } }` so the
-// sanitizer can overlay live data on top of the snapshot.
+// Without this overlay, after a broker is sent the link mid-day, they'd see
+// "PASSENGERS 0/2 CHECKED IN" forever even after pax verify at the gate. Ops
+// would have to re-rotate the share link constantly to refresh the snapshot.
 //
-// Defensive on failures: any doc that can't be read (deleted, permission
-// error, network blip) just returns no live data for that leg and we fall
-// back to the snapshot. Never throw — broker page should still render.
-async function fetchLiveStatuses(legs) {
+// This helper batch-reads each leg's trip-state doc once and returns a map:
+//   { legTripId: {
+//       statuses: { wheels_up: {at}, landed: {at}, ... },
+//       pax:      [{name, status, checkedInAt, walkUp}, ...],
+//       showPax:  true|false  (whether broker should see pax for this leg)
+//     }, ... }
+//
+// `showPax` is preserved from the snapshot since it's a SHARE-TIME policy
+// decision (ops chose not to expose pax on certain legs); only the contents
+// of the pax array refresh. If the snapshot said showPax=false, we still
+// return [] regardless of what we read from the live doc — the broker
+// never sees pax for that leg.
+//
+// Defensive on failures: any doc that can't be read just returns no live
+// data for that leg and we fall back to the snapshot. Never throw — broker
+// page should still render.
+async function fetchLiveLegData(legs) {
   if (!Array.isArray(legs) || legs.length === 0) return {};
   const tripIds = legs.map((l) => l?.tripId).filter(Boolean);
   if (tripIds.length === 0) return {};
@@ -278,31 +363,45 @@ async function fetchLiveStatuses(legs) {
   // Whitelist of status keys we forward to the broker. Same list the
   // sanitizer uses; keeping them in sync is critical for the overlay to
   // do anything useful.
-  const KEYS = ['crew_onsite', 'aircraft_ready', 'catering_aboard', 'pax_arrived', 'pax_boarded', 'taxi_dep', 'wheels_up', 'landed'];
+  const STATUS_KEYS = ['crew_onsite', 'aircraft_ready', 'catering_aboard', 'pax_arrived', 'pax_boarded', 'taxi_dep', 'wheels_up', 'landed'];
+  // Build a quick lookup of legs by tripId so we can preserve the showPax
+  // policy from the snapshot when building pax records.
+  const showPaxByTripId = {};
+  for (const leg of legs) {
+    if (leg?.tripId) showPaxByTripId[leg.tripId] = leg.showPax === true;
+  }
   await Promise.all(tripIds.map(async (tid) => {
     try {
       const snap = await db().collection('trip-state').doc(tid).get();
       if (!snap.exists) return;
       const sd = snap.data() || {};
+
+      // ---------- Live statuses ----------
       const bag = (sd.statuses && typeof sd.statuses === 'object') ? sd.statuses : {};
-      // Each leg's trip-state doc has statuses as a flat map keyed by
-      // step id, e.g. { crew_onsite: { timestamp, author, ... }, ... }.
-      // We normalize to { key: { at: ms } } so the broker side can read
-      // a single shape.
-      const clean = {};
-      for (const key of KEYS) {
+      const liveStatuses = {};
+      for (const key of STATUS_KEYS) {
         const v = bag[key];
         if (v && typeof v === 'object') {
           const at = Number.isFinite(v.timestamp) ? v.timestamp
                     : Number.isFinite(v.at) ? v.at
                     : null;
-          if (at !== null) clean[key] = { at };
+          if (at !== null) liveStatuses[key] = { at };
         }
       }
-      if (Object.keys(clean).length > 0) out[tid] = clean;
+
+      // ---------- Live pax ----------
+      // Only build pax records if the snapshot said this leg shows pax.
+      // Otherwise we leave the field undefined and the sanitizer falls back
+      // to the snapshot's (empty) array.
+      let livePax = undefined;
+      if (showPaxByTripId[tid]) {
+        livePax = buildPaxRecordsFromLiveData(sd.preloadedPax, sd.passengers);
+      }
+
+      out[tid] = { statuses: liveStatuses, pax: livePax };
     } catch (e) {
       // Swallow — broker page renders fine without live overlay for this leg.
-      console.warn('[trip-public] fetchLiveStatuses failed for', tid, e?.message);
+      console.warn('[trip-public] fetchLiveLegData failed for', tid, e?.message);
     }
   }));
   return out;
@@ -331,16 +430,14 @@ export default async function handler(req, res) {
 
   const legs = legsFromTrip(data);
 
-  // Re-read per-leg trip-state docs to overlay LIVE statuses on top of the
-  // share-time snapshot. Without this overlay, a landed event that fires
-  // AFTER the link was shared never reaches the broker — they see "in flight"
-  // forever. This is one of two places the data flows from ops → broker;
-  // the other is the share dialog which only fires on explicit ROTATE /
-  // share open. Brokers can't depend on ops re-opening the dialog every
-  // time a status changes.
-  const liveStatuses = await fetchLiveStatuses(legs);
+  // Re-read per-leg trip-state docs to overlay LIVE data on top of the
+  // share-time snapshot. Without this overlay, post-share events never
+  // reach the broker — they'd see frozen status and frozen pax check-in
+  // forever. Two things refresh per poll: statuses (wheels_up/landed/etc)
+  // and pax check-in records.
+  const liveLegData = await fetchLiveLegData(legs);
 
-  const sanitized = sanitizeTrip(tripId, data, legs, liveStatuses);
+  const sanitized = sanitizeTrip(tripId, data, legs, liveLegData);
 
   // Re-check the 24h post-landing expiry against the live data we just
   // pulled. The earlier check used the anchor's stale `data.statuses` —
@@ -349,8 +446,8 @@ export default async function handler(req, res) {
   // Pull the latest landed timestamp across all legs from the LIVE data and
   // bounce the request if past grace.
   let lastLanded = landedAt;
-  for (const tid of Object.keys(liveStatuses)) {
-    const lt = liveStatuses[tid]?.landed?.at;
+  for (const tid of Object.keys(liveLegData)) {
+    const lt = liveLegData[tid]?.statuses?.landed?.at;
     if (Number.isFinite(lt) && (!lastLanded || lt > lastLanded)) lastLanded = lt;
   }
   if (lastLanded && (Date.now() - lastLanded) > GRACE_HOURS_AFTER_LAST_LEG * 3600 * 1000) {
