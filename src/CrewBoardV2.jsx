@@ -172,8 +172,8 @@ export default function CrewBoardV2({ currentUser, users = [] } = {}) {
           style={{
             fontFamily: 'JetBrains Mono, monospace',
             gridTemplateColumns: canManage
-              ? '1fr 100px 100px 1fr 120px 60px'
-              : '1fr 100px 100px 1fr 120px',
+              ? '1fr 100px 110px 1fr 120px 60px'
+              : '1fr 100px 110px 1fr 120px',
           }}>
           <div>PILOT</div>
           <div>STATE</div>
@@ -182,19 +182,96 @@ export default function CrewBoardV2({ currentUser, users = [] } = {}) {
           <div className="text-right">LEGALITY</div>
           {canManage && <div className="text-right">ADMIN</div>}
         </div>
-        {sortedRows.map(row => (
-          <CrewRow
-            key={row.uid}
-            row={row}
-            now={now}
-            canManage={canManage}
-            currentUser={currentUser}
-            crewUsers={users}
-            expanded={managePilotUid === row.uid}
-            onToggle={() => setManagePilotUid(managePilotUid === row.uid ? null : row.uid)}
-            allPeriods={periods}
-          />
-        ))}
+        {/* PAIR-AWARE RENDER LOOP
+            ------------------------
+            For each pilot row (sorted by urgency), check if their active
+            duty period has a confirmed partner whose period is ALSO in
+            the visible row list. If both periods cross-link via
+            partnerPeriodId AND both are status='on' AND at least one is
+            confirmed (self- or admin-attested), render them as a single
+            CrewPairRow. The `seen` set tracks already-emitted pilots so
+            each pair appears only once.
+
+            Resting and Available pilots are NEVER grouped, even if their
+            most recent duty was paired — they might pair with a
+            different pilot for the next duty day, so showing them
+            individually is the operationally correct default.
+
+            Sort position: the pair surfaces at the position of whichever
+            pilot sorted first (the more urgent of the two). That
+            matches the existing sort intent. */}
+        {(() => {
+          const seen = new Set();
+          const elements = [];
+          for (const row of sortedRows) {
+            if (seen.has(row.uid)) continue;
+
+            // Pair detection — only fires for active confirmed periods
+            // whose partner is also in the visible rows.
+            if (row.active?.partnerPeriodId) {
+              const partnerRow = sortedRows.find(
+                r => r.active?.id === row.active.partnerPeriodId
+              );
+              if (
+                partnerRow &&
+                partnerRow.uid !== row.uid &&
+                partnerRow.active?.partnerPeriodId === row.active.id
+              ) {
+                const validStatuses = new Set(['self-attested', 'admin-attested']);
+                const meOk = !row.active.confirmStatus || validStatuses.has(row.active.confirmStatus);
+                const partnerOk = !partnerRow.active.confirmStatus
+                  || validStatuses.has(partnerRow.active.confirmStatus);
+                const partnerPending = partnerRow.active.confirmStatus === 'pending';
+                const mePending = row.active.confirmStatus === 'pending';
+
+                if ((meOk && partnerOk) || (meOk && partnerPending) || (mePending && partnerOk)) {
+                  // It's a pair. Figure out who's PIC and who's SIC.
+                  const isPic = row.active.role === 'PIC';
+                  const picRow = isPic ? row : partnerRow;
+                  const sicRow = isPic ? partnerRow : row;
+                  // Pending flag — true when the SIC hasn't confirmed yet
+                  const sicPending = sicRow.active.confirmStatus === 'pending';
+
+                  seen.add(row.uid);
+                  seen.add(partnerRow.uid);
+                  elements.push(
+                    <CrewPairRow
+                      key={`pair:${picRow.uid}:${sicRow.uid}`}
+                      pic={picRow}
+                      sic={sicRow}
+                      sicPending={sicPending}
+                      now={now}
+                      canManage={canManage}
+                      currentUser={currentUser}
+                      crewUsers={users}
+                      expandedUid={managePilotUid}
+                      onToggle={(uid) => setManagePilotUid(managePilotUid === uid ? null : uid)}
+                      allPeriods={periods}
+                    />
+                  );
+                  continue;
+                }
+              }
+            }
+
+            // Solo row
+            seen.add(row.uid);
+            elements.push(
+              <CrewRow
+                key={row.uid}
+                row={row}
+                now={now}
+                canManage={canManage}
+                currentUser={currentUser}
+                crewUsers={users}
+                expanded={managePilotUid === row.uid}
+                onToggle={() => setManagePilotUid(managePilotUid === row.uid ? null : row.uid)}
+                allPeriods={periods}
+              />
+            );
+          }
+          return elements;
+        })()}
         {sortedRows.length === 0 && (
           <div className="px-3 py-4 text-[10px] text-slate-600 text-center">No crew data in past 30 days.</div>
         )}
@@ -214,14 +291,11 @@ function CrewRow({ row, now, canManage, currentUser, crewUsers, expanded, onTogg
   const { name, active, sorted, state, legality, uid } = row;
   const elapsed = active?.dutyOnAt ? now - active.dutyOnAt : 0;
   const elapsedHrs = elapsed / MS_HR;
-  let elapsedTone = 'text-slate-300';
-  let pulse = false;
-  if (active) {
-    if (elapsedHrs >= 14) { elapsedTone = 'text-red-500'; pulse = true; }
-    else if (elapsedHrs >= 12) { elapsedTone = 'text-red-400'; pulse = true; }
-    else if (elapsedHrs >= 10) { elapsedTone = 'text-amber-400'; }
-    else { elapsedTone = 'text-emerald-400'; }
-  }
+  // `pulse` triggers the small animated dot next to the STATE label
+  // when a pilot is approaching/exceeding the 14h regular-duty cap.
+  // (The stacked elapsed/LEFT display below has its own inline color
+  // logic — it no longer relies on a precomputed tone class.)
+  const pulse = active && elapsedHrs >= 12;
   const stateTone = {
     'ON DUTY':  'text-emerald-400',
     'RESTING':  'text-violet-300',
@@ -237,6 +311,17 @@ function CrewRow({ row, now, canManage, currentUser, crewUsers, expanded, onTogg
   const restRemainingMs = (state === 'RESTING' && lastClosed?.dutyOffAt)
     ? (lastClosed.dutyOffAt + 10 * MS_HR) - now
     : null;
+  // For resting pilots, show how long they've been resting + how much
+  // legal rest is still required. Mirrors the duty-on bar's
+  // elapsed/LEFT pattern.
+  const restElapsedMs = (state === 'RESTING' && lastClosed?.dutyOffAt)
+    ? now - lastClosed.dutyOffAt
+    : null;
+  // Solo on-duty: time remaining in the 14h regular-duty budget.
+  // (For unscheduled assignments per 135.267(b), this is informational
+  // — there's no hard 14h cap. We still show it so the pilot/ops can
+  // see duration; the column header itself is just ELAPSED.)
+  const dutyRemainingMs = active ? Math.max(0, 14 * MS_HR - elapsed) : null;
 
   // Find the partner period (if any) — needed by the manage panel.
   // Look up directly in allPeriods rather than per-pilot list because
@@ -248,8 +333,8 @@ function CrewRow({ row, now, canManage, currentUser, crewUsers, expanded, onTogg
   // Grid template — adds a fixed-width MANAGE column on the right for
   // admin/ops viewers. Crew users get the original 5-column layout.
   const gridCols = canManage
-    ? '1fr 100px 100px 1fr 120px 60px'
-    : '1fr 100px 100px 1fr 120px';
+    ? '1fr 100px 110px 1fr 120px 60px'
+    : '1fr 100px 110px 1fr 120px';
 
   return (
     <div>
@@ -263,9 +348,45 @@ function CrewRow({ row, now, canManage, currentUser, crewUsers, expanded, onTogg
           {pulse && <span className="inline-block w-1.5 h-1.5 bg-current rounded-full animate-pulse mr-1"></span>}
           {state}
         </div>
-        <div className={`text-sm tabular-nums ${elapsedTone}`}
-          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-          {active ? fmtElapsed(elapsed) : (restRemainingMs > 0 ? `${fmtElapsed(restRemainingMs)} rest` : '—')}
+        {/* ELAPSED column — stacked display for both active duty and
+            rest, so the pilot/ops can see both "where we are" and
+            "how much further until the next state change." */}
+        <div style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {active ? (
+            <>
+              <div className={`text-sm tabular-nums leading-tight ${
+                elapsedHrs >= 14 ? 'text-red-500 animate-pulse' : 'text-amber-400'
+              }`}>
+                {fmtElapsed(elapsed)}
+              </div>
+              {elapsedHrs < 14 ? (
+                <div className="text-[10px] tabular-nums text-emerald-400 leading-tight">
+                  {fmtElapsed(dutyRemainingMs)} LEFT
+                </div>
+              ) : (
+                <div className="text-[10px] tabular-nums text-red-500 leading-tight animate-pulse">
+                  OVER
+                </div>
+              )}
+            </>
+          ) : restElapsedMs != null ? (
+            <>
+              <div className="text-sm tabular-nums text-violet-300 leading-tight">
+                {fmtElapsed(restElapsedMs)}
+              </div>
+              {restRemainingMs > 0 ? (
+                <div className="text-[10px] tabular-nums text-emerald-400 leading-tight">
+                  {fmtElapsed(restRemainingMs)} LEFT
+                </div>
+              ) : (
+                <div className="text-[10px] tabular-nums text-emerald-400 leading-tight">
+                  ✓ REST MET
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="text-sm text-slate-600">—</div>
+          )}
         </div>
         <div className="text-[11px] text-slate-500 truncate" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
           {active
@@ -319,6 +440,197 @@ function CrewRow({ row, now, canManage, currentUser, crewUsers, expanded, onTogg
           currentUser={currentUser}
           crewUsers={crewUsers}
           onClose={onToggle}
+        />
+      )}
+    </div>
+  );
+}
+
+// =====================================================================
+// CREW PAIR ROW — both pilots crewed together on the same duty period
+// =====================================================================
+//
+// When pair-detection in the render loop finds two pilots' periods
+// cross-linked via partnerPeriodId AND both active (or one pending),
+// they collapse into this single row instead of two solo CrewRows.
+//
+// Layout matches the solo CrewRow grid exactly, so headers align:
+//   PILOT  | STATE  | ELAPSED      | CONTEXT          | LEGALITY | ADMIN
+//   PIC: X | ON DUTY| 10h 56m      | Tail N168ZZ      | LEGAL    | MGR PIC
+//   SIC: Y |        | 3h 04m LEFT  | Trip GWXLM0 KBCT |          | MGR SIC
+//
+// Time accounting uses the EARLIER of the two pilots' dutyOnAt — that
+// way if their start times differ (one had time edited), we display
+// the more conservative (less remaining) value. In practice both
+// times match because startDutyPair / addPartnerToActiveDuty inherit
+// the timestamp from the PIC's duty.
+//
+// Legality is worst-of-both: illegal > warning > legal.
+//
+// Admin column renders TWO stacked MGR buttons (MGR PIC, MGR SIC) so
+// ops can drill into either pilot's record. Clicking one expands the
+// existing CrewManagePanel below the row.
+
+function CrewPairRow({ pic, sic, sicPending, now, canManage, currentUser, crewUsers, expandedUid, onToggle, allPeriods }) {
+  // Use the earlier dutyOnAt for shared elapsed (conservative)
+  const dutyOnAt = Math.min(
+    pic.active?.dutyOnAt || Number.POSITIVE_INFINITY,
+    sic.active?.dutyOnAt || Number.POSITIVE_INFINITY,
+  );
+  const elapsed = Number.isFinite(dutyOnAt) ? now - dutyOnAt : 0;
+  const elapsedHrs = elapsed / MS_HR;
+  const dutyRemainingMs = Math.max(0, 14 * MS_HR - elapsed);
+
+  // Shared context — pull from PIC's active period (which is the
+  // authoritative copy; SIC inherited these fields at pair creation).
+  const tail = pic.active?.tail || sic.active?.tail;
+  const tripId = pic.active?.tripId || sic.active?.tripId;
+  const location = pic.active?.location || sic.active?.location;
+
+  // Worst-of-both legality. evaluateCurrent returns
+  // 'legal' | 'warning' | 'illegal' per-pilot.
+  const order = { legal: 0, warning: 1, illegal: 2 };
+  const worstLegality = (order[pic.legality.status] || 0) >= (order[sic.legality.status] || 0)
+    ? pic.legality
+    : sic.legality;
+  const legalityTone = worstLegality.status === 'illegal'
+    ? 'text-red-400'
+    : worstLegality.status === 'warning'
+      ? 'text-amber-400'
+      : 'text-emerald-400';
+  const legalityLabel = worstLegality.status === 'illegal'
+    ? 'ILLEGAL'
+    : worstLegality.status === 'warning'
+      ? `WARN (${worstLegality.warnings?.length || 0})`
+      : 'LEGAL';
+
+  // Pulse if either pilot is over the urgency threshold
+  const pulse = elapsedHrs >= 12;
+
+  const gridCols = canManage
+    ? '1fr 100px 110px 1fr 120px 60px'
+    : '1fr 100px 110px 1fr 120px';
+
+  // The expanded panel can be either pilot — track which one is
+  // currently open via the shared expandedUid prop from the parent.
+  const expandedPilot = expandedUid === pic.uid
+    ? { row: pic, period: pic.active, partner: sic.active }
+    : expandedUid === sic.uid
+      ? { row: sic, period: sic.active, partner: pic.active }
+      : null;
+
+  return (
+    <div>
+      <div className="grid items-center gap-3 px-3 py-2"
+        style={{ gridTemplateColumns: gridCols }}>
+        {/* PILOTS — PIC on top, SIC below, with a small chevron marker
+            so it's obvious this is one crew, not two random pilots. */}
+        <div className="space-y-0.5 min-w-0">
+          <div className="text-sm text-slate-200 truncate flex items-center gap-1.5"
+            style={{ fontFamily: 'DM Sans, sans-serif' }}>
+            <span className="text-[9px] tracking-widest text-cyan-500 shrink-0">PIC</span>
+            <span className="truncate">{pic.name}</span>
+          </div>
+          <div className="text-sm text-slate-300 truncate flex items-center gap-1.5"
+            style={{ fontFamily: 'DM Sans, sans-serif' }}>
+            <span className="text-[9px] tracking-widest text-cyan-500 shrink-0">SIC</span>
+            <span className="truncate">{sic.name}</span>
+            {sicPending && (
+              <span className="text-[9px] tracking-widest text-amber-400 shrink-0"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                · PENDING
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* STATE — single label, vertically centered. The cyan
+            "CREWED" suffix distinguishes paired duty at a glance. */}
+        <div className="text-[11px] tracking-widest text-emerald-400"
+          style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+          {pulse && <span className="inline-block w-1.5 h-1.5 bg-current rounded-full animate-pulse mr-1"></span>}
+          ON DUTY
+          <div className="text-[9px] tracking-widest text-cyan-400 mt-0.5">CREWED</div>
+        </div>
+
+        {/* ELAPSED — yellow elapsed on top, green LEFT below. Same
+            pattern the on-duty card uses internally. Pulses red if
+            over 14h. */}
+        <div style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          <div className={`text-sm tabular-nums leading-tight ${
+            elapsedHrs >= 14 ? 'text-red-500 animate-pulse' : 'text-amber-400'
+          }`}>
+            {fmtElapsed(elapsed)}
+          </div>
+          {elapsedHrs < 14 ? (
+            <div className="text-[10px] tabular-nums text-emerald-400 leading-tight">
+              {fmtElapsed(dutyRemainingMs)} LEFT
+            </div>
+          ) : (
+            <div className="text-[10px] tabular-nums text-red-500 leading-tight animate-pulse">
+              OVER
+            </div>
+          )}
+        </div>
+
+        {/* CONTEXT — tail/trip on one line, location on another. */}
+        <div className="text-[11px] text-slate-500 min-w-0"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          <div className="truncate">
+            {[tail && `Tail ${tail}`, tripId && `Trip ${tripId}`].filter(Boolean).join(' · ') || '—'}
+          </div>
+          <div className="truncate text-slate-600">
+            {location ? `@ ${location}` : ''}
+          </div>
+        </div>
+
+        {/* LEGALITY — worst of both. */}
+        <div className={`text-right text-[10px] tracking-widest ${legalityTone}`}
+          style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
+          {legalityLabel}
+        </div>
+
+        {/* ADMIN — two stacked tiny buttons, MGR PIC / MGR SIC. The
+            current expanded uid (if any) is highlighted. */}
+        {canManage && (
+          <div className="flex flex-col gap-1 items-end">
+            <button
+              onClick={() => onToggle(pic.uid)}
+              className={`text-[9px] tracking-widest px-1.5 py-0.5 border ${
+                expandedUid === pic.uid
+                  ? 'border-cyan-400 text-cyan-300 bg-cyan-500/10'
+                  : 'border-slate-700 text-slate-500 hover:border-cyan-400 hover:text-cyan-300'
+              }`}
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              title={`Manage ${pic.name}'s duty period`}
+            >
+              {expandedUid === pic.uid ? 'CLOSE' : 'MGR PIC'}
+            </button>
+            <button
+              onClick={() => onToggle(sic.uid)}
+              className={`text-[9px] tracking-widest px-1.5 py-0.5 border ${
+                expandedUid === sic.uid
+                  ? 'border-cyan-400 text-cyan-300 bg-cyan-500/10'
+                  : 'border-slate-700 text-slate-500 hover:border-cyan-400 hover:text-cyan-300'
+              }`}
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              title={`Manage ${sic.name}'s duty period`}
+            >
+              {expandedUid === sic.uid ? 'CLOSE' : 'MGR SIC'}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Expanded admin panel — for whichever pilot the admin chose.
+          Uses the same CrewManagePanel as solo rows for consistency. */}
+      {canManage && expandedPilot && (
+        <CrewManagePanel
+          period={expandedPilot.period}
+          partnerPeriod={expandedPilot.partner}
+          currentUser={currentUser}
+          crewUsers={crewUsers}
+          onClose={() => onToggle(expandedPilot.row.uid)}
         />
       )}
     </div>
