@@ -45,6 +45,7 @@ import {
   addOutsideFlying as fbAddOutsideFlying,
 } from './firebase-duty-v2.js';
 import { evaluateCurrent, LIMITS } from './duty-legality.js';
+import { DutyExportButtons } from './DutyExport.jsx';
 
 const MS_HR = 3600 * 1000;
 const MS_DAY = 24 * MS_HR;
@@ -395,6 +396,18 @@ export default function DutyV2({ currentUser, myTrips = [], users = [] }) {
         setOpenForm={setOpenForm}
         onEdit={doEdit}
       />
+
+      {/* Export your own duty records — CSV or printable PDF. Defaults
+          to last 365 days (Skyway retention). For custom date ranges
+          or another pilot's records, use the EXPORT button on the
+          ops crew board. */}
+      <div className="pt-2 border-t border-slate-800">
+        <div className="text-[10px] tracking-widest text-slate-500 mb-2"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          EXPORT YOUR DUTY RECORDS
+        </div>
+        <DutyExportButtons pilotUid={uid} pilotName={name} />
+      </div>
     </div>
   );
 }
@@ -501,7 +514,23 @@ function OnDutyCard({ period, now, busy, openForm, setOpenForm, legality, partne
     if (elapsedHrs >= 10) return { text: 'text-amber-400', border: 'border-amber-500/40', bg: 'bg-amber-500/5' };
     return { text: 'text-emerald-400', border: 'border-emerald-500/30', bg: 'bg-emerald-500/5' };
   })();
-  const progress = Math.max(0, Math.min(1, elapsed / (14 * MS_HR)));
+
+  // Duty-budget math — used for the dual-color bar + countdown.
+  //
+  // DUTY_MAX_MS represents the 14h cap from 135.267(c). For regular
+  // assignments this is the legal limit; for unscheduled (135.267(b))
+  // there is no 14h cap — the bar/countdown are informational only.
+  // We always render the bar so the pilot has a visual sense of how
+  // long they've been on, regardless of assignment type.
+  const DUTY_MAX_MS = 14 * MS_HR;
+  const elapsedPct = Math.max(0, Math.min(100, (elapsed / DUTY_MAX_MS) * 100));
+  const remainingMs = Math.max(0, DUTY_MAX_MS - elapsed);
+  const remainingPct = Math.max(0, 100 - elapsedPct);
+  const isRegular = period.assignmentType === 'regular';
+  // The countdown label changes by assignment type so the pilot
+  // doesn't read "X left" as a regulatory commitment for unscheduled.
+  const remainingLabel = isRegular ? 'LEFT' : 'TO 14H REF';
+
   const ending = openForm === 'end';
   const editingOn = openForm === `edit:${period.id}:dutyOnAt`;
   const requestingOverride = openForm === 'override';
@@ -516,8 +545,8 @@ function OnDutyCard({ period, now, busy, openForm, setOpenForm, legality, partne
 
   return (
     <div className={`border ${tone.border} ${tone.bg} p-4`}>
-      <div className="flex items-baseline justify-between mb-3">
-        <div className="flex items-center gap-2">
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <div className="flex items-center gap-2 flex-wrap pt-1">
           <span className={`w-2 h-2 rounded-full ${tone.pulse ? 'animate-pulse' : ''} bg-current`} />
           <span className="text-[10px] tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
             ON DUTY
@@ -532,16 +561,47 @@ function OnDutyCard({ period, now, busy, openForm, setOpenForm, legality, partne
             {period.assignmentType === 'regular' ? '14h regular' : 'unscheduled'} · {period.crewType === 'two' ? '2 pilot' : 'single'}
           </span>
         </div>
-        <span className={`text-2xl tabular-nums ${tone.text}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-          {fmtElapsed(elapsed)}
-        </span>
+        {/* Right-side counter: elapsed (yellow) on top, remaining (green)
+            below. Stacked vertically and right-aligned so the elapsed
+            time still anchors the visual right edge of the card. When
+            duty exceeds 14h, the remaining line disappears and the
+            elapsed line goes red+pulsing instead of yellow. */}
+        <div className="flex flex-col items-end shrink-0">
+          <span className={`text-2xl tabular-nums leading-none ${
+            elapsedHrs >= 14 ? 'text-red-500 animate-pulse' : 'text-amber-400'
+          }`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {fmtElapsed(elapsed)}
+          </span>
+          {elapsedHrs < 14 ? (
+            <span className="text-[11px] tabular-nums text-emerald-400 mt-1"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {fmtElapsed(remainingMs)} {remainingLabel}
+            </span>
+          ) : (
+            <span className="text-[11px] tabular-nums text-red-500 mt-1 animate-pulse"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {fmtElapsed(elapsed - DUTY_MAX_MS)} OVER
+            </span>
+          )}
+        </div>
       </div>
 
-      {/* Progress bar — fills toward 14h */}
-      <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden mb-3">
-        <div className={`h-full ${tone.pulse ? 'animate-pulse' : ''} ${
-          elapsedHrs >= 12 ? 'bg-red-500' : elapsedHrs >= 10 ? 'bg-amber-500' : 'bg-emerald-500'
-        }`} style={{ width: `${progress * 100}%` }} />
+      {/* Progress bar — yellow segment = elapsed, green segment = time
+          remaining toward the 14h cap. When elapsed exceeds 14h the bar
+          becomes a single red pulsing strip (and the OVER 14 tag in the
+          header is already showing). Bar height bumped from h-1.5 to
+          h-2 so the two segments are easier to read at a glance. */}
+      <div className="h-2 bg-slate-800 rounded-full overflow-hidden mb-3 flex">
+        {elapsedHrs >= 14 ? (
+          <div className="h-full w-full bg-red-500 animate-pulse" />
+        ) : (
+          <>
+            <div className="h-full bg-amber-500 transition-all duration-500"
+              style={{ width: `${elapsedPct}%` }} />
+            <div className="h-full bg-emerald-500 transition-all duration-500"
+              style={{ width: `${remainingPct}%` }} />
+          </>
+        )}
       </div>
 
       {/* Context info */}
