@@ -182,8 +182,12 @@ function writeLastTz(v) {
  *   className: optional extra classes for the input
  *   compact: optional boolean — hides the interpretation hint to save
  *     vertical space (suitable for nested admin panels)
+ *   showNowButton: optional boolean — render a [NOW] quick-action that
+ *     sets the value to the current instant. Useful for admin "set to
+ *     right now" workflows where TZ conversion is irrelevant because
+ *     Date.now() is the same UTC instant everywhere.
  */
-export default function TzAwareDateTimeInput({ value, onChange, className = '', compact = false }) {
+export default function TzAwareDateTimeInput({ value, onChange, className = '', compact = false, showNowButton = false }) {
   const [tzKey, setTzKey] = useState(() => readLastTz());
 
   // Resolve the IANA tz id for the currently selected option.
@@ -218,13 +222,26 @@ export default function TzAwareDateTimeInput({ value, onChange, className = '', 
     // with a converted value we'd corrupt the underlying timestamp.
   }, []);
 
-  // Hint line: shows what UTC moment the input string resolves to and
-  // what that moment looks like in each common TZ. This is the user's
-  // verification step before submitting.
+  // Hint line: shows what wall-clock moment the stored UTC ms will
+  // render as. When the user has picked a non-browser TZ, also show
+  // the value in their browser-local zone so the cross-TZ user can
+  // verify both sides of the conversion at a glance.
+  //
+  // Example with JST browser, ET selected:
+  //   "Stored as Jun 2, 9:00 AM EDT  (= Jun 2, 10:00 PM JST)"
   const hint = useMemo(() => {
     if (!Number.isFinite(value)) return null;
-    return formatInTz(value, tz);
-  }, [value, tz]);
+    const selectedFmt = formatInTz(value, tz);
+    // Only add the second display when the user picked an explicit TZ
+    // that differs from their browser. Matching TZs (tz === null or
+    // tz happens to equal the browser zone) would just repeat the
+    // same string.
+    if (tz && tz !== browserZone) {
+      const browserFmt = formatInTz(value, null);
+      return { primary: selectedFmt, secondary: browserFmt };
+    }
+    return { primary: selectedFmt, secondary: null };
+  }, [value, tz, browserZone]);
 
   return (
     <div className="space-y-1">
@@ -248,12 +265,30 @@ export default function TzAwareDateTimeInput({ value, onChange, className = '', 
             </option>
           ))}
         </select>
+        {showNowButton && (
+          <button
+            type="button"
+            onClick={() => onChange(Date.now())}
+            title="Set to right now (current instant, no TZ math)"
+            className="bg-slate-950/80 border border-slate-700 hover:border-cyan-400 hover:text-cyan-300 px-2 py-2 text-[10px] tracking-widest text-slate-300 shrink-0"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            NOW
+          </button>
+        )}
       </div>
       {!compact && hint && (
-        <div className="flex items-center gap-1.5 text-[10px] text-slate-500"
+        <div className="space-y-0.5"
           style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-          <Globe className="w-3 h-3 shrink-0" />
-          <span>Stored as: {hint}</span>
+          <div className="flex items-center gap-1.5 text-[10px] text-slate-400">
+            <Globe className="w-3 h-3 shrink-0" />
+            <span>Stored as: <span className="text-cyan-300">{hint.primary}</span></span>
+          </div>
+          {hint.secondary && (
+            <div className="flex items-center gap-1.5 text-[10px] text-slate-500 pl-4">
+              <span>= {hint.secondary} (your local)</span>
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -264,6 +264,20 @@ function EditTimeMode({ period, busy, editorName, onBack, onSubmit }) {
     else setNewMs(period.dutyOffAt || Date.now());
   }, [field, period.dutyOnAt, period.dutyOffAt]);
 
+  // The current stored value for the selected field. Shown prominently
+  // as "WHAT'S STORED NOW" so the admin can compare what they're about
+  // to write against what's already there before saving. Especially
+  // important for cross-TZ edits where the displayed input string can
+  // look right in one TZ but be wrong in the pilot's actual TZ.
+  const currentMs = field === 'dutyOnAt' ? period.dutyOnAt : period.dutyOffAt;
+  const currentReadable = Number.isFinite(currentMs)
+    ? new Intl.DateTimeFormat('en-US', {
+        month: 'short', day: 'numeric', year: 'numeric',
+        hour: 'numeric', minute: '2-digit', hour12: true,
+        timeZoneName: 'short',
+      }).format(new Date(currentMs))
+    : '(none)';
+
   // Sanity warnings (non-blocking, just informational)
   const sanityWarnings = [];
   if (field === 'dutyOnAt' && period.dutyOffAt && newMs && newMs >= period.dutyOffAt) {
@@ -272,11 +286,32 @@ function EditTimeMode({ period, busy, editorName, onBack, onSubmit }) {
   if (field === 'dutyOffAt' && period.dutyOnAt && newMs && newMs <= period.dutyOnAt) {
     sanityWarnings.push('Duty-off must be after duty-on.');
   }
+  // Bonus: if the admin is about to save a value that is essentially
+  // identical to what's already stored, surface that. Helps Jake's
+  // exact problem (admin clicks SAVE thinking they edited the time
+  // but the input still holds the original value).
+  const isUnchanged = newMs != null && currentMs != null && Math.abs(newMs - currentMs) < 60000;
+  // For an active duty period, warn if the new dutyOnAt is so old that
+  // the pilot would immediately register as OVER 14h. Common symptom
+  // of a TZ-confused edit.
+  const wouldBeOver14 = field === 'dutyOnAt' && period.status === 'on' && newMs != null &&
+    (Date.now() - newMs) > 14 * 60 * 60 * 1000;
 
   const canSubmit = newMs != null && sanityWarnings.length === 0 && !busy;
 
   return (
     <div className="space-y-2 text-[11px]">
+      {/* Current stored value — read-only reference. Always visible so
+          the admin can compare BEFORE → AFTER. */}
+      <div className="px-2 py-1.5 border border-slate-700 bg-slate-950/50">
+        <div className="text-[9px] tracking-widest text-slate-500">
+          WHAT'S STORED NOW ({field === 'dutyOnAt' ? 'duty on' : 'duty off'})
+        </div>
+        <div className="text-slate-200 mt-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {currentReadable}
+        </div>
+      </div>
+
       <div className="grid grid-cols-2 gap-2">
         <button
           onClick={() => setField('dutyOnAt')}
@@ -300,7 +335,31 @@ function EditTimeMode({ period, busy, editorName, onBack, onSubmit }) {
           DUTY OFF{!period.dutyOffAt && ' (active)'}
         </button>
       </div>
-      <TzAwareDateTimeInput value={newMs} onChange={setNewMs} compact />
+
+      <div className="text-[9px] tracking-widest text-slate-500">
+        NEW VALUE
+      </div>
+      <TzAwareDateTimeInput value={newMs} onChange={setNewMs} showNowButton />
+
+      {wouldBeOver14 && (
+        <div className="text-[10px] text-amber-300 bg-amber-500/10 border border-amber-500/30 p-2 flex items-start gap-2">
+          <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+          <span>
+            This time is {((Date.now() - newMs) / 3600000).toFixed(1)}h ago — the pilot will
+            register as OVER 14h immediately. Likely a timezone mismatch. Check the
+            "Stored as" line above and the TZ dropdown. If you just want them on duty
+            starting now, tap [NOW].
+          </span>
+        </div>
+      )}
+
+      {isUnchanged && (
+        <div className="text-[10px] text-slate-500 flex items-center gap-1">
+          <AlertTriangle className="w-3 h-3" />
+          New value is the same as the stored value — saving will be a no-op.
+        </div>
+      )}
+
       <input
         type="text"
         value={note}
