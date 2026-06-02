@@ -899,6 +899,14 @@ function buildStatusEmail(step, trip, brokerEmail) {
   // JetInsight on import and stored on trip.info.pic / trip.info.sic.
   // Falls back to the company line when neither is set — never returns an
   // empty signature.
+  //
+  // The leading '', '' creates a paragraph break between the body and the
+  // signature (\n\n in joined output). Each subsequent inserted block
+  // also leads with '' to maintain paragraph separation. The HTML email
+  // renderer (api/_email-signature.js textToHtml) converts \n\n to <p>
+  // tags, so visual spacing only appears where we explicitly put a blank
+  // line. Single \n between adjacent lines (e.g. company name + tagline)
+  // becomes a <br> within the same paragraph.
   const sigLines = [
     '',
     '',
@@ -907,16 +915,21 @@ function buildStatusEmail(step, trip, brokerEmail) {
   ];
   if (trip.info.pic || trip.info.sic) {
     // Insert "Your flight crew:" + names ABOVE the company line for a more
-    // personal sign-off. Example:
+    // personal sign-off. Example output:
     //   Your flight crew:
     //   Captain — Maxwell Stanley Hagberg
     //   First Officer — Cole Joseph Zangerle
     //
     //   — Skyway Aviation
     //   Private Jet & Helicopter Charter Services
+    //
+    // The trailing '' after the crew names creates the blank line before
+    // the company sign-off (which is what produces the \n\n that becomes
+    // a paragraph break in HTML rendering).
     const crewLines = ['', 'Your flight crew:'];
     if (trip.info.pic) crewLines.push(`Captain — ${trip.info.pic}`);
     if (trip.info.sic) crewLines.push(`First Officer — ${trip.info.sic}`);
+    crewLines.push('');   // ← blank line separating crew block from company line
     sigLines.splice(2, 0, ...crewLines);
   }
   const signature = sigLines.join('\n');

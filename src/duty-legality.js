@@ -27,10 +27,14 @@
 //                  - 10 consecutive hours of rest in the 24 hours
 //                    BEFORE the planned completion of the assignment.
 //   135.267(c) — Optional "regular assigned duty period" path:
-//                  - Duty period of up to 14 hours, plus required
-//                    rest before and after.
-//                  - Duty period + rest must total at least 24 hours.
-//                  - Flight time still limited to 8/10 hours.
+//                  - Duty period of up to 14 hours.
+//                  - At least 10 consecutive hours of rest in the
+//                    24-hour period preceding the planned completion
+//                    of the assignment. (The "24 hours" here refers to
+//                    the WINDOW in which the 10h rest must fall, NOT
+//                    to a duty+rest total.)
+//                  - Flight time still limited to 8/10 hours per
+//                    135.267(b) crewing.
 //   135.267(d) — Extended rest if flight time exceeded due to
 //                circumstances outside the pilot/operator's control:
 //                  - 0–30 min over → 11 hours rest

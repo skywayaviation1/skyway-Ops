@@ -487,7 +487,12 @@ function StartDutyForm({ busy, onCancel, onConfirm }) {
   const [tripId, setTripId] = useState('');
   const [role, setRole] = useState('PIC');
   const [crewType, setCrewType] = useState('two');
-  const [assignmentType, setAssignmentType] = useState('unscheduled');
+  // Default to 'regular' (135.267(c) 14h duty period). Skyway operates as
+  // assigned/regular duty in the vast majority of cases — pilots arrive
+  // at the FBO under a planned assignment with documented duty-on time.
+  // True unscheduled assignments (pilot pulled off rest without warning
+  // for an emergent trip) are rare and should be the deliberate choice.
+  const [assignmentType, setAssignmentType] = useState('regular');
   const [fitForDuty, setFitForDuty] = useState(false);
   const [priorRestHours, setPriorRestHours] = useState('10');
 
@@ -590,8 +595,8 @@ function StartDutyForm({ busy, onCancel, onConfirm }) {
         />
         <div className="text-[10px] text-slate-500 mt-1">
           {assignmentType === 'unscheduled'
-            ? '135.267(b) — no 14h duty cap; limited by flight time + rest.'
-            : '135.267(c) — up to 14h duty, must have rest before & after totaling 24h.'}
+            ? '135.267(b) — no 14h duty cap; 10h continuous rest required immediately before assignment.'
+            : '135.267(c) — up to 14h duty period; 10h continuous rest required in the 24h before planned completion.'}
         </div>
       </div>
 
