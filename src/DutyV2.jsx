@@ -46,6 +46,7 @@ import {
 } from './firebase-duty-v2.js';
 import { evaluateCurrent, LIMITS } from './duty-legality.js';
 import { DutyExportButtons } from './DutyExport.jsx';
+import TzAwareDateTimeInput from './TzAwareInput.jsx';
 
 const MS_HR = 3600 * 1000;
 const MS_DAY = 24 * MS_HR;
@@ -875,7 +876,11 @@ function PendingConfirmCard({ period, now, busy, openForm, setOpenForm, onConfir
 // =====================================================================
 
 function StartDutyForm({ busy, onCancel, onConfirm, myTrips = [], users = [], currentUserUid }) {
-  const [dutyOnAt, setDutyOnAt] = useState(() => toLocalInputValue(roundToFive()));
+  // dutyOnAt is held as a UTC millisecond timestamp throughout the form.
+  // The TzAwareDateTimeInput component handles converting between this
+  // and the user-visible local-time string in their chosen timezone.
+  // Default: 5-minute-rounded current time.
+  const [dutyOnAt, setDutyOnAt] = useState(() => Math.round(Date.now() / 300000) * 300000);
   const [location, setLocation] = useState('');
   const [tail, setTail] = useState('');
   const [tripId, setTripId] = useState('');
@@ -975,7 +980,7 @@ function StartDutyForm({ busy, onCancel, onConfirm, myTrips = [], users = [], cu
     [partnerUid, crewUsers]
   );
 
-  const onAtMs = fromLocalInputValue(dutyOnAt);
+  const onAtMs = dutyOnAt; // already UTC ms; renamed alias kept for clarity
   const priorRestMs = (() => {
     const n = parseFloat(priorRestHours);
     return Number.isFinite(n) && n >= 0 ? n * MS_HR : null;
@@ -1022,11 +1027,9 @@ function StartDutyForm({ busy, onCancel, onConfirm, myTrips = [], users = [], cu
   return (
     <div className="space-y-3" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
       <Label>DUTY-ON TIME</Label>
-      <input
-        type="datetime-local"
+      <TzAwareDateTimeInput
         value={dutyOnAt}
-        onChange={(e) => setDutyOnAt(e.target.value)}
-        className="w-full bg-slate-950/80 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
+        onChange={setDutyOnAt}
       />
 
       <Label>LOCATION (airport code or freeform)</Label>
@@ -1237,13 +1240,13 @@ function PartnerPicker({ crewUsers, partnerUid, setPartnerUid, partnerUser, auto
 }
 
 function EndDutyForm({ period, busy, onCancel, onConfirm }) {
-  const [dutyOffAt, setDutyOffAt] = useState(() => toLocalInputValue(roundToFive()));
+  const [dutyOffAt, setDutyOffAt] = useState(() => Math.round(Date.now() / 300000) * 300000);
   const [flightTimeHours, setFlightTimeHours] = useState(
     period.flightTimeMs ? (period.flightTimeMs / MS_HR).toFixed(1) : '0'
   );
   const [excursionReason, setExcursionReason] = useState('');
 
-  const offAtMs = fromLocalInputValue(dutyOffAt);
+  const offAtMs = dutyOffAt;
   const ftMs = (() => {
     const n = parseFloat(flightTimeHours);
     return Number.isFinite(n) && n >= 0 ? Math.round(n * MS_HR) : 0;
@@ -1259,11 +1262,9 @@ function EndDutyForm({ period, busy, onCancel, onConfirm }) {
   return (
     <div className="space-y-3 mt-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
       <Label>DUTY-OFF TIME</Label>
-      <input
-        type="datetime-local"
+      <TzAwareDateTimeInput
         value={dutyOffAt}
-        onChange={(e) => setDutyOffAt(e.target.value)}
-        className="w-full bg-slate-950/80 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
+        onChange={setDutyOffAt}
       />
       {canSubmit && (
         <div className="text-[11px] text-slate-400">
@@ -1373,20 +1374,14 @@ function OverrideRequestForm({ busy, onCancel, onConfirm }) {
 }
 
 function InlineTimeEditor({ label, initialMs, busy, onCancel, onSave }) {
-  const [value, setValue] = useState(() => toLocalInputValue(new Date(initialMs)));
+  const [ms, setMs] = useState(() => Number.isFinite(initialMs) ? initialMs : Date.now());
   const [note, setNote] = useState('');
-  const ms = fromLocalInputValue(value);
   const inFuture = ms != null && ms > Date.now() + 60000;
   return (
     <div className="space-y-2 mt-2 p-3 border border-cyan-500/30 bg-cyan-500/5"
       style={{ fontFamily: 'JetBrains Mono, monospace' }}>
       {label && <Label>{label}</Label>}
-      <input
-        type="datetime-local"
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        className="w-full bg-slate-950/80 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
-      />
+      <TzAwareDateTimeInput value={ms} onChange={setMs} />
       <input
         type="text"
         value={note}
@@ -1473,29 +1468,28 @@ function OutsideFlyingSection({ outside, busy, openForm, setOpenForm, onAdd }) {
 }
 
 function OutsideFlyingForm({ busy, onCancel, onConfirm }) {
-  const [startAt, setStartAt] = useState(() => toLocalInputValue(roundToFive()));
-  const [endAt, setEndAt] = useState(() => toLocalInputValue(roundToFive()));
+  // UTC ms timestamps — TZ handled by the input component
+  const [startAt, setStartAt] = useState(() => Math.round(Date.now() / 300000) * 300000);
+  const [endAt, setEndAt] = useState(() => Math.round(Date.now() / 300000) * 300000);
   const [flightTimeHours, setFlightTimeHours] = useState('');
   const [source, setSource] = useState('');
   const [notes, setNotes] = useState('');
-  const startMs = fromLocalInputValue(startAt);
-  const endMs = fromLocalInputValue(endAt);
+  const startMs = startAt;
+  const endMs = endAt;
   const ftMs = parseFloat(flightTimeHours) * MS_HR;
   const valid = startMs && endMs && endMs > startMs && Number.isFinite(ftMs) && ftMs > 0 && source.trim();
 
   return (
     <div className="space-y-2 mt-2 p-3 border border-slate-700"
       style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-      <div className="grid grid-cols-2 gap-2">
+      <div className="space-y-2">
         <div>
           <Label>START</Label>
-          <input type="datetime-local" value={startAt} onChange={(e) => setStartAt(e.target.value)}
-            className="w-full bg-slate-950/80 border border-slate-700 px-2 py-2 text-sm text-slate-100" />
+          <TzAwareDateTimeInput value={startAt} onChange={setStartAt} compact />
         </div>
         <div>
           <Label>END</Label>
-          <input type="datetime-local" value={endAt} onChange={(e) => setEndAt(e.target.value)}
-            className="w-full bg-slate-950/80 border border-slate-700 px-2 py-2 text-sm text-slate-100" />
+          <TzAwareDateTimeInput value={endAt} onChange={setEndAt} compact />
         </div>
       </div>
       <Label>FLIGHT TIME (hours)</Label>

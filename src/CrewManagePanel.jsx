@@ -46,6 +46,7 @@ import {
   removePartnerFromDuty,
   changePartner,
 } from './firebase-duty-v2.js';
+import TzAwareDateTimeInput from './TzAwareInput.jsx';
 
 const MS_HR = 3600 * 1000;
 
@@ -251,16 +252,17 @@ function Btn({ onClick, icon, children, tone }) {
 
 function EditTimeMode({ period, busy, editorName, onBack, onSubmit }) {
   const [field, setField] = useState('dutyOnAt');
-  const [val, setVal] = useState(() => toLocalInput(period.dutyOnAt));
+  // newMs holds the user-selected UTC timestamp directly. The TZ-aware
+  // input component handles all conversion between this number and the
+  // user-visible local-time string.
+  const [newMs, setNewMs] = useState(() => period.dutyOnAt || Date.now());
   const [note, setNote] = useState('');
 
-  // When field switches, repopulate val with the current value of that field
+  // When field switches, repopulate from the period's current value
   React.useEffect(() => {
-    if (field === 'dutyOnAt') setVal(toLocalInput(period.dutyOnAt));
-    else setVal(toLocalInput(period.dutyOffAt || Date.now()));
+    if (field === 'dutyOnAt') setNewMs(period.dutyOnAt || Date.now());
+    else setNewMs(period.dutyOffAt || Date.now());
   }, [field, period.dutyOnAt, period.dutyOffAt]);
-
-  const newMs = fromLocalInput(val);
 
   // Sanity warnings (non-blocking, just informational)
   const sanityWarnings = [];
@@ -298,12 +300,7 @@ function EditTimeMode({ period, busy, editorName, onBack, onSubmit }) {
           DUTY OFF{!period.dutyOffAt && ' (active)'}
         </button>
       </div>
-      <input
-        type="datetime-local"
-        value={val}
-        onChange={e => setVal(e.target.value)}
-        className="w-full bg-slate-950 border border-slate-700 px-2 py-1.5 text-slate-100 focus:outline-none focus:border-cyan-400"
-      />
+      <TzAwareDateTimeInput value={newMs} onChange={setNewMs} compact />
       <input
         type="text"
         value={note}
@@ -534,11 +531,12 @@ function ManagePartnerMode({ period, partnerPeriod, crewUsers, busy, editorName,
 // =====================================================================
 
 function ForceEndMode({ period, busy, editorName, onBack, onSubmit }) {
-  const [dutyOffAt, setDutyOffAt] = useState(() => toLocalInput(Date.now()));
+  // UTC ms — TZ handled by the input component
+  const [dutyOffAt, setDutyOffAt] = useState(() => Date.now());
   const [flightTimeHours, setFlightTimeHours] = useState('0');
   const [note, setNote] = useState('');
 
-  const offMs = fromLocalInput(dutyOffAt);
+  const offMs = dutyOffAt;
   const tooEarly = offMs != null && period.dutyOnAt && offMs <= period.dutyOnAt;
 
   return (
@@ -549,12 +547,7 @@ function ForceEndMode({ period, busy, editorName, onBack, onSubmit }) {
       </div>
       <div>
         <div className="text-[10px] tracking-widest text-slate-500 mb-1">DUTY OFF TIME</div>
-        <input
-          type="datetime-local"
-          value={dutyOffAt}
-          onChange={e => setDutyOffAt(e.target.value)}
-          className="w-full bg-slate-950 border border-slate-700 px-2 py-1.5 text-slate-100 focus:outline-none focus:border-cyan-400"
-        />
+        <TzAwareDateTimeInput value={dutyOffAt} onChange={setDutyOffAt} compact />
         {tooEarly && (
           <div className="text-[10px] text-red-400 mt-1">Must be after duty-on time.</div>
         )}
