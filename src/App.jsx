@@ -8275,28 +8275,124 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
   // Schedule diff — what's new on the schedule that's NOT yet on the manifest,
   // and what's no longer on the schedule but still on the manifest.
   // Excludes trips the user has explicitly removed (dismissedTripUids).
+  //
+  // FUZZY MATCHING: JetInsight regenerates trip UIDs when a trip is modified
+  // (time shift, broker change, etc.) — even though it's conceptually the
+  // same flight. The naive UID-only diff misreports those as "leg removed
+  // + new leg added" when in reality nothing changed. To prevent false
+  // SCHEDULE CHANGED banners, we also match by ROUTE (from + to) within
+  // the manifest's date+tail scope. A leg with a stale UID gets healed:
+  // its tripUid is updated to the new UID and the warning clears.
   const scheduleDiff = useMemo(() => {
-    if (!draft) return { newTrips: [], removedTripUids: [], unchanged: true };
+    if (!draft) return { newTrips: [], removedTripUids: [], unchanged: true, healedUids: {} };
     const existingLegs = Array.isArray(draft.legs) ? draft.legs : [];
     const existingTripUids = new Set(existingLegs.filter(l => l.tripUid).map(l => l.tripUid));
     const dismissedTripUids = new Set(Array.isArray(draft.dismissedTripUids) ? draft.dismissedTripUids : []);
     const scheduledTripUids = new Set(scheduledTrips.map(t => t.uid));
-    // New trips: on schedule, not on manifest, not previously dismissed
+
+    // Build a route key (from→to) → list of scheduled trips so we can
+    // look up a leg's likely match when its UID doesn't appear anymore.
+    const routeKey = (from, to) =>
+      `${String(from || '').toUpperCase()}|${String(to || '').toUpperCase()}`;
+    const scheduledByRoute = new Map();
+    for (const t of scheduledTrips) {
+      const k = routeKey(t.info?.from, t.info?.to);
+      if (!scheduledByRoute.has(k)) scheduledByRoute.set(k, []);
+      scheduledByRoute.get(k).push(t);
+    }
+
+    // Track which scheduled trips have been "claimed" by an existing leg
+    // (either via direct UID match or via fuzzy route match). Anything left
+    // unclaimed at the end is genuinely new.
+    const claimedScheduledUids = new Set();
+    // healedUids maps a leg's STALE tripUid → the FRESH tripUid that matches
+    // the current schedule. The save effect below uses this to silently
+    // update the manifest's leg references.
+    const healedUids = {};
+
+    // First pass: legs with UIDs that still exist in the schedule. These
+    // are unambiguous matches — claim them immediately.
+    for (const leg of existingLegs) {
+      if (leg.tripUid && scheduledTripUids.has(leg.tripUid)) {
+        claimedScheduledUids.add(leg.tripUid);
+      }
+    }
+
+    // Second pass: legs whose UID no longer matches. Try to fuzzy-match
+    // by route. If exactly ONE unclaimed scheduled trip has the same
+    // from+to, that's the match — heal the UID. If multiple candidates
+    // exist (rare same-day A→B→A→B repos), don't auto-heal — surface
+    // the leg as orphaned and let the user resolve manually.
+    const trulyMissingLegs = [];
+    for (const leg of existingLegs) {
+      if (!leg.tripUid) continue;                          // manual leg, not from schedule
+      if (scheduledTripUids.has(leg.tripUid)) continue;    // already claimed in pass 1
+      const candidates = (scheduledByRoute.get(routeKey(leg.from, leg.to)) || [])
+        .filter(t => !claimedScheduledUids.has(t.uid));
+      if (candidates.length === 1) {
+        // Unambiguous match — heal silently
+        healedUids[leg.tripUid] = candidates[0].uid;
+        claimedScheduledUids.add(candidates[0].uid);
+      } else {
+        // 0 candidates (leg really is gone) OR multiple (ambiguous —
+        // can't safely auto-heal). Treat as removed; user decides.
+        trulyMissingLegs.push(leg);
+      }
+    }
+
+    // New trips: scheduled trips not claimed by any leg AND not previously
+    // dismissed.
     const newTrips = scheduledTrips.filter(t =>
-      !existingTripUids.has(t.uid) && !dismissedTripUids.has(t.uid)
+      !claimedScheduledUids.has(t.uid) && !dismissedTripUids.has(t.uid)
     );
-    const removedTripUids = existingLegs
-      .filter(l => l.tripUid && !scheduledTripUids.has(l.tripUid))
-      .map(l => l.tripUid);
+
+    const removedTripUids = trulyMissingLegs.map(l => l.tripUid);
+
     return {
       newTrips,
       removedTripUids,
+      healedUids,
       unchanged: newTrips.length === 0 && removedTripUids.length === 0,
     };
   }, [draft, scheduledTrips]);
 
+  // Apply healedUids — silently update legs whose tripUid drifted to the
+  // new UID. This makes future renders show no banner without the user
+  // doing anything. Runs once per healing opportunity (the persist
+  // updates the draft, which retriggers scheduleDiff with no more heals
+  // needed). Read-only manifests don't get patched.
+  const healAppliedRef = useRef('');
+
   const isSubmitted = draft?.status === 'submitted';
   const readOnly = isSubmitted || !canEdit;
+
+  useEffect(() => {
+    if (readOnly) return;
+    if (!draft) return;
+    const healMap = scheduleDiff.healedUids;
+    if (!healMap || Object.keys(healMap).length === 0) return;
+    // Idempotency: hash of the heal pairs. Same hash twice → already applied.
+    const sig = Object.entries(healMap).map(([k, v]) => `${k}=>${v}`).sort().join('|');
+    if (healAppliedRef.current === sig) return;
+    healAppliedRef.current = sig;
+    const newLegs = (draft.legs || []).map((leg) => {
+      if (leg.tripUid && healMap[leg.tripUid]) {
+        return { ...leg, tripUid: healMap[leg.tripUid] };
+      }
+      return leg;
+    });
+    const next = { ...draft, legs: newLegs };
+    setDraft(next);
+    (async () => {
+      try {
+        const m = await import('./firebase-manifests.js');
+        await m.saveManifest(next);
+        console.info('[manifest] healed stale tripUids:', healMap);
+      } catch (err) {
+        console.warn('[manifest] heal save failed:', err?.message);
+      }
+    })();
+  }, [scheduleDiff.healedUids, draft?.id, readOnly]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   // Pre-populate from schedule on first open if no legs exist yet.
   // Uses a ref-tracked "already attempted" flag so the effect doesn't loop
@@ -18736,6 +18832,82 @@ function paidWithLabel(value) {
   return opt ? opt.label : value;
 }
 
+// PaidWithField — select with an "Other" branch that reveals a free-text
+// input. The "Other mode" is tracked as LOCAL UI STATE, separate from the
+// `value` prop, so an empty/cleared field doesn't collapse the input back
+// to the select-only view.
+//
+// Behavior:
+//   - On mount, if `value` is a canonical option (or empty), starts in
+//     select mode. If `value` is a free-text string (e.g. "Shell fleet"),
+//     starts in Other mode with the input pre-filled.
+//   - Selecting a canonical option from the dropdown writes that value
+//     and exits Other mode.
+//   - Selecting "Other (type a name)" enters Other mode and clears the
+//     parent's value to '' so partial typing doesn't accidentally save a
+//     half-typed name. Mode is preserved by local state.
+//   - Typing in the text input writes through onChange immediately so
+//     saveEdits picks up the final value.
+function PaidWithField({ value, onChange }) {
+  // Detect whether the initial value is a free-text string (Other mode)
+  // or a canonical option / empty (select mode).
+  const isCanonicalValue = (v) =>
+    !v || PAID_WITH_OPTIONS.some(o => o.value === v);
+  const [otherMode, setOtherMode] = React.useState(() => !isCanonicalValue(value));
+
+  // If the parent's value changes externally to a canonical option, exit
+  // Other mode. (E.g. a different expense is loaded into the same editor.)
+  React.useEffect(() => {
+    if (isCanonicalValue(value) && otherMode) {
+      // Only exit if the value is a real canonical option, NOT empty.
+      // Empty + otherMode means user just clicked Other and hasn't typed
+      // yet — we want to STAY in Other mode and show the input.
+      if (value && PAID_WITH_OPTIONS.some(o => o.value === value)) {
+        setOtherMode(false);
+      }
+    }
+    // We don't AUTO-enter other mode from value changes — that's the
+    // user's choice via the select.
+  }, [value]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const selectValue = otherMode ? '__other__' : (value || '');
+
+  return (
+    <>
+      <select
+        value={selectValue}
+        onChange={(e) => {
+          const v = e.target.value;
+          if (v === '__other__') {
+            setOtherMode(true);
+            // Clear value so any old canonical selection doesn't sneak
+            // through if the user picks Other but doesn't type before saving.
+            onChange('');
+          } else {
+            setOtherMode(false);
+            onChange(v);
+          }
+        }}
+        className="w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
+      >
+        <option value="">— Select card —</option>
+        {PAID_WITH_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        <option value="__other__">Other (type a name)</option>
+      </select>
+      {otherMode && (
+        <input
+          autoFocus
+          type="text"
+          value={value || ''}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="e.g. Visa ending 4421, Shell fleet card, …"
+          className="mt-2 w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
+        />
+      )}
+    </>
+  );
+}
+
 /* ============================================================
    TRACKING SCREEN — live fleet map (ops/admin only)
    ============================================================ */
@@ -20947,6 +21119,49 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
     };
   }, [currentUserUid, canSeeAll]);
 
+  // ---- One-shot pending → approved migration ----
+  // After removing the approval workflow, any expenses that were sitting
+  // in 'pending' state at the time of this deploy need to be auto-promoted
+  // so they flow into the QBO export. Runs ONCE per session per approver
+  // user (controlled by a ref) — once expenses are migrated, they'll show
+  // up as 'approved' on the next subscribe tick and won't trigger again.
+  //
+  // Crew users don't run this — only accounting/admin (the previous
+  // approvers) — so we don't risk a Firestore write storm from N pilots
+  // all racing to promote the same docs.
+  const migrationRanRef = useRef(false);
+  useEffect(() => {
+    if (!canApprove) return;             // approver-gated
+    if (loading) return;                  // wait for first snapshot
+    if (migrationRanRef.current) return;  // once per session
+    const pendingExpenses = expenses.filter(e => e.status === 'pending');
+    if (pendingExpenses.length === 0) {
+      migrationRanRef.current = true;     // mark done so we don't re-check
+      return;
+    }
+    migrationRanRef.current = true;
+    (async () => {
+      try {
+        const m = await import('./firebase-expenses.js');
+        const now = Date.now();
+        // Promote sequentially to avoid hammering Firestore. There won't
+        // be many pending expenses post-migration (this only runs once).
+        for (const e of pendingExpenses) {
+          await m.saveExpense({
+            ...e,
+            status: 'approved',
+            approvedAt: now,
+            approvedBy: 'auto-migration',
+          });
+        }
+        console.info(`[expenses] auto-promoted ${pendingExpenses.length} pending → approved`);
+      } catch (err) {
+        console.error('[expenses] pending-promotion failed:', err);
+        // Don't reset the ref — let user reload to retry rather than loop
+      }
+    })();
+  }, [canApprove, loading, expenses]);
+
   const filteredExpenses = useMemo(() => {
     let out = expenses;
     if (canSeeAll) {
@@ -21119,7 +21334,19 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
 
   const submitExpense = async (expense) => {
     const m = await import('./firebase-expenses.js');
-    await m.saveExpense({ ...expense, status: 'pending', submittedAt: Date.now() });
+    // No more approval gate — receipts move straight to 'approved' so they
+    // flow into the QBO push pipeline immediately. Approval was creating
+    // friction without catching real errors; the AI parser + crew tagging
+    // already validates the data. Accounting can still REQUEST REVIEW for
+    // clarification questions, which is a separate workflow.
+    const now = Date.now();
+    await m.saveExpense({
+      ...expense,
+      status: 'approved',
+      submittedAt: now,
+      approvedAt: now,
+      approvedBy: currentUserDisplayName || currentUser?.name || 'auto',
+    });
   };
   const approveExpense = async (expense) => {
     if (!canApprove) return;
@@ -21981,42 +22208,15 @@ function ExpenseDetail({ expense, currentUser, canApprove, isAccounting, onBack,
                 Personal) plus an "Other" branch that reveals a text input so crew
                 can name a card not in the list (e.g. ramp's fuel card, a vendor
                 purchase card). Whatever they type lands in `paidWith` as a plain
-                string and renders via paidWithLabel's fallback. */}
-            {(() => {
-              const isCanonical = !draft.paidWith
-                || PAID_WITH_OPTIONS.some(o => o.value === draft.paidWith);
-              const selectValue = !draft.paidWith ? '' : isCanonical ? draft.paidWith : '__other__';
-              return (
-                <>
-                  <select
-                    value={selectValue}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      if (v === '__other__') {
-                        // Start with empty string so the input renders and crew can type
-                        set('paidWith')('');
-                      } else {
-                        set('paidWith')(v);
-                      }
-                    }}
-                    className="w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
-                  >
-                    <option value="">— Select card —</option>
-                    {PAID_WITH_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                    <option value="__other__">Other (type a name)</option>
-                  </select>
-                  {!isCanonical && (
-                    <input
-                      autoFocus
-                      value={draft.paidWith || ''}
-                      onChange={(e) => set('paidWith')(e.target.value)}
-                      placeholder="e.g. Visa ending 4421, Shell fleet card, …"
-                      className="mt-2 w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
-                    />
-                  )}
-                </>
-              );
-            })()}
+                string and renders via paidWithLabel's fallback.
+                BUGFIX: we used to flip into "other" mode by writing '' into
+                paidWith, but an empty string then made the isCanonical check
+                pass (!'' === true) and the input disappeared. Now we track
+                "Other mode" as a separate piece of UI state. */}
+            <PaidWithField
+              value={draft.paidWith}
+              onChange={(v) => set('paidWith')(v)}
+            />
           </FieldRow>
           <div className="grid grid-cols-3 gap-2">
             <FieldRow label="SUBTOTAL"><input type="number" step="0.01" value={draft.subtotal ?? ''} onChange={(e) => set('subtotal')(e.target.value)} className="w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400" /></FieldRow>
@@ -22108,11 +22308,10 @@ function ExpenseDetail({ expense, currentUser, canApprove, isAccounting, onBack,
           <button onClick={() => setEditing(true)} className="px-3 py-2 border border-slate-700 text-sm text-slate-200 hover:border-cyan-500/40">EDIT</button>
         )}
         {/* Submitter actions.
-            Before this fix, the submit button was disabled when paidWith was
-            empty, leaving crew confused ("why won't this go?"). Now we let
-            them click and we ASK which card via a modal. Same flow for both
-            buttons (draft/rejected and needs_review) so they get the same
-            prompt. */}
+            With approval-workflow removed, SUBMIT finalizes the expense
+            straight to 'approved' so it flows into QBO. The card prompt
+            modal still appears when paidWith is missing (required for
+            QBO push). */}
         {isOwner && (status === 'draft' || status === 'rejected') && !editing && (
           <button
             onClick={() => tryStartSubmit()}
@@ -22120,7 +22319,7 @@ function ExpenseDetail({ expense, currentUser, canApprove, isAccounting, onBack,
             className="px-3 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed"
             style={{ fontFamily: 'DM Sans, sans-serif' }}
           >
-            {status === 'rejected' ? 'RESUBMIT' : 'SUBMIT FOR APPROVAL'}
+            {status === 'rejected' ? 'RESUBMIT' : 'SUBMIT'}
           </button>
         )}
         {isOwner && status === 'needs_review' && !editing && (
@@ -22131,7 +22330,7 @@ function ExpenseDetail({ expense, currentUser, canApprove, isAccounting, onBack,
             style={{ fontFamily: 'DM Sans, sans-serif' }}
             title="Resubmit after addressing the review question"
           >
-            RESUBMIT FOR APPROVAL
+            RESUBMIT
           </button>
         )}
 
@@ -22171,6 +22370,10 @@ function ExpenseDetail({ expense, currentUser, canApprove, isAccounting, onBack,
             </div>
           </div>
         )}
+        {/* PENDING state — kept for legacy expenses that were submitted
+            before approval-workflow removal. New submissions go straight
+            to 'approved'. Approver can still bulk-promote, but no longer
+            reject. */}
         {canApprove && status === 'pending' && !editing && !showReviewPrompt && (
           <>
             <button onClick={() => onApprove(expense)} className="px-3 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-sm font-medium" style={{ fontFamily: 'DM Sans, sans-serif' }}>
@@ -22180,23 +22383,15 @@ function ExpenseDetail({ expense, currentUser, canApprove, isAccounting, onBack,
               onClick={() => setShowReviewPrompt(true)}
               className="px-3 py-2 border border-amber-500/40 text-amber-300 hover:bg-amber-500/10 text-sm"
               style={{ fontFamily: 'DM Sans, sans-serif' }}
-              title="Ask the submitter a question before approving"
+              title="Ask the submitter a question"
             >
               REQUEST REVIEW
             </button>
-            <button
-              onClick={() => {
-                const reason = window.prompt('Rejection reason (optional):') || '';
-                onReject(expense, reason);
-              }}
-              className="px-3 py-2 border border-red-500/40 text-red-300 hover:bg-red-500/10 text-sm"
-              style={{ fontFamily: 'DM Sans, sans-serif' }}
-            >
-              REJECT
-            </button>
           </>
         )}
-        {/* On needs_review, approver can re-ask, approve directly, or reject */}
+        {/* On needs_review, approver can re-ask or approve. Reject removed —
+            if accounting truly can't process an expense, they can REQUEST
+            REVIEW with a delete-this-expense question. */}
         {canApprove && status === 'needs_review' && !editing && !showReviewPrompt && (
           <>
             <button onClick={() => onApprove(expense)} className="px-3 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-sm font-medium" style={{ fontFamily: 'DM Sans, sans-serif' }}>
@@ -22208,16 +22403,6 @@ function ExpenseDetail({ expense, currentUser, canApprove, isAccounting, onBack,
               style={{ fontFamily: 'DM Sans, sans-serif' }}
             >
               ASK ANOTHER QUESTION
-            </button>
-            <button
-              onClick={() => {
-                const reason = window.prompt('Rejection reason (optional):') || '';
-                onReject(expense, reason);
-              }}
-              className="px-3 py-2 border border-red-500/40 text-red-300 hover:bg-red-500/10 text-sm"
-              style={{ fontFamily: 'DM Sans, sans-serif' }}
-            >
-              REJECT
             </button>
           </>
         )}
@@ -22255,17 +22440,14 @@ function ExpenseDetail({ expense, currentUser, canApprove, isAccounting, onBack,
             </div>
           </div>
         )}
-        {canApprove && status === 'approved' && !editing && (
-          <button onClick={() => onReject(expense, 'Reverted from approved')} className="px-3 py-2 border border-slate-700 text-slate-400 hover:border-amber-500/40 hover:text-amber-300 text-sm">
-            REVERT
-          </button>
-        )}
+        {/* REVERT removed — workflow is upload-and-done. If an expense is
+            wrong, edit it or delete it; don't bounce its status. */}
       </div>
 
-      {/* Card-prompt modal — appears when SUBMIT FOR APPROVAL is clicked
-          without a card tagged. Lets crew pick a canonical card OR type a
-          custom name. On confirm we persist paidWith + submit in one
-          transaction-ish flow. */}
+      {/* Card-prompt modal — appears when SUBMIT is clicked without a
+          card tagged. Lets crew pick a canonical card OR type a custom
+          name. On confirm we persist paidWith + finalize the expense in
+          one go. */}
       {cardPromptOpen && (
         <div
           className="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-50"
