@@ -16,9 +16,10 @@
 // legality, render. Re-evaluates every 60s.
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, Clock, CheckCircle2, Shield, Users } from 'lucide-react';
+import { AlertTriangle, Clock, CheckCircle2, Shield, Users, Download } from 'lucide-react';
 import { subscribeRecentForAllPilots, subscribePeriodsForPilot, fetchOutsideFlyingForPilot } from './firebase-duty-v2.js';
 import { evaluateCurrent, evaluateProposed } from './duty-legality.js';
+import { DutyExportModal } from './DutyExport.jsx';
 
 const MS_HR = 3600 * 1000;
 
@@ -41,6 +42,10 @@ export default function CrewBoardV2() {
   const [periods, setPeriods] = useState([]);
   const [loading, setLoading] = useState(true);
   const [now, setNow] = useState(Date.now());
+  // Export modal state — opens via the EXPORT button in the header.
+  // The modal owns its own pilot-picker / date-range / format state;
+  // we just toggle visibility here.
+  const [exportOpen, setExportOpen] = useState(false);
 
   useEffect(() => {
     const unsub = subscribeRecentForAllPilots(30, (list) => {
@@ -124,16 +129,31 @@ export default function CrewBoardV2() {
 
   return (
     <div className="space-y-2">
-      <div className="flex items-baseline justify-between">
+      <div className="flex items-baseline justify-between gap-3">
         <h2 className="text-xs tracking-[0.2em] text-slate-300"
           style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}>
           CREW · DUTY STATUS
         </h2>
-        <span className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-          {stats.onDuty} on duty · {stats.resting} resting · {stats.available} available
-          {stats.illegal > 0 && <span className="text-red-400"> · {stats.illegal} illegal</span>}
-          {stats.warning > 0 && <span className="text-amber-400"> · {stats.warning} warning</span>}
-        </span>
+        <div className="flex items-center gap-3">
+          <span className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {stats.onDuty} on duty · {stats.resting} resting · {stats.available} available
+            {stats.illegal > 0 && <span className="text-red-400"> · {stats.illegal} illegal</span>}
+            {stats.warning > 0 && <span className="text-amber-400"> · {stats.warning} warning</span>}
+          </span>
+          {/* Export button — opens a modal where ops/admin picks a pilot
+              and date range, then downloads CSV or opens print preview
+              for PDF. The crew board already has the pilot list in
+              `rows` so we pass it through. */}
+          <button
+            onClick={() => setExportOpen(true)}
+            className="flex items-center gap-1.5 px-2.5 py-1 text-[10px] tracking-widest text-slate-400 hover:text-cyan-300 border border-slate-700 hover:border-cyan-400"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            title="Export pilot duty records (CSV or PDF)"
+          >
+            <Download className="w-3 h-3" />
+            EXPORT
+          </button>
+        </div>
       </div>
 
       <div className="border border-slate-800 bg-slate-900/30 divide-y divide-slate-800">
@@ -152,6 +172,13 @@ export default function CrewBoardV2() {
           <div className="px-3 py-4 text-[10px] text-slate-600 text-center">No crew data in past 30 days.</div>
         )}
       </div>
+
+      {/* Export modal — renders nothing when closed, full-screen overlay when open */}
+      <DutyExportModal
+        open={exportOpen}
+        onClose={() => setExportOpen(false)}
+        pilots={rows.map(r => ({ uid: r.uid, name: r.name }))}
+      />
     </div>
   );
 }

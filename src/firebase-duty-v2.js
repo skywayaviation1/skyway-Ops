@@ -178,6 +178,76 @@ export async function fetchOutsideFlyingForPilot(pilotUid) {
   return list;
 }
 
+// =====================================================================
+// RETENTION POLICY (for documentation + future cleanup cron)
+// =====================================================================
+//
+// Skyway retains duty records for at least 365 days, exceeding the
+// FAA minimum (14 CFR 135.63 / 135.265). NO auto-deletion code exists
+// today — records accumulate indefinitely. This constant exists so:
+//   1. Future cleanup crons know the cutoff
+//   2. Export defaults to "last 365 days"
+//   3. Any code path that would purge older records knows the floor
+//
+// If you ever build a cron to delete records older than RETENTION_DAYS,
+// it MUST also preserve any record referenced by an admin override
+// approval audit, regardless of age. Talk to me before writing that.
+export const RETENTION_DAYS = 365;
+
+/**
+ * One-shot fetch of all duty periods for a pilot within a date range.
+ * Used by the export feature. Caller passes start/end ms; defaults to
+ * the last RETENTION_DAYS if not provided.
+ *
+ * Returns periods sorted by dutyOnAt DESCENDING (newest first), which
+ * matches how the export renders them.
+ *
+ * The query filters by `dutyOnAt` so a period that STARTED in the
+ * window is included even if it ended outside. This is intentional —
+ * a duty period belongs in the export for the day it began.
+ */
+export async function fetchPeriodsForPilotInRange(pilotUid, startMs, endMs) {
+  if (!pilotUid) return [];
+  const start = Number.isFinite(startMs)
+    ? startMs
+    : Date.now() - RETENTION_DAYS * 24 * 3600 * 1000;
+  const end = Number.isFinite(endMs) ? endMs : Date.now();
+  const q = query(
+    collection(db, COLL),
+    where('pilotUid', '==', pilotUid),
+    where('dutyOnAt', '>=', start),
+    where('dutyOnAt', '<=', end),
+  );
+  const snap = await getDocs(q);
+  const list = [];
+  snap.forEach(d => list.push({ id: d.id, ...d.data() }));
+  list.sort((a, b) => (b.dutyOnAt || 0) - (a.dutyOnAt || 0));
+  return list;
+}
+
+/**
+ * Same shape, but for outside commercial flying — exported as a
+ * separate section in CSV/PDF since it's a different collection.
+ */
+export async function fetchOutsideFlyingForPilotInRange(pilotUid, startMs, endMs) {
+  if (!pilotUid) return [];
+  const start = Number.isFinite(startMs)
+    ? startMs
+    : Date.now() - RETENTION_DAYS * 24 * 3600 * 1000;
+  const end = Number.isFinite(endMs) ? endMs : Date.now();
+  const q = query(
+    collection(db, OUTSIDE_COLL),
+    where('pilotUid', '==', pilotUid),
+    where('startAt', '>=', start),
+    where('startAt', '<=', end),
+  );
+  const snap = await getDocs(q);
+  const list = [];
+  snap.forEach(d => list.push({ id: d.id, ...d.data() }));
+  list.sort((a, b) => (b.startAt || 0) - (a.startAt || 0));
+  return list;
+}
+
 // -----------------------------------------------------------------
 // Writes — duty periods
 // -----------------------------------------------------------------
