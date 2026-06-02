@@ -15,6 +15,11 @@ const MuteToggleLazy = lazy(() => import('./MuteToggle.jsx'));
 // Code-split: FlightBoard loads only when ?board=1 URL is hit.
 const FlightBoardLazy = lazy(() => import('./FlightBoard.jsx'));
 
+// Code-split: OpsCommandCenter is the home screen for ops/admin/sales
+// users. Pilots and crew see PilotHomeScreen instead. Lazy because non-ops
+// roles never render it.
+const OpsCommandCenterLazy = lazy(() => import('./OpsCommandCenter.jsx'));
+
 // Code-split: Lodging tab loads only when a user opens it on a trip.
 // Trip detail is the most-touched screen — keeping this lazy means the
 // Lodging code doesn't bloat the initial bundle.
@@ -23977,17 +23982,40 @@ export default function CharterOps() {
           onOpenProfile={() => setShowProfile(true)}
         />
 
-        {/* === HOME SECTION (pilot's personalized view) === */}
+        {/* === HOME SECTION === */}
+        {/* Ops/admin/sales users see the fleet-wide command center.
+            Pilots, maintenance, and accounting see the personalized
+            PilotHomeScreen (their own trips, duty status, etc.).
+            The role gate happens here so the call site stays single-line
+            and either home component can evolve independently. */}
         {section === 'home' && (
-          <PilotHomeScreen
-            currentUser={currentUser}
-            trips={allTrips}
-            tripStates={null}
-            config={config}
-            users={users}
-            onSelectTrip={(uid) => { setSelectedId(uid); setSection('schedule'); }}
-            onSwitchSection={(id) => setSection(id)}
-          />
+          ['ops', 'admin', 'sales'].includes(currentUser?.role) ? (
+            <Suspense fallback={
+              <div className="flex-1 flex items-center justify-center bg-slate-950 text-slate-500"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                <Loader2 className="w-4 h-4 animate-spin inline mr-2" />
+                LOADING COMMAND CENTER
+              </div>
+            }>
+              <OpsCommandCenterLazy
+                currentUser={currentUser}
+                trips={allTrips}
+                users={users}
+                onSelectTrip={(uid) => { setSelectedId(uid); setSection('schedule'); }}
+                onSwitchSection={(id) => setSection(id)}
+              />
+            </Suspense>
+          ) : (
+            <PilotHomeScreen
+              currentUser={currentUser}
+              trips={allTrips}
+              tripStates={null}
+              config={config}
+              users={users}
+              onSelectTrip={(uid) => { setSelectedId(uid); setSection('schedule'); }}
+              onSwitchSection={(id) => setSection(id)}
+            />
+          )
         )}
 
         {/* === SCHEDULE SECTION (existing trip view) === */}
