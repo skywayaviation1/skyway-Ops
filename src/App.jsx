@@ -419,33 +419,77 @@ function nameMatchesPilot(jetinsightName, pilotName) {
  */
 /**
  * Extract FBO names per airport code from flattened trip-sheet PDF text.
- * extractPdfText joins PDF items with SPACES (no newlines), so the text is
- * one run. For each "CODE - " header we scan ~160 chars: an FBO name is
- * either a known FBO chain or a Title-Case phrase ending in
- * Aviation/FBO/Flight Support/Jet Center just before the street address.
+ *
+ * JetInsight crew itinerary PDFs include FBO info in MULTIPLE places. The
+ * most reliable signal is the `Fees (CODE): <FBO Name> /` line that
+ * appears for every airport in the trip. Other heuristics (scanning
+ * after "CODE - " airport-line headers) fail on two-column PDF layouts
+ * where pdfplumber linearizes the text and interleaves columns — e.g.
+ * "DEPARTS: SGR - Sugar Land Regional ARRIVES: CHO - Charlottesville
+ * Albemarle Tue, Jun 2nd Global Select Tue, Jun 2nd Signature Aviation"
+ * puts "Global Select" AFTER the CHO code in linear order, so a forward
+ * scan from "SGR -" misses it.
+ *
+ * Strategy (in priority order):
+ *   1. `Fees (CODE):` — most reliable. The FBO is everything between
+ *      the colon and the first " / " separator. Always present in
+ *      JetInsight crew itineraries.
+ *   2. `DEPARTS:` / `ARRIVES:` block — parse the departures FBO from
+ *      the line after the airport name. Fallback for sheet formats
+ *      that omit the Fees section.
+ *   3. KNOWN_FBO chain match anywhere near the code — fallback for
+ *      old or unusual sheet formats.
+ *
  * Returns { CODE: 'FBO Name', ... }. Used by the parser AND the admin
  * backfill so the logic never drifts between the two.
  */
 function extractFbosFromText(text) {
   const fboByCode = {};
   if (!text || typeof text !== 'string') return fboByCode;
+
+  // KNOWN_FBO is the list of recognized FBO chains. Used both as a
+  // fallback when the Fees pattern doesn't match and as a sanity check
+  // for free-text matches. Expanded over time as we see new operators
+  // in the wild.
+  const KNOWN_FBO = /(Signature Flight Support|Signature Aviation|Atlantic Aviation|Jet Aviation|Million Air|Sheltair|Wilson Air|Cutter Aviation|Ross Aviation|Modern Aviation|Clay Lacy Aviation|Meridian|Landmark Aviation|TAC Air|Banyan Air Service|Galaxy FBO|Stevens Aerospace|Jet Center|Airport Authority|Global Select|Texas Jet|Henriksen Jet Center|Tampa International Jet Center|Tampa Jet Center|Atlantic Aviation|Million Air|World Jet Of Palm Beach|Yellowstone Jet Center|Net Jets|Cessna Citation Service|FlightWorks|Embraer Executive|TextronAviation|Mountain Aviation|Lynx FBO|Sky Harbor Aviation|Premier Jet Center|North Star Aviation|Avitas Aviation|Privaira)/i;
+
   try {
-    const KNOWN_FBO = /(Signature Flight Support|Signature Aviation|Atlantic Aviation|Jet Aviation|Million Air|Sheltair|Wilson Air|Cutter Aviation|Ross Aviation|Modern Aviation|Clay Lacy Aviation|Meridian|Landmark Aviation|TAC Air|Banyan Air Service|Galaxy FBO|Stevens Aerospace|Jet Center|Airport Authority)/;
+    // ----- Strategy 1: Fees (CODE): line — primary, most reliable -----
+    // Pattern: "Fees (XXX): FBO Name / Landing fee:" — extract the part
+    // between the colon and the first " / ". This is structured data
+    // that JetInsight emits consistently across all crew sheets.
+    const feesRe = /Fees\s*\(([A-Z0-9]{3,4})\)\s*:\s*([^/]+?)\s*\/\s*(?:Landing\s+fee|Parking|Ground|Infrastructure)/gi;
+    let fm;
+    while ((fm = feesRe.exec(text)) !== null) {
+      const code = fm[1].toUpperCase();
+      const fbo = fm[2].trim().replace(/\s+/g, ' ');
+      // Sanity: 2..60 chars, must contain at least one letter
+      if (fbo.length >= 2 && fbo.length <= 60 && /[A-Za-z]/.test(fbo)) {
+        fboByCode[code] = fbo;
+      }
+    }
+
+    // ----- Strategy 2: KNOWN_FBO match in the address window near code -----
+    // For airports the Fees line didn't cover, look near the "CODE - "
+    // header for a known FBO chain. This catches simpler one-column
+    // sheets where the FBO appears right after the airport name.
     const headerRe = /\b([A-Z]{3,4})\s+-\s+/g;
     let hm;
     while ((hm = headerRe.exec(text)) !== null) {
       const code = hm[1].toUpperCase();
-      if (fboByCode[code]) continue;
+      if (fboByCode[code]) continue;     // already filled by Strategy 1
       const start = hm.index + hm[0].length;
-      // Bound the scan to BEFORE the next "CODE - " header so one airport's
-      // window can't bleed into the next airport's FBO. Cap at 160 chars.
+      // Wider window now (400 chars) because column linearization can
+      // push the FBO well past the airport code. Bound by next code
+      // header to avoid bleeding into other airports' addresses.
       const nextHeader = /\b[A-Z]{3,4}\s+-\s+/g;
       nextHeader.lastIndex = start;
       const nh = nextHeader.exec(text);
-      const bound = nh ? Math.min(nh.index, start + 160) : start + 160;
+      const bound = nh ? Math.min(nh.index, start + 400) : start + 400;
       const after = text.slice(start, bound);
       const k = KNOWN_FBO.exec(after);
       if (k) { fboByCode[code] = k[0].trim(); continue; }
+      // Final fallback: Title-Case phrase ending in Aviation/FBO/etc.
       const g = /([A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]+){0,4}\s+(?:Aviation|FBO|Air Center|Jet Center|Flight Support))(?=\s+\d|\s+[A-Z]{3,4}\s+-|\s*$)/.exec(after);
       if (g) {
         const words = g[1].split(/\s+/);
@@ -5732,6 +5776,79 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
     })();
     return () => { if (unsub) unsub(); };
   }, [trip.uid, trip.info.broker]);
+
+  // Auto-recovery for missing FBOs. When a trip has a trip-sheet PDF
+  // attached but no FBO populated (parser missed it on the original upload,
+  // or the parser was upgraded after the upload), automatically re-parse
+  // the PDF in the background and persist the result. Runs at most ONCE
+  // per trip card session to avoid loops or repeated work.
+  //
+  // Triggers only when:
+  //   - Loading is done (we've seen trip-state's authoritative answer)
+  //   - A trip-sheet URL exists (something to re-parse)
+  //   - At least one FBO is still null after the iCal fallback
+  //
+  // Doesn't touch UI loading state — silent background fix. If extraction
+  // fails, no harm done; the trip just keeps showing whatever it had.
+  const fboRecoveryRanRef = useRef(false);
+  useEffect(() => {
+    if (loading) return;
+    if (fboRecoveryRanRef.current) return;
+    if (!tripSheetUrl) return;
+    // Only retry when at least one FBO is missing. If both are populated
+    // (from state or iCal fallback), no need to re-parse.
+    if (fromFbo && toFbo) return;
+
+    fboRecoveryRanRef.current = true;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        // Fetch the PDF. Try the stored URL first; if that fails (stale
+        // Storage token, CORS, etc.), refresh via the storage path.
+        let buf = null;
+        try {
+          const r = await fetch(tripSheetUrl);
+          if (r.ok) buf = await r.arrayBuffer();
+        } catch (_) { /* fall through to path refresh */ }
+        if (!buf && tripSheetPath) {
+          try {
+            const { getStorage, ref, getDownloadURL } = await import('firebase/storage');
+            const fresh = await getDownloadURL(ref(getStorage(), tripSheetPath));
+            const r2 = await fetch(fresh);
+            if (r2.ok) buf = await r2.arrayBuffer();
+          } catch (_) { /* give up silently */ }
+        }
+        if (!buf || cancelled) return;
+        const text = await extractPdfText(buf);
+        if (cancelled) return;
+        const fbos = extractFbosFromText(text);
+        const fromCode = trip.info?.from ? String(trip.info.from).toUpperCase() : null;
+        const toCode = trip.info?.to ? String(trip.info.to).toUpperCase() : null;
+        const newFromFbo = fromCode ? (fbos[fromCode] || null) : null;
+        const newToFbo = toCode ? (fbos[toCode] || null) : null;
+        // Only persist what we ACTUALLY found that's missing. Don't
+        // clobber a value the admin manually set with null.
+        const patch = {};
+        if (!fromFbo && newFromFbo) patch.fromFbo = newFromFbo;
+        if (!toFbo && newToFbo) patch.toFbo = newToFbo;
+        if (Object.keys(patch).length === 0) return;
+        // Write directly to the trip-state doc. The subscribe effect will
+        // pick up the update and re-render with the new FBO values.
+        const { setTripFboById } = await import('./firebase-data.js');
+        await setTripFboById(
+          trip.uid,
+          patch.fromFbo ?? fromFbo ?? null,
+          patch.toFbo ?? toFbo ?? null
+        );
+        console.info('[fbo-recovery] auto-recovered FBO for', trip.uid, patch);
+      } catch (e) {
+        console.warn('[fbo-recovery] failed for', trip.uid, e?.message);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [loading, tripSheetUrl, tripSheetPath, fromFbo, toFbo, trip.uid, trip.info?.from, trip.info?.to]);
 
   // Persist on change — writes to Firebase, real-time listener picks it up everywhere
   // Auto-merges trip-sheet fields from current state since they're mostly read-only
