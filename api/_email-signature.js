@@ -99,15 +99,59 @@ export function ensureCharterCc(ccList, toList) {
 }
 
 /**
- * Convert plain text to a minimal HTML body, with proper escaping. Used by
- * callers that only have text content but need the signature wrapper (which
- * requires HTML).
+ * Convert plain text to a minimal HTML body, with proper escaping AND
+ * proper paragraph rendering across all major email clients.
  *
- * @param {string} text plain text
+ * Background: the previous implementation relied on `white-space:pre-wrap`
+ * to preserve newlines. That works in Apple Mail and Thunderbird but is
+ * routinely stripped by Gmail and Outlook (their HTML sanitizers remove
+ * `white-space` declarations as a defense against CSS injection). The
+ * result: every \n collapsed into a single space and the whole email
+ * rendered as one blob of text.
+ *
+ * Fix: convert `\n\n` (double newline = paragraph break) into actual
+ * <p> tags, and single `\n` (line break within a paragraph) into <br>.
+ * <p> margins and <br> tags survive every major email client's
+ * sanitizer.
+ *
+ * Trailing/leading whitespace within paragraphs is trimmed because
+ * many of our templates end paragraphs with a trailing space due to
+ * the way we concatenate string fragments in the build* functions.
+ *
+ * Empty paragraphs (from \n\n\n or more) are collapsed into one
+ * paragraph break — visual whitespace doesn't grow unbounded.
+ *
+ * @param {string} text plain text with \n line breaks and \n\n paragraph breaks
  * @returns {string} a basic HTML body, NOT yet wrapped with signature
  */
 export function textToHtml(text) {
-  const safe = String(text || '')
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  return `<div style="font-family:-apple-system, Segoe UI, sans-serif; font-size:14px; line-height:1.5; color:#1f2937; white-space:pre-wrap;">${safe}</div>`;
+  const raw = String(text || '');
+  // 1. HTML-escape first. We're producing HTML so any < > & in the source
+  //    must be neutralized before we wrap fragments in tags.
+  const escaped = raw
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  // 2. Split on one-or-more blank lines (i.e. \n\n or longer). Each chunk
+  //    becomes one <p>. Empty chunks (which only happen from leading or
+  //    trailing whitespace) are filtered out.
+  const paragraphs = escaped
+    .split(/\n\s*\n+/)
+    .map(p => p.trim())
+    .filter(p => p.length > 0);
+
+  // 3. Inside each paragraph, single \n becomes <br>. This is important
+  //    for the crew signature block where lines like
+  //      Captain — Foo
+  //      First Officer — Bar
+  //    are separated by single \n, not \n\n.
+  const html = paragraphs
+    .map(p => `<p style="margin:0 0 14px 0;">${p.replace(/\n/g, '<br>')}</p>`)
+    .join('\n');
+
+  // 4. Wrapper div carries the font + color + line-height. Margins live
+  //    on the <p> tags so paragraph spacing survives client sanitizers
+  //    that strip the CSS on the wrapper.
+  return `<div style="font-family:-apple-system, Segoe UI, sans-serif; font-size:14px; line-height:1.5; color:#1f2937;">${html}</div>`;
 }
