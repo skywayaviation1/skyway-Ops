@@ -29,6 +29,10 @@ const MaintenanceLogLazy = lazy(() => import('./MaintenanceLog.jsx'));
 const MELLookupLazy = lazy(() => import('./MELLookup.jsx'));
 const PilotDocsTabLazy = lazy(() => import('./PilotDocs.jsx').then(m => ({ default: m.PilotDocsTab })));
 const AllCrewDocsLazy = lazy(() => import('./PilotDocs.jsx').then(m => ({ default: m.AllCrewDocs })));
+// FAA NOTAM badge — small, used inline next to AirportWxBadge. Not lazy
+// since it renders nothing (returns null) for airports without significant
+// NOTAMs, which is most of them. Import cost is minimal.
+import FAANotamBadge from './FAANotamBadge.jsx';
 import { createPortal } from 'react-dom';
 import {
   Plane, Calendar, MessageSquare, Users, Bell, MapPin,
@@ -5101,11 +5105,29 @@ function PilotFocusCard({ trip, tripState, currentUser, isActive, isImminent, on
             <div className="flex items-center gap-1.5">
               <span>{trip.info.from}</span>
               {trip.info.from && <AirportWxBadge icao={trip.info.from} compact />}
+              {trip.info.from && (
+                <FAANotamBadge
+                  icao={trip.info.from}
+                  getIdToken={async () => {
+                    const { auth } = await import('./firebase.js');
+                    return auth.currentUser ? auth.currentUser.getIdToken() : null;
+                  }}
+                />
+              )}
             </div>
             <ArrowRight className="w-5 h-5 text-cyan-400" />
             <div className="flex items-center gap-1.5">
               <span>{trip.info.to}</span>
               {trip.info.to && <AirportWxBadge icao={trip.info.to} compact />}
+              {trip.info.to && (
+                <FAANotamBadge
+                  icao={trip.info.to}
+                  getIdToken={async () => {
+                    const { auth } = await import('./firebase.js');
+                    return auth.currentUser ? auth.currentUser.getIdToken() : null;
+                  }}
+                />
+              )}
             </div>
           </div>
         </div>
@@ -6384,6 +6406,17 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
                 {trip.info.from && ['admin', 'ops', 'crew'].includes(currentUser?.role) && (
                   <AirportWxBadge icao={trip.info.from} compact />
                 )}
+                {/* FAA NOTAM badge — silent if no significant NOTAMs. Same
+                    role gate as weather since this is operational data. */}
+                {trip.info.from && ['admin', 'ops', 'crew'].includes(currentUser?.role) && (
+                  <FAANotamBadge
+                    icao={trip.info.from}
+                    getIdToken={async () => {
+                      const { auth } = await import('./firebase.js');
+                      return auth.currentUser ? auth.currentUser.getIdToken() : null;
+                    }}
+                  />
+                )}
               </div>
               {fromFbo && (
                 <span className="text-[11px] text-slate-500 mt-0.5" style={{ fontFamily: 'DM Sans, sans-serif' }}>
@@ -6397,6 +6430,15 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
                 <span>{trip.info.to}</span>
                 {trip.info.to && ['admin', 'ops', 'crew'].includes(currentUser?.role) && (
                   <AirportWxBadge icao={trip.info.to} compact />
+                )}
+                {trip.info.to && ['admin', 'ops', 'crew'].includes(currentUser?.role) && (
+                  <FAANotamBadge
+                    icao={trip.info.to}
+                    getIdToken={async () => {
+                      const { auth } = await import('./firebase.js');
+                      return auth.currentUser ? auth.currentUser.getIdToken() : null;
+                    }}
+                  />
                 )}
               </div>
               {toFbo && (
