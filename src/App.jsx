@@ -5317,21 +5317,30 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
 // one URL per leg.
 
 /**
- * All revenue legs that belong to the same charter as `anchor`,
- * sorted chronologically (earliest first).
+ * All legs that belong to the same charter as `anchor`, sorted
+ * chronologically (earliest first).
  *
- * Heuristic: same tail + same broker + ±24h window + revenue (not
- * REPO/FERRY/HOLD/MX/TRAINING).
+ * Heuristic — same charter membership:
+ *   - Same tail
+ *   - ±24h window from anchor
+ *   - Real flight (not HOLD / MX / TRAINING)
+ *   - Same broker as anchor, OR no broker set on this leg
+ *     (covers same-day round trips where ops enters broker on the
+ *     outbound only — the return leg often gets no broker / and is
+ *     mislabeled REPO by JetInsight)
  *
- * Why no pax-overlap check: pax data requires async fetches per
- * leg which we can't do synchronously to determine the URL. The
- * tail+broker+24h heuristic is sufficient for Skyway's wholesale
- * model — same broker booking same plane same day with different
- * pax for two unrelated charters would be unusual. If it happens,
- * ops can rotate the link or share manually.
+ * Why we accept REPO and no-broker legs: in Skyway's wholesale model
+ * a same-day round trip pattern is:
+ *   - Outbound (broker X, pax loaded, REVENUE)
+ *   - Return (no broker assigned, empty pax, often marked REPO by iCal)
+ * Without including the return in charter detection, the broker only
+ * sees the outbound and the link is keyed to just one leg's UID.
  *
- * Always includes the anchor in the result (even if it doesn't
- * match its own filters, it's still the leg the user clicked on).
+ * What we DON'T include: legs from a DIFFERENT non-empty broker.
+ * Privacy: a broker should never see another broker's charter on the
+ * same plane same day.
+ *
+ * Always includes the anchor in the result.
  */
 function findCharterLegs(anchor, allTrips) {
   if (!anchor || !anchor.info) return [];
@@ -5342,24 +5351,28 @@ function findCharterLegs(anchor, allTrips) {
   const anchorStartMs = anchor.start ? new Date(anchor.start).getTime() : Date.now();
   const WINDOW = 24 * 3600 * 1000;
 
-  const isRevenue = (t) => {
+  const isRealFlight = (t) => {
     if (!t || !t.info) return false;
     if (t.info.isFlight === false) return false;
     const rawCat = String(t.info.category || '').toUpperCase();
     if (['HOLD', 'MX', 'TRAINING'].includes(rawCat)) return false;
-    const legType = String(t.info.legType || '').toUpperCase();
-    if (legType === 'REPO' || legType === 'FERRY') return false;
     return true;
   };
 
   const candidates = (allTrips || [])
     .filter((t) => t && t.info && String(t.info.tail || '').toUpperCase() === tail)
-    .filter(isRevenue)
+    .filter(isRealFlight)
     .filter((t) => {
-      // If anchor has no broker, fall back to ONLY the anchor (no
-      // charter detected — single revenue leg, single link).
+      // If anchor has no broker, only the anchor itself qualifies —
+      // we can't build a charter group without a broker to anchor it.
       if (!anchorBroker) return t.uid === anchor.uid;
-      return String(t.info.broker || '').trim().toLowerCase() === anchorBroker;
+      const b = String(t.info.broker || '').trim().toLowerCase();
+      // Include legs with same broker. Also include legs with NO
+      // broker (presumed to be part of anchor's charter — common
+      // for return legs of round trips). Exclude legs with a
+      // DIFFERENT non-empty broker.
+      if (!b) return true;
+      return b === anchorBroker;
     })
     .filter((t) => {
       if (!t.start) return false;
@@ -5367,9 +5380,8 @@ function findCharterLegs(anchor, allTrips) {
       return Number.isFinite(ms) && Math.abs(ms - anchorStartMs) <= WINDOW;
     });
 
-  // Ensure anchor is included even if it doesn't pass the broker
-  // filter (e.g. anchor is a revenue leg with no broker set yet but
-  // related legs DO have one — we still want the link UI to work).
+  // Ensure anchor is always included even if it doesn't pass its
+  // own filter (defensive).
   const byUid = new Map();
   for (const t of candidates) byUid.set(t.uid, t);
   if (!byUid.has(anchor.uid)) byUid.set(anchor.uid, anchor);
@@ -5381,16 +5393,25 @@ function findCharterLegs(anchor, allTrips) {
 
 /**
  * The "canonical" leg of a charter — the one whose UID all share
- * links should be keyed to. Defined as the first revenue leg
- * chronologically that satisfies the charter heuristic.
+ * links should be keyed to. Defined as the FIRST leg chronologically
+ * within the charter. Note this can be a REPO if it's the first thing
+ * the broker's plane does that day — preferable to using the anchor
+ * uid which would change depending on which leg ops clicked.
  *
- * Falls back to the anchor itself if no other legs are found (e.g.
- * single-leg charter, anchor with no broker, etc).
+ * Falls back to the anchor itself if no other legs found.
  */
 function findCanonicalCharterLeg(anchor, allTrips) {
   const legs = findCharterLegs(anchor, allTrips);
   if (legs.length === 0) return anchor;
-  return legs[0];
+  // Prefer the first NON-REPO leg as the canonical — anchoring on
+  // an actual revenue/charter leg gives the broker page a meaningful
+  // primary routing in the URL context. If everything's REPO (weird),
+  // just return the first leg by time.
+  const firstRevenue = legs.find(t => {
+    const cat = String(t.info?.legType || t.info?.category || '').toUpperCase();
+    return cat !== 'REPO' && cat !== 'FERRY';
+  });
+  return firstRevenue || legs[0];
 }
 
 // ============================================================
@@ -5598,28 +5619,30 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
         included.push({ t, showPax: true });
         return;
       }
-      // SAME-BROKER LEGS — checked FIRST, before the REPO filter.
-      // If a leg shares the anchor's broker, it's part of the same
-      // charter and gets included regardless of:
-      //   - Whether pax data has been loaded yet (return leg of a
-      //     round trip often has empty preloadedPax — ops considers
-      //     "same group coming back" implicit and skips re-entry)
-      //   - Whether JetInsight has labeled it REPO (round trips
-      //     sometimes get the return marked REPO incorrectly when
-      //     the iCal feed treats it as positioning)
+      // SAME-CHARTER LEGS — matches findCharterLegs rule:
+      //   - Same broker as anchor, OR
+      //   - No broker set (presumed part of anchor's charter)
+      // This is what makes same-day round trips appear on the broker
+      // page. JetInsight commonly leaves the broker field empty on
+      // the return leg (or marks it REPO) when ops considers "same
+      // group coming back" implicit. Without this, the broker page
+      // shows only the outbound and the round trip looks half-broken.
       // showPax is gated by paxOverlap so the broker sees the routing
-      // but only sees pax data on legs where there's confirmed overlap.
-      // Privacy preserved without dropping the leg's existence.
-      if (sameBroker(t)) {
+      // but only sees pax data on legs where pax actually overlap.
+      // Privacy preserved without dropping the leg.
+      const tBroker = String(t.info?.broker || '').trim().toLowerCase();
+      const matchesCharterBroker = anchorBroker && (
+        tBroker === anchorBroker || !tBroker
+      );
+      if (matchesCharterBroker) {
         included.push({ t, showPax: paxOverlap(t) });
         return;
       }
-      // REPO LEGS WITHOUT MATCHING BROKER — narrow rule: include ONLY
-      // the immediately-prior positioning flight (this leg's `to`
-      // matches the anchor's `from`). Operator's return positioning
-      // AFTER the charter is the operator's business, not the
-      // broker's — and showing it adds clutter without helping the
-      // broker.
+      // DIFFERENT-BROKER REPO with prior positioning — narrow rule:
+      // include ONLY the immediately-prior positioning flight (this
+      // leg's `to` matches the anchor's `from`). Operator's return
+      // positioning AFTER the charter is the operator's business,
+      // not the broker's, and adds clutter without helping the broker.
       if (isRepo(t)) {
         const isPriorPositioning = i < anchorIdx && sameAirport(t.info?.to, anchorFrom);
         if (isPriorPositioning) {
