@@ -5516,9 +5516,11 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
       })
       .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
 
-    // Make sure anchor is in there (dedupe by uid).
+    // Make sure the canonical anchor is in there (dedupe by uid).
+    // Using `anchor` (the canonical) here so the sort/order is keyed
+    // to the leg the link is keyed to, not the leg ops clicked.
     const seen = new Set();
-    const ordered = [trip, ...candidates].filter((t) => {
+    const ordered = [anchor, ...candidates].filter((t) => {
       if (!t || !t.uid) return false;
       if (seen.has(t.uid)) return false;
       seen.add(t.uid);
@@ -5596,10 +5598,27 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
         included.push({ t, showPax: true });
         return;
       }
-      // Repo legs: include ONLY the empty positioning flight that BROUGHT
-      // the aircraft to the charter's departure airport. The return
-      // repositioning AFTER the charter is the operator's business, not
-      // the broker's — and showing it adds clutter without helping the
+      // SAME-BROKER LEGS — checked FIRST, before the REPO filter.
+      // If a leg shares the anchor's broker, it's part of the same
+      // charter and gets included regardless of:
+      //   - Whether pax data has been loaded yet (return leg of a
+      //     round trip often has empty preloadedPax — ops considers
+      //     "same group coming back" implicit and skips re-entry)
+      //   - Whether JetInsight has labeled it REPO (round trips
+      //     sometimes get the return marked REPO incorrectly when
+      //     the iCal feed treats it as positioning)
+      // showPax is gated by paxOverlap so the broker sees the routing
+      // but only sees pax data on legs where there's confirmed overlap.
+      // Privacy preserved without dropping the leg's existence.
+      if (sameBroker(t)) {
+        included.push({ t, showPax: paxOverlap(t) });
+        return;
+      }
+      // REPO LEGS WITHOUT MATCHING BROKER — narrow rule: include ONLY
+      // the immediately-prior positioning flight (this leg's `to`
+      // matches the anchor's `from`). Operator's return positioning
+      // AFTER the charter is the operator's business, not the
+      // broker's — and showing it adds clutter without helping the
       // broker.
       if (isRepo(t)) {
         const isPriorPositioning = i < anchorIdx && sameAirport(t.info?.to, anchorFrom);
@@ -5608,13 +5627,9 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
         }
         return;
       }
-      // Revenue legs: include ONLY when they share broker + overlap pax
-      // with the anchor (multi-leg same-broker charter). Otherwise skip
-      // entirely — we don't show other brokers' charter legs to this
-      // broker at all.
-      if (sameBroker(t) && paxOverlap(t)) {
-        included.push({ t, showPax: true });
-      }
+      // OTHER-BROKER REVENUE LEGS — never shown (privacy). A different
+      // broker's charter on the same plane same day stays invisible
+      // to this broker.
     });
 
     // Renumber legs sequentially as they appear in the final included list.
