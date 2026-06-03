@@ -301,90 +301,318 @@ function ExpBadge({ d, allDocs }) {
 }
 
 // ============================================================================
-// CARD VISUALIZATIONS
+// CARD VISUALIZATIONS — photorealistic renderings of each document type
 // ============================================================================
-// Each docType has its own card layout that mirrors the real document's
-// structure with Skyway dark/cyan styling. Cards render parsed data; the
-// actual file copy is shown below in the files list.
+// Each card renders parsed fields in the layout of the real document so the
+// crew member sees their cert/medical/passport/DL the way they'd recognize
+// it. All four cards use a 1.586 aspect ratio (ISO/IEC 7810 ID-1, the
+// standard credit-card / driver's-license / FAA-cert size). Photos and
+// signatures are placeholders — we store the original file separately and
+// surface it via the FILES list below the card.
 
-// --- AIRMAN CERTIFICATE -----------------------------------------------------
-// Layout mirrors an FAA airman certificate: name, certificate type
-// (ATP/Commercial/Private), certificate number, issue date, ratings.
-// FAA certs don't expire.
+// --- SHARED SVG ASSETS ------------------------------------------------------
+
+// FAA "meatball" — stylized seal used on airman + medical certificates.
+function FaaMeatball({ className = '', size = 40 }) {
+  return (
+    <svg className={className} width={size} height={size} viewBox="0 0 100 100">
+      <defs>
+        <radialGradient id="faaBlue" cx="0.35" cy="0.35">
+          <stop offset="0%" stopColor="#3b6db5" />
+          <stop offset="100%" stopColor="#0e2d5e" />
+        </radialGradient>
+      </defs>
+      <circle cx="50" cy="50" r="48" fill="url(#faaBlue)" stroke="#0a1f42" strokeWidth="2" />
+      {/* Stylized wing/chevron */}
+      <path d="M 18 58 Q 50 32 82 58 L 78 62 Q 50 42 22 62 Z" fill="#ffffff" opacity="0.95" />
+      <path d="M 28 64 L 50 56 L 72 64 L 70 67 L 50 60 L 30 67 Z" fill="#ffffff" opacity="0.7" />
+      <circle cx="50" cy="55" r="2.2" fill="#ffffff" />
+      {/* Subtle inner ring */}
+      <circle cx="50" cy="50" r="42" fill="none" stroke="#ffffff" strokeWidth="0.6" opacity="0.3" />
+    </svg>
+  );
+}
+
+// US Great Seal — gold eagle for passport cover.
+function GreatSeal({ className = '', size = 56 }) {
+  return (
+    <svg className={className} width={size} height={size} viewBox="0 0 100 100">
+      <defs>
+        <radialGradient id="goldGrad" cx="0.5" cy="0.4">
+          <stop offset="0%" stopColor="#e6c989" />
+          <stop offset="60%" stopColor="#c5a572" />
+          <stop offset="100%" stopColor="#8a7349" />
+        </radialGradient>
+      </defs>
+      {/* Outer ring */}
+      <circle cx="50" cy="50" r="46" fill="none" stroke="url(#goldGrad)" strokeWidth="1.5" opacity="0.6" />
+      <circle cx="50" cy="50" r="42" fill="none" stroke="url(#goldGrad)" strokeWidth="0.6" opacity="0.4" />
+      {/* Eagle silhouette */}
+      <g fill="url(#goldGrad)">
+        {/* Wings spread */}
+        <path d="M 50 35 Q 25 35 14 50 Q 22 46 32 47 L 36 50 Q 28 52 22 56 Q 30 54 38 55 L 42 58 L 50 60 L 58 58 L 62 55 Q 70 54 78 56 Q 72 52 64 50 L 68 47 Q 78 46 86 50 Q 75 35 50 35 Z" />
+        {/* Body / shield */}
+        <rect x="44" y="48" width="12" height="20" rx="1" />
+        <rect x="44" y="48" width="12" height="3" fill="#0a1f42" opacity="0.6" />
+        {/* Vertical stripes on shield */}
+        <line x1="46.5" y1="51" x2="46.5" y2="68" stroke="#0a1f42" strokeWidth="0.8" opacity="0.6" />
+        <line x1="50" y1="51" x2="50" y2="68" stroke="#0a1f42" strokeWidth="0.8" opacity="0.6" />
+        <line x1="53.5" y1="51" x2="53.5" y2="68" stroke="#0a1f42" strokeWidth="0.8" opacity="0.6" />
+        {/* Head */}
+        <circle cx="50" cy="42" r="4" />
+        <path d="M 50 42 L 56 44 L 52 45 Z" />
+        {/* Olive branch + arrows hint */}
+        <path d="M 32 70 L 44 66 M 36 72 L 42 70" stroke="url(#goldGrad)" strokeWidth="1" fill="none" />
+        <path d="M 68 70 L 56 66 M 64 72 L 58 70" stroke="url(#goldGrad)" strokeWidth="1" fill="none" />
+      </g>
+      {/* Stars above */}
+      <g fill="url(#goldGrad)">
+        <circle cx="40" cy="30" r="0.8" />
+        <circle cx="45" cy="28" r="0.8" />
+        <circle cx="50" cy="27" r="0.8" />
+        <circle cx="55" cy="28" r="0.8" />
+        <circle cx="60" cy="30" r="0.8" />
+      </g>
+    </svg>
+  );
+}
+
+// Generic state seal — used on driver's license.
+function StateSeal({ className = '', size = 40, state = '' }) {
+  const initial = (state || '').slice(0, 2).toUpperCase();
+  return (
+    <svg className={className} width={size} height={size} viewBox="0 0 100 100">
+      <defs>
+        <linearGradient id="stateGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#1a4480" />
+          <stop offset="100%" stopColor="#0a2a5e" />
+        </linearGradient>
+      </defs>
+      <circle cx="50" cy="50" r="48" fill="url(#stateGrad)" stroke="#c5a572" strokeWidth="1.5" />
+      <circle cx="50" cy="50" r="42" fill="none" stroke="#c5a572" strokeWidth="0.4" opacity="0.7" />
+      {/* Star */}
+      <path d="M 50 28 L 53 42 L 67 42 L 56 50 L 60 64 L 50 56 L 40 64 L 44 50 L 33 42 L 47 42 Z"
+        fill="#c5a572" opacity="0.85" />
+      <text x="50" y="80" textAnchor="middle" fontSize="11" fontWeight="700"
+        fill="#c5a572" fontFamily="serif">
+        {initial}
+      </text>
+    </svg>
+  );
+}
+
+// Generic person silhouette — placeholder for the photo area.
+function PhotoPlaceholder({ className = '', tone = 'dark' }) {
+  const bg = tone === 'dark' ? '#0a1428' : '#d8dde6';
+  const fg = tone === 'dark' ? '#2a3a55' : '#8a95a8';
+  return (
+    <svg className={className} viewBox="0 0 80 100" preserveAspectRatio="none">
+      <rect x="0" y="0" width="80" height="100" fill={bg} />
+      {/* Subtle security pattern */}
+      <g stroke={fg} strokeWidth="0.3" opacity="0.35">
+        {Array.from({ length: 20 }).map((_, i) => (
+          <line key={i} x1="0" y1={i * 5} x2="80" y2={i * 5 - 10} />
+        ))}
+      </g>
+      {/* Person silhouette */}
+      <g fill={fg} opacity="0.55">
+        <circle cx="40" cy="38" r="11" />
+        <path d="M 18 90 Q 18 60 40 60 Q 62 60 62 90 L 62 100 L 18 100 Z" />
+      </g>
+    </svg>
+  );
+}
+
+// Tiny helper used on most cards.
+function Field({ label, value, mono, big, accent, className = '' }) {
+  return (
+    <div className={className}>
+      <div
+        className="text-[7.5px] tracking-[0.18em] uppercase mb-0.5"
+        style={{ fontFamily: 'JetBrains Mono, monospace', color: accent || '#5f7a52' }}
+      >
+        {label}
+      </div>
+      <div
+        className={(big ? 'text-[15px]' : 'text-[11.5px]') + ' leading-tight'}
+        style={{
+          fontFamily: mono ? 'JetBrains Mono, monospace' : 'Georgia, "Times New Roman", serif',
+          fontWeight: big ? 600 : 500,
+          color: '#1a1a1a',
+        }}
+      >
+        {value || <span style={{ color: '#9aa1ad', fontStyle: 'italic' }}>—</span>}
+      </div>
+    </div>
+  );
+}
+
+// Combine surname + given names into display variants.
+function combineName(data, owner) {
+  const surname = (data?.surname || '').trim();
+  const given = (data?.givenNames || '').trim();
+  if (surname && given) {
+    return { surname: surname.toUpperCase(), given: given.toUpperCase(), full: `${given} ${surname}`.toUpperCase() };
+  }
+  const full = (data?.holderName || owner?.name || owner?.displayName || '').trim();
+  if (!full) return { surname: '', given: '', full: '' };
+  const parts = full.split(/\s+/);
+  if (parts.length === 1) return { surname: parts[0].toUpperCase(), given: '', full: full.toUpperCase() };
+  return { surname: parts[parts.length - 1].toUpperCase(), given: parts.slice(0, -1).join(' ').toUpperCase(), full: full.toUpperCase() };
+}
+
+// Build a formatted address from parsed fields.
+function formatAddress(data) {
+  const parts = [];
+  if (data?.addressLine1) parts.push(data.addressLine1);
+  if (data?.addressLine2) parts.push(data.addressLine2);
+  const cityLine = [data?.addressCity, data?.addressState].filter(Boolean).join(', ');
+  const cityZip = [cityLine, data?.addressZip].filter(Boolean).join(' ');
+  if (cityZip) parts.push(cityZip);
+  return parts;
+}
+
+// --- 1. AIRMAN CERTIFICATE --------------------------------------------------
+// Photorealistic plastic-card style mimicking the FAA Airman Certificate
+// issued post-2003. Cream background, FAA blue + green field labels,
+// holographic eagle watermark in the center.
+
 function AirmanCertificateCard({ data, owner }) {
-  const name = (data?.holderName || owner?.name || owner?.displayName || '').toUpperCase();
+  const n = combineName(data, owner);
   const certNo = data?.documentNumber || '';
   const certType = data?.certType || '';
   const ratings = data?.ratings || '';
+  const limitations = data?.limitations || '';
   const issued = data?.issueDate;
-  const issuingAuth = data?.issuingAuthority || 'FEDERAL AVIATION ADMINISTRATION';
+  const addressLines = formatAddress(data);
+  const FAA_BLUE = '#1a4480';
+  const FAA_GREEN = '#5f7a52';
+  const CREAM = '#f8f3e6';
 
   return (
-    <div className="relative overflow-hidden border border-cyan-500/30 bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950"
-      style={{ aspectRatio: '1.6' }}>
-      {/* Topographic backdrop */}
-      <svg className="absolute inset-0 w-full h-full opacity-[0.05] pointer-events-none" viewBox="0 0 400 250" preserveAspectRatio="xMidYMid slice">
-        {Array.from({ length: 8 }).map((_, i) => (
-          <ellipse key={i} cx={200} cy={125} rx={50 + i * 30} ry={20 + i * 12} fill="none" stroke="cyan" strokeWidth="0.3" />
+    <div
+      className="relative overflow-hidden shadow-lg"
+      style={{
+        aspectRatio: '1.586',
+        background: `linear-gradient(135deg, ${CREAM} 0%, #ede4cc 100%)`,
+        border: '1px solid #c8b88e',
+        borderRadius: 12,
+      }}
+    >
+      {/* Holographic eagle watermark */}
+      <svg
+        className="absolute inset-0 w-full h-full pointer-events-none"
+        viewBox="0 0 400 250"
+        preserveAspectRatio="xMidYMid slice"
+        style={{ opacity: 0.06 }}
+      >
+        <g transform="translate(200 130)" fill="#1a4480">
+          <path d="M 0 -40 Q -80 -30 -110 0 Q -85 -10 -55 -8 L -45 0 Q -65 5 -80 15 Q -55 8 -30 10 L -20 18 L 0 22 L 20 18 L 30 10 Q 55 8 80 15 Q 65 5 45 0 L 55 -8 Q 85 -10 110 0 Q 80 -30 0 -40 Z" />
+          <rect x="-12" y="-2" width="24" height="40" />
+        </g>
+      </svg>
+
+      {/* Subtle guilloche security pattern */}
+      <svg className="absolute inset-0 w-full h-full pointer-events-none opacity-20"
+        viewBox="0 0 400 250" preserveAspectRatio="none">
+        {Array.from({ length: 14 }).map((_, i) => (
+          <ellipse key={i} cx="200" cy="125" rx={30 + i * 18} ry={15 + i * 8}
+            fill="none" stroke={FAA_BLUE} strokeWidth="0.2" />
         ))}
       </svg>
-      <div className="relative h-full p-5 flex flex-col">
+
+      <div className="relative h-full px-4 py-3 flex flex-col" style={{ color: '#1a1a1a' }}>
+        {/* HEADER ROW */}
         <div className="flex items-start justify-between">
-          <div>
-            <div className="text-[8px] tracking-[0.3em] text-cyan-300/70" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              {issuingAuth.toUpperCase()}
-            </div>
-            <div className="text-[8px] tracking-[0.3em] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          <FaaMeatball size={42} />
+          <div className="text-center flex-1 px-3">
+            <div className="text-[9px] tracking-[0.3em]" style={{ fontFamily: 'Georgia, serif', color: FAA_BLUE, fontWeight: 700 }}>
               UNITED STATES OF AMERICA
             </div>
+            <div className="text-[7px] tracking-[0.25em] mt-0.5" style={{ fontFamily: 'Georgia, serif', color: '#444' }}>
+              DEPARTMENT OF TRANSPORTATION
+            </div>
+            <div className="text-[7px] tracking-[0.25em]" style={{ fontFamily: 'Georgia, serif', color: '#444' }}>
+              FEDERAL AVIATION ADMINISTRATION
+            </div>
           </div>
-          {/* Aviator wings */}
-          <svg className="w-12 h-7 text-cyan-400" viewBox="0 0 80 30" fill="currentColor">
-            <path d="M 40 5 L 38 12 L 30 15 L 5 20 L 8 21 L 30 19 L 36 16 L 39 16 L 40 25 L 41 16 L 44 16 L 50 19 L 72 21 L 75 20 L 50 15 L 42 12 Z" />
-            <circle cx="40" cy="14" r="3" fill="none" stroke="currentColor" strokeWidth="1" />
-          </svg>
+          <div className="text-right">
+            <div className="text-[6.5px] tracking-[0.18em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: FAA_GREEN, fontWeight: 700 }}>
+              CERTIFICATE NO.
+            </div>
+            <div className="text-[10px] tracking-wider mt-0.5" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, color: FAA_BLUE }}>
+              {certNo || <span style={{ color: '#aaa', fontStyle: 'italic' }}>—</span>}
+            </div>
+          </div>
         </div>
 
-        <div className="mt-1 text-[22px] leading-none tracking-[0.18em] text-slate-100"
-          style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
-          AIRMAN CERTIFICATE
+        <div className="text-center mt-1.5 mb-2">
+          <div
+            className="text-[14px] tracking-[0.32em] inline-block px-3 py-0.5"
+            style={{
+              fontFamily: 'Georgia, serif',
+              fontWeight: 700,
+              color: FAA_BLUE,
+              borderTop: `1px solid ${FAA_BLUE}`,
+              borderBottom: `1px solid ${FAA_BLUE}`,
+            }}
+          >
+            AIRMAN CERTIFICATE
+          </div>
         </div>
-        <div className="h-px bg-gradient-to-r from-cyan-500/50 via-cyan-500/15 to-transparent mt-2 mb-3" />
 
-        <div className="grid grid-cols-2 gap-x-4 gap-y-2 flex-1">
-          <div>
-            <div className="text-[8px] tracking-wider text-slate-500 mb-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>NAME</div>
-            <div className="text-sm text-slate-100 truncate" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
-              {name || <span className="text-slate-600 italic font-normal">— not parsed —</span>}
+        {/* BIO GRID */}
+        <div className="grid grid-cols-12 gap-x-2 gap-y-1.5 flex-1 text-[10.5px]">
+          <Field className="col-span-7" label="Name" value={n.full} big />
+          <Field className="col-span-5" label="Date of Birth" value={data?.dob ? formatLongDate(data.dob) : null} />
+
+          {addressLines.length > 0 && (
+            <div className="col-span-12">
+              <div className="text-[7.5px] tracking-[0.18em] uppercase mb-0.5" style={{ fontFamily: 'JetBrains Mono, monospace', color: FAA_GREEN }}>Address</div>
+              <div className="text-[11px] leading-tight" style={{ fontFamily: 'Georgia, serif', color: '#1a1a1a' }}>
+                {addressLines.map((l, i) => <div key={i}>{l}</div>)}
+              </div>
+            </div>
+          )}
+
+          <Field className="col-span-2" label="Sex"    value={data?.sex} mono />
+          <Field className="col-span-3" label="Height" value={data?.height} mono />
+          <Field className="col-span-3" label="Weight" value={data?.weight} mono />
+          <Field className="col-span-2" label="Hair"   value={data?.hairColor} mono />
+          <Field className="col-span-2" label="Eyes"   value={data?.eyeColor} mono />
+
+          <div className="col-span-12 border-t pt-1.5" style={{ borderColor: '#c8b88e' }}>
+            <div className="text-[7.5px] tracking-[0.18em] uppercase mb-0.5" style={{ fontFamily: 'JetBrains Mono, monospace', color: FAA_GREEN }}>
+              Grade of Certificate
+            </div>
+            <div className="text-[13px] font-bold" style={{ fontFamily: 'Georgia, serif', color: FAA_BLUE }}>
+              {certType ? certType.toUpperCase() : <span style={{ color: '#aaa', fontStyle: 'italic' }}>—</span>}
             </div>
           </div>
-          <div>
-            <div className="text-[8px] tracking-wider text-slate-500 mb-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>CERTIFICATE TYPE</div>
-            <div className="text-sm text-cyan-300 truncate" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
-              {certType || <span className="text-slate-600 italic font-normal">—</span>}
-            </div>
-          </div>
-          <div className="col-span-2">
-            <div className="text-[8px] tracking-wider text-slate-500 mb-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>CERTIFICATE NUMBER</div>
-            <div className="text-base text-slate-200 tracking-wider" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              {certNo || <span className="text-slate-600 italic">—</span>}
-            </div>
-          </div>
-          {ratings && (
-            <div className="col-span-2">
-              <div className="text-[8px] tracking-wider text-slate-500 mb-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>RATINGS / LIMITATIONS</div>
-              <div className="text-[11px] text-slate-300 leading-snug" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-                {ratings}
+
+          {(ratings || limitations) && (
+            <div className="col-span-12">
+              <div className="text-[7.5px] tracking-[0.18em] uppercase mb-0.5" style={{ fontFamily: 'JetBrains Mono, monospace', color: FAA_GREEN }}>
+                Ratings and Limitations
+              </div>
+              <div className="text-[10px] leading-snug" style={{ fontFamily: 'Georgia, serif', color: '#1a1a1a' }}>
+                {[ratings, limitations].filter(Boolean).join(' · ')}
               </div>
             </div>
           )}
         </div>
 
-        <div className="pt-2 mt-auto border-t border-slate-800 flex items-end justify-between">
-          <div className="text-[8px] text-slate-600 tracking-wider" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            ISSUED {issued ? formatLongDate(issued).toUpperCase() : '—'}
+        {/* FOOTER */}
+        <div className="mt-1.5 pt-1.5 border-t flex items-end justify-between" style={{ borderColor: '#c8b88e' }}>
+          <div>
+            <div className="text-[6.5px] tracking-[0.18em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: FAA_GREEN, fontWeight: 700 }}>
+              DATE OF ISSUE
+            </div>
+            <div className="text-[10px]" style={{ fontFamily: 'Georgia, serif', color: '#1a1a1a' }}>
+              {issued ? formatLongDate(issued).toUpperCase() : '—'}
+            </div>
           </div>
-          <div className="text-[8px] text-cyan-500/40 tracking-[0.3em]" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          <div className="text-[6.5px] tracking-[0.3em] text-right" style={{ fontFamily: 'Georgia, serif', color: FAA_BLUE, fontWeight: 700 }}>
             14 CFR 61 · DOES NOT EXPIRE
           </div>
         </div>
@@ -393,77 +621,98 @@ function AirmanCertificateCard({ data, owner }) {
   );
 }
 
-// --- MEDICAL CERTIFICATE ----------------------------------------------------
-// Mirrors an FAA medical certificate. Crucially shows the FAA-computed
-// expirations per privilege level (ATP/Commercial/Private), not just
-// whatever the AI parsed (most medicals don't have an expiration printed).
+// --- 2. MEDICAL CERTIFICATE -------------------------------------------------
+// Paper-document style (real FAA medicals are paper, not plastic). White
+// background, formal serif headings, large class badge, and the FAA-
+// computed expiration table — which is the key feature pilots care about.
+
 function MedicalCertificateCard({ data, owner, allDocs }) {
-  const name = (data?.holderName || owner?.name || owner?.displayName || '').toUpperCase();
+  const n = combineName(data, owner);
   const cls = data?.medicalClass || '';
   const issued = data?.issueDate;
+  const examDate = data?.examinationDate || issued;
   const dob = findUserDob(allDocs);
   const expirations = useMemo(
-    () => calculateMedicalExpirations({ medicalClass: cls, issueDate: issued, dob }),
-    [cls, issued, dob]
+    () => calculateMedicalExpirations({ medicalClass: cls, issueDate: examDate, dob }),
+    [cls, examDate, dob]
   );
-  const age = dob && issued ? ageAtDate(parseISODate(dob), parseISODate(issued)) : null;
-  const limitations = data?.ratings || '';
+  const age = dob && examDate ? ageAtDate(parseISODate(dob), parseISODate(examDate)) : null;
+  const restrictions = data?.medicalRestrictions || data?.ratings || '';
+  const ameName = data?.ameName || '';
+  const ameNumber = data?.ameNumber || '';
 
-  const classLabel = ({
-    '1': 'FIRST-CLASS',
-    '2': 'SECOND-CLASS',
-    '3': 'THIRD-CLASS',
-  })[String(cls)] || '—';
+  const classText = ({ '1': 'FIRST-CLASS', '2': 'SECOND-CLASS', '3': 'THIRD-CLASS' })[String(cls)] || '—';
+  const classBadgeColor = ({ '1': '#c5a572', '2': '#9aa1ad', '3': '#a07647' })[String(cls)] || '#888';
+  const FAA_BLUE = '#1a4480';
+  const FAA_GREEN = '#5f7a52';
 
   return (
-    <div className="relative overflow-hidden border border-amber-500/30 bg-gradient-to-br from-amber-950/30 via-slate-950 to-slate-900"
-      style={{ aspectRatio: '1.6' }}>
-      <div className="relative h-full p-5 flex flex-col">
-        <div className="flex items-start justify-between">
-          <div>
-            <div className="text-[8px] tracking-[0.3em] text-amber-200/70" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+    <div
+      className="relative overflow-hidden shadow-lg"
+      style={{
+        aspectRatio: '1.586',
+        background: 'linear-gradient(180deg, #fefefe 0%, #f8f6ef 100%)',
+        border: '1px solid #d8d3c4',
+        borderRadius: 12,
+      }}
+    >
+      {/* Faint paper lines */}
+      <svg className="absolute inset-0 w-full h-full pointer-events-none opacity-30"
+        viewBox="0 0 400 250" preserveAspectRatio="none">
+        {Array.from({ length: 12 }).map((_, i) => (
+          <line key={i} x1="0" y1={i * 22 + 10} x2="400" y2={i * 22 + 10}
+            stroke="#d8d3c4" strokeWidth="0.3" />
+        ))}
+      </svg>
+
+      <div className="relative h-full px-4 py-3 flex flex-col" style={{ color: '#1a1a1a' }}>
+        {/* HEADER */}
+        <div className="flex items-start gap-3">
+          <FaaMeatball size={36} />
+          <div className="flex-1">
+            <div className="text-[8px] tracking-[0.3em]" style={{ fontFamily: 'Georgia, serif', color: FAA_BLUE, fontWeight: 700 }}>
               FEDERAL AVIATION ADMINISTRATION
             </div>
-            <div className="text-[8px] tracking-[0.3em] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              AVIATION MEDICAL EXAMINER
+            <div className="text-[12px] tracking-[0.22em] mt-0.5" style={{ fontFamily: 'Georgia, serif', fontWeight: 700, color: '#1a1a1a' }}>
+              AIRMAN MEDICAL CERTIFICATE
             </div>
           </div>
-          {/* Medical cross */}
-          <svg className="w-8 h-8 text-amber-400" viewBox="0 0 32 32" fill="currentColor">
-            <rect x="13" y="6" width="6" height="20" rx="1" />
-            <rect x="6" y="13" width="20" height="6" rx="1" />
-          </svg>
-        </div>
-
-        <div className="mt-1 text-[20px] leading-none tracking-[0.18em] text-slate-100"
-          style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
-          MEDICAL CERTIFICATE
-        </div>
-        <div className="mt-1 inline-block self-start px-2 py-0.5 bg-amber-500/15 border border-amber-500/40 text-amber-200 text-[10px] tracking-[0.2em]"
-          style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
-          {classLabel}
-        </div>
-        <div className="h-px bg-gradient-to-r from-amber-500/40 via-amber-500/10 to-transparent mt-2 mb-3" />
-
-        <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-          <div>
-            <div className="text-[8px] tracking-wider text-slate-500 mb-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>NAME</div>
-            <div className="text-sm text-slate-100 truncate" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
-              {name || <span className="text-slate-600 italic font-normal">— not parsed —</span>}
+          <div className="text-right">
+            <div className="px-2 py-0.5 text-[8.5px] tracking-[0.18em]"
+              style={{
+                fontFamily: 'Georgia, serif',
+                fontWeight: 700,
+                color: '#1a1a1a',
+                background: classBadgeColor,
+                borderRadius: 2,
+              }}>
+              {classText}
             </div>
-          </div>
-          <div>
-            <div className="text-[8px] tracking-wider text-slate-500 mb-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>DATE OF EXAMINATION</div>
-            <div className="text-sm text-slate-100" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
-              {issued ? formatLongDate(issued) : <span className="text-slate-600 italic font-normal">—</span>}
-            </div>
+            {data?.documentNumber && (
+              <div className="text-[8px] mt-0.5 tracking-wider"
+                style={{ fontFamily: 'JetBrains Mono, monospace', color: '#555' }}>
+                {data.documentNumber}
+              </div>
+            )}
           </div>
         </div>
 
-        {/* FAA-computed expirations table */}
-        <div className="mt-3 flex-1">
-          <div className="text-[8px] tracking-[0.2em] text-slate-500 mb-1.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            EXPIRATION BY PRIVILEGE · 14 CFR 61.23(d)
+        <div className="h-px mt-2 mb-2" style={{ background: FAA_BLUE, opacity: 0.4 }} />
+
+        {/* BIO ROW */}
+        <div className="grid grid-cols-12 gap-x-2 gap-y-1 text-[10px]">
+          <Field className="col-span-7" label="Holder Name" value={n.full} big />
+          <Field className="col-span-3" label="Date of Birth" value={dob ? formatLongDate(dob) : null} />
+          <Field className="col-span-2" label="Sex" value={data?.sex} mono />
+          <Field className="col-span-6" label="Date of Examination" value={examDate ? formatLongDate(examDate) : null} />
+          <Field className="col-span-6" label="Date of Issue" value={issued ? formatLongDate(issued) : null} />
+        </div>
+
+        {/* EXPIRATION TABLE — the key dynamic feature */}
+        <div className="mt-2 flex-1 min-h-0">
+          <div className="text-[7.5px] tracking-[0.2em] mb-1"
+            style={{ fontFamily: 'JetBrains Mono, monospace', color: FAA_GREEN, fontWeight: 700 }}>
+            EXPIRATION OF PRIVILEGES · 14 CFR 61.23(d){age != null ? ` · AGE AT EXAM ${age}` : ''}
           </div>
           {expirations && expirations.length > 0 ? (
             <div className="space-y-0.5">
@@ -471,139 +720,234 @@ function MedicalCertificateCard({ data, owner, allDocs }) {
                 const isOps = e.privilege === 'Commercial' || e.privilege === 'ATP';
                 const daysLeft = Math.floor((e.expires.getTime() - Date.now()) / 86400000);
                 const status = daysLeft < 0 ? 'expired' : daysLeft <= 60 ? 'soon' : 'ok';
-                const statusColor = status === 'expired' ? 'text-red-300'
-                  : status === 'soon' ? 'text-amber-200' : 'text-emerald-300';
+                const statusColor = status === 'expired' ? '#b71c1c' : status === 'soon' ? '#bf6b00' : '#2e7d32';
                 return (
-                  <div key={e.privilege} className={`flex items-center justify-between text-[11px] ${isOps ? 'text-slate-100' : 'text-slate-400'}`}
-                    style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                    <span className={`tracking-wider ${isOps ? 'font-semibold' : ''}`}>
+                  <div key={e.privilege}
+                    className="flex items-center justify-between text-[10px]"
+                    style={{ fontFamily: 'JetBrains Mono, monospace', color: isOps ? '#1a1a1a' : '#666' }}>
+                    <span style={{ fontWeight: isOps ? 700 : 400 }}>
                       {e.privilege.toUpperCase()}
-                      {e.ageAffected && age != null ? ` (age ${age})` : ''}
+                      <span style={{ color: '#999', fontWeight: 400 }}> · {e.months}MO</span>
+                      {e.ageAffected && age != null ? <span style={{ color: '#999', fontWeight: 400 }}> · age-restricted</span> : ''}
                     </span>
-                    <span className={statusColor}>
-                      {formatLongDate(e.expiresISO).toUpperCase()}
-                      <span className="text-slate-600 ml-2">{daysLeft < 0 ? `−${Math.abs(daysLeft)}d` : `${daysLeft}d`}</span>
+                    <span>
+                      <span style={{ color: '#1a1a1a' }}>{formatLongDate(e.expiresISO).toUpperCase()}</span>
+                      <span className="ml-2" style={{ color: statusColor, fontWeight: 700 }}>
+                        {daysLeft < 0 ? `EXPIRED ${Math.abs(daysLeft)}D` : `${daysLeft}D`}
+                      </span>
                     </span>
                   </div>
                 );
               })}
             </div>
-          ) : !cls || !issued ? (
-            <div className="text-[11px] text-slate-500 italic" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              Need class + issue date to compute expirations.
+          ) : !cls || !examDate ? (
+            <div className="text-[10px] italic" style={{ color: '#999' }}>
+              Need class + exam date to compute expirations.
             </div>
           ) : !dob ? (
-            <div className="text-[11px] text-amber-300/80" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            <div className="text-[10px]" style={{ color: '#bf6b00' }}>
               <Info className="w-3 h-3 inline mr-1 -mt-0.5" />
               Upload passport or driver's license for accurate expiration.
-              Using under-40 estimates.
+              Showing under-40 estimates.
             </div>
           ) : (
-            <div className="text-[11px] text-slate-500 italic" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              No expirations could be computed.
+            <div className="text-[10px] italic" style={{ color: '#999' }}>
+              No expirations computed.
             </div>
           )}
         </div>
 
-        {limitations && (
-          <div className="mt-2 pt-2 border-t border-amber-500/10">
-            <div className="text-[8px] tracking-wider text-slate-500 mb-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>LIMITATIONS</div>
-            <div className="text-[11px] text-slate-300 leading-snug" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-              {limitations}
+        {/* RESTRICTIONS */}
+        {restrictions && (
+          <div className="mt-1 px-2 py-1" style={{ background: '#fff3d6', border: '1px solid #ecd49a' }}>
+            <div className="text-[7px] tracking-[0.2em] mb-0.5" style={{ fontFamily: 'JetBrains Mono, monospace', color: '#7a5a00', fontWeight: 700 }}>
+              LIMITATIONS / RESTRICTIONS
+            </div>
+            <div className="text-[10px] leading-snug" style={{ fontFamily: 'Georgia, serif', color: '#1a1a1a' }}>
+              {restrictions}
             </div>
           </div>
         )}
+
+        {/* AME / FOOTER */}
+        <div className="mt-1.5 pt-1.5 border-t flex items-end justify-between" style={{ borderColor: '#d8d3c4' }}>
+          <div>
+            <div className="text-[6.5px] tracking-[0.18em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: FAA_GREEN, fontWeight: 700 }}>
+              AVIATION MEDICAL EXAMINER
+            </div>
+            <div className="text-[10px]" style={{ fontFamily: 'Georgia, serif', color: '#1a1a1a' }}>
+              {ameName || <span style={{ color: '#aaa', fontStyle: 'italic' }}>—</span>}
+              {ameNumber && <span className="ml-2" style={{ fontFamily: 'JetBrains Mono, monospace', color: '#555' }}>#{ameNumber}</span>}
+            </div>
+          </div>
+          <div className="text-[6.5px] tracking-[0.3em] text-right" style={{ fontFamily: 'Georgia, serif', color: FAA_BLUE, fontWeight: 700 }}>
+            14 CFR 67
+          </div>
+        </div>
       </div>
     </div>
   );
 }
 
-// --- PASSPORT ---------------------------------------------------------------
-// Mirrors a passport biographical data page with parsed fields.
+// --- 3. PASSPORT ------------------------------------------------------------
+// Deep navy passport bio-page style with gold Great Seal, photo
+// placeholder, and machine-readable zone at the bottom.
+
 function PassportCard({ data, owner }) {
-  const name = (data?.holderName || owner?.name || owner?.displayName || '').toUpperCase();
+  const n = combineName(data, owner);
+  const country = data?.passportCountryCode || data?.issuingAuthority || 'USA';
   const passportNo = data?.documentNumber || '';
-  const country = data?.issuingAuthority || 'USA';
-  const dob = data?.dob;
-  const issued = data?.issueDate;
-  const expires = data?.expiration;
+  const type = data?.passportType || 'P';
+  const NAVY = '#0F1B3D';
+  const GOLD = '#c5a572';
+  const CREAM = '#f5f0e4';
+
+  // MRZ — use parsed values if present, else build a plausible-looking one.
+  const buildMrz = () => {
+    if (data?.mrzLine1 && data?.mrzLine2) {
+      return { l1: data.mrzLine1, l2: data.mrzLine2 };
+    }
+    const cc = (country || 'USA').toUpperCase().slice(0, 3).padEnd(3, '<');
+    const surname = (n.surname || '').replace(/[^A-Z]/g, '').slice(0, 20);
+    const given = (n.given || '').replace(/[^A-Z\s]/g, '').replace(/\s+/g, '<').slice(0, 20);
+    const l1 = `P<${cc}${surname}<<${given}`.padEnd(44, '<').slice(0, 44);
+    const pn = (passportNo || '').replace(/[^A-Z0-9]/g, '').slice(0, 9).padEnd(9, '<');
+    const l2 = `${pn}${cc}`.padEnd(44, '<').slice(0, 44);
+    return { l1, l2 };
+  };
+  const mrz = buildMrz();
 
   return (
-    <div className="relative overflow-hidden border border-blue-500/30 bg-gradient-to-br from-blue-950 via-slate-950 to-slate-900"
-      style={{ aspectRatio: '1.6' }}>
-      {/* Globe pattern */}
-      <svg className="absolute inset-0 w-full h-full opacity-[0.04] pointer-events-none" viewBox="0 0 400 250" preserveAspectRatio="xMidYMid slice">
-        <circle cx={320} cy={50} r={60} fill="none" stroke="white" strokeWidth="0.5" />
-        <ellipse cx={320} cy={50} rx={60} ry={20} fill="none" stroke="white" strokeWidth="0.5" />
-        <ellipse cx={320} cy={50} rx={60} ry={40} fill="none" stroke="white" strokeWidth="0.5" />
-        <line x1={320} y1={-10} x2={320} y2={110} stroke="white" strokeWidth="0.5" />
+    <div
+      className="relative overflow-hidden shadow-lg"
+      style={{
+        aspectRatio: '1.586',
+        background: `linear-gradient(135deg, ${NAVY} 0%, #1B2855 60%, #243370 100%)`,
+        border: '1px solid #0a1228',
+        borderRadius: 12,
+        color: CREAM,
+      }}
+    >
+      {/* Subtle weave texture */}
+      <svg className="absolute inset-0 w-full h-full pointer-events-none opacity-20"
+        viewBox="0 0 400 250" preserveAspectRatio="none">
+        {Array.from({ length: 30 }).map((_, i) => (
+          <line key={`h-${i}`} x1="0" y1={i * 9} x2="400" y2={i * 9 + 2}
+            stroke={GOLD} strokeWidth="0.2" />
+        ))}
+        {Array.from({ length: 50 }).map((_, i) => (
+          <line key={`v-${i}`} x1={i * 9} y1="0" x2={i * 9 - 4} y2="250"
+            stroke={GOLD} strokeWidth="0.15" />
+        ))}
       </svg>
-      <div className="relative h-full p-5 flex flex-col">
-        <div className="flex items-start justify-between">
-          <div>
-            <div className="text-[8px] tracking-[0.3em] text-blue-200/70" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              {country.toUpperCase()}
+
+      <div className="relative h-full px-4 py-3 flex flex-col">
+        {/* HEADER */}
+        <div className="flex items-start gap-3">
+          <GreatSeal size={44} />
+          <div className="flex-1 text-center">
+            <div className="text-[10px] tracking-[0.3em]" style={{ fontFamily: 'Georgia, serif', color: GOLD, fontWeight: 700 }}>
+              UNITED STATES OF AMERICA
             </div>
-            <div className="text-[8px] tracking-[0.3em] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              DEPARTMENT OF STATE
+            <div className="text-[7.5px] tracking-[0.4em] mt-0.5" style={{ fontFamily: 'Georgia, serif', color: GOLD, opacity: 0.8 }}>
+              PASSPORT · PASSEPORT · PASAPORTE
             </div>
           </div>
-          <Globe className="w-7 h-7 text-blue-400/60" />
+          <div className="w-11" />
         </div>
 
-        <div className="mt-1 text-[22px] leading-none tracking-[0.18em] text-slate-100"
-          style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
-          PASSPORT
+        <div className="h-px mt-2 mb-2" style={{ background: GOLD, opacity: 0.4 }} />
+
+        {/* BODY: photo + bio */}
+        <div className="flex gap-3 flex-1 min-h-0">
+          {/* Photo column */}
+          <div className="w-[28%] flex flex-col gap-1">
+            <div style={{ height: '70%', border: `1px solid ${GOLD}`, opacity: 0.85 }}>
+              <PhotoPlaceholder className="w-full h-full" tone="dark" />
+            </div>
+            <div className="text-[6.5px] text-center tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: GOLD, opacity: 0.7 }}>
+              SIGNATURE
+            </div>
+            <div className="h-px" style={{ background: GOLD, opacity: 0.4 }} />
+          </div>
+
+          {/* Data column */}
+          <div className="flex-1 grid grid-cols-12 gap-x-2 gap-y-1.5 text-[10px] min-w-0">
+            <div className="col-span-3">
+              <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: GOLD, opacity: 0.75 }}>Type</div>
+              <div className="text-[12px]" style={{ fontFamily: 'JetBrains Mono, monospace', color: CREAM, fontWeight: 700 }}>{type}</div>
+            </div>
+            <div className="col-span-3">
+              <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: GOLD, opacity: 0.75 }}>Code</div>
+              <div className="text-[12px]" style={{ fontFamily: 'JetBrains Mono, monospace', color: CREAM, fontWeight: 700 }}>{country}</div>
+            </div>
+            <div className="col-span-6">
+              <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: GOLD, opacity: 0.75 }}>Passport No.</div>
+              <div className="text-[12px] tracking-wider" style={{ fontFamily: 'JetBrains Mono, monospace', color: CREAM, fontWeight: 700 }}>
+                {passportNo || <span style={{ color: '#888', fontStyle: 'italic', fontWeight: 400 }}>—</span>}
+              </div>
+            </div>
+
+            <div className="col-span-12">
+              <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: GOLD, opacity: 0.75 }}>Surname</div>
+              <div className="text-[12px]" style={{ fontFamily: 'Georgia, serif', color: CREAM, fontWeight: 600 }}>
+                {n.surname || <span style={{ color: '#888', fontStyle: 'italic' }}>—</span>}
+              </div>
+            </div>
+            <div className="col-span-12">
+              <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: GOLD, opacity: 0.75 }}>Given Names</div>
+              <div className="text-[12px]" style={{ fontFamily: 'Georgia, serif', color: CREAM, fontWeight: 600 }}>
+                {n.given || <span style={{ color: '#888', fontStyle: 'italic' }}>—</span>}
+              </div>
+            </div>
+
+            <div className="col-span-4">
+              <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: GOLD, opacity: 0.75 }}>Nationality</div>
+              <div className="text-[10px]" style={{ fontFamily: 'Georgia, serif', color: CREAM }}>
+                {data?.nationality || country || '—'}
+              </div>
+            </div>
+            <div className="col-span-5">
+              <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: GOLD, opacity: 0.75 }}>Date of Birth</div>
+              <div className="text-[10px]" style={{ fontFamily: 'Georgia, serif', color: CREAM }}>
+                {data?.dob ? formatLongDate(data.dob) : <span style={{ color: '#888', fontStyle: 'italic' }}>—</span>}
+              </div>
+            </div>
+            <div className="col-span-3">
+              <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: GOLD, opacity: 0.75 }}>Sex</div>
+              <div className="text-[10px]" style={{ fontFamily: 'JetBrains Mono, monospace', color: CREAM, fontWeight: 700 }}>
+                {data?.sex || '—'}
+              </div>
+            </div>
+
+            <div className="col-span-12">
+              <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: GOLD, opacity: 0.75 }}>Place of Birth</div>
+              <div className="text-[10px]" style={{ fontFamily: 'Georgia, serif', color: CREAM }}>
+                {data?.placeOfBirth || <span style={{ color: '#888', fontStyle: 'italic' }}>—</span>}
+              </div>
+            </div>
+
+            <div className="col-span-6">
+              <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: GOLD, opacity: 0.75 }}>Date of Issue</div>
+              <div className="text-[10px]" style={{ fontFamily: 'Georgia, serif', color: CREAM }}>
+                {data?.issueDate ? formatLongDate(data.issueDate) : <span style={{ color: '#888', fontStyle: 'italic' }}>—</span>}
+              </div>
+            </div>
+            <div className="col-span-6">
+              <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: GOLD, opacity: 0.75 }}>Date of Expiration</div>
+              <div className="text-[10px]" style={{ fontFamily: 'Georgia, serif', color: CREAM, fontWeight: 700 }}>
+                {data?.expiration ? formatLongDate(data.expiration) : <span style={{ color: '#888', fontStyle: 'italic', fontWeight: 400 }}>—</span>}
+              </div>
+            </div>
+          </div>
         </div>
-        <div className="h-px bg-gradient-to-r from-blue-500/50 via-blue-500/15 to-transparent mt-2 mb-3" />
 
-        <div className="grid grid-cols-3 gap-x-4 gap-y-2 flex-1">
-          <div className="col-span-2">
-            <div className="text-[8px] tracking-wider text-slate-500 mb-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>SURNAME / GIVEN NAMES</div>
-            <div className="text-sm text-slate-100 truncate" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
-              {name || <span className="text-slate-600 italic font-normal">— not parsed —</span>}
-            </div>
-          </div>
-          <div>
-            <div className="text-[8px] tracking-wider text-slate-500 mb-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>NATIONALITY</div>
-            <div className="text-sm text-slate-100" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
-              {country || '—'}
-            </div>
-          </div>
-
-          <div className="col-span-2">
-            <div className="text-[8px] tracking-wider text-slate-500 mb-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>PASSPORT NUMBER</div>
-            <div className="text-base text-slate-200 tracking-wider" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              {passportNo || <span className="text-slate-600 italic">—</span>}
-            </div>
-          </div>
-          <div>
-            <div className="text-[8px] tracking-wider text-slate-500 mb-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>DATE OF BIRTH</div>
-            <div className="text-sm text-slate-100" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-              {dob ? formatLongDate(dob) : <span className="text-slate-600 italic">—</span>}
-            </div>
-          </div>
-
-          <div>
-            <div className="text-[8px] tracking-wider text-slate-500 mb-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>DATE OF ISSUE</div>
-            <div className="text-sm text-slate-100" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-              {issued ? formatLongDate(issued) : <span className="text-slate-600 italic">—</span>}
-            </div>
-          </div>
-          <div className="col-span-2">
-            <div className="text-[8px] tracking-wider text-slate-500 mb-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>DATE OF EXPIRATION</div>
-            <div className="text-sm text-slate-100" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
-              {expires ? formatLongDate(expires) : <span className="text-slate-600 italic font-normal">—</span>}
-            </div>
-          </div>
-        </div>
-
-        <div className="pt-2 mt-auto border-t border-slate-800 flex items-center justify-between">
-          <div className="text-[8px] text-slate-600 tracking-[0.3em]" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            P&lt;{country}&lt;&lt;{(name || '').split(' ').slice(-1)[0].slice(0, 10)}
-          </div>
-          <div className="text-[8px] text-blue-500/40 tracking-[0.3em]" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            MACHINE-READABLE
+        {/* MRZ */}
+        <div className="mt-2 pt-1.5 border-t" style={{ borderColor: GOLD, borderTopWidth: 1, borderTopStyle: 'solid', opacity: 1 }}>
+          <div className="text-[8.5px] leading-tight tracking-[0.05em]"
+            style={{ fontFamily: 'JetBrains Mono, monospace', color: CREAM, opacity: 0.85, letterSpacing: '0.02em' }}>
+            <div>{mrz.l1}</div>
+            <div>{mrz.l2}</div>
           </div>
         </div>
       </div>
@@ -611,76 +955,183 @@ function PassportCard({ data, owner }) {
   );
 }
 
-// --- DRIVER'S LICENSE -------------------------------------------------------
-// Mirrors a state-issued driver's license layout.
+// --- 4. DRIVER'S LICENSE ----------------------------------------------------
+// Modern American DL style. Blue header strip with state seal, light
+// background, prominent DL number + expiration, photo placeholder,
+// full address, restrictions, donor/veteran badges.
+
 function DriversLicenseCard({ data, owner }) {
-  const name = (data?.holderName || owner?.name || owner?.displayName || '').toUpperCase();
+  const n = combineName(data, owner);
+  const state = (data?.addressState || data?.issuingAuthority || '').toUpperCase();
   const dlNo = data?.documentNumber || '';
-  const state = data?.issuingAuthority || '';
-  const dob = data?.dob;
+  const cls = data?.licenseClass || '';
   const issued = data?.issueDate;
   const expires = data?.expiration;
+  const restrictions = data?.licenseRestrictions || '';
+  const endorsements = data?.licenseEndorsements || '';
+  const isDonor = data?.organDonor === true;
+  const isVeteran = data?.veteran === true;
+  const addressLines = formatAddress(data);
+
+  const DARK_BLUE = '#1a4480';
+  const LIGHT_BG = 'linear-gradient(135deg, #f0f4fc 0%, #dfe7f4 60%, #c3d3ea 100%)';
 
   return (
-    <div className="relative overflow-hidden border border-emerald-500/30 bg-gradient-to-br from-emerald-950/40 via-slate-950 to-slate-900"
-      style={{ aspectRatio: '1.6' }}>
-      <div className="relative h-full p-5 flex flex-col">
-        <div className="flex items-start justify-between">
+    <div
+      className="relative overflow-hidden shadow-lg"
+      style={{
+        aspectRatio: '1.586',
+        background: LIGHT_BG,
+        border: '1px solid #a8b8d0',
+        borderRadius: 12,
+        color: '#1a1a1a',
+      }}
+    >
+      {/* Holographic security overlay */}
+      <svg className="absolute inset-0 w-full h-full pointer-events-none opacity-25"
+        viewBox="0 0 400 250" preserveAspectRatio="none">
+        {Array.from({ length: 16 }).map((_, i) => (
+          <line key={i} x1={-50 + i * 30} y1="0" x2={i * 30} y2="250"
+            stroke="#1a4480" strokeWidth="0.4" />
+        ))}
+      </svg>
+
+      {/* Header strip */}
+      <div className="absolute top-0 left-0 right-0 px-3 py-1.5 flex items-center justify-between"
+        style={{ background: DARK_BLUE, color: '#fff' }}>
+        <div className="flex items-center gap-2">
+          <StateSeal size={26} state={state} />
           <div>
-            <div className="text-[8px] tracking-[0.3em] text-emerald-200/70" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              {state ? `STATE OF ${state.toUpperCase()}` : 'UNITED STATES'}
+            <div className="text-[10px] tracking-[0.25em]" style={{ fontFamily: 'Georgia, serif', fontWeight: 700 }}>
+              {state ? state : 'UNITED STATES'}
             </div>
-            <div className="text-[8px] tracking-[0.3em] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              DEPARTMENT OF MOTOR VEHICLES
+            <div className="text-[7px] tracking-[0.28em] opacity-80" style={{ fontFamily: 'Georgia, serif' }}>
+              DRIVER LICENSE
             </div>
           </div>
-          <Contact className="w-7 h-7 text-emerald-400/60" />
+        </div>
+        <div className="flex items-center gap-1.5">
+          {isVeteran && (
+            <div className="px-1.5 py-0.5 text-[7px] tracking-widest" style={{ background: '#c5a572', color: '#1a1a1a', fontWeight: 700, borderRadius: 2 }}>
+              VETERAN
+            </div>
+          )}
+          {isDonor && (
+            <div className="px-1.5 py-0.5 text-[7px] tracking-widest" style={{ background: '#b71c1c', color: '#fff', fontWeight: 700, borderRadius: 2 }}>
+              ♥ DONOR
+            </div>
+          )}
+          {cls && (
+            <div className="px-2 py-0.5 text-[10px] tracking-wider"
+              style={{ background: '#c5a572', color: '#1a1a1a', fontWeight: 700, borderRadius: 2, fontFamily: 'JetBrains Mono, monospace' }}>
+              CLASS {cls}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="relative h-full pt-10 px-3 pb-2 flex gap-3" style={{ color: '#1a1a1a' }}>
+        {/* Photo column */}
+        <div className="w-[26%] flex flex-col gap-1">
+          <div style={{ height: '78%', border: '1px solid #8090a8' }}>
+            <PhotoPlaceholder className="w-full h-full" tone="light" />
+          </div>
+          <div className="text-[6px] text-center tracking-[0.2em]"
+            style={{ fontFamily: 'JetBrains Mono, monospace', color: '#5a6478' }}>
+            SIGNATURE
+          </div>
+          <div className="h-px" style={{ background: '#8090a8' }} />
         </div>
 
-        <div className="mt-1 text-[22px] leading-none tracking-[0.18em] text-slate-100"
-          style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
-          DRIVER&apos;S LICENSE
-        </div>
-        <div className="h-px bg-gradient-to-r from-emerald-500/50 via-emerald-500/15 to-transparent mt-2 mb-3" />
+        {/* Data column */}
+        <div className="flex-1 grid grid-cols-12 gap-x-2 gap-y-1 text-[10px] min-w-0">
+          <div className="col-span-12">
+            <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: DARK_BLUE, fontWeight: 700 }}>
+              4d DL NO.
+            </div>
+            <div className="text-[14px] tracking-wider" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, color: DARK_BLUE }}>
+              {dlNo || <span style={{ color: '#aaa', fontStyle: 'italic', fontWeight: 400 }}>—</span>}
+            </div>
+          </div>
 
-        <div className="grid grid-cols-3 gap-x-4 gap-y-2 flex-1">
+          <div className="col-span-6">
+            <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: DARK_BLUE, fontWeight: 700 }}>
+              4b EXP
+            </div>
+            <div className="text-[12px]" style={{ fontFamily: 'Georgia, serif', fontWeight: 700 }}>
+              {expires ? formatLongDate(expires) : <span style={{ color: '#aaa', fontStyle: 'italic', fontWeight: 400 }}>—</span>}
+            </div>
+          </div>
+          <div className="col-span-6">
+            <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: DARK_BLUE, fontWeight: 700 }}>
+              4a ISS
+            </div>
+            <div className="text-[12px]" style={{ fontFamily: 'Georgia, serif' }}>
+              {issued ? formatLongDate(issued) : <span style={{ color: '#aaa', fontStyle: 'italic' }}>—</span>}
+            </div>
+          </div>
+
+          <div className="col-span-12 mt-0.5">
+            <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: DARK_BLUE, fontWeight: 700 }}>
+              1 LN, FN
+            </div>
+            <div className="text-[12px] leading-tight" style={{ fontFamily: 'Georgia, serif', fontWeight: 700 }}>
+              {n.surname || '—'}{n.given ? `, ${n.given}` : ''}
+            </div>
+          </div>
+
+          {addressLines.length > 0 && (
+            <div className="col-span-12">
+              <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: DARK_BLUE, fontWeight: 700 }}>
+                8 ADDRESS
+              </div>
+              <div className="text-[9.5px] leading-tight" style={{ fontFamily: 'Georgia, serif' }}>
+                {addressLines.map((l, i) => <div key={i}>{l}</div>)}
+              </div>
+            </div>
+          )}
+
           <div className="col-span-3">
-            <div className="text-[8px] tracking-wider text-slate-500 mb-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>NAME</div>
-            <div className="text-sm text-slate-100 truncate" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
-              {name || <span className="text-slate-600 italic font-normal">— not parsed —</span>}
+            <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: DARK_BLUE, fontWeight: 700 }}>3 DOB</div>
+            <div className="text-[10px]" style={{ fontFamily: 'Georgia, serif' }}>
+              {data?.dob ? formatLongDate(data.dob) : '—'}
             </div>
           </div>
           <div className="col-span-2">
-            <div className="text-[8px] tracking-wider text-slate-500 mb-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>LICENSE NUMBER</div>
-            <div className="text-base text-slate-200 tracking-wider" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              {dlNo || <span className="text-slate-600 italic">—</span>}
+            <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: DARK_BLUE, fontWeight: 700 }}>15 SEX</div>
+            <div className="text-[10px]" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
+              {data?.sex || '—'}
             </div>
           </div>
-          <div>
-            <div className="text-[8px] tracking-wider text-slate-500 mb-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>STATE</div>
-            <div className="text-sm text-emerald-300" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
-              {state || '—'}
+          <div className="col-span-3">
+            <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: DARK_BLUE, fontWeight: 700 }}>16 HT</div>
+            <div className="text-[10px]" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {data?.height || '—'}
+            </div>
+          </div>
+          <div className="col-span-2">
+            <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: DARK_BLUE, fontWeight: 700 }}>18 EYES</div>
+            <div className="text-[10px]" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {data?.eyeColor || '—'}
+            </div>
+          </div>
+          <div className="col-span-2">
+            <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: DARK_BLUE, fontWeight: 700 }}>17 WT</div>
+            <div className="text-[10px]" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {data?.weight || '—'}
             </div>
           </div>
 
-          <div>
-            <div className="text-[8px] tracking-wider text-slate-500 mb-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>DATE OF BIRTH</div>
-            <div className="text-sm text-slate-100" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-              {dob ? formatLongDate(dob) : <span className="text-slate-600 italic">—</span>}
+          {(restrictions || endorsements) && (
+            <div className="col-span-12">
+              <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: DARK_BLUE, fontWeight: 700 }}>
+                12 RESTR · 9 END
+              </div>
+              <div className="text-[10px] leading-snug" style={{ fontFamily: 'Georgia, serif' }}>
+                {[restrictions, endorsements].filter(Boolean).join(' · ')}
+              </div>
             </div>
-          </div>
-          <div>
-            <div className="text-[8px] tracking-wider text-slate-500 mb-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>ISSUED</div>
-            <div className="text-sm text-slate-100" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-              {issued ? formatLongDate(issued) : <span className="text-slate-600 italic">—</span>}
-            </div>
-          </div>
-          <div>
-            <div className="text-[8px] tracking-wider text-slate-500 mb-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>EXPIRES</div>
-            <div className="text-sm text-slate-100" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
-              {expires ? formatLongDate(expires) : <span className="text-slate-600 italic font-normal">—</span>}
-            </div>
-          </div>
+          )}
         </div>
       </div>
     </div>
@@ -691,15 +1142,24 @@ function DriversLicenseCard({ data, owner }) {
 function EmptyDocCard({ docType }) {
   const Icon = docType.icon;
   return (
-    <div className="relative border border-dashed border-slate-800 bg-slate-900/20 flex items-center justify-center"
-      style={{ aspectRatio: '1.6' }}>
-      <div className="text-center">
-        <Icon className="w-8 h-8 mx-auto mb-2 text-slate-700" />
-        <div className="text-[11px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+    <div
+      className="relative flex items-center justify-center"
+      style={{
+        aspectRatio: '1.586',
+        background: 'linear-gradient(135deg, rgba(30,192,233,0.04) 0%, rgba(30,192,233,0.01) 100%)',
+        border: '1.5px dashed rgba(30,192,233,0.25)',
+        borderRadius: 12,
+      }}
+    >
+      <div className="text-center px-6">
+        <Icon className="w-9 h-9 mx-auto mb-2 text-cyan-400/40" />
+        <div className="text-[11px] tracking-[0.25em] text-cyan-300/70"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
           NO {docType.label.toUpperCase()} ON FILE
         </div>
-        <div className="text-[10px] text-slate-600 mt-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-          Upload below to populate this card
+        <div className="text-[10px] text-slate-500 mt-1.5"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          Upload below to render
         </div>
       </div>
     </div>
@@ -1517,89 +1977,79 @@ function BulkDownloadButton({ crewUid, crewName, docs }) {
 
   if (!docs || docs.length === 0) return null;
 
-  const loadJSZip = () => {
-    if (typeof window === 'undefined') return Promise.reject(new Error('Not in browser'));
-    if (window.JSZip) return Promise.resolve(window.JSZip);
-    return new Promise((resolve, reject) => {
-      const existing = document.querySelector('script[data-jszip-loader]');
-      if (existing) {
-        existing.addEventListener('load', () => resolve(window.JSZip));
-        existing.addEventListener('error', () => reject(new Error('JSZip script failed')));
-        return;
-      }
-      const s = document.createElement('script');
-      s.src = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
-      s.setAttribute('data-jszip-loader', '1');
-      s.onload = () => {
-        if (window.JSZip) resolve(window.JSZip);
-        else reject(new Error('JSZip loaded but window.JSZip is undefined'));
-      };
-      s.onerror = () => reject(new Error('Failed to load JSZip from CDN'));
-      document.head.appendChild(s);
-    });
-  };
+  // The OLD client-side approach used fetch() against Firebase Storage URLs,
+  // which fails on Safari with "Failed to download: Load failed" because
+  // Firebase Storage requires bucket-level CORS configuration to allow
+  // cross-origin browser fetches. We now POST the file manifest to
+  // /api/bulk-download-pilot-docs which fetches + zips server-side and
+  // streams the ZIP back as an attachment — no CORS issues, no JSZip CDN
+  // dependency, no client memory pressure on large crews.
 
   const handleDownload = async () => {
     setBusy(true);
     setErr('');
-    setProgress('Loading ZIP library...');
+    setProgress('Preparing manifest...');
     try {
-      const JSZip = await loadJSZip();
-      const zip = new JSZip();
       const safeName = String(crewName || crewUid || 'crew')
         .replace(/[^a-zA-Z0-9 ._-]/g, '_').trim() || 'crew';
-      const root = zip.folder(safeName);
 
-      // Pre-build a unique-filename mapping per docType so multiple
-      // files don't collide in the same folder.
+      // Build manifest: one entry per file with friendly folder + filename.
+      // Order by docType then uploadedAt so the ZIP layout is stable.
       const byType = docs.reduce((acc, d) => {
         (acc[d.docType || 'misc'] = acc[d.docType || 'misc'] || []).push(d);
         return acc;
       }, {});
 
-      let i = 0;
-      const total = docs.length;
+      const files = [];
       for (const [type, list] of Object.entries(byType)) {
-        const folder = root.folder(type);
-        // Order by uploadedAt for stable, meaningful filenames
         list.sort((a, b) => (a.uploadedAt || 0) - (b.uploadedAt || 0));
-        for (let idx = 0; idx < list.length; idx++) {
-          const d = list[idx];
-          i++;
-          const dispName = d.fileLabel || d.holderName || `file-${idx + 1}`;
-          setProgress(`Downloading ${i} / ${total}: ${type}/${dispName}...`);
-          if (!d.fileUrl) {
-            folder.file(`MISSING_${dispName}.txt`, 'No file URL stored — skipped.');
-            continue;
-          }
-          try {
-            const resp = await fetch(d.fileUrl);
-            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-            const blob = await resp.blob();
-            // Use the storage object's actual filename for uniqueness
-            const storageBaseName = (d.filePath || '').split('/').pop()
-              || d.fileName || `file-${idx + 1}`;
-            // But prefix with the user-friendly label if present
-            const labelPrefix = d.fileLabel
-              ? d.fileLabel.replace(/[^a-zA-Z0-9 ._-]/g, '_') + '__'
-              : '';
-            folder.file(`${labelPrefix}${storageBaseName}`, blob);
-          } catch (fetchErr) {
-            console.warn(`[bulk-download] skipped ${dispName}:`, fetchErr?.message);
-            folder.file(
-              `ERROR_${dispName}.txt`,
-              `Failed to download: ${fetchErr?.message || 'unknown error'}`
-            );
-          }
-        }
+        list.forEach((d, idx) => {
+          if (!d.fileUrl) return;
+          // Storage path's basename for uniqueness; prefix with the user
+          // label so front/back/etc. are distinguishable.
+          const storageBaseName = (d.filePath || '').split('/').pop()
+            || d.fileName || `file-${idx + 1}`;
+          const labelPrefix = d.fileLabel
+            ? d.fileLabel.replace(/[^a-zA-Z0-9 ._-]/g, '_') + '__'
+            : '';
+          files.push({
+            url: d.fileUrl,
+            folder: type,
+            filename: `${labelPrefix}${storageBaseName}`,
+          });
+        });
       }
 
-      setProgress('Building ZIP file...');
-      const blob = await zip.generateAsync({ type: 'blob' }, (m) => {
-        setProgress(`Building ZIP: ${Math.round(m.percent)}%`);
+      if (files.length === 0) {
+        throw new Error('No downloadable files (all entries missing fileUrl).');
+      }
+
+      // Auth: forward Firebase ID token so the API can verify the caller.
+      setProgress('Authenticating...');
+      let idToken = null;
+      try {
+        const { auth } = await import('./firebase.js');
+        if (auth.currentUser) idToken = await auth.currentUser.getIdToken();
+      } catch (_) {}
+
+      setProgress(`Building ZIP server-side · ${files.length} file${files.length === 1 ? '' : 's'}...`);
+      const resp = await fetch('/api/bulk-download-pilot-docs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken, crewName: safeName, files }),
       });
 
-      setProgress('Triggering download...');
+      if (!resp.ok) {
+        let detail = `HTTP ${resp.status}`;
+        try {
+          const j = await resp.json();
+          if (j?.error) detail = j.error;
+        } catch (_) {}
+        throw new Error(detail);
+      }
+
+      setProgress('Streaming ZIP to browser...');
+      const blob = await resp.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
