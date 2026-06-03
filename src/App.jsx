@@ -5317,6 +5317,49 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
 // one URL per leg.
 
 /**
+ * Loose broker-string equivalence check.
+ *
+ * Why we need fuzzy matching: ops stores broker info inconsistently
+ * across legs of the same charter. Common patterns:
+ *   - Leg 1: "platinum air"                       (display name)
+ *   - Leg 2: "krysty.platinumair@gmail.com"       (contact email)
+ *   - Leg 3: "Platinum Air, LLC"                  (legal name)
+ * These all refer to the same broker but won't match by strict
+ * equality. Without fuzzy matching, multi-leg charters split into
+ * one-link-per-leg, which is the bug Jake's hitting on N525CR
+ * MAC→ORL→TPA.
+ *
+ * Algorithm:
+ *   1. Normalize: lowercase, strip non-alphanumeric
+ *   2. Equal → match
+ *   3. One normalized form contains the other (>= 5-char substring,
+ *      to avoid "a" matching everything) → match
+ *
+ * Examples:
+ *   "platinum air" + "krysty.platinumair@gmail.com"
+ *     → "platinumair" + "krystyplatinumairgmailcom"
+ *     → "krystyplatinumairgmailcom" includes "platinumair" → MATCH
+ *
+ *   "platinum air" + "another broker"
+ *     → "platinumair" + "anotherbroker" → no containment → NO MATCH
+ */
+function brokersMatchFuzzy(a, b) {
+  if (!a || !b) return false;
+  const norm = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
+  const na = norm(a);
+  const nb = norm(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  // Require the shorter normalized form to be at least 5 chars to
+  // count as a meaningful substring. Otherwise "a" or "co" would
+  // match too eagerly.
+  const shorter = na.length <= nb.length ? na : nb;
+  const longer = na.length <= nb.length ? nb : na;
+  if (shorter.length < 5) return false;
+  return longer.includes(shorter);
+}
+
+/**
  * All legs that belong to the same charter as `anchor`, sorted
  * chronologically (earliest first).
  *
@@ -5367,12 +5410,15 @@ function findCharterLegs(anchor, allTrips) {
       // we can't build a charter group without a broker to anchor it.
       if (!anchorBroker) return t.uid === anchor.uid;
       const b = String(t.info.broker || '').trim().toLowerCase();
-      // Include legs with same broker. Also include legs with NO
-      // broker (presumed to be part of anchor's charter — common
-      // for return legs of round trips). Exclude legs with a
-      // DIFFERENT non-empty broker.
+      // Include legs with no broker (presumed part of anchor's
+      // charter — common for return legs of round trips where ops
+      // didn't re-enter broker info). Also include legs whose broker
+      // FUZZY-MATCHES the anchor: same string after normalizing, or
+      // one is contained in the other (e.g. display name "platinum
+      // air" matches contact email "krysty.platinumair@gmail.com").
+      // Exclude legs with a CLEARLY DIFFERENT non-empty broker.
       if (!b) return true;
-      return b === anchorBroker;
+      return b === anchorBroker || brokersMatchFuzzy(b, anchorBroker);
     })
     .filter((t) => {
       if (!t.start) return false;
@@ -5453,6 +5499,52 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
   const isMultiLeg = charterLegs.length > 1;
   // Did ops open SHARE from a different leg than the canonical?
   const openedFromNonCanonical = canonicalTrip.uid !== trip.uid;
+
+  // OTHER SAME-DAY LEGS on this plane that auto-detection didn't
+  // include in the charter. These are typically same-tail same-day
+  // real flights whose broker field is inconsistent enough that fuzzy
+  // matching couldn't match them, but ops knows they're part of the
+  // same charter. Surface them with a checkbox so ops can manually
+  // include them without rotating links or fighting the data.
+  const otherSameDayLegs = useMemo(() => {
+    if (!Array.isArray(allTrips)) return [];
+    const tail = String(canonicalTrip.info?.tail || '').toUpperCase();
+    if (!tail) return [];
+    const anchorMs = canonicalTrip.start ? new Date(canonicalTrip.start).getTime() : Date.now();
+    const WINDOW = 24 * 3600 * 1000;
+    const charterUids = new Set(charterLegs.map(l => l.uid));
+    return allTrips
+      .filter(t => t && t.info && String(t.info.tail || '').toUpperCase() === tail)
+      .filter(t => {
+        if (t.info.isFlight === false) return false;
+        const rawCat = String(t.info.category || '').toUpperCase();
+        if (['HOLD', 'MX', 'TRAINING'].includes(rawCat)) return false;
+        return true;
+      })
+      .filter(t => {
+        if (!t.start) return false;
+        const ms = new Date(t.start).getTime();
+        return Number.isFinite(ms) && Math.abs(ms - anchorMs) <= WINDOW;
+      })
+      .filter(t => !charterUids.has(t.uid))
+      .sort((a, b) => new Date(a.start || 0).getTime() - new Date(b.start || 0).getTime());
+  }, [allTrips, canonicalTrip, charterLegs]);
+
+  // UIDs that ops has manually checked to include in the broker page.
+  // These are legs from otherSameDayLegs that ops wants to bundle in
+  // this link even though auto-detection didn't catch them. Toggling
+  // any checkbox triggers a re-call to /api/trip-share with the new
+  // publicTripData payload, so the broker page updates in place
+  // (same URL, fresh content).
+  const [extraIncludedUids, setExtraIncludedUids] = useState(new Set());
+  const toggleExtraLeg = (uid) => {
+    setExtraIncludedUids(prev => {
+      const next = new Set(prev);
+      if (next.has(uid)) next.delete(uid);
+      else next.add(uid);
+      return next;
+    });
+  };
 
   const [url, setUrl] = useState('');
   const [tokenIssuedAt, setTokenIssuedAt] = useState(null);
@@ -5620,19 +5712,26 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
         return;
       }
       // SAME-CHARTER LEGS — matches findCharterLegs rule:
-      //   - Same broker as anchor, OR
+      //   - Same broker as anchor (exact OR fuzzy substring match),
+      //     OR
       //   - No broker set (presumed part of anchor's charter)
       // This is what makes same-day round trips appear on the broker
       // page. JetInsight commonly leaves the broker field empty on
       // the return leg (or marks it REPO) when ops considers "same
       // group coming back" implicit. Without this, the broker page
       // shows only the outbound and the round trip looks half-broken.
+      // Fuzzy matching handles cases where one leg has the broker's
+      // display name ("platinum air") and another has their contact
+      // email ("krysty.platinumair@gmail.com") — same broker, mixed
+      // representation.
       // showPax is gated by paxOverlap so the broker sees the routing
       // but only sees pax data on legs where pax actually overlap.
       // Privacy preserved without dropping the leg.
       const tBroker = String(t.info?.broker || '').trim().toLowerCase();
       const matchesCharterBroker = anchorBroker && (
-        tBroker === anchorBroker || !tBroker
+        tBroker === anchorBroker
+        || !tBroker
+        || brokersMatchFuzzy(tBroker, anchorBroker)
       );
       if (matchesCharterBroker) {
         included.push({ t, showPax: paxOverlap(t) });
@@ -5654,6 +5753,36 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
       // broker's charter on the same plane same day stays invisible
       // to this broker.
     });
+
+    // MANUAL OVERRIDE — ops checked one or more "OTHER SAME-DAY LEGS"
+    // boxes in the dialog because they know those legs belong to this
+    // charter but auto-detection didn't pick them up (data hygiene
+    // issue with the broker field, JetInsight category mislabel, etc).
+    // Push those legs onto the included list. We also need to fetch
+    // pax for any extra leg whose data we didn't already pull above.
+    if (extraIncludedUids && extraIncludedUids.size > 0) {
+      const alreadyIncludedUids = new Set(included.map(x => x.t.uid));
+      const extras = (allTrips || []).filter(t =>
+        extraIncludedUids.has(t?.uid) && !alreadyIncludedUids.has(t.uid)
+      );
+      // Fetch any pax data we haven't already loaded
+      if (extras.length > 0 && fetchTripStateForShare) {
+        await Promise.all(extras.map(async (t) => {
+          if (!stateByUid[t.uid]) {
+            try { stateByUid[t.uid] = await fetchTripStateForShare(t.uid); }
+            catch { stateByUid[t.uid] = { preloadedPax: [], statuses: {} }; }
+          }
+        }));
+      }
+      for (const t of extras) {
+        included.push({ t, showPax: paxOverlap(t) });
+      }
+      // Re-sort included by start time so the legs appear chronologically
+      // on the broker page regardless of which got added when.
+      included.sort((a, b) =>
+        new Date(a.t.start || 0).getTime() - new Date(b.t.start || 0).getTime()
+      );
+    }
 
     // Renumber legs sequentially as they appear in the final included list.
     const legs = included.map(({ t, showPax }, i) => {
@@ -5797,10 +5926,12 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
     }
   }
 
-  // On open: generate (or fetch) the current token + URL so ops can copy
-  // immediately without an extra click. We also POST the freshly-computed
-  // publicTripData so the broker page has real legs to show — the trip-state
-  // doc itself doesn't carry leg data and the broker endpoint can't infer it.
+  // On open AND whenever ops manually toggles an "OTHER LEG" checkbox:
+  // generate (or refresh) the current token + URL with up-to-date
+  // publicTripData. The first run on mount fetches/issues the token;
+  // subsequent runs triggered by extraIncludedUids changes refresh
+  // the cached broker-page payload on the server WITHOUT rotating the
+  // token — same URL, fresh leg list.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -5817,9 +5948,10 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
       }
     })();
     return () => { cancelled = true; };
-    // Run once on mount
+    // Re-run when manual extras change so the broker page reflects
+    // the latest selection.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [extraIncludedUids]);
 
   const handleCopy = async () => {
     if (!effectiveUrl) return;
@@ -5934,6 +6066,68 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
               {openedFromNonCanonical
                 ? '★ Outbound leg is the link\'s anchor. Same URL whether you click SHARE on any leg.'
                 : '★ This leg is the link\'s anchor. Other legs share the same URL.'}
+            </div>
+          </div>
+        )}
+
+        {/* MANUAL OVERRIDE — other same-day legs on this plane that
+            auto-detection didn't add to the charter. Usually surfaces
+            when broker fields are inconsistent (one leg has the email,
+            another has the company name) or when JetInsight categorizes
+            a leg in a way that doesn't fuzzy-match. Ops checks the
+            ones that belong, the broker page refreshes in place. */}
+        {otherSameDayLegs.length > 0 && (
+          <div className="border-b border-slate-700 bg-slate-900/40 px-4 py-2.5">
+            <div className="text-[10px] tracking-widest text-slate-400 mb-1.5"
+              style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+              OTHER SAME-DAY LEGS ON {canonicalTrip.info?.tail || 'PLANE'} · {otherSameDayLegs.length}
+            </div>
+            <div className="text-[9px] text-slate-500 mb-2"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              Auto-detection didn't include these (different / missing broker).
+              Tick any that belong to this charter — link refreshes in place.
+            </div>
+            <div className="space-y-1">
+              {otherSameDayLegs.map(other => {
+                const isChecked = extraIncludedUids.has(other.uid);
+                const time = other.start ? new Date(other.start).toLocaleTimeString('en-US',
+                  { hour: 'numeric', minute: '2-digit' }) : '';
+                const route = `${other.info?.from || '—'} → ${other.info?.to || '—'}`;
+                const broker = other.info?.broker || '(no broker)';
+                const pax = other.info?.paxCount || other.info?.pax || '';
+                const cat = String(other.info?.legType || other.info?.category || '').toUpperCase();
+                return (
+                  <label
+                    key={other.uid}
+                    className={`flex items-start gap-2 px-2 py-1.5 border cursor-pointer ${
+                      isChecked
+                        ? 'border-cyan-500/50 bg-cyan-500/5'
+                        : 'border-slate-800 hover:border-slate-600'
+                    }`}
+                    style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isChecked}
+                      onChange={() => toggleExtraLeg(other.uid)}
+                      disabled={busy}
+                      className="mt-0.5 w-3.5 h-3.5 accent-cyan-500 shrink-0"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[11px] text-slate-200 truncate">
+                        {route}
+                        {time && <span className="text-slate-500 ml-2">{time}</span>}
+                        {cat && cat !== 'REVENUE' && (
+                          <span className="text-[9px] text-amber-400 ml-1.5 tracking-widest">{cat}</span>
+                        )}
+                      </div>
+                      <div className="text-[10px] text-slate-500 truncate">
+                        {broker}{pax ? ` · ${pax} pax` : ''}
+                      </div>
+                    </div>
+                  </label>
+                );
+              })}
             </div>
           </div>
         )}
