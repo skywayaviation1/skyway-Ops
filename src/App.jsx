@@ -38,6 +38,8 @@ import FAANotamBadge from './FAANotamBadge.jsx';
 // Crew board lives in CrewBoardV2 (lazy import for ops/admin home).
 import DutyV2 from './DutyV2.jsx';
 const CrewBoardV2Lazy = lazy(() => import('./CrewBoardV2.jsx'));
+import AppTimezoneSwitch from './AppTimezoneSwitch.jsx';
+import { todayInAppTz } from './app-timezone.js';
 import { createPortal } from 'react-dom';
 import {
   Plane, Calendar, MessageSquare, Users, Bell, MapPin,
@@ -6393,13 +6395,14 @@ function ManifestsScreen({ currentUser, allTrips }) {
     return () => { cancelled = true; if (unsub) unsub(); };
   }, []);
 
-  const todayStr = (() => {
-    const d = new Date();
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const dd = String(d.getDate()).padStart(2, '0');
-    return `${yyyy}-${mm}-${dd}`;
-  })();
+  // "Today" date for new-manifest defaults — respects the app-wide
+  // timezone override. Without the override this returns the browser-
+  // local date, which is what the old inline IIFE did. With the
+  // override (e.g. ET while admin is in JST), this returns the ET
+  // calendar date, so the new-manifest picker opens on the operational
+  // date the admin is thinking about, not the JST date their browser
+  // happens to report.
+  const todayStr = todayInAppTz();
 
   // Group by date — today first
   const grouped = useMemo(() => {
@@ -7307,11 +7310,13 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
             try {
               const fbMod = await import('./firebase-duty-v2.js');
               const linkMod = await import('./manifest-duty-link.js');
-              const range = linkMod.manifestDateToMsRange(draft.date, null);
+              const appTzMod = await import('./app-timezone.js');
+              const appTz = appTzMod.getAppTimezone();
+              const range = linkMod.manifestDateToMsRange(draft.date, appTz);
               const raw = await fbMod.fetchPeriodsByTailInRange(
                 draft.tail, range.startMs, range.endMs
               );
-              const filtered = linkMod.filterToManifestDate(raw, draft.date, null);
+              const filtered = linkMod.filterToManifestDate(raw, draft.date, appTz);
               setDutyCandidates(filtered);
               setDutyFetched(true);
             } catch (e) {
@@ -17287,20 +17292,11 @@ function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, sync
               alt="Skyway Aviation"
               className="h-8 w-auto block"
             />
-            <div className="text-[10px] text-slate-500 tracking-widest mt-1 truncate" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              {(() => {
-                // Show the user's device-local time. No airport context here —
-                // this is "current wall-clock time on your phone." Format:
-                //  "6:30 PM EDT · 07 MAY 2026"
-                const time = new Intl.DateTimeFormat('en-US', {
-                  hour: 'numeric', minute: '2-digit', hour12: true,
-                }).format(now);
-                const tzAbbr = new Intl.DateTimeFormat('en-US', {
-                  timeZoneName: 'short',
-                }).formatToParts(now).find(p => p.type === 'timeZoneName')?.value || '';
-                return `${time}${tzAbbr ? ' ' + tzAbbr : ''} · ${fmtDateZ(now)}`;
-              })()}
-            </div>
+            {/* App timezone switcher. Click the clock to choose a TZ
+                override. When set, all "today"-derived defaults (manifest
+                date, etc.) follow the chosen TZ. Cyan "OVR" badge appears
+                when active. */}
+            <AppTimezoneSwitch now={now} />
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
