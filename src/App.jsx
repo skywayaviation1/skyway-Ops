@@ -6404,13 +6404,36 @@ function ManifestsScreen({ currentUser, allTrips }) {
   // happens to report.
   const todayStr = todayInAppTz();
 
-  // Group by date — today first
+  // Group by date — today first. Within a date, sort by tail then by
+  // suffix number so multi-crew manifests for the same plane cluster:
+  //   N444AM     (1st of day)
+  //   N444AM #2  (2nd crew, same plane)
+  //   N444AM #3  (3rd crew, same plane)
+  //   N525CR     (different plane)
+  // This makes the multi-crew situation visually obvious in the list.
   const grouped = useMemo(() => {
     const byDate = {};
     for (const m of manifests) {
       const date = m.date || 'unknown';
       if (!byDate[date]) byDate[date] = [];
       byDate[date].push(m);
+    }
+    // Suffix number derived from manifest's own date+tail fields, not
+    // by parsing the ID structure. Base manifest = 0; "_2" = 2; etc.
+    const suffixNum = (m) => {
+      if (!m.date || !m.tail || !m.id) return 0;
+      const basePrefix = `${m.date}_${m.tail}`;
+      if (!m.id.startsWith(basePrefix + '_')) return 0;
+      const tail = m.id.slice(basePrefix.length + 1);
+      const match = tail.match(/^\d+$/);
+      return match ? parseInt(tail, 10) : 0;
+    };
+    for (const date of Object.keys(byDate)) {
+      byDate[date].sort((a, b) => {
+        const tailCmp = String(a.tail || '').localeCompare(String(b.tail || ''));
+        if (tailCmp !== 0) return tailCmp;
+        return suffixNum(a) - suffixNum(b);
+      });
     }
     const dates = Object.keys(byDate).sort().reverse();
     return dates.map(date => ({ date, manifests: byDate[date] }));
@@ -6420,33 +6443,54 @@ function ManifestsScreen({ currentUser, allTrips }) {
 
   // Create a new manifest for the given date+tail. If the manifest
   // already exists (e.g. the user picked a date+tail that already has
-  // one), just open it. Otherwise build a fresh doc with:
-  //   1. Empty Hobbs/wait fields (those are aircraft-side; pilots fill at sign)
-  //   2. Auto-populated duty + flight time fields IF a confirmed duty
-  //      period exists for this tail+date in duty-periods-v2. This is
-  //      Jake's "the deleted manifest doesn't restore on recreate" fix:
-  //      we now fetch and fill at creation, not just on button click.
-  //   3. Pre-added legs from the picker's selection (filtered by the
-  //      pilot's crew assignment so multi-crew days don't auto-include
-  //      other crew's legs).
+  // one), behavior depends on the `forceNew` flag:
+  //   - forceNew=false (default): open the existing manifest
+  //   - forceNew=true: create a SECOND manifest with a "_2"/"_3"/...
+  //     suffix. Supports the multi-crew scenario where two crews fly
+  //     the same plane on the same day (e.g. crew swap mid-day).
   //
-  // If the auto-fill fetch fails (no index, permission, network), we
-  // log and proceed with empty fields. The crew can still use the
-  // in-manifest AUTO-FILL button as a fallback.
-  const createNewManifest = async ({ date, tail, selectedTripUids = [] }) => {
+  // The base ID format (`manifestId(date, tail)`) is preserved for the
+  // FIRST manifest so all existing data remains addressable with the
+  // current keys. Suffixed IDs come into existence only when forceNew
+  // is used.
+  //
+  // Auto-fill at creation pulls duty time + flight totals from
+  // duty-periods-v2 for tail+date. When multiple duty periods exist
+  // for the day (multi-crew), the picker uses the selected legs'
+  // PIC/SIC names to filter to THIS crew's records, so each manifest
+  // gets the right pilots' duty data.
+  const createNewManifest = async ({ date, tail, selectedTripUids = [], forceNew = false }) => {
     const m = await import('./firebase-manifests.js');
-    const id = m.manifestId(date, tail);
-    const existing = await m.fetchManifest(id);
-    if (existing) {
-      setSelectedId(id);
-      setShowNewModal(false);
-      return;
+    const baseId = m.manifestId(date, tail);
+
+    // Determine the actual ID to write to:
+    //   - forceNew=false + base exists: open existing, no create
+    //   - forceNew=false + base free:  create at base
+    //   - forceNew=true:                find next free suffix and use that
+    let id = baseId;
+    if (forceNew) {
+      // Suffix discovery: walk 2..99 against the in-memory manifests
+      // list (already subscribed). Fallback to a timestamp suffix in
+      // the extremely unlikely case 99 manifests exist for one date+tail.
+      const existingIds = new Set(manifests.map(x => x.id));
+      let suffix = 2;
+      while (suffix < 100 && existingIds.has(`${baseId}_${suffix}`)) suffix++;
+      id = suffix < 100 ? `${baseId}_${suffix}` : `${baseId}_${Date.now()}`;
+    } else {
+      const existing = await m.fetchManifest(baseId);
+      if (existing) {
+        setSelectedId(baseId);
+        setShowNewModal(false);
+        return;
+      }
     }
 
-    // --- AUTO-FILL FROM DUTY ---
-    // Look up confirmed duty period(s) for tail+date and format the
-    // fields. Uses the app-wide TZ override if set so the date
-    // matching aligns with the admin's chosen operational TZ.
+    // --- AUTO-FILL FROM DUTY (crew-aware) ---
+    // Look up confirmed duty period(s) for tail+date. When the picker
+    // pre-selected legs, extract the PIC/SIC names from those legs and
+    // prefer duty periods whose pilot matches. This is what makes
+    // multi-crew auto-fill correct: each manifest gets its own crew's
+    // duty record, not whichever was created first.
     let dutyFill = { dutyTimeIn: '', dutyTimeOut: '', dutyTimeTotal: '', timeTotal: '' };
     try {
       const fbMod = await import('./firebase-duty-v2.js');
@@ -6455,17 +6499,39 @@ function ManifestsScreen({ currentUser, allTrips }) {
       const appTz = appTzMod.getAppTimezone();
       const range = linkMod.manifestDateToMsRange(date, appTz);
       const raw = await fbMod.fetchPeriodsByTailInRange(tail, range.startMs, range.endMs);
-      const candidates = linkMod.filterToManifestDate(raw, date, appTz);
-      // Pick the best candidate to fill from:
-      //   1. Closed periods (have dutyOffAt + flightTimeMs) preferred
-      //   2. PIC over SIC (their times should match anyway)
-      //   3. First chronologically
+      const allForDate = linkMod.filterToManifestDate(raw, date, appTz);
+
+      // Pull PIC/SIC names from the selected legs (if any). Each trip
+      // in allTrips has info.pic and info.sic — name strings from
+      // JetInsight.
+      const crewNames = new Set();
+      if (Array.isArray(selectedTripUids) && selectedTripUids.length > 0 && Array.isArray(allTrips)) {
+        for (const t of allTrips) {
+          if (!selectedTripUids.includes(t.uid)) continue;
+          if (t.info?.pic) crewNames.add(t.info.pic);
+          if (t.info?.sic) crewNames.add(t.info.sic);
+        }
+      }
+
+      // Filter duty candidates to THIS crew's pilots when we know
+      // them. If no leg crew info, fall back to all candidates for
+      // the date.
+      let candidates = allForDate;
+      if (crewNames.size > 0 && allForDate.length > 0) {
+        const matched = allForDate.filter(p =>
+          Array.from(crewNames).some(n => nameMatchesPilot(n, p.pilotName))
+        );
+        // Only narrow if we found matches; if no period name matches
+        // any selected leg's crew, keep the original list rather than
+        // silently dropping to zero candidates.
+        if (matched.length > 0) candidates = matched;
+      }
+
+      // Pick best candidate: closed > open; PIC > SIC; first chronologically
       const closed = candidates.filter(p => p.dutyOffAt);
       const pool = closed.length > 0 ? closed : candidates;
       const best = pool.find(p => p.role === 'PIC') || pool[0];
       if (best) {
-        // Use the user's last-picked manifest-fill TZ choice (matches the
-        // in-manifest AUTO-FILL modal); default to local time.
         let fillTzMode = 'local';
         try { fillTzMode = localStorage.getItem('skyway-manifest-fill-tz') || 'local'; }
         catch { /* ignore */ }
@@ -6477,29 +6543,20 @@ function ManifestsScreen({ currentUser, allTrips }) {
         });
       }
     } catch (e) {
-      // Index not yet built, permission issue, etc. Manifest still
-      // gets created — just without auto-fill. Crew can use the
-      // in-manifest AUTO-FILL button after the fetch.
       console.warn('Manifest creation auto-fill skipped:', e?.message || e);
     }
 
     // --- PRE-ADD SELECTED LEGS ---
-    // If the picker selected specific trip UIDs (the new "your legs"
-    // checkbox flow), build manifest leg entries for them. The picker
-    // already filtered to current user's crew assignment by default;
-    // user could also add other-crew legs explicitly.
     let initialLegs = [];
     if (Array.isArray(selectedTripUids) && selectedTripUids.length > 0
         && Array.isArray(allTrips)) {
       const dataModule = await import('./firebase-data.js');
       const tripsToAdd = allTrips.filter(t => selectedTripUids.includes(t.uid));
-      // Fetch pax in parallel — same pattern as acceptScheduleChanges
       const paxByTripUid = {};
       await Promise.all(tripsToAdd.map(async (t) => {
         try { paxByTripUid[t.uid] = await dataModule.fetchPreloadedPax(t.uid); }
         catch { paxByTripUid[t.uid] = []; }
       }));
-      // Cap at 7 legs (manifest limit)
       const capped = tripsToAdd.slice(0, 7);
       initialLegs = capped.map(t =>
         m.buildLegFromTrip(t, paxByTripUid[t.uid] || [], 'auto-create')
@@ -6549,6 +6606,7 @@ function ManifestsScreen({ currentUser, allTrips }) {
             currentUser={currentUser}
             allTrips={allTrips}
             todayStr={todayStr}
+            existingManifests={manifests}
             onCreate={createNewManifest}
             onCancel={() => setShowNewModal(false)}
           />
@@ -6628,19 +6686,54 @@ function ManifestRow({ manifest, selected, onClick }) {
   const legCount = (manifest.legs || []).length;
   const hasPic = !!manifest.picSig;
   const hasSic = !!manifest.sicSig;
+
+  // Multi-crew differentiator. When the manifest ID has an "_N" suffix
+  // (e.g. "2026-06-02_N444AM_2"), this manifest is the 2nd, 3rd, etc.
+  // for that date+tail. Show the number as a small amber badge. The
+  // first manifest (no suffix) shows no badge — backward compatible
+  // with all existing data. We compute the base prefix from the
+  // manifest's own date+tail fields rather than parsing the ID, which
+  // works regardless of how `manifestId(date, tail)` is implemented
+  // (could be "{date}_{tail}", colon-separated, etc).
+  const basePrefix = manifest.date && manifest.tail
+    ? `${manifest.date}_${manifest.tail}`
+    : null;
+  const suffix = (basePrefix && manifest.id && manifest.id.startsWith(basePrefix + '_'))
+    ? (manifest.id.slice(basePrefix.length + 1).match(/^\d+$/) || [])[0]
+    : null;
+  const hasSuffix = Boolean(suffix);
+
+  // Crew label preference: first leg's PIC > createdBy > none. Used as
+  // a small secondary label so two manifests for the same date+tail
+  // can be told apart even before opening them.
+  const firstPic = (Array.isArray(manifest.legs) && manifest.legs[0]?.pic) || '';
+  const crewLabel = hasSuffix ? (firstPic || manifest.createdBy || '') : '';
+
   return (
     <button
       onClick={onClick}
       className={`block w-full text-left p-3 border-b border-slate-800 ${selected ? 'bg-slate-900/60' : 'hover:bg-slate-900/40'} transition-colors`}
     >
       <div className="flex items-center justify-between gap-2 mb-1">
-        <span className="text-sm text-slate-100" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
-          {manifest.tail}
+        <span className="text-sm text-slate-100 flex items-center gap-1.5 min-w-0"
+          style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
+          <span className="truncate">{manifest.tail}</span>
+          {hasSuffix && (
+            <span className="px-1 py-0.5 border border-amber-400/60 text-amber-300 text-[9px] tracking-widest leading-none shrink-0">
+              #{suffix}
+            </span>
+          )}
         </span>
         <span className={`text-[10px] tracking-widest shrink-0 ${isSubmitted ? 'text-emerald-300' : 'text-amber-300'}`} style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
           {isSubmitted ? 'SUBMITTED' : 'DRAFT'}
         </span>
       </div>
+      {crewLabel && (
+        <div className="text-[10px] text-amber-300/80 mb-1 truncate"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          CREW: {crewLabel}
+        </div>
+      )}
       <div className="flex items-center justify-between text-[11px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
         <span>{legCount} leg{legCount === 1 ? '' : 's'}</span>
         <span className="flex gap-1">
@@ -6662,9 +6755,24 @@ function ManifestRow({ manifest, selected, onClick }) {
 // name matches PIC or SIC are pre-checked as "yours" and grouped at
 // the top. Other crew's legs appear below, unchecked. The pilot
 // confirms what to include before clicking CREATE.
-function NewManifestPicker({ currentUser, allTrips, todayStr, onCreate, onCancel }) {
+function NewManifestPicker({ currentUser, allTrips, todayStr, existingManifests = [], onCreate, onCancel }) {
   const [date, setDate] = useState(todayStr);
   const [tail, setTail] = useState('');
+
+  // Detect whether a manifest already exists for this date+tail.
+  // The manifest ID format is "{date}_{tail}" for the FIRST manifest
+  // and "{date}_{tail}_2", "{date}_{tail}_3", etc. for subsequent ones
+  // (multi-crew days where two crews flew the same plane). We check
+  // any ID starting with the base prefix, so this banner appears
+  // whether there's 1 or 5 existing manifests for the slot.
+  const existingForSlot = useMemo(() => {
+    if (!date || !tail) return [];
+    const basePrefix = `${date}_${tail}`;
+    return existingManifests.filter(m =>
+      m.id === basePrefix || m.id.startsWith(`${basePrefix}_`)
+    );
+  }, [date, tail, existingManifests]);
+  const hasExisting = existingForSlot.length > 0;
 
   // Suggest tails from trips on the selected date
   const suggestedTails = useMemo(() => {
@@ -6830,25 +6938,109 @@ function NewManifestPicker({ currentUser, allTrips, todayStr, onCreate, onCancel
         </div>
       )}
 
+      {/* Existing-manifest banner — appears when one or more manifests
+          already exist for this date+tail. Multi-crew scenario: shows
+          all existing manifests and offers both OPEN EXISTING (just
+          jump to it) and CREATE 2ND (forceNew=true, makes a new doc
+          with the next available _N suffix). */}
+      {hasExisting && date && tail && (
+        <div className="border border-amber-500/40 bg-amber-500/5 p-3 space-y-2">
+          <div className="text-[10px] tracking-widest text-amber-300"
+            style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+            ⚠ {existingForSlot.length} MANIFEST{existingForSlot.length === 1 ? '' : 'S'} ALREADY EXIST FOR {tail} · {date}
+          </div>
+          <div className="space-y-1">
+            {existingForSlot.map(m => {
+              // Suffix label: ID after the base prefix gives "_2", "_3", etc.
+              const basePrefix = `${date}_${tail}`;
+              const suffix = m.id === basePrefix ? '1' : m.id.slice(basePrefix.length + 1);
+              // Try to derive a crew label from createdBy or the first leg's PIC
+              const firstPic = (Array.isArray(m.legs) && m.legs[0]?.pic) || '';
+              const crewLabel = firstPic || m.createdBy || '(crew unknown)';
+              return (
+                <div key={m.id}
+                  className="flex items-center justify-between text-[11px] gap-2"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  <span className="text-slate-300 truncate">
+                    <span className="text-amber-300">#{suffix}</span>
+                    <span className="text-slate-500 ml-1.5">·</span>
+                    <span className="ml-1.5">{crewLabel}</span>
+                    <span className="text-slate-600 ml-1.5">
+                      · {(m.legs || []).length} leg{(m.legs || []).length === 1 ? '' : 's'}
+                    </span>
+                    <span className={`ml-1.5 text-[9px] tracking-widest ${
+                      m.status === 'submitted' ? 'text-emerald-400' : 'text-slate-500'
+                    }`}>
+                      {m.status === 'submitted' ? 'SUBMITTED' : 'DRAFT'}
+                    </span>
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+          <div className="text-[10px] text-slate-400 pt-1"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            Today crew-swapped? Create a 2nd manifest for your half of the day.
+            Same plane but already your manifest? Just open the existing one.
+          </div>
+        </div>
+      )}
+
       <div className="flex gap-2 pt-2">
-        <button
-          onClick={() => onCreate({
-            date,
-            tail,
-            selectedTripUids: Array.from(selectedUids),
-          })}
-          disabled={!date || !tail}
-          className="flex-1 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-sm font-medium disabled:opacity-40"
-          style={{ fontFamily: 'DM Sans, sans-serif' }}
-        >
-          CREATE
-          {haveSchedule && selectedUids.size > 0 && (
-            <span className="ml-2 text-[10px] opacity-75"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              · {selectedUids.size} leg{selectedUids.size === 1 ? '' : 's'}
-            </span>
-          )}
-        </button>
+        {hasExisting ? (
+          <>
+            <button
+              onClick={() => onCreate({
+                date,
+                tail,
+                // No forceNew → opens the existing first-base manifest
+              })}
+              disabled={!date || !tail}
+              className="flex-1 py-2 border border-slate-600 text-slate-200 hover:bg-slate-800 text-sm font-medium disabled:opacity-40"
+              style={{ fontFamily: 'DM Sans, sans-serif' }}
+            >
+              OPEN EXISTING
+            </button>
+            <button
+              onClick={() => onCreate({
+                date,
+                tail,
+                selectedTripUids: Array.from(selectedUids),
+                forceNew: true,
+              })}
+              disabled={!date || !tail}
+              className="flex-1 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 text-sm font-medium disabled:opacity-40"
+              style={{ fontFamily: 'DM Sans, sans-serif' }}
+            >
+              CREATE #{existingForSlot.length + 1}
+              {haveSchedule && selectedUids.size > 0 && (
+                <span className="ml-2 text-[10px] opacity-75"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  · {selectedUids.size} leg{selectedUids.size === 1 ? '' : 's'}
+                </span>
+              )}
+            </button>
+          </>
+        ) : (
+          <button
+            onClick={() => onCreate({
+              date,
+              tail,
+              selectedTripUids: Array.from(selectedUids),
+            })}
+            disabled={!date || !tail}
+            className="flex-1 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-sm font-medium disabled:opacity-40"
+            style={{ fontFamily: 'DM Sans, sans-serif' }}
+          >
+            CREATE
+            {haveSchedule && selectedUids.size > 0 && (
+              <span className="ml-2 text-[10px] opacity-75"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                · {selectedUids.size} leg{selectedUids.size === 1 ? '' : 's'}
+              </span>
+            )}
+          </button>
+        )}
         <button onClick={onCancel} className="px-4 py-2 border border-slate-700 text-sm text-slate-300">
           CANCEL
         </button>
