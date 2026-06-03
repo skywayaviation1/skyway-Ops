@@ -6418,7 +6418,22 @@ function ManifestsScreen({ currentUser, allTrips }) {
 
   const selected = manifests.find(m => m.id === selectedId);
 
-  const createNewManifest = async ({ date, tail }) => {
+  // Create a new manifest for the given date+tail. If the manifest
+  // already exists (e.g. the user picked a date+tail that already has
+  // one), just open it. Otherwise build a fresh doc with:
+  //   1. Empty Hobbs/wait fields (those are aircraft-side; pilots fill at sign)
+  //   2. Auto-populated duty + flight time fields IF a confirmed duty
+  //      period exists for this tail+date in duty-periods-v2. This is
+  //      Jake's "the deleted manifest doesn't restore on recreate" fix:
+  //      we now fetch and fill at creation, not just on button click.
+  //   3. Pre-added legs from the picker's selection (filtered by the
+  //      pilot's crew assignment so multi-crew days don't auto-include
+  //      other crew's legs).
+  //
+  // If the auto-fill fetch fails (no index, permission, network), we
+  // log and proceed with empty fields. The crew can still use the
+  // in-manifest AUTO-FILL button as a fallback.
+  const createNewManifest = async ({ date, tail, selectedTripUids = [] }) => {
     const m = await import('./firebase-manifests.js');
     const id = m.manifestId(date, tail);
     const existing = await m.fetchManifest(id);
@@ -6427,11 +6442,79 @@ function ManifestsScreen({ currentUser, allTrips }) {
       setShowNewModal(false);
       return;
     }
+
+    // --- AUTO-FILL FROM DUTY ---
+    // Look up confirmed duty period(s) for tail+date and format the
+    // fields. Uses the app-wide TZ override if set so the date
+    // matching aligns with the admin's chosen operational TZ.
+    let dutyFill = { dutyTimeIn: '', dutyTimeOut: '', dutyTimeTotal: '', timeTotal: '' };
+    try {
+      const fbMod = await import('./firebase-duty-v2.js');
+      const linkMod = await import('./manifest-duty-link.js');
+      const appTzMod = await import('./app-timezone.js');
+      const appTz = appTzMod.getAppTimezone();
+      const range = linkMod.manifestDateToMsRange(date, appTz);
+      const raw = await fbMod.fetchPeriodsByTailInRange(tail, range.startMs, range.endMs);
+      const candidates = linkMod.filterToManifestDate(raw, date, appTz);
+      // Pick the best candidate to fill from:
+      //   1. Closed periods (have dutyOffAt + flightTimeMs) preferred
+      //   2. PIC over SIC (their times should match anyway)
+      //   3. First chronologically
+      const closed = candidates.filter(p => p.dutyOffAt);
+      const pool = closed.length > 0 ? closed : candidates;
+      const best = pool.find(p => p.role === 'PIC') || pool[0];
+      if (best) {
+        // Use the user's last-picked manifest-fill TZ choice (matches the
+        // in-manifest AUTO-FILL modal); default to local time.
+        let fillTzMode = 'local';
+        try { fillTzMode = localStorage.getItem('skyway-manifest-fill-tz') || 'local'; }
+        catch { /* ignore */ }
+        const tzArg = fillTzMode === 'utc' ? 'UTC' : null;
+        const styleArg = fillTzMode === 'utc' ? 'HHMMZ' : 'HHMM';
+        dutyFill = linkMod.formatManifestFields(best, {
+          timeZone: tzArg,
+          timeStyle: styleArg,
+        });
+      }
+    } catch (e) {
+      // Index not yet built, permission issue, etc. Manifest still
+      // gets created — just without auto-fill. Crew can use the
+      // in-manifest AUTO-FILL button after the fetch.
+      console.warn('Manifest creation auto-fill skipped:', e?.message || e);
+    }
+
+    // --- PRE-ADD SELECTED LEGS ---
+    // If the picker selected specific trip UIDs (the new "your legs"
+    // checkbox flow), build manifest leg entries for them. The picker
+    // already filtered to current user's crew assignment by default;
+    // user could also add other-crew legs explicitly.
+    let initialLegs = [];
+    if (Array.isArray(selectedTripUids) && selectedTripUids.length > 0
+        && Array.isArray(allTrips)) {
+      const dataModule = await import('./firebase-data.js');
+      const tripsToAdd = allTrips.filter(t => selectedTripUids.includes(t.uid));
+      // Fetch pax in parallel — same pattern as acceptScheduleChanges
+      const paxByTripUid = {};
+      await Promise.all(tripsToAdd.map(async (t) => {
+        try { paxByTripUid[t.uid] = await dataModule.fetchPreloadedPax(t.uid); }
+        catch { paxByTripUid[t.uid] = []; }
+      }));
+      // Cap at 7 legs (manifest limit)
+      const capped = tripsToAdd.slice(0, 7);
+      initialLegs = capped.map(t =>
+        m.buildLegFromTrip(t, paxByTripUid[t.uid] || [], 'auto-create')
+      );
+    }
+
     await m.saveManifest({
       id, date, tail,
       hobbsOut: '', hobbsIn: '', hobbsTotal: '', waitTime: '',
-      dutyTimeIn: '', dutyTimeOut: '', dutyTimeTotal: '',
-      legs: [],
+      dutyTimeIn: dutyFill.dutyTimeIn,
+      dutyTimeOut: dutyFill.dutyTimeOut,
+      dutyTimeTotal: dutyFill.dutyTimeTotal,
+      timeOut: '', timeIn: '',
+      timeTotal: dutyFill.timeTotal,
+      legs: initialLegs,
       picSig: null, sicSig: null,
       status: 'draft',
       createdBy: currentUser?.name || '',
@@ -6570,11 +6653,20 @@ function ManifestRow({ manifest, selected, onClick }) {
   );
 }
 
-// New-manifest picker: choose date + tail
+// New-manifest picker: choose date + tail, then see scheduled legs
+// grouped by crew assignment so the pilot can confirm exactly which
+// legs belong on their manifest before creating.
+//
+// Multi-crew handling: if two crews flew the same tail on the same
+// day, both crews' legs appear here. Legs where the current pilot's
+// name matches PIC or SIC are pre-checked as "yours" and grouped at
+// the top. Other crew's legs appear below, unchecked. The pilot
+// confirms what to include before clicking CREATE.
 function NewManifestPicker({ currentUser, allTrips, todayStr, onCreate, onCancel }) {
   const [date, setDate] = useState(todayStr);
   const [tail, setTail] = useState('');
-  // Suggest tails from today's trips
+
+  // Suggest tails from trips on the selected date
   const suggestedTails = useMemo(() => {
     if (!Array.isArray(allTrips)) return [];
     const tails = new Set();
@@ -6590,13 +6682,68 @@ function NewManifestPicker({ currentUser, allTrips, todayStr, onCreate, onCancel
     return Array.from(tails).sort();
   }, [allTrips, date]);
 
+  // Scheduled trips for the selected date+tail, separated into
+  // "yours" (current user is PIC or SIC) and "other crew" (someone
+  // else flew, or no crew assigned). isFlight filter excludes hotel/
+  // maintenance/training/hold entries that share the calendar.
+  const userName = currentUser?.jetinsightName || currentUser?.name || '';
+  const tripsForSelection = useMemo(() => {
+    if (!Array.isArray(allTrips) || !date || !tail) {
+      return { yours: [], others: [] };
+    }
+    const yours = [];
+    const others = [];
+    for (const t of allTrips) {
+      if (!t.info?.tail || !t.start) continue;
+      if (t.info.tail !== tail) continue;
+      if (!t.info.isFlight) continue;
+      const d = t.start instanceof Date ? t.start : new Date(t.start);
+      const yyyy = d.getFullYear();
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      if (`${yyyy}-${mm}-${dd}` !== date) continue;
+      const picMatch = nameMatchesPilot(t.info.pic || '', userName);
+      const sicMatch = nameMatchesPilot(t.info.sic || '', userName);
+      if (picMatch || sicMatch) yours.push(t);
+      else others.push(t);
+    }
+    // Sort each group chronologically by trip start
+    const byStart = (a, b) => {
+      const ta = a.start instanceof Date ? a.start.getTime() : new Date(a.start).getTime();
+      const tb = b.start instanceof Date ? b.start.getTime() : new Date(b.start).getTime();
+      return ta - tb;
+    };
+    return { yours: yours.sort(byStart), others: others.sort(byStart) };
+  }, [allTrips, date, tail, userName]);
+
+  // Selected trip UIDs. Defaults: all of "yours" selected, none of "other crew".
+  // The default re-applies whenever the date+tail change (so switching tail
+  // resets to "select yours only").
+  const [selectedUids, setSelectedUids] = useState(new Set());
+  useEffect(() => {
+    setSelectedUids(new Set(tripsForSelection.yours.map(t => t.uid)));
+  }, [tripsForSelection.yours.map(t => t.uid).join(',')]);
+
+  const toggle = (uid) => {
+    setSelectedUids(prev => {
+      const next = new Set(prev);
+      if (next.has(uid)) next.delete(uid); else next.add(uid);
+      return next;
+    });
+  };
+
+  const totalLegs = tripsForSelection.yours.length + tripsForSelection.others.length;
+  const haveSchedule = totalLegs > 0;
+
   return (
     <div className="p-4 border-b border-slate-800 bg-slate-900/40 space-y-3">
-      <div className="text-xs tracking-widest text-cyan-300" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+      <div className="text-xs tracking-widest text-cyan-300"
+        style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
         NEW MANIFEST
       </div>
       <label className="block">
-        <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>DATE</span>
+        <span className="text-[10px] tracking-widest text-slate-500"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>DATE</span>
         <input
           type="date"
           value={date}
@@ -6606,7 +6753,8 @@ function NewManifestPicker({ currentUser, allTrips, todayStr, onCreate, onCancel
         />
       </label>
       <label className="block">
-        <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>TAIL</span>
+        <span className="text-[10px] tracking-widest text-slate-500"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>TAIL</span>
         <input
           type="text"
           value={tail}
@@ -6618,7 +6766,8 @@ function NewManifestPicker({ currentUser, allTrips, todayStr, onCreate, onCancel
       </label>
       {suggestedTails.length > 0 && (
         <div>
-          <div className="text-[10px] tracking-widest text-slate-500 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          <div className="text-[10px] tracking-widest text-slate-500 mb-1"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
             FLYING THIS DAY
           </div>
           <div className="flex flex-wrap gap-1">
@@ -6635,18 +6784,138 @@ function NewManifestPicker({ currentUser, allTrips, todayStr, onCreate, onCancel
           </div>
         </div>
       )}
+
+      {/* Leg preview — only when date and tail are filled. Groups
+          "your legs" (current user is on the crew) vs "other crew".
+          Pre-checks "yours" so the common case is one click. */}
+      {date && tail && (
+        <div className="space-y-2 pt-1">
+          <div className="text-[10px] tracking-widest text-slate-500"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            SCHEDULED LEGS FOR {tail} · {date}
+          </div>
+          {!haveSchedule ? (
+            <div className="text-[11px] text-slate-500 italic px-2 py-3 border border-slate-800 bg-slate-950/30"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              No scheduled flying legs found for this date+tail.
+              You can still create the manifest and add legs manually.
+            </div>
+          ) : (
+            <>
+              {tripsForSelection.yours.length > 0 && (
+                <ManifestLegPreviewSection
+                  label="YOUR LEGS"
+                  trips={tripsForSelection.yours}
+                  selectedUids={selectedUids}
+                  onToggle={toggle}
+                  emphasis="yours"
+                />
+              )}
+              {tripsForSelection.others.length > 0 && (
+                <ManifestLegPreviewSection
+                  label={tripsForSelection.yours.length > 0
+                    ? "OTHER CREW'S LEGS"
+                    : "ALL LEGS FOR THIS TAIL"}
+                  trips={tripsForSelection.others}
+                  selectedUids={selectedUids}
+                  onToggle={toggle}
+                  emphasis="others"
+                  hint={tripsForSelection.yours.length > 0
+                    ? "Flown by a different crew. Check any you also need on this manifest."
+                    : "Your name doesn't appear as PIC or SIC on these legs. Confirm before including."}
+                />
+              )}
+            </>
+          )}
+        </div>
+      )}
+
       <div className="flex gap-2 pt-2">
         <button
-          onClick={() => onCreate({ date, tail })}
+          onClick={() => onCreate({
+            date,
+            tail,
+            selectedTripUids: Array.from(selectedUids),
+          })}
           disabled={!date || !tail}
           className="flex-1 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-sm font-medium disabled:opacity-40"
           style={{ fontFamily: 'DM Sans, sans-serif' }}
         >
           CREATE
+          {haveSchedule && selectedUids.size > 0 && (
+            <span className="ml-2 text-[10px] opacity-75"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              · {selectedUids.size} leg{selectedUids.size === 1 ? '' : 's'}
+            </span>
+          )}
         </button>
         <button onClick={onCancel} className="px-4 py-2 border border-slate-700 text-sm text-slate-300">
           CANCEL
         </button>
+      </div>
+    </div>
+  );
+}
+
+// One section of the new-manifest leg preview. Renders a checkbox per
+// trip plus the trip's route, time, and PIC/SIC crew labels.
+function ManifestLegPreviewSection({ label, trips, selectedUids, onToggle, emphasis, hint }) {
+  const borderClass = emphasis === 'yours'
+    ? 'border-cyan-500/40'
+    : 'border-slate-700';
+  const labelClass = emphasis === 'yours'
+    ? 'text-cyan-300'
+    : 'text-slate-400';
+
+  return (
+    <div className={`border ${borderClass}`}>
+      <div className={`px-2 py-1.5 text-[10px] tracking-widest ${labelClass} bg-slate-950/40 border-b border-slate-800`}
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        {label} · {trips.length}
+      </div>
+      {hint && (
+        <div className="px-2 py-1 text-[10px] text-slate-500 italic border-b border-slate-800"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {hint}
+        </div>
+      )}
+      <div className="divide-y divide-slate-800">
+        {trips.map(t => {
+          const isSelected = selectedUids.has(t.uid);
+          const startTime = (() => {
+            try {
+              const d = t.start instanceof Date ? t.start : new Date(t.start);
+              return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+            } catch { return ''; }
+          })();
+          return (
+            <label
+              key={t.uid}
+              className={`flex items-start gap-2 px-2 py-1.5 cursor-pointer hover:bg-slate-800/50 ${isSelected ? 'bg-cyan-500/5' : ''}`}
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              <input
+                type="checkbox"
+                checked={isSelected}
+                onChange={() => onToggle(t.uid)}
+                className="mt-0.5 w-3.5 h-3.5 accent-cyan-500"
+              />
+              <div className="min-w-0 flex-1">
+                <div className="text-[11px] text-slate-200 truncate">
+                  {t.info?.from || '?'} → {t.info?.to || '?'}
+                  {startTime && <span className="text-slate-500 ml-2">{startTime}</span>}
+                  {t.info?.legType === 'REPO' && (
+                    <span className="text-[9px] text-amber-400 ml-1.5 tracking-widest">REPO</span>
+                  )}
+                </div>
+                <div className="text-[10px] text-slate-500 truncate">
+                  {t.info?.pic ? `PIC ${t.info.pic}` : 'PIC —'}
+                  {t.info?.sic ? ` · SIC ${t.info.sic}` : ''}
+                </div>
+              </div>
+            </label>
+          );
+        })}
       </div>
     </div>
   );
@@ -6678,6 +6947,49 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
   const canEdit = isCrew || isOps || isAdmin;
 
   useEffect(() => { setDraft(manifest); }, [manifest.id, manifest.updatedAt]);
+
+  // Auto-fetch duty candidates on manifest open IF the duty fields are
+  // empty (i.e. nothing was auto-populated at creation time, which
+  // covers older manifests created before the auto-fill flow existed,
+  // and manifests where duty was logged AFTER manifest creation). This
+  // way the crew sees AUTO-FILL candidates without having to click
+  // FIND DUTY PERIODS. Manifests with values already filled keep
+  // their current behavior: candidates remain hidden until the user
+  // explicitly clicks FIND, to avoid distracting "did this match?"
+  // computation noise on already-completed manifests.
+  useEffect(() => {
+    if (!manifest?.tail || !manifest?.date) return;
+    const hasAnyDutyValue = manifest.dutyTimeIn || manifest.dutyTimeOut
+      || manifest.dutyTimeTotal || manifest.timeTotal;
+    if (hasAnyDutyValue) return;
+    if (dutyFetched || dutyFetching) return;
+
+    let cancelled = false;
+    (async () => {
+      setDutyFetching(true); setDutyFetchError(null);
+      try {
+        const fbMod = await import('./firebase-duty-v2.js');
+        const linkMod = await import('./manifest-duty-link.js');
+        const appTzMod = await import('./app-timezone.js');
+        const appTz = appTzMod.getAppTimezone();
+        const range = linkMod.manifestDateToMsRange(manifest.date, appTz);
+        const raw = await fbMod.fetchPeriodsByTailInRange(manifest.tail, range.startMs, range.endMs);
+        const filtered = linkMod.filterToManifestDate(raw, manifest.date, appTz);
+        if (!cancelled) {
+          setDutyCandidates(filtered);
+          setDutyFetched(true);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setDutyFetchError(e.message || 'Failed to fetch duty periods');
+        }
+      } finally {
+        if (!cancelled) setDutyFetching(false);
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [manifest.id, manifest.tail, manifest.date]);
 
   // Trips on the schedule that match this manifest's date+tail.
   // ONLY actual flying legs — exclude CREW HOTEL, MAINTENANCE, TRAINING, HOLD.
