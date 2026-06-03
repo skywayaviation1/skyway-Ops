@@ -15,15 +15,27 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   FileText, Loader2, Trash2, Download, Upload, AlertTriangle,
   ChevronDown, ChevronRight, ShieldCheck, Plane, Contact, Stethoscope,
-  Search, CheckCircle2, Clock, XCircle,
+  Search, CheckCircle2, Clock, XCircle, Briefcase, Archive,
 } from 'lucide-react';
 
+// The four "primary" pilot doc types — these are the structured ones with
+// AI-parsed fields (expiration date, document number, etc.) shown as a
+// fixed grid in the UI. Each crew member has ONE current of each.
 const DOC_TYPES = [
   { id: 'certificate',     label: 'Airman Certificate', icon: ShieldCheck,  hasExpiration: false },
   { id: 'medical',         label: 'Medical',            icon: Stethoscope,  hasExpiration: true  },
   { id: 'passport',        label: 'Passport',           icon: Plane,        hasExpiration: true  },
   { id: 'drivers_license', label: "Driver's License",   icon: Contact,      hasExpiration: true  },
 ];
+
+// Free-form "employment" docs: W-4, I-9, contract, direct deposit form,
+// company acknowledgements, training records, anything else related to
+// employment at Skyway. Unlike DOC_TYPES, these are NOT a fixed list —
+// crew uploads as many as they want, each with their own name and
+// optional notes. Stored in the same `pilot-docs` collection with
+// docType='employment', so existing storage rules + admin visibility
+// + bulk download all work uniformly.
+const EMPLOYMENT_DOC_TYPE_ID = 'employment';
 
 function typeMeta(id) {
   return DOC_TYPES.find((d) => d.id === id) || { id, label: id, icon: FileText, hasExpiration: false };
@@ -347,6 +359,275 @@ export function PilotDocsTab({ currentUser }) {
       <p className="text-[10px] text-slate-600 mt-2">
         FAA airman certificates don't expire. Medicals, passports, and licenses show a countdown — amber within 60 days, red once expired.
       </p>
+
+      {/* EMPLOYMENT DOCS — free-form section for W-4, I-9, contract,
+          direct deposit form, training records, anything else related
+          to employment at Skyway. Each is named by the crew member;
+          no AI parsing, no fixed list.
+          Reuses the same `pilot-docs` Firestore collection + storage
+          path (just docType='employment'), so admin visibility and
+          storage rules already cover it. */}
+      <EmploymentDocsSection
+        currentUser={currentUser}
+        docs={docs.filter(d => d.docType === EMPLOYMENT_DOC_TYPE_ID)}
+        onError={setErr}
+      />
+    </div>
+  );
+}
+
+// Renders the free-form employment-docs section under the standard
+// pilot-docs grid. Self-contained: handles its own upload form state,
+// reads its doc list from the parent's already-subscribed `docs` array
+// (filtered to docType='employment'), shares the parent's error state.
+function EmploymentDocsSection({ currentUser, docs, onError }) {
+  const [pendingFile, setPendingFile] = useState(null);
+  const [pendingName, setPendingName] = useState('');
+  const [pendingNotes, setPendingNotes] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const [uploadStage, setUploadStage] = useState('');
+  const fileInputRef = useRef(null);
+
+  const uid = currentUser?.uid || currentUser?.id;
+
+  const onPick = (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    setPendingFile(f);
+    const dot = f.name.lastIndexOf('.');
+    setPendingName(dot > 0 ? f.name.slice(0, dot) : f.name);
+    setPendingNotes('');
+    onError('');
+  };
+
+  const reset = () => {
+    setPendingFile(null);
+    setPendingName('');
+    setPendingNotes('');
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const doUpload = async () => {
+    if (!pendingFile || !pendingName.trim() || !uid) return;
+    setUploading(true);
+    onError('');
+    try {
+      const isPdf = pendingFile.type === 'application/pdf'
+        || (pendingFile.name || '').toLowerCase().endsWith('.pdf');
+      setUploadStage('Preparing...');
+      const prepared = isPdf ? pendingFile : await compressIfImage(pendingFile);
+
+      const m = await import('./firebase-pilotdocs.js');
+      const storage = await import('./firebase-storage.js');
+      const id = m.newPilotDocId();
+
+      setUploadStage('Uploading...');
+      const up = await storage.uploadPilotDoc(prepared, uid, EMPLOYMENT_DOC_TYPE_ID);
+
+      // Save metadata. We reuse the existing pilot-doc schema but
+      // skip the AI parse step — employment docs don't have
+      // structured fields like expiration or document number that
+      // would benefit from extraction. The user-entered name goes in
+      // `holderName` (displayed prominently) and notes in `notes`.
+      setUploadStage('Saving...');
+      await m.savePilotDoc({
+        id, uid,
+        ownerName: currentUser?.name || currentUser?.displayName || 'Unknown',
+        ownerEmail: currentUser?.email || '',
+        docType: EMPLOYMENT_DOC_TYPE_ID,
+        fileUrl: up.url, filePath: up.path, fileContentType: up.contentType,
+        fileName: up.name, fileKind: up.kind, fileSizeBytes: up.sizeBytes,
+        // Re-purpose holderName as the user-entered display name.
+        // Cleaner than adding a new field — existing admin views
+        // already show holderName.
+        holderName: pendingName.trim(),
+        // Free-form description goes in notes.
+        notes: pendingNotes.trim(),
+        uploadedBy: uid,
+      });
+
+      reset();
+      setUploadStage('');
+    } catch (e) {
+      const msg = e?.message || 'Upload failed';
+      if (msg.includes('storage/unauthorized') || msg.includes('permission')) {
+        onError(
+          'Permission denied. Storage rules need updating — ask Jake to '
+          + 'publish the latest storage.rules.'
+        );
+      } else {
+        onError(msg);
+      }
+      setUploadStage('');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const doDelete = async (d) => {
+    if (!window.confirm(`Delete "${d.holderName || d.fileName}"? This cannot be undone.`)) return;
+    try {
+      const m = await import('./firebase-pilotdocs.js');
+      const storage = await import('./firebase-storage.js');
+      if (d.filePath) await storage.deletePilotDoc(d.filePath);
+      await m.deletePilotDocRecord(d.id);
+    } catch (e) {
+      window.alert('Could not delete — try again.');
+    }
+  };
+
+  const fmtSize = (b) => {
+    if (!b) return '';
+    if (b < 1024) return `${b} B`;
+    if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+    return `${(b / 1024 / 1024).toFixed(1)} MB`;
+  };
+  const fmtDate = (ms) => {
+    if (!ms) return '';
+    try { return new Date(ms).toLocaleDateString(); }
+    catch { return ''; }
+  };
+
+  // Sort newest first
+  const sorted = [...docs].sort((a, b) => (b.uploadedAt || 0) - (a.uploadedAt || 0));
+
+  return (
+    <div className="mt-6 border-t border-slate-800 pt-4 space-y-3">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div>
+          <h3 className="text-lg tracking-wider text-slate-100 flex items-center gap-2"
+            style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
+            <Briefcase className="w-4 h-4 text-cyan-300" />
+            EMPLOYMENT DOCUMENTS
+          </h3>
+          <p className="text-xs text-slate-500 mt-1">
+            W-4, I-9, contract, training records, signed acknowledgements —
+            anything else related to your employment at Skyway.
+          </p>
+        </div>
+        {!pendingFile && (
+          <label className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 cursor-pointer text-[11px] tracking-widest"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            <Upload className="w-3 h-3" /> + UPLOAD DOC
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*,application/pdf,.doc,.docx,.xls,.xlsx,.txt"
+              className="hidden"
+              onChange={onPick}
+              disabled={uploading}
+            />
+          </label>
+        )}
+      </div>
+
+      {/* Staging form — name + notes before commit */}
+      {pendingFile && (
+        <div className="border border-cyan-500/40 bg-cyan-500/5 p-3 space-y-2">
+          <div className="text-[10px] tracking-widest text-cyan-300"
+            style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+            NEW EMPLOYMENT DOCUMENT
+          </div>
+          <div className="text-[11px] text-slate-400 truncate"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {pendingFile.name} · {fmtSize(pendingFile.size)}
+          </div>
+          <label className="block">
+            <span className="text-[10px] tracking-widest text-slate-500"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              DOCUMENT NAME *
+            </span>
+            <input
+              type="text"
+              value={pendingName}
+              onChange={(e) => setPendingName(e.target.value)}
+              placeholder='e.g. "W-4 (2026)" or "Employment Agreement"'
+              disabled={uploading}
+              className="mt-1 w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            />
+          </label>
+          <label className="block">
+            <span className="text-[10px] tracking-widest text-slate-500"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              NOTES (OPTIONAL)
+            </span>
+            <textarea
+              value={pendingNotes}
+              onChange={(e) => setPendingNotes(e.target.value)}
+              placeholder='Any notes about this document...'
+              rows={2}
+              disabled={uploading}
+              className="mt-1 w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-cyan-400"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            />
+          </label>
+          <div className="flex gap-2 pt-1">
+            <button
+              onClick={doUpload}
+              disabled={uploading || !pendingName.trim()}
+              className="flex-1 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-sm font-medium disabled:opacity-40"
+              style={{ fontFamily: 'DM Sans, sans-serif' }}
+            >
+              {uploading ? (uploadStage || 'UPLOADING...') : 'UPLOAD'}
+            </button>
+            <button
+              onClick={reset}
+              disabled={uploading}
+              className="px-4 py-2 border border-slate-700 text-slate-300 text-sm"
+              style={{ fontFamily: 'DM Sans, sans-serif' }}
+            >
+              CANCEL
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Existing employment docs list */}
+      {sorted.length === 0 ? (
+        <div className="text-xs text-slate-500 italic py-4 border border-dashed border-slate-800 px-3 text-center"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          No employment documents yet. Tap UPLOAD DOC to add your first.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {sorted.map((d) => (
+            <div key={d.id}
+              className="border border-slate-700 bg-slate-900/40 p-3 flex items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <a href={d.fileUrl} target="_blank" rel="noreferrer"
+                  className="text-sm text-cyan-300 hover:text-cyan-200 truncate block"
+                  style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
+                  {d.holderName || d.fileName || 'Untitled'}
+                </a>
+                {d.notes && (
+                  <div className="text-[11px] text-slate-400 mt-0.5">
+                    {d.notes}
+                  </div>
+                )}
+                <div className="text-[10px] text-slate-500 mt-0.5"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  {fmtDate(d.uploadedAt)}
+                  {d.fileSizeBytes ? ` · ${fmtSize(d.fileSizeBytes)}` : ''}
+                  {d.fileContentType ? ` · ${d.fileContentType}` : ''}
+                </div>
+              </div>
+              <div className="flex gap-1 shrink-0">
+                <a href={d.fileUrl} target="_blank" rel="noreferrer"
+                  className="inline-flex items-center gap-1 px-2 py-1 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 text-[10px] tracking-widest"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  <Download className="w-3 h-3" /> OPEN
+                </a>
+                <button onClick={() => doDelete(d)}
+                  className="inline-flex items-center gap-1 px-2 py-1 border border-red-700/40 text-red-400 hover:bg-red-500/10 text-[10px] tracking-widest"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  <Trash2 className="w-3 h-3" /> DELETE
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -469,39 +750,91 @@ export function AllCrewDocs({ currentUser, users = [] }) {
                 </button>
 
                 {isOpen && (
-                  <div className="border-t border-slate-800 p-3 grid grid-cols-1 md:grid-cols-2 gap-3">
-                    {DOC_TYPES.map((t) => {
-                      const d = latest[t.id];
-                      const Icon = t.icon;
-                      return (
-                        <div key={t.id} className="border border-slate-800 p-3">
-                          <div className="flex items-center justify-between mb-2">
-                            <div className="flex items-center gap-2">
-                              <Icon className="w-3.5 h-3.5 text-cyan-300" />
-                              <span className="text-[11px] tracking-wider text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>{t.label.toUpperCase()}</span>
-                            </div>
-                            {d && <ExpBadge d={d} />}
-                          </div>
-                          {d ? (
-                            <div className="space-y-1.5">
-                              <div className="text-[11px] text-slate-400 space-y-0.5">
-                                {d.documentNumber && <div>No: {d.documentNumber}</div>}
-                                {d.certType && <div>Level: {d.certType}</div>}
-                                {d.medicalClass && <div>Class: {d.medicalClass}</div>}
-                                {d.expiration && <div>Expires: {d.expiration}</div>}
+                  <div className="border-t border-slate-800 p-3 space-y-3">
+                    {/* Bulk-download button — ZIPs all of this crew
+                        member's files in the browser. Loads JSZip from
+                        CDN on demand. */}
+                    <BulkDownloadButton
+                      crewUid={g.uid}
+                      crewName={g.name}
+                      docs={g.docs}
+                    />
+                    {/* Primary docs grid (cert/medical/passport/license) */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {DOC_TYPES.map((t) => {
+                        const d = latest[t.id];
+                        const Icon = t.icon;
+                        return (
+                          <div key={t.id} className="border border-slate-800 p-3">
+                            <div className="flex items-center justify-between mb-2">
+                              <div className="flex items-center gap-2">
+                                <Icon className="w-3.5 h-3.5 text-cyan-300" />
+                                <span className="text-[11px] tracking-wider text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>{t.label.toUpperCase()}</span>
                               </div>
-                              <a href={d.fileUrl} target="_blank" rel="noreferrer"
-                                className="inline-flex items-center gap-1 px-2 py-1 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 text-[10px] tracking-wider"
-                                style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                                <Download className="w-3 h-3" /> DOWNLOAD
-                              </a>
+                              {d && <ExpBadge d={d} />}
                             </div>
-                          ) : (
-                            <div className="text-[11px] text-slate-600 italic">Not uploaded</div>
-                          )}
+                            {d ? (
+                              <div className="space-y-1.5">
+                                <div className="text-[11px] text-slate-400 space-y-0.5">
+                                  {d.documentNumber && <div>No: {d.documentNumber}</div>}
+                                  {d.certType && <div>Level: {d.certType}</div>}
+                                  {d.medicalClass && <div>Class: {d.medicalClass}</div>}
+                                  {d.expiration && <div>Expires: {d.expiration}</div>}
+                                </div>
+                                <a href={d.fileUrl} target="_blank" rel="noreferrer"
+                                  className="inline-flex items-center gap-1 px-2 py-1 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 text-[10px] tracking-wider"
+                                  style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                                  <Download className="w-3 h-3" /> DOWNLOAD
+                                </a>
+                              </div>
+                            ) : (
+                              <div className="text-[11px] text-slate-600 italic">Not uploaded</div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {/* Employment docs (free-form) — only show if any exist */}
+                    {g.docs.some(d => d.docType === EMPLOYMENT_DOC_TYPE_ID) && (
+                      <div className="border border-slate-800 p-3 space-y-2">
+                        <div className="flex items-center gap-2 mb-1">
+                          <Briefcase className="w-3.5 h-3.5 text-cyan-300" />
+                          <span className="text-[11px] tracking-wider text-slate-200"
+                            style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+                            EMPLOYMENT DOCUMENTS · {g.docs.filter(d => d.docType === EMPLOYMENT_DOC_TYPE_ID).length}
+                          </span>
                         </div>
-                      );
-                    })}
+                        <div className="space-y-1.5">
+                          {g.docs
+                            .filter(d => d.docType === EMPLOYMENT_DOC_TYPE_ID)
+                            .sort((a, b) => (b.uploadedAt || 0) - (a.uploadedAt || 0))
+                            .map(d => (
+                              <div key={d.id} className="flex items-start justify-between gap-2 border-b border-slate-800/50 pb-1.5 last:border-0">
+                                <div className="min-w-0 flex-1">
+                                  <a href={d.fileUrl} target="_blank" rel="noreferrer"
+                                    className="text-[12px] text-cyan-300 hover:text-cyan-200 truncate block"
+                                    style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                                    {d.holderName || d.fileName || 'Untitled'}
+                                  </a>
+                                  {d.notes && (
+                                    <div className="text-[10px] text-slate-500 truncate">{d.notes}</div>
+                                  )}
+                                  <div className="text-[9px] text-slate-600"
+                                    style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                                    {d.uploadedAt ? new Date(d.uploadedAt).toLocaleDateString() : ''}
+                                  </div>
+                                </div>
+                                <a href={d.fileUrl} target="_blank" rel="noreferrer"
+                                  className="inline-flex items-center gap-1 px-2 py-0.5 border border-slate-700 text-slate-300 hover:border-cyan-400 hover:text-cyan-300 text-[9px] tracking-widest shrink-0"
+                                  style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                                  OPEN
+                                </a>
+                              </div>
+                            ))
+                          }
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -509,6 +842,166 @@ export function AllCrewDocs({ currentUser, users = [] }) {
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+// ============================================================
+// BULK DOWNLOAD BUTTON — ZIPs all of one crew member's docs
+// ============================================================
+//
+// Used inside AllCrewDocs (admin/ops view). Given an expanded crew
+// member, downloads every one of their pilot-docs files (across all
+// doc types — certificate, medical, passport, license, employment),
+// bundles them in a ZIP with one folder per category, and triggers
+// a single browser download.
+//
+// IMPLEMENTATION NOTES:
+//   - JSZip is loaded from a CDN on first click (no npm dep to add).
+//     Cached on window.JSZip for subsequent invocations.
+//   - Reads file URLs from the docs array we already have from
+//     Firestore — no extra Firestore reads.
+//   - Fetches each file's blob via the stored fileUrl. These URLs
+//     are signed download tokens that work as long as the user has
+//     read access to the underlying storage object. For admins,
+//     Firestore rules already grant read access to all pilot-docs,
+//     so this works.
+//
+// SECURITY NOTE: If you ever revoke an admin's access, any pre-loaded
+// fileUrls in their browser still work until the download tokens
+// expire. This is a Firebase Storage signed-URL behavior, not
+// something this code controls.
+
+function BulkDownloadButton({ crewUid, crewName, docs }) {
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState('');
+  const [err, setErr] = useState('');
+
+  // Skip if no docs to download
+  if (!docs || docs.length === 0) return null;
+
+  // Load JSZip from CDN on demand. Caches on window so repeated
+  // calls don't re-fetch.
+  const loadJSZip = () => {
+    if (typeof window === 'undefined') return Promise.reject(new Error('Not in browser'));
+    if (window.JSZip) return Promise.resolve(window.JSZip);
+    return new Promise((resolve, reject) => {
+      const existing = document.querySelector('script[data-jszip-loader]');
+      if (existing) {
+        existing.addEventListener('load', () => resolve(window.JSZip));
+        existing.addEventListener('error', () => reject(new Error('JSZip script failed')));
+        return;
+      }
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
+      s.setAttribute('data-jszip-loader', '1');
+      s.onload = () => {
+        if (window.JSZip) resolve(window.JSZip);
+        else reject(new Error('JSZip loaded but window.JSZip is undefined'));
+      };
+      s.onerror = () => reject(new Error('Failed to load JSZip from CDN'));
+      document.head.appendChild(s);
+    });
+  };
+
+  const handleDownload = async () => {
+    setBusy(true);
+    setErr('');
+    setProgress('Loading ZIP library...');
+    try {
+      const JSZip = await loadJSZip();
+      const zip = new JSZip();
+      const safeName = String(crewName || crewUid || 'crew')
+        .replace(/[^a-zA-Z0-9 ._-]/g, '_').trim() || 'crew';
+      const root = zip.folder(safeName);
+
+      // Iterate docs, group by docType for folder structure
+      for (let i = 0; i < docs.length; i++) {
+        const d = docs[i];
+        const dispName = d.holderName || d.fileName || `doc-${i + 1}`;
+        setProgress(`Downloading ${i + 1} / ${docs.length}: ${dispName}...`);
+        if (!d.fileUrl) {
+          // Skip metadata-only docs (no storage object). Add a
+          // small marker so admin sees what happened.
+          const folder = root.folder(d.docType || 'misc');
+          folder.file(`MISSING_${dispName}.txt`, 'No file URL — skipped.');
+          continue;
+        }
+        try {
+          const resp = await fetch(d.fileUrl);
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          const blob = await resp.blob();
+          // Build a friendly filename — combine the user's display
+          // name with the original file extension if present.
+          const extMatch = (d.fileName || '').match(/\.[a-zA-Z0-9]+$/);
+          const ext = extMatch ? extMatch[0] : '';
+          const baseName = dispName.replace(/[^a-zA-Z0-9 ._-]/g, '_').slice(0, 80);
+          const finalName = baseName.endsWith(ext) ? baseName : `${baseName}${ext}`;
+          const folder = root.folder(d.docType || 'misc');
+          folder.file(finalName, blob);
+        } catch (fetchErr) {
+          console.warn(`[bulk-download] skipped ${dispName}:`, fetchErr?.message);
+          const folder = root.folder(d.docType || 'misc');
+          folder.file(
+            `ERROR_${dispName}.txt`,
+            `Failed to download: ${fetchErr?.message || 'unknown error'}`
+          );
+        }
+      }
+
+      setProgress('Building ZIP file...');
+      const blob = await zip.generateAsync({ type: 'blob' }, (m) => {
+        setProgress(`Building ZIP: ${Math.round(m.percent)}%`);
+      });
+
+      // Trigger download
+      setProgress('Triggering download...');
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${safeName} - skyway docs.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setProgress('');
+    } catch (e) {
+      setErr(e?.message || 'Failed to build ZIP');
+      setProgress('');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex items-center justify-between gap-3 border border-slate-700 bg-slate-900/40 px-3 py-2">
+      <div className="min-w-0">
+        <div className="text-[11px] tracking-widest text-slate-300"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          <Archive className="w-3 h-3 inline mr-1" />
+          DOWNLOAD ALL · {docs.length} FILE{docs.length === 1 ? '' : 'S'}
+        </div>
+        {busy && progress && (
+          <div className="text-[10px] text-cyan-300 mt-0.5"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {progress}
+          </div>
+        )}
+        {err && (
+          <div className="text-[10px] text-red-300 mt-0.5"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {err}
+          </div>
+        )}
+      </div>
+      <button
+        onClick={handleDownload}
+        disabled={busy}
+        className="px-3 py-1.5 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-[11px] tracking-widest font-medium disabled:opacity-40 shrink-0"
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}
+      >
+        {busy ? 'WORKING...' : 'DOWNLOAD ZIP'}
+      </button>
     </div>
   );
 }
