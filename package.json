@@ -9,11 +9,10 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@zxing/browser": "0.1.5",
-    "@zxing/library": "0.21.3",
     "firebase": "10.13.2",
     "firebase-admin": "12.5.0",
     "jspdf": "2.5.2",
+    "jszip": "3.10.1",
     "lucide-react": "0.383.0",
     "pdfjs-dist": "4.7.76",
     "pdfkit": "0.15.0",
