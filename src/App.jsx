@@ -5308,10 +5308,131 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
 }
 
 // ============================================================
+// CHARTER-LEG GROUPING HELPERS
+// ============================================================
+// Used by the SHARE WITH BROKER dialog to detect multi-leg
+// charters (same-day round trip, multi-stop charter) and route
+// all share-link operations through ONE canonical leg's UID, so
+// a broker sees a single URL for the whole charter rather than
+// one URL per leg.
+
+/**
+ * All revenue legs that belong to the same charter as `anchor`,
+ * sorted chronologically (earliest first).
+ *
+ * Heuristic: same tail + same broker + ±24h window + revenue (not
+ * REPO/FERRY/HOLD/MX/TRAINING).
+ *
+ * Why no pax-overlap check: pax data requires async fetches per
+ * leg which we can't do synchronously to determine the URL. The
+ * tail+broker+24h heuristic is sufficient for Skyway's wholesale
+ * model — same broker booking same plane same day with different
+ * pax for two unrelated charters would be unusual. If it happens,
+ * ops can rotate the link or share manually.
+ *
+ * Always includes the anchor in the result (even if it doesn't
+ * match its own filters, it's still the leg the user clicked on).
+ */
+function findCharterLegs(anchor, allTrips) {
+  if (!anchor || !anchor.info) return [];
+  const tail = String(anchor.info.tail || '').toUpperCase();
+  const anchorBroker = String(anchor.info.broker || '').trim().toLowerCase();
+  if (!tail) return [anchor];
+
+  const anchorStartMs = anchor.start ? new Date(anchor.start).getTime() : Date.now();
+  const WINDOW = 24 * 3600 * 1000;
+
+  const isRevenue = (t) => {
+    if (!t || !t.info) return false;
+    if (t.info.isFlight === false) return false;
+    const rawCat = String(t.info.category || '').toUpperCase();
+    if (['HOLD', 'MX', 'TRAINING'].includes(rawCat)) return false;
+    const legType = String(t.info.legType || '').toUpperCase();
+    if (legType === 'REPO' || legType === 'FERRY') return false;
+    return true;
+  };
+
+  const candidates = (allTrips || [])
+    .filter((t) => t && t.info && String(t.info.tail || '').toUpperCase() === tail)
+    .filter(isRevenue)
+    .filter((t) => {
+      // If anchor has no broker, fall back to ONLY the anchor (no
+      // charter detected — single revenue leg, single link).
+      if (!anchorBroker) return t.uid === anchor.uid;
+      return String(t.info.broker || '').trim().toLowerCase() === anchorBroker;
+    })
+    .filter((t) => {
+      if (!t.start) return false;
+      const ms = new Date(t.start).getTime();
+      return Number.isFinite(ms) && Math.abs(ms - anchorStartMs) <= WINDOW;
+    });
+
+  // Ensure anchor is included even if it doesn't pass the broker
+  // filter (e.g. anchor is a revenue leg with no broker set yet but
+  // related legs DO have one — we still want the link UI to work).
+  const byUid = new Map();
+  for (const t of candidates) byUid.set(t.uid, t);
+  if (!byUid.has(anchor.uid)) byUid.set(anchor.uid, anchor);
+
+  return Array.from(byUid.values()).sort((a, b) =>
+    new Date(a.start || 0).getTime() - new Date(b.start || 0).getTime()
+  );
+}
+
+/**
+ * The "canonical" leg of a charter — the one whose UID all share
+ * links should be keyed to. Defined as the first revenue leg
+ * chronologically that satisfies the charter heuristic.
+ *
+ * Falls back to the anchor itself if no other legs are found (e.g.
+ * single-leg charter, anchor with no broker, etc).
+ */
+function findCanonicalCharterLeg(anchor, allTrips) {
+  const legs = findCharterLegs(anchor, allTrips);
+  if (legs.length === 0) return anchor;
+  return legs[0];
+}
+
+// ============================================================
 // SHARE TRIP WITH BROKER — modal that generates a public token
 // for a trip and optionally emails it. Backed by /api/trip-share.
 // ============================================================
 function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, onClose }) {
+  // Canonical-leg detection for multi-leg charters.
+  //
+  // Problem this solves: ops clicks SHARE on each leg of a same-day
+  // round trip (e.g. KAPF → KMIA outbound + KMIA → KAPF return,
+  // same broker, same passengers). Without canonicalization, each
+  // click generates a DIFFERENT URL keyed to that leg's UID, so the
+  // broker gets TWO links for what's logically ONE charter. Confusing,
+  // and the broker has to bookmark/forward both.
+  //
+  // With canonicalization, we identify the "primary" leg of the charter
+  // (first revenue leg chronologically with same broker + same tail
+  // within ±24h) and route ALL link operations through THAT leg's UID.
+  // Clicking SHARE on Leg 1 or Leg 2 produces the same URL. The
+  // broker page already handles multi-leg display (buildPublicTripData
+  // gathers sibling legs).
+  //
+  // Heuristic: same tail + same broker + revenue + ±24h. Doesn't
+  // require pax-overlap (which would require an async fetch per leg
+  // before we even know which UID to use). For Skyway's wholesale
+  // broker model, same broker + same plane + same day = same charter
+  // is a safe assumption. If two truly unrelated charters share these
+  // attributes, ops can still rotate the link or share each one
+  // separately by deferring to manual workflow.
+  const canonicalTrip = useMemo(() => {
+    return findCanonicalCharterLeg(trip, allTrips);
+  }, [trip, allTrips]);
+  // Charter sibling count for the banner — derived from the same
+  // heuristic so it matches the canonical detection.
+  const charterLegs = useMemo(() => {
+    return findCharterLegs(trip, allTrips);
+  }, [trip, allTrips]);
+  const isMultiLeg = charterLegs.length > 1;
+  // Did ops open SHARE from a different leg than the canonical?
+  const openedFromNonCanonical = canonicalTrip.uid !== trip.uid;
+
   const [url, setUrl] = useState('');
   const [tokenIssuedAt, setTokenIssuedAt] = useState(null);
   const [revoked, setRevoked] = useState(false);
@@ -5349,27 +5470,16 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
   // doc itself doesn't store legs — each leg is its own doc — so we have to
   // gather sibling legs from allTrips by matching tail + same calendar day.
   // This is the data the BROKER will see; it's a sanitized snapshot.
-  // Build the snapshot of legs the broker will see. Rules:
-  //   - Anchor leg = the trip the share dialog was opened from (always shown)
-  //   - Always include the immediately-preceding REPO leg (positioning flight)
-  //   - Include any other leg in the ±24h window that shares broker email
-  //     AND at least one matching passenger with the anchor (multi-leg
-  //     charter with same broker + same pax)
-  //   - Each leg gets a `showPax` flag: true ONLY when the leg's broker
-  //     matches the anchor's broker AND its pax overlap. False for repo
-  //     legs, false for other brokers' legs (privacy: don't leak another
-  //     broker's pax to this broker).
   //
-  // Because trip-state docs (where preloadedPax lives) aren't in the
-  // in-memory `allTrips` list, we have to fetch them. This is async and
-  // happens at share-time, not at dialog mount — the parent has already
-  // populated `allTrips` so the candidate set is local; only the pax data
-  // requires a Firestore round-trip per candidate (typically 1-3 candidates).
+  // ANCHORS on `canonicalTrip` so multi-leg charters present the same
+  // view regardless of which leg ops clicked SHARE from. The canonical
+  // is the first revenue leg of the charter (see findCanonicalCharterLeg).
   async function buildPublicTripData() {
-    const tail = (trip.info?.tail || '').toUpperCase();
+    const anchor = canonicalTrip;
+    const tail = (anchor.info?.tail || '').toUpperCase();
     if (!tail) return null;
 
-    const anchorStartMs = trip.start ? new Date(trip.start).getTime() : Date.now();
+    const anchorStartMs = anchor.start ? new Date(anchor.start).getTime() : Date.now();
     const WINDOW = 24 * 3600 * 1000;
 
     // Candidate set: same tail, within ±24h, sorted chronologically.
@@ -5434,10 +5544,13 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
       );
     }
 
-    // Anchor identifiers.
-    const anchorIdx = ordered.findIndex((t) => t.uid === trip.uid);
-    const anchorBroker = String(trip.info?.broker || '').trim().toLowerCase();
-    const anchorPax = ((stateByUid[trip.uid] || {}).preloadedPax || []).map(paxKey).filter(Boolean);
+    // Anchor identifiers — derived from `anchor` (the canonical leg),
+    // not `trip` (the leg ops clicked SHARE from). For a single-leg
+    // charter these are the same; for multi-leg they differ when ops
+    // opens SHARE from a non-canonical leg.
+    const anchorIdx = ordered.findIndex((t) => t.uid === anchor.uid);
+    const anchorBroker = String(anchor.info?.broker || '').trim().toLowerCase();
+    const anchorPax = ((stateByUid[anchor.uid] || {}).preloadedPax || []).map(paxKey).filter(Boolean);
     const anchorPaxSet = new Set(anchorPax);
 
     // Decide for each candidate whether to INCLUDE it, and whether to
@@ -5473,12 +5586,12 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
       return !!a && !!b && norm(a) === norm(b);
     };
 
-    const anchorFrom = trip.info?.from;
-    const anchorTo = trip.info?.to;
+    const anchorFrom = anchor.info?.from;
+    const anchorTo = anchor.info?.to;
 
     const included = [];
     ordered.forEach((t, i) => {
-      if (t.uid === trip.uid) {
+      if (t.uid === anchor.uid) {
         // Anchor — always included, always shows pax
         included.push({ t, showPax: true });
         return;
@@ -5613,7 +5726,7 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
 
     return {
       tail,
-      aircraftType: trip.info?.aircraftType || trip.info?.tripType || null,
+      aircraftType: anchor.info?.aircraftType || anchor.info?.tripType || null,
       legs,
     };
   }
@@ -5632,7 +5745,11 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
       const r = await fetch('/api/trip-share', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ idToken, action, tripId: trip.uid, ...extra }),
+        // Key the link to the CANONICAL leg's UID, not the leg the
+        // user happened to click SHARE on. For a multi-leg charter
+        // this means every leg's SHARE button resolves to the same
+        // URL — broker gets one link, not one-per-leg.
+        body: JSON.stringify({ idToken, action, tripId: canonicalTrip.uid, ...extra }),
       });
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(data.error || `Server returned ${r.status}`);
@@ -5728,13 +5845,60 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
               SHARE TRIP WITH BROKER
             </h3>
             <p className="text-xs text-slate-500 mt-0.5">
-              {trip.info?.tail || 'Trip'} · {trip.info?.from || '—'} → {trip.info?.to || '—'}
+              {canonicalTrip.info?.tail || 'Trip'} · {canonicalTrip.info?.from || '—'} → {canonicalTrip.info?.to || '—'}
             </p>
           </div>
           <button onClick={onClose} className="text-slate-500 hover:text-slate-200" disabled={busy}>
             <X className="w-5 h-5" />
           </button>
         </div>
+
+        {/* Multi-leg charter banner. Surfaces three pieces of info:
+              1. There ARE other legs in this charter that this ONE link covers
+              2. The list of those legs (so ops can verify they belong)
+              3. If ops opened SHARE on a non-canonical leg, why the header
+                 shows a different routing than the row they clicked
+            Without this, ops would be confused that clicking SHARE on the
+            return leg shows the outbound leg's routing. */}
+        {isMultiLeg && (
+          <div className="border-b border-amber-500/30 bg-amber-500/5 px-4 py-2.5">
+            <div className="text-[10px] tracking-widest text-amber-300 mb-1"
+              style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+              MULTI-LEG CHARTER · ONE LINK COVERS {charterLegs.length} LEGS
+            </div>
+            <div className="space-y-0.5 text-[11px] text-slate-300"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {charterLegs.map((cl, i) => {
+                const time = cl.start ? new Date(cl.start).toLocaleTimeString('en-US',
+                  { hour: 'numeric', minute: '2-digit' }) : '';
+                const isCanonical = cl.uid === canonicalTrip.uid;
+                const isClickedFrom = cl.uid === trip.uid;
+                return (
+                  <div key={cl.uid} className="flex items-center gap-1.5">
+                    <span className="text-slate-500 w-4">
+                      {isCanonical ? '★' : (i + 1)}
+                    </span>
+                    <span className={isCanonical ? 'text-amber-200' : ''}>
+                      {cl.info?.from || '—'} → {cl.info?.to || '—'}
+                    </span>
+                    {time && <span className="text-slate-500">{time}</span>}
+                    {isClickedFrom && !isCanonical && (
+                      <span className="text-[9px] text-cyan-400 tracking-widest ml-1">
+                        ← YOU CLICKED HERE
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <div className="text-[10px] text-slate-500 mt-1.5"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {openedFromNonCanonical
+                ? '★ Outbound leg is the link\'s anchor. Same URL whether you click SHARE on any leg.'
+                : '★ This leg is the link\'s anchor. Other legs share the same URL.'}
+            </div>
+          </div>
+        )}
 
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {err && (
@@ -6759,69 +6923,118 @@ function NewManifestPicker({ currentUser, allTrips, todayStr, existingManifests 
   const [date, setDate] = useState(todayStr);
   const [tail, setTail] = useState('');
 
-  // Detect whether a manifest already exists for this date+tail.
-  // The manifest ID format is "{date}_{tail}" for the FIRST manifest
-  // and "{date}_{tail}_2", "{date}_{tail}_3", etc. for subsequent ones
-  // (multi-crew days where two crews flew the same plane). We check
-  // any ID starting with the base prefix, so this banner appears
-  // whether there's 1 or 5 existing manifests for the slot.
+  // Detect whether a manifest already exists for this date+tail. We
+  // match against the manifest's own `date` and `tail` fields rather
+  // than parsing the ID — `manifestId()` lives in firebase-manifests.js
+  // and could be implemented with any separator. Field-based matching
+  // is robust to format changes.
   const existingForSlot = useMemo(() => {
     if (!date || !tail) return [];
-    const basePrefix = `${date}_${tail}`;
-    return existingManifests.filter(m =>
-      m.id === basePrefix || m.id.startsWith(`${basePrefix}_`)
-    );
+    return existingManifests.filter(m => m.date === date && m.tail === tail);
   }, [date, tail, existingManifests]);
   const hasExisting = existingForSlot.length > 0;
 
-  // Suggest tails from trips on the selected date
+  // TZ-aware date key for a trip's start. The app-wide TZ override
+  // governs how we interpret "what calendar date does this trip
+  // belong to." Without this, a JST-based admin overriding to ET sees
+  // evening ET trips skip to the next day (JST = ET + ~13h), and the
+  // picker silently drops them. Now both the manifest `date` (from
+  // todayInAppTz) and the trip dates are computed in the same TZ.
+  const dateKey = (dt) => {
+    if (!dt) return '';
+    const ms = dt instanceof Date ? dt.getTime() : new Date(dt).getTime();
+    if (!Number.isFinite(ms)) return '';
+    // Inline equivalent of dateKeyInTz from app-timezone.js to avoid
+    // a dynamic import on every render. Uses Intl when a TZ is set,
+    // browser local otherwise.
+    let appTz = null;
+    try { appTz = localStorage.getItem('skyway-app-tz') || null; }
+    catch { /* ignore */ }
+    if (appTz === 'browser') appTz = null;
+    if (!appTz) {
+      const d = new Date(ms);
+      const pad = n => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    }
+    const fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: appTz,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+    });
+    const parts = fmt.formatToParts(new Date(ms));
+    const o = {};
+    for (const p of parts) o[p.type] = p.value;
+    return `${o.year}-${o.month}-${o.day}`;
+  };
+
+  // Suggest tails from trips on the selected date — same TZ-aware
+  // matching so the suggestions actually match the legs that'll show
+  // up below.
   const suggestedTails = useMemo(() => {
     if (!Array.isArray(allTrips)) return [];
     const tails = new Set();
     for (const t of allTrips) {
       if (!t.info?.tail || !t.start) continue;
-      const d = t.start instanceof Date ? t.start : new Date(t.start);
-      const yyyy = d.getFullYear();
-      const mm = String(d.getMonth() + 1).padStart(2, '0');
-      const dd = String(d.getDate()).padStart(2, '0');
-      const dStr = `${yyyy}-${mm}-${dd}`;
-      if (dStr === date) tails.add(t.info.tail);
+      if (dateKey(t.start) === date) tails.add(t.info.tail);
     }
     return Array.from(tails).sort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allTrips, date]);
 
   // Scheduled trips for the selected date+tail, separated into
   // "yours" (current user is PIC or SIC) and "other crew" (someone
   // else flew, or no crew assigned). isFlight filter excludes hotel/
   // maintenance/training/hold entries that share the calendar.
+  //
+  // When nameMatchesPilot returns NO matches against any leg, that's
+  // usually a JetInsight-vs-account name mismatch (e.g. "Dan" vs
+  // "Daniel"). The fallback re-categorizes everything as "yours" so
+  // the user sees their legs pre-checked and can verify by name. The
+  // tripsForSelection result includes a flag (`fellBack`) so the UI
+  // can warn the user that name-based filtering didn't work.
   const userName = currentUser?.jetinsightName || currentUser?.name || '';
   const tripsForSelection = useMemo(() => {
     if (!Array.isArray(allTrips) || !date || !tail) {
-      return { yours: [], others: [] };
+      return { yours: [], others: [], fellBack: false, totalForSlot: 0 };
     }
-    const yours = [];
-    const others = [];
+    const allMatching = [];
     for (const t of allTrips) {
       if (!t.info?.tail || !t.start) continue;
       if (t.info.tail !== tail) continue;
       if (!t.info.isFlight) continue;
-      const d = t.start instanceof Date ? t.start : new Date(t.start);
-      const yyyy = d.getFullYear();
-      const mm = String(d.getMonth() + 1).padStart(2, '0');
-      const dd = String(d.getDate()).padStart(2, '0');
-      if (`${yyyy}-${mm}-${dd}` !== date) continue;
-      const picMatch = nameMatchesPilot(t.info.pic || '', userName);
-      const sicMatch = nameMatchesPilot(t.info.sic || '', userName);
+      if (dateKey(t.start) !== date) continue;
+      allMatching.push(t);
+    }
+    const yours = [];
+    const others = [];
+    for (const t of allMatching) {
+      const picMatch = userName && nameMatchesPilot(t.info.pic || '', userName);
+      const sicMatch = userName && nameMatchesPilot(t.info.sic || '', userName);
       if (picMatch || sicMatch) yours.push(t);
       else others.push(t);
     }
-    // Sort each group chronologically by trip start
     const byStart = (a, b) => {
       const ta = a.start instanceof Date ? a.start.getTime() : new Date(a.start).getTime();
       const tb = b.start instanceof Date ? b.start.getTime() : new Date(b.start).getTime();
       return ta - tb;
     };
-    return { yours: yours.sort(byStart), others: others.sort(byStart) };
+    // Fallback: if no name match found but legs DO exist for the
+    // slot, treat all as "yours" so the user doesn't end up with an
+    // empty manifest. Flag this so the UI can explain.
+    if (yours.length === 0 && others.length > 0) {
+      return {
+        yours: others.sort(byStart),
+        others: [],
+        fellBack: true,
+        totalForSlot: allMatching.length,
+      };
+    }
+    return {
+      yours: yours.sort(byStart),
+      others: others.sort(byStart),
+      fellBack: false,
+      totalForSlot: allMatching.length,
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allTrips, date, tail, userName]);
 
   // Selected trip UIDs. Defaults: all of "yours" selected, none of "other crew".
@@ -6898,21 +7111,43 @@ function NewManifestPicker({ currentUser, allTrips, todayStr, existingManifests 
           Pre-checks "yours" so the common case is one click. */}
       {date && tail && (
         <div className="space-y-2 pt-1">
-          <div className="text-[10px] tracking-widest text-slate-500"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            SCHEDULED LEGS FOR {tail} · {date}
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-[10px] tracking-widest text-slate-500"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              SCHEDULED LEGS FOR {tail} · {date}
+            </div>
+            <div className="text-[9px] text-slate-600"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {tripsForSelection.totalForSlot} found in schedule
+            </div>
           </div>
           {!haveSchedule ? (
             <div className="text-[11px] text-slate-500 italic px-2 py-3 border border-slate-800 bg-slate-950/30"
               style={{ fontFamily: 'JetBrains Mono, monospace' }}>
               No scheduled flying legs found for this date+tail.
-              You can still create the manifest and add legs manually.
+              <div className="text-slate-600 mt-1 not-italic">
+                If you expect legs here: check the date is correct in
+                YOUR app timezone (banner clock). Also confirm the
+                schedule has synced.
+              </div>
             </div>
           ) : (
             <>
+              {/* Fallback explanation — shown when name matching
+                  didn't identify the user on any leg. Without this
+                  hint the user would just see "YOUR LEGS" with all
+                  legs in it and wonder why. */}
+              {tripsForSelection.fellBack && (
+                <div className="text-[10px] text-amber-300/90 px-2 py-1.5 border border-amber-500/30 bg-amber-500/5"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  Your name didn't match PIC/SIC on any leg —
+                  showing all {tripsForSelection.totalForSlot} for
+                  review. Check the ones that are yours.
+                </div>
+              )}
               {tripsForSelection.yours.length > 0 && (
                 <ManifestLegPreviewSection
-                  label="YOUR LEGS"
+                  label={tripsForSelection.fellBack ? "ALL LEGS · REVIEW" : "YOUR LEGS"}
                   trips={tripsForSelection.yours}
                   selectedUids={selectedUids}
                   onToggle={toggle}
@@ -6921,16 +7156,12 @@ function NewManifestPicker({ currentUser, allTrips, todayStr, existingManifests 
               )}
               {tripsForSelection.others.length > 0 && (
                 <ManifestLegPreviewSection
-                  label={tripsForSelection.yours.length > 0
-                    ? "OTHER CREW'S LEGS"
-                    : "ALL LEGS FOR THIS TAIL"}
+                  label="OTHER CREW'S LEGS"
                   trips={tripsForSelection.others}
                   selectedUids={selectedUids}
                   onToggle={toggle}
                   emphasis="others"
-                  hint={tripsForSelection.yours.length > 0
-                    ? "Flown by a different crew. Check any you also need on this manifest."
-                    : "Your name doesn't appear as PIC or SIC on these legs. Confirm before including."}
+                  hint="Flown by a different crew. Check any you also need on this manifest."
                 />
               )}
             </>
@@ -7186,18 +7417,45 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
   // Trips on the schedule that match this manifest's date+tail.
   // ONLY actual flying legs — exclude CREW HOTEL, MAINTENANCE, TRAINING, HOLD.
   // The `info.isFlight` flag is set during iCal parsing based on category.
+  //
+  // TZ-aware date matching: the manifest's `date` field is a YYYY-MM-DD
+  // string from the picker (which defaulted to today-in-app-TZ via
+  // todayInAppTz). Trip starts are UTC instants. To match them
+  // correctly, we must compute the trip's date IN THE SAME TZ the
+  // manifest date represents. Without this, a JST-based admin
+  // overriding to ET sees evening ET trips skip to the next day in
+  // JST and get filtered out — manifests silently miss legs.
   const scheduledTrips = useMemo(() => {
     if (!Array.isArray(allTrips) || !draft) return [];
+    // Read app TZ once per memo run (no per-trip localStorage hit).
+    let appTz = null;
+    try { appTz = localStorage.getItem('skyway-app-tz') || null; }
+    catch { /* ignore */ }
+    if (appTz === 'browser') appTz = null;
+    const fmt = appTz
+      ? new Intl.DateTimeFormat('en-US', {
+          timeZone: appTz, year: 'numeric', month: '2-digit', day: '2-digit',
+        })
+      : null;
+    const dateKey = (dt) => {
+      if (!dt) return '';
+      const ms = dt instanceof Date ? dt.getTime() : new Date(dt).getTime();
+      if (!Number.isFinite(ms)) return '';
+      if (!fmt) {
+        const d = new Date(ms);
+        const pad = n => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+      }
+      const parts = fmt.formatToParts(new Date(ms));
+      const o = {};
+      for (const p of parts) o[p.type] = p.value;
+      return `${o.year}-${o.month}-${o.day}`;
+    };
     return allTrips.filter(t => {
       if (!t.info?.tail || !t.start) return false;
       if (t.info.tail !== draft.tail) return false;
-      // Skip non-flying entries (crew hotel, maintenance, hold, training)
       if (!t.info.isFlight) return false;
-      const d = t.start instanceof Date ? t.start : new Date(t.start);
-      const yyyy = d.getFullYear();
-      const mm = String(d.getMonth() + 1).padStart(2, '0');
-      const dd = String(d.getDate()).padStart(2, '0');
-      return `${yyyy}-${mm}-${dd}` === draft.date;
+      return dateKey(t.start) === draft.date;
     });
   }, [allTrips, draft]);
 
