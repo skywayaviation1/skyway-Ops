@@ -301,147 +301,47 @@ function ExpBadge({ d, allDocs }) {
 }
 
 // ============================================================================
-// CARD VISUALIZATIONS — photorealistic renderings of each document type
+// CARD VISUALIZATIONS v4 — restrained, typography-driven document renderings
 // ============================================================================
-// Each card renders parsed fields in the layout of the real document so the
-// crew member sees their cert/medical/passport/DL the way they'd recognize
-// it. All four cards use a 1.586 aspect ratio (ISO/IEC 7810 ID-1, the
-// standard credit-card / driver's-license / FAA-cert size). Photos and
-// signatures are placeholders — we store the original file separately and
-// surface it via the FILES list below the card.
+// Design principles:
+//   - One tasteful emblem per card, not multiple competing seals
+//   - Typography carries the design; ornament is subtle and minimal
+//   - Generous whitespace; cards read as premium digital IDs, not forgeries
+//   - Every parsed field shown when present, em-dash when missing
+//   - All four cards: ISO/IEC 7810 ID-1 aspect (1.586) so they feel like
+//     real plastic cards / passport pages
 
-// --- SHARED SVG ASSETS ------------------------------------------------------
+// --- SHARED COMPONENTS ------------------------------------------------------
 
-// FAA "meatball" — stylized seal used on airman + medical certificates.
-function FaaMeatball({ className = '', size = 40 }) {
-  return (
-    <svg className={className} width={size} height={size} viewBox="0 0 100 100">
-      <defs>
-        <radialGradient id="faaBlue" cx="0.35" cy="0.35">
-          <stop offset="0%" stopColor="#3b6db5" />
-          <stop offset="100%" stopColor="#0e2d5e" />
-        </radialGradient>
-      </defs>
-      <circle cx="50" cy="50" r="48" fill="url(#faaBlue)" stroke="#0a1f42" strokeWidth="2" />
-      {/* Stylized wing/chevron */}
-      <path d="M 18 58 Q 50 32 82 58 L 78 62 Q 50 42 22 62 Z" fill="#ffffff" opacity="0.95" />
-      <path d="M 28 64 L 50 56 L 72 64 L 70 67 L 50 60 L 30 67 Z" fill="#ffffff" opacity="0.7" />
-      <circle cx="50" cy="55" r="2.2" fill="#ffffff" />
-      {/* Subtle inner ring */}
-      <circle cx="50" cy="50" r="42" fill="none" stroke="#ffffff" strokeWidth="0.6" opacity="0.3" />
-    </svg>
-  );
-}
-
-// US Great Seal — gold eagle for passport cover.
-function GreatSeal({ className = '', size = 56 }) {
-  return (
-    <svg className={className} width={size} height={size} viewBox="0 0 100 100">
-      <defs>
-        <radialGradient id="goldGrad" cx="0.5" cy="0.4">
-          <stop offset="0%" stopColor="#e6c989" />
-          <stop offset="60%" stopColor="#c5a572" />
-          <stop offset="100%" stopColor="#8a7349" />
-        </radialGradient>
-      </defs>
-      {/* Outer ring */}
-      <circle cx="50" cy="50" r="46" fill="none" stroke="url(#goldGrad)" strokeWidth="1.5" opacity="0.6" />
-      <circle cx="50" cy="50" r="42" fill="none" stroke="url(#goldGrad)" strokeWidth="0.6" opacity="0.4" />
-      {/* Eagle silhouette */}
-      <g fill="url(#goldGrad)">
-        {/* Wings spread */}
-        <path d="M 50 35 Q 25 35 14 50 Q 22 46 32 47 L 36 50 Q 28 52 22 56 Q 30 54 38 55 L 42 58 L 50 60 L 58 58 L 62 55 Q 70 54 78 56 Q 72 52 64 50 L 68 47 Q 78 46 86 50 Q 75 35 50 35 Z" />
-        {/* Body / shield */}
-        <rect x="44" y="48" width="12" height="20" rx="1" />
-        <rect x="44" y="48" width="12" height="3" fill="#0a1f42" opacity="0.6" />
-        {/* Vertical stripes on shield */}
-        <line x1="46.5" y1="51" x2="46.5" y2="68" stroke="#0a1f42" strokeWidth="0.8" opacity="0.6" />
-        <line x1="50" y1="51" x2="50" y2="68" stroke="#0a1f42" strokeWidth="0.8" opacity="0.6" />
-        <line x1="53.5" y1="51" x2="53.5" y2="68" stroke="#0a1f42" strokeWidth="0.8" opacity="0.6" />
-        {/* Head */}
-        <circle cx="50" cy="42" r="4" />
-        <path d="M 50 42 L 56 44 L 52 45 Z" />
-        {/* Olive branch + arrows hint */}
-        <path d="M 32 70 L 44 66 M 36 72 L 42 70" stroke="url(#goldGrad)" strokeWidth="1" fill="none" />
-        <path d="M 68 70 L 56 66 M 64 72 L 58 70" stroke="url(#goldGrad)" strokeWidth="1" fill="none" />
-      </g>
-      {/* Stars above */}
-      <g fill="url(#goldGrad)">
-        <circle cx="40" cy="30" r="0.8" />
-        <circle cx="45" cy="28" r="0.8" />
-        <circle cx="50" cy="27" r="0.8" />
-        <circle cx="55" cy="28" r="0.8" />
-        <circle cx="60" cy="30" r="0.8" />
-      </g>
-    </svg>
-  );
-}
-
-// Generic state seal — used on driver's license.
-function StateSeal({ className = '', size = 40, state = '' }) {
-  const initial = (state || '').slice(0, 2).toUpperCase();
-  return (
-    <svg className={className} width={size} height={size} viewBox="0 0 100 100">
-      <defs>
-        <linearGradient id="stateGrad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#1a4480" />
-          <stop offset="100%" stopColor="#0a2a5e" />
-        </linearGradient>
-      </defs>
-      <circle cx="50" cy="50" r="48" fill="url(#stateGrad)" stroke="#c5a572" strokeWidth="1.5" />
-      <circle cx="50" cy="50" r="42" fill="none" stroke="#c5a572" strokeWidth="0.4" opacity="0.7" />
-      {/* Star */}
-      <path d="M 50 28 L 53 42 L 67 42 L 56 50 L 60 64 L 50 56 L 40 64 L 44 50 L 33 42 L 47 42 Z"
-        fill="#c5a572" opacity="0.85" />
-      <text x="50" y="80" textAnchor="middle" fontSize="11" fontWeight="700"
-        fill="#c5a572" fontFamily="serif">
-        {initial}
-      </text>
-    </svg>
-  );
-}
-
-// Generic person silhouette — placeholder for the photo area.
-function PhotoPlaceholder({ className = '', tone = 'dark' }) {
-  const bg = tone === 'dark' ? '#0a1428' : '#d8dde6';
-  const fg = tone === 'dark' ? '#2a3a55' : '#8a95a8';
-  return (
-    <svg className={className} viewBox="0 0 80 100" preserveAspectRatio="none">
-      <rect x="0" y="0" width="80" height="100" fill={bg} />
-      {/* Subtle security pattern */}
-      <g stroke={fg} strokeWidth="0.3" opacity="0.35">
-        {Array.from({ length: 20 }).map((_, i) => (
-          <line key={i} x1="0" y1={i * 5} x2="80" y2={i * 5 - 10} />
-        ))}
-      </g>
-      {/* Person silhouette */}
-      <g fill={fg} opacity="0.55">
-        <circle cx="40" cy="38" r="11" />
-        <path d="M 18 90 Q 18 60 40 60 Q 62 60 62 90 L 62 100 L 18 100 Z" />
-      </g>
-    </svg>
-  );
-}
-
-// Tiny helper used on most cards.
-function Field({ label, value, mono, big, accent, className = '' }) {
+// Compact field renderer used across all cards.
+function CardField({ label, value, accent = '#6b5e3f', valueColor = '#1a1a1a', mono = false, big = false, italic = false, className = '' }) {
+  const empty = value == null || value === '';
   return (
     <div className={className}>
       <div
-        className="text-[7.5px] tracking-[0.18em] uppercase mb-0.5"
-        style={{ fontFamily: 'JetBrains Mono, monospace', color: accent || '#5f7a52' }}
+        style={{
+          fontFamily: 'JetBrains Mono, ui-monospace, monospace',
+          fontSize: 7,
+          letterSpacing: '0.22em',
+          textTransform: 'uppercase',
+          color: accent,
+          fontWeight: 600,
+          marginBottom: 2,
+        }}
       >
         {label}
       </div>
       <div
-        className={(big ? 'text-[15px]' : 'text-[11.5px]') + ' leading-tight'}
         style={{
-          fontFamily: mono ? 'JetBrains Mono, monospace' : 'Georgia, "Times New Roman", serif',
+          fontFamily: mono ? 'JetBrains Mono, ui-monospace, monospace' : 'Georgia, "Times New Roman", serif',
+          fontSize: big ? 14 : 11,
           fontWeight: big ? 600 : 500,
-          color: '#1a1a1a',
+          fontStyle: empty ? 'italic' : 'normal',
+          color: empty ? '#aaa' : valueColor,
+          lineHeight: 1.2,
         }}
       >
-        {value || <span style={{ color: '#9aa1ad', fontStyle: 'italic' }}>—</span>}
+        {empty ? '—' : value}
       </div>
     </div>
   );
@@ -472,10 +372,170 @@ function formatAddress(data) {
   return parts;
 }
 
-// --- 1. AIRMAN CERTIFICATE --------------------------------------------------
-// Photorealistic plastic-card style mimicking the FAA Airman Certificate
-// issued post-2003. Cream background, FAA blue + green field labels,
-// holographic eagle watermark in the center.
+// --- SHARED SVG EMBLEMS -----------------------------------------------------
+// Restrained, elegant emblems — not attempting to forge official seals.
+
+// FAA mark — clean blue roundel with a stylized aircraft silhouette.
+function FaaMark({ size = 36 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 100 100" aria-hidden>
+      <defs>
+        <linearGradient id="faaRing" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#1e4a8a" />
+          <stop offset="100%" stopColor="#0a2d5e" />
+        </linearGradient>
+      </defs>
+      <circle cx="50" cy="50" r="48" fill="url(#faaRing)" />
+      <circle cx="50" cy="50" r="44" fill="none" stroke="#ffffff" strokeWidth="0.6" opacity="0.35" />
+      {/* Stylized aircraft — clean silhouette */}
+      <g fill="#ffffff">
+        <path d="M 50 28 L 53 50 L 78 56 L 78 60 L 53 58 L 53 70 L 60 74 L 60 77 L 50 75 L 40 77 L 40 74 L 47 70 L 47 58 L 22 60 L 22 56 L 47 50 Z" />
+      </g>
+      <text
+        x="50"
+        y="92"
+        textAnchor="middle"
+        fill="#ffffff"
+        fontFamily="Georgia, serif"
+        fontWeight="700"
+        fontSize="9"
+        letterSpacing="0.15em"
+      >
+        FAA
+      </text>
+    </svg>
+  );
+}
+
+// American shield — gold geometric mark for passport. Cleaner than a
+// fake eagle at small sizes.
+function ShieldMark({ size = 44 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 100 100" aria-hidden>
+      <defs>
+        <linearGradient id="goldShield" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#e6cd95" />
+          <stop offset="50%" stopColor="#c5a572" />
+          <stop offset="100%" stopColor="#8a7349" />
+        </linearGradient>
+      </defs>
+      {/* Outer rim */}
+      <path
+        d="M 50 8 L 90 18 L 90 50 Q 90 78 50 92 Q 10 78 10 50 L 10 18 Z"
+        fill="none"
+        stroke="url(#goldShield)"
+        strokeWidth="1.4"
+      />
+      {/* Inner shield */}
+      <path
+        d="M 50 16 L 82 24 L 82 48 Q 82 72 50 84 Q 18 72 18 48 L 18 24 Z"
+        fill="none"
+        stroke="url(#goldShield)"
+        strokeWidth="0.8"
+        opacity="0.7"
+      />
+      {/* Top blue/dark field representing chief */}
+      <path
+        d="M 50 16 L 82 24 L 82 38 L 18 38 L 18 24 Z"
+        fill="url(#goldShield)"
+        opacity="0.18"
+      />
+      {/* Star cluster */}
+      <g fill="url(#goldShield)">
+        {[
+          [42, 24], [50, 22], [58, 24],
+          [38, 30], [46, 28], [54, 28], [62, 30],
+        ].map(([x, y], i) => (
+          <circle key={i} cx={x} cy={y} r="0.9" />
+        ))}
+      </g>
+      {/* Vertical stripes */}
+      <g stroke="url(#goldShield)" strokeWidth="0.5" opacity="0.55">
+        {[28, 34, 40, 46, 52, 58, 64, 70].map((x) => (
+          <line key={x} x1={x} y1="42" x2={x} y2={68 - Math.abs(x - 49) * 0.4} />
+        ))}
+      </g>
+    </svg>
+  );
+}
+
+// State emblem for DL — clean star inside a thin gold ring on navy.
+function StateMark({ size = 32, state = '' }) {
+  const initial = (state || '').slice(0, 2).toUpperCase();
+  return (
+    <svg width={size} height={size} viewBox="0 0 100 100" aria-hidden>
+      <defs>
+        <linearGradient id="stateNavy" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#1a3d70" />
+          <stop offset="100%" stopColor="#0a2042" />
+        </linearGradient>
+      </defs>
+      <circle cx="50" cy="50" r="46" fill="url(#stateNavy)" />
+      <circle cx="50" cy="50" r="42" fill="none" stroke="#c5a572" strokeWidth="0.6" />
+      <path
+        d="M 50 22 L 56 42 L 76 42 L 60 54 L 66 74 L 50 62 L 34 74 L 40 54 L 24 42 L 44 42 Z"
+        fill="#c5a572"
+        opacity="0.95"
+      />
+      {initial && (
+        <text
+          x="50"
+          y="56"
+          textAnchor="middle"
+          fill="#0a2042"
+          fontFamily="Georgia, serif"
+          fontWeight="700"
+          fontSize="12"
+        >
+          {initial}
+        </text>
+      )}
+    </svg>
+  );
+}
+
+// Photo placeholder — subtle silhouette only, no security pattern noise.
+function PhotoFrame({ tone = 'dark' }) {
+  const isDark = tone === 'dark';
+  return (
+    <svg
+      width="100%"
+      height="100%"
+      viewBox="0 0 100 130"
+      preserveAspectRatio="xMidYMid slice"
+      aria-hidden
+    >
+      <defs>
+        <linearGradient id={isDark ? 'photoDarkBg' : 'photoLightBg'} x1="0" y1="0" x2="0" y2="1">
+          {isDark ? (
+            <>
+              <stop offset="0%" stopColor="#1a2848" />
+              <stop offset="100%" stopColor="#0a1530" />
+            </>
+          ) : (
+            <>
+              <stop offset="0%" stopColor="#dde4ee" />
+              <stop offset="100%" stopColor="#bcc6d4" />
+            </>
+          )}
+        </linearGradient>
+      </defs>
+      <rect width="100" height="130" fill={`url(#${isDark ? 'photoDarkBg' : 'photoLightBg'})`} />
+      {/* Soft silhouette */}
+      <g fill={isDark ? '#2d3d5e' : '#9ba8b8'} opacity="0.55">
+        <circle cx="50" cy="48" r="14" />
+        <path d="M 22 130 Q 22 84 50 84 Q 78 84 78 130 Z" />
+      </g>
+    </svg>
+  );
+}
+
+// =============================================================================
+// 1. AIRMAN CERTIFICATE
+// =============================================================================
+// Premium digital take on the FAA airman certificate. Warm sepia card,
+// FAA navy + muted gold accents, Georgia serif throughout. No fake
+// watermarks or security textures — typography and color do the work.
 
 function AirmanCertificateCard({ data, owner }) {
   const n = combineName(data, owner);
@@ -485,117 +545,114 @@ function AirmanCertificateCard({ data, owner }) {
   const limitations = data?.limitations || '';
   const issued = data?.issueDate;
   const addressLines = formatAddress(data);
-  const FAA_BLUE = '#1a4480';
-  const FAA_GREEN = '#5f7a52';
-  const CREAM = '#f8f3e6';
+
+  const NAVY = '#0a2d5e';
+  const GOLD = '#a88a4f';
+  const INK = '#231a0e';
 
   return (
     <div
-      className="relative overflow-hidden shadow-lg"
       style={{
         aspectRatio: '1.586',
-        background: `linear-gradient(135deg, ${CREAM} 0%, #ede4cc 100%)`,
-        border: '1px solid #c8b88e',
-        borderRadius: 12,
+        background: 'linear-gradient(135deg, #f6efd9 0%, #ece2c0 100%)',
+        borderRadius: 14,
+        border: '1px solid #d4c592',
+        boxShadow: '0 10px 30px -10px rgba(0,0,0,0.5), 0 2px 6px rgba(0,0,0,0.15) inset',
+        color: INK,
+        position: 'relative',
+        overflow: 'hidden',
       }}
     >
-      {/* Holographic eagle watermark */}
-      <svg
-        className="absolute inset-0 w-full h-full pointer-events-none"
-        viewBox="0 0 400 250"
-        preserveAspectRatio="xMidYMid slice"
-        style={{ opacity: 0.06 }}
-      >
-        <g transform="translate(200 130)" fill="#1a4480">
-          <path d="M 0 -40 Q -80 -30 -110 0 Q -85 -10 -55 -8 L -45 0 Q -65 5 -80 15 Q -55 8 -30 10 L -20 18 L 0 22 L 20 18 L 30 10 Q 55 8 80 15 Q 65 5 45 0 L 55 -8 Q 85 -10 110 0 Q 80 -30 0 -40 Z" />
-          <rect x="-12" y="-2" width="24" height="40" />
-        </g>
-      </svg>
+      {/* Subtle corner ornament */}
+      <div style={{
+        position: 'absolute', top: 0, right: 0, width: 110, height: 110,
+        background: `radial-gradient(circle at top right, ${GOLD}15, transparent 70%)`,
+        pointerEvents: 'none',
+      }} />
 
-      {/* Subtle guilloche security pattern */}
-      <svg className="absolute inset-0 w-full h-full pointer-events-none opacity-20"
-        viewBox="0 0 400 250" preserveAspectRatio="none">
-        {Array.from({ length: 14 }).map((_, i) => (
-          <ellipse key={i} cx="200" cy="125" rx={30 + i * 18} ry={15 + i * 8}
-            fill="none" stroke={FAA_BLUE} strokeWidth="0.2" />
-        ))}
-      </svg>
-
-      <div className="relative h-full px-4 py-3 flex flex-col" style={{ color: '#1a1a1a' }}>
-        {/* HEADER ROW */}
-        <div className="flex items-start justify-between">
-          <FaaMeatball size={42} />
-          <div className="text-center flex-1 px-3">
-            <div className="text-[9px] tracking-[0.3em]" style={{ fontFamily: 'Georgia, serif', color: FAA_BLUE, fontWeight: 700 }}>
+      <div style={{ padding: '14px 18px', height: '100%', display: 'flex', flexDirection: 'column', position: 'relative' }}>
+        {/* HEADER */}
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+          <FaaMark size={38} />
+          <div style={{ flex: 1, textAlign: 'center' }}>
+            <div style={{ fontFamily: 'Georgia, serif', color: NAVY, fontWeight: 700, fontSize: 8.5, letterSpacing: '0.32em' }}>
               UNITED STATES OF AMERICA
             </div>
-            <div className="text-[7px] tracking-[0.25em] mt-0.5" style={{ fontFamily: 'Georgia, serif', color: '#444' }}>
-              DEPARTMENT OF TRANSPORTATION
-            </div>
-            <div className="text-[7px] tracking-[0.25em]" style={{ fontFamily: 'Georgia, serif', color: '#444' }}>
-              FEDERAL AVIATION ADMINISTRATION
+            <div style={{ fontFamily: 'Georgia, serif', color: '#5a4a2e', fontSize: 6.5, letterSpacing: '0.28em', marginTop: 1 }}>
+              DEPARTMENT OF TRANSPORTATION · FEDERAL AVIATION ADMINISTRATION
             </div>
           </div>
-          <div className="text-right">
-            <div className="text-[6.5px] tracking-[0.18em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: FAA_GREEN, fontWeight: 700 }}>
-              CERTIFICATE NO.
+          <div style={{ minWidth: 78, textAlign: 'right' }}>
+            <div style={{ fontFamily: 'JetBrains Mono, ui-monospace, monospace', fontSize: 6.5, letterSpacing: '0.22em', color: GOLD, fontWeight: 600 }}>
+              CERTIFICATE
             </div>
-            <div className="text-[10px] tracking-wider mt-0.5" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, color: FAA_BLUE }}>
-              {certNo || <span style={{ color: '#aaa', fontStyle: 'italic' }}>—</span>}
+            <div style={{ fontFamily: 'JetBrains Mono, ui-monospace, monospace', fontSize: 11, color: NAVY, fontWeight: 700, letterSpacing: '0.03em', marginTop: 1 }}>
+              {certNo || <span style={{ color: '#bbb', fontStyle: 'italic', fontWeight: 400 }}>—</span>}
             </div>
           </div>
         </div>
 
-        <div className="text-center mt-1.5 mb-2">
-          <div
-            className="text-[14px] tracking-[0.32em] inline-block px-3 py-0.5"
-            style={{
-              fontFamily: 'Georgia, serif',
-              fontWeight: 700,
-              color: FAA_BLUE,
-              borderTop: `1px solid ${FAA_BLUE}`,
-              borderBottom: `1px solid ${FAA_BLUE}`,
-            }}
-          >
+        {/* TITLE */}
+        <div style={{ textAlign: 'center', margin: '10px 0 8px' }}>
+          <div style={{
+            display: 'inline-block',
+            fontFamily: 'Georgia, serif',
+            fontSize: 13,
+            fontWeight: 700,
+            letterSpacing: '0.38em',
+            color: NAVY,
+            borderTop: `0.5px solid ${GOLD}`,
+            borderBottom: `0.5px solid ${GOLD}`,
+            padding: '3px 14px',
+          }}>
             AIRMAN CERTIFICATE
           </div>
         </div>
 
-        {/* BIO GRID */}
-        <div className="grid grid-cols-12 gap-x-2 gap-y-1.5 flex-1 text-[10.5px]">
-          <Field className="col-span-7" label="Name" value={n.full} big />
-          <Field className="col-span-5" label="Date of Birth" value={data?.dob ? formatLongDate(data.dob) : null} />
+        {/* BIO BODY */}
+        <div style={{ flex: 1, display: 'grid', gridTemplateColumns: 'repeat(12, 1fr)', gap: '7px 12px', alignContent: 'start' }}>
+          <CardField className="col-span-8" label="Name" value={n.full} accent={GOLD} valueColor={INK} big
+            // tailwind doesn't grok inline col-span — use style fallback
+          />
+          <CardField className="col-span-4" label="Date of Birth" value={data?.dob ? formatLongDate(data.dob) : null} accent={GOLD} valueColor={INK} />
 
           {addressLines.length > 0 && (
-            <div className="col-span-12">
-              <div className="text-[7.5px] tracking-[0.18em] uppercase mb-0.5" style={{ fontFamily: 'JetBrains Mono, monospace', color: FAA_GREEN }}>Address</div>
-              <div className="text-[11px] leading-tight" style={{ fontFamily: 'Georgia, serif', color: '#1a1a1a' }}>
+            <div style={{ gridColumn: 'span 8 / span 8' }}>
+              <div style={{ fontFamily: 'JetBrains Mono, ui-monospace, monospace', fontSize: 7, letterSpacing: '0.22em', color: GOLD, fontWeight: 600, marginBottom: 2 }}>
+                ADDRESS
+              </div>
+              <div style={{ fontFamily: 'Georgia, serif', fontSize: 10.5, lineHeight: 1.3, color: INK }}>
                 {addressLines.map((l, i) => <div key={i}>{l}</div>)}
               </div>
             </div>
           )}
+          <div style={{ gridColumn: 'span 4 / span 4', display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <CardField label="Sex" value={data?.sex} accent={GOLD} valueColor={INK} mono />
+            <CardField label="Nationality" value={data?.nationality} accent={GOLD} valueColor={INK} />
+          </div>
 
-          <Field className="col-span-2" label="Sex"    value={data?.sex} mono />
-          <Field className="col-span-3" label="Height" value={data?.height} mono />
-          <Field className="col-span-3" label="Weight" value={data?.weight} mono />
-          <Field className="col-span-2" label="Hair"   value={data?.hairColor} mono />
-          <Field className="col-span-2" label="Eyes"   value={data?.eyeColor} mono />
+          <div style={{ gridColumn: 'span 12 / span 12', display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+            <CardField label="Height" value={data?.height} accent={GOLD} valueColor={INK} mono />
+            <CardField label="Weight" value={data?.weight} accent={GOLD} valueColor={INK} mono />
+            <CardField label="Hair"   value={data?.hairColor} accent={GOLD} valueColor={INK} mono />
+            <CardField label="Eyes"   value={data?.eyeColor}  accent={GOLD} valueColor={INK} mono />
+          </div>
 
-          <div className="col-span-12 border-t pt-1.5" style={{ borderColor: '#c8b88e' }}>
-            <div className="text-[7.5px] tracking-[0.18em] uppercase mb-0.5" style={{ fontFamily: 'JetBrains Mono, monospace', color: FAA_GREEN }}>
-              Grade of Certificate
+          <div style={{ gridColumn: 'span 12 / span 12', borderTop: `0.5px solid ${GOLD}66`, paddingTop: 6, marginTop: 2 }}>
+            <div style={{ fontFamily: 'JetBrains Mono, ui-monospace, monospace', fontSize: 7, letterSpacing: '0.22em', color: GOLD, fontWeight: 600 }}>
+              GRADE OF CERTIFICATE
             </div>
-            <div className="text-[13px] font-bold" style={{ fontFamily: 'Georgia, serif', color: FAA_BLUE }}>
-              {certType ? certType.toUpperCase() : <span style={{ color: '#aaa', fontStyle: 'italic' }}>—</span>}
+            <div style={{ fontFamily: 'Georgia, serif', fontSize: 13, fontWeight: 700, color: NAVY, letterSpacing: '0.04em', marginTop: 1 }}>
+              {certType ? certType.toUpperCase() : <span style={{ color: '#bbb', fontStyle: 'italic', fontWeight: 400 }}>—</span>}
             </div>
           </div>
 
           {(ratings || limitations) && (
-            <div className="col-span-12">
-              <div className="text-[7.5px] tracking-[0.18em] uppercase mb-0.5" style={{ fontFamily: 'JetBrains Mono, monospace', color: FAA_GREEN }}>
-                Ratings and Limitations
+            <div style={{ gridColumn: 'span 12 / span 12' }}>
+              <div style={{ fontFamily: 'JetBrains Mono, ui-monospace, monospace', fontSize: 7, letterSpacing: '0.22em', color: GOLD, fontWeight: 600 }}>
+                RATINGS AND LIMITATIONS
               </div>
-              <div className="text-[10px] leading-snug" style={{ fontFamily: 'Georgia, serif', color: '#1a1a1a' }}>
+              <div style={{ fontFamily: 'Georgia, serif', fontSize: 10, lineHeight: 1.35, color: INK, marginTop: 1 }}>
                 {[ratings, limitations].filter(Boolean).join(' · ')}
               </div>
             </div>
@@ -603,16 +660,19 @@ function AirmanCertificateCard({ data, owner }) {
         </div>
 
         {/* FOOTER */}
-        <div className="mt-1.5 pt-1.5 border-t flex items-end justify-between" style={{ borderColor: '#c8b88e' }}>
+        <div style={{
+          display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between',
+          marginTop: 8, paddingTop: 6, borderTop: `0.5px solid ${GOLD}66`,
+        }}>
           <div>
-            <div className="text-[6.5px] tracking-[0.18em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: FAA_GREEN, fontWeight: 700 }}>
+            <div style={{ fontFamily: 'JetBrains Mono, ui-monospace, monospace', fontSize: 6.5, letterSpacing: '0.22em', color: GOLD, fontWeight: 600 }}>
               DATE OF ISSUE
             </div>
-            <div className="text-[10px]" style={{ fontFamily: 'Georgia, serif', color: '#1a1a1a' }}>
+            <div style={{ fontFamily: 'Georgia, serif', fontSize: 10, color: INK, marginTop: 1 }}>
               {issued ? formatLongDate(issued).toUpperCase() : '—'}
             </div>
           </div>
-          <div className="text-[6.5px] tracking-[0.3em] text-right" style={{ fontFamily: 'Georgia, serif', color: FAA_BLUE, fontWeight: 700 }}>
+          <div style={{ fontFamily: 'Georgia, serif', fontSize: 8, letterSpacing: '0.32em', color: NAVY, fontWeight: 700 }}>
             14 CFR 61 · DOES NOT EXPIRE
           </div>
         </div>
@@ -621,10 +681,11 @@ function AirmanCertificateCard({ data, owner }) {
   );
 }
 
-// --- 2. MEDICAL CERTIFICATE -------------------------------------------------
-// Paper-document style (real FAA medicals are paper, not plastic). White
-// background, formal serif headings, large class badge, and the FAA-
-// computed expiration table — which is the key feature pilots care about.
+// =============================================================================
+// 2. MEDICAL CERTIFICATE
+// =============================================================================
+// Document-paper style. White card, FAA navy text, class as a colored
+// ribbon in the corner. The FAA expiration table is the hero feature.
 
 function MedicalCertificateCard({ data, owner, allDocs }) {
   const n = combineName(data, owner);
@@ -641,146 +702,174 @@ function MedicalCertificateCard({ data, owner, allDocs }) {
   const ameName = data?.ameName || '';
   const ameNumber = data?.ameNumber || '';
 
-  const classText = ({ '1': 'FIRST-CLASS', '2': 'SECOND-CLASS', '3': 'THIRD-CLASS' })[String(cls)] || '—';
-  const classBadgeColor = ({ '1': '#c5a572', '2': '#9aa1ad', '3': '#a07647' })[String(cls)] || '#888';
-  const FAA_BLUE = '#1a4480';
-  const FAA_GREEN = '#5f7a52';
+  const classText = ({ '1': 'FIRST CLASS', '2': 'SECOND CLASS', '3': 'THIRD CLASS' })[String(cls)] || '—';
+  const classColor = ({
+    '1': { bg: '#c9a861', fg: '#3a2a0a' },
+    '2': { bg: '#a8a8a8', fg: '#1a1a1a' },
+    '3': { bg: '#9a7547', fg: '#fff' },
+  })[String(cls)] || { bg: '#999', fg: '#fff' };
+
+  const NAVY = '#0a2d5e';
+  const GOLD = '#9a7d3e';
+  const INK = '#1a1a1a';
 
   return (
     <div
-      className="relative overflow-hidden shadow-lg"
       style={{
         aspectRatio: '1.586',
-        background: 'linear-gradient(180deg, #fefefe 0%, #f8f6ef 100%)',
-        border: '1px solid #d8d3c4',
-        borderRadius: 12,
+        background: 'linear-gradient(180deg, #fefdf9 0%, #f8f5ec 100%)',
+        borderRadius: 14,
+        border: '1px solid #e2dac4',
+        boxShadow: '0 10px 30px -10px rgba(0,0,0,0.4)',
+        position: 'relative',
+        overflow: 'hidden',
+        color: INK,
       }}
     >
-      {/* Faint paper lines */}
-      <svg className="absolute inset-0 w-full h-full pointer-events-none opacity-30"
-        viewBox="0 0 400 250" preserveAspectRatio="none">
-        {Array.from({ length: 12 }).map((_, i) => (
-          <line key={i} x1="0" y1={i * 22 + 10} x2="400" y2={i * 22 + 10}
-            stroke="#d8d3c4" strokeWidth="0.3" />
-        ))}
-      </svg>
+      {/* Class ribbon in top-right corner */}
+      <div style={{
+        position: 'absolute', top: 14, right: -28, transform: 'rotate(34deg)',
+        background: classColor.bg, color: classColor.fg,
+        padding: '3px 32px', fontFamily: 'Georgia, serif', fontWeight: 700,
+        fontSize: 8, letterSpacing: '0.22em', textAlign: 'center',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+      }}>
+        {classText}
+      </div>
 
-      <div className="relative h-full px-4 py-3 flex flex-col" style={{ color: '#1a1a1a' }}>
+      <div style={{ padding: '14px 18px', height: '100%', display: 'flex', flexDirection: 'column' }}>
         {/* HEADER */}
-        <div className="flex items-start gap-3">
-          <FaaMeatball size={36} />
-          <div className="flex-1">
-            <div className="text-[8px] tracking-[0.3em]" style={{ fontFamily: 'Georgia, serif', color: FAA_BLUE, fontWeight: 700 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <FaaMark size={32} />
+          <div>
+            <div style={{ fontFamily: 'Georgia, serif', color: NAVY, fontWeight: 700, fontSize: 7.5, letterSpacing: '0.28em' }}>
               FEDERAL AVIATION ADMINISTRATION
             </div>
-            <div className="text-[12px] tracking-[0.22em] mt-0.5" style={{ fontFamily: 'Georgia, serif', fontWeight: 700, color: '#1a1a1a' }}>
+            <div style={{ fontFamily: 'Georgia, serif', color: INK, fontWeight: 700, fontSize: 13, letterSpacing: '0.16em', marginTop: 1 }}>
               AIRMAN MEDICAL CERTIFICATE
             </div>
           </div>
-          <div className="text-right">
-            <div className="px-2 py-0.5 text-[8.5px] tracking-[0.18em]"
-              style={{
-                fontFamily: 'Georgia, serif',
-                fontWeight: 700,
-                color: '#1a1a1a',
-                background: classBadgeColor,
-                borderRadius: 2,
-              }}>
-              {classText}
-            </div>
-            {data?.documentNumber && (
-              <div className="text-[8px] mt-0.5 tracking-wider"
-                style={{ fontFamily: 'JetBrains Mono, monospace', color: '#555' }}>
-                {data.documentNumber}
-              </div>
-            )}
+        </div>
+
+        <div style={{ height: 1, background: NAVY, opacity: 0.35, margin: '9px 0 9px' }} />
+
+        {/* BIO ROW */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(12, 1fr)', gap: '6px 12px' }}>
+          <div style={{ gridColumn: 'span 7' }}>
+            <CardField label="Holder Name" value={n.full} accent={GOLD} valueColor={INK} big />
+          </div>
+          <div style={{ gridColumn: 'span 3' }}>
+            <CardField label="Date of Birth" value={dob ? formatLongDate(dob) : null} accent={GOLD} valueColor={INK} />
+          </div>
+          <div style={{ gridColumn: 'span 2' }}>
+            <CardField label="Sex" value={data?.sex} accent={GOLD} valueColor={INK} mono />
+          </div>
+          <div style={{ gridColumn: 'span 6' }}>
+            <CardField label="Date of Examination" value={examDate ? formatLongDate(examDate) : null} accent={GOLD} valueColor={INK} />
+          </div>
+          <div style={{ gridColumn: 'span 4' }}>
+            <CardField label="Date of Issue" value={issued ? formatLongDate(issued) : null} accent={GOLD} valueColor={INK} />
+          </div>
+          <div style={{ gridColumn: 'span 2' }}>
+            <CardField label="Cert No." value={data?.documentNumber} accent={GOLD} valueColor={INK} mono />
           </div>
         </div>
 
-        <div className="h-px mt-2 mb-2" style={{ background: FAA_BLUE, opacity: 0.4 }} />
-
-        {/* BIO ROW */}
-        <div className="grid grid-cols-12 gap-x-2 gap-y-1 text-[10px]">
-          <Field className="col-span-7" label="Holder Name" value={n.full} big />
-          <Field className="col-span-3" label="Date of Birth" value={dob ? formatLongDate(dob) : null} />
-          <Field className="col-span-2" label="Sex" value={data?.sex} mono />
-          <Field className="col-span-6" label="Date of Examination" value={examDate ? formatLongDate(examDate) : null} />
-          <Field className="col-span-6" label="Date of Issue" value={issued ? formatLongDate(issued) : null} />
-        </div>
-
-        {/* EXPIRATION TABLE — the key dynamic feature */}
-        <div className="mt-2 flex-1 min-h-0">
-          <div className="text-[7.5px] tracking-[0.2em] mb-1"
-            style={{ fontFamily: 'JetBrains Mono, monospace', color: FAA_GREEN, fontWeight: 700 }}>
+        {/* EXPIRATION TABLE — the hero feature */}
+        <div style={{ marginTop: 8, flex: 1, minHeight: 0 }}>
+          <div style={{ fontFamily: 'JetBrains Mono, ui-monospace, monospace', fontSize: 7, letterSpacing: '0.22em', color: GOLD, fontWeight: 700, marginBottom: 4 }}>
             EXPIRATION OF PRIVILEGES · 14 CFR 61.23(d){age != null ? ` · AGE AT EXAM ${age}` : ''}
           </div>
           {expirations && expirations.length > 0 ? (
-            <div className="space-y-0.5">
+            <div style={{ borderTop: `0.5px solid #d8cfb2` }}>
               {expirations.map((e) => {
                 const isOps = e.privilege === 'Commercial' || e.privilege === 'ATP';
                 const daysLeft = Math.floor((e.expires.getTime() - Date.now()) / 86400000);
                 const status = daysLeft < 0 ? 'expired' : daysLeft <= 60 ? 'soon' : 'ok';
-                const statusColor = status === 'expired' ? '#b71c1c' : status === 'soon' ? '#bf6b00' : '#2e7d32';
+                const statusColor = status === 'expired' ? '#b71c1c' : status === 'soon' ? '#a66400' : '#2e7d32';
                 return (
-                  <div key={e.privilege}
-                    className="flex items-center justify-between text-[10px]"
-                    style={{ fontFamily: 'JetBrains Mono, monospace', color: isOps ? '#1a1a1a' : '#666' }}>
-                    <span style={{ fontWeight: isOps ? 700 : 400 }}>
-                      {e.privilege.toUpperCase()}
-                      <span style={{ color: '#999', fontWeight: 400 }}> · {e.months}MO</span>
-                      {e.ageAffected && age != null ? <span style={{ color: '#999', fontWeight: 400 }}> · age-restricted</span> : ''}
-                    </span>
-                    <span>
-                      <span style={{ color: '#1a1a1a' }}>{formatLongDate(e.expiresISO).toUpperCase()}</span>
-                      <span className="ml-2" style={{ color: statusColor, fontWeight: 700 }}>
-                        {daysLeft < 0 ? `EXPIRED ${Math.abs(daysLeft)}D` : `${daysLeft}D`}
+                  <div key={e.privilege} style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    padding: '4px 0', borderBottom: `0.5px solid #ede5cc`,
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                      <span style={{
+                        fontFamily: 'Georgia, serif',
+                        fontSize: isOps ? 11 : 10,
+                        fontWeight: isOps ? 700 : 500,
+                        color: isOps ? INK : '#7a7568',
+                        letterSpacing: '0.05em',
+                      }}>
+                        {e.privilege.toUpperCase()}
                       </span>
-                    </span>
+                      <span style={{
+                        fontFamily: 'JetBrains Mono, ui-monospace, monospace',
+                        fontSize: 8,
+                        color: '#999',
+                        letterSpacing: '0.08em',
+                      }}>
+                        {e.months} MO
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+                      <span style={{ fontFamily: 'Georgia, serif', fontSize: 10, color: INK }}>
+                        {formatLongDate(e.expiresISO).toUpperCase()}
+                      </span>
+                      <span style={{
+                        fontFamily: 'JetBrains Mono, ui-monospace, monospace',
+                        fontSize: 9, fontWeight: 700, color: statusColor,
+                        minWidth: 60, textAlign: 'right',
+                      }}>
+                        {daysLeft < 0 ? `EXPIRED ${Math.abs(daysLeft)}D` : `${daysLeft} D`}
+                      </span>
+                    </div>
                   </div>
                 );
               })}
             </div>
           ) : !cls || !examDate ? (
-            <div className="text-[10px] italic" style={{ color: '#999' }}>
+            <div style={{ fontFamily: 'Georgia, serif', fontSize: 10, fontStyle: 'italic', color: '#999' }}>
               Need class + exam date to compute expirations.
             </div>
           ) : !dob ? (
-            <div className="text-[10px]" style={{ color: '#bf6b00' }}>
-              <Info className="w-3 h-3 inline mr-1 -mt-0.5" />
-              Upload passport or driver's license for accurate expiration.
-              Showing under-40 estimates.
+            <div style={{ fontFamily: 'Georgia, serif', fontSize: 10, color: '#a66400', fontStyle: 'italic' }}>
+              <Info style={{ display: 'inline-block', width: 11, height: 11, marginRight: 4, verticalAlign: '-1px' }} />
+              Upload passport or driver's license for accurate age-based expiration.
             </div>
-          ) : (
-            <div className="text-[10px] italic" style={{ color: '#999' }}>
-              No expirations computed.
-            </div>
-          )}
+          ) : null}
         </div>
 
         {/* RESTRICTIONS */}
         {restrictions && (
-          <div className="mt-1 px-2 py-1" style={{ background: '#fff3d6', border: '1px solid #ecd49a' }}>
-            <div className="text-[7px] tracking-[0.2em] mb-0.5" style={{ fontFamily: 'JetBrains Mono, monospace', color: '#7a5a00', fontWeight: 700 }}>
+          <div style={{ marginTop: 6, padding: '5px 8px', background: '#fbf3df', borderLeft: `2px solid ${GOLD}` }}>
+            <div style={{ fontFamily: 'JetBrains Mono, ui-monospace, monospace', fontSize: 7, letterSpacing: '0.22em', color: GOLD, fontWeight: 700, marginBottom: 1 }}>
               LIMITATIONS / RESTRICTIONS
             </div>
-            <div className="text-[10px] leading-snug" style={{ fontFamily: 'Georgia, serif', color: '#1a1a1a' }}>
+            <div style={{ fontFamily: 'Georgia, serif', fontSize: 10, color: INK, lineHeight: 1.3 }}>
               {restrictions}
             </div>
           </div>
         )}
 
-        {/* AME / FOOTER */}
-        <div className="mt-1.5 pt-1.5 border-t flex items-end justify-between" style={{ borderColor: '#d8d3c4' }}>
+        {/* FOOTER */}
+        <div style={{
+          display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between',
+          marginTop: 6, paddingTop: 6, borderTop: `0.5px solid #d8cfb2`,
+        }}>
           <div>
-            <div className="text-[6.5px] tracking-[0.18em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: FAA_GREEN, fontWeight: 700 }}>
+            <div style={{ fontFamily: 'JetBrains Mono, ui-monospace, monospace', fontSize: 6.5, letterSpacing: '0.22em', color: GOLD, fontWeight: 600 }}>
               AVIATION MEDICAL EXAMINER
             </div>
-            <div className="text-[10px]" style={{ fontFamily: 'Georgia, serif', color: '#1a1a1a' }}>
-              {ameName || <span style={{ color: '#aaa', fontStyle: 'italic' }}>—</span>}
-              {ameNumber && <span className="ml-2" style={{ fontFamily: 'JetBrains Mono, monospace', color: '#555' }}>#{ameNumber}</span>}
+            <div style={{ fontFamily: 'Georgia, serif', fontSize: 10, color: INK, marginTop: 1 }}>
+              {ameName || <span style={{ color: '#bbb', fontStyle: 'italic' }}>—</span>}
+              {ameNumber && (
+                <span style={{ fontFamily: 'JetBrains Mono, ui-monospace, monospace', fontSize: 9, color: '#777', marginLeft: 8 }}>
+                  #{ameNumber}
+                </span>
+              )}
             </div>
           </div>
-          <div className="text-[6.5px] tracking-[0.3em] text-right" style={{ fontFamily: 'Georgia, serif', color: FAA_BLUE, fontWeight: 700 }}>
+          <div style={{ fontFamily: 'Georgia, serif', fontSize: 7, letterSpacing: '0.32em', color: NAVY, fontWeight: 700 }}>
             14 CFR 67
           </div>
         </div>
@@ -789,20 +878,24 @@ function MedicalCertificateCard({ data, owner, allDocs }) {
   );
 }
 
-// --- 3. PASSPORT ------------------------------------------------------------
-// Deep navy passport bio-page style with gold Great Seal, photo
-// placeholder, and machine-readable zone at the bottom.
+// =============================================================================
+// 3. PASSPORT
+// =============================================================================
+// Deep navy bio-page styling. Gold shield mark replaces my earlier fake-
+// eagle attempt. Generous spacing, all bio fields visible, MRZ rendered
+// in proper monospace at the bottom.
 
 function PassportCard({ data, owner }) {
   const n = combineName(data, owner);
   const country = data?.passportCountryCode || data?.issuingAuthority || 'USA';
   const passportNo = data?.documentNumber || '';
   const type = data?.passportType || 'P';
-  const NAVY = '#0F1B3D';
+  const NAVY_BG = 'linear-gradient(135deg, #0a1a38 0%, #122a52 100%)';
   const GOLD = '#c5a572';
-  const CREAM = '#f5f0e4';
+  const GOLD_MUTED = '#8a7349';
+  const CREAM = '#f0e8d5';
+  const CREAM_DIM = '#b8ad95';
 
-  // MRZ — use parsed values if present, else build a plausible-looking one.
   const buildMrz = () => {
     if (data?.mrzLine1 && data?.mrzLine2) {
       return { l1: data.mrzLine1, l2: data.mrzLine2 };
@@ -819,133 +912,102 @@ function PassportCard({ data, owner }) {
 
   return (
     <div
-      className="relative overflow-hidden shadow-lg"
       style={{
         aspectRatio: '1.586',
-        background: `linear-gradient(135deg, ${NAVY} 0%, #1B2855 60%, #243370 100%)`,
-        border: '1px solid #0a1228',
-        borderRadius: 12,
+        background: NAVY_BG,
+        borderRadius: 14,
+        border: '1px solid #050d20',
+        boxShadow: '0 10px 30px -10px rgba(0,0,0,0.65)',
         color: CREAM,
+        position: 'relative',
+        overflow: 'hidden',
       }}
     >
-      {/* Subtle weave texture */}
-      <svg className="absolute inset-0 w-full h-full pointer-events-none opacity-20"
-        viewBox="0 0 400 250" preserveAspectRatio="none">
-        {Array.from({ length: 30 }).map((_, i) => (
-          <line key={`h-${i}`} x1="0" y1={i * 9} x2="400" y2={i * 9 + 2}
-            stroke={GOLD} strokeWidth="0.2" />
-        ))}
-        {Array.from({ length: 50 }).map((_, i) => (
-          <line key={`v-${i}`} x1={i * 9} y1="0" x2={i * 9 - 4} y2="250"
-            stroke={GOLD} strokeWidth="0.15" />
-        ))}
-      </svg>
+      {/* Subtle gold edge accent */}
+      <div style={{
+        position: 'absolute', top: 0, left: 0, right: 0, height: 2,
+        background: `linear-gradient(90deg, transparent 0%, ${GOLD} 50%, transparent 100%)`,
+        opacity: 0.4,
+      }} />
 
-      <div className="relative h-full px-4 py-3 flex flex-col">
+      <div style={{ padding: '14px 18px', height: '100%', display: 'flex', flexDirection: 'column' }}>
         {/* HEADER */}
-        <div className="flex items-start gap-3">
-          <GreatSeal size={44} />
-          <div className="flex-1 text-center">
-            <div className="text-[10px] tracking-[0.3em]" style={{ fontFamily: 'Georgia, serif', color: GOLD, fontWeight: 700 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+          <ShieldMark size={42} />
+          <div style={{ flex: 1 }}>
+            <div style={{ fontFamily: 'Georgia, serif', color: GOLD, fontWeight: 700, fontSize: 10, letterSpacing: '0.32em' }}>
               UNITED STATES OF AMERICA
             </div>
-            <div className="text-[7.5px] tracking-[0.4em] mt-0.5" style={{ fontFamily: 'Georgia, serif', color: GOLD, opacity: 0.8 }}>
+            <div style={{ fontFamily: 'Georgia, serif', color: GOLD_MUTED, fontWeight: 600, fontSize: 7, letterSpacing: '0.42em', marginTop: 1, fontStyle: 'italic' }}>
               PASSPORT · PASSEPORT · PASAPORTE
             </div>
           </div>
-          <div className="w-11" />
         </div>
 
-        <div className="h-px mt-2 mb-2" style={{ background: GOLD, opacity: 0.4 }} />
+        <div style={{ height: 0.5, background: GOLD, opacity: 0.35, margin: '8px 0 8px' }} />
 
-        {/* BODY: photo + bio */}
-        <div className="flex gap-3 flex-1 min-h-0">
+        {/* BODY */}
+        <div style={{ display: 'flex', gap: 14, flex: 1, minHeight: 0 }}>
           {/* Photo column */}
-          <div className="w-[28%] flex flex-col gap-1">
-            <div style={{ height: '70%', border: `1px solid ${GOLD}`, opacity: 0.85 }}>
-              <PhotoPlaceholder className="w-full h-full" tone="dark" />
+          <div style={{ width: '28%', display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <div style={{ flex: 1, border: `1px solid ${GOLD}`, overflow: 'hidden' }}>
+              <PhotoFrame tone="dark" />
             </div>
-            <div className="text-[6.5px] text-center tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: GOLD, opacity: 0.7 }}>
-              SIGNATURE
+            <div style={{ height: 0.5, background: GOLD, opacity: 0.5 }} />
+            <div style={{ fontFamily: 'Georgia, serif', fontSize: 7, letterSpacing: '0.28em', color: GOLD_MUTED, textAlign: 'center', fontStyle: 'italic' }}>
+              Signature
             </div>
-            <div className="h-px" style={{ background: GOLD, opacity: 0.4 }} />
           </div>
 
           {/* Data column */}
-          <div className="flex-1 grid grid-cols-12 gap-x-2 gap-y-1.5 text-[10px] min-w-0">
-            <div className="col-span-3">
-              <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: GOLD, opacity: 0.75 }}>Type</div>
-              <div className="text-[12px]" style={{ fontFamily: 'JetBrains Mono, monospace', color: CREAM, fontWeight: 700 }}>{type}</div>
+          <div style={{ flex: 1, display: 'grid', gridTemplateColumns: 'repeat(12, 1fr)', gap: '5px 10px', alignContent: 'start', minWidth: 0 }}>
+            <div style={{ gridColumn: 'span 3' }}>
+              <CardField label="Type" value={type} accent={GOLD_MUTED} valueColor={CREAM} mono />
             </div>
-            <div className="col-span-3">
-              <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: GOLD, opacity: 0.75 }}>Code</div>
-              <div className="text-[12px]" style={{ fontFamily: 'JetBrains Mono, monospace', color: CREAM, fontWeight: 700 }}>{country}</div>
+            <div style={{ gridColumn: 'span 3' }}>
+              <CardField label="Code" value={country} accent={GOLD_MUTED} valueColor={CREAM} mono />
             </div>
-            <div className="col-span-6">
-              <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: GOLD, opacity: 0.75 }}>Passport No.</div>
-              <div className="text-[12px] tracking-wider" style={{ fontFamily: 'JetBrains Mono, monospace', color: CREAM, fontWeight: 700 }}>
-                {passportNo || <span style={{ color: '#888', fontStyle: 'italic', fontWeight: 400 }}>—</span>}
-              </div>
+            <div style={{ gridColumn: 'span 6' }}>
+              <CardField label="Passport No." value={passportNo} accent={GOLD_MUTED} valueColor={CREAM} mono />
             </div>
 
-            <div className="col-span-12">
-              <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: GOLD, opacity: 0.75 }}>Surname</div>
-              <div className="text-[12px]" style={{ fontFamily: 'Georgia, serif', color: CREAM, fontWeight: 600 }}>
-                {n.surname || <span style={{ color: '#888', fontStyle: 'italic' }}>—</span>}
-              </div>
+            <div style={{ gridColumn: 'span 12' }}>
+              <CardField label="Surname" value={n.surname} accent={GOLD_MUTED} valueColor={CREAM} />
             </div>
-            <div className="col-span-12">
-              <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: GOLD, opacity: 0.75 }}>Given Names</div>
-              <div className="text-[12px]" style={{ fontFamily: 'Georgia, serif', color: CREAM, fontWeight: 600 }}>
-                {n.given || <span style={{ color: '#888', fontStyle: 'italic' }}>—</span>}
-              </div>
+            <div style={{ gridColumn: 'span 12' }}>
+              <CardField label="Given Names" value={n.given} accent={GOLD_MUTED} valueColor={CREAM} />
             </div>
 
-            <div className="col-span-4">
-              <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: GOLD, opacity: 0.75 }}>Nationality</div>
-              <div className="text-[10px]" style={{ fontFamily: 'Georgia, serif', color: CREAM }}>
-                {data?.nationality || country || '—'}
-              </div>
+            <div style={{ gridColumn: 'span 5' }}>
+              <CardField label="Nationality" value={data?.nationality || country} accent={GOLD_MUTED} valueColor={CREAM} />
             </div>
-            <div className="col-span-5">
-              <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: GOLD, opacity: 0.75 }}>Date of Birth</div>
-              <div className="text-[10px]" style={{ fontFamily: 'Georgia, serif', color: CREAM }}>
-                {data?.dob ? formatLongDate(data.dob) : <span style={{ color: '#888', fontStyle: 'italic' }}>—</span>}
-              </div>
+            <div style={{ gridColumn: 'span 4' }}>
+              <CardField label="Date of Birth" value={data?.dob ? formatLongDate(data.dob) : null} accent={GOLD_MUTED} valueColor={CREAM} />
             </div>
-            <div className="col-span-3">
-              <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: GOLD, opacity: 0.75 }}>Sex</div>
-              <div className="text-[10px]" style={{ fontFamily: 'JetBrains Mono, monospace', color: CREAM, fontWeight: 700 }}>
-                {data?.sex || '—'}
-              </div>
+            <div style={{ gridColumn: 'span 3' }}>
+              <CardField label="Sex" value={data?.sex} accent={GOLD_MUTED} valueColor={CREAM} mono />
             </div>
 
-            <div className="col-span-12">
-              <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: GOLD, opacity: 0.75 }}>Place of Birth</div>
-              <div className="text-[10px]" style={{ fontFamily: 'Georgia, serif', color: CREAM }}>
-                {data?.placeOfBirth || <span style={{ color: '#888', fontStyle: 'italic' }}>—</span>}
-              </div>
+            <div style={{ gridColumn: 'span 12' }}>
+              <CardField label="Place of Birth" value={data?.placeOfBirth} accent={GOLD_MUTED} valueColor={CREAM} />
             </div>
 
-            <div className="col-span-6">
-              <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: GOLD, opacity: 0.75 }}>Date of Issue</div>
-              <div className="text-[10px]" style={{ fontFamily: 'Georgia, serif', color: CREAM }}>
-                {data?.issueDate ? formatLongDate(data.issueDate) : <span style={{ color: '#888', fontStyle: 'italic' }}>—</span>}
-              </div>
+            <div style={{ gridColumn: 'span 6' }}>
+              <CardField label="Date of Issue" value={data?.issueDate ? formatLongDate(data.issueDate) : null} accent={GOLD_MUTED} valueColor={CREAM} />
             </div>
-            <div className="col-span-6">
-              <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: GOLD, opacity: 0.75 }}>Date of Expiration</div>
-              <div className="text-[10px]" style={{ fontFamily: 'Georgia, serif', color: CREAM, fontWeight: 700 }}>
-                {data?.expiration ? formatLongDate(data.expiration) : <span style={{ color: '#888', fontStyle: 'italic', fontWeight: 400 }}>—</span>}
-              </div>
+            <div style={{ gridColumn: 'span 6' }}>
+              <CardField label="Date of Expiration" value={data?.expiration ? formatLongDate(data.expiration) : null} accent={GOLD_MUTED} valueColor={CREAM} />
             </div>
           </div>
         </div>
 
         {/* MRZ */}
-        <div className="mt-2 pt-1.5 border-t" style={{ borderColor: GOLD, borderTopWidth: 1, borderTopStyle: 'solid', opacity: 1 }}>
-          <div className="text-[8.5px] leading-tight tracking-[0.05em]"
-            style={{ fontFamily: 'JetBrains Mono, monospace', color: CREAM, opacity: 0.85, letterSpacing: '0.02em' }}>
+        <div style={{ marginTop: 8, paddingTop: 6, borderTop: `0.5px solid ${GOLD}55` }}>
+          <div style={{
+            fontFamily: 'JetBrains Mono, ui-monospace, monospace',
+            fontSize: 9, color: CREAM, opacity: 0.92, lineHeight: 1.35,
+            letterSpacing: '0.06em',
+          }}>
             <div>{mrz.l1}</div>
             <div>{mrz.l2}</div>
           </div>
@@ -955,10 +1017,12 @@ function PassportCard({ data, owner }) {
   );
 }
 
-// --- 4. DRIVER'S LICENSE ----------------------------------------------------
-// Modern American DL style. Blue header strip with state seal, light
-// background, prominent DL number + expiration, photo placeholder,
-// full address, restrictions, donor/veteran badges.
+// =============================================================================
+// 4. DRIVER'S LICENSE
+// =============================================================================
+// Clean two-tone DL. Navy header strip with state mark, light body with
+// photo placeholder + structured data. No fake holograms; the design
+// carries itself.
 
 function DriversLicenseCard({ data, owner }) {
   const n = combineName(data, owner);
@@ -973,161 +1037,137 @@ function DriversLicenseCard({ data, owner }) {
   const isVeteran = data?.veteran === true;
   const addressLines = formatAddress(data);
 
-  const DARK_BLUE = '#1a4480';
-  const LIGHT_BG = 'linear-gradient(135deg, #f0f4fc 0%, #dfe7f4 60%, #c3d3ea 100%)';
+  const NAVY = '#0a2855';
+  const GOLD = '#a88a4f';
+  const INK = '#1a1a1a';
+  const BG = 'linear-gradient(135deg, #f0f4fb 0%, #d8e2f0 50%, #c0cfe5 100%)';
 
   return (
     <div
-      className="relative overflow-hidden shadow-lg"
       style={{
         aspectRatio: '1.586',
-        background: LIGHT_BG,
-        border: '1px solid #a8b8d0',
-        borderRadius: 12,
-        color: '#1a1a1a',
+        background: BG,
+        borderRadius: 14,
+        border: '1px solid #aebbcc',
+        boxShadow: '0 10px 30px -10px rgba(0,0,0,0.45)',
+        color: INK,
+        position: 'relative',
+        overflow: 'hidden',
       }}
     >
-      {/* Holographic security overlay */}
-      <svg className="absolute inset-0 w-full h-full pointer-events-none opacity-25"
-        viewBox="0 0 400 250" preserveAspectRatio="none">
-        {Array.from({ length: 16 }).map((_, i) => (
-          <line key={i} x1={-50 + i * 30} y1="0" x2={i * 30} y2="250"
-            stroke="#1a4480" strokeWidth="0.4" />
-        ))}
-      </svg>
-
-      {/* Header strip */}
-      <div className="absolute top-0 left-0 right-0 px-3 py-1.5 flex items-center justify-between"
-        style={{ background: DARK_BLUE, color: '#fff' }}>
-        <div className="flex items-center gap-2">
-          <StateSeal size={26} state={state} />
+      {/* Header bar */}
+      <div style={{
+        background: `linear-gradient(90deg, ${NAVY} 0%, #143270 100%)`,
+        padding: '8px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        color: '#fff',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <StateMark size={28} state={state} />
           <div>
-            <div className="text-[10px] tracking-[0.25em]" style={{ fontFamily: 'Georgia, serif', fontWeight: 700 }}>
+            <div style={{ fontFamily: 'Georgia, serif', fontWeight: 700, fontSize: 11.5, letterSpacing: '0.22em' }}>
               {state ? state : 'UNITED STATES'}
             </div>
-            <div className="text-[7px] tracking-[0.28em] opacity-80" style={{ fontFamily: 'Georgia, serif' }}>
+            <div style={{ fontFamily: 'Georgia, serif', fontWeight: 500, fontSize: 7, letterSpacing: '0.34em', color: '#c5a572', marginTop: 1, fontStyle: 'italic' }}>
               DRIVER LICENSE
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-1.5">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           {isVeteran && (
-            <div className="px-1.5 py-0.5 text-[7px] tracking-widest" style={{ background: '#c5a572', color: '#1a1a1a', fontWeight: 700, borderRadius: 2 }}>
+            <span style={{
+              padding: '2px 7px', fontSize: 7, fontWeight: 700, letterSpacing: '0.18em',
+              background: '#c5a572', color: '#1a1a1a', borderRadius: 2,
+              fontFamily: 'Georgia, serif',
+            }}>
               VETERAN
-            </div>
+            </span>
           )}
           {isDonor && (
-            <div className="px-1.5 py-0.5 text-[7px] tracking-widest" style={{ background: '#b71c1c', color: '#fff', fontWeight: 700, borderRadius: 2 }}>
+            <span style={{
+              padding: '2px 7px', fontSize: 7, fontWeight: 700, letterSpacing: '0.18em',
+              background: '#a82121', color: '#fff', borderRadius: 2,
+              fontFamily: 'Georgia, serif',
+            }}>
               ♥ DONOR
-            </div>
+            </span>
           )}
           {cls && (
-            <div className="px-2 py-0.5 text-[10px] tracking-wider"
-              style={{ background: '#c5a572', color: '#1a1a1a', fontWeight: 700, borderRadius: 2, fontFamily: 'JetBrains Mono, monospace' }}>
+            <span style={{
+              padding: '2px 8px', fontSize: 10, fontWeight: 700, letterSpacing: '0.12em',
+              background: '#c5a572', color: '#1a1a1a', borderRadius: 2,
+              fontFamily: 'Georgia, serif',
+            }}>
               CLASS {cls}
-            </div>
+            </span>
           )}
         </div>
       </div>
 
-      <div className="relative h-full pt-10 px-3 pb-2 flex gap-3" style={{ color: '#1a1a1a' }}>
-        {/* Photo column */}
-        <div className="w-[26%] flex flex-col gap-1">
-          <div style={{ height: '78%', border: '1px solid #8090a8' }}>
-            <PhotoPlaceholder className="w-full h-full" tone="light" />
+      <div style={{ padding: '12px 16px', display: 'flex', gap: 14, height: 'calc(100% - 48px)' }}>
+        {/* Photo */}
+        <div style={{ width: '26%', display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div style={{ flex: 1, border: `1px solid #6e7d92`, overflow: 'hidden' }}>
+            <PhotoFrame tone="light" />
           </div>
-          <div className="text-[6px] text-center tracking-[0.2em]"
-            style={{ fontFamily: 'JetBrains Mono, monospace', color: '#5a6478' }}>
-            SIGNATURE
+          <div style={{ height: 0.5, background: '#6e7d92' }} />
+          <div style={{ fontFamily: 'Georgia, serif', fontSize: 6.5, letterSpacing: '0.28em', color: '#5a6478', textAlign: 'center', fontStyle: 'italic' }}>
+            Signature
           </div>
-          <div className="h-px" style={{ background: '#8090a8' }} />
         </div>
 
-        {/* Data column */}
-        <div className="flex-1 grid grid-cols-12 gap-x-2 gap-y-1 text-[10px] min-w-0">
-          <div className="col-span-12">
-            <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: DARK_BLUE, fontWeight: 700 }}>
-              4d DL NO.
+        {/* Data */}
+        <div style={{ flex: 1, display: 'grid', gridTemplateColumns: 'repeat(12, 1fr)', gap: '4px 10px', alignContent: 'start', minWidth: 0 }}>
+          <div style={{ gridColumn: 'span 12' }}>
+            <div style={{ fontFamily: 'JetBrains Mono, ui-monospace, monospace', fontSize: 6.5, letterSpacing: '0.2em', color: NAVY, fontWeight: 700 }}>
+              DL NO.
             </div>
-            <div className="text-[14px] tracking-wider" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, color: DARK_BLUE }}>
+            <div style={{ fontFamily: 'JetBrains Mono, ui-monospace, monospace', fontSize: 14, fontWeight: 700, color: NAVY, letterSpacing: '0.06em' }}>
               {dlNo || <span style={{ color: '#aaa', fontStyle: 'italic', fontWeight: 400 }}>—</span>}
             </div>
           </div>
 
-          <div className="col-span-6">
-            <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: DARK_BLUE, fontWeight: 700 }}>
-              4b EXP
-            </div>
-            <div className="text-[12px]" style={{ fontFamily: 'Georgia, serif', fontWeight: 700 }}>
-              {expires ? formatLongDate(expires) : <span style={{ color: '#aaa', fontStyle: 'italic', fontWeight: 400 }}>—</span>}
-            </div>
+          <div style={{ gridColumn: 'span 6' }}>
+            <CardField label="Expires" value={expires ? formatLongDate(expires) : null} accent={NAVY} valueColor={INK} />
           </div>
-          <div className="col-span-6">
-            <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: DARK_BLUE, fontWeight: 700 }}>
-              4a ISS
-            </div>
-            <div className="text-[12px]" style={{ fontFamily: 'Georgia, serif' }}>
-              {issued ? formatLongDate(issued) : <span style={{ color: '#aaa', fontStyle: 'italic' }}>—</span>}
-            </div>
+          <div style={{ gridColumn: 'span 6' }}>
+            <CardField label="Issued" value={issued ? formatLongDate(issued) : null} accent={NAVY} valueColor={INK} />
           </div>
 
-          <div className="col-span-12 mt-0.5">
-            <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: DARK_BLUE, fontWeight: 700 }}>
-              1 LN, FN
+          <div style={{ gridColumn: 'span 12', marginTop: 1 }}>
+            <div style={{ fontFamily: 'JetBrains Mono, ui-monospace, monospace', fontSize: 6.5, letterSpacing: '0.2em', color: NAVY, fontWeight: 700, marginBottom: 1 }}>
+              NAME
             </div>
-            <div className="text-[12px] leading-tight" style={{ fontFamily: 'Georgia, serif', fontWeight: 700 }}>
+            <div style={{ fontFamily: 'Georgia, serif', fontSize: 12, fontWeight: 700, color: INK }}>
               {n.surname || '—'}{n.given ? `, ${n.given}` : ''}
             </div>
           </div>
 
           {addressLines.length > 0 && (
-            <div className="col-span-12">
-              <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: DARK_BLUE, fontWeight: 700 }}>
-                8 ADDRESS
+            <div style={{ gridColumn: 'span 12' }}>
+              <div style={{ fontFamily: 'JetBrains Mono, ui-monospace, monospace', fontSize: 6.5, letterSpacing: '0.2em', color: NAVY, fontWeight: 700, marginBottom: 1 }}>
+                ADDRESS
               </div>
-              <div className="text-[9.5px] leading-tight" style={{ fontFamily: 'Georgia, serif' }}>
+              <div style={{ fontFamily: 'Georgia, serif', fontSize: 10, lineHeight: 1.3, color: INK }}>
                 {addressLines.map((l, i) => <div key={i}>{l}</div>)}
               </div>
             </div>
           )}
 
-          <div className="col-span-3">
-            <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: DARK_BLUE, fontWeight: 700 }}>3 DOB</div>
-            <div className="text-[10px]" style={{ fontFamily: 'Georgia, serif' }}>
-              {data?.dob ? formatLongDate(data.dob) : '—'}
-            </div>
-          </div>
-          <div className="col-span-2">
-            <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: DARK_BLUE, fontWeight: 700 }}>15 SEX</div>
-            <div className="text-[10px]" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
-              {data?.sex || '—'}
-            </div>
-          </div>
-          <div className="col-span-3">
-            <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: DARK_BLUE, fontWeight: 700 }}>16 HT</div>
-            <div className="text-[10px]" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              {data?.height || '—'}
-            </div>
-          </div>
-          <div className="col-span-2">
-            <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: DARK_BLUE, fontWeight: 700 }}>18 EYES</div>
-            <div className="text-[10px]" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              {data?.eyeColor || '—'}
-            </div>
-          </div>
-          <div className="col-span-2">
-            <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: DARK_BLUE, fontWeight: 700 }}>17 WT</div>
-            <div className="text-[10px]" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              {data?.weight || '—'}
-            </div>
+          <div style={{ gridColumn: 'span 12', display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: '0 8px' }}>
+            <CardField label="DOB" value={data?.dob ? formatLongDate(data.dob) : null} accent={NAVY} valueColor={INK} />
+            <CardField label="Sex" value={data?.sex} accent={NAVY} valueColor={INK} mono />
+            <CardField label="Ht"  value={data?.height} accent={NAVY} valueColor={INK} mono />
+            <CardField label="Wt"  value={data?.weight} accent={NAVY} valueColor={INK} mono />
+            <CardField label="Eyes" value={data?.eyeColor} accent={NAVY} valueColor={INK} mono />
+            <CardField label="Hair" value={data?.hairColor} accent={NAVY} valueColor={INK} mono />
           </div>
 
           {(restrictions || endorsements) && (
-            <div className="col-span-12">
-              <div className="text-[6.5px] tracking-[0.2em]" style={{ fontFamily: 'JetBrains Mono, monospace', color: DARK_BLUE, fontWeight: 700 }}>
-                12 RESTR · 9 END
+            <div style={{ gridColumn: 'span 12' }}>
+              <div style={{ fontFamily: 'JetBrains Mono, ui-monospace, monospace', fontSize: 6.5, letterSpacing: '0.2em', color: NAVY, fontWeight: 700, marginBottom: 1 }}>
+                RESTRICTIONS · ENDORSEMENTS
               </div>
-              <div className="text-[10px] leading-snug" style={{ fontFamily: 'Georgia, serif' }}>
+              <div style={{ fontFamily: 'Georgia, serif', fontSize: 10, color: INK, lineHeight: 1.3 }}>
                 {[restrictions, endorsements].filter(Boolean).join(' · ')}
               </div>
             </div>
@@ -1138,27 +1178,35 @@ function DriversLicenseCard({ data, owner }) {
   );
 }
 
-// --- EMPTY CARD -------------------------------------------------------------
+// =============================================================================
+// EMPTY CARD
+// =============================================================================
+
 function EmptyDocCard({ docType }) {
   const Icon = docType.icon;
   return (
     <div
-      className="relative flex items-center justify-center"
       style={{
         aspectRatio: '1.586',
         background: 'linear-gradient(135deg, rgba(30,192,233,0.04) 0%, rgba(30,192,233,0.01) 100%)',
         border: '1.5px dashed rgba(30,192,233,0.25)',
-        borderRadius: 12,
+        borderRadius: 14,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
       }}
     >
-      <div className="text-center px-6">
-        <Icon className="w-9 h-9 mx-auto mb-2 text-cyan-400/40" />
-        <div className="text-[11px] tracking-[0.25em] text-cyan-300/70"
-          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+      <div style={{ textAlign: 'center', padding: 24 }}>
+        <Icon style={{ width: 36, height: 36, color: 'rgba(30,192,233,0.4)', margin: '0 auto 8px' }} />
+        <div style={{
+          fontFamily: 'JetBrains Mono, ui-monospace, monospace',
+          fontSize: 10, letterSpacing: '0.28em',
+          color: 'rgba(30,192,233,0.75)',
+        }}>
           NO {docType.label.toUpperCase()} ON FILE
         </div>
-        <div className="text-[10px] text-slate-500 mt-1.5"
-          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        <div style={{
+          fontFamily: 'JetBrains Mono, ui-monospace, monospace',
+          fontSize: 9, color: '#65748a', marginTop: 6,
+        }}>
           Upload below to render
         </div>
       </div>
