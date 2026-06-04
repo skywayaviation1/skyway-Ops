@@ -32,6 +32,7 @@ import {
   ChevronDown, ChevronRight, ShieldCheck, Plane, Contact, Stethoscope,
   Search, CheckCircle2, Clock, XCircle, Briefcase, Archive,
   Camera, Award, Globe, CalendarDays, User, Info,
+  Pencil, BellRing, X,
 } from 'lucide-react';
 
 // ============================================================================
@@ -226,15 +227,22 @@ function formatLongDate(s) {
 // erase the front-side's parsed data.
 function mergeDocData(docs) {
   if (!docs?.length) return null;
-  const sorted = [...docs].sort((a, b) => (a.uploadedAt || 0) - (b.uploadedAt || 0));
+  // Separate parsed records from manual-override records. Overrides always
+  // win regardless of timestamp — they represent user-confirmed truth.
+  const parsed = docs.filter((d) => d.fileKind !== 'manual-override');
+  const overrides = docs.filter((d) => d.fileKind === 'manual-override');
+  const sorted = [
+    ...parsed.sort((a, b) => (a.uploadedAt || 0) - (b.uploadedAt || 0)),
+    ...overrides.sort((a, b) => (a.uploadedAt || 0) - (b.uploadedAt || 0)),
+  ];
   const merged = {};
   for (const d of sorted) {
     for (const [k, v] of Object.entries(d)) {
       if (v !== null && v !== undefined && v !== '') merged[k] = v;
     }
   }
-  // Preserve "primary record" reference for things like the canonical fileUrl
-  merged.__primary = sorted[sorted.length - 1];
+  merged.__primary = parsed[parsed.length - 1] || overrides[overrides.length - 1];
+  merged.__hasOverride = overrides.length > 0;
   return merged;
 }
 
@@ -1280,7 +1288,12 @@ function DocTypeSection({ docType, docs, currentUser, allDocs, onError }) {
   const [stagingLabel, setStagingLabel] = useState('');
   const [busy, setBusy] = useState(false);
   const [stage, setStage] = useState('');
+  const [editing, setEditing] = useState(false);
   const fileInputRef = useRef(null);
+
+  // Real file uploads vs manual-override "data only" records. Only real
+  // uploads appear in the FILES list and bulk download.
+  const realDocs = useMemo(() => docs.filter((d) => d.fileKind !== 'manual-override'), [docs]);
 
   const uid = currentUser?.uid || currentUser?.id;
 
@@ -1434,8 +1447,27 @@ function DocTypeSection({ docType, docs, currentUser, allDocs, onError }) {
             style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
             {docType.label.toUpperCase()}
           </h3>
+          {merged?.__hasOverride && (
+            <span className="text-[8px] tracking-widest text-amber-300 border border-amber-500/40 px-1.5 py-0.5"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              EDITED
+            </span>
+          )}
         </div>
-        {merged && <ExpBadge d={merged} allDocs={allDocs} />}
+        <div className="flex items-center gap-2">
+          {merged && <ExpBadge d={merged} allDocs={allDocs} />}
+          {(merged || realDocs.length > 0) && (
+            <button
+              onClick={() => setEditing(true)}
+              className="px-2 py-1 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 text-[10px] tracking-widest"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              title="Edit parsed data"
+            >
+              <Pencil className="w-3 h-3 inline mr-1" />
+              EDIT
+            </button>
+          )}
+        </div>
       </div>
 
       {/* CARD */}
@@ -1450,12 +1482,12 @@ function DocTypeSection({ docType, docs, currentUser, allDocs, onError }) {
       )}
 
       {/* FILES LIST */}
-      {docs.length > 0 && (
+      {realDocs.length > 0 && (
         <div className="space-y-1.5">
           <div className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            FILES ({docs.length})
+            FILES ({realDocs.length})
           </div>
-          {[...docs]
+          {[...realDocs]
             .sort((a, b) => (a.uploadedAt || 0) - (b.uploadedAt || 0))
             .map((d) => (
               <FileRow key={d.id} d={d} onDelete={doDelete} busy={busy} />
@@ -1512,6 +1544,16 @@ function DocTypeSection({ docType, docs, currentUser, allDocs, onError }) {
           <input ref={fileInputRef} type="file" accept="image/*,application/pdf" className="hidden" onChange={onPick} disabled={busy} />
         </label>
       )}
+
+      {editing && (
+        <EditDocModal
+          docType={docType}
+          merged={merged}
+          allDocsForUser={docs}
+          currentUser={currentUser}
+          onClose={() => setEditing(false)}
+        />
+      )}
     </div>
   );
 }
@@ -1566,18 +1608,26 @@ export function PilotDocsTab({ currentUser }) {
           <Loader2 className="w-5 h-5 animate-spin mx-auto mb-2" /> Loading documents...
         </div>
       ) : (
-        <div className="space-y-4">
-          {DOC_TYPES.map((t) => (
-            <DocTypeSection
-              key={t.id}
-              docType={t}
-              docs={byType[t.id] || []}
-              currentUser={currentUser}
-              allDocs={docs}
-              onError={setErr}
-            />
-          ))}
-        </div>
+        <>
+          {/* Crew-only alerts: missing docs + expiration warnings */}
+          <CrewAlerts allDocs={docs} />
+
+          {/* Status snapshot — counts + items needing attention */}
+          <DocStatusPanel allDocs={docs} title="DOCUMENT STATUS" />
+
+          <div className="space-y-4">
+            {DOC_TYPES.map((t) => (
+              <DocTypeSection
+                key={t.id}
+                docType={t}
+                docs={byType[t.id] || []}
+                currentUser={currentUser}
+                allDocs={docs}
+                onError={setErr}
+              />
+            ))}
+          </div>
+        </>
       )}
 
       <p className="text-[10px] text-slate-600 mt-2">
@@ -1813,6 +1863,122 @@ function EmploymentDocsSection({ currentUser, docs, onError }) {
 // ADMIN / OPS: all crew docs on one screen
 // ============================================================================
 
+// Aggregate status summary across ALL crew, rendered above the accordion.
+// Counts how many CREW MEMBERS have at least one doc in each bucket so
+// admin sees "3 crew have expired docs, 5 crew have docs due within 30
+// days" — actionable at the operations level.
+function AdminAggregateStatus({ groups }) {
+  const summary = useMemo(() => {
+    const acc = {
+      expired:  new Map(), // crewName -> [statuses]
+      due15:    new Map(),
+      due30:    new Map(),
+      missing:  new Map(),
+    };
+    for (const g of groups) {
+      const statuses = buildAllStatuses(g.docs);
+      for (const s of statuses) {
+        const target =
+          s.status.kind === STATUS_KIND.EXPIRED ? acc.expired
+          : s.status.kind === STATUS_KIND.DUE_15 ? acc.due15
+          : s.status.kind === STATUS_KIND.DUE_30 ? acc.due30
+          : s.status.kind === STATUS_KIND.MISSING ? acc.missing
+          : null;
+        if (!target) continue;
+        if (!target.has(g.uid)) target.set(g.uid, { name: g.name, items: [] });
+        target.get(g.uid).items.push(s);
+      }
+    }
+    return acc;
+  }, [groups]);
+
+  const buckets = [
+    { key: 'expired', label: 'EXPIRED',    map: summary.expired, color: 'red' },
+    { key: 'due15',   label: 'DUE ≤15D',  map: summary.due15,   color: 'orange' },
+    { key: 'due30',   label: 'DUE ≤30D',  map: summary.due30,   color: 'amber' },
+    { key: 'missing', label: 'MISSING',    map: summary.missing, color: 'fuchsia' },
+  ];
+
+  const tone = {
+    red:     { border: 'border-red-500/50',     bg: 'bg-red-500/15',     fg: 'text-red-200',     num: 'text-red-300' },
+    orange:  { border: 'border-orange-500/50',  bg: 'bg-orange-500/15',  fg: 'text-orange-200',  num: 'text-orange-300' },
+    amber:   { border: 'border-amber-500/50',   bg: 'bg-amber-500/15',   fg: 'text-amber-200',   num: 'text-amber-300' },
+    fuchsia: { border: 'border-fuchsia-500/50', bg: 'bg-fuchsia-500/15', fg: 'text-fuchsia-200', num: 'text-fuchsia-300' },
+  };
+
+  const [openBucket, setOpenBucket] = useState(null);
+
+  return (
+    <div className="border border-slate-800 bg-slate-950/40 p-3">
+      <div className="text-[10px] tracking-[0.28em] text-slate-500 mb-2"
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        FLEET STATUS · {groups.length} CREW
+      </div>
+      <div className="grid grid-cols-4 gap-2">
+        {buckets.map((b) => {
+          const t = tone[b.color];
+          const crewCount = b.map.size;
+          const itemCount = Array.from(b.map.values()).reduce((n, v) => n + v.items.length, 0);
+          const isOpen = openBucket === b.key;
+          return (
+            <button key={b.key}
+              onClick={() => setOpenBucket(isOpen ? null : b.key)}
+              className={`${t.border} ${t.bg} border px-2 py-1.5 text-left transition ${isOpen ? 'ring-2 ring-cyan-400/40' : 'hover:brightness-110'}`}>
+              <div className={`text-[8px] tracking-[0.18em] ${t.fg}`}
+                style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
+                {b.label}
+              </div>
+              <div className="flex items-baseline gap-2">
+                <div className={`text-xl ${t.num}`}
+                  style={{ fontFamily: 'Bebas Neue, sans-serif', lineHeight: 1 }}>
+                  {itemCount}
+                </div>
+                <div className={`text-[9px] ${t.fg}`}
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  · {crewCount} CREW
+                </div>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Drill-down list when a bucket is selected */}
+      {openBucket && (
+        <div className="mt-3 space-y-1">
+          {Array.from(buckets.find((b) => b.key === openBucket).map.entries()).length === 0 ? (
+            <div className="text-[11px] text-slate-500 italic"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              No items in this bucket.
+            </div>
+          ) : (
+            Array.from(buckets.find((b) => b.key === openBucket).map.entries()).map(([uid, v]) => (
+              <div key={uid}
+                className="flex items-start justify-between gap-2 border border-slate-800 bg-slate-900/40 px-2 py-1.5">
+                <div className="min-w-0">
+                  <div className="text-[12px] text-slate-100"
+                    style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
+                    {v.name}
+                  </div>
+                  <div className="text-[10px] text-slate-400 mt-0.5"
+                    style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    {v.items.map((s) => {
+                      const d = s.status.kind === STATUS_KIND.MISSING ? 'not uploaded'
+                        : s.status.kind === STATUS_KIND.EXPIRED ? `expired ${Math.abs(s.status.days)}d ago`
+                        : `${s.status.days}d`;
+                      return `${s.docType.label}: ${d}`;
+                    }).join('  ·  ')}
+                  </div>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function AllCrewDocs({ currentUser, users = [] }) {
   const [docs, setDocs] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1876,6 +2042,11 @@ export function AllCrewDocs({ currentUser, users = [] }) {
         </div>
       </div>
 
+      {/* AGGREGATE STATUS across all crew — counts expired/due/missing fleet-wide */}
+      {!loading && groups.length > 0 && (
+        <AdminAggregateStatus groups={groups} />
+      )}
+
       {loading ? (
         <div className="p-8 text-center text-slate-500"><Loader2 className="w-5 h-5 animate-spin mx-auto mb-2" /> Loading…</div>
       ) : groups.length === 0 ? (
@@ -1902,7 +2073,7 @@ export function AllCrewDocs({ currentUser, users = [] }) {
                   <div className="flex items-center gap-3 shrink-0">
                     <div className="hidden sm:flex items-center gap-1">
                       {DOC_TYPES.map((t) => {
-                        const has = groupedByType[t.id]?.length > 0;
+                        const has = (groupedByType[t.id] || []).some((d) => d.fileKind !== 'manual-override');
                         return (
                           <span key={t.id} title={`${t.label}: ${has ? `${groupedByType[t.id].length} file(s)` : 'missing'}`}
                             className={`w-2 h-2 rounded-full ${has ? 'bg-emerald-500' : 'bg-slate-700'}`} />
@@ -1910,7 +2081,7 @@ export function AllCrewDocs({ currentUser, users = [] }) {
                       })}
                     </div>
                     <span className="text-[11px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                      {g.docs.length} FILE{g.docs.length === 1 ? '' : 'S'}
+                      {g.docs.filter((d) => d.fileKind !== 'manual-override').length} FILE{g.docs.length === 1 ? '' : 'S'}
                     </span>
                     {flags.length > 0 && (
                       <span className={`w-2 h-2 rounded-full ${hasExpired ? 'bg-red-500' : 'bg-amber-400'}`} title={hasExpired ? 'Has expired docs' : 'Has docs expiring soon'} />
@@ -1920,6 +2091,9 @@ export function AllCrewDocs({ currentUser, users = [] }) {
 
                 {isOpen && (
                   <div className="border-t border-slate-800 p-3 space-y-3">
+                    {/* Per-crew status snapshot */}
+                    <DocStatusPanel allDocs={g.docs} title={`${g.name.toUpperCase()} · STATUS`} />
+
                     <BulkDownloadButton crewUid={g.uid} crewName={g.name} docs={g.docs} />
 
                     {/* Cards + files per doc type */}
@@ -2004,6 +2178,572 @@ export function AllCrewDocs({ currentUser, users = [] }) {
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+// ============================================================================
+// DOC STATUS COMPUTATION
+// ============================================================================
+// Single source of truth for "is this doc OK, due soon, or expired?" Used by
+// the status panel, crew alerts, and overall summaries. Honors:
+//   - Airman cert never expires
+//   - Medical: COMMERCIAL privilege expiration (per 14 CFR 61.23(d))
+//   - Passport / DL: parsed `expiration` field
+
+const STATUS_KIND = {
+  EXPIRED: 'expired',
+  DUE_15:  'due_15',     // 0..15 days
+  DUE_30:  'due_30',     // 16..30 days
+  OK:      'ok',          // 31+ days
+  NO_EXPIRY: 'no_expiry', // cert
+  UNKNOWN:  'unknown',    // missing data
+  MISSING:  'missing',    // no docs uploaded
+};
+
+function statusFromDays(days) {
+  if (days < 0)       return { kind: STATUS_KIND.EXPIRED, days };
+  if (days <= 15)     return { kind: STATUS_KIND.DUE_15,  days };
+  if (days <= 30)     return { kind: STATUS_KIND.DUE_30,  days };
+  return { kind: STATUS_KIND.OK, days };
+}
+
+// Compute the operative expiration status for ONE doc type given its
+// merged data + the full doc set (for cross-doc DOB lookup on medical).
+function computeDocTypeStatus(docTypeId, merged, allDocs) {
+  if (!merged) return { kind: STATUS_KIND.MISSING, days: null, expDate: null };
+  if (docTypeId === 'certificate') {
+    return { kind: STATUS_KIND.NO_EXPIRY, days: null, expDate: null };
+  }
+  if (docTypeId === 'medical') {
+    const dob = findUserDob(allDocs);
+    const exps = calculateMedicalExpirations({
+      medicalClass: merged.medicalClass,
+      issueDate: merged.examinationDate || merged.issueDate,
+      dob,
+    });
+    if (!exps || exps.length === 0) {
+      return { kind: STATUS_KIND.UNKNOWN, days: null, expDate: null };
+    }
+    // Operative date for Skyway = COMMERCIAL (or ATP if class 1, or whatever).
+    const op = exps.find((x) => x.privilege === 'Commercial')
+            || exps.find((x) => x.privilege === 'ATP')
+            || exps[0];
+    const days = Math.floor((op.expires.getTime() - Date.now()) / 86400000);
+    return { ...statusFromDays(days), expDate: op.expiresISO };
+  }
+  // Passport / DL
+  if (!merged.expiration) {
+    return { kind: STATUS_KIND.UNKNOWN, days: null, expDate: null };
+  }
+  const exp = parseISODate(merged.expiration);
+  if (!exp) return { kind: STATUS_KIND.UNKNOWN, days: null, expDate: null };
+  const days = Math.floor((exp.getTime() - Date.now()) / 86400000);
+  return { ...statusFromDays(days), expDate: merged.expiration };
+}
+
+// Build status array for all 4 required doc types, given a flat list of docs
+// for ONE user. Returns: [{ docType, merged, status }] in DOC_TYPES order.
+function buildAllStatuses(allDocs) {
+  // Group by docType (excluding employment + manual-override here is handled
+  // inside mergeDocData)
+  const byType = {};
+  for (const d of allDocs) {
+    if (d.docType === EMPLOYMENT_DOC_TYPE_ID) continue;
+    (byType[d.docType] = byType[d.docType] || []).push(d);
+  }
+  return DOC_TYPES.map((t) => {
+    const list = byType[t.id] || [];
+    // For "missing" detection we need to know if there's at least one real
+    // upload — overrides alone shouldn't count as "have it on file."
+    const realUploads = list.filter((d) => d.fileKind !== 'manual-override');
+    const merged = mergeDocData(list);
+    const status = computeDocTypeStatus(t.id, merged, allDocs);
+    return {
+      docType: t,
+      merged,
+      status: realUploads.length === 0 ? { kind: STATUS_KIND.MISSING, days: null, expDate: null } : status,
+      fileCount: realUploads.length,
+    };
+  });
+}
+
+// ============================================================================
+// DOC STATUS PANEL — bucket summary across all 4 doc types
+// ============================================================================
+// Used at the top of crew view (their own docs) and admin view (per-crew or
+// aggregated). Renders four colored count buckets: EXPIRED · ≤15D · ≤30D · OK.
+// Compact mode = single horizontal strip, expanded = also lists which docs.
+
+function DocStatusPanel({ allDocs, compact = false, title = 'STATUS' }) {
+  const statuses = useMemo(() => buildAllStatuses(allDocs), [allDocs]);
+
+  const buckets = useMemo(() => {
+    const out = { expired: [], due15: [], due30: [], ok: [], missing: [], unknown: [], noExpiry: [] };
+    for (const s of statuses) {
+      switch (s.status.kind) {
+        case STATUS_KIND.EXPIRED:   out.expired.push(s); break;
+        case STATUS_KIND.DUE_15:    out.due15.push(s); break;
+        case STATUS_KIND.DUE_30:    out.due30.push(s); break;
+        case STATUS_KIND.OK:        out.ok.push(s); break;
+        case STATUS_KIND.MISSING:   out.missing.push(s); break;
+        case STATUS_KIND.NO_EXPIRY: out.noExpiry.push(s); break;
+        default:                    out.unknown.push(s); break;
+      }
+    }
+    return out;
+  }, [statuses]);
+
+  const counts = [
+    { label: 'EXPIRED',   n: buckets.expired.length, color: 'red',     items: buckets.expired },
+    { label: 'DUE ≤15D',  n: buckets.due15.length,   color: 'orange',  items: buckets.due15 },
+    { label: 'DUE ≤30D',  n: buckets.due30.length,   color: 'amber',   items: buckets.due30 },
+    { label: 'MISSING',   n: buckets.missing.length, color: 'fuchsia', items: buckets.missing },
+    { label: 'OK',        n: buckets.ok.length,      color: 'emerald', items: buckets.ok },
+  ];
+
+  const tone = {
+    red:     { border: 'border-red-500/50',     bg: 'bg-red-500/15',     fg: 'text-red-200',     num: 'text-red-300' },
+    orange:  { border: 'border-orange-500/50',  bg: 'bg-orange-500/15',  fg: 'text-orange-200',  num: 'text-orange-300' },
+    amber:   { border: 'border-amber-500/50',   bg: 'bg-amber-500/15',   fg: 'text-amber-200',   num: 'text-amber-300' },
+    fuchsia: { border: 'border-fuchsia-500/50', bg: 'bg-fuchsia-500/15', fg: 'text-fuchsia-200', num: 'text-fuchsia-300' },
+    emerald: { border: 'border-emerald-500/50', bg: 'bg-emerald-500/15', fg: 'text-emerald-200', num: 'text-emerald-300' },
+  };
+
+  return (
+    <div className="border border-slate-800 bg-slate-950/40 p-3">
+      <div className="text-[10px] tracking-[0.28em] text-slate-500 mb-2"
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        {title}
+      </div>
+      <div className="grid grid-cols-5 gap-2">
+        {counts.map((c) => {
+          const t = tone[c.color];
+          return (
+            <div key={c.label} className={`${t.border} ${t.bg} border px-2 py-1.5`}>
+              <div className={`text-[8px] tracking-[0.18em] ${t.fg}`}
+                style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
+                {c.label}
+              </div>
+              <div className={`text-xl ${t.num}`}
+                style={{ fontFamily: 'Bebas Neue, sans-serif', lineHeight: 1 }}>
+                {c.n}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {!compact && (
+        <div className="mt-3 space-y-1">
+          {counts.flatMap((c) => c.items).length === 0 ? (
+            <div className="text-[11px] text-slate-500 italic"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              No items requiring attention.
+            </div>
+          ) : (
+            counts.filter((c) => c.color !== 'emerald').flatMap((c) => c.items.map((s) => (
+              <div key={`${c.label}-${s.docType.id}`}
+                className={`flex items-center justify-between text-[11px] border ${tone[c.color].border} bg-slate-900/40 px-2 py-1`}>
+                <div className="flex items-center gap-2 min-w-0">
+                  <s.docType.icon className={`w-3.5 h-3.5 ${tone[c.color].fg} shrink-0`} />
+                  <span className="text-slate-200 truncate"
+                    style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                    {s.docType.label}
+                  </span>
+                </div>
+                <span className={`text-[10px] tracking-wider ${tone[c.color].num} shrink-0`}
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  {s.status.kind === STATUS_KIND.MISSING ? 'NOT UPLOADED'
+                    : s.status.kind === STATUS_KIND.EXPIRED ? `EXPIRED ${Math.abs(s.status.days)}D AGO · ${formatLongDate(s.status.expDate)}`
+                    : `${s.status.days}D · ${formatLongDate(s.status.expDate)}`}
+                </span>
+              </div>
+            )))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// CREW ALERTS — banners only shown to the pilot for their OWN docs
+// ============================================================================
+// Two alerts:
+//   1) MISSING — they haven't uploaded a required doc type
+//   2) EXPIRING — at least one doc is expired or within 30 days
+// Dismissible per session via a small X. Re-renders on the next page load.
+
+function CrewAlerts({ allDocs }) {
+  const [dismissed, setDismissed] = useState({ missing: false, expiring: false });
+  const statuses = useMemo(() => buildAllStatuses(allDocs), [allDocs]);
+
+  const missing = statuses.filter((s) => s.status.kind === STATUS_KIND.MISSING);
+  const expiringOrDead = statuses.filter((s) =>
+    s.status.kind === STATUS_KIND.EXPIRED
+    || s.status.kind === STATUS_KIND.DUE_15
+    || s.status.kind === STATUS_KIND.DUE_30
+  );
+
+  if (missing.length === 0 && expiringOrDead.length === 0) return null;
+
+  return (
+    <div className="space-y-2">
+      {missing.length > 0 && !dismissed.missing && (
+        <div className="relative border border-fuchsia-500/40 bg-fuchsia-500/10 p-3 pr-9">
+          <button
+            onClick={() => setDismissed((p) => ({ ...p, missing: true }))}
+            className="absolute top-2 right-2 text-fuchsia-300 hover:text-fuchsia-100"
+            aria-label="Dismiss">
+            <X className="w-3.5 h-3.5" />
+          </button>
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 text-fuchsia-300 mt-0.5 shrink-0" />
+            <div className="min-w-0">
+              <div className="text-[11px] tracking-[0.22em] text-fuchsia-200 mb-1"
+                style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
+                MISSING DOCUMENTS
+              </div>
+              <div className="text-[12px] text-slate-100"
+                style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                You haven't uploaded:{' '}
+                <span className="font-semibold text-fuchsia-100">
+                  {missing.map((s) => s.docType.label).join(' · ')}
+                </span>
+              </div>
+              <div className="text-[11px] text-slate-400 mt-1"
+                style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                Skyway needs all four documents on file. Scroll down to upload.
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {expiringOrDead.length > 0 && !dismissed.expiring && (
+        <div className="relative border border-amber-500/40 bg-amber-500/10 p-3 pr-9">
+          <button
+            onClick={() => setDismissed((p) => ({ ...p, expiring: true }))}
+            className="absolute top-2 right-2 text-amber-300 hover:text-amber-100"
+            aria-label="Dismiss">
+            <X className="w-3.5 h-3.5" />
+          </button>
+          <div className="flex items-start gap-2">
+            <BellRing className="w-4 h-4 text-amber-300 mt-0.5 shrink-0" />
+            <div className="min-w-0 flex-1">
+              <div className="text-[11px] tracking-[0.22em] text-amber-200 mb-1"
+                style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
+                EXPIRATION WARNINGS
+              </div>
+              <div className="space-y-0.5">
+                {expiringOrDead.map((s) => {
+                  const isExpired = s.status.kind === STATUS_KIND.EXPIRED;
+                  const isCritical = isExpired || s.status.kind === STATUS_KIND.DUE_15;
+                  return (
+                    <div key={s.docType.id} className="text-[12px] flex items-center gap-2"
+                      style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                      <s.docType.icon className={`w-3.5 h-3.5 shrink-0 ${isCritical ? 'text-red-300' : 'text-amber-300'}`} />
+                      <span className="text-slate-100 font-medium">{s.docType.label}</span>
+                      <span className={isCritical ? 'text-red-300' : 'text-amber-200'}>
+                        {isExpired
+                          ? `expired ${Math.abs(s.status.days)} days ago (${formatLongDate(s.status.expDate)})`
+                          : `expires ${formatLongDate(s.status.expDate)} — ${s.status.days} day${s.status.days === 1 ? '' : 's'} away`}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// EDIT DOC MODAL — manual override of parsed fields
+// ============================================================================
+// Opens from a pencil button on each DocTypeSection. Form is pre-filled with
+// current merged values. Saving writes/updates a per-(uid, docType) record
+// with fileKind: 'manual-override' that always wins in mergeDocData.
+
+// Build a stable, deterministic id for the override record.
+function overrideDocId(uid, docTypeId) {
+  return `override-${uid}-${docTypeId}`;
+}
+
+// Find the existing override doc, if any.
+function findOverrideDoc(docs, docTypeId) {
+  return (docs || []).find((d) => d.fileKind === 'manual-override' && d.docType === docTypeId) || null;
+}
+
+// Editable field config per doc type. Order matters — it's the rendering order.
+// Each entry: { key, label, type, options?, span? }
+const EDIT_FIELDS = {
+  certificate: [
+    { key: 'holderName',     label: 'Holder Name (as printed)', type: 'text', span: 12 },
+    { key: 'surname',        label: 'Surname',          type: 'text', span: 6 },
+    { key: 'givenNames',     label: 'Given Names',      type: 'text', span: 6 },
+    { key: 'documentNumber', label: 'Certificate No.',  type: 'text', span: 6, mono: true },
+    { key: 'certType',       label: 'Grade',            type: 'select', span: 6, options: ['', 'ATP', 'Commercial', 'Private', 'Student', 'Sport', 'Recreational', 'Flight Instructor'] },
+    { key: 'issueDate',      label: 'Date of Issue',    type: 'date', span: 6 },
+    { key: 'dob',            label: 'Date of Birth',    type: 'date', span: 6 },
+    { key: 'sex',            label: 'Sex',              type: 'select', span: 3, options: ['', 'M', 'F', 'X'] },
+    { key: 'nationality',    label: 'Nationality',      type: 'text', span: 3 },
+    { key: 'height',         label: 'Height',           type: 'text', span: 3 },
+    { key: 'weight',         label: 'Weight',           type: 'text', span: 3 },
+    { key: 'hairColor',      label: 'Hair',             type: 'text', span: 3 },
+    { key: 'eyeColor',       label: 'Eyes',             type: 'text', span: 3 },
+    { key: 'addressLine1',   label: 'Address Line 1',   type: 'text', span: 8 },
+    { key: 'addressLine2',   label: 'Apt / Suite',      type: 'text', span: 4 },
+    { key: 'addressCity',    label: 'City',             type: 'text', span: 5 },
+    { key: 'addressState',   label: 'State',            type: 'text', span: 3 },
+    { key: 'addressZip',     label: 'ZIP',              type: 'text', span: 4 },
+    { key: 'ratings',        label: 'Ratings',          type: 'textarea', span: 12 },
+    { key: 'limitations',    label: 'Limitations',      type: 'textarea', span: 12 },
+  ],
+  medical: [
+    { key: 'holderName',         label: 'Holder Name',        type: 'text', span: 12 },
+    { key: 'documentNumber',     label: 'Certificate No.',    type: 'text', span: 6, mono: true },
+    { key: 'medicalClass',       label: 'Class',              type: 'select', span: 6, options: ['', '1', '2', '3'] },
+    { key: 'examinationDate',    label: 'Date of Examination',type: 'date', span: 6 },
+    { key: 'issueDate',          label: 'Date of Issue',      type: 'date', span: 6 },
+    { key: 'sex',                label: 'Sex',                type: 'select', span: 3, options: ['', 'M', 'F', 'X'] },
+    { key: 'dob',                label: 'Date of Birth',      type: 'date', span: 9 },
+    { key: 'ameName',            label: 'AME Name',           type: 'text', span: 8 },
+    { key: 'ameNumber',          label: 'AME Number',         type: 'text', span: 4, mono: true },
+    { key: 'medicalRestrictions',label: 'Restrictions',       type: 'textarea', span: 12 },
+  ],
+  passport: [
+    { key: 'surname',              label: 'Surname',         type: 'text', span: 12 },
+    { key: 'givenNames',           label: 'Given Names',     type: 'text', span: 12 },
+    { key: 'documentNumber',       label: 'Passport No.',    type: 'text', span: 6, mono: true },
+    { key: 'passportCountryCode',  label: 'Country Code',    type: 'text', span: 3, mono: true },
+    { key: 'passportType',         label: 'Type',            type: 'text', span: 3, mono: true },
+    { key: 'nationality',          label: 'Nationality',     type: 'text', span: 6 },
+    { key: 'sex',                  label: 'Sex',             type: 'select', span: 3, options: ['', 'M', 'F', 'X'] },
+    { key: 'dob',                  label: 'Date of Birth',   type: 'date', span: 3 },
+    { key: 'placeOfBirth',         label: 'Place of Birth',  type: 'text', span: 12 },
+    { key: 'issueDate',            label: 'Date of Issue',   type: 'date', span: 6 },
+    { key: 'expiration',           label: 'Date of Expiration', type: 'date', span: 6 },
+    { key: 'issuingAuthorityFull', label: 'Issuing Authority', type: 'text', span: 12 },
+  ],
+  drivers_license: [
+    { key: 'surname',          label: 'Surname',        type: 'text', span: 6 },
+    { key: 'givenNames',       label: 'Given Names',    type: 'text', span: 6 },
+    { key: 'documentNumber',   label: 'DL Number',      type: 'text', span: 6, mono: true },
+    { key: 'licenseClass',     label: 'Class',          type: 'text', span: 3, mono: true },
+    { key: 'issuingAuthority', label: 'State',          type: 'text', span: 3, mono: true },
+    { key: 'issueDate',        label: 'Date of Issue',  type: 'date', span: 6 },
+    { key: 'expiration',       label: 'Expiration',     type: 'date', span: 6 },
+    { key: 'dob',              label: 'Date of Birth',  type: 'date', span: 6 },
+    { key: 'sex',              label: 'Sex',            type: 'select', span: 2, options: ['', 'M', 'F', 'X'] },
+    { key: 'height',           label: 'Height',         type: 'text', span: 2 },
+    { key: 'weight',           label: 'Weight',         type: 'text', span: 2 },
+    { key: 'eyeColor',         label: 'Eyes',           type: 'text', span: 3 },
+    { key: 'hairColor',        label: 'Hair',           type: 'text', span: 3 },
+    { key: 'addressLine1',     label: 'Address Line 1', type: 'text', span: 8 },
+    { key: 'addressLine2',     label: 'Apt / Suite',    type: 'text', span: 4 },
+    { key: 'addressCity',      label: 'City',           type: 'text', span: 5 },
+    { key: 'addressState',     label: 'State',          type: 'text', span: 3 },
+    { key: 'addressZip',       label: 'ZIP',            type: 'text', span: 4 },
+    { key: 'licenseRestrictions', label: 'Restrictions',   type: 'text', span: 6 },
+    { key: 'licenseEndorsements', label: 'Endorsements',   type: 'text', span: 6 },
+    { key: 'organDonor',       label: 'Organ Donor',    type: 'checkbox', span: 6 },
+    { key: 'veteran',          label: 'Veteran',        type: 'checkbox', span: 6 },
+  ],
+};
+
+function EditDocModal({ docType, merged, allDocsForUser, currentUser, onClose }) {
+  const fields = EDIT_FIELDS[docType.id] || [];
+  const [form, setForm] = useState(() => {
+    const init = {};
+    for (const f of fields) {
+      const v = merged ? merged[f.key] : '';
+      init[f.key] = f.type === 'checkbox' ? Boolean(v) : (v || '');
+    }
+    return init;
+  });
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
+
+  const uid = currentUser?.uid || currentUser?.id;
+  const ownerName = currentUser?.name || currentUser?.displayName || '';
+  const ownerEmail = currentUser?.email || '';
+
+  const setField = (k, v) => setForm((p) => ({ ...p, [k]: v }));
+
+  const onSave = async () => {
+    setSaving(true);
+    setErr('');
+    try {
+      const m = await import('./firebase-pilotdocs.js');
+      // Find existing override on this user's docs
+      const existing = findOverrideDoc(allDocsForUser, docType.id);
+      const id = existing?.id || overrideDocId(uid, docType.id);
+
+      // Build the record. Only include keys that have a value (so empty
+      // form fields fall through to parsed values).
+      const record = {
+        id,
+        uid,
+        docType: docType.id,
+        fileKind: 'manual-override',
+        ownerName,
+        ownerEmail,
+        editedAt: Date.now(),
+        editedBy: uid,
+        uploadedAt: existing?.uploadedAt || Date.now(),
+        // Pad timestamp so override sorts AFTER any current parsed doc;
+        // we already filter by fileKind for the merge order, this is just
+        // a belt-and-suspenders.
+      };
+      for (const f of fields) {
+        const v = form[f.key];
+        if (f.type === 'checkbox') {
+          record[f.key] = Boolean(v);
+        } else if (v !== '' && v != null) {
+          record[f.key] = v;
+        }
+      }
+      await m.savePilotDoc(record);
+      onClose();
+    } catch (e) {
+      setErr(e?.message || 'Save failed');
+      setSaving(false);
+    }
+  };
+
+  const onClearOverride = async () => {
+    if (!window.confirm('Clear all manual edits and revert to AI-parsed values?')) return;
+    setSaving(true);
+    try {
+      const m = await import('./firebase-pilotdocs.js');
+      const existing = findOverrideDoc(allDocsForUser, docType.id);
+      if (existing?.id) await m.deletePilotDocRecord(existing.id);
+      onClose();
+    } catch (e) {
+      setErr(e?.message || 'Clear failed');
+      setSaving(false);
+    }
+  };
+
+  const hasOverride = Boolean(findOverrideDoc(allDocsForUser, docType.id));
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 overflow-y-auto"
+      onClick={onClose}>
+      <div className="bg-slate-950 border border-slate-700 max-w-3xl w-full my-8"
+        onClick={(e) => e.stopPropagation()}>
+        {/* Header */}
+        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
+          <div className="flex items-center gap-2">
+            <docType.icon className="w-4 h-4 text-cyan-300" />
+            <h3 className="text-sm tracking-widest text-slate-100"
+              style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
+              EDIT {docType.label.toUpperCase()}
+            </h3>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-100">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="px-4 py-3 border-b border-slate-800 bg-slate-900/40">
+          <div className="text-[11px] text-slate-400" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+            Edits here override AI-parsed values. Saving creates a manual record that always
+            wins — re-uploads won't overwrite your corrections.
+          </div>
+        </div>
+
+        {/* Form */}
+        <div className="p-4 grid grid-cols-12 gap-3">
+          {fields.map((f) => {
+            const colSpan = `col-span-${f.span || 12}`;
+            const v = form[f.key];
+            return (
+              <div key={f.key} className={colSpan}>
+                <label className="block text-[10px] tracking-widest text-slate-500 mb-1"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  {f.label.toUpperCase()}
+                </label>
+                {f.type === 'textarea' ? (
+                  <textarea
+                    value={v}
+                    onChange={(e) => setField(f.key, e.target.value)}
+                    rows={2}
+                    className="w-full bg-slate-900 border border-slate-700 px-2 py-1.5 text-sm text-slate-100"
+                    style={{ fontFamily: f.mono ? 'JetBrains Mono, monospace' : 'DM Sans, sans-serif' }}
+                  />
+                ) : f.type === 'select' ? (
+                  <select
+                    value={v}
+                    onChange={(e) => setField(f.key, e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 px-2 py-1.5 text-sm text-slate-100"
+                    style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                    {f.options.map((opt) => (
+                      <option key={opt} value={opt}>{opt || '—'}</option>
+                    ))}
+                  </select>
+                ) : f.type === 'checkbox' ? (
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(v)}
+                      onChange={(e) => setField(f.key, e.target.checked)}
+                      className="w-4 h-4"
+                    />
+                    <span className="text-sm text-slate-200" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                      Yes
+                    </span>
+                  </label>
+                ) : (
+                  <input
+                    type={f.type === 'date' ? 'date' : 'text'}
+                    value={v}
+                    onChange={(e) => setField(f.key, e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 px-2 py-1.5 text-sm text-slate-100"
+                    style={{ fontFamily: f.mono ? 'JetBrains Mono, monospace' : 'DM Sans, sans-serif' }}
+                  />
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {err && (
+          <div className="mx-4 mb-3 p-2 border border-red-500/30 bg-red-500/5 text-xs text-red-300">
+            {err}
+          </div>
+        )}
+
+        {/* Footer */}
+        <div className="flex items-center justify-between gap-2 px-4 py-3 border-t border-slate-800 bg-slate-900/40">
+          <div>
+            {hasOverride && (
+              <button onClick={onClearOverride} disabled={saving}
+                className="px-3 py-1.5 border border-red-700/40 text-red-400 hover:bg-red-500/10 text-[11px] tracking-widest disabled:opacity-40"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                CLEAR MANUAL EDITS
+              </button>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={onClose} disabled={saving}
+              className="px-3 py-1.5 border border-slate-700 text-slate-300 hover:bg-slate-800 text-[11px] tracking-widest disabled:opacity-40"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              CANCEL
+            </button>
+            <button onClick={onSave} disabled={saving}
+              className="px-3 py-1.5 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-[11px] tracking-widest font-medium disabled:opacity-40"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {saving ? 'SAVING…' : 'SAVE EDITS'}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
