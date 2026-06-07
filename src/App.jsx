@@ -29,6 +29,12 @@ const MaintenanceLogLazy = lazy(() => import('./MaintenanceLog.jsx'));
 const MELLookupLazy = lazy(() => import('./MELLookup.jsx'));
 const PilotDocsTabLazy = lazy(() => import('./PilotDocs.jsx').then(m => ({ default: m.PilotDocsTab })));
 const AllCrewDocsLazy = lazy(() => import('./PilotDocs.jsx').then(m => ({ default: m.AllCrewDocs })));
+// Wear Watch — tire + brake preflight tracking. Modal + badge are
+// imported eagerly (rendered on every trip detail) but the admin tab
+// and training library are lazy since pilots never see them.
+import { WearCheckBadge, WearCheckModal } from './WearCheck.jsx';
+const WearTabLazy = lazy(() => import('./WearCheck.jsx').then(m => ({ default: m.WearTab })));
+const WearTrainingLibraryLazy = lazy(() => import('./WearCheck.jsx').then(m => ({ default: m.WearTrainingLibrary })));
 // FAA NOTAM badge — small, used inline next to AirportWxBadge. Not lazy
 // since it renders nothing (returns null) for airports without significant
 // NOTAMs, which is most of them. Import cost is minimal.
@@ -47,7 +53,8 @@ import {
   Coffee, ArrowRight, Clock, Shield, X, ScanLine, ChevronLeft,
   Mail, Navigation, Loader2, Wifi, WifiOff, Settings as SettingsIcon,
   Download, Trash2, Plus, FileText, Zap, Radio, AlertCircle, Upload,
-  CheckCheck, UserCheck, Sparkles, Hash, Cloud, Wrench, Hotel, BookOpen, Search
+  CheckCheck, UserCheck, Sparkles, Hash, Cloud, Wrench, Hotel, BookOpen, Search,
+  Activity,
 } from 'lucide-react';
 import { formatLocalTime, formatLocalDate } from './airports.js';
 import {
@@ -4127,6 +4134,12 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   const [etaResult, setEtaResult] = useState(null); // { ok: bool, msg: string }
   // SHARE WITH BROKER flow
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
+  // WEAR CHECK modal state — opened by the badge next to the tail.
+  // `wearModalOpen` toggles the modal; `wearModalType` carries the
+  // inspection type (first_flight | end_of_day | ad_hoc) decided by
+  // the badge based on whether this leg is first/last of the day.
+  const [wearModalOpen, setWearModalOpen] = useState(false);
+  const [wearModalType, setWearModalType] = useState('ad_hoc');
   const geo = useGeolocation();
 
   // Reset tab when switching trips
@@ -4704,6 +4717,33 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   );
   const completedCount = applicableSteps.filter(s => statuses[s.id]).length;
   const nextStep = applicableSteps.find(s => !statuses[s.id]);
+
+  // === WEAR CHECK gating helpers ===
+  // Determine whether THIS leg is the first or last scheduled flight for
+  // its tail in the local calendar day. Drives the WearCheckBadge color
+  // (red when required) and which inspection type the modal opens with.
+  const { isFirstFlightOfDay, isLastFlightOfDay } = useMemo(() => {
+    const myStart = trip?.start instanceof Date ? trip.start : null;
+    if (!myStart || !trip?.info?.tail || !Array.isArray(allTrips)) {
+      return { isFirstFlightOfDay: false, isLastFlightOfDay: false };
+    }
+    const dayKey = myStart.toDateString();
+    const sameDayTailLegs = allTrips
+      .filter(t =>
+        t?.info?.tail === trip.info.tail &&
+        t?.info?.isFlight &&
+        t?.start instanceof Date &&
+        t.start.toDateString() === dayKey
+      )
+      .sort((a, b) => a.start.getTime() - b.start.getTime());
+    if (sameDayTailLegs.length === 0) {
+      return { isFirstFlightOfDay: false, isLastFlightOfDay: false };
+    }
+    return {
+      isFirstFlightOfDay: sameDayTailLegs[0]?.uid === trip.uid,
+      isLastFlightOfDay: sameDayTailLegs[sameDayTailLegs.length - 1]?.uid === trip.uid,
+    };
+  }, [trip?.uid, trip?.info?.tail, trip?.start, allTrips]);
   // Effective pax count: crew-overridden value if set, otherwise iCal value
   // Helper: parse JetInsight DOB string (e.g. "1/21/68") and compute age in years.
   // Returns null if unparseable. 2-digit year heuristic: 00-30 → 2000s, 31-99 → 1900s.
@@ -4941,6 +4981,26 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
           >
             {trip.info.tail}
           </h1>
+          {/* WEAR CHECK badge — renders ONLY on the last scheduled leg of
+              the day for this tail. If the schedule changes (a later leg
+              is added), the badge moves automatically because the
+              isLastFlightOfDay memo re-computes from allTrips. The badge
+              itself decides which check to surface (first-flight vs EOD)
+              based on what's already been done today. */}
+          {trip.info.isFlight && trip.info.tail && isLastFlightOfDay && (
+            <WearCheckBadge
+              tail={trip.info.tail}
+              isFirstFlightOfDay={isFirstFlightOfDay}
+              isLastFlightOfDay={isLastFlightOfDay}
+              currentUser={currentUser}
+              tripId={trip.uid}
+              legId={trip.uid}
+              onOpenModal={({ inspectionType }) => {
+                setWearModalType(inspectionType);
+                setWearModalOpen(true);
+              }}
+            />
+          )}
           <div className="flex items-center gap-2 text-xl text-slate-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
             <div className="flex flex-col">
               <div className="flex items-center gap-1.5">
@@ -5301,6 +5361,18 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
           defaultEmail={brokerEmail}
           currentUser={currentUser}
           onClose={() => setShareDialogOpen(false)}
+        />
+      )}
+      {/* WEAR CHECK modal — preflight tire/brake inspection. Opens from
+          the badge near the tail in the header. */}
+      {wearModalOpen && (
+        <WearCheckModal
+          tail={trip.info.tail}
+          currentUser={currentUser}
+          tripId={trip.uid}
+          legId={trip.uid}
+          inspectionType={wearModalType}
+          onClose={() => setWearModalOpen(false)}
         />
       )}
     </div>
@@ -8138,6 +8210,30 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
     if (!(draft.legs || []).length) {
       alert('Manifest has no legs. Add at least one leg before submitting.');
       return;
+    }
+    // === WEAR CHECK gate ===
+    // Block submission until the end-of-day wear check is complete for this
+    // tail. Defer-with-reason counts as complete (MX is already alerted).
+    if (draft.tail) {
+      try {
+        const wear = await import('./firebase-wear.js');
+        const todays = await wear.getTodayInspections(draft.tail);
+        const eod = wear.checkComplete(draft.tail, todays, 'end_of_day');
+        if (!eod.complete) {
+          alert(
+            'End-of-day wear check is required before submitting this manifest.\n\n' +
+            `Open today's last flight for ${draft.tail} on the SCHEDULE tab and tap ` +
+            'the EOD CHECK REQUIRED badge next to the tail. The check takes about ' +
+            '30 seconds. If conditions prevent a proper check, use DEFER WITH REASON ' +
+            'inside the wear modal.'
+          );
+          return;
+        }
+      } catch (err) {
+        // Don't block submission if the wear module itself failed to load
+        // (e.g. an old cached bundle). Log and proceed.
+        console.warn('[wear] EOD gate check failed; allowing manifest submit:', err);
+      }
     }
     if (!window.confirm(
       'Submit this load manifest? This action is FINAL.\n\n' +
@@ -12776,6 +12872,29 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
                   <CrewBoardV2Lazy currentUser={currentUser} users={users} trips={allTrips} />
                 </Suspense>
               </div>
+            </section>
+          )}
+
+          {isAdminUser && (
+            <section>
+              <h3 className="text-xs tracking-widest text-cyan-400 mb-3" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
+                WEAR WATCH — AI TRAINING (ADMIN)
+              </h3>
+              <p className="text-[11px] text-slate-500 mb-3" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                Upload labeled reference photos of tires + brakes in each
+                wear state. AI compares pilot inspection photos against this
+                set when flagging discrepancies. ~5 photos per status bucket
+                per item per aircraft type is enough to start (~80 total).
+                Until then, AI runs in cold-start mode with capped confidence.
+              </p>
+              <Suspense fallback={
+                <div className="border border-slate-800 bg-slate-900/30 p-3 text-[10px] tracking-widest text-slate-500"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  TRAINING LIBRARY · LOADING…
+                </div>
+              }>
+                <WearTrainingLibraryLazy currentUser={currentUser} />
+              </Suspense>
             </section>
           )}
 
@@ -18265,6 +18384,7 @@ function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, sync
     // MAINT > MEL respectively. Role gating moves into MaintScreen.
     { id: 'ops',      label: 'OPS',       icon: Zap,      roles: ['ops', 'admin'] },
     { id: 'maint',    label: 'MAINT',     icon: AlertTriangle, roles: ['maint', 'ops', 'admin'] },
+    { id: 'wear',     label: 'WEAR',      icon: Activity, roles: ['maint', 'ops', 'admin'] },
     { id: 'users',    label: 'USERS',     icon: Users,    roles: ['ops', 'admin'] },
     { id: 'duty',     label: 'DUTY',      icon: Clock,    roles: ['ops', 'admin'] },
   ];
@@ -24575,6 +24695,15 @@ export default function CharterOps() {
             allTrips={allTrips}
             fleetTails={Array.isArray(config?.fleetTails) ? config.fleetTails : ['N20UF', 'N168ZZ', 'N286N', 'N444AM', 'N651TW', 'N551FP', 'N85AH', 'N525CR']}
           />
+        )}
+
+        {/* === WEAR WATCH SECTION === */}
+        {section === 'wear' && (
+          <div className="flex-1 overflow-y-auto scroll-area p-4 md:p-6">
+            <Suspense fallback={<div className="flex items-center justify-center py-16 text-slate-500"><Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading wear watch...</div>}>
+              <WearTabLazy currentUser={currentUser} />
+            </Suspense>
+          </div>
         )}
 
         {/* === COMMS SECTION === */}

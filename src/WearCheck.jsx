@@ -61,20 +61,26 @@ function StatusPill({ status, size = 'sm' }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// <WearCheckBadge /> — Trip card badge
+// <WearCheckBadge /> — Tail-level wear-check status pill
 // ─────────────────────────────────────────────────────────────────────────────
 //
 // Renders one of:
-//   - RED   "WEAR CHECK REQUIRED" (gate-blocking) for first_flight when not done today
-//   - RED   "EOD CHECK REQUIRED" (gate-blocking) when isLastFlightOfDay && not done today
-//   - AMBER "DEFERRED" if a defer record exists for today
-//   - GRAY  "WEAR CHECK" (always-accessible default)
-// Tapping opens <WearCheckModal />.
+//   - RED   "WEAR CHECK REQUIRED" — first-flight check not done for the tail today
+//   - RED   "EOD CHECK REQUIRED"  — first-flight done, EOD not done yet
+//   - AMBER "WEAR DEFERRED"       — a defer record exists for today
+//   - GREEN "WEAR CHECK · OK"     — both checks complete for today
+// Tapping opens <WearCheckModal /> with the appropriate inspection type.
+//
+// The caller is responsible for deciding WHERE the badge renders — e.g.
+// TripDetail only renders it on the LAST scheduled leg of the day for the
+// tail, so the badge naturally "moves" if a new leg is added later. The
+// `isFirstFlightOfDay` / `isLastFlightOfDay` props are accepted for
+// back-compat but no longer used to gate display inside this component.
 
 export function WearCheckBadge({
   tail,
-  isFirstFlightOfDay,
-  isLastFlightOfDay,
+  isFirstFlightOfDay,    // accepted for back-compat; not used here
+  isLastFlightOfDay,     // accepted for back-compat; not used here
   currentUser,
   tripId,
   legId,
@@ -96,24 +102,39 @@ export function WearCheckBadge({
     [tail, todayInspections],
   );
 
-  const needFirstFlight = isFirstFlightOfDay && !firstFlightStatus.complete;
-  const needEod = isLastFlightOfDay && !eodStatus.complete;
+  // What's needed for THIS tail TODAY, regardless of which leg this is.
+  // The badge surfaces whichever check is most pressing first.
+  const needFirstFlight = !firstFlightStatus.complete;
+  const needEod = firstFlightStatus.complete && !eodStatus.complete;
   const wasDeferred = firstFlightStatus.deferred || eodStatus.deferred;
+  const allDone = firstFlightStatus.complete && eodStatus.complete && !wasDeferred;
 
-  let label, kind;
-  if (needFirstFlight) { label = 'WEAR CHECK REQUIRED'; kind = 'red'; }
-  else if (needEod)    { label = 'EOD CHECK REQUIRED';  kind = 'red'; }
-  else if (wasDeferred){ label = 'WEAR DEFERRED';        kind = 'amber'; }
-  else                 { label = 'WEAR CHECK';            kind = 'gray'; }
+  let label, kind, openType;
+  if (needFirstFlight) {
+    label = 'WEAR CHECK REQUIRED';
+    kind = 'red';
+    openType = 'first_flight';
+  } else if (needEod) {
+    label = 'EOD CHECK REQUIRED';
+    kind = 'red';
+    openType = 'end_of_day';
+  } else if (wasDeferred) {
+    label = 'WEAR DEFERRED';
+    kind = 'amber';
+    openType = 'ad_hoc';
+  } else {
+    // allDone — green confirmation pill, still tappable for ad-hoc re-check
+    label = 'WEAR CHECK · OK';
+    kind = 'green';
+    openType = 'ad_hoc';
+  }
 
   const cls = {
     red:   'bg-red-500/20 border-red-500/60 text-red-200 animate-pulse',
     amber: 'bg-amber-500/15 border-amber-500/50 text-amber-200',
+    green: 'bg-emerald-500/15 border-emerald-500/50 text-emerald-300 hover:bg-emerald-500/20',
     gray:  'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700',
   }[kind];
-
-  // Determine what inspection type to open
-  const openType = needFirstFlight ? 'first_flight' : needEod ? 'end_of_day' : 'ad_hoc';
 
   return (
     <button
