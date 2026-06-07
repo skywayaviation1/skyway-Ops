@@ -31,9 +31,11 @@ import {
   query, where, orderBy, limit, onSnapshot, serverTimestamp,
   Timestamp,
 } from 'firebase/firestore';
-import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage';
+import {
+  getStorage, ref as storageRef, uploadBytes, getDownloadURL,
+} from 'firebase/storage';
 
-import { db, storage } from './firebase.js';
+import { db } from './firebase.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONFIG
@@ -145,7 +147,7 @@ export function rollupStatus(items) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function uploadPhoto(file, path) {
-  const ref = storageRef(storage, path);
+  const ref = storageRef(getStorage(), path);
   await uploadBytes(ref, file, { contentType: file.type || 'image/jpeg' });
   const url = await getDownloadURL(ref);
   return { url, path };
