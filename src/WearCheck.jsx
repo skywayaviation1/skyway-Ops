@@ -33,7 +33,7 @@ import {
   saveWearInspection, markItemReplaced,
   saveTrainingPhoto, deleteTrainingPhoto,
   subscribeAllWearItems, subscribeWearItemsForTail,
-  subscribeWearInspections, subscribeTodayInspections,
+  subscribeWearInspections, subscribeInspectionsForItem, subscribeTodayInspections,
   subscribeTrainingLibrary,
   checkComplete, requestAiAssessment,
 } from './firebase-wear.js';
@@ -566,6 +566,112 @@ function FleetTile({ tail, items, onSelect }) {
   );
 }
 
+// Recent inspection log — horizontal strip of the last 6 photo inspections
+// for ONE wear item. Tap a thumb to enlarge with full metadata. Skips
+// deferred-with-reason entries since they have no photo.
+function WearItemLog({ tail, position, itemType }) {
+  const [inspections, setInspections] = useState([]);
+  const [enlarged, setEnlarged] = useState(null);
+
+  useEffect(() => {
+    if (!tail || !position || !itemType) return;
+    const u = subscribeInspectionsForItem(tail, position, itemType, setInspections, 12);
+    return () => u && u();
+  }, [tail, position, itemType]);
+
+  const withPhotos = inspections.filter((i) => i.photoUrl && !i.isDeferred);
+  if (withPhotos.length === 0) return null;
+
+  return (
+    <div className="mt-3 pt-3 border-t border-slate-800">
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-[9px] tracking-widest text-slate-500"
+          style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
+          WEAR LOG · LAST {Math.min(withPhotos.length, 6)} INSPECTIONS
+        </div>
+      </div>
+      <div className="flex gap-1.5 overflow-x-auto pb-1 scroll-area">
+        {withPhotos.slice(0, 6).map((i) => {
+          const stat = i.pilotStatus || 'good';
+          const tc = STATUS_TAILWIND[stat] || STATUS_TAILWIND.good;
+          const dateLabel = i.inspectedAtMs
+            ? new Date(i.inspectedAtMs).toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' })
+            : '';
+          return (
+            <button
+              key={i.id}
+              onClick={() => setEnlarged(i)}
+              className={`flex-shrink-0 border-2 ${tc.border} bg-slate-900 w-[68px] hover:brightness-125 transition`}
+              title={`${WEAR_STATUS[stat]?.label} · ${i.inspectedAtMs ? new Date(i.inspectedAtMs).toLocaleString() : ''}${i.inspectedByName ? ' · ' + i.inspectedByName : ''}`}
+            >
+              <img src={i.photoUrl} alt="" className="w-full h-14 object-cover" loading="lazy" />
+              <div className={`text-[8px] tracking-widest px-1 py-0.5 ${tc.bg} ${tc.text} text-center font-bold`}
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                {WEAR_STATUS[stat]?.label?.replace('REPLACE SOON', 'REPL') || '—'}
+              </div>
+              <div className="text-[8px] text-slate-500 text-center py-0.5"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                {dateLabel}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Enlarged photo viewer */}
+      {enlarged && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4"
+          onClick={() => setEnlarged(null)}>
+          <div className="max-w-3xl w-full bg-slate-950 border border-slate-700"
+            onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
+              <div>
+                <div className="text-[10px] tracking-widest text-slate-400"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  {enlarged.tail} · {(enlarged.position || '').toUpperCase()} · {(enlarged.itemType || '').toUpperCase()}
+                </div>
+                <div className="text-xs text-slate-300 mt-0.5" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                  {enlarged.inspectedAtMs ? new Date(enlarged.inspectedAtMs).toLocaleString() : '—'}
+                  {enlarged.inspectedByName && <span className="text-slate-500"> · {enlarged.inspectedByName}</span>}
+                </div>
+              </div>
+              <button onClick={() => setEnlarged(null)} className="text-slate-400 hover:text-slate-100">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <img src={enlarged.photoUrl} alt="" className="w-full max-h-[70vh] object-contain bg-slate-900" />
+            <div className="px-4 py-3 border-t border-slate-800 flex items-center justify-between gap-3">
+              <StatusPill status={enlarged.pilotStatus || 'good'} size="lg" />
+              <div className="text-[10px] tracking-widest text-slate-500"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                {INSPECTION_TYPES[enlarged.inspectionType] || enlarged.inspectionType || ''}
+              </div>
+            </div>
+            {enlarged.notes && (
+              <div className="px-4 pb-3 text-[12px] text-slate-300 italic"
+                style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                "{enlarged.notes}"
+              </div>
+            )}
+            {enlarged.aiAssessment && (
+              <div className={`mx-4 mb-3 border ${enlarged.aiAssessment.discrepancy ? 'border-amber-500/40 bg-amber-500/5' : 'border-slate-700 bg-slate-900/40'} px-3 py-2`}>
+                <div className="text-[9px] tracking-widest text-amber-300 mb-1"
+                  style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
+                  AI ASSESSMENT {enlarged.aiAssessment.discrepancy ? '· DISCREPANCY' : ''}
+                </div>
+                <div className="text-[11px] text-slate-200 flex items-center gap-2 flex-wrap">
+                  <StatusPill status={enlarged.aiAssessment.status} />
+                  <span className="text-slate-400 italic">{enlarged.aiAssessment.reasoning}</span>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function WearItemCard({ item, onMarkReplaced, onOpenHistory }) {
   const t = STATUS_TAILWIND[item.status || 'good'];
   const cfg = AIRCRAFT_WEAR_CONFIGS[item.aircraftType];
@@ -607,7 +713,9 @@ function WearItemCard({ item, onMarkReplaced, onOpenHistory }) {
           </div>
         </div>
       )}
-      <div className="flex items-center justify-between gap-2 mt-2">
+      {/* Recent inspection thumbnails — tap any to enlarge */}
+      <WearItemLog tail={item.tail} position={item.position} itemType={item.itemType} />
+      <div className="flex items-center justify-between gap-2 mt-3">
         <button onClick={() => onOpenHistory(item)}
           className="text-[10px] tracking-widest text-slate-400 hover:text-slate-200"
           style={{ fontFamily: 'JetBrains Mono, monospace' }}>
