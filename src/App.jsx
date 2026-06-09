@@ -23786,6 +23786,37 @@ export default function CharterOps() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Auto-refresh the iCal feed every 30 minutes while the app is open
+  // and visible. Pauses when the tab is hidden so we don't hammer the
+  // feed for backgrounded sessions. Wakes back up + immediately fetches
+  // when the tab becomes visible again.
+  useEffect(() => {
+    if (!config?.icalUrl) return;
+    const REFRESH_MS = 30 * 60 * 1000; // 30 minutes
+    let timer = null;
+
+    const tick = () => {
+      if (document.visibilityState !== 'visible') return;
+      autoFetch(config.icalUrl);
+    };
+
+    const onVisChange = () => {
+      if (document.visibilityState === 'visible') {
+        // Coming back to the tab — fetch once, then resume polling.
+        autoFetch(config.icalUrl);
+      }
+    };
+
+    timer = setInterval(tick, REFRESH_MS);
+    document.addEventListener('visibilitychange', onVisChange);
+
+    return () => {
+      if (timer) clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisChange);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config?.icalUrl]);
+
   // Combined trips list: iCal + manual, sorted, filtered by user role.
   // Pilots only see trips where their JetInsight name matches PIC or SIC.
   // Ops and admins see everything.

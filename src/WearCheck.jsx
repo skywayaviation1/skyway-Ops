@@ -62,6 +62,56 @@ function StatusPill({ status, size = 'sm' }) {
   );
 }
 
+// Tappable photo — shows a thumbnail/preview that opens a full-screen
+// lightbox on click. Used everywhere we render inspection photos so the
+// user can always tap through to see detail. Photo fills the lightbox at
+// up to 80vh with object-contain so nothing is cropped.
+function TappablePhoto({ url, label, subtitle, className, alt = '' }) {
+  const [open, setOpen] = useState(false);
+  if (!url) return null;
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="block w-full group relative"
+        title="Tap to enlarge"
+      >
+        <img src={url} alt={alt} className={className} loading="lazy" />
+        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition pointer-events-none" />
+      </button>
+      {open && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/90 p-2 sm:p-4"
+          onClick={() => setOpen(false)}>
+          <div className="max-w-4xl w-full bg-slate-950 border border-slate-700"
+            onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
+              <div className="min-w-0">
+                {label && (
+                  <div className="text-[10px] tracking-widest text-slate-400 truncate"
+                    style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    {label}
+                  </div>
+                )}
+                {subtitle && (
+                  <div className="text-xs text-slate-300 mt-0.5 truncate"
+                    style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                    {subtitle}
+                  </div>
+                )}
+              </div>
+              <button onClick={() => setOpen(false)} className="text-slate-400 hover:text-slate-100 flex-shrink-0 ml-2">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <img src={url} alt={alt} className="w-full max-h-[80vh] object-contain bg-slate-900" />
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // <WearCheckBadge /> — Tail-level wear-check status pill (landings-based)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -420,7 +470,12 @@ export function WearCheckModal({ tail, currentUser, tripId, legId, inspectionTyp
             {/* Photo */}
             {activeDraft.photoUrl ? (
               <div className="relative">
-                <img src={activeDraft.photoUrl} alt="" className="w-full max-h-72 object-contain bg-slate-900 border border-slate-700" />
+                <TappablePhoto
+                  url={activeDraft.photoUrl}
+                  label={`${tail} · ${active.positionLabel.toUpperCase()} · ${ITEM_LABELS[active.itemType]?.toUpperCase()}`}
+                  subtitle="Tap to enlarge"
+                  className="w-full max-h-[55vh] object-contain bg-slate-900 border border-slate-700"
+                />
                 <button onClick={() => setDraft({ photoUrl: null, photoPath: null })}
                   className="absolute top-2 right-2 bg-slate-950/80 text-slate-100 px-2 py-1 text-[10px] tracking-widest border border-slate-700"
                   style={{ fontFamily: 'JetBrains Mono, monospace' }}>
@@ -722,8 +777,12 @@ function WearItemCard({ item, onMarkReplaced, onOpenHistory }) {
         <StatusPill status={item.status || 'good'} />
       </div>
       {item.lastPhotoUrl && (
-        <img src={item.lastPhotoUrl} alt=""
-          className="w-full h-32 object-cover bg-slate-900 border border-slate-700 mb-2" />
+        <TappablePhoto
+          url={item.lastPhotoUrl}
+          label={`${item.tail} · ${posLabel.toUpperCase()} · ${ITEM_LABELS[item.itemType]?.toUpperCase() || item.itemType.toUpperCase()}`}
+          subtitle={item.lastInspectedAtMs ? new Date(item.lastInspectedAtMs).toLocaleString() : ''}
+          className="w-full block bg-slate-900 border border-slate-700 mb-2"
+        />
       )}
       {item.lastNotes && (
         <div className="text-[11px] text-slate-300 italic mb-2"
@@ -895,7 +954,14 @@ function HistoryDrawer({ item, onClose }) {
                   <StatusPill status={r.pilotStatus} />
                 )}
               </div>
-              {r.photoUrl && <img src={r.photoUrl} alt="" className="w-full max-h-48 object-cover bg-slate-900 border border-slate-700 mb-2" />}
+              {r.photoUrl && (
+                <TappablePhoto
+                  url={r.photoUrl}
+                  label={`${r.tail} · ${(r.position || '').toUpperCase()} · ${(r.itemType || '').toUpperCase()}`}
+                  subtitle={`${r.inspectedAtMs ? new Date(r.inspectedAtMs).toLocaleString() : ''}${r.inspectedByName ? ' · ' + r.inspectedByName : ''}`}
+                  className="w-full block bg-slate-900 border border-slate-700 mb-2"
+                />
+              )}
               {r.notes && (
                 <div className="text-[11px] text-slate-300 italic"
                   style={{ fontFamily: 'DM Sans, sans-serif' }}>“{r.notes}”</div>
