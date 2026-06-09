@@ -385,62 +385,75 @@ export async function saveWearInspection({
 }
 
 // Listen to a tail's inspection history (admin detail page).
+// Uses a single-where query (no composite index required). Sort and
+// limit happen client-side — wear-inspections volume per tail is small
+// (a few dozen per month) so this is fine.
 export function subscribeWearInspections(tail, cb, maxRows = 100) {
   const q = query(
     collection(db, 'wear-inspections'),
     where('tail', '==', tail),
-    orderBy('inspectedAtMs', 'desc'),
-    limit(maxRows),
   );
   return onSnapshot(q, (snap) => {
     const rows = [];
     snap.forEach((d) => rows.push({ id: d.id, ...d.data() }));
-    cb(rows);
+    rows.sort((a, b) => (b.inspectedAtMs || 0) - (a.inspectedAtMs || 0));
+    cb(rows.slice(0, maxRows));
   });
 }
 
 // Listen to inspections filtered by position+itemType (for trend chart).
+// Same pattern: single-where, filter + sort + limit on the client to
+// avoid the 4-field composite index this would otherwise require.
 export function subscribeInspectionsForItem(tail, position, itemType, cb, maxRows = 60) {
   const q = query(
     collection(db, 'wear-inspections'),
     where('tail', '==', tail),
-    where('position', '==', position),
-    where('itemType', '==', itemType),
-    orderBy('inspectedAtMs', 'desc'),
-    limit(maxRows),
   );
   return onSnapshot(q, (snap) => {
     const rows = [];
-    snap.forEach((d) => rows.push({ id: d.id, ...d.data() }));
-    cb(rows);
+    snap.forEach((d) => {
+      const data = d.data();
+      if (data.position === position && data.itemType === itemType) {
+        rows.push({ id: d.id, ...data });
+      }
+    });
+    rows.sort((a, b) => (b.inspectedAtMs || 0) - (a.inspectedAtMs || 0));
+    cb(rows.slice(0, maxRows));
   });
 }
 
 // Find today's inspections for a tail (used by gates).
+// Single-where query, filtered client-side by the local date key. Avoids
+// the (tail, inspectedAtLocalDateKey) composite index.
 export async function getTodayInspections(tail) {
   const key = localDateKey();
   const q = query(
     collection(db, 'wear-inspections'),
     where('tail', '==', tail),
-    where('inspectedAtLocalDateKey', '==', key),
   );
   const snap = await getDocs(q);
   const rows = [];
-  snap.forEach((d) => rows.push({ id: d.id, ...d.data() }));
+  snap.forEach((d) => {
+    const data = d.data();
+    if (data.inspectedAtLocalDateKey === key) rows.push({ id: d.id, ...data });
+  });
   return rows;
 }
 
 // Live subscription for today's inspections — used by the trip card badge.
+// Same approach: single-where + client-side date filter.
 export function subscribeTodayInspections(tail, cb) {
   const key = localDateKey();
   const q = query(
     collection(db, 'wear-inspections'),
     where('tail', '==', tail),
-    where('inspectedAtLocalDateKey', '==', key),
   );
   return onSnapshot(q, (snap) => {
     const rows = [];
-    snap.forEach((d) => rows.push({ id: d.id, ...d.data() }));
+    snap.forEach((d) => {
+      const data = d.data();
+      if (data.inspectedAtLocalDateKey === key) rows.push({ id: d.id, ...data });
+    });
     cb(rows);
   });
 }
@@ -594,17 +607,18 @@ export async function saveWearCheckSession({
 }
 
 // Live subscription to the most recent completed session for a tail.
+// Single-where query (no composite index required); sort + take-first
+// happen client-side.
 export function subscribeLatestSession(tail, cb) {
   const q = query(
     collection(db, 'wear-check-sessions'),
     where('tail', '==', tail),
-    orderBy('completedAtMs', 'desc'),
-    limit(1),
   );
   return onSnapshot(q, (snap) => {
-    let row = null;
-    snap.forEach((d) => { row = { id: d.id, ...d.data() }; });
-    cb(row);
+    const rows = [];
+    snap.forEach((d) => rows.push({ id: d.id, ...d.data() }));
+    rows.sort((a, b) => (b.completedAtMs || 0) - (a.completedAtMs || 0));
+    cb(rows[0] || null);
   });
 }
 
