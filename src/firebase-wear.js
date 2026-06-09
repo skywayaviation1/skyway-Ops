@@ -42,6 +42,9 @@ import { db } from './firebase.js';
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Aircraft type per tail. Edit this when the fleet changes.
+// Citations CJ1 and CJ3 are tracked separately so training libraries
+// can hold type-specific reference photos even though their wear items
+// overlap. Update any specific tail to 'cj1' if it's actually a CJ1.
 export const TAIL_AIRCRAFT_TYPES = {
   N168ZZ: 'lear60',
   N444AM: 'cj3',
@@ -53,22 +56,45 @@ export const TAIL_AIRCRAFT_TYPES = {
   N85AH:  'cj3',
 };
 
-// Per-aircraft-type wear configuration. Adding a new airframe = add a row.
+// Items per aircraft type. Three buckets per airframe:
+//   - Landing gear (tires + brakes) — what we started with
+//   - Engines (oil level, one per engine)
+//   - Systems (cockpit + bay gauges that drift between flights)
+//
+// CJ1 and CJ3 share the same wear items (both Citation small-cabin
+// jets with similar systems). Lear 60 differs on the systems set.
 export const AIRCRAFT_WEAR_CONFIGS = {
   cj3: {
     label: 'Citation CJ3',
     positions: [
-      { id: 'nose',   label: 'Nose Gear',   items: ['tire'] },
-      { id: 'main-l', label: 'Main Gear L', items: ['tire', 'brake'] },
-      { id: 'main-r', label: 'Main Gear R', items: ['tire', 'brake'] },
+      { id: 'nose',     label: 'Nose Gear',   items: ['tire'] },
+      { id: 'main-l',   label: 'Main Gear L', items: ['tire', 'brake'] },
+      { id: 'main-r',   label: 'Main Gear R', items: ['tire', 'brake'] },
+      { id: 'engine-l', label: 'Engine L',    items: ['oil'] },
+      { id: 'engine-r', label: 'Engine R',    items: ['oil'] },
+      { id: 'systems',  label: 'Systems',     items: ['oxygen', 'hydSight', 'precharge'] },
+    ],
+  },
+  cj1: {
+    label: 'Citation CJ1',
+    positions: [
+      { id: 'nose',     label: 'Nose Gear',   items: ['tire'] },
+      { id: 'main-l',   label: 'Main Gear L', items: ['tire', 'brake'] },
+      { id: 'main-r',   label: 'Main Gear R', items: ['tire', 'brake'] },
+      { id: 'engine-l', label: 'Engine L',    items: ['oil'] },
+      { id: 'engine-r', label: 'Engine R',    items: ['oil'] },
+      { id: 'systems',  label: 'Systems',     items: ['oxygen', 'hydSight', 'precharge'] },
     ],
   },
   lear60: {
     label: 'Lear 60',
     positions: [
-      { id: 'nose',   label: 'Nose Gear',   items: ['tire'] },
-      { id: 'main-l', label: 'Main Gear L', items: ['tire', 'brake'] },
-      { id: 'main-r', label: 'Main Gear R', items: ['tire', 'brake'] },
+      { id: 'nose',     label: 'Nose Gear',   items: ['tire'] },
+      { id: 'main-l',   label: 'Main Gear L', items: ['tire', 'brake'] },
+      { id: 'main-r',   label: 'Main Gear R', items: ['tire', 'brake'] },
+      { id: 'engine-l', label: 'Engine L',    items: ['oil'] },
+      { id: 'engine-r', label: 'Engine R',    items: ['oil'] },
+      { id: 'systems',  label: 'Systems',     items: ['hydFluid', 'gearAir', 'accumulator'] },
     ],
   },
 };
@@ -92,9 +118,18 @@ export const INSPECTION_TYPES = {
 };
 
 // Item types per position — used when iterating the modal.
+// Tires + brakes are physical wear consumables; the rest are
+// gauges/levels checked visually each flight.
 export const ITEM_LABELS = {
-  tire:  'Tire',
-  brake: 'Brake',
+  tire:        'Tire',
+  brake:       'Brake',
+  oil:         'Oil Level',
+  oxygen:      'Oxygen Gauge',
+  hydSight:    'Hyd Sight Glass',
+  precharge:   'Pre-Charge Pressure',
+  hydFluid:    'Hyd Fluid Level',
+  gearAir:     'Gear Air',
+  accumulator: 'Accumulator',
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -118,6 +153,18 @@ export function expectedWearItemIds(tail) {
     for (const it of p.items) ids.push(wearItemId(tail, p.id, it));
   }
   return ids;
+}
+
+// Same as above but returns {tail, position, itemType} keys directly.
+// Used by checkComplete so it doesn't have to parse delimited IDs back
+// into parts (which broke when item names contained dashes).
+export function expectedWearItemKeys(tail) {
+  const { config } = configForTail(tail);
+  const keys = [];
+  for (const p of config.positions) {
+    for (const it of p.items) keys.push({ tail, position: p.id, itemType: it });
+  }
+  return keys;
 }
 
 // Local-date string (YYYY-MM-DD) in the user's TZ. Used to determine
@@ -408,16 +455,7 @@ export function hasInspectionType(inspections, inspectionType) {
 // matching type (or a defer record at the day level, which we treat as
 // passing the gate but flagging MX).
 export function checkComplete(tail, inspections, inspectionType) {
-  const expected = expectedWearItemIds(tail).map((id) => {
-    const parts = id.split('-');
-    // ids look like "{TAIL}-{POSITION}-{ITEM}" but TAIL contains no
-    // dash; POSITION can be 'nose' or 'main-l' or 'main-r' (has a dash).
-    // Reconstruct: first segment is tail, last is item, middle is position.
-    const tailPart = parts[0];
-    const itemPart = parts[parts.length - 1];
-    const positionPart = parts.slice(1, -1).join('-');
-    return { tail: tailPart, position: positionPart, itemType: itemPart };
-  });
+  const expected = expectedWearItemKeys(tail);
   // Also: if any inspection of this type was deferred, treat the whole
   // check as deferred (still passes gate, MX gets the alert).
   const anyDeferred = inspections.some(

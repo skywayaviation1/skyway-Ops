@@ -35,7 +35,7 @@ import {
   subscribeAllWearItems, subscribeWearItemsForTail,
   subscribeWearInspections, subscribeInspectionsForItem, subscribeTodayInspections,
   subscribeTrainingLibrary,
-  checkComplete, requestAiAssessment,
+  checkComplete, requestAiAssessment, localDateKey,
 } from './firebase-wear.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -64,32 +64,46 @@ function StatusPill({ status, size = 'sm' }) {
 // <WearCheckBadge /> — Tail-level wear-check status pill
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// Renders one of:
-//   - RED   "WEAR CHECK REQUIRED" — first-flight check not done for the tail today
-//   - RED   "EOD CHECK REQUIRED"  — first-flight done, EOD not done yet
-//   - AMBER "WEAR DEFERRED"       — a defer record exists for today
-//   - GREEN "WEAR CHECK · OK"     — both checks complete for today
-// Tapping opens <WearCheckModal /> with the appropriate inspection type.
+// Rendering rules (the caller passes isFirstFlightOfDay / isLastFlightOfDay
+// from the trip's position in the day's tail schedule):
 //
-// The caller is responsible for deciding WHERE the badge renders — e.g.
-// TripDetail only renders it on the LAST scheduled leg of the day for the
-// tail, so the badge naturally "moves" if a new leg is added later. The
-// `isFirstFlightOfDay` / `isLastFlightOfDay` props are accepted for
-// back-compat but no longer used to gate display inside this component.
+//   - LAST leg of the day → badge always shows. Label depends on what's
+//     left to do today: first-flight, EOD, deferred, or all-done OK.
+//
+//   - FIRST leg of the day → badge shows ONLY if the most recent prior
+//     flying day had no EOD check on record AND today's first-flight
+//     hasn't been logged yet. Label = "WEAR CHECK REQUIRED" (red). This
+//     enforces a re-check before flying when we don't have a clean wear
+//     state on file from when the aircraft was last put away.
+//
+//   - Any other leg → badge renders null (no clutter on middle legs).
+//
+// Tap → opens <WearCheckModal /> with the appropriate inspection type.
 
 export function WearCheckBadge({
   tail,
-  isFirstFlightOfDay,    // accepted for back-compat; not used here
-  isLastFlightOfDay,     // accepted for back-compat; not used here
+  isFirstFlightOfDay,
+  isLastFlightOfDay,
   currentUser,
   tripId,
   legId,
   onOpenModal,
 }) {
   const [todayInspections, setTodayInspections] = useState([]);
+  const [recentInspections, setRecentInspections] = useState([]);
+
+  // TODAY's inspections drive the last-leg badge state.
   useEffect(() => {
     if (!tail) return;
     const u = subscribeTodayInspections(tail, setTodayInspections);
+    return () => u && u();
+  }, [tail]);
+
+  // The last ~50 inspections across all days power the prior-EOD-overdue
+  // detection used on the first leg of the day.
+  useEffect(() => {
+    if (!tail) return;
+    const u = subscribeWearInspections(tail, setRecentInspections, 50);
     return () => u && u();
   }, [tail]);
 
@@ -102,32 +116,74 @@ export function WearCheckBadge({
     [tail, todayInspections],
   );
 
-  // What's needed for THIS tail TODAY, regardless of which leg this is.
-  // The badge surfaces whichever check is most pressing first.
+  // Most recent prior FLYING day for this tail (excluding today). If that
+  // day has no EOD record on file we treat the EOD as overdue.
+  // `priorEodOverdueKey` is null when no overdue, or a YYYY-MM-DD string
+  // for the day that's missing its EOD.
+  const priorEodOverdueKey = useMemo(() => {
+    const todayKey = localDateKey();
+    // Distinct prior date keys, sorted newest first.
+    const keys = new Set();
+    for (const i of recentInspections) {
+      if (!i.inspectedAtLocalDateKey) continue;
+      if (i.inspectedAtLocalDateKey === todayKey) continue;
+      keys.add(i.inspectedAtLocalDateKey);
+    }
+    const sortedDesc = Array.from(keys).sort().reverse();
+    if (sortedDesc.length === 0) return null;
+    const mostRecentPriorKey = sortedDesc[0];
+    const dayInsp = recentInspections.filter(
+      (i) => i.inspectedAtLocalDateKey === mostRecentPriorKey,
+    );
+    const hadEod = dayInsp.some((i) => i.inspectionType === 'end_of_day');
+    return hadEod ? null : mostRecentPriorKey;
+  }, [recentInspections]);
+
+  // What state is the badge in for THIS leg position?
   const needFirstFlight = !firstFlightStatus.complete;
   const needEod = firstFlightStatus.complete && !eodStatus.complete;
   const wasDeferred = firstFlightStatus.deferred || eodStatus.deferred;
   const allDone = firstFlightStatus.complete && eodStatus.complete && !wasDeferred;
 
-  let label, kind, openType;
-  if (needFirstFlight) {
+  // Determine whether THIS leg should render the badge, and what to show.
+  let shouldRender = false;
+  let label = '';
+  let kind = 'gray';
+  let openType = 'ad_hoc';
+  let titleAttr;
+
+  // First leg → only render if prior EOD overdue AND today's first-flight
+  // check hasn't been done. Once the pilot completes today's first-flight
+  // inspection, the operational concern is resolved and the badge drops.
+  if (isFirstFlightOfDay && priorEodOverdueKey && needFirstFlight) {
+    shouldRender = true;
     label = 'WEAR CHECK REQUIRED';
     kind = 'red';
     openType = 'first_flight';
-  } else if (needEod) {
-    label = 'EOD CHECK REQUIRED';
-    kind = 'red';
-    openType = 'end_of_day';
-  } else if (wasDeferred) {
-    label = 'WEAR DEFERRED';
-    kind = 'amber';
-    openType = 'ad_hoc';
-  } else {
-    // allDone — green confirmation pill, still tappable for ad-hoc re-check
-    label = 'WEAR CHECK · OK';
-    kind = 'green';
-    openType = 'ad_hoc';
+    titleAttr = `EOD wear check from ${priorEodOverdueKey} was not completed. Inspect tires + brakes before this flight.`;
+  } else if (isLastFlightOfDay) {
+    shouldRender = true;
+    if (needFirstFlight) {
+      label = 'WEAR CHECK REQUIRED';
+      kind = 'red';
+      openType = 'first_flight';
+    } else if (needEod) {
+      label = 'EOD CHECK REQUIRED';
+      kind = 'red';
+      openType = 'end_of_day';
+    } else if (wasDeferred) {
+      label = 'WEAR DEFERRED';
+      kind = 'amber';
+      openType = 'ad_hoc';
+    } else {
+      // allDone — green confirmation pill, still tappable for ad-hoc re-check
+      label = 'WEAR CHECK · OK';
+      kind = 'green';
+      openType = 'ad_hoc';
+    }
   }
+
+  if (!shouldRender) return null;
 
   const cls = {
     red:   'bg-red-500/20 border-red-500/60 text-red-200 animate-pulse',
@@ -139,6 +195,7 @@ export function WearCheckBadge({
   return (
     <button
       onClick={() => onOpenModal({ tail, currentUser, tripId, legId, inspectionType: openType })}
+      title={titleAttr}
       className={`inline-flex items-center gap-1.5 border ${cls} px-2 py-1 text-[10px] tracking-widest font-bold transition`}
       style={{ fontFamily: 'JetBrains Mono, monospace' }}
     >
@@ -1020,6 +1077,19 @@ export function WearTrainingLibrary({ currentUser }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
+  // Keep draft.itemType valid when the user switches aircraft type — e.g.
+  // Lear 60 has 'hydFluid' which doesn't exist on a CJ3.
+  useEffect(() => {
+    const cfg = AIRCRAFT_WEAR_CONFIGS[aircraftType];
+    if (!cfg) return;
+    const valid = new Set();
+    for (const p of cfg.positions) for (const it of p.items) valid.add(it);
+    if (!valid.has(draft.itemType)) {
+      setDraft((p) => ({ ...p, itemType: valid.values().next().value || 'tire' }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aircraftType]);
+
   const onPhoto = async (f) => {
     try {
       const { url, path } = await uploadTrainingPhoto({
@@ -1045,15 +1115,28 @@ export function WearTrainingLibrary({ currentUser }) {
     setBusy(false);
   };
 
-  // Group by itemType -> status
+  // Item types available for the selected aircraft — derived from the
+  // type's positions so new items added in firebase-wear.js show up here
+  // automatically without code changes here.
+  const availableItemTypes = useMemo(() => {
+    const cfg = AIRCRAFT_WEAR_CONFIGS[aircraftType];
+    if (!cfg) return [];
+    const set = new Set();
+    for (const p of cfg.positions) for (const it of p.items) set.add(it);
+    return Array.from(set);
+  }, [aircraftType]);
+
+  // Group by itemType -> status, sized to the available item types
   const grouped = useMemo(() => {
-    const g = { tire: { good: [], monitor: [], replace_soon: [], grounded: [] },
-                brake:{ good: [], monitor: [], replace_soon: [], grounded: [] } };
+    const g = {};
+    for (const it of availableItemTypes) {
+      g[it] = { good: [], monitor: [], replace_soon: [], grounded: [] };
+    }
     for (const r of rows) {
       if (g[r.itemType] && g[r.itemType][r.status]) g[r.itemType][r.status].push(r);
     }
     return g;
-  }, [rows]);
+  }, [rows, availableItemTypes]);
 
   return (
     <div className="space-y-4">
@@ -1084,17 +1167,17 @@ export function WearTrainingLibrary({ currentUser }) {
         ))}
       </div>
 
-      {/* Buckets */}
-      {['tire', 'brake'].map((it) => (
+      {/* Buckets — one per item type available for the selected aircraft */}
+      {availableItemTypes.map((it) => (
         <div key={it} className="border border-slate-800 p-3 bg-slate-950/40">
           <div className="text-sm tracking-widest text-slate-100 mb-2"
             style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
-            {ITEM_LABELS[it].toUpperCase()}
+            {ITEM_LABELS[it]?.toUpperCase() || it.toUpperCase()}
           </div>
           <div className="grid grid-cols-4 gap-2">
             {STATUS_ORDER.map((s) => {
               const t = STATUS_TAILWIND[s];
-              const photos = grouped[it][s] || [];
+              const photos = grouped[it]?.[s] || [];
               return (
                 <div key={s} className={`border ${t.border} ${t.bg} p-2`}>
                   <div className="flex items-center justify-between mb-1">
@@ -1140,8 +1223,9 @@ export function WearTrainingLibrary({ currentUser }) {
                     style={{ fontFamily: 'JetBrains Mono, monospace' }}>ITEM</div>
                   <select value={draft.itemType} onChange={(e) => setDraft((p) => ({ ...p, itemType: e.target.value }))}
                     className="w-full bg-slate-900 border border-slate-700 px-2 py-1.5 text-sm text-slate-100">
-                    <option value="tire">Tire</option>
-                    <option value="brake">Brake</option>
+                    {availableItemTypes.map((it) => (
+                      <option key={it} value={it}>{ITEM_LABELS[it] || it}</option>
+                    ))}
                   </select>
                 </div>
                 <div>
