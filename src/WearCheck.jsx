@@ -34,6 +34,8 @@ import {
   saveTrainingPhoto, deleteTrainingPhoto,
   subscribeAllWearItems, subscribeWearItemsForTail,
   subscribeWearInspections, subscribeInspectionsForItem, subscribeTodayInspections,
+  subscribeLatestSession, saveWearCheckSession, computeLandingsSinceCheck,
+  LANDINGS_PER_CHECK,
   subscribeTrainingLibrary,
   checkComplete, requestAiAssessment, localDateKey,
 } from './firebase-wear.js';
@@ -61,27 +63,29 @@ function StatusPill({ status, size = 'sm' }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// <WearCheckBadge /> — Tail-level wear-check status pill
+// <WearCheckBadge /> — Tail-level wear-check status pill (landings-based)
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// Rendering rules (the caller passes isFirstFlightOfDay / isLastFlightOfDay
-// from the trip's position in the day's tail schedule):
+// Cadence is now landings-based, not daily. The badge tracks how many
+// flights have landed for this tail since the last completed wear-check
+// session, and goes red at LANDINGS_PER_CHECK (10). Old daily logic
+// (first_flight / end_of_day) is no longer enforced.
 //
-//   - LAST leg of the day → badge always shows. Label depends on what's
-//     left to do today: first-flight, EOD, deferred, or all-done OK.
+// States:
+//   RED   "WEAR CHECK DUE · N/10"         — N >= 10 landings since last session
+//   AMBER "WEAR · N/10"                   — N >= 8 but < 10 (approaching due)
+//   GREEN "WEAR · N/10"                   — N < 8 (plenty of margin)
 //
-//   - FIRST leg of the day → badge shows ONLY if the most recent prior
-//     flying day had no EOD check on record AND today's first-flight
-//     hasn't been logged yet. Label = "WEAR CHECK REQUIRED" (red). This
-//     enforces a re-check before flying when we don't have a clean wear
-//     state on file from when the aircraft was last put away.
-//
-//   - Any other leg → badge renders null (no clutter on middle legs).
-//
-// Tap → opens <WearCheckModal /> with the appropriate inspection type.
+// Render rules (caller passes leg position):
+//   - LAST leg of the day  → always renders (informational + actionable)
+//   - FIRST leg of the day → renders ONLY if check is due (red state),
+//                             so the badge surfaces on the morning of a
+//                             day when last night's check was missed.
+//   - Middle legs          → renders null (no clutter).
 
 export function WearCheckBadge({
   tail,
+  allTrips,
   isFirstFlightOfDay,
   isLastFlightOfDay,
   currentUser,
@@ -89,100 +93,54 @@ export function WearCheckBadge({
   legId,
   onOpenModal,
 }) {
-  const [todayInspections, setTodayInspections] = useState([]);
-  const [recentInspections, setRecentInspections] = useState([]);
+  const [latestSession, setLatestSession] = useState(null);
+  const [sessionLoaded, setSessionLoaded] = useState(false);
 
-  // TODAY's inspections drive the last-leg badge state.
   useEffect(() => {
     if (!tail) return;
-    const u = subscribeTodayInspections(tail, setTodayInspections);
+    setSessionLoaded(false);
+    const u = subscribeLatestSession(tail, (s) => {
+      setLatestSession(s);
+      setSessionLoaded(true);
+    });
     return () => u && u();
   }, [tail]);
 
-  // The last ~50 inspections across all days power the prior-EOD-overdue
-  // detection used on the first leg of the day.
-  useEffect(() => {
-    if (!tail) return;
-    const u = subscribeWearInspections(tail, setRecentInspections, 50);
-    return () => u && u();
-  }, [tail]);
-
-  const firstFlightStatus = useMemo(
-    () => checkComplete(tail, todayInspections, 'first_flight'),
-    [tail, todayInspections],
-  );
-  const eodStatus = useMemo(
-    () => checkComplete(tail, todayInspections, 'end_of_day'),
-    [tail, todayInspections],
+  // Landings since the most recent completed session for this tail.
+  const landingsSince = useMemo(
+    () => computeLandingsSinceCheck(allTrips, tail, latestSession?.completedAtMs || 0),
+    [allTrips, tail, latestSession],
   );
 
-  // Most recent prior FLYING day for this tail (excluding today). If that
-  // day has no EOD record on file we treat the EOD as overdue.
-  // `priorEodOverdueKey` is null when no overdue, or a YYYY-MM-DD string
-  // for the day that's missing its EOD.
-  const priorEodOverdueKey = useMemo(() => {
-    const todayKey = localDateKey();
-    // Distinct prior date keys, sorted newest first.
-    const keys = new Set();
-    for (const i of recentInspections) {
-      if (!i.inspectedAtLocalDateKey) continue;
-      if (i.inspectedAtLocalDateKey === todayKey) continue;
-      keys.add(i.inspectedAtLocalDateKey);
-    }
-    const sortedDesc = Array.from(keys).sort().reverse();
-    if (sortedDesc.length === 0) return null;
-    const mostRecentPriorKey = sortedDesc[0];
-    const dayInsp = recentInspections.filter(
-      (i) => i.inspectedAtLocalDateKey === mostRecentPriorKey,
-    );
-    const hadEod = dayInsp.some((i) => i.inspectionType === 'end_of_day');
-    return hadEod ? null : mostRecentPriorKey;
-  }, [recentInspections]);
+  // Avoid flashing the "DUE" red badge for half a second while the
+  // session subscription is loading on first render.
+  if (!sessionLoaded) return null;
 
-  // What state is the badge in for THIS leg position?
-  const needFirstFlight = !firstFlightStatus.complete;
-  const needEod = firstFlightStatus.complete && !eodStatus.complete;
-  const wasDeferred = firstFlightStatus.deferred || eodStatus.deferred;
-  const allDone = firstFlightStatus.complete && eodStatus.complete && !wasDeferred;
+  const isDue = landingsSince >= LANDINGS_PER_CHECK;
+  const isApproaching = landingsSince >= (LANDINGS_PER_CHECK - 2) && !isDue;
 
-  // Determine whether THIS leg should render the badge, and what to show.
-  let shouldRender = false;
-  let label = '';
-  let kind = 'gray';
-  let openType = 'ad_hoc';
-  let titleAttr;
-
-  // First leg → only render if prior EOD overdue AND today's first-flight
-  // check hasn't been done. Once the pilot completes today's first-flight
-  // inspection, the operational concern is resolved and the badge drops.
-  if (isFirstFlightOfDay && priorEodOverdueKey && needFirstFlight) {
-    shouldRender = true;
-    label = 'WEAR CHECK REQUIRED';
+  // Compose label + visual based on state
+  let label, kind, titleAttr;
+  if (isDue) {
+    label = `WEAR CHECK DUE · ${landingsSince}/${LANDINGS_PER_CHECK}`;
     kind = 'red';
-    openType = 'first_flight';
-    titleAttr = `EOD wear check from ${priorEodOverdueKey} was not completed. Inspect tires + brakes before this flight.`;
-  } else if (isLastFlightOfDay) {
-    shouldRender = true;
-    if (needFirstFlight) {
-      label = 'WEAR CHECK REQUIRED';
-      kind = 'red';
-      openType = 'first_flight';
-    } else if (needEod) {
-      label = 'EOD CHECK REQUIRED';
-      kind = 'red';
-      openType = 'end_of_day';
-    } else if (wasDeferred) {
-      label = 'WEAR DEFERRED';
-      kind = 'amber';
-      openType = 'ad_hoc';
-    } else {
-      // allDone — green confirmation pill, still tappable for ad-hoc re-check
-      label = 'WEAR CHECK · OK';
-      kind = 'green';
-      openType = 'ad_hoc';
-    }
+    titleAttr = latestSession
+      ? `${landingsSince} landings since last wear check on ${new Date(latestSession.completedAtMs).toLocaleDateString()}. Inspect before next flight.`
+      : 'No wear check on record yet. Inspect before next flight.';
+  } else if (isApproaching) {
+    label = `WEAR · ${landingsSince}/${LANDINGS_PER_CHECK}`;
+    kind = 'amber';
+    titleAttr = `${landingsSince} of ${LANDINGS_PER_CHECK} landings since last wear check. ${LANDINGS_PER_CHECK - landingsSince} more before next check is due.`;
+  } else {
+    label = `WEAR · ${landingsSince}/${LANDINGS_PER_CHECK}`;
+    kind = 'green';
+    titleAttr = latestSession
+      ? `${landingsSince} of ${LANDINGS_PER_CHECK} landings since last wear check on ${new Date(latestSession.completedAtMs).toLocaleDateString()}.`
+      : `No wear check on record yet.`;
   }
 
+  // Render decision: last leg always, first leg only if due
+  const shouldRender = isLastFlightOfDay || (isFirstFlightOfDay && isDue);
   if (!shouldRender) return null;
 
   const cls = {
@@ -194,7 +152,7 @@ export function WearCheckBadge({
 
   return (
     <button
-      onClick={() => onOpenModal({ tail, currentUser, tripId, legId, inspectionType: openType })}
+      onClick={() => onOpenModal({ tail, currentUser, tripId, legId, inspectionType: 'standard' })}
       title={titleAttr}
       className={`inline-flex items-center gap-1.5 border ${cls} px-2 py-1 text-[10px] tracking-widest font-bold transition`}
       style={{ fontFamily: 'JetBrains Mono, monospace' }}
@@ -344,6 +302,21 @@ export function WearCheckModal({ tail, currentUser, tripId, legId, inspectionTyp
         // Phase 2 — fire-and-forget AI assessment
         if (idToken) requestAiAssessment({ idToken, inspectionId });
       }
+
+      // Record the session completion — this is what resets the
+      // landings-since-last-check counter for the badge cadence.
+      try {
+        await saveWearCheckSession({
+          tail,
+          byUid: currentUser?.uid,
+          byName: currentUser?.name || currentUser?.displayName,
+          inspectionCount: items.length,
+          inspectionType,
+        });
+      } catch (e) {
+        console.warn('[wear] session write failed (inspections still saved):', e?.message);
+      }
+
       onClose();
     } catch (e) {
       setErr(e?.message || 'Save failed');

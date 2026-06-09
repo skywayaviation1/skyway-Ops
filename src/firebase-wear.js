@@ -551,3 +551,82 @@ export async function requestAiAssessment({ idToken, inspectionId }) {
     return null;
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WEAR-CHECK-SESSIONS — landings-based cadence
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// A "session" is one fully-completed wear check for a tail (all expected
+// items inspected in one sitting). We record session completion in its
+// own collection so the badge logic can ask a simple question: when was
+// the last session, and how many landings have happened since?
+//
+// LANDINGS_PER_CHECK is the cadence threshold. When the count of landed
+// flights since the last session reaches this number, the badge flips
+// red ("WEAR CHECK DUE") and the EOD-overdue logic surfaces on the next
+// day's first leg.
+//
+// This collection replaces the prior daily (first_flight + EOD) cadence.
+// Old wear-inspections records with inspectionType='first_flight' or
+// 'end_of_day' remain valid as historical data — they're just no longer
+// used to decide whether a check is due.
+
+export const LANDINGS_PER_CHECK = 10;
+
+// Write a session-completion doc. Called by the modal after all items
+// have been successfully saved (i.e. allDone was true at submit time).
+export async function saveWearCheckSession({
+  tail, byUid, byName, inspectionCount, inspectionType,
+}) {
+  const id = `session-${tail}-${Date.now()}`;
+  await setDoc(doc(db, 'wear-check-sessions', id), {
+    id,
+    tail,
+    aircraftType: configForTail(tail).type,
+    completedAt: serverTimestamp(),
+    completedAtMs: Date.now(),
+    completedBy: byUid || null,
+    completedByName: byName || null,
+    inspectionCount: inspectionCount || 0,
+    inspectionType: inspectionType || 'standard',
+  });
+  return id;
+}
+
+// Live subscription to the most recent completed session for a tail.
+export function subscribeLatestSession(tail, cb) {
+  const q = query(
+    collection(db, 'wear-check-sessions'),
+    where('tail', '==', tail),
+    orderBy('completedAtMs', 'desc'),
+    limit(1),
+  );
+  return onSnapshot(q, (snap) => {
+    let row = null;
+    snap.forEach((d) => { row = { id: d.id, ...d.data() }; });
+    cb(row);
+  });
+}
+
+// Count how many landed flights this tail has had since `sinceMs`.
+// We count from the JetInsight feed (allTrips) — a leg is treated as
+// landed when its `end` timestamp is in the past. This is a reasonable
+// proxy for actual landings without requiring FlightAware data.
+//
+// If sinceMs is 0/null (no session on record), returns LANDINGS_PER_CHECK
+// so the badge fires immediately on first run.
+export function computeLandingsSinceCheck(allTrips, tail, sinceMs) {
+  if (!tail) return 0;
+  if (!sinceMs) return LANDINGS_PER_CHECK; // no session ever -> due now
+  if (!Array.isArray(allTrips) || allTrips.length === 0) return 0;
+  const now = Date.now();
+  let count = 0;
+  for (const t of allTrips) {
+    if (t?.info?.tail !== tail) continue;
+    if (!t?.info?.isFlight) continue;
+    const endMs = t?.end instanceof Date ? t.end.getTime() : null;
+    if (endMs === null) continue;
+    if (endMs > sinceMs && endMs <= now) count++;
+  }
+  return count;
+}

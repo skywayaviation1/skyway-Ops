@@ -4981,15 +4981,15 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
           >
             {trip.info.tail}
           </h1>
-          {/* WEAR CHECK badge — renders ONLY on the last scheduled leg of
-              the day for this tail. If the schedule changes (a later leg
-              is added), the badge moves automatically because the
-              isLastFlightOfDay memo re-computes from allTrips. The badge
-              itself decides which check to surface (first-flight vs EOD)
-              based on what's already been done today. */}
-          {trip.info.isFlight && trip.info.tail && isLastFlightOfDay && (
+          {/* WEAR CHECK badge — landings-based cadence (every 10 landings
+              per tail). Renders on the last leg of the day always, and on
+              the first leg if the check is currently due. Middle legs
+              render nothing. The badge handles the rendering decision
+              internally. */}
+          {trip.info.isFlight && trip.info.tail && (isFirstFlightOfDay || isLastFlightOfDay) && (
             <WearCheckBadge
               tail={trip.info.tail}
+              allTrips={allTrips}
               isFirstFlightOfDay={isFirstFlightOfDay}
               isLastFlightOfDay={isLastFlightOfDay}
               currentUser={currentUser}
@@ -8210,30 +8210,6 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
     if (!(draft.legs || []).length) {
       alert('Manifest has no legs. Add at least one leg before submitting.');
       return;
-    }
-    // === WEAR CHECK gate ===
-    // Block submission until the end-of-day wear check is complete for this
-    // tail. Defer-with-reason counts as complete (MX is already alerted).
-    if (draft.tail) {
-      try {
-        const wear = await import('./firebase-wear.js');
-        const todays = await wear.getTodayInspections(draft.tail);
-        const eod = wear.checkComplete(draft.tail, todays, 'end_of_day');
-        if (!eod.complete) {
-          alert(
-            'End-of-day wear check is required before submitting this manifest.\n\n' +
-            `Open today's last flight for ${draft.tail} on the SCHEDULE tab and tap ` +
-            'the EOD CHECK REQUIRED badge next to the tail. The check takes about ' +
-            '30 seconds. If conditions prevent a proper check, use DEFER WITH REASON ' +
-            'inside the wear modal.'
-          );
-          return;
-        }
-      } catch (err) {
-        // Don't block submission if the wear module itself failed to load
-        // (e.g. an old cached bundle). Log and proceed.
-        console.warn('[wear] EOD gate check failed; allowing manifest submit:', err);
-      }
     }
     if (!window.confirm(
       'Submit this load manifest? This action is FINAL.\n\n' +
