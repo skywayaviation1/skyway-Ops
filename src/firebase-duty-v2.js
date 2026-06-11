@@ -1276,4 +1276,131 @@ export async function changePartner(picPeriodId, newSicOpts, opts = {}) {
   return await addPartnerToActiveDuty(picPeriodId, newSicOpts, opts);
 }
 
+// =====================================================================
+// ADMIN BACKFILL — create a CLOSED historical duty period
+// =====================================================================
+//
+// Used when a period was never recorded in the app (pilot forgot to
+// duty-on, system was down, etc) and admin needs to enter it after the
+// fact. ONLY creates closed/completed periods — not open ones. For an
+// open period the admin should walk the pilot through startDuty
+// normally, not back-fill.
+//
+// The created record gets confirmStatus='admin-attested' so the legality
+// engine includes it in lookback calculations. The adminEdits[] array
+// gets one entry recording the backfill action with the admin's name.
+//
+// Refuses if it would overlap an existing OPEN period for the pilot
+// (that creates a double-on-duty state the legality engine can't
+// reconcile). Overlapping a CLOSED period is allowed and surfaces in
+// the editor UI as red — admin is expected to see and fix manually.
+//
+// opts: {
+//   pilotUid: string (required)
+//   pilotName: string (optional)
+//   dutyOnAt: number ms (required)
+//   dutyOffAt: number ms (required, > dutyOnAt)
+//   location: string (optional)
+//   tail: string|null (optional)
+//   tripId: string|null (optional)
+//   role: 'PIC'|'SIC'|null (optional)
+//   crewType: 'single'|'two' (optional, default 'single')
+//   assignmentType: 'unscheduled'|'regular' (optional, default 'regular')
+//   flightTimeMs: number (optional, default 0)
+//   priorRestMs: number|null (optional)
+//   excursionReason: string|null (optional)
+//   editedBy: string (REQUIRED — admin's display name for audit)
+//   note: string (optional admin note explaining why backfilling)
+// }
+//
+// Returns the created document.
+export async function adminAddBackfillPeriod(opts) {
+  if (!opts?.pilotUid) throw new Error('pilotUid required');
+  if (!opts?.editedBy) throw new Error('editedBy required for audit');
+  if (!Number.isFinite(opts.dutyOnAt)) throw new Error('dutyOnAt required (ms)');
+  if (!Number.isFinite(opts.dutyOffAt)) throw new Error('dutyOffAt required (ms)');
+  if (opts.dutyOffAt <= opts.dutyOnAt) {
+    throw new Error('dutyOffAt must be after dutyOnAt');
+  }
+
+  // Refuse to overlap an existing OPEN period for this pilot. A closed
+  // open period overlap is allowed (the editor will flag it red).
+  const openQ = query(
+    collection(db, COLL),
+    where('pilotUid', '==', opts.pilotUid),
+    where('status', '==', 'on'),
+  );
+  const openSnap = await getDocs(openQ);
+  if (!openSnap.empty) {
+    const open = openSnap.docs[0].data();
+    const openEnd = open.dutyOffAt || Date.now();
+    const overlapsOpen = opts.dutyOnAt < openEnd && opts.dutyOffAt > open.dutyOnAt;
+    if (overlapsOpen) {
+      throw new Error(
+        'Backfill period would overlap the pilot\'s currently-open duty ' +
+        'period. Close the open period first (or move its dutyOnAt) before ' +
+        'adding this backfill.'
+      );
+    }
+  }
+
+  const now = Date.now();
+  const id = `${opts.pilotUid}_${opts.dutyOnAt}`;
+  const elapsed = opts.dutyOffAt - opts.dutyOnAt;
+  const flightTimeMs = Number.isFinite(opts.flightTimeMs) ? opts.flightTimeMs : 0;
+  const docData = {
+    id,
+    pilotUid: opts.pilotUid,
+    pilotName: opts.pilotName || 'Unknown',
+    location: opts.location || '',
+    tail: opts.tail || null,
+    tripId: opts.tripId || null,
+    role: opts.role || null,
+    crewType: ['single', 'two'].includes(opts.crewType) ? opts.crewType : 'single',
+    assignmentType: ['unscheduled', 'regular'].includes(opts.assignmentType)
+      ? opts.assignmentType
+      : 'regular',
+    fitForDuty: true,
+    priorRestMs: Number.isFinite(opts.priorRestMs) ? opts.priorRestMs : null,
+    dutyOnAt: opts.dutyOnAt,
+    dutyOffAt: opts.dutyOffAt,
+    flightTimeMs,
+    excursionReason: opts.excursionReason || null,
+    overrideStatus: 'none',
+    overrideRequestedBy: null,
+    overrideRequestedAt: null,
+    overrideRequestReason: null,
+    overrideApprovedBy: null,
+    overrideApprovedAt: null,
+    overrideApprovalNotes: null,
+    // Admin-attested confirmStatus — legality engine treats this as a
+    // valid record while keeping it distinguishable from pilot self-
+    // attestation in audit reports.
+    confirmStatus: 'admin-attested',
+    partnerPeriodId: null,
+    pendingCreatedBy: opts.editedBy,
+    confirmedAt: null,
+    declinedAt: null,
+    declinedReason: null,
+    adminEdits: [{
+      by: opts.editedBy,
+      at: now,
+      field: 'create-backfill',
+      from: null,
+      to: {
+        dutyOnAt: opts.dutyOnAt,
+        dutyOffAt: opts.dutyOffAt,
+        flightTimeMs,
+      },
+      note: opts.note || 'Admin backfilled missing historical period',
+    }],
+    createdAt: now,
+    updatedAt: now,
+    status: 'off',
+    over14: elapsed > 14 * 3600 * 1000,
+  };
+  await setDoc(doc(db, COLL, id), docData);
+  return docData;
+}
+
 

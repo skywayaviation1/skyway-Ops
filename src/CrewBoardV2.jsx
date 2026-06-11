@@ -15,13 +15,18 @@
 // Pulls recent periods (30 days) for ALL pilots. Group by pilot, evaluate
 // legality, render. Re-evaluates every 60s.
 
-import React, { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, Clock, CheckCircle2, Shield, Users, Download, Settings } from 'lucide-react';
+import React, { useEffect, useMemo, useState, lazy, Suspense } from 'react';
+import { AlertTriangle, Clock, CheckCircle2, Shield, Users, Download, Settings, Calendar } from 'lucide-react';
 import { subscribeRecentForAllPilots, subscribePeriodsForPilot, fetchOutsideFlyingForPilot } from './firebase-duty-v2.js';
 import { evaluateCurrent, evaluateProposed } from './duty-legality.js';
 import { DutyExportModal } from './DutyExport.jsx';
 import CrewManagePanel from './CrewManagePanel.jsx';
 import CrewStatsPanel from './CrewStatsPanel.jsx';
+
+// Admin-only timeline editor — lazy because it's not used in the common
+// crew-board read path, and it pulls a lot of UI for editing duty
+// periods that's wasted weight for non-admin viewers.
+const DutyEditor = lazy(() => import('./DutyEditor.jsx'));
 
 const MS_HR = 3600 * 1000;
 
@@ -48,6 +53,9 @@ export default function CrewBoardV2({ currentUser, users = [], trips = [] } = {}
   // The modal owns its own pilot-picker / date-range / format state;
   // we just toggle visibility here.
   const [exportOpen, setExportOpen] = useState(false);
+  // Timeline editor modal state — opens via the TIMELINE button next to
+  // EXPORT. Admin/ops only (UI gates the button behind canManage too).
+  const [timelineOpen, setTimelineOpen] = useState(false);
   // Which pilot row has the management panel expanded. Single-expand:
   // opening another row collapses the previous. Null = all collapsed.
   const [managePilotUid, setManagePilotUid] = useState(null);
@@ -161,9 +169,23 @@ export default function CrewBoardV2({ currentUser, users = [], trips = [] } = {}
         <div className="flex items-center gap-3">
           <span className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
             {stats.onDuty} on duty · {stats.resting} resting · {stats.available} available
-            {stats.illegal > 0 && <span className="text-red-400"> · {stats.illegal} illegal</span>}
+            {stats.illegal > 0 && <span className="text-red-400"> · {stats.illegal} unavailable</span>}
             {stats.warning > 0 && <span className="text-amber-400"> · {stats.warning} warning</span>}
           </span>
+          {/* Timeline editor — visual calendar of duty periods with
+              tap-to-edit and overlap detection. Admin/ops only. The
+              modal handles pilot picking, date range, and all writes. */}
+          {canManage && (
+            <button
+              onClick={() => setTimelineOpen(true)}
+              className="flex items-center gap-1.5 px-2.5 py-1 text-[10px] tracking-widest text-slate-400 hover:text-cyan-300 border border-slate-700 hover:border-cyan-400"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              title="Edit duty timeline — fix bad records, add backfill periods"
+            >
+              <Calendar className="w-3 h-3" />
+              TIMELINE
+            </button>
+          )}
           {/* Export button — opens a modal where ops/admin picks a pilot
               and date range, then downloads CSV or opens print preview
               for PDF. The crew board already has the pilot list in
@@ -296,6 +318,25 @@ export default function CrewBoardV2({ currentUser, users = [], trips = [] } = {}
         onClose={() => setExportOpen(false)}
         pilots={rows.map(r => ({ uid: r.uid, name: r.name }))}
       />
+
+      {/* Timeline editor — admin/ops fix bad records and backfill missing
+          periods. Lazy-loaded so non-admins don't pay the bundle cost. */}
+      {timelineOpen && (
+        <Suspense fallback={
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80">
+            <div className="text-cyan-300 text-xs tracking-widest"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              LOADING TIMELINE EDITOR…
+            </div>
+          </div>
+        }>
+          <DutyEditor
+            currentUser={currentUser}
+            pilots={rows.map(r => ({ uid: r.uid, name: r.name }))}
+            onClose={() => setTimelineOpen(false)}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }
@@ -416,7 +457,7 @@ function CrewRow({ row, now, canManage, currentUser, crewUsers, expanded, onTogg
         <div className={`text-right text-[10px] tracking-widest ${legalityTone}`}
           style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
           {legality.status === 'illegal'
-            ? 'ILLEGAL'
+            ? 'UNAVAILABLE'
             : legality.status === 'warning'
               ? `WARN (${legality.warnings.length})`
               : 'LEGAL'}
@@ -512,7 +553,7 @@ function CrewPairRow({ pic, sic, sicPending, now, canManage, currentUser, crewUs
       ? 'text-amber-400'
       : 'text-emerald-400';
   const legalityLabel = worstLegality.status === 'illegal'
-    ? 'ILLEGAL'
+    ? 'UNAVAILABLE'
     : worstLegality.status === 'warning'
       ? `WARN (${worstLegality.warnings?.length || 0})`
       : 'LEGAL';
@@ -832,7 +873,7 @@ export function CrewPairLegalityCheck({ pic, sic, proposed, onResult }) {
 
       {aggregate?.status === 'illegal' && (
         <div className="pt-2 border-t border-red-500/30 text-[10px] text-red-300">
-          BLOCKING — at least one crewmember is illegal for this assignment.
+          BLOCKING — at least one crewmember is unavailable for this assignment.
           Dispatch only with CP/DO override on the affected pilot's duty record.
         </div>
       )}
