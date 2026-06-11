@@ -4152,6 +4152,32 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   // the badge based on whether this leg is first/last of the day.
   const [wearModalOpen, setWearModalOpen] = useState(false);
   const [wearModalType, setWearModalType] = useState('ad_hoc');
+  // Hero card scroll-collapse — when the user scrolls down the trip
+  // content, the big trip-info hero shrinks out of the way so legs/
+  // manifest/etc. get full screen real estate. A compact sticky bar
+  // (tail + route) takes its place at the top so context isn't lost.
+  // Scrolling back to the top expands the hero again.
+  const [heroCollapsed, setHeroCollapsed] = useState(false);
+  const tripScrollRef = useRef(null);
+  useEffect(() => {
+    const el = tripScrollRef.current;
+    if (!el) return;
+    let raf = null;
+    const onScroll = () => {
+      // rAF-debounce to avoid setState on every pixel
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = null;
+        const shouldCollapse = el.scrollTop > 80;
+        setHeroCollapsed((cur) => cur === shouldCollapse ? cur : shouldCollapse);
+      });
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      el.removeEventListener('scroll', onScroll);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [tab]);  // Re-bind when switching tabs since the scroll container may remount
   const geo = useGeolocation();
 
   // Reset tab when switching trips
@@ -4847,6 +4873,37 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       )}
 
       {tab !== 'chat' && tab !== 'lodging' && (
+      <>
+        {/* Compact sticky bar — visible only when the hero is collapsed.
+            Shows the essentials (back · tail · route) so the user keeps
+            their bearings while scrolling through legs/manifest/sheet. */}
+        {heroCollapsed && (
+          <div className="px-3 py-2 border-b border-slate-800 bg-slate-950 flex items-center gap-3 shrink-0">
+            <button
+              onClick={onBack}
+              className="text-slate-400 hover:text-slate-200 md:hidden shrink-0"
+              aria-label="Back"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <span className="text-sm font-semibold text-slate-100 shrink-0"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {trip.info.tail}
+            </span>
+            <span className="text-sm text-slate-300 whitespace-nowrap overflow-hidden text-ellipsis"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {trip.info.from} → {trip.info.to}
+            </span>
+            {completed && (
+              <Pill tone="green">
+                <CheckCheck className="w-3 h-3 inline mr-0.5" /> COMPLETE
+              </Pill>
+            )}
+          </div>
+        )}
+        {/* Full hero — animates collapse via max-height transition. The
+            overflow-hidden lets the inner content disappear smoothly. */}
+        <div className={`overflow-hidden transition-all duration-300 ease-out ${heroCollapsed ? 'max-h-0 opacity-0' : 'max-h-[2000px] opacity-100'}`}>
       <div className="px-6 py-5 border-b border-slate-800 bg-gradient-to-b from-slate-900/50 to-transparent">
         <div className="flex items-center justify-between mb-3">
           <button
@@ -5115,6 +5172,8 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
           </div>
         )}
       </div>
+        </div>
+      </>
       )}
 
       {/* Tabs */}
@@ -5162,7 +5221,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       </div>
 
       {/* Tab content */}
-      <div className="flex-1 overflow-y-auto">
+      <div ref={tripScrollRef} className="flex-1 overflow-y-auto">
         {loading ? (
           <div className="flex items-center justify-center py-16 text-slate-500">
             <Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading trip data...

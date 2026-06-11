@@ -44,17 +44,29 @@ html[data-theme="classy"] body {
 [data-theme="classy"] .bg-slate-700 { background-color: #e2e8f0 !important; }
 
 [data-theme="classy"] .bg-slate-950\/30 { background-color: rgba(255, 255, 255, 0.6) !important; }
+[data-theme="classy"] .bg-slate-950\/40 { background-color: rgba(255, 255, 255, 0.7) !important; }
+[data-theme="classy"] .bg-slate-950\/50 { background-color: rgba(255, 255, 255, 0.75) !important; }
 [data-theme="classy"] .bg-slate-950\/60 { background-color: rgba(255, 255, 255, 0.85) !important; }
+[data-theme="classy"] .bg-slate-950\/70 { background-color: rgba(255, 255, 255, 0.9) !important; }
 [data-theme="classy"] .bg-slate-950\/80 { background-color: rgba(255, 255, 255, 0.9) !important; }
+[data-theme="classy"] .bg-slate-950\/90 { background-color: rgba(255, 255, 255, 0.95) !important; }
+[data-theme="classy"] .bg-slate-950\/95 { background-color: rgba(255, 255, 255, 0.95) !important; }
+[data-theme="classy"] .bg-slate-900\/20 { background-color: rgba(248, 250, 252, 0.35) !important; }
 [data-theme="classy"] .bg-slate-900\/30 { background-color: rgba(248, 250, 252, 0.5) !important; }
 [data-theme="classy"] .bg-slate-900\/40 { background-color: rgba(248, 250, 252, 0.7) !important; }
 [data-theme="classy"] .bg-slate-900\/50 { background-color: rgba(248, 250, 252, 0.8) !important; }
 [data-theme="classy"] .bg-slate-900\/60 { background-color: rgba(248, 250, 252, 0.9) !important; }
 [data-theme="classy"] .bg-slate-900\/70 { background-color: rgba(248, 250, 252, 0.95) !important; }
 [data-theme="classy"] .bg-slate-900\/80 { background-color: #f8fafc !important; }
+[data-theme="classy"] .bg-slate-900\/90 { background-color: #f8fafc !important; }
 [data-theme="classy"] .bg-slate-800\/30 { background-color: rgba(241, 245, 249, 0.5) !important; }
+[data-theme="classy"] .bg-slate-800\/40 { background-color: rgba(241, 245, 249, 0.65) !important; }
 [data-theme="classy"] .bg-slate-800\/50 { background-color: rgba(241, 245, 249, 0.75) !important; }
+[data-theme="classy"] .bg-slate-800\/60 { background-color: rgba(241, 245, 249, 0.85) !important; }
+[data-theme="classy"] .bg-slate-800\/70 { background-color: rgba(241, 245, 249, 0.92) !important; }
 [data-theme="classy"] .bg-slate-800\/80 { background-color: #f1f5f9 !important; }
+[data-theme="classy"] .bg-slate-700\/30 { background-color: rgba(226, 232, 240, 0.5) !important; }
+[data-theme="classy"] .bg-slate-700\/50 { background-color: rgba(226, 232, 240, 0.75) !important; }
 
 /* --------------------------------------------------------------------------
    TEXT — slate-light (on dark) becomes slate-deep (on white).
@@ -221,3 +233,19 @@ html[data-theme="classy"] body {
 [data-theme="classy"] ::-webkit-scrollbar-track { background: #f8fafc; }
 [data-theme="classy"] ::-webkit-scrollbar-thumb { background: #cbd5e1; }
 [data-theme="classy"] ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+/* --------------------------------------------------------------------------
+   LOGO FIX — temporary workaround until a transparent-background PNG is
+   provided. The original asset has a dark navy background baked in.
+   Using mix-blend-mode "multiply" against the white classy background,
+   the dark navy effectively becomes invisible because dark × white = dark,
+   while bright cyan logo content × white = bright cyan. NOT perfect —
+   bright details of the logo may pick up a slight tint — but readable
+   until a clean PNG is dropped in. To fully fix: replace
+   /public/skyway-logo-nav.png with a transparent PNG and remove this
+   rule (or leave it — multiply with transparent pixels = transparent).
+   -------------------------------------------------------------------------- */
+
+[data-theme="classy"] img[src*="skyway-logo"] {
+  mix-blend-mode: multiply;
+}
