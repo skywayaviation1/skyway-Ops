@@ -1,5 +1,5 @@
 /* ==========================================================================
-   THEME Â· CLASSY (BRIGHT)
+   THEME · CLASSY (BRIGHT)
    --------------------------------------------------------------------------
    Applied when <html data-theme="classy"> is set. This is the LIGHT
    counterpart to the default dark theme. Crisp white surfaces, deep
@@ -7,7 +7,7 @@
    the bright background. Status colors darkened so they pop against
    white rather than getting washed out.
 
-     - Backgrounds: slate-blue darks â†’ near-white / soft gray surfaces
+     - Backgrounds: slate-blue darks → near-white / soft gray surfaces
      - Cyan accent: same hue, shifted darker (cyan-500/600/700) for AA
        contrast against white
      - Status colors: from light pastel-on-dark to saturated-on-white
@@ -16,7 +16,7 @@
      - Native browser surfaces (scrollbars, date pickers) switch to
        light via color-scheme
 
-   The dark theme (default) is unchanged â€” these overrides only apply
+   The dark theme (default) is unchanged — these overrides only apply
    when data-theme="classy" is set on <html>.
 
    Implementation note: !important is required because we override
@@ -24,7 +24,7 @@
    ========================================================================== */
 
 /* --------------------------------------------------------------------------
-   ROOT â€” body coloring + browser color-scheme
+   ROOT — body coloring + browser color-scheme
    -------------------------------------------------------------------------- */
 
 html[data-theme="classy"],
@@ -35,7 +35,7 @@ html[data-theme="classy"] body {
 }
 
 /* --------------------------------------------------------------------------
-   BACKGROUNDS â€” slate (cold dark) â†’ soft whites and pale slates
+   BACKGROUNDS — slate (cold dark) → soft whites and pale slates
    -------------------------------------------------------------------------- */
 
 [data-theme="classy"] .bg-slate-950 { background-color: #ffffff !important; }
@@ -57,9 +57,9 @@ html[data-theme="classy"] body {
 [data-theme="classy"] .bg-slate-800\/80 { background-color: #f1f5f9 !important; }
 
 /* --------------------------------------------------------------------------
-   TEXT â€” slate-light (on dark) becomes slate-deep (on white).
+   TEXT — slate-light (on dark) becomes slate-deep (on white).
    The numbering is inverted: text-slate-100 was the lightest in dark
-   mode â†’ now becomes the DARKEST so it reads on a white surface.
+   mode → now becomes the DARKEST so it reads on a white surface.
    -------------------------------------------------------------------------- */
 
 [data-theme="classy"] .text-slate-100 { color: #0f172a !important; }   /* slate-900 */
@@ -70,7 +70,7 @@ html[data-theme="classy"] body {
 [data-theme="classy"] .text-slate-600 { color: #cbd5e1 !important; }   /* slate-300 */
 
 /* --------------------------------------------------------------------------
-   BORDERS â€” dark slate edges â†’ pale slate edges
+   BORDERS — dark slate edges → pale slate edges
    -------------------------------------------------------------------------- */
 
 [data-theme="classy"] .border-slate-700 { border-color: #cbd5e1 !important; }   /* slate-300 */
@@ -80,7 +80,7 @@ html[data-theme="classy"] body {
 [data-theme="classy"] .border-slate-700\/60 { border-color: rgba(203, 213, 225, 0.8) !important; }
 
 /* --------------------------------------------------------------------------
-   ACCENT â€” CYAN, KEPT VIBRANT.
+   ACCENT — CYAN, KEPT VIBRANT.
    On dark, cyan-300/400 reads as bright pastel. On white we shift one
    step deeper (cyan-500/600/700) so the same elements still pop with
    AA contrast. Background-alpha tints use cyan-500 hue, alpha against
@@ -93,13 +93,13 @@ html[data-theme="classy"] body {
 [data-theme="classy"] .text-cyan-400 { color: #06b6d4 !important; }   /* cyan-500 */
 [data-theme="classy"] .text-cyan-500 { color: #0891b2 !important; }   /* cyan-600 */
 
-/* Solid backgrounds â€” saturated against white */
+/* Solid backgrounds — saturated against white */
 [data-theme="classy"] .bg-cyan-400 { background-color: #22d3ee !important; }
 [data-theme="classy"] .bg-cyan-500 { background-color: #06b6d4 !important; }
 [data-theme="classy"] .hover\:bg-cyan-400:hover { background-color: #22d3ee !important; }
 [data-theme="classy"] .hover\:bg-cyan-500:hover { background-color: #06b6d4 !important; }
 
-/* Alpha tints â€” cyan with white showing through */
+/* Alpha tints — cyan with white showing through */
 [data-theme="classy"] .bg-cyan-500\/5  { background-color: rgba(6, 182, 212, 0.05) !important; }
 [data-theme="classy"] .bg-cyan-500\/10 { background-color: rgba(6, 182, 212, 0.1) !important; }
 [data-theme="classy"] .bg-cyan-500\/15 { background-color: rgba(6, 182, 212, 0.12) !important; }
@@ -130,12 +130,12 @@ html[data-theme="classy"] body {
 [data-theme="classy"] .ring-cyan-400 { --tw-ring-color: #22d3ee !important; }
 
 /* --------------------------------------------------------------------------
-   STATUS COLORS â€” pop against white. Each family shifts one step
+   STATUS COLORS — pop against white. Each family shifts one step
    darker than the dark-theme version so the same `text-red-300` reads
    as a confident saturated red on white instead of a washed-out pink.
    -------------------------------------------------------------------------- */
 
-/* RED â€” danger / blocking */
+/* RED — danger / blocking */
 [data-theme="classy"] .text-red-200 { color: #b91c1c !important; }   /* red-700 */
 [data-theme="classy"] .text-red-300 { color: #b91c1c !important; }   /* red-700 */
 [data-theme="classy"] .text-red-400 { color: #dc2626 !important; }   /* red-600 */
@@ -153,7 +153,7 @@ html[data-theme="classy"] body {
 [data-theme="classy"] .border-red-500\/50 { border-color: rgba(220, 38, 38, 0.6) !important; }
 [data-theme="classy"] .border-red-500\/60 { border-color: rgba(220, 38, 38, 0.7) !important; }
 
-/* AMBER â€” warning */
+/* AMBER — warning */
 [data-theme="classy"] .text-amber-200 { color: #b45309 !important; }   /* amber-700 */
 [data-theme="classy"] .text-amber-300 { color: #d97706 !important; }   /* amber-600 */
 [data-theme="classy"] .text-amber-400 { color: #d97706 !important; }
@@ -167,7 +167,7 @@ html[data-theme="classy"] body {
 [data-theme="classy"] .border-amber-500\/40 { border-color: rgba(217, 119, 6, 0.5) !important; }
 [data-theme="classy"] .border-amber-500\/50 { border-color: rgba(217, 119, 6, 0.6) !important; }
 
-/* EMERALD â€” ok / legal */
+/* EMERALD — ok / legal */
 [data-theme="classy"] .text-emerald-200 { color: #166534 !important; }   /* green-800 */
 [data-theme="classy"] .text-emerald-300 { color: #15803d !important; }   /* green-700 */
 [data-theme="classy"] .text-emerald-400 { color: #16a34a !important; }   /* green-600 */
@@ -179,7 +179,7 @@ html[data-theme="classy"] body {
 [data-theme="classy"] .border-emerald-500\/30 { border-color: rgba(22, 163, 74, 0.4) !important; }
 [data-theme="classy"] .border-emerald-500\/40 { border-color: rgba(22, 163, 74, 0.5) !important; }
 
-/* PURPLE â€” admin-attested */
+/* PURPLE — admin-attested */
 [data-theme="classy"] .text-purple-100 { color: #6b21a8 !important; }   /* purple-800 */
 [data-theme="classy"] .text-purple-200 { color: #7e22ce !important; }   /* purple-700 */
 [data-theme="classy"] .text-purple-300 { color: #9333ea !important; }   /* purple-600 */
@@ -189,14 +189,14 @@ html[data-theme="classy"] body {
 [data-theme="classy"] .border-purple-400\/60 { border-color: rgba(168, 85, 247, 0.7) !important; }
 
 /* --------------------------------------------------------------------------
-   TYPOGRAPHY â€” softer tracking for refinement
+   TYPOGRAPHY — softer tracking for refinement
    -------------------------------------------------------------------------- */
 
 [data-theme="classy"] .tracking-widest { letter-spacing: 0.06em !important; }
 [data-theme="classy"] .tracking-wider  { letter-spacing: 0.04em !important; }
 
 /* --------------------------------------------------------------------------
-   FORM CONTROLS â€” native browser styling switches to light
+   FORM CONTROLS — native browser styling switches to light
    -------------------------------------------------------------------------- */
 
 [data-theme="classy"] input[type="text"],
@@ -215,7 +215,7 @@ html[data-theme="classy"] body {
 }
 
 /* --------------------------------------------------------------------------
-   SCROLLBAR â€” subtle gray on light background
+   SCROLLBAR — subtle gray on light background
    -------------------------------------------------------------------------- */
 
 [data-theme="classy"] ::-webkit-scrollbar-track { background: #f8fafc; }
