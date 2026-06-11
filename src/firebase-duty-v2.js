@@ -1277,43 +1277,45 @@ export async function changePartner(picPeriodId, newSicOpts, opts = {}) {
 }
 
 // =====================================================================
-// ADMIN BACKFILL — create a CLOSED historical duty period
+// ADMIN CALENDAR FUNCTIONS — power the new admin Duty tab
 // =====================================================================
 //
-// Used when a period was never recorded in the app (pilot forgot to
-// duty-on, system was down, etc) and admin needs to enter it after the
-// fact. ONLY creates closed/completed periods — not open ones. For an
-// open period the admin should walk the pilot through startDuty
-// normally, not back-fill.
+// Three functions used by the new DutyAdminCalendar / DutyDayDetail UI:
 //
-// The created record gets confirmStatus='admin-attested' so the legality
-// engine includes it in lookback calculations. The adminEdits[] array
-// gets one entry recording the backfill action with the admin's name.
+//   adminAddBackfillPeriod  — create a CLOSED historical period (gap-fill)
+//   linkCrewPeriods         — connect a PIC's period with an SIC's period
+//                              (set partnerPeriodId on both)
+//   unlinkCrewPeriods       — break a PIC↔SIC pairing without ending
+//                              either duty period
 //
-// Refuses if it would overlap an existing OPEN period for the pilot
-// (that creates a double-on-duty state the legality engine can't
-// reconcile). Overlapping a CLOSED period is allowed and surfaces in
-// the editor UI as red — admin is expected to see and fix manually.
-//
-// opts: {
-//   pilotUid: string (required)
-//   pilotName: string (optional)
-//   dutyOnAt: number ms (required)
-//   dutyOffAt: number ms (required, > dutyOnAt)
-//   location: string (optional)
-//   tail: string|null (optional)
-//   tripId: string|null (optional)
-//   role: 'PIC'|'SIC'|null (optional)
-//   crewType: 'single'|'two' (optional, default 'single')
-//   assignmentType: 'unscheduled'|'regular' (optional, default 'regular')
-//   flightTimeMs: number (optional, default 0)
-//   priorRestMs: number|null (optional)
-//   excursionReason: string|null (optional)
-//   editedBy: string (REQUIRED — admin's display name for audit)
-//   note: string (optional admin note explaining why backfilling)
-// }
-//
-// Returns the created document.
+// All three preserve existing data (no deletes), write full audit
+// entries to both affected records when applicable, and refuse to
+// produce nonsensical states (overlapping with an open period, linking
+// a pilot to themselves, etc).
+
+/**
+ * Create a CLOSED historical duty period. Use when a record was never
+ * entered in the app and needs to be backfilled. ONLY creates closed
+ * periods — admin should not back-fill open ones (use startDuty for
+ * those, walking the pilot through normally).
+ *
+ * Refuses if the proposed window overlaps the pilot's currently-open
+ * period. Overlapping a CLOSED period is allowed (the editor flags
+ * those red so admin can fix). The created record gets
+ * confirmStatus='admin-attested' so the legality engine includes it.
+ *
+ * opts: {
+ *   pilotUid: string (required)
+ *   pilotName: string (optional but recommended for display)
+ *   dutyOnAt: number ms (required)
+ *   dutyOffAt: number ms (required, > dutyOnAt)
+ *   location, tail, tripId, role, crewType, assignmentType (optional)
+ *   flightTimeMs (optional, default 0)
+ *   priorRestMs, excursionReason (optional)
+ *   editedBy: string (REQUIRED — admin's display name for audit)
+ *   note: string (optional audit note)
+ * }
+ */
 export async function adminAddBackfillPeriod(opts) {
   if (!opts?.pilotUid) throw new Error('pilotUid required');
   if (!opts?.editedBy) throw new Error('editedBy required for audit');
@@ -1323,23 +1325,19 @@ export async function adminAddBackfillPeriod(opts) {
     throw new Error('dutyOffAt must be after dutyOnAt');
   }
 
-  // Refuse to overlap an existing OPEN period for this pilot. A closed
-  // open period overlap is allowed (the editor will flag it red).
-  const openQ = query(
+  // Refuse to overlap an existing OPEN period for this pilot.
+  const openSnap = await getDocs(query(
     collection(db, COLL),
     where('pilotUid', '==', opts.pilotUid),
     where('status', '==', 'on'),
-  );
-  const openSnap = await getDocs(openQ);
+  ));
   if (!openSnap.empty) {
     const open = openSnap.docs[0].data();
     const openEnd = open.dutyOffAt || Date.now();
-    const overlapsOpen = opts.dutyOnAt < openEnd && opts.dutyOffAt > open.dutyOnAt;
-    if (overlapsOpen) {
+    if (opts.dutyOnAt < openEnd && opts.dutyOffAt > open.dutyOnAt) {
       throw new Error(
-        'Backfill period would overlap the pilot\'s currently-open duty ' +
-        'period. Close the open period first (or move its dutyOnAt) before ' +
-        'adding this backfill.'
+        'Backfill period overlaps the pilot\'s currently-open duty period. ' +
+        'Close the open period first or move its dutyOnAt before adding this backfill.'
       );
     }
   }
@@ -1373,9 +1371,6 @@ export async function adminAddBackfillPeriod(opts) {
     overrideApprovedBy: null,
     overrideApprovedAt: null,
     overrideApprovalNotes: null,
-    // Admin-attested confirmStatus — legality engine treats this as a
-    // valid record while keeping it distinguishable from pilot self-
-    // attestation in audit reports.
     confirmStatus: 'admin-attested',
     partnerPeriodId: null,
     pendingCreatedBy: opts.editedBy,
@@ -1387,11 +1382,7 @@ export async function adminAddBackfillPeriod(opts) {
       at: now,
       field: 'create-backfill',
       from: null,
-      to: {
-        dutyOnAt: opts.dutyOnAt,
-        dutyOffAt: opts.dutyOffAt,
-        flightTimeMs,
-      },
+      to: { dutyOnAt: opts.dutyOnAt, dutyOffAt: opts.dutyOffAt, flightTimeMs },
       note: opts.note || 'Admin backfilled missing historical period',
     }],
     createdAt: now,
@@ -1401,6 +1392,163 @@ export async function adminAddBackfillPeriod(opts) {
   };
   await setDoc(doc(db, COLL, id), docData);
   return docData;
+}
+
+/**
+ * Link two duty periods as PIC+SIC. Sets partnerPeriodId on both,
+ * upgrades crewType to 'two' on both, and writes audit entries on both.
+ * Use this when:
+ *   - The pair-flow wasn't used at start (PIC and SIC each started
+ *     duty solo and admin needs to retroactively connect them)
+ *   - An admin re-paired a crew after an earlier link was broken
+ *
+ * Refuses if either period is already linked to a DIFFERENT period
+ * (admin must unlink first), or if both periods belong to the same pilot.
+ *
+ * opts: {
+ *   editedBy: string (REQUIRED — admin's display name for audit)
+ *   note: string (optional audit note)
+ * }
+ *
+ * SIC's confirmStatus handling:
+ *   - 'self-attested' → preserved
+ *   - 'pending' → upgraded to 'admin-attested' (since admin is asserting
+ *      the link is legitimate)
+ *   - 'declined' → upgraded to 'admin-attested' (admin is overriding a
+ *      prior decline; expectation is that admin has verified the SIC
+ *      was actually present)
+ */
+export async function linkCrewPeriods(picPeriodId, sicPeriodId, opts = {}) {
+  if (!picPeriodId || !sicPeriodId) throw new Error('both period IDs required');
+  if (picPeriodId === sicPeriodId) throw new Error('cannot link a period to itself');
+  if (!opts.editedBy) throw new Error('editedBy required for audit');
+
+  const picRef = doc(db, COLL, picPeriodId);
+  const sicRef = doc(db, COLL, sicPeriodId);
+  const [picSnap, sicSnap] = await Promise.all([getDoc(picRef), getDoc(sicRef)]);
+  if (!picSnap.exists()) throw new Error('PIC period not found');
+  if (!sicSnap.exists()) throw new Error('SIC period not found');
+  const pic = picSnap.data();
+  const sic = sicSnap.data();
+
+  if (pic.pilotUid === sic.pilotUid) {
+    throw new Error('cannot link a pilot to themselves');
+  }
+  if (pic.partnerPeriodId && pic.partnerPeriodId !== sicPeriodId) {
+    throw new Error('PIC period is already linked to a different SIC — unlink first');
+  }
+  if (sic.partnerPeriodId && sic.partnerPeriodId !== picPeriodId) {
+    throw new Error('SIC period is already linked to a different PIC — unlink first');
+  }
+
+  const now = Date.now();
+  const adminName = opts.editedBy;
+  const note = opts.note || 'Admin linked crew periods via calendar';
+
+  const picEdits = Array.isArray(pic.adminEdits) ? pic.adminEdits : [];
+  const sicEdits = Array.isArray(sic.adminEdits) ? sic.adminEdits : [];
+
+  // SIC confirmStatus upgrade rule (see docstring above)
+  const newSicConfirm = sic.confirmStatus === 'self-attested'
+    ? 'self-attested'
+    : 'admin-attested';
+
+  const batch = writeBatch(db);
+  batch.update(picRef, {
+    partnerPeriodId: sicPeriodId,
+    role: pic.role || 'PIC',
+    crewType: 'two',
+    updatedAt: now,
+    adminEdits: [...picEdits, {
+      by: adminName,
+      at: now,
+      field: 'partnerPeriodId',
+      from: pic.partnerPeriodId || null,
+      to: sicPeriodId,
+      note,
+    }],
+  });
+  batch.update(sicRef, {
+    partnerPeriodId: picPeriodId,
+    role: sic.role || 'SIC',
+    crewType: 'two',
+    confirmStatus: newSicConfirm,
+    fitForDuty: newSicConfirm === 'self-attested' ? sic.fitForDuty : true,
+    updatedAt: now,
+    adminEdits: [...sicEdits, {
+      by: adminName,
+      at: now,
+      field: 'partnerPeriodId',
+      from: sic.partnerPeriodId || null,
+      to: picPeriodId,
+      note: `${note}${newSicConfirm === 'admin-attested' && sic.confirmStatus !== 'self-attested'
+        ? ` · confirmStatus upgraded to admin-attested (was ${sic.confirmStatus || 'unset'})`
+        : ''}`,
+    }],
+  });
+  await batch.commit();
+  return { picPeriodId, sicPeriodId };
+}
+
+/**
+ * Break a PIC↔SIC pairing without ending either duty period. Both
+ * periods stay in their current on/off state — only the partnerPeriodId
+ * is cleared, and crewType is reset to 'single' if the period is still
+ * on duty (closed periods keep their historical crewType for record
+ * purposes).
+ *
+ * opts: {
+ *   editedBy: string (REQUIRED)
+ *   note: string (optional)
+ * }
+ */
+export async function unlinkCrewPeriods(picPeriodId, opts = {}) {
+  if (!picPeriodId) throw new Error('picPeriodId required');
+  if (!opts.editedBy) throw new Error('editedBy required for audit');
+
+  const picRef = doc(db, COLL, picPeriodId);
+  const picSnap = await getDoc(picRef);
+  if (!picSnap.exists()) throw new Error('PIC period not found');
+  const pic = picSnap.data();
+  if (!pic.partnerPeriodId) throw new Error('PIC period has no partner to unlink');
+
+  const sicId = pic.partnerPeriodId;
+  const sicRef = doc(db, COLL, sicId);
+  const sicSnap = await getDoc(sicRef);
+
+  const now = Date.now();
+  const adminName = opts.editedBy;
+  const note = opts.note || 'Admin unlinked crew periods via calendar';
+  const batch = writeBatch(db);
+
+  const picEdits = Array.isArray(pic.adminEdits) ? pic.adminEdits : [];
+  batch.update(picRef, {
+    partnerPeriodId: null,
+    // Only flip crewType back if the period is still ACTIVE — closed
+    // periods keep their historical crewType.
+    crewType: pic.status === 'on' ? 'single' : pic.crewType,
+    updatedAt: now,
+    adminEdits: [...picEdits, {
+      by: adminName, at: now, field: 'partnerPeriodId',
+      from: sicId, to: null, note,
+    }],
+  });
+
+  if (sicSnap.exists()) {
+    const sic = sicSnap.data();
+    const sicEdits = Array.isArray(sic.adminEdits) ? sic.adminEdits : [];
+    batch.update(sicRef, {
+      partnerPeriodId: null,
+      crewType: sic.status === 'on' ? 'single' : sic.crewType,
+      updatedAt: now,
+      adminEdits: [...sicEdits, {
+        by: adminName, at: now, field: 'partnerPeriodId',
+        from: picPeriodId, to: null, note,
+      }],
+    });
+  }
+
+  await batch.commit();
 }
 
 

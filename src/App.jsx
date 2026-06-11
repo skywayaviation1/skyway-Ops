@@ -44,6 +44,12 @@ import FAANotamBadge from './FAANotamBadge.jsx';
 // Crew board lives in CrewBoardV2 (lazy import for ops/admin home).
 import DutyV2 from './DutyV2.jsx';
 const CrewBoardV2Lazy = lazy(() => import('./CrewBoardV2.jsx'));
+// New admin Duty tab — full month calendar with click-to-expand day
+// detail, visual bubble timeline, edit-in-place, and crew linking.
+// Replaces the old CrewBoardV2 in the main Duty section. CrewBoardV2
+// import is retained above only because settings still mounts it
+// (small status panel inside Settings). The Duty tab itself uses this.
+const DutyAdminCalendarLazy = lazy(() => import('./DutyAdminCalendar.jsx'));
 import AppTimezoneSwitch from './AppTimezoneSwitch.jsx';
 import { todayInAppTz } from './app-timezone.js';
 import { createPortal } from 'react-dom';
@@ -18362,7 +18368,7 @@ function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, sync
     { id: 'maint',    label: 'MAINT',     icon: AlertTriangle, roles: ['maint', 'ops', 'admin'] },
     { id: 'wear',     label: 'WEAR',      icon: Activity, roles: ['maint', 'ops', 'admin'] },
     { id: 'users',    label: 'USERS',     icon: Users,    roles: ['ops', 'admin'] },
-    { id: 'duty',     label: 'DUTY',      icon: Clock,    roles: ['ops', 'admin'] },
+    { id: 'duty',     label: 'DUTY',      icon: Clock,    roles: ['admin'] },
   ];
   // DUTY tab also shows when an admin is impersonating a crew member
   // (impersonation is admin-only, so _impersonating is a safe signal).
@@ -24742,20 +24748,20 @@ export default function CharterOps() {
         {/* === DUTY SECTION (admin duty/rest oversight) === */}
         {section === 'duty' && (currentUser.role === 'admin' || currentUser._impersonating === true) && config?.dutyTrackerEnabled && (
           <div className="flex-1 overflow-y-auto scroll-area bg-slate-950 p-4">
-            {/* Full-page CrewBoardV2. Same component that mounts in
-                ops home and settings; here it's the entire admin duty
-                section. Each pilot row shows state + legality. Per-pilot
-                history, override approval, and outside-flying logs live
-                on the pilot's own DutyV2 console (admins can impersonate
-                a pilot to access). */}
+            {/* Admin duty calendar — month grid → click a day → expanded
+                day detail with 24-hour timeline, duty bubbles, rest gaps,
+                time-remaining indicators, edit modals, and crew linking.
+                Reads all 365 days of duty-periods-v2 records. The
+                pilot-facing DutyV2 console on home stays untouched —
+                pilots still duty-on and duty-off themselves there. */}
             <Suspense fallback={
               <div className="border border-slate-800 bg-slate-900/30 p-6 text-center text-slate-500"
                 style={{ fontFamily: 'JetBrains Mono, monospace' }}>
                 <Loader2 className="w-4 h-4 animate-spin inline mr-2" />
-                LOADING CREW BOARD
+                LOADING DUTY CALENDAR
               </div>
             }>
-              <CrewBoardV2Lazy currentUser={currentUser} users={users} trips={allTrips} />
+              <DutyAdminCalendarLazy currentUser={currentUser} users={users} />
             </Suspense>
           </div>
         )}
