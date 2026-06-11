@@ -1,5 +1,11 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback, Suspense, lazy } from 'react';
 
+// Classy theme override stylesheet — applied when the user switches to
+// "classy" mode via the topbar toggle. The CSS targets [data-theme="classy"]
+// on the <html> element and is a no-op when not active. Default dark
+// theme uses Tailwind utility colors as-is.
+import './theme-classy.css';
+
 // Code-split: Comms screen loads only when the user opens the COMMS tab.
 const CommsScreenLazy = lazy(() => import('./CommsScreen.jsx'));
 
@@ -60,7 +66,7 @@ import {
   Mail, Navigation, Loader2, Wifi, WifiOff, Settings as SettingsIcon,
   Download, Trash2, Plus, FileText, Zap, Radio, AlertCircle, Upload,
   CheckCheck, UserCheck, Sparkles, Hash, Cloud, Wrench, Hotel, BookOpen, Search,
-  Activity,
+  Activity, Palette,
 } from 'lucide-react';
 import { formatLocalTime, formatLocalDate } from './airports.js';
 import {
@@ -18349,7 +18355,7 @@ function AddChecklistModal({ project, actor, onClose }) {
   );
 }
 
-function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, syncStatus, now, tripCount, onOpenSettings, onOpenProfile }) {
+function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, syncStatus, now, tripCount, onOpenSettings, onOpenProfile, themeMode, onToggleTheme }) {
   const sections = [
     { id: 'home',     label: 'HOME',      icon: Sparkles, roles: ['crew', 'sales', 'ops', 'admin'] },
     { id: 'schedule', label: 'SCHEDULE',  icon: Calendar, roles: ['crew', 'ops', 'admin'] },
@@ -18425,6 +18431,20 @@ function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, sync
           <button onClick={onOpenProfile} className="md:hidden p-2 border border-slate-800 hover:border-cyan-500/40 text-cyan-300" title="My profile">
             <UserCheck className="w-4 h-4" />
           </button>
+          {/* Theme toggle — switches between dark (cyan/slate, the default
+              tactical look) and classy (warm charcoal + champagne gold,
+              boutique brand feel). State persists in localStorage. The
+              actual color swap lives in theme-classy.css scoped to
+              [data-theme="classy"] on <html>. */}
+          {onToggleTheme && (
+            <button
+              onClick={onToggleTheme}
+              className="p-2 border border-slate-800 hover:border-slate-600 text-slate-400 hover:text-slate-200"
+              title={`Switch theme · current: ${(themeMode || 'dark').toUpperCase()}`}
+            >
+              <Palette className="w-4 h-4" />
+            </button>
+          )}
           <button onClick={onOpenSettings} className="p-2 border border-slate-800 hover:border-slate-600 text-slate-400 hover:text-slate-200" title="Settings">
             <SettingsIcon className="w-4 h-4" />
           </button>
@@ -23447,6 +23467,19 @@ export default function CharterOps() {
     return false;
   });
   const [showProfile, setShowProfile] = useState(false);
+  // UI theme — 'dark' (default cyan/slate) or 'classy' (warm + gold).
+  // Persisted in localStorage so the choice survives reloads. The actual
+  // visual switch happens via the data-theme attribute on the html
+  // element (see useEffect below) which scopes theme-classy.css overrides.
+  const [themeMode, setThemeMode] = useState(() => {
+    if (typeof window === 'undefined') return 'dark';
+    return localStorage.getItem('skyway-theme') === 'classy' ? 'classy' : 'dark';
+  });
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    document.documentElement.setAttribute('data-theme', themeMode);
+    try { localStorage.setItem('skyway-theme', themeMode); } catch (_) {}
+  }, [themeMode]);
   const [syncStatus, setSyncStatus] = useState({ status: 'idle', message: '' });
   const [syncLog, setSyncLog] = useState([]);
   const [tripStatusCounts, setTripStatusCounts] = useState({});
@@ -24275,6 +24308,8 @@ export default function CharterOps() {
           tripCount={allTrips.length}
           onOpenSettings={() => setShowSettings(true)}
           onOpenProfile={() => setShowProfile(true)}
+          themeMode={themeMode}
+          onToggleTheme={() => setThemeMode((m) => m === 'classy' ? 'dark' : 'classy')}
         />
 
         {/* === HOME SECTION === */}

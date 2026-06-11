@@ -1,0 +1,234 @@
+/* ==========================================================================
+   THEME · CLASSY
+   --------------------------------------------------------------------------
+   Applied when <html data-theme="classy"> is set. Overrides specific
+   Tailwind utility classes with a warmer, more refined palette:
+
+     - Backgrounds shift from cold slate-blue to warm charcoal
+     - Cyan accent (#1ec0e9) → champagne gold (#c4a572)
+     - Status colors (red / amber / emerald / purple) muted to wine /
+       sage / brick to match the warmer base
+     - All-caps tracking softened from .1em to .06em for less aggressive
+       tactical feel
+     - Borders + dividers warmed
+     - Backdrop tint warmed (no blue cast)
+
+   The dark theme (default) doesn't need these — Tailwind classes apply
+   their normal values when no [data-theme] is set or when
+   data-theme="dark".
+
+   Implementation note: all rules use `!important` because we're
+   overriding Tailwind utility classes that load via the main bundle.
+   Without !important the cascade would tie or lose depending on
+   stylesheet load order. The high-specificity selector
+   [data-theme="classy"] .x ensures we only apply when the theme is
+   active.
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   Body / root coloring — fallback for components reading variables
+   -------------------------------------------------------------------------- */
+
+html[data-theme="classy"],
+html[data-theme="classy"] body {
+  background-color: #1c1a17 !important;
+  color: #f5ecd9;
+}
+
+/* --------------------------------------------------------------------------
+   Backgrounds — slate family → warm charcoal
+   -------------------------------------------------------------------------- */
+
+[data-theme="classy"] .bg-slate-950 { background-color: #1c1a17 !important; }
+[data-theme="classy"] .bg-slate-900 { background-color: #26221d !important; }
+[data-theme="classy"] .bg-slate-800 { background-color: #322c26 !important; }
+[data-theme="classy"] .bg-slate-700 { background-color: #3e3730 !important; }
+
+[data-theme="classy"] .bg-slate-950\/30 { background-color: rgba(28, 26, 23, 0.5) !important; }
+[data-theme="classy"] .bg-slate-950\/60 { background-color: rgba(28, 26, 23, 0.75) !important; }
+[data-theme="classy"] .bg-slate-950\/80 { background-color: rgba(28, 26, 23, 0.9) !important; }
+[data-theme="classy"] .bg-slate-900\/30 { background-color: rgba(38, 34, 29, 0.5) !important; }
+[data-theme="classy"] .bg-slate-900\/40 { background-color: rgba(38, 34, 29, 0.65) !important; }
+[data-theme="classy"] .bg-slate-900\/50 { background-color: rgba(38, 34, 29, 0.75) !important; }
+[data-theme="classy"] .bg-slate-900\/60 { background-color: rgba(38, 34, 29, 0.85) !important; }
+[data-theme="classy"] .bg-slate-900\/70 { background-color: rgba(38, 34, 29, 0.9) !important; }
+[data-theme="classy"] .bg-slate-900\/80 { background-color: rgba(38, 34, 29, 0.92) !important; }
+[data-theme="classy"] .bg-slate-800\/30 { background-color: rgba(50, 44, 38, 0.5) !important; }
+[data-theme="classy"] .bg-slate-800\/50 { background-color: rgba(50, 44, 38, 0.75) !important; }
+[data-theme="classy"] .bg-slate-800\/80 { background-color: rgba(50, 44, 38, 0.92) !important; }
+
+/* --------------------------------------------------------------------------
+   Text — slate family → warm ivory / taupe
+   -------------------------------------------------------------------------- */
+
+[data-theme="classy"] .text-slate-100 { color: #f5ecd9 !important; }
+[data-theme="classy"] .text-slate-200 { color: #ddd4c1 !important; }
+[data-theme="classy"] .text-slate-300 { color: #c4baa6 !important; }
+[data-theme="classy"] .text-slate-400 { color: #a59a85 !important; }
+[data-theme="classy"] .text-slate-500 { color: #7c7163 !important; }
+[data-theme="classy"] .text-slate-600 { color: #5a5048 !important; }
+
+/* --------------------------------------------------------------------------
+   Borders — warm equivalents
+   -------------------------------------------------------------------------- */
+
+[data-theme="classy"] .border-slate-700 { border-color: #3e3730 !important; }
+[data-theme="classy"] .border-slate-800 { border-color: #322c26 !important; }
+[data-theme="classy"] .border-slate-900 { border-color: #26221d !important; }
+[data-theme="classy"] .border-slate-800\/60 { border-color: rgba(50, 44, 38, 0.6) !important; }
+[data-theme="classy"] .border-slate-700\/60 { border-color: rgba(62, 55, 48, 0.6) !important; }
+
+/* --------------------------------------------------------------------------
+   ACCENT — cyan (#1ec0e9) becomes champagne gold (#c4a572).
+   This is the most visible change — almost every interactive element
+   in the app is cyan, so the new color carries the whole brand feel.
+   Picked champagne over yellow-gold or brass to keep it desaturated and
+   sophisticated; the slight warmth pairs naturally with the warm bg.
+   -------------------------------------------------------------------------- */
+
+/* Text */
+[data-theme="classy"] .text-cyan-200 { color: #e8d8b3 !important; }
+[data-theme="classy"] .text-cyan-300 { color: #d4b890 !important; }
+[data-theme="classy"] .text-cyan-400 { color: #c4a572 !important; }
+[data-theme="classy"] .text-cyan-500 { color: #b59560 !important; }
+
+/* Backgrounds */
+[data-theme="classy"] .bg-cyan-400 { background-color: #d4b890 !important; }
+[data-theme="classy"] .bg-cyan-500 { background-color: #c4a572 !important; }
+[data-theme="classy"] .hover\:bg-cyan-400:hover { background-color: #d4b890 !important; }
+[data-theme="classy"] .hover\:bg-cyan-500:hover { background-color: #c4a572 !important; }
+[data-theme="classy"] .bg-cyan-500\/5  { background-color: rgba(196, 165, 114, 0.06) !important; }
+[data-theme="classy"] .bg-cyan-500\/10 { background-color: rgba(196, 165, 114, 0.1) !important; }
+[data-theme="classy"] .bg-cyan-500\/15 { background-color: rgba(196, 165, 114, 0.15) !important; }
+[data-theme="classy"] .bg-cyan-500\/20 { background-color: rgba(196, 165, 114, 0.2) !important; }
+[data-theme="classy"] .bg-cyan-500\/30 { background-color: rgba(196, 165, 114, 0.3) !important; }
+[data-theme="classy"] .bg-cyan-500\/40 { background-color: rgba(196, 165, 114, 0.4) !important; }
+[data-theme="classy"] .bg-cyan-400\/40 { background-color: rgba(212, 184, 144, 0.4) !important; }
+[data-theme="classy"] .hover\:bg-cyan-500\/10:hover { background-color: rgba(196, 165, 114, 0.1) !important; }
+[data-theme="classy"] .hover\:bg-cyan-500\/20:hover { background-color: rgba(196, 165, 114, 0.2) !important; }
+
+/* Borders */
+[data-theme="classy"] .border-cyan-300 { border-color: #d4b890 !important; }
+[data-theme="classy"] .border-cyan-400 { border-color: #c4a572 !important; }
+[data-theme="classy"] .border-cyan-500 { border-color: #b59560 !important; }
+[data-theme="classy"] .border-cyan-400\/40 { border-color: rgba(196, 165, 114, 0.4) !important; }
+[data-theme="classy"] .border-cyan-400\/60 { border-color: rgba(196, 165, 114, 0.6) !important; }
+[data-theme="classy"] .border-cyan-500\/30 { border-color: rgba(181, 149, 96, 0.3) !important; }
+[data-theme="classy"] .border-cyan-500\/40 { border-color: rgba(181, 149, 96, 0.4) !important; }
+[data-theme="classy"] .border-cyan-500\/50 { border-color: rgba(181, 149, 96, 0.5) !important; }
+[data-theme="classy"] .border-cyan-500\/60 { border-color: rgba(181, 149, 96, 0.6) !important; }
+[data-theme="classy"] .hover\:border-cyan-400:hover { border-color: #c4a572 !important; }
+[data-theme="classy"] .hover\:border-cyan-500\/40:hover { border-color: rgba(181, 149, 96, 0.4) !important; }
+[data-theme="classy"] .hover\:text-cyan-300:hover { color: #d4b890 !important; }
+[data-theme="classy"] .hover\:text-cyan-400:hover { color: #c4a572 !important; }
+
+/* Rings */
+[data-theme="classy"] .ring-cyan-200 { --tw-ring-color: #e8d8b3 !important; }
+[data-theme="classy"] .ring-cyan-400 { --tw-ring-color: #c4a572 !important; }
+
+/* --------------------------------------------------------------------------
+   STATE COLORS — muted/warmed
+     Red    → brick #a85957
+     Amber  → ochre #c89e5b (already pretty warm)
+     Emerald → sage #8aa482
+     Purple → wine #7f4658
+   -------------------------------------------------------------------------- */
+
+/* Red */
+[data-theme="classy"] .text-red-200 { color: #d9b5b1 !important; }
+[data-theme="classy"] .text-red-300 { color: #c89a94 !important; }
+[data-theme="classy"] .text-red-400 { color: #b87a72 !important; }
+[data-theme="classy"] .text-red-500 { color: #a85957 !important; }
+[data-theme="classy"] .bg-red-500 { background-color: #a85957 !important; }
+[data-theme="classy"] .bg-red-500\/5  { background-color: rgba(168, 89, 87, 0.06) !important; }
+[data-theme="classy"] .bg-red-500\/10 { background-color: rgba(168, 89, 87, 0.12) !important; }
+[data-theme="classy"] .bg-red-500\/15 { background-color: rgba(168, 89, 87, 0.17) !important; }
+[data-theme="classy"] .bg-red-500\/20 { background-color: rgba(168, 89, 87, 0.22) !important; }
+[data-theme="classy"] .bg-red-500\/30 { background-color: rgba(168, 89, 87, 0.32) !important; }
+[data-theme="classy"] .border-red-400 { border-color: #b87a72 !important; }
+[data-theme="classy"] .border-red-500 { border-color: #a85957 !important; }
+[data-theme="classy"] .border-red-500\/30 { border-color: rgba(168, 89, 87, 0.3) !important; }
+[data-theme="classy"] .border-red-500\/40 { border-color: rgba(168, 89, 87, 0.4) !important; }
+[data-theme="classy"] .border-red-500\/50 { border-color: rgba(168, 89, 87, 0.5) !important; }
+[data-theme="classy"] .border-red-500\/60 { border-color: rgba(168, 89, 87, 0.6) !important; }
+
+/* Amber / ochre */
+[data-theme="classy"] .text-amber-200 { color: #e8d4a6 !important; }
+[data-theme="classy"] .text-amber-300 { color: #d8bc88 !important; }
+[data-theme="classy"] .text-amber-400 { color: #c89e5b !important; }
+[data-theme="classy"] .bg-amber-500\/10 { background-color: rgba(200, 158, 91, 0.12) !important; }
+[data-theme="classy"] .bg-amber-500\/15 { background-color: rgba(200, 158, 91, 0.17) !important; }
+[data-theme="classy"] .bg-amber-500\/20 { background-color: rgba(200, 158, 91, 0.22) !important; }
+[data-theme="classy"] .bg-amber-500\/30 { background-color: rgba(200, 158, 91, 0.32) !important; }
+[data-theme="classy"] .border-amber-400 { border-color: #c89e5b !important; }
+[data-theme="classy"] .border-amber-400\/60 { border-color: rgba(200, 158, 91, 0.6) !important; }
+[data-theme="classy"] .border-amber-500\/30 { border-color: rgba(200, 158, 91, 0.3) !important; }
+[data-theme="classy"] .border-amber-500\/40 { border-color: rgba(200, 158, 91, 0.4) !important; }
+[data-theme="classy"] .border-amber-500\/50 { border-color: rgba(200, 158, 91, 0.5) !important; }
+
+/* Emerald / sage */
+[data-theme="classy"] .text-emerald-200 { color: #c8d5c0 !important; }
+[data-theme="classy"] .text-emerald-300 { color: #aac0a0 !important; }
+[data-theme="classy"] .text-emerald-400 { color: #8aa482 !important; }
+[data-theme="classy"] .text-green-400 { color: #8aa482 !important; }
+[data-theme="classy"] .bg-emerald-500\/5  { background-color: rgba(138, 164, 130, 0.06) !important; }
+[data-theme="classy"] .bg-emerald-500\/10 { background-color: rgba(138, 164, 130, 0.12) !important; }
+[data-theme="classy"] .bg-emerald-500\/15 { background-color: rgba(138, 164, 130, 0.17) !important; }
+[data-theme="classy"] .bg-emerald-500\/20 { background-color: rgba(138, 164, 130, 0.22) !important; }
+[data-theme="classy"] .border-emerald-500\/30 { border-color: rgba(138, 164, 130, 0.3) !important; }
+[data-theme="classy"] .border-emerald-500\/40 { border-color: rgba(138, 164, 130, 0.4) !important; }
+
+/* Purple / wine */
+[data-theme="classy"] .text-purple-100 { color: #d9c0c8 !important; }
+[data-theme="classy"] .text-purple-200 { color: #c9a5b0 !important; }
+[data-theme="classy"] .text-purple-300 { color: #b88a98 !important; }
+[data-theme="classy"] .bg-purple-500\/15 { background-color: rgba(127, 70, 88, 0.17) !important; }
+[data-theme="classy"] .bg-purple-500\/30 { background-color: rgba(127, 70, 88, 0.32) !important; }
+[data-theme="classy"] .border-purple-400 { border-color: #8f5869 !important; }
+[data-theme="classy"] .border-purple-400\/60 { border-color: rgba(143, 88, 105, 0.6) !important; }
+
+/* --------------------------------------------------------------------------
+   TYPOGRAPHY — softer tracking, no font swap (V1)
+     - tracking-widest from .1em down to .06em
+     - tracking-wider from .05em down to .04em
+     Keeps the typeset rhythm of the existing fonts but feels less
+     "mil-spec readout" and more "boutique brand."
+   -------------------------------------------------------------------------- */
+
+[data-theme="classy"] .tracking-widest { letter-spacing: 0.06em !important; }
+[data-theme="classy"] .tracking-wider  { letter-spacing: 0.04em !important; }
+
+/* --------------------------------------------------------------------------
+   FORM FIELDS — inputs/textareas/selects get warm-tinted backgrounds.
+   Tailwind classes already covered above; this is a catch-all for the
+   browser-default styling.
+   -------------------------------------------------------------------------- */
+
+[data-theme="classy"] input[type="text"],
+[data-theme="classy"] input[type="number"],
+[data-theme="classy"] input[type="email"],
+[data-theme="classy"] input[type="password"],
+[data-theme="classy"] input[type="date"],
+[data-theme="classy"] input[type="time"],
+[data-theme="classy"] input[type="datetime-local"],
+[data-theme="classy"] input[type="search"],
+[data-theme="classy"] input[type="tel"],
+[data-theme="classy"] input[type="url"],
+[data-theme="classy"] textarea,
+[data-theme="classy"] select {
+  color-scheme: dark;
+}
+
+/* --------------------------------------------------------------------------
+   SCROLLBAR — warm tint
+   -------------------------------------------------------------------------- */
+
+[data-theme="classy"] ::-webkit-scrollbar-track {
+  background: #1c1a17;
+}
+[data-theme="classy"] ::-webkit-scrollbar-thumb {
+  background: #3e3730;
+}
+[data-theme="classy"] ::-webkit-scrollbar-thumb:hover {
+  background: #5a5048;
+}
