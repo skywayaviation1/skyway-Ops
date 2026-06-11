@@ -1,207 +1,202 @@
 /* ==========================================================================
-   THEME · CLASSY
+   THEME Â· CLASSY (BRIGHT)
    --------------------------------------------------------------------------
-   Applied when <html data-theme="classy"> is set. Overrides specific
-   Tailwind utility classes with a warmer, more refined palette:
+   Applied when <html data-theme="classy"> is set. This is the LIGHT
+   counterpart to the default dark theme. Crisp white surfaces, deep
+   slate text for readability, vibrant cyan accent kept saturated against
+   the bright background. Status colors darkened so they pop against
+   white rather than getting washed out.
 
-     - Backgrounds shift from cold slate-blue to warm charcoal
-     - Cyan accent (#1ec0e9) → champagne gold (#c4a572)
-     - Status colors (red / amber / emerald / purple) muted to wine /
-       sage / brick to match the warmer base
-     - All-caps tracking softened from .1em to .06em for less aggressive
-       tactical feel
-     - Borders + dividers warmed
-     - Backdrop tint warmed (no blue cast)
+     - Backgrounds: slate-blue darks â†’ near-white / soft gray surfaces
+     - Cyan accent: same hue, shifted darker (cyan-500/600/700) for AA
+       contrast against white
+     - Status colors: from light pastel-on-dark to saturated-on-white
+     - Borders: subtle light gray instead of dark slate
+     - All-caps tracking softened from .1em to .06em for a refined feel
+     - Native browser surfaces (scrollbars, date pickers) switch to
+       light via color-scheme
 
-   The dark theme (default) doesn't need these — Tailwind classes apply
-   their normal values when no [data-theme] is set or when
-   data-theme="dark".
+   The dark theme (default) is unchanged â€” these overrides only apply
+   when data-theme="classy" is set on <html>.
 
-   Implementation note: all rules use `!important` because we're
-   overriding Tailwind utility classes that load via the main bundle.
-   Without !important the cascade would tie or lose depending on
-   stylesheet load order. The high-specificity selector
-   [data-theme="classy"] .x ensures we only apply when the theme is
-   active.
+   Implementation note: !important is required because we override
+   Tailwind utility classes loaded via the main bundle.
    ========================================================================== */
 
 /* --------------------------------------------------------------------------
-   Body / root coloring — fallback for components reading variables
+   ROOT â€” body coloring + browser color-scheme
    -------------------------------------------------------------------------- */
 
 html[data-theme="classy"],
 html[data-theme="classy"] body {
-  background-color: #1c1a17 !important;
-  color: #f5ecd9;
+  background-color: #ffffff !important;
+  color: #0f172a;
+  color-scheme: light;
 }
 
 /* --------------------------------------------------------------------------
-   Backgrounds — slate family → warm charcoal
+   BACKGROUNDS â€” slate (cold dark) â†’ soft whites and pale slates
    -------------------------------------------------------------------------- */
 
-[data-theme="classy"] .bg-slate-950 { background-color: #1c1a17 !important; }
-[data-theme="classy"] .bg-slate-900 { background-color: #26221d !important; }
-[data-theme="classy"] .bg-slate-800 { background-color: #322c26 !important; }
-[data-theme="classy"] .bg-slate-700 { background-color: #3e3730 !important; }
+[data-theme="classy"] .bg-slate-950 { background-color: #ffffff !important; }
+[data-theme="classy"] .bg-slate-900 { background-color: #f8fafc !important; }
+[data-theme="classy"] .bg-slate-800 { background-color: #f1f5f9 !important; }
+[data-theme="classy"] .bg-slate-700 { background-color: #e2e8f0 !important; }
 
-[data-theme="classy"] .bg-slate-950\/30 { background-color: rgba(28, 26, 23, 0.5) !important; }
-[data-theme="classy"] .bg-slate-950\/60 { background-color: rgba(28, 26, 23, 0.75) !important; }
-[data-theme="classy"] .bg-slate-950\/80 { background-color: rgba(28, 26, 23, 0.9) !important; }
-[data-theme="classy"] .bg-slate-900\/30 { background-color: rgba(38, 34, 29, 0.5) !important; }
-[data-theme="classy"] .bg-slate-900\/40 { background-color: rgba(38, 34, 29, 0.65) !important; }
-[data-theme="classy"] .bg-slate-900\/50 { background-color: rgba(38, 34, 29, 0.75) !important; }
-[data-theme="classy"] .bg-slate-900\/60 { background-color: rgba(38, 34, 29, 0.85) !important; }
-[data-theme="classy"] .bg-slate-900\/70 { background-color: rgba(38, 34, 29, 0.9) !important; }
-[data-theme="classy"] .bg-slate-900\/80 { background-color: rgba(38, 34, 29, 0.92) !important; }
-[data-theme="classy"] .bg-slate-800\/30 { background-color: rgba(50, 44, 38, 0.5) !important; }
-[data-theme="classy"] .bg-slate-800\/50 { background-color: rgba(50, 44, 38, 0.75) !important; }
-[data-theme="classy"] .bg-slate-800\/80 { background-color: rgba(50, 44, 38, 0.92) !important; }
+[data-theme="classy"] .bg-slate-950\/30 { background-color: rgba(255, 255, 255, 0.6) !important; }
+[data-theme="classy"] .bg-slate-950\/60 { background-color: rgba(255, 255, 255, 0.85) !important; }
+[data-theme="classy"] .bg-slate-950\/80 { background-color: rgba(255, 255, 255, 0.9) !important; }
+[data-theme="classy"] .bg-slate-900\/30 { background-color: rgba(248, 250, 252, 0.5) !important; }
+[data-theme="classy"] .bg-slate-900\/40 { background-color: rgba(248, 250, 252, 0.7) !important; }
+[data-theme="classy"] .bg-slate-900\/50 { background-color: rgba(248, 250, 252, 0.8) !important; }
+[data-theme="classy"] .bg-slate-900\/60 { background-color: rgba(248, 250, 252, 0.9) !important; }
+[data-theme="classy"] .bg-slate-900\/70 { background-color: rgba(248, 250, 252, 0.95) !important; }
+[data-theme="classy"] .bg-slate-900\/80 { background-color: #f8fafc !important; }
+[data-theme="classy"] .bg-slate-800\/30 { background-color: rgba(241, 245, 249, 0.5) !important; }
+[data-theme="classy"] .bg-slate-800\/50 { background-color: rgba(241, 245, 249, 0.75) !important; }
+[data-theme="classy"] .bg-slate-800\/80 { background-color: #f1f5f9 !important; }
 
 /* --------------------------------------------------------------------------
-   Text — slate family → warm ivory / taupe
+   TEXT â€” slate-light (on dark) becomes slate-deep (on white).
+   The numbering is inverted: text-slate-100 was the lightest in dark
+   mode â†’ now becomes the DARKEST so it reads on a white surface.
    -------------------------------------------------------------------------- */
 
-[data-theme="classy"] .text-slate-100 { color: #f5ecd9 !important; }
-[data-theme="classy"] .text-slate-200 { color: #ddd4c1 !important; }
-[data-theme="classy"] .text-slate-300 { color: #c4baa6 !important; }
-[data-theme="classy"] .text-slate-400 { color: #a59a85 !important; }
-[data-theme="classy"] .text-slate-500 { color: #7c7163 !important; }
-[data-theme="classy"] .text-slate-600 { color: #5a5048 !important; }
+[data-theme="classy"] .text-slate-100 { color: #0f172a !important; }   /* slate-900 */
+[data-theme="classy"] .text-slate-200 { color: #1e293b !important; }   /* slate-800 */
+[data-theme="classy"] .text-slate-300 { color: #334155 !important; }   /* slate-700 */
+[data-theme="classy"] .text-slate-400 { color: #64748b !important; }   /* slate-500 */
+[data-theme="classy"] .text-slate-500 { color: #94a3b8 !important; }   /* slate-400 */
+[data-theme="classy"] .text-slate-600 { color: #cbd5e1 !important; }   /* slate-300 */
 
 /* --------------------------------------------------------------------------
-   Borders — warm equivalents
+   BORDERS â€” dark slate edges â†’ pale slate edges
    -------------------------------------------------------------------------- */
 
-[data-theme="classy"] .border-slate-700 { border-color: #3e3730 !important; }
-[data-theme="classy"] .border-slate-800 { border-color: #322c26 !important; }
-[data-theme="classy"] .border-slate-900 { border-color: #26221d !important; }
-[data-theme="classy"] .border-slate-800\/60 { border-color: rgba(50, 44, 38, 0.6) !important; }
-[data-theme="classy"] .border-slate-700\/60 { border-color: rgba(62, 55, 48, 0.6) !important; }
+[data-theme="classy"] .border-slate-700 { border-color: #cbd5e1 !important; }   /* slate-300 */
+[data-theme="classy"] .border-slate-800 { border-color: #e2e8f0 !important; }   /* slate-200 */
+[data-theme="classy"] .border-slate-900 { border-color: #f1f5f9 !important; }   /* slate-100 */
+[data-theme="classy"] .border-slate-800\/60 { border-color: rgba(226, 232, 240, 0.8) !important; }
+[data-theme="classy"] .border-slate-700\/60 { border-color: rgba(203, 213, 225, 0.8) !important; }
 
 /* --------------------------------------------------------------------------
-   ACCENT — cyan (#1ec0e9) becomes champagne gold (#c4a572).
-   This is the most visible change — almost every interactive element
-   in the app is cyan, so the new color carries the whole brand feel.
-   Picked champagne over yellow-gold or brass to keep it desaturated and
-   sophisticated; the slight warmth pairs naturally with the warm bg.
+   ACCENT â€” CYAN, KEPT VIBRANT.
+   On dark, cyan-300/400 reads as bright pastel. On white we shift one
+   step deeper (cyan-500/600/700) so the same elements still pop with
+   AA contrast. Background-alpha tints use cyan-500 hue, alpha against
+   white naturally produces a paler tint.
    -------------------------------------------------------------------------- */
 
 /* Text */
-[data-theme="classy"] .text-cyan-200 { color: #e8d8b3 !important; }
-[data-theme="classy"] .text-cyan-300 { color: #d4b890 !important; }
-[data-theme="classy"] .text-cyan-400 { color: #c4a572 !important; }
-[data-theme="classy"] .text-cyan-500 { color: #b59560 !important; }
+[data-theme="classy"] .text-cyan-200 { color: #0e7490 !important; }   /* cyan-700 */
+[data-theme="classy"] .text-cyan-300 { color: #0891b2 !important; }   /* cyan-600 */
+[data-theme="classy"] .text-cyan-400 { color: #06b6d4 !important; }   /* cyan-500 */
+[data-theme="classy"] .text-cyan-500 { color: #0891b2 !important; }   /* cyan-600 */
 
-/* Backgrounds */
-[data-theme="classy"] .bg-cyan-400 { background-color: #d4b890 !important; }
-[data-theme="classy"] .bg-cyan-500 { background-color: #c4a572 !important; }
-[data-theme="classy"] .hover\:bg-cyan-400:hover { background-color: #d4b890 !important; }
-[data-theme="classy"] .hover\:bg-cyan-500:hover { background-color: #c4a572 !important; }
-[data-theme="classy"] .bg-cyan-500\/5  { background-color: rgba(196, 165, 114, 0.06) !important; }
-[data-theme="classy"] .bg-cyan-500\/10 { background-color: rgba(196, 165, 114, 0.1) !important; }
-[data-theme="classy"] .bg-cyan-500\/15 { background-color: rgba(196, 165, 114, 0.15) !important; }
-[data-theme="classy"] .bg-cyan-500\/20 { background-color: rgba(196, 165, 114, 0.2) !important; }
-[data-theme="classy"] .bg-cyan-500\/30 { background-color: rgba(196, 165, 114, 0.3) !important; }
-[data-theme="classy"] .bg-cyan-500\/40 { background-color: rgba(196, 165, 114, 0.4) !important; }
-[data-theme="classy"] .bg-cyan-400\/40 { background-color: rgba(212, 184, 144, 0.4) !important; }
-[data-theme="classy"] .hover\:bg-cyan-500\/10:hover { background-color: rgba(196, 165, 114, 0.1) !important; }
-[data-theme="classy"] .hover\:bg-cyan-500\/20:hover { background-color: rgba(196, 165, 114, 0.2) !important; }
+/* Solid backgrounds â€” saturated against white */
+[data-theme="classy"] .bg-cyan-400 { background-color: #22d3ee !important; }
+[data-theme="classy"] .bg-cyan-500 { background-color: #06b6d4 !important; }
+[data-theme="classy"] .hover\:bg-cyan-400:hover { background-color: #22d3ee !important; }
+[data-theme="classy"] .hover\:bg-cyan-500:hover { background-color: #06b6d4 !important; }
+
+/* Alpha tints â€” cyan with white showing through */
+[data-theme="classy"] .bg-cyan-500\/5  { background-color: rgba(6, 182, 212, 0.05) !important; }
+[data-theme="classy"] .bg-cyan-500\/10 { background-color: rgba(6, 182, 212, 0.1) !important; }
+[data-theme="classy"] .bg-cyan-500\/15 { background-color: rgba(6, 182, 212, 0.12) !important; }
+[data-theme="classy"] .bg-cyan-500\/20 { background-color: rgba(6, 182, 212, 0.15) !important; }
+[data-theme="classy"] .bg-cyan-500\/30 { background-color: rgba(6, 182, 212, 0.22) !important; }
+[data-theme="classy"] .bg-cyan-500\/40 { background-color: rgba(6, 182, 212, 0.3) !important; }
+[data-theme="classy"] .bg-cyan-400\/40 { background-color: rgba(34, 211, 238, 0.3) !important; }
+[data-theme="classy"] .hover\:bg-cyan-500\/10:hover { background-color: rgba(6, 182, 212, 0.1) !important; }
+[data-theme="classy"] .hover\:bg-cyan-500\/20:hover { background-color: rgba(6, 182, 212, 0.18) !important; }
 
 /* Borders */
-[data-theme="classy"] .border-cyan-300 { border-color: #d4b890 !important; }
-[data-theme="classy"] .border-cyan-400 { border-color: #c4a572 !important; }
-[data-theme="classy"] .border-cyan-500 { border-color: #b59560 !important; }
-[data-theme="classy"] .border-cyan-400\/40 { border-color: rgba(196, 165, 114, 0.4) !important; }
-[data-theme="classy"] .border-cyan-400\/60 { border-color: rgba(196, 165, 114, 0.6) !important; }
-[data-theme="classy"] .border-cyan-500\/30 { border-color: rgba(181, 149, 96, 0.3) !important; }
-[data-theme="classy"] .border-cyan-500\/40 { border-color: rgba(181, 149, 96, 0.4) !important; }
-[data-theme="classy"] .border-cyan-500\/50 { border-color: rgba(181, 149, 96, 0.5) !important; }
-[data-theme="classy"] .border-cyan-500\/60 { border-color: rgba(181, 149, 96, 0.6) !important; }
-[data-theme="classy"] .hover\:border-cyan-400:hover { border-color: #c4a572 !important; }
-[data-theme="classy"] .hover\:border-cyan-500\/40:hover { border-color: rgba(181, 149, 96, 0.4) !important; }
-[data-theme="classy"] .hover\:text-cyan-300:hover { color: #d4b890 !important; }
-[data-theme="classy"] .hover\:text-cyan-400:hover { color: #c4a572 !important; }
+[data-theme="classy"] .border-cyan-300 { border-color: #67e8f9 !important; }
+[data-theme="classy"] .border-cyan-400 { border-color: #22d3ee !important; }
+[data-theme="classy"] .border-cyan-500 { border-color: #06b6d4 !important; }
+[data-theme="classy"] .border-cyan-400\/40 { border-color: rgba(34, 211, 238, 0.5) !important; }
+[data-theme="classy"] .border-cyan-400\/60 { border-color: rgba(34, 211, 238, 0.7) !important; }
+[data-theme="classy"] .border-cyan-500\/30 { border-color: rgba(6, 182, 212, 0.35) !important; }
+[data-theme="classy"] .border-cyan-500\/40 { border-color: rgba(6, 182, 212, 0.45) !important; }
+[data-theme="classy"] .border-cyan-500\/50 { border-color: rgba(6, 182, 212, 0.55) !important; }
+[data-theme="classy"] .border-cyan-500\/60 { border-color: rgba(6, 182, 212, 0.65) !important; }
+[data-theme="classy"] .hover\:border-cyan-400:hover { border-color: #22d3ee !important; }
+[data-theme="classy"] .hover\:border-cyan-500\/40:hover { border-color: rgba(6, 182, 212, 0.5) !important; }
+[data-theme="classy"] .hover\:text-cyan-300:hover { color: #0891b2 !important; }
+[data-theme="classy"] .hover\:text-cyan-400:hover { color: #06b6d4 !important; }
 
 /* Rings */
-[data-theme="classy"] .ring-cyan-200 { --tw-ring-color: #e8d8b3 !important; }
-[data-theme="classy"] .ring-cyan-400 { --tw-ring-color: #c4a572 !important; }
+[data-theme="classy"] .ring-cyan-200 { --tw-ring-color: #67e8f9 !important; }
+[data-theme="classy"] .ring-cyan-400 { --tw-ring-color: #22d3ee !important; }
 
 /* --------------------------------------------------------------------------
-   STATE COLORS — muted/warmed
-     Red    → brick #a85957
-     Amber  → ochre #c89e5b (already pretty warm)
-     Emerald → sage #8aa482
-     Purple → wine #7f4658
+   STATUS COLORS â€” pop against white. Each family shifts one step
+   darker than the dark-theme version so the same `text-red-300` reads
+   as a confident saturated red on white instead of a washed-out pink.
    -------------------------------------------------------------------------- */
 
-/* Red */
-[data-theme="classy"] .text-red-200 { color: #d9b5b1 !important; }
-[data-theme="classy"] .text-red-300 { color: #c89a94 !important; }
-[data-theme="classy"] .text-red-400 { color: #b87a72 !important; }
-[data-theme="classy"] .text-red-500 { color: #a85957 !important; }
-[data-theme="classy"] .bg-red-500 { background-color: #a85957 !important; }
-[data-theme="classy"] .bg-red-500\/5  { background-color: rgba(168, 89, 87, 0.06) !important; }
-[data-theme="classy"] .bg-red-500\/10 { background-color: rgba(168, 89, 87, 0.12) !important; }
-[data-theme="classy"] .bg-red-500\/15 { background-color: rgba(168, 89, 87, 0.17) !important; }
-[data-theme="classy"] .bg-red-500\/20 { background-color: rgba(168, 89, 87, 0.22) !important; }
-[data-theme="classy"] .bg-red-500\/30 { background-color: rgba(168, 89, 87, 0.32) !important; }
-[data-theme="classy"] .border-red-400 { border-color: #b87a72 !important; }
-[data-theme="classy"] .border-red-500 { border-color: #a85957 !important; }
-[data-theme="classy"] .border-red-500\/30 { border-color: rgba(168, 89, 87, 0.3) !important; }
-[data-theme="classy"] .border-red-500\/40 { border-color: rgba(168, 89, 87, 0.4) !important; }
-[data-theme="classy"] .border-red-500\/50 { border-color: rgba(168, 89, 87, 0.5) !important; }
-[data-theme="classy"] .border-red-500\/60 { border-color: rgba(168, 89, 87, 0.6) !important; }
+/* RED â€” danger / blocking */
+[data-theme="classy"] .text-red-200 { color: #b91c1c !important; }   /* red-700 */
+[data-theme="classy"] .text-red-300 { color: #b91c1c !important; }   /* red-700 */
+[data-theme="classy"] .text-red-400 { color: #dc2626 !important; }   /* red-600 */
+[data-theme="classy"] .text-red-500 { color: #dc2626 !important; }
+[data-theme="classy"] .bg-red-500 { background-color: #dc2626 !important; }
+[data-theme="classy"] .bg-red-500\/5  { background-color: rgba(220, 38, 38, 0.05) !important; }
+[data-theme="classy"] .bg-red-500\/10 { background-color: rgba(220, 38, 38, 0.08) !important; }
+[data-theme="classy"] .bg-red-500\/15 { background-color: rgba(220, 38, 38, 0.12) !important; }
+[data-theme="classy"] .bg-red-500\/20 { background-color: rgba(220, 38, 38, 0.16) !important; }
+[data-theme="classy"] .bg-red-500\/30 { background-color: rgba(220, 38, 38, 0.22) !important; }
+[data-theme="classy"] .border-red-400 { border-color: #ef4444 !important; }
+[data-theme="classy"] .border-red-500 { border-color: #dc2626 !important; }
+[data-theme="classy"] .border-red-500\/30 { border-color: rgba(220, 38, 38, 0.4) !important; }
+[data-theme="classy"] .border-red-500\/40 { border-color: rgba(220, 38, 38, 0.5) !important; }
+[data-theme="classy"] .border-red-500\/50 { border-color: rgba(220, 38, 38, 0.6) !important; }
+[data-theme="classy"] .border-red-500\/60 { border-color: rgba(220, 38, 38, 0.7) !important; }
 
-/* Amber / ochre */
-[data-theme="classy"] .text-amber-200 { color: #e8d4a6 !important; }
-[data-theme="classy"] .text-amber-300 { color: #d8bc88 !important; }
-[data-theme="classy"] .text-amber-400 { color: #c89e5b !important; }
-[data-theme="classy"] .bg-amber-500\/10 { background-color: rgba(200, 158, 91, 0.12) !important; }
-[data-theme="classy"] .bg-amber-500\/15 { background-color: rgba(200, 158, 91, 0.17) !important; }
-[data-theme="classy"] .bg-amber-500\/20 { background-color: rgba(200, 158, 91, 0.22) !important; }
-[data-theme="classy"] .bg-amber-500\/30 { background-color: rgba(200, 158, 91, 0.32) !important; }
-[data-theme="classy"] .border-amber-400 { border-color: #c89e5b !important; }
-[data-theme="classy"] .border-amber-400\/60 { border-color: rgba(200, 158, 91, 0.6) !important; }
-[data-theme="classy"] .border-amber-500\/30 { border-color: rgba(200, 158, 91, 0.3) !important; }
-[data-theme="classy"] .border-amber-500\/40 { border-color: rgba(200, 158, 91, 0.4) !important; }
-[data-theme="classy"] .border-amber-500\/50 { border-color: rgba(200, 158, 91, 0.5) !important; }
+/* AMBER â€” warning */
+[data-theme="classy"] .text-amber-200 { color: #b45309 !important; }   /* amber-700 */
+[data-theme="classy"] .text-amber-300 { color: #d97706 !important; }   /* amber-600 */
+[data-theme="classy"] .text-amber-400 { color: #d97706 !important; }
+[data-theme="classy"] .bg-amber-500\/10 { background-color: rgba(217, 119, 6, 0.1) !important; }
+[data-theme="classy"] .bg-amber-500\/15 { background-color: rgba(217, 119, 6, 0.14) !important; }
+[data-theme="classy"] .bg-amber-500\/20 { background-color: rgba(217, 119, 6, 0.18) !important; }
+[data-theme="classy"] .bg-amber-500\/30 { background-color: rgba(217, 119, 6, 0.25) !important; }
+[data-theme="classy"] .border-amber-400 { border-color: #f59e0b !important; }
+[data-theme="classy"] .border-amber-400\/60 { border-color: rgba(245, 158, 11, 0.7) !important; }
+[data-theme="classy"] .border-amber-500\/30 { border-color: rgba(217, 119, 6, 0.4) !important; }
+[data-theme="classy"] .border-amber-500\/40 { border-color: rgba(217, 119, 6, 0.5) !important; }
+[data-theme="classy"] .border-amber-500\/50 { border-color: rgba(217, 119, 6, 0.6) !important; }
 
-/* Emerald / sage */
-[data-theme="classy"] .text-emerald-200 { color: #c8d5c0 !important; }
-[data-theme="classy"] .text-emerald-300 { color: #aac0a0 !important; }
-[data-theme="classy"] .text-emerald-400 { color: #8aa482 !important; }
-[data-theme="classy"] .text-green-400 { color: #8aa482 !important; }
-[data-theme="classy"] .bg-emerald-500\/5  { background-color: rgba(138, 164, 130, 0.06) !important; }
-[data-theme="classy"] .bg-emerald-500\/10 { background-color: rgba(138, 164, 130, 0.12) !important; }
-[data-theme="classy"] .bg-emerald-500\/15 { background-color: rgba(138, 164, 130, 0.17) !important; }
-[data-theme="classy"] .bg-emerald-500\/20 { background-color: rgba(138, 164, 130, 0.22) !important; }
-[data-theme="classy"] .border-emerald-500\/30 { border-color: rgba(138, 164, 130, 0.3) !important; }
-[data-theme="classy"] .border-emerald-500\/40 { border-color: rgba(138, 164, 130, 0.4) !important; }
+/* EMERALD â€” ok / legal */
+[data-theme="classy"] .text-emerald-200 { color: #166534 !important; }   /* green-800 */
+[data-theme="classy"] .text-emerald-300 { color: #15803d !important; }   /* green-700 */
+[data-theme="classy"] .text-emerald-400 { color: #16a34a !important; }   /* green-600 */
+[data-theme="classy"] .text-green-400 { color: #16a34a !important; }
+[data-theme="classy"] .bg-emerald-500\/5  { background-color: rgba(22, 163, 74, 0.05) !important; }
+[data-theme="classy"] .bg-emerald-500\/10 { background-color: rgba(22, 163, 74, 0.1) !important; }
+[data-theme="classy"] .bg-emerald-500\/15 { background-color: rgba(22, 163, 74, 0.13) !important; }
+[data-theme="classy"] .bg-emerald-500\/20 { background-color: rgba(22, 163, 74, 0.18) !important; }
+[data-theme="classy"] .border-emerald-500\/30 { border-color: rgba(22, 163, 74, 0.4) !important; }
+[data-theme="classy"] .border-emerald-500\/40 { border-color: rgba(22, 163, 74, 0.5) !important; }
 
-/* Purple / wine */
-[data-theme="classy"] .text-purple-100 { color: #d9c0c8 !important; }
-[data-theme="classy"] .text-purple-200 { color: #c9a5b0 !important; }
-[data-theme="classy"] .text-purple-300 { color: #b88a98 !important; }
-[data-theme="classy"] .bg-purple-500\/15 { background-color: rgba(127, 70, 88, 0.17) !important; }
-[data-theme="classy"] .bg-purple-500\/30 { background-color: rgba(127, 70, 88, 0.32) !important; }
-[data-theme="classy"] .border-purple-400 { border-color: #8f5869 !important; }
-[data-theme="classy"] .border-purple-400\/60 { border-color: rgba(143, 88, 105, 0.6) !important; }
+/* PURPLE â€” admin-attested */
+[data-theme="classy"] .text-purple-100 { color: #6b21a8 !important; }   /* purple-800 */
+[data-theme="classy"] .text-purple-200 { color: #7e22ce !important; }   /* purple-700 */
+[data-theme="classy"] .text-purple-300 { color: #9333ea !important; }   /* purple-600 */
+[data-theme="classy"] .bg-purple-500\/15 { background-color: rgba(147, 51, 234, 0.12) !important; }
+[data-theme="classy"] .bg-purple-500\/30 { background-color: rgba(147, 51, 234, 0.22) !important; }
+[data-theme="classy"] .border-purple-400 { border-color: #a855f7 !important; }
+[data-theme="classy"] .border-purple-400\/60 { border-color: rgba(168, 85, 247, 0.7) !important; }
 
 /* --------------------------------------------------------------------------
-   TYPOGRAPHY — softer tracking, no font swap (V1)
-     - tracking-widest from .1em down to .06em
-     - tracking-wider from .05em down to .04em
-     Keeps the typeset rhythm of the existing fonts but feels less
-     "mil-spec readout" and more "boutique brand."
+   TYPOGRAPHY â€” softer tracking for refinement
    -------------------------------------------------------------------------- */
 
 [data-theme="classy"] .tracking-widest { letter-spacing: 0.06em !important; }
 [data-theme="classy"] .tracking-wider  { letter-spacing: 0.04em !important; }
 
 /* --------------------------------------------------------------------------
-   FORM FIELDS — inputs/textareas/selects get warm-tinted backgrounds.
-   Tailwind classes already covered above; this is a catch-all for the
-   browser-default styling.
+   FORM CONTROLS â€” native browser styling switches to light
    -------------------------------------------------------------------------- */
 
 [data-theme="classy"] input[type="text"],
@@ -216,19 +211,13 @@ html[data-theme="classy"] body {
 [data-theme="classy"] input[type="url"],
 [data-theme="classy"] textarea,
 [data-theme="classy"] select {
-  color-scheme: dark;
+  color-scheme: light;
 }
 
 /* --------------------------------------------------------------------------
-   SCROLLBAR — warm tint
+   SCROLLBAR â€” subtle gray on light background
    -------------------------------------------------------------------------- */
 
-[data-theme="classy"] ::-webkit-scrollbar-track {
-  background: #1c1a17;
-}
-[data-theme="classy"] ::-webkit-scrollbar-thumb {
-  background: #3e3730;
-}
-[data-theme="classy"] ::-webkit-scrollbar-thumb:hover {
-  background: #5a5048;
-}
+[data-theme="classy"] ::-webkit-scrollbar-track { background: #f8fafc; }
+[data-theme="classy"] ::-webkit-scrollbar-thumb { background: #cbd5e1; }
+[data-theme="classy"] ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
