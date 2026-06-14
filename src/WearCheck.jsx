@@ -18,11 +18,11 @@
 //   <WearTrainingLibrary />     — admin-only training library for AI
 //                                 reference photos (Phase 2).
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Camera, CheckCircle2, AlertTriangle, XCircle, Loader2, ChevronRight,
   ChevronLeft, X, Plane, Wrench, Activity, ShieldAlert, ShieldCheck,
-  Clock, Image as ImageIcon, Trash2, Upload, Plus,
+  Clock, Image as ImageIcon, Trash2, Upload, Plus, Send, MessageSquare,
 } from 'lucide-react';
 
 import {
@@ -38,6 +38,7 @@ import {
   LANDINGS_PER_CHECK,
   subscribeTrainingLibrary,
   checkComplete, requestAiAssessment, localDateKey,
+  saveWearCheckDraft, subscribeWearCheckDraft, clearWearCheckDraft,
 } from './firebase-wear.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -296,12 +297,82 @@ export function WearCheckModal({ tail, currentUser, tripId, legId, inspectionTyp
   const [deferring, setDeferring] = useState(false);
   const [deferReason, setDeferReason] = useState('');
   const [err, setErr] = useState('');
+  // AUTOSAVE — resume in-progress check if the pilot closed the modal
+  // before finishing. On mount we subscribe to wear-check-drafts and
+  // seed the local drafts map from whatever's persisted. Every change
+  // to a draft (photo / status / notes) is then mirrored back to the
+  // doc with a 500ms debounce. On successful submit we delete the doc.
+  // `draftLoaded` gates the autosave so the initial pull from Firestore
+  // doesn't trigger a redundant write of the same data.
+  const [draftLoaded, setDraftLoaded] = useState(false);
+  const [draftSavedAt, setDraftSavedAt] = useState(null);
+  const [draftSaving, setDraftSaving] = useState(false);
+  const [didResume, setDidResume] = useState(false);
+  const saveTimerRef = useRef(null);
+
+  // Subscribe to any existing in-progress draft for this (tail × user × type)
+  // and seed drafts state from it. Cleans up the listener on unmount.
+  useEffect(() => {
+    if (!tail || !currentUser?.uid || !inspectionType) {
+      setDraftLoaded(true);
+      return;
+    }
+    const unsub = subscribeWearCheckDraft(tail, currentUser.uid, inspectionType, (data) => {
+      if (data && data.drafts && typeof data.drafts === 'object') {
+        const hasContent = Object.keys(data.drafts).length > 0;
+        if (hasContent && !draftLoaded) {
+          setDrafts(data.drafts);
+          setDidResume(true);
+          if (data.updatedAtMs) setDraftSavedAt(data.updatedAtMs);
+        }
+      }
+      setDraftLoaded(true);
+    });
+    return () => unsub && unsub();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tail, currentUser?.uid, inspectionType]);
+
+  // Debounced persist of the FULL drafts map to wear-check-drafts. Called
+  // by setDraft below. 500ms after the last change, the doc is upserted.
+  const persistDrafts = useCallback((nextDrafts) => {
+    if (!draftLoaded) return; // skip the redundant write on initial mount
+    if (!tail || !currentUser?.uid || !inspectionType) return;
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(async () => {
+      setDraftSaving(true);
+      try {
+        await saveWearCheckDraft({
+          tail,
+          pilotUid: currentUser.uid,
+          pilotName: currentUser.name || currentUser.displayName,
+          inspectionType,
+          tripId: tripId || null,
+          legId: legId || null,
+          drafts: nextDrafts,
+        });
+        setDraftSavedAt(Date.now());
+      } catch (e) {
+        console.warn('[wear] autosave failed:', e?.message);
+      } finally {
+        setDraftSaving(false);
+      }
+    }, 500);
+  }, [draftLoaded, tail, currentUser?.uid, currentUser?.name, currentUser?.displayName, inspectionType, tripId, legId]);
+
+  // Cleanup the pending debounce on unmount.
+  useEffect(() => () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); }, []);
 
   const active = items[activeIdx];
   const activeKey = active ? `${active.position}:${active.itemType}` : '';
   const activeDraft = drafts[activeKey] || {};
 
-  const setDraft = (patch) => setDrafts((p) => ({ ...p, [activeKey]: { ...activeDraft, ...patch } }));
+  const setDraft = (patch) => {
+    setDrafts((p) => {
+      const next = { ...p, [activeKey]: { ...(p[activeKey] || {}), ...patch } };
+      persistDrafts(next);
+      return next;
+    });
+  };
 
   const allDone = items.every((i) => {
     const k = `${i.position}:${i.itemType}`;
@@ -367,6 +438,10 @@ export function WearCheckModal({ tail, currentUser, tripId, legId, inspectionTyp
         console.warn('[wear] session write failed (inspections still saved):', e?.message);
       }
 
+      // Autosave cleanup — the structured submit succeeded, so the
+      // draft doc is no longer needed.
+      try { await clearWearCheckDraft(tail, currentUser?.uid, inspectionType); } catch (_) {}
+
       onClose();
     } catch (e) {
       setErr(e?.message || 'Save failed');
@@ -404,6 +479,8 @@ export function WearCheckModal({ tail, currentUser, tripId, legId, inspectionTyp
         deferReason,
         idToken,
       });
+      // Autosave cleanup — defer also retires the draft.
+      try { await clearWearCheckDraft(tail, currentUser?.uid, inspectionType); } catch (_) {}
       onClose();
     } catch (e) {
       setErr(e?.message || 'Defer save failed');
@@ -432,9 +509,23 @@ export function WearCheckModal({ tail, currentUser, tripId, legId, inspectionTyp
         </div>
 
         <div className="px-4 py-2 border-b border-slate-800 bg-slate-900/50">
-          <div className="text-[11px] tracking-widest text-slate-400"
+          <div className="text-[11px] tracking-widest text-slate-400 flex items-center gap-2 flex-wrap"
             style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            {INSPECTION_TYPES[inspectionType] || 'Inspection'} · {config.label}
+            <span>{INSPECTION_TYPES[inspectionType] || 'Inspection'} · {config.label}</span>
+            {/* AUTOSAVE PILL — silent when there's nothing saved yet,
+                shows "RESUMED" briefly on a re-open, then settles into
+                "SAVED HH:MM" so the pilot knows their progress is safe. */}
+            {draftSaving ? (
+              <span className="inline-flex items-center gap-1 text-cyan-300/80">
+                <Loader2 className="w-3 h-3 animate-spin" /> SAVING…
+              </span>
+            ) : draftSavedAt ? (
+              <span className="inline-flex items-center gap-1 text-emerald-300/80">
+                <CheckCircle2 className="w-3 h-3" />
+                {didResume ? 'RESUMED · ' : 'SAVED · '}
+                {new Date(draftSavedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </span>
+            ) : null}
           </div>
         </div>
 
@@ -1027,6 +1118,192 @@ function TailDetail({ tail, currentUser, onBack }) {
 
       {replacing && <MarkReplacedModal item={replacing} currentUser={currentUser} onClose={() => setReplacing(null)} />}
       {historyFor && <HistoryDrawer item={historyFor} onClose={() => setHistoryFor(null)} />}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// <MXShareButton /> + <MXShareModal />
+//
+// Lets a pilot send MX a photo + note at ANY time, outside the structured
+// wear check cadence. Used for one-off things: a small dent noticed on
+// walk-around, a panel that doesn't sit right, a smell of fuel, anything
+// the pilot wants MX to see right now. Different from the WearCheckBadge
+// in two ways:
+//   1) Always available (not gated on landings-since-last-check)
+//   2) Single photo + caption, not a per-item flow
+// Persists to the same wear-inspections collection with inspectionType =
+// 'mx_share' so MX sees it in the same history view, the AI vision check
+// pipeline still runs, and the existing /api/wear-notify endpoint fires
+// the email side-channel — but it does NOT alter any specific wear item
+// state because the photo isn't tied to one.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function MXShareButton({ tail, onOpenModal }) {
+  if (!tail) return null;
+  return (
+    <button
+      onClick={() => onOpenModal({ tail })}
+      title={`Send MX a photo for ${tail}. Use this any time something looks off — outside the regular wear-check cadence.`}
+      className="inline-flex items-center gap-1.5 border border-slate-700 bg-slate-800/60 text-slate-300 hover:border-cyan-500/60 hover:text-cyan-300 hover:bg-cyan-500/10 px-2 py-1 text-[10px] tracking-widest font-bold transition"
+      style={{ fontFamily: 'JetBrains Mono, monospace' }}
+    >
+      <Camera className="w-3 h-3" />
+      MX PHOTO
+    </button>
+  );
+}
+
+export function MXShareModal({ tail, currentUser, tripId, legId, onClose }) {
+  const [photoUrl, setPhotoUrl] = useState('');
+  const [photoPath, setPhotoPath] = useState('');
+  const [notes, setNotes] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [err, setErr] = useState('');
+
+  const onPhoto = async (file) => {
+    setBusy(true);
+    setErr('');
+    try {
+      const { url, path } = await uploadInspectionPhoto({
+        tail, position: 'general', itemType: 'general', file,
+      });
+      setPhotoUrl(url);
+      setPhotoPath(path);
+    } catch (e) {
+      setErr(e?.message || 'Upload failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onSend = async () => {
+    if (!photoUrl) { setErr('Take or pick a photo first.'); return; }
+    if (!notes.trim()) { setErr('Tell MX what they should be looking at.'); return; }
+    setSending(true);
+    setErr('');
+    try {
+      let idToken = null;
+      try { idToken = await currentUser?.getIdToken?.(); } catch (_) {}
+      const inspectionId = await saveWearInspection({
+        tail,
+        position: 'general',
+        itemType: 'general',
+        pilotStatus: null,
+        photoUrl,
+        photoPath,
+        inspectedBy: currentUser?.uid,
+        inspectedByName: currentUser?.name || currentUser?.displayName,
+        inspectionType: 'mx_share',
+        tripId: tripId || null,
+        legId: legId || null,
+        notes: notes.trim(),
+        idToken, // mx_share always notifies MX server-side
+      });
+      // Best-effort AI vision check on the photo too. If MX wants to see
+      // something specific, the AI's read can be useful context for them.
+      if (idToken) {
+        try { requestAiAssessment({ idToken, inspectionId }); } catch (_) {}
+      }
+      onClose();
+    } catch (e) {
+      setErr(e?.message || 'Send failed');
+      setSending(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-2 sm:p-4 overflow-y-auto"
+      onClick={onClose}>
+      <div className="bg-slate-950 border border-slate-700 w-full max-w-lg my-4"
+        onClick={(e) => e.stopPropagation()}>
+        {/* Header */}
+        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
+          <div className="flex items-center gap-2">
+            <Camera className="w-4 h-4 text-cyan-300" />
+            <h3 className="text-sm tracking-widest text-slate-100"
+              style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
+              SEND MX A PHOTO · {tail}
+            </h3>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-100">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Helper line */}
+        <div className="px-4 py-2 border-b border-slate-800 bg-slate-900/50">
+          <div className="text-[11px] tracking-widest text-slate-400"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            Use any time — does not replace the structured wear check
+          </div>
+        </div>
+
+        {/* Photo */}
+        <div className="p-4">
+          {photoUrl ? (
+            <div className="relative">
+              <img src={photoUrl} alt="MX share" className="w-full bg-slate-900 block" />
+              <button
+                onClick={() => { setPhotoUrl(''); setPhotoPath(''); }}
+                className="absolute top-2 right-2 bg-slate-950/80 border border-slate-700 text-slate-200 hover:text-cyan-300 px-2 py-1 text-[10px] tracking-widest"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              >
+                <Trash2 className="w-3 h-3 inline mr-1 -mt-0.5" /> REPLACE
+              </button>
+            </div>
+          ) : (
+            <PhotoCapture onCaptured={onPhoto} label="TAKE OR PICK A PHOTO" />
+          )}
+          {busy && (
+            <div className="mt-2 text-[11px] text-cyan-300/80 flex items-center gap-1"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              <Loader2 className="w-3 h-3 animate-spin" /> UPLOADING…
+            </div>
+          )}
+        </div>
+
+        {/* Notes */}
+        <div className="px-4 pb-4">
+          <label className="block text-[10px] tracking-widest text-slate-500 mb-1"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            WHAT SHOULD MX SEE?
+          </label>
+          <textarea
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="e.g. small dent on right wing root · oil indication briefly amber on climb · fuel smell after shutdown"
+            rows={4}
+            className="w-full bg-slate-900 border border-slate-700 text-slate-100 px-2 py-2 text-sm focus:border-cyan-500 outline-none"
+            style={{ fontFamily: 'DM Sans, sans-serif' }}
+          />
+        </div>
+
+        {err && (
+          <div className="mx-4 mb-3 text-[12px] text-red-300 border border-red-500/40 bg-red-500/10 px-2 py-1"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {err}
+          </div>
+        )}
+
+        {/* Actions */}
+        <div className="px-4 py-3 border-t border-slate-800 flex items-center justify-between gap-2">
+          <button onClick={onClose}
+            className="text-[11px] tracking-widest text-slate-400 hover:text-slate-100 px-2 py-1"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            CANCEL
+          </button>
+          <button
+            onClick={onSend}
+            disabled={!photoUrl || !notes.trim() || sending || busy}
+            className="inline-flex items-center gap-1.5 border border-cyan-400 bg-cyan-500/15 text-cyan-200 hover:bg-cyan-500/25 disabled:opacity-40 disabled:cursor-not-allowed px-3 py-1.5 text-[11px] tracking-widest font-bold"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {sending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
+            {sending ? 'SENDING…' : 'SEND TO MX'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

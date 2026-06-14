@@ -38,7 +38,7 @@ const AllCrewDocsLazy = lazy(() => import('./PilotDocs.jsx').then(m => ({ defaul
 // Wear Watch — tire + brake preflight tracking. Modal + badge are
 // imported eagerly (rendered on every trip detail) but the admin tab
 // and training library are lazy since pilots never see them.
-import { WearCheckBadge, WearCheckModal } from './WearCheck.jsx';
+import { WearCheckBadge, WearCheckModal, MXShareButton, MXShareModal } from './WearCheck.jsx';
 const WearTabLazy = lazy(() => import('./WearCheck.jsx').then(m => ({ default: m.WearTab })));
 const WearTrainingLibraryLazy = lazy(() => import('./WearCheck.jsx').then(m => ({ default: m.WearTrainingLibrary })));
 // FAA NOTAM badge — small, used inline next to AirportWxBadge. Not lazy
@@ -4152,6 +4152,11 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   // the badge based on whether this leg is first/last of the day.
   const [wearModalOpen, setWearModalOpen] = useState(false);
   const [wearModalType, setWearModalType] = useState('ad_hoc');
+  // MX SHARE modal — separate from the structured wear check. Lets the
+  // pilot send MX a one-off photo + note at any time, not just on the
+  // structured cadence. Reuses the wear-inspections collection with
+  // inspectionType = 'mx_share'.
+  const [mxShareOpen, setMxShareOpen] = useState(false);
   // Hero card scroll-collapse — when the user scrolls down the trip
   // content, the big trip-info hero shrinks out of the way so legs/
   // manifest/etc. get full screen real estate. A compact sticky bar
@@ -5070,6 +5075,15 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
               }}
             />
           )}
+          {/* Ad-hoc photo to MX — always visible on a flight leg. Use any
+              time the pilot wants MX to see something outside the
+              structured wear check cadence. */}
+          {trip.info.isFlight && trip.info.tail && (
+            <MXShareButton
+              tail={trip.info.tail}
+              onOpenModal={() => setMxShareOpen(true)}
+            />
+          )}
           <div className="flex items-center gap-2 text-xl text-slate-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
             <div className="flex flex-col">
               <div className="flex items-center gap-1.5">
@@ -5444,6 +5458,17 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
           legId={trip.uid}
           inspectionType={wearModalType}
           onClose={() => setWearModalOpen(false)}
+        />
+      )}
+      {/* MX SHARE modal — ad-hoc photo to MX, any time. Opens from the
+          camera button alongside the wear check badge. */}
+      {mxShareOpen && (
+        <MXShareModal
+          tail={trip.info.tail}
+          currentUser={currentUser}
+          tripId={trip.uid}
+          legId={trip.uid}
+          onClose={() => setMxShareOpen(false)}
         />
       )}
     </div>

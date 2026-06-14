@@ -115,6 +115,12 @@ export const INSPECTION_TYPES = {
   end_of_day:   'End of day (before manifest)',
   ad_hoc:       'Ad-hoc check',
   defer:        'Deferred with reason',
+  // Pilot-initiated photo share with MX, outside the structured wear-check
+  // cadence. Goes into wear-inspections (same plumbing — AI vision check,
+  // notify MX, history) but does NOT alter any specific wear item state
+  // because the photo isn't tied to one. position/itemType for these are
+  // both 'general'.
+  mx_share:     'MX photo share',
 };
 
 // Item types per position — used when iterating the modal.
@@ -362,17 +368,21 @@ export async function saveWearInspection({
   };
   await setDoc(doc(db, 'wear-inspections', inspectionId), data);
 
-  // Update current state — unless it was deferred (no actual status pick).
-  if (!isDeferred) {
+  // Update current state — unless it was deferred (no actual status pick),
+  // or this is an mx_share (the photo isn't tied to a specific wear item).
+  const isMxShare = inspectionType === 'mx_share';
+  if (!isDeferred && !isMxShare) {
     await upsertWearItem({
       tail, position, itemType, status: pilotStatus, photoUrl,
       inspectedBy, inspectedByName, inspectionId, notes,
     });
   }
 
-  // Fire immediate MX notify for status drops + defers. Fire-and-forget.
+  // Fire immediate MX notify for status drops, defers, and ALL mx_share
+  // photos (an mx_share is by definition something the pilot wants MX
+  // to see right now). Fire-and-forget.
   const isDrop = !isDeferred && pilotStatus && pilotStatus !== 'good';
-  if ((isDrop || isDeferred) && idToken) {
+  if ((isDrop || isDeferred || isMxShare) && idToken) {
     try {
       fetch('/api/wear-notify', {
         method: 'POST',
@@ -643,4 +653,93 @@ export function computeLandingsSinceCheck(allTrips, tail, sinceMs) {
     if (endMs > sinceMs && endMs <= now) count++;
   }
   return count;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WEAR CHECK DRAFTS — per-pilot autosave of in-progress wear checks.
+// Backs the "don't lose progress if you close the modal" behavior. One doc
+// per (tail × pilot × inspectionType). On successful submit, the modal
+// calls clearWearCheckDraft to delete the doc. While in progress, every
+// change in the modal (photo/status/notes) calls saveWearCheckDraft which
+// upserts the doc with the FULL drafts map. The modal also subscribes to
+// the same doc so that resuming on another device picks up where the
+// pilot left off.
+//
+// Collection schema (wear-check-drafts/{draftId}):
+//   id              draft-{tail}-{pilotUid}-{inspectionType}
+//   tail, pilotUid, pilotName, inspectionType
+//   tripId, legId   optional context
+//   drafts          { 'nose:tire': {photoUrl, photoPath, status, notes}, ... }
+//   createdAtMs, updatedAtMs   numeric for client-side sort, no composite idx
+// ─────────────────────────────────────────────────────────────────────────────
+
+function wearCheckDraftId(tail, pilotUid, inspectionType) {
+  return `draft-${tail}-${pilotUid}-${inspectionType}`;
+}
+
+/**
+ * Upsert the entire drafts map for one pilot's in-progress wear check.
+ * Called debounced from the modal as the pilot fills items in.
+ * Idempotent — safe to call repeatedly with the same map. Returns the
+ * draft document id.
+ */
+export async function saveWearCheckDraft({
+  tail, pilotUid, pilotName, inspectionType, tripId, legId, drafts,
+}) {
+  if (!tail || !pilotUid || !inspectionType) {
+    throw new Error('saveWearCheckDraft: tail, pilotUid, and inspectionType are required');
+  }
+  const draftId = wearCheckDraftId(tail, pilotUid, inspectionType);
+  const ref = doc(db, 'wear-check-drafts', draftId);
+  const existing = await getDoc(ref);
+  const now = Date.now();
+  const body = {
+    id: draftId,
+    tail,
+    pilotUid,
+    pilotName: pilotName || null,
+    inspectionType,
+    tripId: tripId || null,
+    legId: legId || null,
+    drafts: drafts || {},
+    updatedAt: serverTimestamp(),
+    updatedAtMs: now,
+  };
+  if (!existing.exists()) {
+    body.createdAt = serverTimestamp();
+    body.createdAtMs = now;
+  }
+  await setDoc(ref, body, { merge: true });
+  return draftId;
+}
+
+/**
+ * Live listener for one pilot's in-progress wear check on this tail.
+ * cb receives the full draft doc (with `.drafts` map) or null if no draft
+ * exists. Returns the unsubscribe function.
+ */
+export function subscribeWearCheckDraft(tail, pilotUid, inspectionType, cb) {
+  if (!tail || !pilotUid || !inspectionType) {
+    cb(null);
+    return () => {};
+  }
+  const ref = doc(db, 'wear-check-drafts', wearCheckDraftId(tail, pilotUid, inspectionType));
+  return onSnapshot(ref, (snap) => {
+    cb(snap.exists() ? snap.data() : null);
+  });
+}
+
+/**
+ * Delete the draft doc — called after a successful submit (or deferral)
+ * so the next time the pilot opens the modal, they start fresh.
+ * Swallows errors since failing to clear a draft doesn't break anything
+ * functionally; the doc just sticks around as garbage.
+ */
+export async function clearWearCheckDraft(tail, pilotUid, inspectionType) {
+  if (!tail || !pilotUid || !inspectionType) return;
+  try {
+    await deleteDoc(doc(db, 'wear-check-drafts', wearCheckDraftId(tail, pilotUid, inspectionType)));
+  } catch (e) {
+    console.warn('[wear] clearWearCheckDraft failed:', e?.message);
+  }
 }
