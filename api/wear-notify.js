@@ -44,8 +44,17 @@ async function sendEmail({ subject, text, html }) {
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       from: 'Skyway Ops <ops@send.flyskyway.com>',
+      // MX is the primary recipient. Jake / Jim / Mario / Kevin are CC'd
+      // so the whole MX-aware group sees status drops, defers, and ad-hoc
+      // pilot shares at the same time. Applies to every wear-notify trigger
+      // (drop / defer / mx_share).
       to: ['mx@flyskyway.com'],
-      cc: ['jake@flyskyway.com', 'charters@flyskyway.com'],
+      cc: [
+        'Jake@flyskyway.com',
+        'Jim@flyskyway.com',
+        'Mario@flyskyway.com',
+        'Kevin@flyskyway.com',
+      ],
       subject,
       text,
       html,
@@ -67,6 +76,26 @@ function buildBody(insp) {
   const when = new Date(insp.inspectedAtMs).toLocaleString('en-US', {
     timeZone: 'America/New_York', dateStyle: 'short', timeStyle: 'short',
   });
+
+  // Pilot-initiated MX photo share — different shape from a structured
+  // wear-item finding. Lead with the pilot's caption + photo, no
+  // position/item row (which would just say "general / general").
+  if (insp.inspectionType === 'mx_share') {
+    return [
+      `Tail:     ${insp.tail}`,
+      `Pilot:    ${insp.inspectedByName || insp.inspectedBy || '—'}`,
+      `When:     ${when} ET`,
+      `Type:     PILOT MX SHARE (ad-hoc — outside the wear-check cadence)`,
+      '',
+      `Pilot says:`,
+      `  ${insp.notes || '(no caption)'}`,
+      '',
+      `Photo:    ${insp.photoUrl || '(no photo)'}`,
+      '',
+      `View in Skyway Ops: https://skyway-ops.vercel.app`,
+    ].join('\n');
+  }
+
   const lines = [
     `Tail:     ${insp.tail}`,
     `Item:     ${POSITION_LABEL[insp.position] || insp.position} · ${ITEM_LABEL[insp.itemType] || insp.itemType}`,
@@ -108,12 +137,18 @@ export default async function handler(req, res) {
 
     const isDrop = !insp.isDeferred && insp.pilotStatus && insp.pilotStatus !== 'good';
     const isDefer = !!insp.isDeferred;
-    if (!isDrop && !isDefer) {
+    // Pilot-initiated photo share to MX. No status drop, no defer — the
+    // photo IS the reason for the alert. Always sends.
+    const isMxShare = insp.inspectionType === 'mx_share';
+    if (!isDrop && !isDefer && !isMxShare) {
       return res.status(200).json({ ok: true, skipped: 'no alert needed' });
     }
 
     let subject;
-    if (isDefer) {
+    if (isMxShare) {
+      const who = insp.inspectedByName || insp.inspectedBy || 'a pilot';
+      subject = `[Skyway WEAR] MX PHOTO · ${insp.tail} · ${who}`;
+    } else if (isDefer) {
       subject = `[Skyway WEAR] DEFER · ${insp.tail} ${insp.inspectionType.replace(/_/g, ' ')}`;
     } else {
       subject = `[Skyway WEAR] ${STATUS_LABEL[insp.pilotStatus]} · ${insp.tail} ${POSITION_LABEL[insp.position] || insp.position} ${ITEM_LABEL[insp.itemType] || insp.itemType}`;
