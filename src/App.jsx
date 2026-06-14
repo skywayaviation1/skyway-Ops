@@ -4161,7 +4161,23 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   // content, the big trip-info hero shrinks out of the way so legs/
   // manifest/etc. get full screen real estate. A compact sticky bar
   // (tail + route) takes its place at the top so context isn't lost.
-  // Scrolling back to the top expands the hero again.
+  // Scrolling back near the top expands the hero again.
+  //
+  // Three guards against the layout-feedback bounce that an earlier
+  // version of this had:
+  //   1) HYSTERESIS — collapse at >120, expand only at <20. The
+  //      80px-wide deadband between them stops single-threshold
+  //      oscillation when the user idles near the boundary.
+  //   2) CONTENT-LENGTH GUARD — only collapse if there's enough
+  //      scrollable runway that the collapse won't cause the browser
+  //      to clamp scrollTop back to 0 (which would then trigger
+  //      expand → repeat). We require ≥250px of true scroll headroom
+  //      AFTER the hero would collapse. If the tab content is short,
+  //      we just leave the hero open — there was nothing to gain.
+  //   3) TAB-CHANGE RESET — heroCollapsed flips back to false when
+  //      the user switches tabs. Different tabs have wildly different
+  //      content lengths and the persisted "collapsed" state from
+  //      a long tab would misbehave on a short one.
   const [heroCollapsed, setHeroCollapsed] = useState(false);
   const tripScrollRef = useRef(null);
   useEffect(() => {
@@ -4169,12 +4185,25 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
     if (!el) return;
     let raf = null;
     const onScroll = () => {
-      // rAF-debounce to avoid setState on every pixel
       if (raf) return;
       raf = requestAnimationFrame(() => {
         raf = null;
-        const shouldCollapse = el.scrollTop > 80;
-        setHeroCollapsed((cur) => cur === shouldCollapse ? cur : shouldCollapse);
+        const top = el.scrollTop;
+        setHeroCollapsed((cur) => {
+          if (cur) {
+            // Currently collapsed — only expand when the user has
+            // scrolled back near the very top. Keeps the hero stable
+            // through normal mid-content scrolling.
+            return top > 20;
+          }
+          // Currently expanded — collapse only past 120px AND only if
+          // collapsing would leave enough room to scroll without the
+          // browser snapping scrollTop down (the feedback loop fix).
+          if (top <= 120) return false;
+          const scrollableHeadroom = el.scrollHeight - el.clientHeight;
+          if (scrollableHeadroom < 250) return false;
+          return true;
+        });
       });
     };
     el.addEventListener('scroll', onScroll, { passive: true });
@@ -4183,6 +4212,15 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       if (raf) cancelAnimationFrame(raf);
     };
   }, [tab]);  // Re-bind when switching tabs since the scroll container may remount
+  // Tab-change reset for the hero — see comment block above.
+  useEffect(() => {
+    setHeroCollapsed(false);
+    // Also reset the scroll position so the user lands at the top of
+    // the new tab's content. Without this, scrollTop carries over from
+    // the previous tab and can land mid-content on a tab they haven't
+    // looked at yet.
+    if (tripScrollRef.current) tripScrollRef.current.scrollTop = 0;
+  }, [tab]);
   const geo = useGeolocation();
 
   // Reset tab when switching trips
