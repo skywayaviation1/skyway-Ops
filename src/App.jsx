@@ -21159,6 +21159,15 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
   // signal that something is happening even though the parse takes ~15s.
   // null | 'compressing' | 'uploading' | 'parsing'
   const [uploadStage, setUploadStage] = useState(null);
+  // Persistent "✓ Uploaded" toast — set right after a successful upload
+  // so the user has a clear confirmation that the receipt landed before
+  // they navigate away. Auto-dismisses after 8s, or the user can tap to
+  // dismiss. Carries the parsed vendor/amount so the toast is informative
+  // rather than generic.
+  const [uploadSuccess, setUploadSuccess] = useState(null); // { vendor, amount, id } | null
+  // Top-level view inside the expense screen. 'list' is the original
+  // single-pane list + detail. 'reports' is the new analytics tab.
+  const [view, setView] = useState('list'); // 'list' | 'reports'
   // Local-only copy of the freshly-uploaded expense. Firestore snapshots
   // take 100-500ms to round-trip on the new doc — without this, mobile
   // users see a brief flash back to the list view after parse completes
@@ -21417,6 +21426,15 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
       // All done — close the panel and clear stage
       setShowUploader(false);
       setUploadStage(null);
+      // Visible confirmation toast. Stays until the user dismisses it
+      // or 8s passes. The previous version silently dismissed the
+      // uploader, which left users wondering whether the upload had
+      // actually landed.
+      setUploadSuccess({
+        id: finalDraft.id,
+        vendor: finalDraft.vendor || 'Receipt',
+        amount: finalDraft.totalAmount,
+      });
     } catch (err) {
       console.error('[expenses] upload failed:', err);
       setUploadError(err.message || 'Upload failed');
@@ -21629,6 +21647,13 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
     }
   }, [localDraft, expenses]);
 
+  // Auto-dismiss the upload-success toast after 8s.
+  useEffect(() => {
+    if (!uploadSuccess) return;
+    const t = setTimeout(() => setUploadSuccess(null), 8000);
+    return () => clearTimeout(t);
+  }, [uploadSuccess]);
+
   // Resolves the currently-selected expense. Falls back through:
   //   1) the filtered list (normal case)
   //   2) the full unfiltered list (covers filter-excluded selections, e.g.
@@ -21642,7 +21667,66 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
 
   return (
     <div className="flex-1 overflow-hidden flex flex-col md:flex-row">
+      {/* Upload-success toast — green banner at the top of the sidebar
+          with the parsed vendor + amount. Persists for 8s or until the
+          user taps the × to dismiss. Auto-dismiss timer lives in a
+          useEffect above. */}
+      {uploadSuccess && (
+        <div className="absolute top-2 left-1/2 -translate-x-1/2 z-40 max-w-sm w-[92%] sm:w-auto pointer-events-none">
+          <div className="bg-emerald-500/15 border border-emerald-400 backdrop-blur-sm px-3 py-2 flex items-center gap-2 pointer-events-auto shadow-lg">
+            <CheckCircle2 className="w-4 h-4 text-emerald-300 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <div className="text-[10px] tracking-widest text-emerald-300"
+                style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
+                ✓ RECEIPT UPLOADED
+              </div>
+              <div className="text-xs text-slate-100 truncate"
+                style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                {uploadSuccess.vendor}
+                {uploadSuccess.amount != null && ` · $${Number(uploadSuccess.amount).toFixed(2)}`}
+                {' '}— review & tap SUBMIT to finalize
+              </div>
+            </div>
+            <button
+              onClick={() => setUploadSuccess(null)}
+              className="text-emerald-300 hover:text-emerald-100 shrink-0"
+              aria-label="Dismiss"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
       <aside className={`${selected ? 'hidden md:block' : 'block'} w-full md:w-96 md:border-r md:border-slate-800 overflow-y-auto scroll-area`}>
+        {/* View toggle — switches between the standard list view and the
+            new reports view. Reports is available to everyone (your own
+            data, or all data for accounting/ops/admin). */}
+        <div className="border-b border-slate-800 bg-slate-950 sticky top-0 z-20 flex">
+          <button
+            onClick={() => setView('list')}
+            className={`flex-1 px-4 py-2 text-[10px] tracking-widest border-r border-slate-800 ${view === 'list' ? 'bg-slate-900 text-cyan-300 border-b-2 border-b-cyan-400' : 'text-slate-500 hover:text-slate-300'}`}
+            style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}
+          >
+            {canSeeAll ? 'LIST' : 'YOUR HISTORY'}
+          </button>
+          <button
+            onClick={() => setView('reports')}
+            className={`flex-1 px-4 py-2 text-[10px] tracking-widest ${view === 'reports' ? 'bg-slate-900 text-cyan-300 border-b-2 border-b-cyan-400' : 'text-slate-500 hover:text-slate-300'}`}
+            style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}
+          >
+            REPORTS
+          </button>
+        </div>
+
+        {view === 'reports' ? (
+          <ExpenseReports
+            expenses={expenses}
+            canSeeAll={canSeeAll}
+            currentUserUid={currentUserUid}
+            currentUserDisplayName={currentUserDisplayName}
+          />
+        ) : (
+          <>
         {/* Monthly totals panel */}
         <ExpenseMonthlyStats
           stats={monthlyStats}
@@ -21652,7 +21736,7 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
         <div className="px-4 py-3 border-b border-slate-800 bg-slate-950 sticky top-0 z-10">
           <div className="flex items-center justify-between gap-2 mb-2">
             <h2 className="text-xs tracking-[0.2em]" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}>
-              EXPENSES{isAccounting ? ' · ACCOUNTING' : ''}
+              {isAccounting ? 'EXPENSES · ACCOUNTING' : canSeeAll ? `ALL EXPENSES (${filteredExpenses.length})` : `YOUR HISTORY (${filteredExpenses.length})`}
             </h2>
             {canUpload && (
               <button
@@ -21805,6 +21889,8 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
             ))}
           </div>
         )}
+          </>
+        )}
       </aside>
 
       <main className={`flex-1 overflow-y-auto scroll-area ${selected ? 'block' : 'hidden md:block'}`}>
@@ -21845,6 +21931,313 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
 }
 
 // Monthly totals panel — shown above the expense list
+// ─────────────────────────────────────────────────────────────────────────────
+// <ExpenseReports /> — analytics panel inside the expense screen.
+//
+// Renders three pickers (date range, group-by, status-filter), a summary
+// header (total, count, average), and a grouped table with proportional
+// bars. CSV export drops the grouped totals to the clipboard / download
+// for ad-hoc reporting in Sheets/Excel.
+//
+// Data shape on input: `expenses` is the SAME list the LIST view consumes.
+// For non-canSeeAll users that's already scoped to their own uploads
+// (subscribeToUserExpenses); for accounting/ops/admin it's everyone's.
+// canSeeAll gates the "BY USER" group-by option and the per-user table.
+// ─────────────────────────────────────────────────────────────────────────────
+function ExpenseReports({ expenses, canSeeAll, currentUserUid, currentUserDisplayName }) {
+  const [range, setRange] = useState('thisMonth'); // 'thisMonth' | 'lastMonth' | 'last30' | 'last90' | 'ytd' | 'all' | 'custom'
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
+  const [groupBy, setGroupBy] = useState('category'); // 'category' | 'user' | 'month' | 'paidWith'
+  // Auto-promote groupBy back to 'category' if user toggled from canSeeAll
+  // off; 'user' wouldn't make sense without aggregate visibility.
+  useEffect(() => {
+    if (!canSeeAll && groupBy === 'user') setGroupBy('category');
+  }, [canSeeAll, groupBy]);
+
+  // Resolve date range to [startISO, endISO] for filtering.
+  const { startDate, endDate } = useMemo(() => {
+    const now = new Date();
+    const today = now.toISOString().slice(0, 10);
+    const ymStart = (y, m) => `${y}-${String(m).padStart(2, '0')}-01`;
+    const ymEnd = (y, m) => {
+      const d = new Date(y, m, 0); // day 0 of next month = last day of this month
+      return d.toISOString().slice(0, 10);
+    };
+    const y = now.getFullYear();
+    const m = now.getMonth() + 1;
+    switch (range) {
+      case 'lastMonth': {
+        const lm = m === 1 ? 12 : m - 1;
+        const ly = m === 1 ? y - 1 : y;
+        return { startDate: ymStart(ly, lm), endDate: ymEnd(ly, lm) };
+      }
+      case 'last30': {
+        const d = new Date(now); d.setDate(d.getDate() - 30);
+        return { startDate: d.toISOString().slice(0, 10), endDate: today };
+      }
+      case 'last90': {
+        const d = new Date(now); d.setDate(d.getDate() - 90);
+        return { startDate: d.toISOString().slice(0, 10), endDate: today };
+      }
+      case 'ytd':
+        return { startDate: `${y}-01-01`, endDate: today };
+      case 'all':
+        return { startDate: '0000-01-01', endDate: '9999-12-31' };
+      case 'custom':
+        return { startDate: customStart || '0000-01-01', endDate: customEnd || '9999-12-31' };
+      case 'thisMonth':
+      default:
+        return { startDate: ymStart(y, m), endDate: today };
+    }
+  }, [range, customStart, customEnd]);
+
+  // Slice to date range AND finalized expenses only (approved/synced).
+  // Drafts and pending entries are excluded from reports — they represent
+  // work-in-progress, not actual spend.
+  const inRange = useMemo(() => {
+    return expenses.filter(e => {
+      if (e.status !== 'approved' && e.status !== 'synced') return false;
+      if (e.totalAmount == null) return false;
+      const d = e.transactionDate
+        || (e.approvedAt ? new Date(e.approvedAt).toISOString().slice(0, 10) : null);
+      if (!d) return false;
+      return d >= startDate && d <= endDate;
+    });
+  }, [expenses, startDate, endDate]);
+
+  // Group + total.
+  const { groups, totalAmount, totalCount } = useMemo(() => {
+    const buckets = {};
+    let total = 0;
+    for (const e of inRange) {
+      let key;
+      if (groupBy === 'user') key = e.authorName || 'Unknown';
+      else if (groupBy === 'month') {
+        const d = e.transactionDate
+          || (e.approvedAt ? new Date(e.approvedAt).toISOString().slice(0, 10) : null);
+        key = d ? d.slice(0, 7) : 'Unknown';
+      } else if (groupBy === 'paidWith') {
+        key = e.paidWith ? (paidWithLabel(e.paidWith) || e.paidWith) : 'Untagged';
+      } else key = e.category || 'Other';
+      const amt = Number(e.totalAmount) || 0;
+      if (!buckets[key]) buckets[key] = { key, label: key, total: 0, count: 0 };
+      buckets[key].total += amt;
+      buckets[key].count += 1;
+      total += amt;
+    }
+    // Month labels: show "Jun 2026" instead of "2026-06"
+    if (groupBy === 'month') {
+      for (const b of Object.values(buckets)) {
+        if (b.key !== 'Unknown') {
+          const [yy, mm] = b.key.split('-');
+          const d = new Date(parseInt(yy, 10), parseInt(mm, 10) - 1, 1);
+          b.label = d.toLocaleString('en-US', { month: 'short', year: 'numeric' });
+        }
+      }
+    }
+    const arr = Object.values(buckets).sort((a, b) => {
+      // Months sort chronologically, everything else by descending total.
+      if (groupBy === 'month') return a.key.localeCompare(b.key);
+      return b.total - a.total;
+    });
+    return { groups: arr, totalAmount: total, totalCount: inRange.length };
+  }, [inRange, groupBy]);
+
+  const maxGroupTotal = groups.length > 0 ? groups[0].total : 0;
+  const avgAmount = totalCount > 0 ? totalAmount / totalCount : 0;
+  const fmtUSD = (n) => `$${Number(n).toFixed(2)}`;
+
+  const exportReportCsv = () => {
+    if (groups.length === 0) return;
+    const headerLabel = groupBy === 'user' ? 'Submitter'
+      : groupBy === 'month' ? 'Month'
+      : groupBy === 'paidWith' ? 'Paid With'
+      : 'Category';
+    const headers = [headerLabel, 'Count', 'Total', 'Percent'];
+    const rows = groups.map(g => [
+      g.label,
+      g.count,
+      g.total.toFixed(2),
+      totalAmount > 0 ? `${((g.total / totalAmount) * 100).toFixed(1)}%` : '0%',
+    ]);
+    rows.push([]); // blank
+    rows.push(['Range:', `${startDate} to ${endDate}`, '', '']);
+    rows.push(['Total:', totalCount, totalAmount.toFixed(2), '100%']);
+    const csv = [
+      headers.join(','),
+      ...rows.map(r => r.map(csvEscape).join(',')),
+    ].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const tag = `by-${groupBy}_${range}`;
+    a.download = `expense-report_${tag}_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const rangeOptions = [
+    { id: 'thisMonth', label: 'THIS MONTH' },
+    { id: 'lastMonth', label: 'LAST MONTH' },
+    { id: 'last30',    label: 'LAST 30 D' },
+    { id: 'last90',    label: 'LAST 90 D' },
+    { id: 'ytd',       label: 'YTD' },
+    { id: 'all',       label: 'ALL' },
+    { id: 'custom',    label: 'CUSTOM' },
+  ];
+  const groupOptions = [
+    { id: 'category', label: 'BY CATEGORY' },
+    ...(canSeeAll ? [{ id: 'user', label: 'BY USER' }] : []),
+    { id: 'month',    label: 'BY MONTH' },
+    { id: 'paidWith', label: 'BY CARD' },
+  ];
+
+  return (
+    <div className="px-4 py-3">
+      {/* Date range picker */}
+      <div className="mb-2">
+        <div className="text-[10px] tracking-widest text-slate-500 mb-1"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>DATE RANGE</div>
+        <div className="flex flex-wrap gap-1">
+          {rangeOptions.map(o => (
+            <button
+              key={o.id}
+              onClick={() => setRange(o.id)}
+              className={`text-[10px] px-2 py-1 border tracking-widest ${range === o.id ? 'border-cyan-400 text-cyan-300' : 'border-slate-700 text-slate-500 hover:text-slate-300'}`}
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+        {range === 'custom' && (
+          <div className="flex items-center gap-2 mt-2">
+            <input
+              type="date" value={customStart}
+              onChange={(e) => setCustomStart(e.target.value)}
+              className="bg-slate-900/60 border border-slate-700 px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-cyan-400"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            />
+            <span className="text-slate-500 text-xs">→</span>
+            <input
+              type="date" value={customEnd}
+              onChange={(e) => setCustomEnd(e.target.value)}
+              className="bg-slate-900/60 border border-slate-700 px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-cyan-400"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            />
+          </div>
+        )}
+      </div>
+
+      {/* Group by picker */}
+      <div className="mb-3">
+        <div className="text-[10px] tracking-widest text-slate-500 mb-1"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}>GROUP BY</div>
+        <div className="flex flex-wrap gap-1">
+          {groupOptions.map(o => (
+            <button
+              key={o.id}
+              onClick={() => setGroupBy(o.id)}
+              className={`text-[10px] px-2 py-1 border tracking-widest ${groupBy === o.id ? 'border-cyan-400 text-cyan-300' : 'border-slate-700 text-slate-500 hover:text-slate-300'}`}
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Summary header */}
+      <div className="grid grid-cols-3 gap-2 mb-3 pb-3 border-b border-slate-800">
+        <div>
+          <div className="text-[9px] tracking-widest text-slate-500"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>TOTAL</div>
+          <div className="text-base text-slate-100"
+            style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+            {fmtUSD(totalAmount)}
+          </div>
+        </div>
+        <div>
+          <div className="text-[9px] tracking-widest text-slate-500"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>RECEIPTS</div>
+          <div className="text-base text-slate-100"
+            style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+            {totalCount}
+          </div>
+        </div>
+        <div>
+          <div className="text-[9px] tracking-widest text-slate-500"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>AVG</div>
+          <div className="text-base text-slate-100"
+            style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+            {fmtUSD(avgAmount)}
+          </div>
+        </div>
+      </div>
+
+      {/* Grouped table with proportional bars */}
+      {groups.length === 0 ? (
+        <div className="text-[11px] text-slate-600 italic py-4">
+          No finalized expenses in this range.
+          {(!canSeeAll && range === 'thisMonth') && (
+            <div className="text-[10px] text-slate-700 mt-1">
+              (Drafts and not-yet-submitted receipts aren't counted.)
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-1.5">
+          {groups.map((g) => {
+            const pct = totalAmount > 0 ? (g.total / totalAmount) * 100 : 0;
+            const barPct = maxGroupTotal > 0 ? (g.total / maxGroupTotal) * 100 : 0;
+            return (
+              <div key={g.key} className="grid grid-cols-[1fr_auto] gap-2 items-center text-xs">
+                <div className="min-w-0">
+                  <div className="flex items-center justify-between gap-2 mb-0.5">
+                    <span className="text-slate-200 truncate" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
+                      {g.label}
+                    </span>
+                    <span className="text-slate-500 text-[10px] shrink-0"
+                      style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                      {g.count} · {pct.toFixed(0)}%
+                    </span>
+                  </div>
+                  <div className="h-1.5 bg-slate-900 overflow-hidden">
+                    <div className="h-full bg-cyan-500/60" style={{ width: `${barPct}%` }} />
+                  </div>
+                </div>
+                <div className="text-slate-100 text-right shrink-0"
+                  style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600, minWidth: 80 }}>
+                  {fmtUSD(g.total)}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Export */}
+      {groups.length > 0 && (
+        <button
+          onClick={exportReportCsv}
+          className="w-full mt-4 text-[10px] px-2 py-1.5 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10 tracking-widest"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        >
+          ↓ EXPORT REPORT (CSV)
+        </button>
+      )}
+
+      {/* Range readout */}
+      <div className="text-[10px] text-slate-600 mt-3 pt-3 border-t border-slate-800"
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        Range: {startDate} → {endDate}
+      </div>
+    </div>
+  );
+}
+
 function ExpenseMonthlyStats({ stats, onMonthChange }) {
   const [expanded, setExpanded] = useState(true);
   const fmt = (n) => `$${Number(n).toFixed(2)}`;
@@ -22049,8 +22442,13 @@ async function compressImageForReceipt(file, opts = {}) {
 
 function ExpenseRow({ expense, selected, onClick }) {
   const status = expense.status || 'draft';
+  // A "draft" that has been parsed and has a totalAmount is ready for
+  // the user to tap SUBMIT. Distinguish it from a still-parsing draft
+  // (no amount yet) so the user knows what action is needed.
+  const isParsing = expense.notes === 'Parsing receipt with AI...';
+  const isReadyToSubmit = status === 'draft' && !isParsing && expense.totalAmount != null;
   const tone = status === 'approved'
-    ? { border: 'border-emerald-500/30', bg: 'bg-emerald-500/5', label: 'text-emerald-300', text: 'APPROVED' }
+    ? { border: 'border-emerald-500/30', bg: 'bg-emerald-500/5', label: 'text-emerald-300', text: '✓ COMPLETE' }
     : status === 'rejected'
     ? { border: 'border-red-500/30', bg: 'bg-red-500/5', label: 'text-red-300', text: 'REJECTED' }
     : status === 'needs_review'
@@ -22058,9 +22456,12 @@ function ExpenseRow({ expense, selected, onClick }) {
     : status === 'pending'
     ? { border: 'border-amber-500/30', bg: 'bg-amber-500/5', label: 'text-amber-300', text: 'PENDING' }
     : status === 'synced'
-    ? { border: 'border-cyan-500/30', bg: 'bg-cyan-500/5', label: 'text-cyan-300', text: 'SYNCED' }
+    ? { border: 'border-cyan-500/30', bg: 'bg-cyan-500/5', label: 'text-cyan-300', text: '✓ SYNCED' }
+    : isReadyToSubmit
+    ? { border: 'border-cyan-500/40', bg: 'bg-cyan-500/5', label: 'text-cyan-300', text: 'READY · TAP TO SUBMIT' }
+    : isParsing
+    ? { border: 'border-slate-700', bg: 'bg-slate-900/40', label: 'text-slate-400', text: 'PARSING…' }
     : { border: 'border-slate-700', bg: 'bg-slate-900/40', label: 'text-slate-400', text: 'DRAFT' };
-  const isParsing = expense.notes === 'Parsing receipt with AI...';
   const isExported = !!expense.exportedAt;
   return (
     <button
