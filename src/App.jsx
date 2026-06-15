@@ -4221,6 +4221,14 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
     // looked at yet.
     if (tripScrollRef.current) tripScrollRef.current.scrollTop = 0;
   }, [tab]);
+  // Auto-collapse the hero when a passenger check-in starts so the
+  // scanner / verification UI has the screen. Triggers on both the
+  // ADD WALK-UP button and the preloaded-adult flow (both flip
+  // `scanning` to true). Minor-pax checkin doesn't open the scanner,
+  // so it gets its own setHeroCollapsed call inside startPreloadedCheckIn.
+  useEffect(() => {
+    if (scanning) setHeroCollapsed(true);
+  }, [scanning]);
   const geo = useGeolocation();
 
   // Reset tab when switching trips
@@ -4697,6 +4705,11 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   // Begin checking in a pre-loaded pax. If they're a minor by DOB, skip the
   // ID scan entirely and add them as a verified child. Otherwise open scanner.
   const startPreloadedCheckIn = async (preloadPax) => {
+    // Minimize the hero card so the check-in UI has the screen. The
+    // minor path (below) doesn't open the scanner, so the scanner-
+    // watching useEffect won't fire for that path — collapse explicitly
+    // here so behavior matches across minor and adult flows.
+    setHeroCollapsed(true);
     // Minor check first — federal rules don't require ID for under-18 on private charter
     if (isMinorFromDob(preloadPax.dob)) {
       const age = computeAgeFromDob(preloadPax.dob);
@@ -5910,54 +5923,85 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
     const anchorFrom = anchor.info?.from;
     const anchorTo = anchor.info?.to;
 
+    // CHAIN WALK — fix for the 6/14/26 broker-link bug. The old rules
+    // included ANY same-window leg with empty broker, and ANY prior repo
+    // whose `to` matched the anchor's `from`. Both nets were too wide:
+    //   - Empty-broker rule scooped up unrelated repos from earlier
+    //     same-day trips (JetInsight commonly leaves the broker field
+    //     blank on repos).
+    //   - "Any prior repo to matching airport" rule had no continuity
+    //     check, so e.g. yesterday's MYEF→MYNN repo would attach itself
+    //     to today's MYNN→X charter just because the airports lined up.
+    // The fix: walk OUT from the anchor in both directions, including
+    // each adjacent leg only if it CHAINS — either by exact/fuzzy broker
+    // match OR by airport continuity AND being a repo / empty-broker.
+    // The chain breaks the first time a leg fails both tests, which
+    // correctly cuts off legs from unrelated earlier trips even when
+    // their airports happen to line up.
+    const chainUids = new Set([anchor.uid]);
+    const continuesChain = (other, expectedAirport, direction) => {
+      const otherBroker = brokerOf(other);
+      const brokerOk = !!anchorBroker && (
+        otherBroker === anchorBroker
+        || (otherBroker && brokersMatchFuzzy(otherBroker, anchorBroker))
+      );
+      const otherEdge = direction === 'back' ? other.info?.to : other.info?.from;
+      const airportOk = sameAirport(otherEdge, expectedAirport);
+      // Airport continuity counts as chain-extending ONLY for repos or
+      // empty-broker legs. A different-broker REVENUE leg that happens
+      // to land at our airport is not part of our trip.
+      return brokerOk || (airportOk && (!otherBroker || isRepo(other)));
+    };
+    // Walk backward from anchor.
+    {
+      let expected = anchorFrom;
+      for (let i = anchorIdx - 1; i >= 0; i--) {
+        const prev = ordered[i];
+        if (!continuesChain(prev, expected, 'back')) break;
+        chainUids.add(prev.uid);
+        expected = prev.info?.from;
+      }
+    }
+    // Walk forward from anchor (return-positioning, multi-stop legs).
+    {
+      let expected = anchorTo;
+      for (let i = anchorIdx + 1; i < ordered.length; i++) {
+        const next = ordered[i];
+        if (!continuesChain(next, expected, 'fwd')) break;
+        chainUids.add(next.uid);
+        expected = next.info?.to;
+      }
+    }
+
     const included = [];
-    ordered.forEach((t, i) => {
+    ordered.forEach((t) => {
       if (t.uid === anchor.uid) {
         // Anchor — always included, always shows pax
         included.push({ t, showPax: true });
         return;
       }
-      // SAME-CHARTER LEGS — matches findCharterLegs rule:
-      //   - Same broker as anchor (exact OR fuzzy substring match),
-      //     OR
-      //   - No broker set (presumed part of anchor's charter)
-      // This is what makes same-day round trips appear on the broker
-      // page. JetInsight commonly leaves the broker field empty on
-      // the return leg (or marks it REPO) when ops considers "same
-      // group coming back" implicit. Without this, the broker page
-      // shows only the outbound and the round trip looks half-broken.
-      // Fuzzy matching handles cases where one leg has the broker's
-      // display name ("platinum air") and another has their contact
-      // email ("krysty.platinumair@gmail.com") — same broker, mixed
-      // representation.
-      // showPax is gated by paxOverlap so the broker sees the routing
-      // but only sees pax data on legs where pax actually overlap.
-      // Privacy preserved without dropping the leg.
-      const tBroker = String(t.info?.broker || '').trim().toLowerCase();
-      const matchesCharterBroker = anchorBroker && (
-        tBroker === anchorBroker
-        || !tBroker
-        || brokersMatchFuzzy(tBroker, anchorBroker)
-      );
-      if (matchesCharterBroker) {
+      const tBroker = brokerOf(t);
+      // EXACT or FUZZY broker match — include unconditionally. Brokers
+      // sometimes have separate trips on the same aircraft on the same
+      // day; they want to see all of them. showPax gated by pax overlap
+      // so the broker doesn't see passenger data from a different
+      // booking of theirs.
+      if (anchorBroker && tBroker && (
+        tBroker === anchorBroker || brokersMatchFuzzy(tBroker, anchorBroker)
+      )) {
         included.push({ t, showPax: paxOverlap(t) });
         return;
       }
-      // DIFFERENT-BROKER REPO with prior positioning — narrow rule:
-      // include ONLY the immediately-prior positioning flight (this
-      // leg's `to` matches the anchor's `from`). Operator's return
-      // positioning AFTER the charter is the operator's business,
-      // not the broker's, and adds clutter without helping the broker.
-      if (isRepo(t)) {
-        const isPriorPositioning = i < anchorIdx && sameAirport(t.info?.to, anchorFrom);
-        if (isPriorPositioning) {
-          included.push({ t, showPax: false });
-        }
+      // EMPTY-BROKER or REPO leg — include ONLY if it's part of the
+      // chain (chain walk above). This is the fix for unrelated
+      // same-day repos showing up on the broker page.
+      if (chainUids.has(t.uid)) {
+        // Repos have no pax; empty-broker non-repo legs check pax overlap.
+        included.push({ t, showPax: isRepo(t) ? false : paxOverlap(t) });
         return;
       }
       // OTHER-BROKER REVENUE LEGS — never shown (privacy). A different
-      // broker's charter on the same plane same day stays invisible
-      // to this broker.
+      // broker's charter on the same plane same day stays invisible.
     });
 
     // MANUAL OVERRIDE — ops checked one or more "OTHER SAME-DAY LEGS"
