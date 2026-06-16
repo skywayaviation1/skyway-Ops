@@ -139,7 +139,7 @@ async function ensureTokenIssued(tripId, opts = {}) {
   return { token, issuedAt, reused: reuse, persistedPublicTripData: !!publicTripData };
 }
 
-async function sendBrokerEmail(req, { to, url, tripCode, tail, message, fromOpsName, idToken }) {
+async function sendBrokerEmail(req, { to, url, tripCode, tail, tripId, message, fromOpsName, idToken }) {
   const host = req.headers.host || 'skyway-ops.vercel.app';
   const proto = host.includes('localhost') ? 'http' : 'https';
   const headers = { 'Content-Type': 'application/json' };
@@ -209,6 +209,11 @@ async function sendBrokerEmail(req, { to, url, tripCode, tail, message, fromOpsN
     html,
     text,
     source: 'trip-share',
+    // tripId carries through so email-enqueue can derive the threadKey
+    // automatically (it falls back to `trip-${tripId}` when threadKey is
+    // absent). We pass both explicitly so audit records stay clean.
+    tripId: tripId || null,
+    threadKey: tripId ? `trip-${tripId}` : null,
     // Always include idToken when available — email-enqueue accepts EITHER
     // auth mode, and the broker share flow is always user-initiated so we
     // always have one. This is the belt-and-suspenders fix for silent
@@ -340,7 +345,7 @@ export default async function handler(req, res) {
       const userIdToken = req.headers['authorization']?.replace(/^Bearer\s+/i, '') || body?.idToken || null;
 
       const result = await sendBrokerEmail(req, {
-        to: recipients, url, tripCode, tail,
+        to: recipients, url, tripCode, tail, tripId,
         message: body?.message || null,
         fromOpsName: body?.fromOpsName || 'Skyway Ops',
         idToken: userIdToken,

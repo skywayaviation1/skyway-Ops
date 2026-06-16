@@ -89,7 +89,7 @@ export default async function handler(req, res) {
     return res.status(401).json({ error: 'Unauthorized: provide idToken or x-internal-secret' });
   }
 
-  const { to, cc, subject, html, text, from, source, tripId, statusKey } = body;
+  const { to, cc, subject, html, text, from, source, tripId, statusKey, threadKey } = body;
   if (!Array.isArray(to) || to.length === 0) {
     return res.status(400).json({ error: 'to[] required' });
   }
@@ -128,6 +128,16 @@ export default async function handler(req, res) {
     const id = genId();
     const now = Date.now();
 
+    // Threading headers — applied ONLY when the caller explicitly passes
+    // `threadKey`. We deliberately do NOT auto-derive from tripId here;
+    // many App.jsx-initiated emails (delay notifications, status updates)
+    // already carry tripId for audit purposes, and Jake doesn't want those
+    // threaded into one inbox conversation per trip. Currently only the
+    // broker tracking-link flow (trip-share.js) passes `threadKey`.
+    const threadHeaders = threadKey
+      ? buildThreadHeaders(threadKey)
+      : null;
+
     // ATTEMPT 1: Send immediately via Resend. This is the fast path that
     // 99% of emails take. The dispatcher tapped the status; they want the
     // email out NOW, not in 60 seconds when the queue cron next runs.
@@ -137,6 +147,7 @@ export default async function handler(req, res) {
       subject: String(subject).slice(0, 200),
       html: wrappedHtml,
       from: from || null,
+      headers: threadHeaders,
     });
 
     // Write the record either way — sent or pending. This gives us a full
@@ -154,6 +165,7 @@ export default async function handler(req, res) {
       lastAttemptAt: now,
       source: source || null,
       tripId: tripId || null,
+      threadKey: threadKey || null,
       statusKey: statusKey || null,
       queuedBy: authedAs,
     };
@@ -203,19 +215,57 @@ export default async function handler(req, res) {
   }
 }
 
+// Build email threading headers from a stable thread key (e.g. "trip-JI-1234"
+// or "aog-N20UF-7"). Returns a headers object suitable for Resend's API.
+//
+// The phantom Message-ID format is `<threadKey@flyskyway.com>` — never
+// actually sent as a real email, but every message about the same
+// thread references it so mail clients group them.
+//
+// Why both References AND In-Reply-To:
+//   - Gmail/Apple Mail thread primarily on References
+//   - Outlook (desktop + M365 web) uses In-Reply-To as the strong signal
+//   - Setting both maximizes threading compatibility across recipient inboxes
+function buildThreadHeaders(threadKey) {
+  if (!threadKey) return null;
+  // Sanitize to safe Message-ID characters. RFC 5322 allows a wide charset
+  // in dot-atoms but keeping to [A-Za-z0-9_-] avoids any client doing
+  // weird parsing tricks.
+  const safe = String(threadKey).replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 80);
+  if (!safe) return null;
+  const phantomId = `<${safe}@flyskyway.com>`;
+  return {
+    'References': phantomId,
+    'In-Reply-To': phantomId,
+  };
+}
+
 // Send via Resend directly, return { ok, id?, error? }
-async function sendViaResendInline({ to, cc, subject, html, from }) {
+async function sendViaResendInline({ to, cc, subject, html, from, headers }) {
   if (!process.env.RESEND_API_KEY) {
     return { ok: false, error: 'RESEND_API_KEY missing on server' };
   }
   const DEFAULT_FROM = process.env.OPS_FROM_EMAIL || 'Skyway Ops <noreply@send.flyskyway.com>';
+  // Reply-To routes user replies to a real Workspace mailbox so the
+  // recipient's mail server doesn't bounce them back ("Domain not
+  // found" on send.flyskyway.com which is outbound-only). Once
+  // OPS_FROM_EMAIL is flipped to an @flyskyway.com address this
+  // becomes redundant but harmless.
+  const DEFAULT_REPLY_TO = process.env.OPS_REPLY_TO || 'charters@flyskyway.com';
   const body = {
     from: from || DEFAULT_FROM,
+    reply_to: DEFAULT_REPLY_TO,
     to: Array.isArray(to) ? to : [to],
     subject,
     html,
   };
   if (Array.isArray(cc) && cc.length > 0) body.cc = cc;
+  // Threading headers (References, In-Reply-To, Message-ID overrides
+  // for whoever passes them). Resend's API accepts custom headers via
+  // a `headers` field — pass them through verbatim.
+  if (headers && typeof headers === 'object' && Object.keys(headers).length > 0) {
+    body.headers = headers;
+  }
 
   try {
     // 8-second timeout so we don't hang the user's request
