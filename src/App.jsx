@@ -5679,6 +5679,126 @@ function findCanonicalCharterLeg(anchor, allTrips) {
   return firstRevenue || legs[0];
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// Same-day candidate legs (the UNIVERSE of legs the share panel can
+// offer to include or exclude). Same tail, ±24h, no HOLD/MX/TRAINING,
+// no same-airport pseudo-flights. Sorted chronologically.
+//
+// This is the synchronous twin of the filter inside buildPublicTripData
+// — kept in lock-step. Both must apply the same rules so the panel
+// reflects exactly what the broker page is willing to show.
+// ─────────────────────────────────────────────────────────────────────
+function shareCandidateLegs(canonical, allTrips) {
+  if (!canonical || !Array.isArray(allTrips)) return [];
+  const tail = String(canonical.info?.tail || '').toUpperCase();
+  if (!tail) return [];
+  const anchorMs = canonical.start ? new Date(canonical.start).getTime() : Date.now();
+  const WINDOW = 24 * 3600 * 1000;
+  const norm = (c) => {
+    const u = String(c || '').toUpperCase().trim();
+    return u.length === 4 && u.startsWith('K') ? u.slice(1) : u;
+  };
+  return allTrips
+    .filter(t => t && t.info && String(t.info.tail || '').toUpperCase() === tail)
+    .filter(t => {
+      if (t.info.isFlight === false) return false;
+      const rawCat = String(t.info.category || '').toUpperCase();
+      if (['HOLD', 'MX', 'TRAINING'].includes(rawCat)) return false;
+      if (t.info.from && t.info.to && norm(t.info.from) === norm(t.info.to)) return false;
+      return true;
+    })
+    .filter(t => {
+      if (!t.start) return false;
+      const ms = new Date(t.start).getTime();
+      return Number.isFinite(ms) && Math.abs(ms - anchorMs) <= WINDOW;
+    })
+    .sort((a, b) => new Date(a.start || 0).getTime() - new Date(b.start || 0).getTime());
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Synchronous computation of which leg UIDs auto-detection WOULD
+// include in the broker page (the "default checked" state of the
+// leg selector).
+//
+// Mirrors the inclusion logic inside buildPublicTripData — chain walk
+// from anchor + exact/fuzzy broker matches. INCLUSION only depends on
+// broker fields and airport continuity (sync); pax overlap is used by
+// buildPublicTripData purely to decide showPax (whether to display
+// the manifest), not whether to include the leg at all. So we can
+// compute the default selection synchronously here and let ops toggle
+// in the UI before the async build runs.
+//
+// Keep in lock-step with buildPublicTripData's chainUids + broker-
+// match blocks. If you change one, change the other.
+// ─────────────────────────────────────────────────────────────────────
+function computeAutoIncludedUids(canonical, candidates) {
+  const anchor = canonical;
+  if (!anchor) return new Set();
+  const anchorIdx = candidates.findIndex(t => t.uid === anchor.uid);
+  if (anchorIdx === -1) return new Set([anchor.uid]);
+
+  const norm = (c) => {
+    const u = String(c || '').toUpperCase().trim();
+    return u.length === 4 && u.startsWith('K') ? u.slice(1) : u;
+  };
+  const sameAirport = (a, b) => !!a && !!b && norm(a) === norm(b);
+  const brokerOf = (t) => String(t.info?.broker || '').trim().toLowerCase();
+  const isRepo = (t) => {
+    const cat = String(t.info?.legType || t.info?.category || '').toUpperCase();
+    return cat === 'REPO' || cat === 'FERRY';
+  };
+  const anchorBroker = brokerOf(anchor);
+  const anchorFrom = anchor.info?.from;
+  const anchorTo = anchor.info?.to;
+
+  // Chain walk — outward from the anchor in both directions, including
+  // each adjacent leg if it CHAINS by broker match OR airport continuity
+  // (and the latter only for repos / empty-broker legs). The first leg
+  // that fails both tests breaks the chain.
+  const chainUids = new Set([anchor.uid]);
+  const continuesChain = (other, expectedAirport, direction) => {
+    const otherBroker = brokerOf(other);
+    const brokerOk = !!anchorBroker && (
+      otherBroker === anchorBroker
+      || (otherBroker && brokersMatchFuzzy(otherBroker, anchorBroker))
+    );
+    const otherEdge = direction === 'back' ? other.info?.to : other.info?.from;
+    const airportOk = sameAirport(otherEdge, expectedAirport);
+    return brokerOk || (airportOk && (!otherBroker || isRepo(other)));
+  };
+  {
+    let expected = anchorFrom;
+    for (let i = anchorIdx - 1; i >= 0; i--) {
+      const prev = candidates[i];
+      if (!continuesChain(prev, expected, 'back')) break;
+      chainUids.add(prev.uid);
+      expected = prev.info?.from;
+    }
+  }
+  {
+    let expected = anchorTo;
+    for (let i = anchorIdx + 1; i < candidates.length; i++) {
+      const next = candidates[i];
+      if (!continuesChain(next, expected, 'fwd')) break;
+      chainUids.add(next.uid);
+      expected = next.info?.to;
+    }
+  }
+
+  // Same-broker matches outside the chain — broker has more than one
+  // charter on this aircraft today, they want to see all of them.
+  const result = new Set(chainUids);
+  for (const t of candidates) {
+    const tBroker = brokerOf(t);
+    if (anchorBroker && tBroker && (
+      tBroker === anchorBroker || brokersMatchFuzzy(tBroker, anchorBroker)
+    )) {
+      result.add(t.uid);
+    }
+  }
+  return result;
+}
+
 // ============================================================
 // SHARE TRIP WITH BROKER — modal that generates a public token
 // for a trip and optionally emails it. Backed by /api/trip-share.
@@ -5719,48 +5839,46 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
   // Did ops open SHARE from a different leg than the canonical?
   const openedFromNonCanonical = canonicalTrip.uid !== trip.uid;
 
-  // OTHER SAME-DAY LEGS on this plane that auto-detection didn't
-  // include in the charter. These are typically same-tail same-day
-  // real flights whose broker field is inconsistent enough that fuzzy
-  // matching couldn't match them, but ops knows they're part of the
-  // same charter. Surface them with a checkbox so ops can manually
-  // include them without rotating links or fighting the data.
-  const otherSameDayLegs = useMemo(() => {
-    if (!Array.isArray(allTrips)) return [];
-    const tail = String(canonicalTrip.info?.tail || '').toUpperCase();
-    if (!tail) return [];
-    const anchorMs = canonicalTrip.start ? new Date(canonicalTrip.start).getTime() : Date.now();
-    const WINDOW = 24 * 3600 * 1000;
-    const charterUids = new Set(charterLegs.map(l => l.uid));
-    return allTrips
-      .filter(t => t && t.info && String(t.info.tail || '').toUpperCase() === tail)
-      .filter(t => {
-        if (t.info.isFlight === false) return false;
-        const rawCat = String(t.info.category || '').toUpperCase();
-        if (['HOLD', 'MX', 'TRAINING'].includes(rawCat)) return false;
-        return true;
-      })
-      .filter(t => {
-        if (!t.start) return false;
-        const ms = new Date(t.start).getTime();
-        return Number.isFinite(ms) && Math.abs(ms - anchorMs) <= WINDOW;
-      })
-      .filter(t => !charterUids.has(t.uid))
-      .sort((a, b) => new Date(a.start || 0).getTime() - new Date(b.start || 0).getTime());
-  }, [allTrips, canonicalTrip, charterLegs]);
-
-  // UIDs that ops has manually checked to include in the broker page.
-  // These are legs from otherSameDayLegs that ops wants to bundle in
-  // this link even though auto-detection didn't catch them. Toggling
-  // any checkbox triggers a re-call to /api/trip-share with the new
-  // publicTripData payload, so the broker page updates in place
-  // (same URL, fresh content).
-  const [extraIncludedUids, setExtraIncludedUids] = useState(new Set());
-  const toggleExtraLeg = (uid) => {
-    setExtraIncludedUids(prev => {
-      const next = new Set(prev);
+  // UNIFIED LEG SELECTOR — replaces the previous "OTHER SAME-DAY LEGS"
+  // include-only checkbox panel. Ops now sees ALL same-day legs on this
+  // plane (the candidate universe) in one panel, with the auto-detected
+  // ones pre-checked. Toggling lets ops freely include OR exclude any
+  // non-canonical leg — adding ones the chain walk missed and removing
+  // ones it grabbed too eagerly.
+  //
+  // `allCandidateLegs` is the full universe (same-tail, same-day window,
+  // real flights only). `autoIncludedUids` is what the chain-walk + same-
+  // broker matcher would include by default. `selectedUids` is the user's
+  // current selection — null until they touch a checkbox, at which point
+  // it becomes a concrete Set that overrides the auto-detection.
+  //
+  // The canonical anchor is ALWAYS included regardless — it's the leg
+  // the link is keyed to and can never be unchecked.
+  const allCandidateLegs = useMemo(
+    () => shareCandidateLegs(canonicalTrip, allTrips),
+    [canonicalTrip, allTrips]
+  );
+  const autoIncludedUids = useMemo(
+    () => computeAutoIncludedUids(canonicalTrip, allCandidateLegs),
+    [canonicalTrip, allCandidateLegs]
+  );
+  const [selectedUids, setSelectedUids] = useState(null);
+  // The set the rest of the dialog reads — falls back to auto when the
+  // user hasn't touched the panel yet.
+  const effectiveSelectedUids = useMemo(() => {
+    if (selectedUids) return selectedUids;
+    return autoIncludedUids;
+  }, [selectedUids, autoIncludedUids]);
+  const toggleLeg = (uid) => {
+    if (uid === canonicalTrip.uid) return; // anchor can't be unchecked
+    setSelectedUids(prev => {
+      const base = prev || new Set(autoIncludedUids);
+      const next = new Set(base);
       if (next.has(uid)) next.delete(uid);
       else next.add(uid);
+      // Always keep canonical in the set even if the user fiddles with
+      // it via some other path — defense in depth.
+      next.add(canonicalTrip.uid);
       return next;
     });
   };
@@ -6004,31 +6122,45 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
       // broker's charter on the same plane same day stays invisible.
     });
 
-    // MANUAL OVERRIDE — ops checked one or more "OTHER SAME-DAY LEGS"
-    // boxes in the dialog because they know those legs belong to this
-    // charter but auto-detection didn't pick them up (data hygiene
-    // issue with the broker field, JetInsight category mislabel, etc).
-    // Push those legs onto the included list. We also need to fetch
-    // pax for any extra leg whose data we didn't already pull above.
-    if (extraIncludedUids && extraIncludedUids.size > 0) {
-      const alreadyIncludedUids = new Set(included.map(x => x.t.uid));
-      const extras = (allTrips || []).filter(t =>
-        extraIncludedUids.has(t?.uid) && !alreadyIncludedUids.has(t.uid)
+    // FINAL FILTER — apply the user's leg selection from the unified
+    // panel. Auto-detection (chain walk + same-broker matches above)
+    // populates `included`; here we filter to exactly what's checked
+    // in the LEGS TO SHARE panel. The canonical anchor is always kept
+    // regardless.
+    //
+    // If the user has NOT touched the panel, effectiveSelectedUids
+    // equals autoIncludedUids and this is effectively a no-op against
+    // the auto-included set. If they HAVE touched it, this lets them
+    // either ADD legs the chain walk missed (by checking previously-
+    // excluded same-day legs) or REMOVE legs it grabbed too eagerly
+    // (by unchecking ones it auto-included).
+    {
+      const sel = effectiveSelectedUids;
+      const alreadyUids = new Set(included.map(x => x.t.uid));
+      // First add any extras the user checked that aren't in the
+      // auto-included list — needs pax data we may not have fetched.
+      const extrasNeeded = (allTrips || []).filter(t =>
+        sel.has(t?.uid) && !alreadyUids.has(t.uid)
       );
-      // Fetch any pax data we haven't already loaded
-      if (extras.length > 0 && fetchTripStateForShare) {
-        await Promise.all(extras.map(async (t) => {
+      if (extrasNeeded.length > 0 && fetchTripStateForShare) {
+        await Promise.all(extrasNeeded.map(async (t) => {
           if (!stateByUid[t.uid]) {
             try { stateByUid[t.uid] = await fetchTripStateForShare(t.uid); }
             catch { stateByUid[t.uid] = { preloadedPax: [], statuses: {} }; }
           }
         }));
       }
-      for (const t of extras) {
+      for (const t of extrasNeeded) {
         included.push({ t, showPax: paxOverlap(t) });
       }
-      // Re-sort included by start time so the legs appear chronologically
-      // on the broker page regardless of which got added when.
+      // Now filter to selected ∪ canonical
+      const filtered = included.filter(({ t }) =>
+        t.uid === anchor.uid || sel.has(t.uid)
+      );
+      included.length = 0;
+      included.push(...filtered);
+      // Re-sort by start time so legs appear chronologically regardless
+      // of insertion order.
       included.sort((a, b) =>
         new Date(a.t.start || 0).getTime() - new Date(b.t.start || 0).getTime()
       );
@@ -6179,8 +6311,8 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
   // On open AND whenever ops manually toggles an "OTHER LEG" checkbox:
   // generate (or refresh) the current token + URL with up-to-date
   // publicTripData. The first run on mount fetches/issues the token;
-  // subsequent runs triggered by extraIncludedUids changes refresh
-  // the cached broker-page payload on the server WITHOUT rotating the
+  // subsequent runs triggered by selectedUids changes refresh the
+  // cached broker-page payload on the server WITHOUT rotating the
   // token — same URL, fresh leg list.
   useEffect(() => {
     let cancelled = false;
@@ -6198,10 +6330,10 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
       }
     })();
     return () => { cancelled = true; };
-    // Re-run when manual extras change so the broker page reflects
-    // the latest selection.
+    // Re-run when the leg selection changes so the broker page reflects
+    // the latest set.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [extraIncludedUids]);
+  }, [selectedUids]);
 
   const handleCopy = async () => {
     if (!effectiveUrl) return;
@@ -6217,14 +6349,44 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
   };
 
   const handleEmail = async () => {
-    const to = emailTo.trim();
-    if (!to || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) {
-      setErr('Enter a valid broker email');
+    // Parse the input as a list — accepts comma, semicolon, or whitespace
+    // separators (same flexible pattern the notify panel uses). Validate
+    // every entry; if ANY fails, bail with a clear error pointing at the
+    // bad one so ops doesn't accidentally ship a half-bad list.
+    const raw = emailTo || '';
+    const candidates = raw
+      .split(/[,;\s]+/)
+      .map(s => s.trim())
+      .filter(Boolean);
+    if (candidates.length === 0) {
+      setErr('Enter at least one broker email.');
       return;
     }
+    const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+    const bad = candidates.find(e => !EMAIL_RE.test(e));
+    if (bad) {
+      setErr(`Invalid email: "${bad}". Separate addresses with commas, semicolons, or spaces.`);
+      return;
+    }
+    // Dedupe (case-insensitive) so a paste like "joe@x.com Joe@x.com"
+    // doesn't double-send.
+    const seen = new Set();
+    const recipients = [];
+    for (const e of candidates) {
+      const key = e.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      recipients.push(e);
+    }
     try {
-      const data = await callShare('email', { to, message: emailMessage.trim(), theme: brokerTheme });
-      setInfo(`Email sent to ${to}.`);
+      const data = await callShare('email', {
+        to: recipients,
+        message: emailMessage.trim(),
+        theme: brokerTheme,
+      });
+      setInfo(recipients.length === 1
+        ? `Email sent to ${recipients[0]}.`
+        : `Email sent to ${recipients.length} recipients: ${recipients.join(', ')}.`);
       if (data.url) setUrl(data.url);
     } catch (e) {
       setErr(e.message || 'Could not send email');
@@ -6320,55 +6482,69 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
           </div>
         )}
 
-        {/* MANUAL OVERRIDE — other same-day legs on this plane that
-            auto-detection didn't add to the charter. Usually surfaces
-            when broker fields are inconsistent (one leg has the email,
-            another has the company name) or when JetInsight categorizes
-            a leg in a way that doesn't fuzzy-match. Ops checks the
-            ones that belong, the broker page refreshes in place. */}
-        {otherSameDayLegs.length > 0 && (
+        {/* LEGS TO SHARE — unified leg selector. Lists every same-day
+            same-tail leg as a checkbox row, pre-checked based on auto-
+            detection (chain walk + same-broker matches). Ops can freely
+            toggle to ADD legs the auto-detector missed OR REMOVE legs
+            it grabbed too eagerly. The canonical anchor is forced on
+            and disabled — it's the leg the link is keyed to. */}
+        {allCandidateLegs.length > 1 && (
           <div className="border-b border-slate-700 bg-slate-900/40 px-4 py-2.5">
             <div className="text-[10px] tracking-widest text-slate-400 mb-1.5"
               style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
-              OTHER SAME-DAY LEGS ON {canonicalTrip.info?.tail || 'PLANE'} · {otherSameDayLegs.length}
+              LEGS TO SHARE · {effectiveSelectedUids.size} of {allCandidateLegs.length}
             </div>
             <div className="text-[9px] text-slate-500 mb-2"
               style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              Auto-detection didn't include these (different / missing broker).
-              Tick any that belong to this charter — link refreshes in place.
+              Auto-detection pre-checked the legs that belong to this charter.
+              Uncheck any you want to hide from the broker. Anchor (★) is locked on.
             </div>
             <div className="space-y-1">
-              {otherSameDayLegs.map(other => {
-                const isChecked = extraIncludedUids.has(other.uid);
-                const time = other.start ? new Date(other.start).toLocaleTimeString('en-US',
-                  { hour: 'numeric', minute: '2-digit' }) : '';
-                const route = `${other.info?.from || '—'} → ${other.info?.to || '—'}`;
-                const broker = other.info?.broker || '(no broker)';
-                const pax = other.info?.paxCount || other.info?.pax || '';
-                const cat = String(other.info?.legType || other.info?.category || '').toUpperCase();
+              {allCandidateLegs.map(leg => {
+                const isAnchor = leg.uid === canonicalTrip.uid;
+                const isChecked = effectiveSelectedUids.has(leg.uid);
+                const time = leg.start
+                  ? new Date(leg.start).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+                  : '';
+                const route = `${leg.info?.from || '—'} → ${leg.info?.to || '—'}`;
+                const broker = leg.info?.broker || '(no broker)';
+                const pax = leg.info?.paxCount || leg.info?.pax || '';
+                const cat = String(leg.info?.legType || leg.info?.category || '').toUpperCase();
+                const wasAutoIncluded = autoIncludedUids.has(leg.uid);
                 return (
                   <label
-                    key={other.uid}
-                    className={`flex items-start gap-2 px-2 py-1.5 border cursor-pointer ${
-                      isChecked
-                        ? 'border-cyan-500/50 bg-cyan-500/5'
-                        : 'border-slate-800 hover:border-slate-600'
+                    key={leg.uid}
+                    className={`flex items-start gap-2 px-2 py-1.5 border ${
+                      isAnchor
+                        ? 'border-amber-500/50 bg-amber-500/5 cursor-default'
+                        : isChecked
+                        ? 'border-cyan-500/50 bg-cyan-500/5 cursor-pointer'
+                        : 'border-slate-800 hover:border-slate-600 cursor-pointer'
                     }`}
                     style={{ fontFamily: 'JetBrains Mono, monospace' }}
                   >
                     <input
                       type="checkbox"
                       checked={isChecked}
-                      onChange={() => toggleExtraLeg(other.uid)}
-                      disabled={busy}
-                      className="mt-0.5 w-3.5 h-3.5 accent-cyan-500 shrink-0"
+                      disabled={isAnchor || busy}
+                      onChange={() => toggleLeg(leg.uid)}
+                      className="mt-0.5 w-3.5 h-3.5 accent-cyan-500 shrink-0 disabled:opacity-50"
                     />
                     <div className="min-w-0 flex-1">
-                      <div className="text-[11px] text-slate-200 truncate">
-                        {route}
-                        {time && <span className="text-slate-500 ml-2">{time}</span>}
+                      <div className="text-[11px] truncate flex items-center gap-1.5">
+                        {isAnchor && (
+                          <span className="text-amber-300 text-[10px]" title="Anchor leg — always included">★</span>
+                        )}
+                        <span className={isAnchor ? 'text-amber-200' : 'text-slate-200'}>{route}</span>
+                        {time && <span className="text-slate-500">{time}</span>}
                         {cat && cat !== 'REVENUE' && (
-                          <span className="text-[9px] text-amber-400 ml-1.5 tracking-widest">{cat}</span>
+                          <span className="text-[9px] text-amber-400 tracking-widest">{cat}</span>
+                        )}
+                        {!isAnchor && !wasAutoIncluded && isChecked && (
+                          <span className="text-[9px] text-cyan-400 tracking-widest" title="Manually added">+ADDED</span>
+                        )}
+                        {!isAnchor && wasAutoIncluded && !isChecked && (
+                          <span className="text-[9px] text-slate-500 tracking-widest" title="Auto-included, manually removed">−HIDDEN</span>
                         )}
                       </div>
                       <div className="text-[10px] text-slate-500 truncate">
@@ -6452,17 +6628,21 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
           {/* EMAIL TO BROKER */}
           <div className="border-t border-slate-800 pt-4">
             <label className="block text-[10px] tracking-widest text-slate-400 mb-1.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              EMAIL TO BROKER
+              EMAIL TO BROKER · MULTIPLE OK
             </label>
             <input
-              type="email"
+              type="text"
               value={emailTo}
               onChange={(e) => setEmailTo(e.target.value)}
-              placeholder="broker@example.com"
+              placeholder="broker@example.com, ops@example.com"
+              autoComplete="email"
               className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-sm text-slate-100"
               style={{ fontFamily: 'DM Sans, sans-serif' }}
               disabled={busy || revoked}
             />
+            <p className="text-[10px] text-slate-500 mt-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              Separate multiple addresses with commas, semicolons, or spaces. Pre-fills from the trip's broker email.
+            </p>
             <textarea
               value={emailMessage}
               onChange={(e) => setEmailMessage(e.target.value)}
