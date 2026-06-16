@@ -198,8 +198,13 @@ async function sendBrokerEmail(req, { to, url, tripCode, tail, message, fromOpsN
   // user's idToken (which we already validated at the top of this handler).
   // Without idToken fallback, if INTERNAL_API_SECRET is missing or mismatched
   // on the target side, enqueue 401s and the broker email silently fails.
+  //
+  // `to` may be a single string (legacy) or an array (multi-recipient).
+  // email-enqueue accepts both shapes — pass through as-is, normalizing
+  // a stray string to a single-element array for consistency.
+  const toArray = Array.isArray(to) ? to : [to];
   const body = JSON.stringify({
-    to: [to],
+    to: toArray,
     subject,
     html,
     text,
@@ -289,9 +294,30 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true, revoked: true });
     }
     if (action === 'email') {
-      const to = String(body?.to || '').trim();
-      if (!to || !/.+@.+\..+/.test(to)) {
-        return res.status(400).json({ ok: false, error: 'valid email "to" required' });
+      // Accept `to` as either a single string or an array of strings.
+      // Mirror notify's split pattern so a comma-separated string from
+      // an older client (or a paste like "a@x.com, b@x.com") works too.
+      const rawTo = body?.to;
+      const candidates = Array.isArray(rawTo)
+        ? rawTo.map(s => String(s || '').trim()).filter(Boolean)
+        : String(rawTo || '').split(/[,;\s]+/).map(s => s.trim()).filter(Boolean);
+      if (candidates.length === 0) {
+        return res.status(400).json({ ok: false, error: 'at least one "to" address required' });
+      }
+      const EMAIL_RE = /.+@.+\..+/;
+      const bad = candidates.find(e => !EMAIL_RE.test(e));
+      if (bad) {
+        return res.status(400).json({ ok: false, error: `invalid email: ${bad}` });
+      }
+      // Dedupe case-insensitively. Cap at 20 to deter abuse.
+      const seen = new Set();
+      const recipients = [];
+      for (const e of candidates) {
+        const key = e.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        recipients.push(e);
+        if (recipients.length >= 20) break;
       }
       const r = await ensureTokenIssued(tripId, { rotate: false });
       let url = publicUrl(req, r.token);
@@ -314,7 +340,7 @@ export default async function handler(req, res) {
       const userIdToken = req.headers['authorization']?.replace(/^Bearer\s+/i, '') || body?.idToken || null;
 
       const result = await sendBrokerEmail(req, {
-        to, url, tripCode, tail,
+        to: recipients, url, tripCode, tail,
         message: body?.message || null,
         fromOpsName: body?.fromOpsName || 'Skyway Ops',
         idToken: userIdToken,
@@ -326,14 +352,17 @@ export default async function handler(req, res) {
         return res.status(502).json({ ok: false, error: result.error || 'email delivery failed', url });
       }
 
-      // Record share history for audit
+      // Record share history for audit. Joined string keeps the field
+      // shape unchanged for any downstream consumer that expected a
+      // single string (backwards compatible).
       await db().collection('trip-state').doc(tripId).set({
-        lastSharedTo: to,
+        lastSharedTo: recipients.join(', '),
+        lastSharedToList: recipients,
         lastSharedAt: Date.now(),
         lastSharedBy: auth.uid || null,
       }, { merge: true });
 
-      return res.status(200).json({ ok: true, sent: true, url });
+      return res.status(200).json({ ok: true, sent: true, url, recipientCount: recipients.length });
     }
     return res.status(400).json({ ok: false, error: `Unknown action: ${action}` });
   } catch (e) {
