@@ -5513,6 +5513,15 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
           allTrips={allTrips}
           defaultEmail={brokerEmail}
           currentUser={currentUser}
+          // Live FBO values from this TripDetail's React state — same
+          // source the hero card reads. Passing these as props makes
+          // sure the broker page shows the SAME FBO ops sees on the
+          // hero card, even when trip-state was updated mid-session
+          // (e.g. PDF auto-extraction patched a new FBO after the
+          // link was already generated). The dialog plumbs these into
+          // buildPublicTripData as the anchor leg's authoritative FBO.
+          liveAnchorFromFbo={fromFbo}
+          liveAnchorToFbo={toFbo}
           onClose={() => setShareDialogOpen(false)}
         />
       )}
@@ -5710,7 +5719,12 @@ function shareCandidateLegs(canonical, allTrips) {
   const tail = String(canonical.info?.tail || '').toUpperCase();
   if (!tail) return [];
   const anchorMs = canonical.start ? new Date(canonical.start).getTime() : Date.now();
-  const WINDOW = 24 * 3600 * 1000;
+  // ±48h: covers multi-day charters where day-1 outbound + day-2 return
+  // is the same logical trip. Previously ±24h missed these — e.g. a
+  // 10am day-1 outbound + 4pm day-2 return is 30 hours apart and wasn't
+  // showing up as a checkable leg in the SHARE dialog.
+  // The anchor is still always pre-checked; siblings remain opt-in.
+  const WINDOW = 48 * 3600 * 1000;
   const norm = (c) => {
     const u = String(c || '').toUpperCase().trim();
     return u.length === 4 && u.startsWith('K') ? u.slice(1) : u;
@@ -5736,7 +5750,7 @@ function shareCandidateLegs(canonical, allTrips) {
 // SHARE TRIP WITH BROKER — modal that generates a public token
 // for a trip and optionally emails it. Backed by /api/trip-share.
 // ============================================================
-function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, onClose }) {
+function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, liveAnchorFromFbo, liveAnchorToFbo, onClose }) {
   // Canonical-leg detection for multi-leg charters.
   //
   // Problem this solves: ops clicks SHARE on each leg of a same-day
@@ -5845,7 +5859,10 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
     if (!tail) return null;
 
     const anchorStartMs = anchor.start ? new Date(anchor.start).getTime() : Date.now();
-    const WINDOW = 24 * 3600 * 1000;
+    // ±48h matches shareCandidateLegs above. Without this match, ops
+    // could check a day-2 leg in the picker but buildPublicTripData
+    // would silently drop it from the actual broker payload.
+    const WINDOW = 48 * 3600 * 1000;
 
     // Candidate set: same tail, within ±24h, sorted chronologically.
     // CRITICAL: skip non-flight events (crew holds, MX blocks, training).
@@ -6159,6 +6176,19 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
         }
       }
 
+      // FBO sourcing — for the SPECIFIC leg ops opened SHARE from, the
+      // live React-state values from TripDetail win. These are what the
+      // hero card displays, so this guarantees the broker page and the
+      // hero card never drift out of sync. For other legs in the
+      // payload (siblings, the canonical when ops is on a non-canonical
+      // leg), fall through to trip-state then trip.info as before.
+      //
+      // Without this override, mid-session FBO updates (PDF auto-extract,
+      // manual admin edit) would only refresh the broker page if ops
+      // closed and re-opened SHARE — confusing.
+      const isCurrentLeg = t.uid === trip.uid;
+      const liveFromFbo = isCurrentLeg ? liveAnchorFromFbo : null;
+      const liveToFbo   = isCurrentLeg ? liveAnchorToFbo   : null;
       return {
         tripId: t.uid,
         legNumber: i + 1,
@@ -6169,8 +6199,8 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
         // FBO details in the DESCRIPTION field, so admin manually sets
         // them in trip-state. Without this preference, manually-set
         // FBOs never reach the broker page.
-        fromFbo: state.fromFbo || t.info?.fromFbo || null,
-        toFbo:   state.toFbo   || t.info?.toFbo   || null,
+        fromFbo: liveFromFbo || state.fromFbo || t.info?.fromFbo || null,
+        toFbo:   liveToFbo   || state.toFbo   || t.info?.toFbo   || null,
         departure: t.start || null,
         arrival: t.end || null,
         category: t.info?.legType || t.info?.category || 'REVENUE',
@@ -6240,9 +6270,11 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
     })();
     return () => { cancelled = true; };
     // Re-run when the leg selection changes so the broker page reflects
-    // the latest set.
+    // the latest set. Also re-run when the live anchor FBOs change so
+    // a PDF auto-extract or admin edit while the dialog is open instantly
+    // pushes the new FBO to the broker page without needing a reopen.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedUids]);
+  }, [selectedUids, liveAnchorFromFbo, liveAnchorToFbo]);
 
   const handleCopy = async () => {
     if (!effectiveUrl) return;
