@@ -2047,26 +2047,197 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
 
   useEffect(() => () => stopCamera(), [stopCamera]);
 
+  // Platform detection — used to give the user the right "go to settings"
+  // instructions when camera permission is denied. iOS Safari, iOS PWA,
+  // Android Chrome, and desktop all have different recovery paths.
+  const detectPlatform = () => {
+    const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || '';
+    const isiOS = /iPad|iPhone|iPod/.test(ua) && !window.MSStream;
+    const isAndroid = /Android/.test(ua);
+    const isStandalone =
+      (typeof window !== 'undefined' && window.navigator?.standalone === true) ||
+      (typeof window !== 'undefined' && window.matchMedia?.('(display-mode: standalone)').matches);
+    return { isiOS, isAndroid, isStandalone };
+  };
+
+  // Map a getUserMedia exception to a structured error object the UI can
+  // render cleanly. Most fields are optional; the renderer hides
+  // missing ones. canRetry → show TRY AGAIN. canUpload → show UPLOAD PHOTO
+  // fallback so a pilot with bricked permissions can still complete the
+  // check-in via their photo library.
+  const buildCameraErrorMessage = (err) => {
+    const { isiOS, isAndroid, isStandalone } = detectPlatform();
+    const name = err?.name || '';
+
+    if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+      let instructions;
+      if (isiOS && isStandalone) {
+        instructions = 'iOS: open Settings → scroll to "Skyway Ops" → Camera → On. Then return here and tap TRY AGAIN.';
+      } else if (isiOS) {
+        instructions = 'iOS Safari: tap the "AA" icon in the URL bar → Website Settings → Camera → Allow. Or open Settings → Safari → Camera. Then refresh and try again.';
+      } else if (isAndroid) {
+        instructions = 'Android Chrome: tap the lock icon (🔒) in the address bar → Permissions → Camera → Allow. Then tap TRY AGAIN.';
+      } else {
+        instructions = 'Click the camera icon in the address bar (next to the URL) → Allow camera → Reload the page.';
+      }
+      return {
+        title: 'Camera access denied',
+        detail: 'The browser blocked Skyway Ops from using the camera.',
+        instructions,
+        canRetry: true,
+        canUpload: true,
+      };
+    }
+    if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+      return {
+        title: 'No camera found',
+        detail: 'This device doesn\'t have a camera available, or none is connected.',
+        canRetry: false,
+        canUpload: true,
+      };
+    }
+    if (name === 'NotReadableError' || name === 'TrackStartError') {
+      return {
+        title: 'Camera is busy',
+        detail: 'Another app is using the camera. Close any video calls (Zoom, FaceTime, Teams, etc.) and try again.',
+        canRetry: true,
+        canUpload: true,
+      };
+    }
+    if (name === 'SecurityError') {
+      return {
+        title: 'Insecure connection',
+        detail: 'Camera access requires HTTPS. Make sure you opened the app via the official URL.',
+        canRetry: false,
+        canUpload: true,
+      };
+    }
+    if (name === 'TypeError' || name === 'NotSupportedError') {
+      return {
+        title: 'Camera not supported',
+        detail: 'This browser doesn\'t expose the camera API. Try Safari (iOS) or Chrome (Android), or upload a photo instead.',
+        canRetry: false,
+        canUpload: true,
+      };
+    }
+    // OverconstrainedError is handled inside startCamera by auto-retrying
+    // with relaxed constraints. If we got here it means even relaxed
+    // failed — fall through to a generic message.
+    return {
+      title: 'Couldn\'t start the camera',
+      detail: err?.message || 'Unknown camera error.',
+      canRetry: true,
+      canUpload: true,
+    };
+  };
+
+  // Attach a successfully-acquired MediaStream to the panel state and
+  // flip to the capturing phase. Shared between the primary getUserMedia
+  // attempt and the relaxed-constraints retry below.
+  const attachCameraStream = (stream) => {
+    streamRef.current = stream;
+    const track = stream.getVideoTracks()[0];
+    const capabilities = track?.getCapabilities ? track.getCapabilities() : {};
+    if (capabilities.torch) setTorchSupported(true);
+    // Switch phase first so the <video> element renders. The stream gets
+    // attached by the useEffect below once videoRef.current is populated.
+    // (iPhone Safari + PWA mode requires the element be in the DOM before
+    // assigning srcObject — otherwise the video stays black.)
+    setPhase('capturing');
+  };
+
   const startCamera = async () => {
     setError(null);
+    // Browser doesn't expose getUserMedia at all (very old browser, or
+    // an iframe in a non-secure context). Bail with a structured error
+    // and offer the upload fallback.
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setError({
+        title: 'Camera not available',
+        detail: 'This browser doesn\'t support the camera API.',
+        canRetry: false,
+        canUpload: true,
+      });
+      return;
+    }
+    // Primary attempt: ideal rear camera at HD.
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
         audio: false,
       });
-      streamRef.current = stream;
-      const track = stream.getVideoTracks()[0];
-      const capabilities = track.getCapabilities ? track.getCapabilities() : {};
-      if (capabilities.torch) setTorchSupported(true);
-      // Switch phase first so the <video> element renders. The stream gets
-      // attached by the useEffect below once videoRef.current is populated.
-      // (iPhone Safari + PWA mode requires the element be in the DOM before
-      // assigning srcObject — otherwise the video stays black.)
-      setPhase('capturing');
+      attachCameraStream(stream);
+      return;
     } catch (e) {
-      setError(`Camera error: ${e.message}`);
+      // OverconstrainedError = the device can't satisfy facingMode or
+      // width/height. Common on laptops with only a front cam, or on
+      // older Android tablets. Retry with no constraints — any camera
+      // at any resolution.
+      if (e?.name === 'OverconstrainedError' || e?.name === 'ConstraintNotSatisfiedError') {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+          attachCameraStream(stream);
+          return;
+        } catch (e2) {
+          setError(buildCameraErrorMessage(e2));
+          return;
+        }
+      }
+      setError(buildCameraErrorMessage(e));
     }
   };
+
+  // Fallback path when camera permissions are bricked: pick a photo
+  // from the device library. We resize via a canvas before storing so
+  // a 12MP iPhone photo doesn't blow up the dataURL. End state matches
+  // capturePhoto() so the rest of the verification flow is identical.
+  const fileInputRef = useRef(null);
+  const onFileSelected = async (e) => {
+    const file = e.target.files?.[0];
+    // Always clear the input so re-picking the same file fires onChange
+    if (e.target) e.target.value = '';
+    if (!file) return;
+    setError(null);
+    try {
+      const dataUrl = await readImageAsResizedDataUrl(file, 1280);
+      stopCamera();
+      setPhoto(dataUrl);
+      setPhase('review');
+    } catch (err) {
+      setError({
+        title: 'Couldn\'t read that photo',
+        detail: err?.message || 'Try a different file.',
+        canRetry: false,
+        canUpload: true,
+      });
+    }
+  };
+
+  // Decode + resize an uploaded image to a dataURL matching what
+  // capturePhoto produces. Keeping the encoding identical means the
+  // server-side upload + AI pipelines don't have to know about the
+  // fallback path.
+  function readImageAsResizedDataUrl(file, maxW) {
+    return new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+          const scale = Math.min(1, maxW / img.width);
+          const cnv = document.createElement('canvas');
+          cnv.width  = Math.round(img.width  * scale);
+          cnv.height = Math.round(img.height * scale);
+          const ctx = cnv.getContext('2d');
+          ctx.drawImage(img, 0, 0, cnv.width, cnv.height);
+          resolve(cnv.toDataURL('image/jpeg', 0.75));
+        };
+        img.onerror = () => reject(new Error('Image decode failed'));
+        img.src = fr.result;
+      };
+      fr.onerror = () => reject(new Error('File read failed'));
+      fr.readAsDataURL(file);
+    });
+  }
 
   // Attach the stream once both (1) the stream exists and (2) the <video>
   // element is mounted (phase === 'capturing'). This is the iPhone-safe
@@ -2191,7 +2362,61 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
 
   return (
     <div className="space-y-3">
-      {error && (
+      {/* Camera error with platform-aware recovery instructions + actions.
+          `error` is a structured object now (title, detail, instructions,
+          canRetry, canUpload). The buttons let the pilot recover without
+          having to know browser-specific permission flows by heart. */}
+      {error && typeof error === 'object' && (
+        <div className="border border-red-500/40 bg-red-500/10 p-3 space-y-2">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <div className="text-sm text-red-200 font-medium">{error.title}</div>
+              {error.detail && (
+                <div className="text-xs text-red-300/80 mt-0.5">{error.detail}</div>
+              )}
+              {error.instructions && (
+                <div className="text-xs text-slate-300 mt-2 leading-relaxed">
+                  {error.instructions}
+                </div>
+              )}
+            </div>
+          </div>
+          {(error.canRetry || error.canUpload) && (
+            <div className="flex flex-wrap gap-2 pt-1">
+              {error.canRetry && (
+                <button
+                  type="button"
+                  onClick={() => { setError(null); startCamera(); }}
+                  className="px-3 py-1.5 text-xs bg-red-500/20 border border-red-500/40 text-red-200 hover:bg-red-500/30 tracking-wider transition"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                >
+                  TRY AGAIN
+                </button>
+              )}
+              {error.canUpload && (
+                <label
+                  className="px-3 py-1.5 text-xs bg-slate-700 border border-slate-600 text-slate-200 hover:bg-slate-600 tracking-wider transition cursor-pointer"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                >
+                  UPLOAD PHOTO
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={onFileSelected}
+                  />
+                </label>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+      {/* Defensive: support the old string-shape error if any caller
+          still sets a raw string (e.g. legacy code path). Render exactly
+          as before so behavior never silently regresses. */}
+      {error && typeof error === 'string' && (
         <div className="p-2 border border-red-500/40 bg-red-500/5 text-xs text-red-300">
           {error}
         </div>
