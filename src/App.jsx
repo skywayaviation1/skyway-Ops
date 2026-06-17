@@ -43,6 +43,11 @@ const AllCrewDocsLazy = lazy(() => import('./PilotDocs.jsx').then(m => ({ defaul
 // imported eagerly (rendered on every trip detail) but the admin tab
 // and training library are lazy since pilots never see them.
 import { WearCheckBadge, WearCheckModal, MXShareButton, MXShareModal } from './WearCheck.jsx';
+// Open squawks + active MEL deferrals badge — renders inline next to
+// the WearCheck badge on the trip hero card. PICs see at trip acceptance
+// time everything that's open against the tail. Self-contained
+// (subscribes to firebase-maint internally) so no plumbing through.
+import TailStatusBadge from './TailStatusBadge.jsx';
 const WearTabLazy = lazy(() => import('./WearCheck.jsx').then(m => ({ default: m.WearTab })));
 const WearTrainingLibraryLazy = lazy(() => import('./WearCheck.jsx').then(m => ({ default: m.WearTrainingLibrary })));
 // FAA NOTAM badge — small, used inline next to AirportWxBadge. Not lazy
@@ -4201,6 +4206,15 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
     if (!el) return;
     let raf = null;
     const onScroll = () => {
+      // PAX CHECK-IN MODE: keep the hero locked-collapsed throughout.
+      // Without this gate, when the user enters check-in the hero
+      // collapses (good), the scroll container reflows shorter, and
+      // scrollTop lands near 0 — which the handler below interprets
+      // as "scrolled to top, expand hero." Then collapsing again on the
+      // next scroll creates the bounce. While `scanning` is true we
+      // simply don't run the handler at all; the check-in panel owns
+      // the full vertical area.
+      if (scanning) return;
       if (raf) return;
       raf = requestAnimationFrame(() => {
         raf = null;
@@ -4227,7 +4241,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       el.removeEventListener('scroll', onScroll);
       if (raf) cancelAnimationFrame(raf);
     };
-  }, [tab]);  // Re-bind when switching tabs since the scroll container may remount
+  }, [tab, scanning]);  // scanning is now a dep so the handler rebinds on enter/exit of check-in
   // Tab-change reset for the hero — see comment block above.
   useEffect(() => {
     setHeroCollapsed(false);
@@ -5155,6 +5169,13 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
               tail={trip.info.tail}
               onOpenModal={() => setMxShareOpen(true)}
             />
+          )}
+          {/* MEL / Squawk status badge — surfaces open maint items for
+              this tail BEFORE the PIC accepts the trip. Renders nothing
+              if the tail has zero open items. Crew + maint + ops + admin
+              all see it; tap opens a read-only modal listing every item. */}
+          {trip.info.isFlight && trip.info.tail && (
+            <TailStatusBadge tail={trip.info.tail} />
           )}
           <div className="flex items-center gap-2 text-xl text-slate-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
             <div className="flex flex-col">
@@ -25405,10 +25426,12 @@ export default function CharterOps() {
         {/* === CURRENCY SECTION ===
             Pilot currency & training dashboard. Admin/ops see every crew
             member's 61.57 / Part 135 / recurrent / medical status; crew
-            see only their own. Read-only for crew, editable for ops/admin. */}
+            see only their own. Read-only for crew, editable for ops/admin.
+            allTrips is required for auto-computing 61.57(a) T/O+L and
+            61.57(b) Night currencies from actual flight history. */}
         {section === 'currency' && (
           <Suspense fallback={<div className="flex-1 flex items-center justify-center text-slate-500"><Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading currency dashboard...</div>}>
-            <PilotCurrencyLazy currentUser={currentUser} users={users} />
+            <PilotCurrencyLazy currentUser={currentUser} users={users} allTrips={allTrips} />
           </Suspense>
         )}
 
