@@ -21529,17 +21529,26 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
     (async () => {
       const m = await import('./firebase-expenses.js');
       if (cancelled) return;
-      if (canSeeAll) {
-        unsub = m.subscribeToAllExpenses((list) => {
-          setExpenses(list);
-          setLoading(false);
-        });
-      } else {
-        unsub = m.subscribeToUserExpenses(currentUserUid, (list) => {
-          setExpenses(list);
-          setLoading(false);
-        });
-      }
+      // ALWAYS subscribe via subscribeToAllExpenses. Previously crew users
+      // went through subscribeToUserExpenses(uid) — but that query
+      // (where uid == X + orderBy createdAt desc) requires a composite
+      // Firestore index. When the index is missing, Firestore returns a
+      // silent error and onSnapshot never fires → crew see nothing even
+      // though their uploads landed correctly. By using the all-expenses
+      // path (orderBy createdAt only, no where) we sidestep the index
+      // requirement entirely, then scope client-side. The expense volume
+      // for Skyway is small enough that this is essentially free.
+      unsub = m.subscribeToAllExpenses((list) => {
+        // For users who can't see all (crew, sales, maint), restrict to
+        // their own docs immediately at the subscription boundary so
+        // downstream useMemos can't accidentally leak someone else's
+        // expense into the UI.
+        const scoped = canSeeAll
+          ? list
+          : list.filter(e => e && e.uid === currentUserUid);
+        setExpenses(scoped);
+        setLoading(false);
+      });
     })();
     return () => {
       cancelled = true;
