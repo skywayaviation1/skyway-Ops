@@ -844,7 +844,7 @@ function greetingFromEmail(email) {
 // All send-email calls from the frontend now include the user's Firebase
 // idToken so the server can authorize them. send-email.js rejects calls
 // that don't have either a valid idToken or the internal server secret.
-async function sendEmailViaApi({ to, subject, text, source, tripId, statusKey }) {
+async function sendEmailViaApi({ to, subject, text, source, tripId, statusKey, includeTrackingButton }) {
   // Reliable delivery: writes to the email-queue collection. The
   // /api/email-queue-drain cron picks it up within ~60s and delivers via
   // Resend, retrying failures with backoff. Returns a faux Response object
@@ -867,6 +867,11 @@ async function sendEmailViaApi({ to, subject, text, source, tripId, statusKey })
         source: source || 'app',
         tripId: tripId || null,
         statusKey: statusKey || null,
+        // When set, email-enqueue looks up the trip's broker tracking
+        // link and injects a "TRACK THIS FLIGHT" button at the top of
+        // the email. Only active (non-revoked) links produce a button;
+        // otherwise the email goes out unchanged.
+        includeTrackingButton: includeTrackingButton === true,
       }),
     });
     if (r.ok) {
@@ -890,11 +895,13 @@ async function sendEmailViaApi({ to, subject, text, source, tripId, statusKey })
   } catch (e) {
     console.warn('[sendEmailViaApi] queue endpoint unreachable, falling back to direct send:', e.message);
   }
-  // Legacy direct-send fallback (preserves prior behavior)
+  // Legacy direct-send fallback (preserves prior behavior). Also pass
+  // tripId here so the threading headers still get applied even when
+  // email-enqueue is unreachable and we fall through to direct send.
   return fetch('/api/send-email', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ to, subject, text, idToken }),
+    body: JSON.stringify({ to, subject, text, idToken, tripId: tripId || null }),
   });
 }
 
@@ -2449,6 +2456,11 @@ function DelayPanel({ trip, opsEmail, brokerEmail, currentUser, statuses, setSta
           ? `Flight Delay — ${tail} ${route}`
           : `[INTERNAL] Flight Delay — ${tail} ${route}`,
         text: body,
+        tripId: trip.uid,
+        // Only show the broker tracking button when the broker is being
+        // notified. Internal-only delays go to ops alone and don't need
+        // a tracking CTA.
+        includeTrackingButton: notifyBroker,
       });
       const data = await r.json().catch(() => ({}));
       if (!r.ok) {
@@ -4454,6 +4466,11 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
         to: recipients,
         subject: emailContent.subject,
         text: emailContent.text,
+        tripId: trip.uid,
+        // Status updates always include the tracking button when an
+        // active broker link exists — these emails always go to the
+        // broker by design.
+        includeTrackingButton: true,
       });
       const respData = await r.json().catch(() => ({}));
       if (!r.ok) {
