@@ -89,7 +89,7 @@ export default async function handler(req, res) {
     return res.status(401).json({ error: 'Unauthorized: provide idToken or x-internal-secret' });
   }
 
-  const { to, cc, subject, html, text, from, source, tripId, statusKey, threadKey } = body;
+  const { to, cc, subject, html, text, from, source, tripId, statusKey, threadKey, includeTrackingButton } = body;
   if (!Array.isArray(to) || to.length === 0) {
     return res.status(400).json({ error: 'to[] required' });
   }
@@ -117,9 +117,31 @@ export default async function handler(req, res) {
   //   - caller passed text → convert to a basic html wrapper, THEN wrap
   // Both paths end up running through the same signature wrapper so every
   // email leaving Skyway carries the brand + do-not-reply notice.
-  const rawHtml = html
+  let rawHtml = html
     ? String(html).slice(0, 200000)
     : textToHtml(text).slice(0, 200000);
+
+  // "Track This Flight" button injection. When the client sets
+  // includeTrackingButton=true AND provides a tripId, we look up the
+  // trip's broker tracking link from trip-state. If the link is active
+  // (token present, not revoked), we prepend a styled button to the
+  // body BEFORE applySkywaySignature wraps with the Skyway header/footer.
+  // This way the button lands between the header and the message body —
+  // prominent placement above the fold for brokers reading the email.
+  if (includeTrackingButton && tripId) {
+    try {
+      const trackingUrl = await findActiveBrokerTrackingUrl(req, tripId);
+      if (trackingUrl) {
+        rawHtml = renderTrackButton(trackingUrl) + rawHtml;
+      }
+    } catch (e) {
+      // Non-fatal: if the lookup fails for any reason, the email still
+      // goes out without the button. We'd rather deliver a delay/status
+      // notification than block on a button render.
+      console.warn('[email-enqueue] track-button lookup failed:', e.message);
+    }
+  }
+
   const wrappedHtml = applySkywaySignature(rawHtml);
 
   try {
@@ -213,6 +235,53 @@ export default async function handler(req, res) {
     console.error('[email-enqueue] error:', err);
     return res.status(500).json({ error: err.message || 'enqueue failed' });
   }
+}
+
+// Look up the broker tracking URL for a given trip. Returns null when
+// there's no active link (no trip-state doc, no token, or link revoked).
+// Used by the "Track This Flight" button injection above.
+//
+// The URL format matches /api/trip-share's publicUrl helper so brokers
+// land on exactly the same page whether the link came from the SHARE
+// dialog email or from a notify/delay email button.
+async function findActiveBrokerTrackingUrl(req, tripId) {
+  try {
+    const db = getDb();
+    const snap = await db.collection('trip-state').doc(String(tripId)).get();
+    if (!snap.exists) return null;
+    const data = snap.data() || {};
+    if (data.linkRevoked === true) return null;
+    if (!data.token) return null;
+    const host = req.headers.host
+      || process.env.VERCEL_PROJECT_PRODUCTION_URL
+      || 'skyway-ops.vercel.app';
+    const proto = host.includes('localhost') ? 'http' : 'https';
+    return `${proto}://${host}/trip-track.html?token=${encodeURIComponent(data.token)}`;
+  } catch (e) {
+    console.warn('[track-url] lookup error:', e.message);
+    return null;
+  }
+}
+
+// Render the "Track This Flight" button as inline HTML. Styles are
+// inlined because email clients (Outlook in particular) don't reliably
+// load external stylesheets. Skyway brand: cyan #1ec0e9 on black with
+// the same tracking-letter aesthetic as the in-app buttons.
+//
+// Font stack: Inter / Helvetica Neue / Arial. Email clients can't load
+// Google Fonts (Bebas Neue, JetBrains Mono), so a safe sans-serif
+// fallback chain gives a clean uppercase button on every reader.
+function renderTrackButton(url) {
+  return `<div style="text-align:center;margin:24px 0;">`
+    + `<a href="${url}" `
+    + `style="display:inline-block;background:#1ec0e9;color:#000;`
+    + `padding:14px 36px;text-decoration:none;`
+    + `font-family:'Inter','Helvetica Neue',Arial,sans-serif;`
+    + `font-weight:700;font-size:14px;letter-spacing:0.18em;`
+    + `border:2px solid #1ec0e9;">`
+    + `TRACK THIS FLIGHT &rarr;`
+    + `</a>`
+    + `</div>`;
 }
 
 // Build email threading headers from a stable thread key (e.g. "trip-JI-1234"
