@@ -37,9 +37,10 @@ import {
   subscribePilotCurrencies,
   subscribeMyPilotCurrency,
   savePilotCurrency,
+  computeAutoTakeoffLanding,
 } from './firebase-currency.js';
 
-export default function PilotCurrencyScreen({ currentUser, users }) {
+export default function PilotCurrencyScreen({ currentUser, users, allTrips }) {
   // Role gating: admin + ops can see everyone and edit; crew sees self
   // only, read-only. We treat 'admin' and 'ops' as the editable roles
   // here — chief pilot duties usually fall to ops, and admin has god
@@ -78,14 +79,80 @@ export default function PilotCurrencyScreen({ currentUser, users }) {
   // a multi-day-open tab will see updates re-flow on the next re-render.
   const todayMs = Date.now();
 
-  // Join + roll up per pilot.
+  // Join + roll up per pilot. We compute the auto T/O+L and Night
+  // currencies here from allTrips so each card has them in scope.
+  //
+  // For 61.57(a) T/O+L and 61.57(b) Night, we take the BETTER of
+  // (auto-computed, manual-entered) — auto reflects real flight data,
+  // manual lets admin record sim-only completions or flights Skyway
+  // doesn't track. If either qualifies, the pilot is current.
   const pilotRows = useMemo(() => {
+    const statusRank = { current: 0, caution: 1, warning: 2, critical: 3, expired: 4, unknown: 5 };
+    const betterStatus = (a, b) => {
+      if (a === 'unknown') return b;
+      if (b === 'unknown') return a;
+      return statusRank[a] < statusRank[b] ? a : b;
+    };
+
     return pilots.map((p) => {
       const docForPilot = currenciesByUid[p.uid] || null;
-      const rollup = rollupPilotStatus(docForPilot, todayMs);
-      return { pilot: p, doc: docForPilot, rollup };
+      const auto = p.name
+        ? computeAutoTakeoffLanding(p.name, allTrips, todayMs)
+        : { takeoffLanding: { status: 'unknown', count: 0 }, nightCurrency: { status: 'unknown', count: 0 } };
+
+      // Compute combined status for the two event-count currencies.
+      // If a pilot has 3+ T/O+L by either path, they're current.
+      const manualTLStatus = computeStatus(
+        docForPilot?.takeoffLanding,
+        CURRENCY_TYPES.find((t) => t.key === 'takeoffLanding').interval,
+        todayMs
+      ).status;
+      const manualNightStatus = computeStatus(
+        docForPilot?.nightCurrency,
+        CURRENCY_TYPES.find((t) => t.key === 'nightCurrency').interval,
+        todayMs
+      ).status;
+      const combinedTLStatus    = betterStatus(auto.takeoffLanding.status, manualTLStatus);
+      const combinedNightStatus = betterStatus(auto.nightCurrency.status, manualNightStatus);
+
+      // Roll up across ALL items using combined statuses for the two
+      // auto-aware types. The base rollupPilotStatus is unaware of auto;
+      // we re-do it inline here using the same status-rank logic.
+      let worstStatus = 'current';
+      let expiredCount = 0;
+      let warningCount = 0;
+      const accumulate = (s) => {
+        if (s === 'expired') expiredCount++;
+        if (['warning', 'critical'].includes(s)) warningCount++;
+        if (statusRank[s] > statusRank[worstStatus]) worstStatus = s;
+      };
+      // The five non-auto types use manual lastDate alone
+      for (const type of CURRENCY_TYPES) {
+        if (type.key === 'takeoffLanding' || type.key === 'nightCurrency') continue;
+        accumulate(computeStatus(docForPilot?.[type.key], type.interval, todayMs).status);
+      }
+      accumulate(computeMedicalStatus(docForPilot?.medical, todayMs).status);
+      // Auto-aware: T/O+L and Night
+      accumulate(combinedTLStatus);
+      accumulate(combinedNightStatus);
+
+      const rollup = {
+        status: worstStatus === 'unknown' ? 'unknown' : worstStatus,
+        expiredCount,
+        warningCount,
+        worstDays: null, // not used downstream when computing this inline
+      };
+
+      return {
+        pilot: p,
+        doc: docForPilot,
+        rollup,
+        auto,
+        combinedTLStatus,
+        combinedNightStatus,
+      };
     });
-  }, [pilots, currenciesByUid, todayMs]);
+  }, [pilots, currenciesByUid, todayMs, allTrips]);
 
   // Apply filter chips
   const filteredRows = useMemo(() => {
@@ -204,12 +271,15 @@ export default function PilotCurrencyScreen({ currentUser, users }) {
               ? 'No pilots visible yet. Approved users with role=crew will show up here.'
               : 'No pilots match this filter.'}
           </div>
-        ) : sortedRows.map(({ pilot, doc: pilotDoc, rollup }) => (
+        ) : sortedRows.map(({ pilot, doc: pilotDoc, rollup, auto, combinedTLStatus, combinedNightStatus }) => (
           <PilotCard
             key={pilot.uid}
             pilot={pilot}
             currencyDoc={pilotDoc}
             rollup={rollup}
+            auto={auto}
+            combinedTLStatus={combinedTLStatus}
+            combinedNightStatus={combinedNightStatus}
             expanded={expandedUid === pilot.uid}
             onToggle={() => setExpandedUid(expandedUid === pilot.uid ? null : pilot.uid)}
             onEdit={isAdminOrOps ? () => setEditingUid(pilot.uid) : null}
@@ -238,7 +308,7 @@ export default function PilotCurrencyScreen({ currentUser, users }) {
 // Collapsed: status badge + name + summary line
 // Expanded: every currency type as its own row with status + due date
 
-function PilotCard({ pilot, currencyDoc, rollup, expanded, onToggle, onEdit, todayMs }) {
+function PilotCard({ pilot, currencyDoc, rollup, auto, combinedTLStatus, combinedNightStatus, expanded, onToggle, onEdit, todayMs }) {
   const statusColor = STATUS_COLORS[rollup.status] || STATUS_COLORS.unknown;
 
   return (
@@ -295,14 +365,42 @@ function PilotCard({ pilot, currencyDoc, rollup, expanded, onToggle, onEdit, tod
 
       {expanded && (
         <div className="border-t border-slate-800 px-4 py-2 bg-slate-950/40">
-          {CURRENCY_TYPES.map((type) => (
-            <CurrencyRow
-              key={type.key}
-              type={type}
-              item={currencyDoc?.[type.key]}
-              todayMs={todayMs}
-            />
-          ))}
+          {CURRENCY_TYPES.map((type) => {
+            // T/O+L and Night are event-count based — render the auto-aware
+            // row that combines flight history with any manual entry.
+            if (type.key === 'takeoffLanding') {
+              return (
+                <AutoCurrencyRow
+                  key={type.key}
+                  type={type}
+                  manualItem={currencyDoc?.[type.key]}
+                  autoResult={auto.takeoffLanding}
+                  combinedStatus={combinedTLStatus}
+                  todayMs={todayMs}
+                />
+              );
+            }
+            if (type.key === 'nightCurrency') {
+              return (
+                <AutoCurrencyRow
+                  key={type.key}
+                  type={type}
+                  manualItem={currencyDoc?.[type.key]}
+                  autoResult={auto.nightCurrency}
+                  combinedStatus={combinedNightStatus}
+                  todayMs={todayMs}
+                />
+              );
+            }
+            return (
+              <CurrencyRow
+                key={type.key}
+                type={type}
+                item={currencyDoc?.[type.key]}
+                todayMs={todayMs}
+              />
+            );
+          })}
           <MedicalRow medical={currencyDoc?.medical} todayMs={todayMs} />
         </div>
       )}
@@ -341,6 +439,104 @@ function CurrencyRow({ type, item, todayMs }) {
         {r.daysUntil != null && (
           <div className={`text-xs mt-0.5 ${r.status === 'expired' ? 'text-red-400' : 'text-slate-500'}`}>
             {r.daysUntil >= 0 ? `${r.daysUntil}d remaining` : `${-r.daysUntil}d overdue`}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Auto-aware row for 61.57(a) T/O+L and (b) Night. Surfaces:
+//   - the auto count (e.g. "5 T/O+L in last 90d")
+//   - the expiration date based on the 3rd-most-recent qualifying flight
+//   - the manual override status (lower priority)
+//   - the combined status (better of auto vs manual)
+//
+// When auto count >= 3 → CURRENT and the "due date" is when the rolling
+// 90-day window will drop below 3 if no new flights happen.
+// When auto count < 3 → shows "need X more" prominently and falls back
+// to manual entry if admin set a recent date (e.g. sim-only completion).
+function AutoCurrencyRow({ type, manualItem, autoResult, combinedStatus, todayMs }) {
+  const autoStatus = autoResult.status;
+  const manual = computeStatus(manualItem, type.interval, todayMs);
+  const colors = STATUS_COLORS[combinedStatus] || STATUS_COLORS.unknown;
+
+  // Decide which source the headline status comes from
+  const autoIsBetter = (() => {
+    const statusRank = { current: 0, caution: 1, warning: 2, critical: 3, expired: 4, unknown: 5 };
+    if (autoStatus === 'unknown') return false;
+    if (manual.status === 'unknown') return true;
+    return statusRank[autoStatus] < statusRank[manual.status];
+  })();
+
+  return (
+    <div className="flex items-start justify-between py-3 border-b border-slate-800/50 last:border-b-0">
+      <div className="flex-1 min-w-0 pr-3">
+        <div className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {type.category}
+        </div>
+        <div className="text-sm text-slate-200 mt-0.5">{type.abbrev}</div>
+        <div className="text-xs text-slate-500 mt-0.5">{type.notes}</div>
+        {/* Auto row — actual flight history */}
+        <div className="text-xs mt-1.5 flex items-center gap-1.5">
+          <span className="text-cyan-400/80 tracking-wider" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            AUTO
+          </span>
+          <span className="text-slate-300">
+            {autoResult.count} {type.key === 'nightCurrency' ? 'night T/O+L' : 'T/O+L'} in last 90d
+          </span>
+        </div>
+        {autoResult.count > 0 && autoResult.count < 3 && (
+          <div className="text-xs text-orange-300 mt-0.5">
+            Need {autoResult.needed} more
+          </div>
+        )}
+        {/* Manual row — only shown if admin entered something */}
+        {manualItem?.lastDate && (
+          <div className="text-xs mt-0.5 flex items-center gap-1.5">
+            <span className="text-slate-500 tracking-wider" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              MANUAL
+            </span>
+            <span className="text-slate-400">
+              last {manualItem.lastDate}
+              {manualItem.notes && ` · ${manualItem.notes}`}
+            </span>
+          </div>
+        )}
+      </div>
+      <div className="text-right shrink-0">
+        <div
+          className={`text-[10px] tracking-widest ${colors.text}`}
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        >
+          {colors.label}
+        </div>
+        {autoIsBetter && autoResult.dueDate && (
+          <div className="text-xs text-slate-400 mt-1">
+            {autoResult.daysUntil >= 0
+              ? `lapses ${autoResult.dueDate}`
+              : `lapsed ${autoResult.dueDate}`}
+          </div>
+        )}
+        {autoIsBetter && autoResult.daysUntil != null && (
+          <div className={`text-xs mt-0.5 ${combinedStatus === 'expired' ? 'text-red-400' : 'text-slate-500'}`}>
+            {autoResult.daysUntil >= 0
+              ? `${autoResult.daysUntil}d remaining`
+              : `${-autoResult.daysUntil}d overdue`}
+          </div>
+        )}
+        {!autoIsBetter && manual.dueDate && (
+          <div className="text-xs text-slate-400 mt-1">
+            {manual.daysUntil >= 0
+              ? `due ${manual.dueDate}`
+              : `was due ${manual.dueDate}`}
+          </div>
+        )}
+        {!autoIsBetter && manual.daysUntil != null && (
+          <div className={`text-xs mt-0.5 ${combinedStatus === 'expired' ? 'text-red-400' : 'text-slate-500'}`}>
+            {manual.daysUntil >= 0
+              ? `${manual.daysUntil}d remaining`
+              : `${-manual.daysUntil}d overdue`}
           </div>
         )}
       </div>
