@@ -15,6 +15,10 @@
     {
       "path": "/api/airport-coords-refresh",
       "schedule": "0 6 * * 0"
+    },
+    {
+      "path": "/api/currency-alerts",
+      "schedule": "0 14 * * *"
     }
   ],
   "functions": {
@@ -26,6 +30,9 @@
       "maxDuration": 60
     },
     "api/parse-receipt.js": {
+      "maxDuration": 60
+    },
+    "api/currency-alerts.js": {
       "maxDuration": 60
     }
   },
