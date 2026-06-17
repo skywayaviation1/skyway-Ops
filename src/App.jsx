@@ -33,6 +33,10 @@ const LodgingLazy = lazy(() => import('./Lodging.jsx'));
 const LodgingDashboardLazy = lazy(() => import('./LodgingDashboard.jsx'));
 const MaintenanceLogLazy = lazy(() => import('./MaintenanceLog.jsx'));
 const MELLookupLazy = lazy(() => import('./MELLookup.jsx'));
+// Pilot currency & training dashboard. Lazy because crew rarely opens
+// it (sees their own data only — useful but not daily) and ops/admin
+// use it on a weekly compliance cadence rather than every load.
+const PilotCurrencyLazy = lazy(() => import('./PilotCurrency.jsx'));
 const PilotDocsTabLazy = lazy(() => import('./PilotDocs.jsx').then(m => ({ default: m.PilotDocsTab })));
 const AllCrewDocsLazy = lazy(() => import('./PilotDocs.jsx').then(m => ({ default: m.AllCrewDocs })));
 // Wear Watch — tire + brake preflight tracking. Modal + badge are
@@ -66,7 +70,7 @@ import {
   Mail, Navigation, Loader2, Wifi, WifiOff, Settings as SettingsIcon,
   Download, Trash2, Plus, FileText, Zap, Radio, AlertCircle, Upload,
   CheckCheck, UserCheck, Sparkles, Hash, Cloud, Wrench, Hotel, BookOpen, Search,
-  Activity, Palette,
+  Activity, Palette, ShieldCheck,
 } from 'lucide-react';
 import { formatLocalTime, formatLocalDate } from './airports.js';
 import {
@@ -18613,6 +18617,10 @@ function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, sync
     { id: 'maint',    label: 'MAINT',     icon: AlertTriangle, roles: ['maint', 'ops', 'admin'] },
     { id: 'wear',     label: 'WEAR',      icon: Activity, roles: ['maint', 'ops', 'admin'] },
     { id: 'users',    label: 'USERS',     icon: Users,    roles: ['ops', 'admin'] },
+    // Pilot currency & training compliance — crew sees their own status,
+    // ops/admin see all crew and can edit dates. Surfacing 61.57, Part
+    // 135 checkrides, recurrent training, and medical on one screen.
+    { id: 'currency', label: 'CURRENCY',  icon: ShieldCheck, roles: ['crew', 'ops', 'admin'] },
     { id: 'duty',     label: 'DUTY',      icon: Clock,    roles: ['admin'] },
   ];
   // DUTY tab also shows when an admin is impersonating a crew member
@@ -25392,6 +25400,16 @@ export default function CharterOps() {
               <WearTabLazy currentUser={currentUser} />
             </Suspense>
           </div>
+        )}
+
+        {/* === CURRENCY SECTION ===
+            Pilot currency & training dashboard. Admin/ops see every crew
+            member's 61.57 / Part 135 / recurrent / medical status; crew
+            see only their own. Read-only for crew, editable for ops/admin. */}
+        {section === 'currency' && (
+          <Suspense fallback={<div className="flex-1 flex items-center justify-center text-slate-500"><Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading currency dashboard...</div>}>
+            <PilotCurrencyLazy currentUser={currentUser} users={users} />
+          </Suspense>
         )}
 
         {/* === COMMS SECTION === */}
