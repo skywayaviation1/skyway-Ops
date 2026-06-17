@@ -47,6 +47,7 @@ import { db } from './firebase.js';
 import {
   doc, setDoc, collection, onSnapshot,
 } from 'firebase/firestore';
+import { getAirportTimezone } from './airports.js';
 
 // Currency types displayed in the dashboard. Order here = render order.
 // `interval` is in days. To add a new type: append to this array — the
@@ -259,4 +260,160 @@ export async function savePilotCurrency(uid, updates, currentUserUid, pilotName 
   };
   if (pilotName) payload.pilotName = pilotName;
   await setDoc(doc(db, 'pilot-currencies', uid), payload, { merge: true });
+}
+
+// =====================================================================
+// AUTO-COMPUTE: 61.57(a) T/O+L and 61.57(b) Night currency
+// =====================================================================
+//
+// These two currencies are EVENT-COUNT based, not interval based:
+//   61.57(a) — 3 takeoffs + landings in last 90 days
+//   61.57(b) — 3 night T/O + full-stop landings in last 90 days
+//
+// Rather than make admins manually enter the last completion date,
+// the dashboard scans the pilot's assigned trips in allTrips, counts
+// qualifying events, and computes status directly.
+//
+// Pilot is "assigned" to a trip when nameMatchesPilot returns true
+// for either trip.info.pic or trip.info.sic. We don't try to
+// distinguish who flew the actual leg — each pilot logs their own
+// T/O+L per FAA convention.
+//
+// Night detection is conservative: a leg counts as night only when
+// BOTH the takeoff (local time at FROM airport) AND landing (local
+// time at TO airport) fall in [21:00, 05:00). This under-counts at
+// high latitudes / summer evenings, but never over-counts. Admins
+// can manually adjust by setting `nightCurrency.lastDate` if needed.
+
+// Mirror of App.jsx's nameMatchesPilot — kept local so this module
+// stays self-contained. Both first AND last token of pilotName must
+// appear as whole words in jetinsightName for a match.
+function nameMatchesPilot(jetinsightName, pilotName) {
+  if (!jetinsightName || !pilotName) return false;
+  const tokens = String(pilotName).trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (tokens.length < 2) return false;
+  const first = tokens[0];
+  const last = tokens[tokens.length - 1];
+  const target = String(jetinsightName).toLowerCase();
+  const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const wordRe = (w) => new RegExp(`\\b${escape(w)}\\b`, 'i');
+  return wordRe(first).test(target) && wordRe(last).test(target);
+}
+
+// Local hour at an airport (0-23) for a given UTC instant. Falls back
+// to UTC if the airport's timezone isn't in our table.
+function localHourAtAirport(utcMs, airportCode) {
+  if (!Number.isFinite(utcMs)) return null;
+  // airports.js's AIRPORT_TIMEZONES constant is private — use the
+  // exported lookup function instead. Returns 'UTC' for unknown codes,
+  // which is a safe default (just won't match the night window).
+  const tz = getAirportTimezone(airportCode) || 'UTC';
+  try {
+    const hourStr = new Intl.DateTimeFormat('en-US', {
+      hour: 'numeric',
+      hour12: false,
+      timeZone: tz,
+    }).format(new Date(utcMs));
+    const hour = parseInt(hourStr, 10);
+    return Number.isFinite(hour) ? (hour === 24 ? 0 : hour) : null;
+  } catch {
+    return null;
+  }
+}
+
+function isNightHour(h) {
+  return h != null && (h >= 21 || h < 5);
+}
+
+// Collect every leg in the last 90 days where the pilot was assigned
+// (PIC or SIC) and it was an actual flight (not HOLD/MX/TRAINING).
+// Returns events ordered most-recent-first with night flag computed.
+export function collectRecentLegEvents(pilotName, allTrips, todayMs = Date.now()) {
+  if (!pilotName || !Array.isArray(allTrips)) return [];
+  const windowStart = todayMs - 90 * 86400000;
+  const events = [];
+  for (const trip of allTrips) {
+    if (!trip?.info?.isFlight) continue;
+    if (!trip?.start) continue;
+    const startMs = new Date(trip.start).getTime();
+    if (!Number.isFinite(startMs)) continue;
+    if (startMs < windowStart || startMs > todayMs) continue;
+    const wasPic = nameMatchesPilot(trip.info.pic || '', pilotName);
+    const wasSic = nameMatchesPilot(trip.info.sic || '', pilotName);
+    if (!wasPic && !wasSic) continue;
+
+    const endMs = trip.end ? new Date(trip.end).getTime() : startMs + 90 * 60000;
+    const departHour = localHourAtAirport(startMs, trip.info.from);
+    const arriveHour = localHourAtAirport(
+      Number.isFinite(endMs) ? endMs : startMs + 90 * 60000,
+      trip.info.to || trip.info.from
+    );
+    const isNight = isNightHour(departHour) && isNightHour(arriveHour);
+    events.push({
+      tripUid: trip.uid,
+      startMs,
+      endMs: Number.isFinite(endMs) ? endMs : startMs + 90 * 60000,
+      from: trip.info.from || null,
+      to: trip.info.to || null,
+      tail: trip.info.tail || null,
+      role: wasPic ? 'PIC' : 'SIC',
+      isNight,
+    });
+  }
+  // Most recent first — needed for currency-expiry math
+  events.sort((a, b) => b.startMs - a.startMs);
+  return events;
+}
+
+// Apply the 3-events-in-90-days rule to a list of qualifying flight
+// events. Returns { status, count, needed, expiresMs, daysUntil, lastDates }.
+//
+// When count >= 3: currency stays current until the 3rd-most-recent
+// event drops out of the rolling 90-day window. That expiration date
+// becomes the "lastDate equivalent" — i.e. 90 days before this is the
+// 3rd-most-recent event, after this the pilot has only 2 in window.
+//
+// When count < 3: status is 'expired' (the pilot is NOT current).
+export function rollingNinetyDayStatus(qualifyingEvents, todayMs = Date.now()) {
+  const sorted = [...(qualifyingEvents || [])].sort((a, b) => b.startMs - a.startMs);
+  const count = sorted.length;
+  if (count >= 3) {
+    // Currency lasts until the 3rd-most-recent event drops out of the
+    // 90-day window. After that the pilot has only 2 events in window,
+    // i.e. not current.
+    const expiresMs = sorted[2].startMs + 90 * 86400000;
+    const daysUntil = Math.floor((expiresMs - todayMs) / 86400000);
+    return {
+      status: bucketize(daysUntil),
+      count,
+      needed: 0,
+      expiresMs,
+      daysUntil,
+      dueDate: new Date(expiresMs).toISOString().slice(0, 10),
+      lastDate: new Date(sorted[0].startMs).toISOString().slice(0, 10),
+    };
+  }
+  return {
+    status: 'expired',
+    count,
+    needed: 3 - count,
+    expiresMs: null,
+    daysUntil: null,
+    dueDate: null,
+    lastDate: count > 0 ? new Date(sorted[0].startMs).toISOString().slice(0, 10) : null,
+  };
+}
+
+// Convenience: return auto status for a pilot's T/O+L and Night
+// currencies in one call. Takes the pilot's name + allTrips and folds
+// `collectRecentLegEvents` and `rollingNinetyDayStatus` together.
+export function computeAutoTakeoffLanding(pilotName, allTrips, todayMs = Date.now()) {
+  const events = collectRecentLegEvents(pilotName, allTrips, todayMs);
+  const allLegs = events;
+  const nightLegs = events.filter((e) => e.isNight);
+  return {
+    takeoffLanding: rollingNinetyDayStatus(allLegs, todayMs),
+    nightCurrency:  rollingNinetyDayStatus(nightLegs, todayMs),
+    rawEvents: events,
+  };
 }
