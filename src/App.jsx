@@ -547,8 +547,192 @@ function extractFbosFromText(text) {
   return fboByCode;
 }
 
+// Convert "11:00" + "pm" → "23:00" (24-hour string). Used by the
+// Passenger Itinerary parser since that format uses 12-hour clocks.
+// "12:30 am" → "00:30", "12:00 pm" → "12:00", "11:59 pm" → "23:59".
+function to24HourTime(timeStr, ampm) {
+  const parts = String(timeStr || '').split(':');
+  if (parts.length < 2) return null;
+  let h = parseInt(parts[0], 10);
+  const m = parseInt(parts[1], 10);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+  const ap = String(ampm || '').trim().toLowerCase();
+  if (ap === 'pm' && h < 12) h += 12;
+  if (ap === 'am' && h === 12) h = 0;
+  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
+}
+
+// Passenger Itinerary parser (broker-facing JetInsight format).
+//
+// Returns the same shape as parseJetInsightTripSheet so the rest of
+// the upload pipeline doesn't need to branch:
+//   { tripCode, tail, legs, notes, _isPassengerItinerary }
+//
+// What's PRESENT in this format:
+//   - Trip code, tail, aircraft type
+//   - Legs with from/to, dates, local times, timezone abbreviations
+//   - Crew (PIC / SIC) by name
+//   - FBOs (same "CODE - Airport Name" / next-line FBO pattern)
+//   - Passenger names
+//
+// What's MISSING (caller must handle these as nullable):
+//   - Pax weight, DOB, gender — Passenger Itinerary scrubs these for PII
+//   - Zulu departure/arrival times — only local clock is printed
+//   - Trip notes (crew/pax/customer/special) — not included in the
+//     broker-facing variant
+//
+// The _isPassengerItinerary flag lets the UI render a warning so ops
+// knows to backfill pax weights before generating a manifest.
+function parseJetInsightPassengerItinerary(text) {
+  if (!text || typeof text !== 'string') return null;
+
+  // Trip code: "Passenger Itinerary (RY38CU)" — same parens shape as
+  // the Crew variant, different label.
+  const tripCodeMatch = text.match(/Passenger\s+Itinerary\s*\(([A-Z0-9]+)\)/i);
+  const tripCode = tripCodeMatch ? tripCodeMatch[1] : null;
+
+  // Tail (N-number) — same regex as Crew Itinerary, only one per sheet.
+  const tailMatch = text.match(/\b(N\d{1,5}[A-Z]{0,2})\b/);
+  const tail = tailMatch ? tailMatch[1] : null;
+
+  // Compact leg summary lines look like (after PDF text extraction,
+  // arrows become whitespace):
+  //   "Leg 1: GRB 06/18/2026 - 11:00 pm CDT  MIA 06/19/2026 - 3:30 am EDT"
+  // We capture both halves in one shot since pdf-extract puts them on
+  // the same "line" with arbitrary whitespace where the arrow was.
+  const legRe = /Leg\s+(\d+)\s*:\s*([A-Z0-9]{3,4})\s+(\d{1,2}\/\d{1,2}\/\d{4})\s*-\s*(\d{1,2}:\d{2})\s*(am|pm)\s+([A-Z]{2,4})\s+([A-Z0-9]{3,4})\s+(\d{1,2}\/\d{1,2}\/\d{4})\s*-\s*(\d{1,2}:\d{2})\s*(am|pm)\s+([A-Z]{2,4})/gi;
+  const legSummaries = [];
+  let lm;
+  while ((lm = legRe.exec(text)) !== null) {
+    legSummaries.push({
+      legNumber: parseInt(lm[1], 10),
+      paxCount: 0,                                      // unknown — Passenger Itinerary header has no count
+      from: lm[2].toUpperCase(),
+      depDate: lm[3],
+      depTimeLocal: to24HourTime(lm[4], lm[5]),         // "11:00 pm" → "23:00"
+      depTimeLocalTz: lm[6],
+      depTimeZ: null,                                   // not printed on Passenger Itinerary
+      to: lm[7].toUpperCase(),
+      _arrDate: lm[8],                                  // surfaced for downstream — most consumers ignore
+      _arrTimeLocal: to24HourTime(lm[9], lm[10]),
+      _arrTimeLocalTz: lm[11],
+    });
+  }
+
+  // FBO map — works on the same "CODE - Airport Name" / next-line FBO
+  // pattern in both formats. Reuse the existing extractor.
+  const fboByCode = extractFbosFromText(text);
+
+  // Crew names — Passenger Itinerary prints "PIC: <name>" and
+  // "SIC: <name>" inline. Capture the rest of the line up to the next
+  // section break (which appears as 2+ spaces or another label).
+  // Same crew applies to all legs in a single sheet.
+  const picMatch = text.match(/PIC\s*:\s*([^\n\r]{2,80}?)(?=\s{2,}|SIC\s*:|Passengers?\s*\(|Crew\b|$)/i);
+  const sicMatch = text.match(/SIC\s*:\s*([^\n\r]{2,80}?)(?=\s{2,}|PIC\s*:|Passengers?\s*\(|Crew\b|$)/i);
+  const pic = picMatch ? picMatch[1].trim() : null;
+  const sic = sicMatch ? sicMatch[1].trim() : null;
+
+  // Passenger names — Passenger Itinerary uses "Passengers (N)" (note
+  // the plural 's') and lists names without weight/DOB. Body extends
+  // until the next pax block, the table header row, or a TRANSPORT/
+  // Arranged-by section. Names are 2-4 capitalized tokens separated
+  // by whitespace; we filter the body for plausible matches.
+  const paxByLeg = {};
+  const paxHeaderRe = /Passengers?\s*\((\d+)\)/gi;
+  let phMatch;
+  let blockIdx = 0;
+  while ((phMatch = paxHeaderRe.exec(text)) !== null) {
+    const startIdx = phMatch.index + phMatch[0].length;
+    const rest = text.slice(startIdx);
+    // Stop at: next pax block, the customer-info table header
+    // (Name/Address/Phone/Confirmation), a TRANSPORT block, an
+    // "Arranged by Broker" marker, or the next leg header.
+    const stopRe = /(?:Passengers?\s*\(|Name\s+Address\s+Phone|TRANSPORT\s*:|Arranged\s+by|Leg\s+\d+\s*:|Crew\b)/i;
+    const stopMatch = rest.match(stopRe);
+    const endIdx = stopMatch
+      ? startIdx + stopMatch.index
+      : Math.min(text.length, startIdx + 500);
+    const body = text.slice(startIdx, endIdx).trim();
+
+    // Extract plausible name strings. PDF text extraction often runs
+    // names together with surrounding whitespace, so we split on 2+
+    // spaces (which usually corresponds to a column break or line
+    // break in the original layout) and filter to capitalized
+    // 2-4-token name-shaped strings under 60 chars (filters out
+    // accidental address fragments / weather lines / etc).
+    const candidates = body.split(/\s{2,}|\n+|,\s*/).map(s => s.trim());
+    const names = candidates.filter(s => {
+      if (!s || s.length > 60 || s.length < 4) return false;
+      const tokens = s.split(/\s+/).filter(Boolean);
+      if (tokens.length < 2 || tokens.length > 5) return false;
+      // Each token must start with an uppercase letter and contain
+      // only name-like characters. Tolerates suffixes like "Jr" and
+      // apostrophed names like O'Brien.
+      return tokens.every(t => /^[A-Z][a-zA-Z'.-]*$/.test(t));
+    });
+
+    const legNum = blockIdx + 1;
+    paxByLeg[legNum] = names.map(name => {
+      const tokens = name.split(/\s+/).filter(Boolean);
+      return {
+        firstName: tokens[0] || '',
+        lastName: tokens.slice(1).join(' ') || '',
+        // null fields make it explicit that the Passenger Itinerary
+        // didn't supply this data. UI should render an empty input
+        // (not "undefined") and the manifest builder should refuse
+        // to generate until these are filled.
+        gender: null,
+        dob: null,
+        weight: null,
+        primary: false,
+        _fromPassengerItinerary: true,
+      };
+    });
+    blockIdx++;
+  }
+
+  // Assemble legs. If we matched zero legs but DO have a tail/code,
+  // return what we have rather than null so the caller can decide
+  // whether to surface a "format detected, structure not extractable"
+  // error message vs the generic preview-of-text error.
+  const legs = legSummaries.map(s => ({
+    ...s,
+    pax: paxByLeg[s.legNumber] || [],
+    fromFbo: fboByCode[s.from] || null,
+    toFbo: fboByCode[s.to] || null,
+    // Carry the crew through on each leg so the existing pipeline (which
+    // is per-leg) gets the same data without us having to thread a
+    // separate trip-level crew object.
+    pic, sic,
+  }));
+
+  return {
+    tripCode,
+    tail,
+    legs,
+    pic, sic,
+    // Notes block stays empty since Passenger Itinerary doesn't carry
+    // crew/pax/customer/special items. UI handles null/missing fields.
+    notes: { crew: null, pax: null, customer: null, specialItems: null },
+    // Sentinel for the upload UI to surface a warning banner.
+    _isPassengerItinerary: true,
+  };
+}
+
 function parseJetInsightTripSheet(text) {
   if (!text || typeof text !== 'string') return null;
+
+  // Dispatcher: JetInsight emits two distinct sheet types. The Crew
+  // Itinerary (what ops normally uploads) has Pax with weight + DOB,
+  // zulu times, and full per-leg blocks. The Passenger Itinerary
+  // (broker-facing, no PII) shows the same trip with names-only pax
+  // and 12-hour local times. They share zero regex patterns, so we
+  // dispatch on the header before doing any work. If the document
+  // contains BOTH strings (rare — usually a comparison print) we
+  // prefer the Crew variant since it has strictly more data.
+  if (/Passenger\s+Itinerary/i.test(text) && !/Crew\s+Itinerary/i.test(text)) {
+    return parseJetInsightPassengerItinerary(text);
+  }
 
   // Trip code lives in "Crew Itinerary (WEQVQD)"
   const tripCodeMatch = text.match(/Crew Itinerary\s*\(([A-Z0-9]+)\)/i);
@@ -7058,9 +7242,30 @@ function TripSheetPanel({
       const text = await extractPdfText(file);
       const parsed = parseJetInsightTripSheet(text);
       if (!parsed || !parsed.legs || parsed.legs.length === 0) {
-        // Surface the actual text in the error so we can debug
+        // Distinguish the failure mode so the user knows what to do.
+        // The most common mistake is uploading a Passenger Itinerary
+        // (broker-facing) when the Crew Itinerary was expected, or a
+        // sheet from a different system entirely.
+        const isPaxItin = /Passenger\s+Itinerary/i.test(text);
+        const isCrewItin = /Crew\s+Itinerary/i.test(text);
+        if (isPaxItin) {
+          throw new Error(
+            'Detected a Passenger Itinerary but couldn\'t extract leg data. ' +
+            'JetInsight may have used a different layout than expected. ' +
+            'Try uploading the Crew Itinerary version instead — it has more fields and parses more reliably.'
+          );
+        }
+        if (isCrewItin) {
+          // Surface the actual text in the error so we can debug
+          const preview = text.slice(0, 200).replace(/\s+/g, ' ');
+          throw new Error(`Detected a Crew Itinerary but couldn't extract legs. Got ${text.length} chars. Preview: "${preview}..."`);
+        }
+        // Neither header present — probably the wrong PDF entirely.
         const preview = text.slice(0, 200).replace(/\s+/g, ' ');
-        throw new Error(`Could not parse trip sheet. Got ${text.length} chars. Preview: "${preview}..."`);
+        throw new Error(
+          `This doesn't look like a JetInsight trip sheet. Expected "Crew Itinerary" or "Passenger Itinerary" in the header. ` +
+          `Got ${text.length} chars. Preview: "${preview}..."`
+        );
       }
 
       // 2. For each parsed leg, find matching trips in the schedule
@@ -7165,6 +7370,25 @@ function TripSheetPanel({
             Cancel
           </button>
         </div>
+
+        {/* Passenger Itinerary warning — the broker-facing sheet has
+            no pax weight/DOB/gender, so anyone generating a manifest
+            from this upload needs to backfill those fields manually.
+            We show the banner only on this sheet type (Crew Itinerary
+            uploads stay silent). */}
+        {matchPreview._isPassengerItinerary && (
+          <div className="border border-amber-500/40 bg-amber-500/10 p-3 flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+            <div className="text-xs text-amber-200 space-y-1">
+              <div className="font-medium">
+                Passenger Itinerary detected — limited data
+              </div>
+              <div className="text-amber-300/80 leading-relaxed">
+                This is the broker-facing sheet. Passenger names and FBOs were captured, but <strong>weight, DOB, and gender are missing</strong> (the broker version strips that PII). You'll need to fill those in manually before generating a manifest. For the full data set, upload the Crew Itinerary from JetInsight instead.
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="space-y-2">
           {matchPreview.matches.map((m, i) => {
