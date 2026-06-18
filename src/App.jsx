@@ -25559,46 +25559,6 @@ export default function CharterOps() {
     } catch (e) { /* ignore */ }
   }, []);
 
-  // ---- Tab order preferences -----------------------------------------
-  // Org default lives at app-config/tab-order. Per-user override lives on
-  // the user's profile at users/{uid}.tabOrderPrefs. Resolution at render
-  // time is user override → org default → hardcoded source order.
-  //
-  // We subscribe to the org default here at the root and pass it down.
-  // The user override is read straight off currentUser (already in
-  // profile context).
-  const [defaultTabOrder, setDefaultTabOrder] = useState(null);
-  useEffect(() => {
-    let unsub = null; let cancelled = false;
-    (async () => {
-      try {
-        const { subscribeDefaultTabOrder } = await import('./firebase-data.js');
-        if (cancelled) return;
-        unsub = subscribeDefaultTabOrder((data) => {
-          if (cancelled) return;
-          setDefaultTabOrder(data || null);
-        });
-      } catch (err) { console.warn('[tab-order] subscribe failed:', err); }
-    })();
-    return () => { cancelled = true; if (unsub) try { unsub(); } catch (_) {} };
-  }, []);
-
-  const saveTabOrder = useCallback(async (area, newOrder) => {
-    try {
-      const uid = profile?.uid;
-      if (!uid) return;
-      // Block writes while admin is impersonating another user — we don't
-      // want a stray drag to overwrite the target's saved order, and we
-      // don't want admin's own order to change based on what they see
-      // through someone else's eyes either. Stop impersonating to edit.
-      if (impersonateUid) return;
-      const { saveUserTabOrder } = await import('./firebase-data.js');
-      await saveUserTabOrder(uid, area, newOrder);
-    } catch (err) {
-      console.error('[tab-order] save failed:', err);
-    }
-  }, [profile?.uid, impersonateUid]);
-
   // When a trip is opened, mark it as seen
   const markTripSeen = useCallback((tripUid) => {
     setTripLastSeen(prev => {
@@ -25713,6 +25673,46 @@ export default function CharterOps() {
   // Admin impersonation: when set to another user's uid, currentUser appears as that user
   // for testing different role views. Only works if the actual logged-in user is admin.
   const [impersonateUid, setImpersonateUid] = useState(null);
+
+  // ---- Tab order preferences -----------------------------------------
+  // Org default lives at app-config/tab-order. Per-user override lives on
+  // the user's profile at users/{uid}.tabOrderPrefs. Resolution at render
+  // time is user override → org default → hardcoded source order.
+  //
+  // Must be declared AFTER impersonateUid above because saveTabOrder
+  // depends on it; defining it earlier would put impersonateUid in a
+  // Temporal Dead Zone at render and crash the whole tree.
+  const [defaultTabOrder, setDefaultTabOrder] = useState(null);
+  useEffect(() => {
+    let unsub = null; let cancelled = false;
+    (async () => {
+      try {
+        const { subscribeDefaultTabOrder } = await import('./firebase-data.js');
+        if (cancelled) return;
+        unsub = subscribeDefaultTabOrder((data) => {
+          if (cancelled) return;
+          setDefaultTabOrder(data || null);
+        });
+      } catch (err) { console.warn('[tab-order] subscribe failed:', err); }
+    })();
+    return () => { cancelled = true; if (unsub) try { unsub(); } catch (_) {} };
+  }, []);
+
+  const saveTabOrder = useCallback(async (area, newOrder) => {
+    try {
+      const uid = profile?.uid;
+      if (!uid) return;
+      // Block writes while admin is impersonating — we don't want a stray
+      // drag to overwrite the target's saved order, and we don't want
+      // admin's own order to change based on what they see through
+      // someone else's eyes either. Stop impersonating to edit.
+      if (impersonateUid) return;
+      const { saveUserTabOrder } = await import('./firebase-data.js');
+      await saveUserTabOrder(uid, area, newOrder);
+    } catch (err) {
+      console.error('[tab-order] save failed:', err);
+    }
+  }, [profile?.uid, impersonateUid]);
 
   const currentUser = useMemo(() => {
     if (!profile) return null;
