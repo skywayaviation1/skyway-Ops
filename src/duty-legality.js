@@ -713,8 +713,18 @@ export function evaluateLegality(periods, outsideFlying, atTime, options = {}) {
     .sort((a, b) => b.dutyOnAt - a.dutyOnAt)[0]
     || proposed;
 
+  // NOTE 2026-06: the 8/10-hour rolling-24h flight-time check (FT_24H,
+  // computed by check_flightTime24h) was producing wildly incorrect
+  // numbers in production — it placed each duty period's whole
+  // flightTimeMs at dutyOnAt and double-counted events whose
+  // [at, at+ms] envelope brushed the 24h window, so two unrelated
+  // duty periods on different days would aggregate into a fake
+  // "9.4h of 10h" warning. Pulled from the alerts list per Jake's
+  // call. The check_flightTime24h function is kept in the file (and
+  // FT_24H is still in the comment table above) so a future rewrite
+  // has somewhere to land — it just isn't run.
   const checks = [
-    check_flightTime24h(periodsForCheck, safeOutside, crewType, checkTime),
+    // check_flightTime24h(periodsForCheck, safeOutside, crewType, checkTime),  // disabled — incorrect math, see note above
     check_rest24h(periodsForCheck, atTime, proposed?.dutyOffAt),
     check_dutyPeriod14h(activeNow, checkTime),
     check_quarterly13(periodsForCheck, checkTime),

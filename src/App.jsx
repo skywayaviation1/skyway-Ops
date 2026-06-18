@@ -719,45 +719,97 @@ function parseJetInsightPassengerItinerary(text) {
   };
 }
 
-function parseJetInsightTripSheet(text) {
-  if (!text || typeof text !== 'string') return null;
+function parseJetInsightTripSheet(rawText) {
+  if (!rawText || typeof rawText !== 'string') return null;
+
+  // ─────────────────────────────────────────────────────────────────────
+  // TEXT NORMALIZATION
+  // ─────────────────────────────────────────────────────────────────────
+  // PDF text extraction surprises that break naive regexes downstream:
+  //
+  //  1. JetInsight uses FontAwesome icons (arrows, crew/pax/luggage glyphs)
+  //     and these arrive from pdfjs-dist as Unicode Private Use Area
+  //     codepoints (U+E000–U+F8FF). "MKE → GRB" comes through as
+  //     "MKE   <U+F178>   GRB" and \s+ won't match the icon — so a regex
+  //     looking for "MKE\s+GRB" fails on the bolded detail header.
+  //     We rewrite ALL PUA chars to a space.
+  //
+  //  2. Ligatures: "fi" and "fl" come through split into two text items
+  //     ("Confirmed" → "Con fi rmed", "flyskyway" → "fl yskyway").
+  //     We surgically repair the specific vocabulary that appears on a
+  //     Skyway trip sheet so trip notes, confirmations, and email
+  //     addresses stay parseable.
+  //
+  // Do this once, up front. All regexes below run against `text`.
+  let text = rawText
+    // PUA chars → space (U+E000–U+F8FF covers FontAwesome + most icon fonts)
+    .replace(/[\uE000-\uF8FF]/g, ' ')
+    // Ligature splits — common Skyway-vocabulary repairs
+    .replace(/\bfl yskyway\b/gi, 'flyskyway')
+    .replace(/\bRecon fi rmed\b/gi, 'Reconfirmed')
+    .replace(/\bCon fi rm/g, 'Confirm')
+    .replace(/\bcon fi rm/g, 'confirm')
+    .replace(/\b10k\s+fi ne\b/gi, '10k fine')
+    // Generic fix: "fi " or "fl " surrounded by lowercase becomes the joined ligature.
+    // Catches less common cases like "speci fi cally". Conservative — only
+    // applies when surrounded by lowercase letters so we don't munge
+    // legitimate occurrences like "Trip Fi nal" (none on a trip sheet but
+    // defensive anyway).
+    .replace(/([a-z]) fi ([a-z])/g, '$1fi$2')
+    .replace(/([a-z]) fl ([a-z])/g, '$1fl$2')
+    //  3. Email "@" followed by a space. The ligature repair fixes
+    //     "fl yskyway" → "flyskyway" but leaves the SPACE between "@"
+    //     and "flyskyway" (the original PDF had "@ fl yskyway.com" with
+    //     "@" rendered separately from the domain). Without this fix,
+    //     contact extraction fails because the email regex can't span
+    //     whitespace. There's no legitimate email shape that has a
+    //     space immediately after the @ sign, so this is safe.
+    .replace(/@\s+([A-Za-z0-9])/g, '@$1');
 
   // Dispatcher: JetInsight emits two distinct sheet types. The Crew
-  // Itinerary (what ops normally uploads) has Pax with weight + DOB,
-  // zulu times, and full per-leg blocks. The Passenger Itinerary
-  // (broker-facing, no PII) shows the same trip with names-only pax
-  // and 12-hour local times. They share zero regex patterns, so we
-  // dispatch on the header before doing any work. If the document
-  // contains BOTH strings (rare — usually a comparison print) we
-  // prefer the Crew variant since it has strictly more data.
+  // Itinerary has Pax with weight + DOB, zulu times, and full per-leg
+  // blocks. The Passenger Itinerary (broker-facing, no PII) shows the
+  // same trip with names-only pax and 12-hour local times.
   if (/Passenger\s+Itinerary/i.test(text) && !/Crew\s+Itinerary/i.test(text)) {
     return parseJetInsightPassengerItinerary(text);
   }
 
+  // ─────────────────────────────────────────────────────────────────────
+  // TRIP-LEVEL FIELDS
+  // ─────────────────────────────────────────────────────────────────────
+
   // Trip code lives in "Crew Itinerary (WEQVQD)"
-  const tripCodeMatch = text.match(/Crew Itinerary\s*\(([A-Z0-9]+)\)/i);
+  const tripCodeMatch = text.match(/Crew\s+Itinerary\s*\(([A-Z0-9]+)\)/i);
   const tripCode = tripCodeMatch ? tripCodeMatch[1] : null;
 
-  // Tail is a standalone N-number block — there's only ever one per itinerary
+  // Tail is a standalone N-number — there's only ever one per itinerary
   const tailMatch = text.match(/\b(N\d{1,5}[A-Z]{0,2})\b/);
   const tail = tailMatch ? tailMatch[1] : null;
 
-  // Extract trip-level notes (apply to all legs, not per-leg).
-  // Stop at the next top-level section header AND at common company-header
-  // markers (so notes don't bleed into the operator's own address block which
-  // follows the notes section in JetInsight crew itineraries).
+  // Aircraft type — appears immediately after the tail (e.g.,
+  // "N444AM  Cessna Citation CJ3  MKE - GRB"). We capture 1-4 title-case
+  // words that start with a letter, stopping at the next airport-code
+  // pattern. Collapsed whitespace for output.
+  let aircraftType = null;
+  if (tail) {
+    const acRe = new RegExp(
+      tail + '\\s+([A-Z][a-z]+(?:\\s+[A-Z][a-zA-Z0-9]+){0,3})(?=\\s+[A-Z]{3,4}\\s+-|\\s+\\d|\\s*$)',
+      ''
+    );
+    const acM = text.match(acRe);
+    if (acM) aircraftType = acM[1].replace(/\s+/g, ' ').trim();
+  }
+
+  // Trip-level notes (apply to all legs). Stop at the next section
+  // header or common header-block markers so notes don't bleed into
+  // the operator's address.
   const extractNote = (labelPattern) => {
     const re = new RegExp(
       `${labelPattern}\\s*:\\s*([\\s\\S]*?)(?=(?:` +
-        // section headers
         `Trip notes \\(|Customer notes:|Special items:|Leg \\s*\\d+|Distance:|Client:|Planner:|` +
-        // company name (Skyway-specific — adjust if app is reused)
         `Skyway Aviation|` +
-        // generic street address: 3-5 digit number + capitalized word + Blvd/St/Ave/Rd/Way/Dr/Ln/Pkwy
         `\\d{3,5}\\s+[A-Z][a-z]+\\s+(?:Blvd|St|Ave|Rd|Way|Dr|Ln|Pkwy)|` +
-        // email address
         `[A-Za-z0-9._-]+@[A-Za-z0-9.-]+\\.(?:com|net|org)|` +
-        // US-style phone (123-456-7890 / 123.456.7890 / 123 456 7890)
         `\\d{3}[-.\\s]?\\d{3}[-.\\s]?\\d{4}` +
       `)|$)`,
       'i'
@@ -767,7 +819,6 @@ function parseJetInsightTripSheet(text) {
     const cleaned = m[1].trim().replace(/\s+/g, ' ');
     return cleaned ? cleaned.slice(0, 2000) : null;
   };
-
   const notes = {
     crew: extractNote('Trip notes \\(crew\\)'),
     pax: extractNote('Trip notes \\(pax\\)'),
@@ -775,76 +826,334 @@ function parseJetInsightTripSheet(text) {
     specialItems: extractNote('Special items'),
   };
 
-  // Leg summary lines look like (in PDF text after extraction):
-  //   Leg 1: Pax: 0 SDF 04/30/2026 - 18:24 EDT (22:24 Z) → 1:06 → CLE 04/30/2026 - 19:30 EDT (23:30 Z)
-  // PDF text extraction loses the arrow chars and reorders some content. To be robust,
-  // we parse departure and arrival info SEPARATELY, then pair them up by leg number.
-  //
-  // 2026-05 update: JetInsight changed the pax format from "Pax: 0" to "Pax: 0/1"
-  // (apparently "confirmed/booked" or "actual/manifested"). The regex now accepts
-  // either form; we capture only the first number as the operative count.
+  // Crew contacts — same PIC/SIC across all legs, captured at trip
+  // level. "PIC: Nicholas Riley Albritton - +1 (318) 547-3400, nicholas.albritton@flyskyway.com"
+  // Name runs until the " - " before the phone. Phone allows +, digits,
+  // spaces, parens, dashes. Email matches a standard pattern.
+  const extractContact = (label) => {
+    // Stop the name at " - +1" / " - 123" / " - (" — phone-start markers.
+    const re = new RegExp(
+      `${label}\\s*:\\s*([A-Z][A-Za-z'.\\- ]+?)\\s*(?:-\\s*(\\+?[\\d\\s()\\-]+?))?(?:\\s*,\\s*([A-Za-z0-9._\\-]+@[A-Za-z0-9.\\-]+\\.[A-Za-z]{2,}))?(?=\\s*(?:SIC\\s*:|PIC\\s*:|Release|Fees|Fuel|Pax\\s*\\(|$|\\n))`,
+      'i'
+    );
+    const m = text.match(re);
+    if (!m) return null;
+    return {
+      name: m[1] ? m[1].trim() : null,
+      phone: m[2] ? m[2].trim().replace(/\s+/g, ' ') : null,
+      email: m[3] ? m[3].trim() : null,
+    };
+  };
+  const crewContacts = {
+    pic: extractContact('PIC'),
+    sic: extractContact('SIC'),
+  };
+
+  // Segment status — appears in a table near the top of the sheet,
+  // one row per leg: "MKE - GRB   Not released   Vetting not applicable"
+  // or "GRB - MIA   Not released   Vetted: 06/16/2026 04:00 Z   All passengers cleared to board"
+  const segmentStatus = {};
+  const segRe = /\b([A-Z]{3,4})\s*-\s*([A-Z]{3,4})\s+(Released|Not released)\s+(?:(Vetting not applicable)|Vetted:\s*(\d{1,2}\/\d{1,2}\/\d{4}\s+\d{1,2}:\d{2}\s+Z)(?:\s+(All passengers cleared to board))?)/gi;
+  let segM;
+  while ((segM = segRe.exec(text)) !== null) {
+    const key = `${segM[1]}-${segM[2]}`;
+    segmentStatus[key] = {
+      from: segM[1],
+      to: segM[2],
+      released: segM[3] === 'Released',
+      vettingApplicable: !segM[4],
+      vettedAt: segM[5] || null,
+      paxCleared: !!segM[6],
+    };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  // LEG SUMMARY LINES — compact one-line-per-leg block at top of sheet
+  // ─────────────────────────────────────────────────────────────────────
+  // Format: "Leg 1: Pax: 0 MKE 06/18/2026 - 21:33 CDT (02:33 Z)  0:42  GRB 06/18/2026 - 22:15 CDT (03:15 Z)"
+  // The pdfjs extraction puts dep + arr on the same logical line. We
+  // capture both halves in a single regex now (the old two-pass approach
+  // could mis-pair legs when pdfjs reordered them by column).
   const legSummaries = [];
-  // First pass: find "Leg N: Pax: M FROM date - time tz (zulu Z)" — the departure half
-  // Pax format: single number ("0") OR slash-separated pair ("0/1") — capture first only
-  const depRe = /Leg\s+(\d+)\s*:\s*Pax\s*:\s*(\d+)(?:\s*\/\s*\d+)?\s+([A-Z0-9]{3,4})\s+(\d{1,2}\/\d{1,2}\/\d{4})\s*-\s*(\d{1,2}:\d{2})\s+([A-Z]{2,4})\s*\((\d{1,2}:\d{2})\s*Z\)/gi;
-  const departures = [];
-  let dm;
-  while ((dm = depRe.exec(text)) !== null) {
-    departures.push({
-      legNumber: parseInt(dm[1], 10),
-      paxCount: parseInt(dm[2], 10),
-      from: dm[3].toUpperCase(),
-      depDate: dm[4],
-      depTimeLocal: dm[5],
-      depTimeLocalTz: dm[6],
-      depTimeZ: dm[7],
-      depEndIdx: dm.index + dm[0].length,
+  const legSummaryRe = /Leg\s+(\d+)\s*:\s*Pax\s*:\s*(\d+)(?:\s*\/\s*\d+)?\s+([A-Z0-9]{3,4})\s+(\d{1,2}\/\d{1,2}\/\d{4})\s*-\s*(\d{1,2}:\d{2})\s+([A-Z]{2,4})\s*\((\d{1,2}:\d{2})\s*Z\)\s+[\d:]+\s+([A-Z0-9]{3,4})\s+(\d{1,2}\/\d{1,2}\/\d{4})\s*-\s*(\d{1,2}:\d{2})\s+([A-Z]{2,4})\s*\((\d{1,2}:\d{2})\s*Z\)/gi;
+  let lsm;
+  while ((lsm = legSummaryRe.exec(text)) !== null) {
+    legSummaries.push({
+      legNumber: parseInt(lsm[1], 10),
+      paxCount: parseInt(lsm[2], 10),
+      from: lsm[3].toUpperCase(),
+      depDate: lsm[4],
+      depTimeLocal: lsm[5],
+      depTimeLocalTz: lsm[6],
+      depTimeZ: lsm[7],
+      to: lsm[8].toUpperCase(),
+      arrDate: lsm[9],
+      arrTimeLocal: lsm[10],
+      arrTimeLocalTz: lsm[11],
+      arrTimeZ: lsm[12],
     });
   }
-  // Second pass: find arrival "TO date - time tz (zulu Z)" — extract the destination
-  // airport. We look for these AFTER each departure end index.
-  const arrRe = /([A-Z0-9]{3,4})\s+(\d{1,2}\/\d{1,2}\/\d{4})\s*-\s*(\d{1,2}:\d{2})\s+[A-Z]{2,4}\s*\((\d{1,2}:\d{2})\s*Z\)/g;
-  for (const dep of departures) {
-    arrRe.lastIndex = dep.depEndIdx;
-    const am = arrRe.exec(text);
-    if (am && am.index < dep.depEndIdx + 200) {
-      // Within 200 chars of departure — counts as the arrival
-      legSummaries.push({
-        legNumber: dep.legNumber,
-        paxCount: dep.paxCount,
-        from: dep.from,
-        depDate: dep.depDate,
-        depTimeLocal: dep.depTimeLocal,
-        depTimeLocalTz: dep.depTimeLocalTz,
-        depTimeZ: dep.depTimeZ,
-        to: am[1].toUpperCase(),
+  // Fallback: if the single-line regex missed (e.g., pdfjs split dep/arr
+  // across pages), fall back to the original two-pass approach so we
+  // never come away with zero legs when the data is there.
+  if (legSummaries.length === 0) {
+    const depRe = /Leg\s+(\d+)\s*:\s*Pax\s*:\s*(\d+)(?:\s*\/\s*\d+)?\s+([A-Z0-9]{3,4})\s+(\d{1,2}\/\d{1,2}\/\d{4})\s*-\s*(\d{1,2}:\d{2})\s+([A-Z]{2,4})\s*\((\d{1,2}:\d{2})\s*Z\)/gi;
+    const departures = [];
+    let dm;
+    while ((dm = depRe.exec(text)) !== null) {
+      departures.push({
+        legNumber: parseInt(dm[1], 10),
+        paxCount: parseInt(dm[2], 10),
+        from: dm[3].toUpperCase(),
+        depDate: dm[4],
+        depTimeLocal: dm[5],
+        depTimeLocalTz: dm[6],
+        depTimeZ: dm[7],
+        depEndIdx: dm.index + dm[0].length,
       });
-    } else {
-      // No arrival found — still record the leg with TO unknown so we don't lose it
-      legSummaries.push({
-        legNumber: dep.legNumber,
-        paxCount: dep.paxCount,
-        from: dep.from,
-        depDate: dep.depDate,
-        depTimeLocal: dep.depTimeLocal,
-        depTimeLocalTz: dep.depTimeLocalTz,
-        depTimeZ: dep.depTimeZ,
-        to: '----',
-      });
+    }
+    const arrRe = /([A-Z0-9]{3,4})\s+(\d{1,2}\/\d{1,2}\/\d{4})\s*-\s*(\d{1,2}:\d{2})\s+([A-Z]{2,4})\s*\((\d{1,2}:\d{2})\s*Z\)/g;
+    for (const dep of departures) {
+      arrRe.lastIndex = dep.depEndIdx;
+      const am = arrRe.exec(text);
+      if (am && am.index < dep.depEndIdx + 300) {
+        legSummaries.push({
+          legNumber: dep.legNumber, paxCount: dep.paxCount,
+          from: dep.from, depDate: dep.depDate, depTimeLocal: dep.depTimeLocal,
+          depTimeLocalTz: dep.depTimeLocalTz, depTimeZ: dep.depTimeZ,
+          to: am[1].toUpperCase(),
+          arrDate: am[2], arrTimeLocal: am[3], arrTimeLocalTz: am[4], arrTimeZ: am[5],
+        });
+      } else {
+        legSummaries.push({
+          legNumber: dep.legNumber, paxCount: dep.paxCount,
+          from: dep.from, depDate: dep.depDate, depTimeLocal: dep.depTimeLocal,
+          depTimeLocalTz: dep.depTimeLocalTz, depTimeZ: dep.depTimeZ,
+          to: '----',
+        });
+      }
     }
   }
 
-  // Find ALL pax blocks in document order. Each leg has exactly one pax block
-  // (either "Pax (N)" with names, or "Pax (0) No passengers"). They appear in
-  // leg order (leg 1 first, leg 2 second, etc.).
-  // Pre-spec: blocks are separated by section breaks; we capture the block
-  // body until we hit another "Pax (N)", a "Distance:" line, or a "Leg N :" header.
+  // ─────────────────────────────────────────────────────────────────────
+  // AIRPORT DETAILS (trip-level — same airport same details across legs)
+  // ─────────────────────────────────────────────────────────────────────
+  // "MKE - General Mitchell Intl  Jet Aviation  504 E. Citation Way  Milwaukee, WI 53207  414-348-5900 / A2G: 131.200"
+  // Require the airport NAME to have a lowercase letter, which filters
+  // out the segment-status line "MKE - GRB" that uses two airport codes.
+  //
+  // Use a LITERAL space (not \s) between name tokens so the regex stops
+  // at the 2-space column break that separates "Intl" from "Jet
+  // Aviation" in pdfjs output. The trailing lookahead requires 2+ spaces
+  // OR end-of-string AFTER the name so we don't accidentally include
+  // the FBO name when an airport has only one title-case word.
+  const fboByCode = extractFbosFromText(text);
+  const airportDetails = {};
+  const aptRe = /\b([A-Z]{3,4})\s+-\s+([A-Z][a-z][A-Za-z'.\-]*(?: [A-Z][A-Za-z'.\-]+){0,5})(?=\s{2,}|$)/g;
+  let aptM;
+  while ((aptM = aptRe.exec(text)) !== null) {
+    const code = aptM[1].toUpperCase();
+    if (airportDetails[code]) continue;
+    const after = text.slice(aptM.index + aptM[0].length, aptM.index + aptM[0].length + 400);
+    const phoneA2gM = after.match(/(\d{3}[-.\s]?\d{3}[-.\s]?\d{4})(?:\s*\/\s*A2G\s*:\s*([\d.]+))?/);
+    airportDetails[code] = {
+      name: aptM[2].replace(/\s+/g, ' ').trim(),
+      fbo: fboByCode[code] || null,
+      phone: phoneA2gM ? phoneA2gM[1] : null,
+      a2g: phoneA2gM ? phoneA2gM[2] || null : null,
+    };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  // PER-LEG DETAIL SECTIONS — bounded by "Leg N : FROM TO Part X" headers
+  // ─────────────────────────────────────────────────────────────────────
+  // After PUA-char normalization the detail header looks like:
+  //   "Leg 1 : MKE      GRB   Part 91" or
+  //   "Leg 2 : GRB      MIA   Part 135   Flight #3218"
+  const sectionHeaderRe = /Leg\s+(\d+)\s+:\s+([A-Z]{3,4})\s+([A-Z]{3,4})\s+Part\s+(\d+)(?:\s+Flight\s+#(\d+))?/g;
+  const sectionHeaders = [];
+  let shm;
+  while ((shm = sectionHeaderRe.exec(text)) !== null) {
+    sectionHeaders.push({
+      legNumber: parseInt(shm[1], 10),
+      from: shm[2],
+      to: shm[3],
+      partClass: 'Part ' + shm[4],
+      flightNumber: shm[5] ? parseInt(shm[5], 10) : null,
+      headerStartIdx: shm.index,
+      headerEndIdx: shm.index + shm[0].length,
+    });
+  }
+
+  // For each section, the body extends to the next section header (or
+  // end of document). The "Distance / Block / Flight / Time change"
+  // tagline appears BEFORE the section header in pdfjs extraction
+  // (it's the right-aligned text on the same visual row but pdfjs
+  // hoists it to the top of its page text run). For Leg 1 the line
+  // is at index 0 — earlier than any reasonable lookback window — so
+  // we collect ALL Distance lines in document order and assign them
+  // to legs by index (1st occurrence = leg 1, 2nd = leg 2, etc).
+  // This is more reliable than position-based lookback when pdfjs
+  // text ordering is unpredictable.
+  const dbfRe = /Distance\s*:\s*([\d.,]+\s*\w+)\s*-\s*Block\s*:\s*([\d:]+)\s*-\s*Flight\s*:\s*([\d:]+)\s*-\s*Time\s*change\s*:\s*([+\-]?\d+)/gi;
+  const dbfMatches = [];
+  let dbfMG;
+  while ((dbfMG = dbfRe.exec(text)) !== null) {
+    dbfMatches.push({
+      distance: dbfMG[1].replace(/\s+/g, ' ').trim(),
+      blockTime: dbfMG[2],
+      flightTime: dbfMG[3],
+      timeChange: dbfMG[4],
+    });
+  }
+
+  const sectionByLeg = {};
+  sectionHeaders.forEach((h, i) => {
+    const bodyStart = h.headerEndIdx;
+    const bodyEnd = sectionHeaders[i + 1]?.headerStartIdx ?? text.length;
+    const body = text.slice(bodyStart, bodyEnd);
+
+    // Distance/Block/Flight/Time change — assigned by leg index. If
+    // there are fewer Distance lines than legs (sheet truncated or
+    // unusual format), the missing legs get null.
+    const dbf = dbfMatches[i] || null;
+
+    // Total pax weight — leg-specific
+    const tpwM = body.match(/Total\s*pax\s*weight\s*:\s*([\d,]+)\s*lbs?/i);
+
+    // Release status — "Segment has not been released" means not released
+    const released = !/Segment has not been released/i.test(body) &&
+                     /Release status\s*:\s*(?:Released|Segment has been released)/i.test(body);
+
+    // Fees per airport — multiple per leg (origin + destination, sometimes more)
+    const feesRe = /Fees\s*\(([A-Z]{3,4})\)\s*:\s*([^/]+?)\s*\/\s*Landing\s*fee\s*:\s*\$?([\d,]+)\s*\/\s*Parking\s*fee\s*:\s*\$?([\d,]+)\s*\/\s*Ground\s*handling\s*fee\s*:\s*\$?([\d,]+)(?:,\s*waived\s*with\s*(\d+)\s*gals?)?\s*\/\s*Infrastructure\s*\s*fee\s*:\s*\$?([\d,]+)/gi;
+    const fees = {};
+    let feeM;
+    while ((feeM = feesRe.exec(body)) !== null) {
+      fees[feeM[1]] = {
+        fbo: feeM[2].trim(),
+        landing: parseInt(feeM[3].replace(/,/g, ''), 10),
+        parking: parseInt(feeM[4].replace(/,/g, ''), 10),
+        groundHandling: parseInt(feeM[5].replace(/,/g, ''), 10),
+        groundHandlingWaivedGals: feeM[6] ? parseInt(feeM[6], 10) : null,
+        infrastructure: parseInt(feeM[7].replace(/,/g, ''), 10),
+      };
+    }
+
+    // Fuel per airport — "Fuel (CODE): FBO / BRAND: tier1+: $X / tier2+: $Y / ..."
+    // Body shape varies; we capture the header and walk forward until
+    // the next section-like marker, then split into tiers.
+    const fuel = {};
+    const fuelHeadRe = /Fuel\s*\(([A-Z]{3,4})\)\s*:\s*([^/]+?)\s*\/\s*(\w+)\s*:\s*/g;
+    let fhm;
+    while ((fhm = fuelHeadRe.exec(body)) !== null) {
+      const tiersStart = fhm.index + fhm[0].length;
+      const rest = body.slice(tiersStart);
+      const stopM = rest.match(/(?:Fuel\s*\(|Airport\s*\(|Pax\s*\(|TSA\s+ID|Release|MKE\s+TITAN|GRB\s+TITAN|MIA\s+TITAN|[A-Z]{3,4}\s+TITAN)/i);
+      const tiersBody = rest.slice(0, stopM ? stopM.index : Math.min(rest.length, 400));
+      const tierRe = /(\d+)\+\s*:\s*\$?([\d.]+)/g;
+      const tiers = [];
+      let tm;
+      while ((tm = tierRe.exec(tiersBody)) !== null) {
+        tiers.push({ minGals: parseInt(tm[1], 10), price: parseFloat(tm[2]) });
+      }
+      fuel[fhm[1]] = {
+        fbo: fhm[2].trim(),
+        brand: fhm[3].trim(),
+        tiers,
+      };
+    }
+
+    // Airport notes — "Airport (CODE): <free text>" runs until the next
+    // section-like marker.
+    const airportNotes = {};
+    const aptNoteRe = /Airport\s*\(([A-Z]{3,4})\)\s*:\s*([\s\S]*?)(?=(?:\bPax\s*\(|\bTSA\s+ID|\bAirport\s*\(|\bLeg\s+\d+\s*:|_{3,}))/gi;
+    let anM;
+    while ((anM = aptNoteRe.exec(body)) !== null) {
+      airportNotes[anM[1]] = anM[2].trim().replace(/\s+/g, ' ').slice(0, 1500);
+    }
+
+    // Transport / ground arrangements — appears once per leg if booked
+    // through the broker. The previous monolithic regex used lazy
+    // quantifiers that bailed too early — "+1" satisfied the lazy
+    // phone group instead of "+1 319-730-2100", which cascaded into
+    // null deliveryLocal and confirmedAt. We now run a sequence of
+    // smaller, independent regexes against the leg body. Each piece
+    // is null if it doesn't match, and we capture the arrival FBO +
+    // address that appear at the end of the transport block too.
+    let transport = null;
+    const transHeadM = body.match(/TRANSPORT\s*:\s*([^\n\r]+?)\s{2,}(\S[^\n\r]*?)\s+CONF\s*#\s*(\S+)/i);
+    if (transHeadM) {
+      transport = {
+        passenger: transHeadM[1].trim(),
+        provider: transHeadM[2].trim(),
+        confirmation: transHeadM[3].trim(),
+        pickup: null,
+        serviceName: null,
+        servicePhone: null,
+        deliveryLocal: null,
+        confirmedAt: null,
+        arrivalFbo: null,
+        arrivalAddress: null,
+      };
+      // Anchor each downstream regex to the start of the transport
+      // block so we don't accidentally match earlier-document content.
+      const transStart = transHeadM.index;
+      const transBlock = body.slice(transStart);
+
+      const pickupM = transBlock.match(/Pickup\s*:\s*(\d{1,2}\/\d{1,2}\/\d{4}\s+\d{1,2}:\d{2})/i);
+      if (pickupM) transport.pickup = pickupM[1];
+
+      // Greedy phone with explicit start (digit possibly preceded by +)
+      // and a length cap, stopping at a 2-space column break OR the
+      // start of the next labeled section.
+      const svcM = transBlock.match(/Arrival\s*Car\s*Service\s*:\s*([^,]+?)\s*,\s*(\+?\d[\d\s()\-]{4,28}?)(?=\s{2,}|\s+Delivery|\s+Confirmation|$)/i);
+      if (svcM) {
+        transport.serviceName = svcM[1].trim();
+        transport.servicePhone = svcM[2].trim().replace(/\s+/g, ' ');
+      }
+
+      const delM = transBlock.match(/Delivery\s*@\s*([\d:]+)\s*Local/i);
+      if (delM) transport.deliveryLocal = delM[1];
+
+      // Confirmation: "4171668-001 on 8 May 21:36Z by FlightBridgeIntegrationService"
+      const confM = transBlock.match(/Confirmation\s*:\s*(\S+\s+on\s+\d+\s+\w+\s+[\d:]+Z\s+by\s+\S+)/i);
+      if (confM) transport.confirmedAt = confM[1].trim();
+
+      // Arrival FBO + address appear AFTER the confirmation. Pattern:
+      // 1-3 title-case words (FBO name), 2-space column break, then a
+      // street-number-prefixed address ending in country/state code.
+      const fboAddrM = transBlock.match(/Confirmation\s*:[\s\S]+?\s{2,}([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){0,2})\s{2,}(\d{1,5}\s+[^\n\r]+?(?:USA|US|FL|Florida))/i);
+      if (fboAddrM) {
+        transport.arrivalFbo = fboAddrM[1].trim();
+        transport.arrivalAddress = fboAddrM[2].replace(/\s+/g, ' ').trim();
+      }
+    }
+
+    sectionByLeg[h.legNumber] = {
+      partClass: h.partClass,
+      flightNumber: h.flightNumber,
+      distance: dbf ? dbf.distance : null,
+      blockTime: dbf ? dbf.blockTime : null,
+      flightTime: dbf ? dbf.flightTime : null,
+      timeChange: dbf ? dbf.timeChange : null,
+      released,
+      totalPaxWeight: tpwM ? parseInt(tpwM[1].replace(/,/g, ''), 10) : null,
+      fees,
+      fuel,
+      airportNotes,
+      transport,
+    };
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // PAX BLOCKS — leg-by-leg, matched by index
+  // ─────────────────────────────────────────────────────────────────────
   const paxBlocks = [];
   const paxHeaderRe = /Pax\s*\((\d+)\)\s*/g;
   let phMatch;
   while ((phMatch = paxHeaderRe.exec(text)) !== null) {
     const startIdx = phMatch.index + phMatch[0].length;
-    // Find the end of this block: the next "Pax (" or "Distance:" or end-of-text
     const rest = text.slice(startIdx);
     const stopRe = /(?:\bPax\s*\(|Distance:|Leg\s+\d+\s*:)/;
     const stopMatch = rest.match(stopRe);
@@ -855,25 +1164,14 @@ function parseJetInsightTripSheet(text) {
     });
   }
 
-  // Map blocks to legs by index (first block = leg 1, etc.)
-  // Falls back gracefully if # of blocks != # of legs.
   const paxByLeg = {};
   legSummaries.forEach((leg, i) => {
     const block = paxBlocks[i];
-    if (!block) {
-      paxByLeg[leg.legNumber] = [];
-      return;
-    }
+    if (!block) { paxByLeg[leg.legNumber] = []; return; }
     if (block.count === 0 || /no passengers/i.test(block.body)) {
       paxByLeg[leg.legNumber] = [];
       return;
     }
-    // Name (Gender - DOB - NNN lbs [- anything else] ) [(Primary)]
-    // JetInsight sometimes prints additional fields inside the parens after
-    // the weight, e.g. "(Male - 2/6/38 - 210 lbs - bags: 50 lbs)". We capture
-    // the weight, then tolerate any further " - ..." content up to the close
-    // paren so those passengers aren't dropped. The trailing optional
-    // "(Primary)" group is matched after the (possibly longer) first group.
     const paxRe = /([A-Za-z][A-Za-z\s\-'.]+?)\s*\(\s*(Male|Female|M|F)\s*-\s*(\d{1,2}\/\d{1,2}\/\d{2,4})\s*-\s*(\d+)\s*lbs?\b[^)]*\)(?:\s*\(([^)]+)\))?/gi;
     const list = [];
     let pm;
@@ -892,27 +1190,78 @@ function parseJetInsightTripSheet(text) {
     paxByLeg[leg.legNumber] = list;
   });
 
-  // Combine summaries + pax
-  // ---- FBO extraction --------------------------------------------------
-  // In the PDF detail blocks each airport appears as:
-  //   "PWK - Chicago Executive"
-  //   "Signature Aviation"          <-- FBO (next non-empty line)
-  //   "1100 South Milwaukee Avenue"
-  // We find, per airport code, the FBO name as the line immediately
-  // following the "CODE - <Airport Name>" header. First occurrence wins
-  // (DEPARTS for origin, ARRIVES for destination — same FBO string).
-  // Shared extractor (also used by the admin backfill) — see
-  // extractFbosFromText below.
-  const fboByCode = extractFbosFromText(text);
+  // ─────────────────────────────────────────────────────────────────────
+  // ASSEMBLE FINAL LEG OBJECTS — merge summaries + per-leg sections + pax
+  // ─────────────────────────────────────────────────────────────────────
+  const legs = legSummaries.map(s => {
+    const sec = sectionByLeg[s.legNumber] || {};
+    const segKey = `${s.from}-${s.to}`;
+    const segStat = segmentStatus[segKey] || {};
+    return {
+      // Existing fields (downstream code already uses these)
+      legNumber: s.legNumber,
+      paxCount: s.paxCount,
+      from: s.from,
+      to: s.to,
+      depDate: s.depDate,
+      depTimeLocal: s.depTimeLocal,
+      depTimeLocalTz: s.depTimeLocalTz,
+      depTimeZ: s.depTimeZ,
+      pax: paxByLeg[s.legNumber] || [],
+      fromFbo: fboByCode[s.from] || null,
+      toFbo: fboByCode[s.to] || null,
 
-  const legs = legSummaries.map(s => ({
-    ...s,
-    pax: paxByLeg[s.legNumber] || [],
-    fromFbo: fboByCode[s.from] || null,
-    toFbo: fboByCode[s.to] || null,
-  }));
+      // NEW — arrival times (now captured by the single-line regex)
+      arrDate: s.arrDate || null,
+      arrTimeLocal: s.arrTimeLocal || null,
+      arrTimeLocalTz: s.arrTimeLocalTz || null,
+      arrTimeZ: s.arrTimeZ || null,
 
-  return { tripCode, tail, legs, notes };
+      // NEW — leg classification
+      partClass: sec.partClass || null,            // "Part 91" / "Part 135"
+      flightNumber: sec.flightNumber || null,      // e.g., 3218 for the 135 leg
+
+      // NEW — distance + times
+      distance: sec.distance || null,              // "1184 nm"
+      blockTime: sec.blockTime || null,            // "3:30"
+      flightTime: sec.flightTime || null,          // "3:18"
+      timeChange: sec.timeChange || null,          // "+1"
+
+      // NEW — status
+      released: sec.released ?? false,
+      vetted: !!segStat.vettedAt,
+      vettedAt: segStat.vettedAt || null,
+      paxCleared: segStat.paxCleared || false,
+
+      // NEW — costing
+      totalPaxWeight: sec.totalPaxWeight || null,  // 170 (lbs)
+      fees: sec.fees || {},                        // per-airport fees breakdown
+      fuel: sec.fuel || {},                        // per-airport fuel tiers
+
+      // NEW — airport-specific info
+      fromAirportName: airportDetails[s.from]?.name || null,
+      toAirportName: airportDetails[s.to]?.name || null,
+      fromAirportPhone: airportDetails[s.from]?.phone || null,
+      toAirportPhone: airportDetails[s.to]?.phone || null,
+      fromAirportA2G: airportDetails[s.from]?.a2g || null,
+      toAirportA2G: airportDetails[s.to]?.a2g || null,
+      airportNotes: sec.airportNotes || {},        // { CODE: 'free text note' }
+
+      // NEW — ground arrangements
+      transport: sec.transport || null,            // { passenger, provider, confirmation, ... }
+    };
+  });
+
+  return {
+    tripCode,
+    tail,
+    aircraftType,
+    legs,
+    notes,
+    crewContacts,
+    segmentStatus,
+    airportDetails,
+  };
 }
 
 /**
@@ -7323,6 +7672,50 @@ function TripSheetPanel({
           scannedPaxId: null,
           checkInStatus: 'pending', // 'pending' | 'matched' | 'mismatch' | 'manual_override'
         }));
+        // Rich per-leg data captured by the JetInsight parser. We
+        // strip already-extracted-or-derived fields (pax, fromFbo,
+        // toFbo, legNumber) since those are persisted separately or
+        // can be re-derived from the matched iCal trip. Everything
+        // else — distance, block/flight times, fees, fuel tiers,
+        // airport phones+A2G, segment status, transport, etc — flows
+        // into trip-state/{uid}.tripSheetData for the detail UI to
+        // pull from without needing to re-parse the PDF.
+        const tripSheetData = {
+          partClass: m.leg.partClass || null,
+          flightNumber: m.leg.flightNumber || null,
+          distance: m.leg.distance || null,
+          blockTime: m.leg.blockTime || null,
+          flightTime: m.leg.flightTime || null,
+          timeChange: m.leg.timeChange || null,
+          arrDate: m.leg.arrDate || null,
+          arrTimeLocal: m.leg.arrTimeLocal || null,
+          arrTimeLocalTz: m.leg.arrTimeLocalTz || null,
+          arrTimeZ: m.leg.arrTimeZ || null,
+          released: !!m.leg.released,
+          vetted: !!m.leg.vetted,
+          vettedAt: m.leg.vettedAt || null,
+          paxCleared: !!m.leg.paxCleared,
+          totalPaxWeight: m.leg.totalPaxWeight ?? null,
+          fees: m.leg.fees || {},
+          fuel: m.leg.fuel || {},
+          fromAirportName: m.leg.fromAirportName || null,
+          toAirportName: m.leg.toAirportName || null,
+          fromAirportPhone: m.leg.fromAirportPhone || null,
+          toAirportPhone: m.leg.toAirportPhone || null,
+          fromAirportA2G: m.leg.fromAirportA2G || null,
+          toAirportA2G: m.leg.toAirportA2G || null,
+          airportNotes: m.leg.airportNotes || {},
+          transport: m.leg.transport || null,
+          // Trip-level — duplicated onto each leg so the UI can
+          // surface them in the per-leg context without a second
+          // Firestore read.
+          tripCode: matchPreview.tripCode || null,
+          aircraftType: matchPreview.aircraftType || null,
+          crewContacts: matchPreview.crewContacts || null,
+          // Stored at parse time so the UI can show when the captured
+          // data was last refreshed against the underlying PDF.
+          parsedAt: Date.now(),
+        };
         await attachTripSheetToLeg({
           tripUid: matched.uid,
           tripSheetUrl: url,
@@ -7333,6 +7726,7 @@ function TripSheetPanel({
           tripSheetNotes: matchPreview.notes || null,
           fromFbo: m.leg.fromFbo || null,
           toFbo: m.leg.toFbo || null,
+          tripSheetData,
         });
       }
 
@@ -7360,8 +7754,29 @@ function TripSheetPanel({
               REVIEW BEFORE UPLOAD
             </div>
             <div className="text-[10px] text-slate-500 mt-0.5">
-              Trip {matchPreview.tripCode} · {matchPreview.tail} · {matchPreview.legs.length} legs
+              Trip {matchPreview.tripCode} · {matchPreview.tail}
+              {matchPreview.aircraftType && <span> · {matchPreview.aircraftType}</span>}
+              {' · '}{matchPreview.legs.length} legs
             </div>
+            {/* Trip-level crew contacts. Same PIC/SIC across all legs
+                in the sheet, so we surface them once at the top
+                instead of repeating on every leg card. */}
+            {matchPreview.crewContacts && (matchPreview.crewContacts.pic || matchPreview.crewContacts.sic) && (
+              <div className="text-[10px] text-slate-400 mt-1 space-y-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                {matchPreview.crewContacts.pic && (
+                  <div>
+                    <span className="text-slate-500">PIC:</span> {matchPreview.crewContacts.pic.name}
+                    {matchPreview.crewContacts.pic.phone && <span className="text-slate-500"> · {matchPreview.crewContacts.pic.phone}</span>}
+                  </div>
+                )}
+                {matchPreview.crewContacts.sic && (
+                  <div>
+                    <span className="text-slate-500">SIC:</span> {matchPreview.crewContacts.sic.name}
+                    {matchPreview.crewContacts.sic.phone && <span className="text-slate-500"> · {matchPreview.crewContacts.sic.phone}</span>}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
           <button
             onClick={() => setMatchPreview(null)}
@@ -7423,6 +7838,113 @@ function TripSheetPanel({
                     </span>
                   )}
                 </div>
+
+                {/* Rich per-leg data captured by the parser. Mono spans
+                    so the dense values line up; only render the rows
+                    that have data so legs from the Passenger Itinerary
+                    (which has fewer fields) don't show empty cells. */}
+                {(m.leg.partClass || m.leg.distance || m.leg.totalPaxWeight) && (
+                  <div className="mt-1.5 text-[10px] text-slate-400 pl-2 flex flex-wrap gap-x-3 gap-y-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    {m.leg.partClass && (
+                      <span>
+                        <span className="text-slate-500">PART:</span> {m.leg.partClass}
+                        {m.leg.flightNumber && <span className="text-slate-500"> #{m.leg.flightNumber}</span>}
+                      </span>
+                    )}
+                    {m.leg.distance && (
+                      <span><span className="text-slate-500">DIST:</span> {m.leg.distance}</span>
+                    )}
+                    {m.leg.blockTime && (
+                      <span><span className="text-slate-500">BLK:</span> {m.leg.blockTime}</span>
+                    )}
+                    {m.leg.flightTime && (
+                      <span><span className="text-slate-500">FLT:</span> {m.leg.flightTime}</span>
+                    )}
+                    {m.leg.timeChange != null && m.leg.timeChange !== '0' && (
+                      <span><span className="text-slate-500">TZ:</span> {m.leg.timeChange}</span>
+                    )}
+                    {m.leg.totalPaxWeight && (
+                      <span><span className="text-slate-500">PAX WT:</span> {m.leg.totalPaxWeight} lbs</span>
+                    )}
+                  </div>
+                )}
+
+                {/* Vetting / release status — only when relevant data
+                    is present. We keep the wording terse so it scans
+                    on a phone screen. */}
+                {(m.leg.vettedAt || m.leg.paxCleared) && (
+                  <div className="mt-0.5 text-[10px] pl-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    {m.leg.vettedAt && <span className="text-emerald-400">VETTED {m.leg.vettedAt}</span>}
+                    {m.leg.vettedAt && m.leg.paxCleared && <span className="text-slate-600 mx-1">·</span>}
+                    {m.leg.paxCleared && <span className="text-emerald-400">PAX CLEARED</span>}
+                  </div>
+                )}
+
+                {/* Fees summary — one line per airport. Skips when no
+                    fees were extracted (Passenger Itinerary, or a
+                    partial parse). The "waivedGals" qualifier is
+                    surfaced because it's the most actionable piece
+                    for dispatch (uplift target to dodge handling fees). */}
+                {Object.keys(m.leg.fees || {}).length > 0 && (
+                  <div className="mt-1 text-[10px] text-slate-400 pl-2 space-y-0" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    {Object.entries(m.leg.fees).map(([code, f]) => (
+                      <div key={code}>
+                        <span className="text-slate-500">FEES {code}:</span>{' '}
+                        L${f.landing} P${f.parking} GH${f.groundHandling}
+                        {f.groundHandlingWaivedGals != null && (
+                          <span className="text-cyan-400"> (waive @ {f.groundHandlingWaivedGals}gal)</span>
+                        )}
+                        {' '}I${f.infrastructure}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Fuel pricing tiers per airport */}
+                {Object.keys(m.leg.fuel || {}).length > 0 && (
+                  <div className="mt-1 text-[10px] text-slate-400 pl-2 space-y-0" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    {Object.entries(m.leg.fuel).map(([code, f]) => (
+                      <div key={code}>
+                        <span className="text-slate-500">FUEL {code}:</span> {f.brand}
+                        {f.tiers && f.tiers.length > 0 && (
+                          <span> · {f.tiers.map(t => `${t.minGals}+: $${t.price}`).join(' / ')}</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Airport notes (e.g., MIA Customs warning, $10k fine
+                    note). Shown as a soft-yellow callout because these
+                    are the kind of thing that cause costly mistakes if
+                    missed pre-departure. */}
+                {Object.keys(m.leg.airportNotes || {}).length > 0 && (
+                  <div className="mt-1 pl-2 space-y-0.5">
+                    {Object.entries(m.leg.airportNotes).map(([code, note]) => (
+                      <div key={code} className="text-[10px] text-amber-200/80 leading-snug">
+                        <span className="text-amber-400/80" style={{ fontFamily: 'JetBrains Mono, monospace' }}>NOTE {code}:</span>{' '}
+                        {note.length > 250 ? note.slice(0, 250) + '…' : note}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Ground transport block — surface the key fields so
+                    ops can verify the pickup time/location pre-shipment. */}
+                {m.leg.transport && (
+                  <div className="mt-1 pl-2 text-[10px] text-slate-400 leading-snug" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    <span className="text-cyan-400">TRANSPORT:</span> {m.leg.transport.passenger || '?'}
+                    {m.leg.transport.provider && <span> · {m.leg.transport.provider}</span>}
+                    {m.leg.transport.confirmation && <span className="text-slate-500"> #{m.leg.transport.confirmation}</span>}
+                    {m.leg.transport.pickup && <span> · pickup {m.leg.transport.pickup}</span>}
+                    {m.leg.transport.servicePhone && <span> · {m.leg.transport.servicePhone}</span>}
+                    {(m.leg.transport.arrivalFbo || m.leg.transport.arrivalAddress) && (
+                      <div className="text-slate-500 mt-0.5">
+                        → {[m.leg.transport.arrivalFbo, m.leg.transport.arrivalAddress].filter(Boolean).join(' · ')}
+                      </div>
+                    )}
+                  </div>
+                )}
                 {m.leg.pax.length > 0 && (
                   <div className="mt-1 text-[10px] text-slate-400 pl-2">
                     {m.leg.pax.map((p, j) => (

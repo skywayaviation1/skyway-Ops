@@ -233,6 +233,10 @@ export async function attachTripSheetToLeg(legUpdate) {
         tripSheetNotes: null,
         fromFbo: null,
         toFbo: null,
+        // Also clear the rich per-leg JetInsight blob (added 2026-06).
+        // null rather than deleteField() — null reads cleanly downstream
+        // and keeps Firestore merge semantics simple.
+        tripSheetData: null,
         updatedAt: Date.now(),
       },
       { merge: true }
@@ -251,6 +255,14 @@ export async function attachTripSheetToLeg(legUpdate) {
       tripSheetNotes: legUpdate.tripSheetNotes || null,
       fromFbo: legUpdate.fromFbo || null,
       toFbo: legUpdate.toFbo || null,
+      // Rich per-leg JetInsight data (added 2026-06): distance, block,
+      // flight, fees, fuel tiers, airport phones/A2G, segment status,
+      // transport arrangements, etc. Stored as a nested object so the
+      // existing trip-card / detail UI can pull fields without further
+      // Firestore queries. Pass-through only — if the caller didn't
+      // include it (older client), leave Firestore field unchanged
+      // (merge semantics).
+      ...(legUpdate.tripSheetData ? { tripSheetData: legUpdate.tripSheetData } : {}),
       updatedAt: Date.now(),
     },
     { merge: true }
