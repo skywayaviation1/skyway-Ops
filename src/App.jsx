@@ -4890,7 +4890,7 @@ function PlanField({ label, value, onChange, type = 'text', placeholder }) {
 /* ============================================================
    Trip detail view
    ============================================================ */
-function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], allTrips, opsEmail, onBack, onArchive }) {
+function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], allTrips, opsEmail, onBack, onArchive, tripDetailOrder, onReorderTripDetail }) {
   const [tab, setTab] = useState(trip.info.isOps ? 'status' : 'chat');
   const [statuses, setStatuses] = useState({});
   const [passengers, setPassengers] = useState([]);
@@ -6042,13 +6042,13 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       )}
 
       {/* Tabs */}
-      <div className="flex border-b border-slate-800 bg-slate-950 sticky top-0 z-10 overflow-x-auto">
+      <div className="border-b border-slate-800 bg-slate-950 sticky top-0 z-10">
         {(() => {
           const hasNotes = tripSheetNotes && (tripSheetNotes.crew || tripSheetNotes.pax || tripSheetNotes.customer || tripSheetNotes.specialItems);
           const canManageSheet = ['ops', 'admin'].includes(currentUser?.role);
           // SHEET tab: visible if trip sheet exists OR user can upload one
           const showSheetTab = trip.info.isOps && (tripSheetUrl || canManageSheet);
-          return [
+          const tripTabs = [
             { id: 'status', label: 'STATUS', icon: Zap, badge: `${completedCount}/${applicableSteps.length}`, hidden: !trip.info.isOps },
             { id: 'pax', label: 'PAX', icon: Users, badge: trip.info.pax === 0 ? null : `${totalVerified}/${totalExpected}`, hidden: trip.info.pax === 0 || !trip.info.isOps },
             { id: 'sheet', label: 'SHEET', icon: FileText, badge: tripSheetUrl ? '✓' : null, hidden: !showSheetTab },
@@ -6063,26 +6063,35 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
             { id: 'chat', label: 'COMMS', icon: MessageSquare },
             { id: 'notify', label: 'NOTIFY', icon: Bell, hidden: !trip.info.isOps },
             { id: 'delay', label: 'DELAY', icon: AlertCircle, hidden: !trip.info.isOps },
-          ];
-        })().filter(t => !t.hidden).map(t => (
-          <button
-            key={t.id}
-            onClick={() => setTab(t.id)}
-            className={`flex items-center gap-2 px-3 py-3 text-xs tracking-widest transition-colors relative shrink-0 ${
-              tab === t.id ? 'text-cyan-400' : 'text-slate-500 hover:text-slate-300'
-            }`}
-            style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}
-          >
-            <t.icon className="w-3.5 h-3.5" />
-            {t.label}
-            {t.badge && (
-              <span className={`text-[10px] px-1.5 py-0.5 ${tab === t.id ? 'bg-cyan-500/20 text-cyan-300' : 'bg-slate-800 text-slate-400'}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                {t.badge}
-              </span>
-            )}
-            {tab === t.id && <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-cyan-400" />}
-          </button>
-        ))}
+          ].filter(t => !t.hidden);
+          return (
+            <DraggableTabBar
+              tabs={tripTabs}
+              order={tripDetailOrder}
+              activeId={tab}
+              onSelect={(id) => setTab(id)}
+              onReorder={(newOrder) => onReorderTripDetail?.(newOrder)}
+              renderTab={(t, active /*, dragging */) => (
+                <button
+                  type="button"
+                  className={`flex items-center gap-2 px-3 py-3 text-xs tracking-widest transition-colors relative shrink-0 ${
+                    active ? 'text-cyan-400' : 'text-slate-500 hover:text-slate-300'
+                  }`}
+                  style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}
+                >
+                  <t.icon className="w-3.5 h-3.5" />
+                  {t.label}
+                  {t.badge && (
+                    <span className={`text-[10px] px-1.5 py-0.5 ${active ? 'bg-cyan-500/20 text-cyan-300' : 'bg-slate-800 text-slate-400'}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                      {t.badge}
+                    </span>
+                  )}
+                  {active && <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-cyan-400" />}
+                </button>
+              )}
+            />
+          );
+        })()}
       </div>
 
       {/* Tab content */}
@@ -13832,6 +13841,124 @@ function QuickBooksConnectionPanel({ currentUser }) {
   );
 }
 
+/* ============================================================
+   TabOrderPanel — settings card for tab reordering.
+
+   Two functions:
+     1. Reset to default — clears the user's personal override and falls
+        back to the org default. Visible whenever the user has any
+        override saved (for top nav OR trip detail).
+     2. Publish current order as default — admin only. Copies the user's
+        current effective order to app-config/tab-order so it becomes
+        the new default for everyone who hasn't customized.
+
+   The actual reordering happens via long-press-and-drag in the tab bars
+   themselves — there's no edit-list UI here, intentionally. The drag
+   gesture IS the editor.
+   ============================================================ */
+function TabOrderPanel({ currentUser }) {
+  const isAdmin = currentUser?.role === 'admin';
+  const userPrefs = currentUser?.tabOrderPrefs || {};
+  const hasUserOverride = Array.isArray(userPrefs.topNav) || Array.isArray(userPrefs.tripDetail);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  const resetOverride = async (area) => {
+    if (!currentUser?.uid) return;
+    setBusy(true); setMsg('');
+    try {
+      const { clearUserTabOrder } = await import('./firebase-data.js');
+      await clearUserTabOrder(currentUser.uid, area);
+      setMsg(`Reset ${area === 'topNav' ? 'top nav' : 'trip tabs'} to default.`);
+    } catch (err) {
+      setMsg('Failed to reset: ' + (err.message || err));
+    } finally { setBusy(false); }
+  };
+
+  const publishAsDefault = async (area) => {
+    if (!isAdmin) return;
+    const order = userPrefs?.[area];
+    if (!Array.isArray(order) || order.length === 0) {
+      setMsg('You haven\'t reordered this tab bar yet — long-press a tab and drag to set an order first.');
+      return;
+    }
+    if (!window.confirm(`Publish your current ${area === 'topNav' ? 'top nav' : 'trip tab'} order as the default for EVERY user? Users who have already customized their own order will keep their override; users who haven\'t will see this new default.`)) return;
+    setBusy(true); setMsg('');
+    try {
+      const { publishDefaultTabOrder } = await import('./firebase-data.js');
+      await publishDefaultTabOrder(area, order);
+      setMsg(`Published ${area === 'topNav' ? 'top nav' : 'trip tab'} order as default for everyone.`);
+    } catch (err) {
+      setMsg('Failed to publish: ' + (err.message || err));
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <section className="border border-slate-800 p-4">
+      <h3 className="text-xs tracking-widest text-slate-400 mb-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        TAB ORDER
+      </h3>
+      <p className="text-[11px] text-slate-500 mb-3 leading-relaxed">
+        <strong className="text-slate-400">Long-press</strong> any tab in the top
+        nav or inside a trip and <strong className="text-slate-400">drag</strong> to
+        reorder. The new order saves automatically and follows your account across
+        devices.{isAdmin ? ' As admin, you can also publish your order as the default for everyone.' : ''}
+      </p>
+      <div className="space-y-2">
+        <div className="flex items-center gap-2 p-2 border border-slate-800 bg-slate-900/40">
+          <span className="text-[10px] tracking-widest text-slate-500 flex-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            TOP NAV
+            {Array.isArray(userPrefs.topNav)
+              ? <span className="ml-2 text-cyan-400">custom order saved</span>
+              : <span className="ml-2 text-slate-600">using default</span>}
+          </span>
+          {Array.isArray(userPrefs.topNav) && (
+            <button onClick={() => resetOverride('topNav')} disabled={busy}
+              className="text-[10px] tracking-widest px-2 py-1 border border-slate-700 hover:border-amber-500/40 text-slate-400 hover:text-amber-300"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              RESET
+            </button>
+          )}
+          {isAdmin && Array.isArray(userPrefs.topNav) && (
+            <button onClick={() => publishAsDefault('topNav')} disabled={busy}
+              className="text-[10px] tracking-widest px-2 py-1 border border-cyan-500/40 hover:border-cyan-400 text-cyan-300"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              PUBLISH AS DEFAULT
+            </button>
+          )}
+        </div>
+        <div className="flex items-center gap-2 p-2 border border-slate-800 bg-slate-900/40">
+          <span className="text-[10px] tracking-widest text-slate-500 flex-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            TRIP TABS
+            {Array.isArray(userPrefs.tripDetail)
+              ? <span className="ml-2 text-cyan-400">custom order saved</span>
+              : <span className="ml-2 text-slate-600">using default</span>}
+          </span>
+          {Array.isArray(userPrefs.tripDetail) && (
+            <button onClick={() => resetOverride('tripDetail')} disabled={busy}
+              className="text-[10px] tracking-widest px-2 py-1 border border-slate-700 hover:border-amber-500/40 text-slate-400 hover:text-amber-300"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              RESET
+            </button>
+          )}
+          {isAdmin && Array.isArray(userPrefs.tripDetail) && (
+            <button onClick={() => publishAsDefault('tripDetail')} disabled={busy}
+              className="text-[10px] tracking-widest px-2 py-1 border border-cyan-500/40 hover:border-cyan-400 text-cyan-300"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              PUBLISH AS DEFAULT
+            </button>
+          )}
+        </div>
+      </div>
+      {msg && (
+        <div className="mt-2 text-[11px] text-slate-400 p-2 border border-slate-700 bg-slate-900/40">
+          {msg}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, onLoadFromText, syncStatus, currentUser, allTrips, users = [] }) {
   const [icalUrl, setIcalUrl] = useState(config.icalUrl || '');
   const [icalText, setIcalText] = useState('');
@@ -14189,6 +14316,8 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
           <FlightAwarePanel currentUser={currentUser} allTrips={allTrips} />
 
           <QuickBooksConnectionPanel currentUser={currentUser} />
+
+          <TabOrderPanel currentUser={currentUser} />
 
           <button
             onClick={async () => { await save(); onClose(); }}
@@ -19590,7 +19719,218 @@ function AddChecklistModal({ project, actor, onClose }) {
   );
 }
 
-function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, syncStatus, now, tripCount, onOpenSettings, onOpenProfile, themeMode, onToggleTheme }) {
+/* ============================================================
+   sortTabsByOrder — apply a saved order array to a tab list.
+
+   `orderArray` is an array of tab IDs (e.g. ['schedule','home','comms']).
+   `tabs` is the array of tab objects with an `id` field.
+
+   Tabs whose id appears in orderArray are sorted by their position in it.
+   Tabs whose id is NOT in orderArray (new tabs added in code after the
+   user's saved order was written) fall through to the END of the bar in
+   their source order. This makes adding tabs in code safe — nobody's
+   saved layout breaks.
+   ============================================================ */
+function sortTabsByOrder(tabs, orderArray) {
+  if (!Array.isArray(orderArray) || orderArray.length === 0) return tabs;
+  const idx = (id) => {
+    const i = orderArray.indexOf(id);
+    return i >= 0 ? i : 9999 + tabs.findIndex(t => t.id === id);
+  };
+  return [...tabs].sort((a, b) => idx(a.id) - idx(b.id));
+}
+
+/* ============================================================
+   DraggableTabBar — long-press-and-drag tab reordering.
+
+   How it works:
+     pointerdown   → start a 500ms timer. If released before the timer
+                     fires, treat as a normal tap (calls onSelect).
+     500ms hold    → enter "reorder mode" for this tab. Vibrate briefly
+                     (where supported), lift the tab visually, capture
+                     the pointer to the original element so we keep
+                     receiving move events even if the finger drifts
+                     off it.
+     pointermove   → if NOT in reorder mode and finger moved >10px, kill
+                     the long-press timer (this is a scroll gesture, not
+                     a hold). If IN reorder mode, find which tab the
+                     pointer is currently over and swap positions in
+                     the draft order.
+     pointerup     → commit the draft order via onReorder (only if it
+                     actually changed) and exit reorder mode.
+     pointercancel → discard draft, exit reorder mode (e.g. OS interrupt).
+
+   While reorder mode is active we set touch-action: none on the bar so
+   the browser doesn't fight us over horizontal scroll. Outside reorder
+   mode touch-action stays pan-x so the user can still scroll a long
+   tab bar normally.
+
+   Props:
+     tabs        — array of { id, ... } in source order
+     order       — array of IDs (effective order, may include IDs not in
+                   tabs and tabs whose IDs aren't here; both handled)
+     activeId    — id of the currently selected tab (for active styling)
+     onSelect    — (id) => void, called on quick tap
+     onReorder   — (newOrderIds) => void, called when reorder commits
+     renderTab   — (tab, isActive, isDragging) => ReactNode, the chip
+     scrollable  — bool, default true. When true bar gets overflow-x-auto.
+     containerClassName — extra classes for the outer flex container.
+   ============================================================ */
+function DraggableTabBar({
+  tabs,
+  order,
+  activeId,
+  onSelect,
+  onReorder,
+  renderTab,
+  scrollable = true,
+  containerClassName = '',
+}) {
+  const sortedTabs = useMemo(() => sortTabsByOrder(tabs, order), [tabs, order]);
+  const [dragId, setDragId] = useState(null);
+  const [draftOrder, setDraftOrder] = useState(null);
+  const longPressTimer = useRef(null);
+  const startPoint = useRef(null);
+  const containerRef = useRef(null);
+  // Track the original committed order at drag-start so we know whether
+  // the user actually changed anything when releasing.
+  const startOrderRef = useRef(null);
+
+  // Effective list of tab objects in the order to render. While dragging
+  // we follow draftOrder so the user sees the live swap; otherwise we
+  // use the sorted-by-saved-order list.
+  const renderList = useMemo(() => {
+    if (!draftOrder) return sortedTabs;
+    return draftOrder.map(id => sortedTabs.find(t => t.id === id)).filter(Boolean);
+  }, [sortedTabs, draftOrder]);
+
+  const cancelLongPress = () => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+    startPoint.current = null;
+  };
+
+  const handlePointerDown = (e, tabId) => {
+    // Ignore right-click / middle-click. For touch and primary mouse
+    // button, start the long-press timer.
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    startPoint.current = { x: e.clientX, y: e.clientY };
+    const targetEl = e.currentTarget;
+    longPressTimer.current = setTimeout(() => {
+      longPressTimer.current = null;
+      const ids = sortedTabs.map(t => t.id);
+      startOrderRef.current = ids;
+      setDraftOrder(ids);
+      setDragId(tabId);
+      // Capture pointer to the original tab element so we keep
+      // receiving pointer events even if the finger slides off it.
+      try { targetEl.setPointerCapture?.(e.pointerId); } catch (_) {}
+      // Light haptic feedback where supported.
+      try { navigator.vibrate?.(20); } catch (_) {}
+    }, 500);
+  };
+
+  const handlePointerMove = (e) => {
+    if (!startPoint.current) return;
+    if (dragId == null) {
+      // Long-press hasn't fired yet. If the user moved >10px this is a
+      // scroll/swipe, not a hold — cancel the timer so it never fires.
+      const dx = e.clientX - startPoint.current.x;
+      const dy = e.clientY - startPoint.current.y;
+      if (Math.hypot(dx, dy) > 10) cancelLongPress();
+      return;
+    }
+    // Reorder mode: figure out which tab the pointer is over.
+    const container = containerRef.current;
+    if (!container) return;
+    const tabEls = container.querySelectorAll('[data-tab-id]');
+    let overId = null;
+    for (const el of tabEls) {
+      const rect = el.getBoundingClientRect();
+      if (e.clientX >= rect.left && e.clientX <= rect.right) {
+        overId = el.getAttribute('data-tab-id');
+        break;
+      }
+    }
+    if (overId && overId !== dragId) {
+      setDraftOrder(prev => {
+        if (!prev) return prev;
+        const next = [...prev];
+        const fromIdx = next.indexOf(dragId);
+        const toIdx = next.indexOf(overId);
+        if (fromIdx < 0 || toIdx < 0) return prev;
+        next.splice(fromIdx, 1);
+        next.splice(toIdx, 0, dragId);
+        return next;
+      });
+    }
+  };
+
+  const handlePointerUp = (e, tabId) => {
+    cancelLongPress();
+    if (dragId != null) {
+      // Commit the draft order if it changed.
+      const original = startOrderRef.current;
+      if (draftOrder && original && draftOrder.join(',') !== original.join(',')) {
+        try { onReorder?.(draftOrder); } catch (err) { console.error('[tab-reorder] save failed:', err); }
+      }
+      setDragId(null);
+      setDraftOrder(null);
+      startOrderRef.current = null;
+    } else {
+      // Quick tap — just select.
+      onSelect?.(tabId);
+    }
+  };
+
+  const handlePointerCancel = () => {
+    cancelLongPress();
+    setDragId(null);
+    setDraftOrder(null);
+    startOrderRef.current = null;
+  };
+
+  return (
+    <div
+      ref={containerRef}
+      className={`flex ${scrollable ? 'overflow-x-auto' : ''} ${containerClassName}`}
+      style={{
+        // Lock horizontal panning during a drag so the browser doesn't
+        // try to scroll the bar while we're reordering.
+        touchAction: dragId != null ? 'none' : 'pan-x',
+        userSelect: dragId != null ? 'none' : 'auto',
+      }}
+    >
+      {renderList.map(tab => {
+        const isDragging = tab.id === dragId;
+        const isActive = tab.id === activeId;
+        return (
+          <div
+            key={tab.id}
+            data-tab-id={tab.id}
+            onPointerDown={(e) => handlePointerDown(e, tab.id)}
+            onPointerMove={handlePointerMove}
+            onPointerUp={(e) => handlePointerUp(e, tab.id)}
+            onPointerCancel={handlePointerCancel}
+            style={{
+              opacity: isDragging ? 0.5 : 1,
+              transform: isDragging ? 'scale(1.05)' : 'scale(1)',
+              boxShadow: isDragging ? '0 4px 14px rgba(0,0,0,0.4)' : 'none',
+              transition: dragId == null ? 'opacity 0.15s, transform 0.12s' : 'none',
+              cursor: dragId != null ? 'grabbing' : 'pointer',
+            }}
+          >
+            {renderTab(tab, isActive, isDragging)}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, syncStatus, now, tripCount, onOpenSettings, onOpenProfile, themeMode, onToggleTheme, topNavOrder, onReorderTopNav }) {
   const sections = [
     { id: 'home',     label: 'HOME',      icon: Sparkles, roles: ['crew', 'sales', 'ops', 'admin'] },
     { id: 'schedule', label: 'SCHEDULE',  icon: Calendar, roles: ['crew', 'ops', 'admin'] },
@@ -19692,22 +20032,27 @@ function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, sync
           </button>
         </div>
       </div>
-      <div className="flex border-t border-slate-800 overflow-x-auto">
-        {allowed.map(s => (
+      <DraggableTabBar
+        tabs={allowed}
+        order={topNavOrder}
+        activeId={currentSection}
+        onSelect={(id) => setCurrentSection(id)}
+        onReorder={(newOrder) => onReorderTopNav?.(newOrder)}
+        containerClassName="border-t border-slate-800"
+        renderTab={(s, active /*, dragging */) => (
           <button
-            key={s.id}
-            onClick={() => setCurrentSection(s.id)}
+            type="button"
             className={`flex items-center gap-2 px-5 py-2.5 text-xs tracking-widest transition-colors relative shrink-0 ${
-              currentSection === s.id ? 'text-cyan-400' : 'text-slate-500 hover:text-slate-300'
+              active ? 'text-cyan-400' : 'text-slate-500 hover:text-slate-300'
             }`}
             style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}
           >
             <s.icon className="w-3.5 h-3.5" />
             {s.label}
-            {currentSection === s.id && <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-cyan-400" />}
+            {active && <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-cyan-400" />}
           </button>
-        ))}
-      </div>
+        )}
+      />
     </header>
   );
 }
@@ -25214,6 +25559,46 @@ export default function CharterOps() {
     } catch (e) { /* ignore */ }
   }, []);
 
+  // ---- Tab order preferences -----------------------------------------
+  // Org default lives at app-config/tab-order. Per-user override lives on
+  // the user's profile at users/{uid}.tabOrderPrefs. Resolution at render
+  // time is user override → org default → hardcoded source order.
+  //
+  // We subscribe to the org default here at the root and pass it down.
+  // The user override is read straight off currentUser (already in
+  // profile context).
+  const [defaultTabOrder, setDefaultTabOrder] = useState(null);
+  useEffect(() => {
+    let unsub = null; let cancelled = false;
+    (async () => {
+      try {
+        const { subscribeDefaultTabOrder } = await import('./firebase-data.js');
+        if (cancelled) return;
+        unsub = subscribeDefaultTabOrder((data) => {
+          if (cancelled) return;
+          setDefaultTabOrder(data || null);
+        });
+      } catch (err) { console.warn('[tab-order] subscribe failed:', err); }
+    })();
+    return () => { cancelled = true; if (unsub) try { unsub(); } catch (_) {} };
+  }, []);
+
+  const saveTabOrder = useCallback(async (area, newOrder) => {
+    try {
+      const uid = profile?.uid;
+      if (!uid) return;
+      // Block writes while admin is impersonating another user — we don't
+      // want a stray drag to overwrite the target's saved order, and we
+      // don't want admin's own order to change based on what they see
+      // through someone else's eyes either. Stop impersonating to edit.
+      if (impersonateUid) return;
+      const { saveUserTabOrder } = await import('./firebase-data.js');
+      await saveUserTabOrder(uid, area, newOrder);
+    } catch (err) {
+      console.error('[tab-order] save failed:', err);
+    }
+  }, [profile?.uid, impersonateUid]);
+
   // When a trip is opened, mark it as seen
   const markTripSeen = useCallback((tripUid) => {
     setTripLastSeen(prev => {
@@ -25347,6 +25732,11 @@ export default function CharterOps() {
       active: liveProfile.active !== false,
       approved: liveProfile.approved === true,
       savedSignature: liveProfile.savedSignature || null,
+      // Per-user tab order overrides. Each area can be an array of tab
+      // IDs (custom order saved) or undefined/null (use org default).
+      // Carried through here so TopNav/TripDetail receive it without an
+      // extra Firestore round trip.
+      tabOrderPrefs: liveProfile.tabOrderPrefs || null,
     };
     // Only admins can impersonate
     if (impersonateUid && realUser.role === 'admin') {
@@ -25361,6 +25751,11 @@ export default function CharterOps() {
           role: target.role || 'crew',
           active: target.active !== false,
           approved: target.approved === true,
+          // Show the IMPERSONATED user's saved tab order so admin sees
+          // exactly what that role/user sees. Reordering is disabled
+          // while impersonating (see saveTabOrder guard) so we never
+          // accidentally mutate the target user's prefs.
+          tabOrderPrefs: target.tabOrderPrefs || null,
           _impersonating: true,
           _realName: realUser.name,
         };
@@ -25959,6 +26354,12 @@ export default function CharterOps() {
           onOpenProfile={() => setShowProfile(true)}
           themeMode={themeMode}
           onToggleTheme={() => setThemeMode((m) => m === 'classy' ? 'dark' : 'classy')}
+          topNavOrder={
+            (currentUser?.tabOrderPrefs?.topNav)
+              || (defaultTabOrder?.topNav)
+              || null
+          }
+          onReorderTopNav={(newOrder) => saveTabOrder('topNav', newOrder)}
         />
 
         {/* === HOME SECTION === */}
@@ -26172,6 +26573,12 @@ export default function CharterOps() {
                   opsEmail={OPS_EMAIL}
                   onBack={() => setSelectedId(null)}
                   onArchive={(uid, archived) => archived ? archiveTrip(uid) : unarchiveTrip(uid)}
+                  tripDetailOrder={
+                    (currentUser?.tabOrderPrefs?.tripDetail)
+                      || (defaultTabOrder?.tripDetail)
+                      || null
+                  }
+                  onReorderTripDetail={(newOrder) => saveTabOrder('tripDetail', newOrder)}
                 />
               ) : (
                 <div className="h-full flex items-center justify-center p-8 grid-bg">
@@ -26279,6 +26686,12 @@ export default function CharterOps() {
                   opsEmail={OPS_EMAIL}
                   onBack={() => setSelectedId(null)}
                   onArchive={(uid, archived) => archived ? archiveTrip(uid) : unarchiveTrip(uid)}
+                  tripDetailOrder={
+                    (currentUser?.tabOrderPrefs?.tripDetail)
+                      || (defaultTabOrder?.tripDetail)
+                      || null
+                  }
+                  onReorderTripDetail={(newOrder) => saveTabOrder('tripDetail', newOrder)}
                 />
               ) : (
                 <div className="h-full flex items-center justify-center p-8 grid-bg">

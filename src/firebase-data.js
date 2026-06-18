@@ -470,3 +470,57 @@ export async function deleteManualTrip(tripUid) {
   await deleteDoc(doc(db, 'manual-trips', safeId));
 }
 
+/* ============================================================
+   TAB ORDER PREFERENCES — per-user override + org default
+   ============================================================
+   Two areas: 'topNav' (post-login top nav) and 'tripDetail' (per-trip tabs).
+   Each area's "order" is an array of tab IDs in display order. Unknown IDs
+   (e.g., new tabs the saved order doesn't include yet) fall through to the
+   end of the bar in their natural source order, so adding tabs in code
+   doesn't break anyone's saved layout.
+
+   Resolution at render time:
+     user override → org default → hardcoded source order
+
+   Storage:
+     users/{uid}.tabOrderPrefs.{topNav|tripDetail} = ['home', 'schedule', ...]
+     app-config/tab-order.{topNav|tripDetail}       = ['home', 'schedule', ...]
+   ============================================================ */
+
+export async function saveUserTabOrder(uid, area, orderArray) {
+  if (!uid || !area || !Array.isArray(orderArray)) return;
+  await setDoc(
+    doc(db, 'users', uid),
+    { tabOrderPrefs: { [area]: orderArray } },
+    { merge: true }
+  );
+}
+
+export async function clearUserTabOrder(uid, area) {
+  if (!uid || !area) return;
+  // Set to null rather than deleteField — older clients reading the field
+  // unconditionally see a falsy value instead of an undefined access.
+  await setDoc(
+    doc(db, 'users', uid),
+    { tabOrderPrefs: { [area]: null } },
+    { merge: true }
+  );
+}
+
+export function subscribeDefaultTabOrder(onUpdate) {
+  return onSnapshot(doc(db, 'app-config', 'tab-order'), (snap) => {
+    onUpdate(snap.exists() ? snap.data() : null);
+  }, (err) => {
+    console.warn('[tab-order] default listener:', err);
+    onUpdate(null);
+  });
+}
+
+export async function publishDefaultTabOrder(area, orderArray) {
+  if (!area || !Array.isArray(orderArray)) return;
+  await setDoc(
+    doc(db, 'app-config', 'tab-order'),
+    { [area]: orderArray },
+    { merge: true }
+  );
+}
