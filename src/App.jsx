@@ -49,6 +49,7 @@ import { WearCheckBadge, WearCheckModal, MXShareButton, MXShareModal } from './W
 // (subscribes to firebase-maint internally) so no plumbing through.
 import TailStatusBadge from './TailStatusBadge.jsx';
 const WearTabLazy = lazy(() => import('./WearCheck.jsx').then(m => ({ default: m.WearTab })));
+const CrewWearTabLazy = lazy(() => import('./WearCheck.jsx').then(m => ({ default: m.CrewWearTab })));
 const WearTrainingLibraryLazy = lazy(() => import('./WearCheck.jsx').then(m => ({ default: m.WearTrainingLibrary })));
 // FAA NOTAM badge — small, used inline next to AirportWxBadge. Not lazy
 // since it renders nothing (returns null) for airports without significant
@@ -8183,125 +8184,154 @@ function ManifestsScreen({ currentUser, allTrips }) {
   // for the day (multi-crew), the picker uses the selected legs'
   // PIC/SIC names to filter to THIS crew's records, so each manifest
   // gets the right pilots' duty data.
+  // Tracks an in-flight create so the modal can show a saving state and
+  // we can block double-submission. We also use this as a "have we
+  // already optimistically closed the modal" flag — if creation throws
+  // after that point, we surface the error inline rather than leaving
+  // the user staring at an empty list.
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState(null);
+
   const createNewManifest = async ({ date, tail, selectedTripUids = [], forceNew = false }) => {
-    const m = await import('./firebase-manifests.js');
-    const baseId = m.manifestId(date, tail);
-
-    // Determine the actual ID to write to:
-    //   - forceNew=false + base exists: open existing, no create
-    //   - forceNew=false + base free:  create at base
-    //   - forceNew=true:                find next free suffix and use that
-    let id = baseId;
-    if (forceNew) {
-      // Suffix discovery: walk 2..99 against the in-memory manifests
-      // list (already subscribed). Fallback to a timestamp suffix in
-      // the extremely unlikely case 99 manifests exist for one date+tail.
-      const existingIds = new Set(manifests.map(x => x.id));
-      let suffix = 2;
-      while (suffix < 100 && existingIds.has(`${baseId}_${suffix}`)) suffix++;
-      id = suffix < 100 ? `${baseId}_${suffix}` : `${baseId}_${Date.now()}`;
-    } else {
-      const existing = await m.fetchManifest(baseId);
-      if (existing) {
-        setSelectedId(baseId);
-        setShowNewModal(false);
-        return;
-      }
-    }
-
-    // --- AUTO-FILL FROM DUTY (crew-aware) ---
-    // Look up confirmed duty period(s) for tail+date. When the picker
-    // pre-selected legs, extract the PIC/SIC names from those legs and
-    // prefer duty periods whose pilot matches. This is what makes
-    // multi-crew auto-fill correct: each manifest gets its own crew's
-    // duty record, not whichever was created first.
-    let dutyFill = { dutyTimeIn: '', dutyTimeOut: '', dutyTimeTotal: '', timeTotal: '' };
+    if (creating) return; // ignore double-tap
+    setCreating(true);
+    setCreateError(null);
+    // Close the modal IMMEDIATELY. The create flow does ~3 Firestore
+    // round-trips + several dynamic imports and on a slow mobile
+    // connection iOS Safari will sometimes kill the tab mid-flight to
+    // free memory. If that happens after we already closed the modal,
+    // the user reloads onto a clean state instead of returning to a
+    // half-broken picker. The actual manifest doc is durable in
+    // Firestore once saveManifest resolves, and the user can navigate
+    // back to MANIFESTS to find it.
+    setShowNewModal(false);
     try {
-      const fbMod = await import('./firebase-duty-v2.js');
-      const linkMod = await import('./manifest-duty-link.js');
-      const appTzMod = await import('./app-timezone.js');
-      const appTz = appTzMod.getAppTimezone();
-      const range = linkMod.manifestDateToMsRange(date, appTz);
-      const raw = await fbMod.fetchPeriodsByTailInRange(tail, range.startMs, range.endMs);
-      const allForDate = linkMod.filterToManifestDate(raw, date, appTz);
+      const m = await import('./firebase-manifests.js');
+      const baseId = m.manifestId(date, tail);
 
-      // Pull PIC/SIC names from the selected legs (if any). Each trip
-      // in allTrips has info.pic and info.sic — name strings from
-      // JetInsight.
-      const crewNames = new Set();
-      if (Array.isArray(selectedTripUids) && selectedTripUids.length > 0 && Array.isArray(allTrips)) {
-        for (const t of allTrips) {
-          if (!selectedTripUids.includes(t.uid)) continue;
-          if (t.info?.pic) crewNames.add(t.info.pic);
-          if (t.info?.sic) crewNames.add(t.info.sic);
+      // Determine the actual ID to write to:
+      //   - forceNew=false + base exists: open existing, no create
+      //   - forceNew=false + base free:  create at base
+      //   - forceNew=true:                find next free suffix and use that
+      let id = baseId;
+      if (forceNew) {
+        // Suffix discovery: walk 2..99 against the in-memory manifests
+        // list (already subscribed). Fallback to a timestamp suffix in
+        // the extremely unlikely case 99 manifests exist for one date+tail.
+        const existingIds = new Set(manifests.map(x => x.id));
+        let suffix = 2;
+        while (suffix < 100 && existingIds.has(`${baseId}_${suffix}`)) suffix++;
+        id = suffix < 100 ? `${baseId}_${suffix}` : `${baseId}_${Date.now()}`;
+      } else {
+        const existing = await m.fetchManifest(baseId);
+        if (existing) {
+          setSelectedId(baseId);
+          return;
         }
       }
 
-      // Filter duty candidates to THIS crew's pilots when we know
-      // them. If no leg crew info, fall back to all candidates for
-      // the date.
-      let candidates = allForDate;
-      if (crewNames.size > 0 && allForDate.length > 0) {
-        const matched = allForDate.filter(p =>
-          Array.from(crewNames).some(n => nameMatchesPilot(n, p.pilotName))
+      // --- AUTO-FILL FROM DUTY (crew-aware) ---
+      // Look up confirmed duty period(s) for tail+date. When the picker
+      // pre-selected legs, extract the PIC/SIC names from those legs and
+      // prefer duty periods whose pilot matches. This is what makes
+      // multi-crew auto-fill correct: each manifest gets its own crew's
+      // duty record, not whichever was created first.
+      let dutyFill = { dutyTimeIn: '', dutyTimeOut: '', dutyTimeTotal: '', timeTotal: '' };
+      try {
+        const fbMod = await import('./firebase-duty-v2.js');
+        const linkMod = await import('./manifest-duty-link.js');
+        const appTzMod = await import('./app-timezone.js');
+        const appTz = appTzMod.getAppTimezone();
+        const range = linkMod.manifestDateToMsRange(date, appTz);
+        const raw = await fbMod.fetchPeriodsByTailInRange(tail, range.startMs, range.endMs);
+        const allForDate = linkMod.filterToManifestDate(raw, date, appTz);
+
+        // Pull PIC/SIC names from the selected legs (if any). Each trip
+        // in allTrips has info.pic and info.sic — name strings from
+        // JetInsight.
+        const crewNames = new Set();
+        if (Array.isArray(selectedTripUids) && selectedTripUids.length > 0 && Array.isArray(allTrips)) {
+          for (const t of allTrips) {
+            if (!selectedTripUids.includes(t.uid)) continue;
+            if (t.info?.pic) crewNames.add(t.info.pic);
+            if (t.info?.sic) crewNames.add(t.info.sic);
+          }
+        }
+
+        // Filter duty candidates to THIS crew's pilots when we know
+        // them. If no leg crew info, fall back to all candidates for
+        // the date.
+        let candidates = allForDate;
+        if (crewNames.size > 0 && allForDate.length > 0) {
+          const matched = allForDate.filter(p =>
+            Array.from(crewNames).some(n => nameMatchesPilot(n, p.pilotName))
+          );
+          // Only narrow if we found matches; if no period name matches
+          // any selected leg's crew, keep the original list rather than
+          // silently dropping to zero candidates.
+          if (matched.length > 0) candidates = matched;
+        }
+
+        // Pick best candidate: closed > open; PIC > SIC; first chronologically
+        const closed = candidates.filter(p => p.dutyOffAt);
+        const pool = closed.length > 0 ? closed : candidates;
+        const best = pool.find(p => p.role === 'PIC') || pool[0];
+        if (best) {
+          let fillTzMode = 'local';
+          try { fillTzMode = localStorage.getItem('skyway-manifest-fill-tz') || 'local'; }
+          catch { /* ignore */ }
+          const tzArg = fillTzMode === 'utc' ? 'UTC' : null;
+          const styleArg = fillTzMode === 'utc' ? 'HHMMZ' : 'HHMM';
+          dutyFill = linkMod.formatManifestFields(best, {
+            timeZone: tzArg,
+            timeStyle: styleArg,
+          });
+        }
+      } catch (e) {
+        console.warn('Manifest creation auto-fill skipped:', e?.message || e);
+      }
+
+      // --- PRE-ADD SELECTED LEGS ---
+      let initialLegs = [];
+      if (Array.isArray(selectedTripUids) && selectedTripUids.length > 0
+          && Array.isArray(allTrips)) {
+        const dataModule = await import('./firebase-data.js');
+        const tripsToAdd = allTrips.filter(t => selectedTripUids.includes(t.uid));
+        const paxByTripUid = {};
+        await Promise.all(tripsToAdd.map(async (t) => {
+          try { paxByTripUid[t.uid] = await dataModule.fetchPreloadedPax(t.uid); }
+          catch { paxByTripUid[t.uid] = []; }
+        }));
+        const capped = tripsToAdd.slice(0, 7);
+        initialLegs = capped.map(t =>
+          m.buildLegFromTrip(t, paxByTripUid[t.uid] || [], 'auto-create')
         );
-        // Only narrow if we found matches; if no period name matches
-        // any selected leg's crew, keep the original list rather than
-        // silently dropping to zero candidates.
-        if (matched.length > 0) candidates = matched;
       }
 
-      // Pick best candidate: closed > open; PIC > SIC; first chronologically
-      const closed = candidates.filter(p => p.dutyOffAt);
-      const pool = closed.length > 0 ? closed : candidates;
-      const best = pool.find(p => p.role === 'PIC') || pool[0];
-      if (best) {
-        let fillTzMode = 'local';
-        try { fillTzMode = localStorage.getItem('skyway-manifest-fill-tz') || 'local'; }
-        catch { /* ignore */ }
-        const tzArg = fillTzMode === 'utc' ? 'UTC' : null;
-        const styleArg = fillTzMode === 'utc' ? 'HHMMZ' : 'HHMM';
-        dutyFill = linkMod.formatManifestFields(best, {
-          timeZone: tzArg,
-          timeStyle: styleArg,
-        });
-      }
-    } catch (e) {
-      console.warn('Manifest creation auto-fill skipped:', e?.message || e);
+      await m.saveManifest({
+        id, date, tail,
+        hobbsOut: '', hobbsIn: '', hobbsTotal: '', waitTime: '',
+        dutyTimeIn: dutyFill.dutyTimeIn,
+        dutyTimeOut: dutyFill.dutyTimeOut,
+        dutyTimeTotal: dutyFill.dutyTimeTotal,
+        timeOut: '', timeIn: '',
+        timeTotal: dutyFill.timeTotal,
+        legs: initialLegs,
+        picSig: null, sicSig: null,
+        status: 'draft',
+        createdBy: currentUser?.name || '',
+      });
+      setSelectedId(id);
+    } catch (err) {
+      // Network/Firestore/permission error mid-create. The Firestore SDK
+      // will retry the write in the background once connectivity is
+      // restored (offline-persistent), so the manifest may still arrive
+      // — but tell the user what's happening either way.
+      console.error('[manifest] create failed:', err);
+      setCreateError(err?.message || 'Failed to create manifest. Check your connection and try again.');
+    } finally {
+      setCreating(false);
     }
-
-    // --- PRE-ADD SELECTED LEGS ---
-    let initialLegs = [];
-    if (Array.isArray(selectedTripUids) && selectedTripUids.length > 0
-        && Array.isArray(allTrips)) {
-      const dataModule = await import('./firebase-data.js');
-      const tripsToAdd = allTrips.filter(t => selectedTripUids.includes(t.uid));
-      const paxByTripUid = {};
-      await Promise.all(tripsToAdd.map(async (t) => {
-        try { paxByTripUid[t.uid] = await dataModule.fetchPreloadedPax(t.uid); }
-        catch { paxByTripUid[t.uid] = []; }
-      }));
-      const capped = tripsToAdd.slice(0, 7);
-      initialLegs = capped.map(t =>
-        m.buildLegFromTrip(t, paxByTripUid[t.uid] || [], 'auto-create')
-      );
-    }
-
-    await m.saveManifest({
-      id, date, tail,
-      hobbsOut: '', hobbsIn: '', hobbsTotal: '', waitTime: '',
-      dutyTimeIn: dutyFill.dutyTimeIn,
-      dutyTimeOut: dutyFill.dutyTimeOut,
-      dutyTimeTotal: dutyFill.dutyTimeTotal,
-      timeOut: '', timeIn: '',
-      timeTotal: dutyFill.timeTotal,
-      legs: initialLegs,
-      picSig: null, sicSig: null,
-      status: 'draft',
-      createdBy: currentUser?.name || '',
-    });
-    setSelectedId(id);
-    setShowNewModal(false);
   };
 
   return (
@@ -8323,6 +8353,35 @@ function ManifestsScreen({ currentUser, allTrips }) {
           <p className="text-[10px] text-slate-500 mt-1">
             One per day per tail. Legs auto-add when trips are marked complete.
           </p>
+          {/* In-flight create indicator — visible while createNewManifest
+              runs. On a flaky mobile connection this can take a few seconds
+              and we don't want the user thinking the tap was missed. */}
+          {creating && (
+            <div className="mt-2 flex items-center gap-2 text-[11px] text-cyan-300 p-2 border border-cyan-500/40 bg-cyan-500/5"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              <Loader2 className="w-3 h-3 animate-spin" />
+              CREATING MANIFEST...
+            </div>
+          )}
+          {/* Error banner when create throws (network, permission, etc).
+              The Firestore write is offline-persistent so the doc may
+              still land — tell the user to refresh manifests if so. */}
+          {createError && !creating && (
+            <div className="mt-2 flex items-start gap-2 text-[11px] text-red-300 p-2 border border-red-500/40 bg-red-500/5">
+              <AlertCircle className="w-3 h-3 mt-0.5 shrink-0" />
+              <div className="flex-1">
+                <div className="font-medium mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>CREATE FAILED</div>
+                <div className="text-slate-300 leading-tight">{createError}</div>
+                <button
+                  onClick={() => setCreateError(null)}
+                  className="mt-1 text-[10px] text-slate-500 hover:text-slate-300 tracking-widest"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                >
+                  DISMISS
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         {showNewModal && (
@@ -19947,7 +20006,7 @@ function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, sync
     // MAINT > MEL respectively. Role gating moves into MaintScreen.
     { id: 'ops',      label: 'OPS',       icon: Zap,      roles: ['ops', 'admin'] },
     { id: 'maint',    label: 'MAINT',     icon: AlertTriangle, roles: ['maint', 'ops', 'admin'] },
-    { id: 'wear',     label: 'WEAR',      icon: Activity, roles: ['maint', 'ops', 'admin'] },
+    { id: 'wear',     label: 'WEAR',      icon: Activity, roles: ['crew', 'maint', 'ops', 'admin'] },
     { id: 'users',    label: 'USERS',     icon: Users,    roles: ['ops', 'admin'] },
     // Pilot currency & training compliance — crew sees their own status,
     // ops/admin see all crew and can edit dates. Surfacing 61.57, Part
@@ -25714,6 +25773,14 @@ export default function CharterOps() {
     }
   }, [profile?.uid, impersonateUid]);
 
+  // Per-area reorder callbacks. Stable refs so TopNav and TripDetail
+  // don't see brand-new function props on every render of this big root
+  // component (which would cascade into DraggableTabBar re-renders and
+  // add unnecessary allocation pressure on memory-constrained phones).
+  const reorderTopNav = useCallback((newOrder) => saveTabOrder('topNav', newOrder), [saveTabOrder]);
+  const reorderTripDetail = useCallback((newOrder) => saveTabOrder('tripDetail', newOrder), [saveTabOrder]);
+
+
   const currentUser = useMemo(() => {
     if (!profile) return null;
     // Use the LIVE version of the profile from `users` (subscribed to
@@ -26359,7 +26426,7 @@ export default function CharterOps() {
               || (defaultTabOrder?.topNav)
               || null
           }
-          onReorderTopNav={(newOrder) => saveTabOrder('topNav', newOrder)}
+          onReorderTopNav={reorderTopNav}
         />
 
         {/* === HOME SECTION === */}
@@ -26578,7 +26645,7 @@ export default function CharterOps() {
                       || (defaultTabOrder?.tripDetail)
                       || null
                   }
-                  onReorderTripDetail={(newOrder) => saveTabOrder('tripDetail', newOrder)}
+                  onReorderTripDetail={reorderTripDetail}
                 />
               ) : (
                 <div className="h-full flex items-center justify-center p-8 grid-bg">
@@ -26691,7 +26758,7 @@ export default function CharterOps() {
                       || (defaultTabOrder?.tripDetail)
                       || null
                   }
-                  onReorderTripDetail={(newOrder) => saveTabOrder('tripDetail', newOrder)}
+                  onReorderTripDetail={reorderTripDetail}
                 />
               ) : (
                 <div className="h-full flex items-center justify-center p-8 grid-bg">
@@ -26807,11 +26874,36 @@ export default function CharterOps() {
           />
         )}
 
-        {/* === WEAR WATCH SECTION === */}
+        {/* === WEAR WATCH SECTION ===
+            Two views, role-dispatched:
+              crew → CrewWearTab — only the tails on their current+upcoming
+                     trips, all inspections logged for those tails by any
+                     pilot, and a CREATE INSPECTION button per tail (ad-hoc,
+                     outside the landings cadence). myTails is computed
+                     inline here so WearCheck.jsx doesn't need to import
+                     the trip-classification helpers.
+              maint/ops/admin → WearTab — full fleet rollup. */}
         {section === 'wear' && (
           <div className="flex-1 overflow-y-auto scroll-area p-4 md:p-6">
             <Suspense fallback={<div className="flex items-center justify-center py-16 text-slate-500"><Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading wear watch...</div>}>
-              <WearTabLazy currentUser={currentUser} />
+              {currentUser?.role === 'crew' ? (
+                <CrewWearTabLazy
+                  currentUser={currentUser}
+                  myTails={(() => {
+                    const nowMs = Date.now();
+                    const tails = new Set();
+                    for (const t of (Array.isArray(allTrips) ? allTrips : [])) {
+                      if (!tripIsAssignedToUser(t, currentUser)) continue;
+                      if (classifyTripTiming(t, nowMs) === 'past') continue;
+                      const tail = (t.info?.tail || '').trim().toUpperCase();
+                      if (tail) tails.add(tail);
+                    }
+                    return [...tails];
+                  })()}
+                />
+              ) : (
+                <WearTabLazy currentUser={currentUser} />
+              )}
             </Suspense>
           </div>
         )}
