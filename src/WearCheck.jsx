@@ -1580,3 +1580,275 @@ export function WearTrainingLibrary({ currentUser }) {
     </div>
   );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// <CrewWearTab /> — Pilot-facing wear view.
+//
+// Different from <WearTab /> which shows the full fleet for maint/ops/admin.
+// This one shows ONLY the aircraft the signed-in pilot is currently or
+// soon-to-be flying, surfaces every wear inspection logged for those tails
+// by anyone, and lets the pilot kick off a new ad-hoc inspection at any
+// time without waiting for the landings-cadence to trip.
+//
+// Props:
+//   currentUser — required, for the inspection-write attribution
+//   myTails     — array of tail strings (e.g. ['N444AM','N20UF']) computed
+//                 in App.jsx by intersecting `allTrips` × tripIsAssignedToUser
+//                 × classifyTripTiming!=='past'. We accept it as a prop so
+//                 this file doesn't need the trip-classification helpers.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function CrewWearInspectionRow({ row, expanded, onToggle }) {
+  // One inspection in the list. Compact by default (date · pilot · item ·
+  // status pill, plus a thumbnail if present). Tapping expands the row to
+  // show the full photo, notes, and any AI assessment without leaving
+  // the tab.
+  const when = row.inspectedAtMs ? new Date(row.inspectedAtMs).toLocaleString([], {
+    month: 'numeric', day: 'numeric',
+    hour: 'numeric', minute: '2-digit',
+  }) : '—';
+  const who = row.inspectedByName || '—';
+  const itemLabel = row.position && row.itemType
+    ? `${row.position.toUpperCase()} ${row.itemType.toUpperCase()}`
+    : (row.inspectionType === 'mx_share' ? 'MX SHARE' : (row.inspectionType || '').toUpperCase());
+  return (
+    <div className="border border-slate-800 bg-slate-900/40">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="w-full text-left p-3 flex items-center gap-3 hover:bg-slate-800/40"
+      >
+        {row.photoUrl ? (
+          <img
+            src={row.photoUrl}
+            alt=""
+            className="w-12 h-12 object-cover border border-slate-700 shrink-0 bg-slate-900"
+          />
+        ) : (
+          <div className="w-12 h-12 border border-slate-800 bg-slate-900 shrink-0 flex items-center justify-center">
+            <ImageIcon className="w-4 h-4 text-slate-700" />
+          </div>
+        )}
+        <div className="min-w-0 flex-1">
+          <div className="text-[10px] tracking-widest text-slate-400 truncate"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {itemLabel}
+          </div>
+          <div className="text-xs text-slate-300 truncate" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+            {when} · {who}
+          </div>
+        </div>
+        <div className="shrink-0 flex items-center gap-2">
+          {row.isDeferred ? (
+            <span className="px-2 py-0.5 text-[10px] tracking-widest border border-amber-500/50 text-amber-300 bg-amber-500/10"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>DEFERRED</span>
+          ) : row.pilotStatus ? (
+            <StatusPill status={row.pilotStatus} />
+          ) : null}
+          <ChevronRight className={`w-4 h-4 text-slate-500 transition-transform ${expanded ? 'rotate-90' : ''}`} />
+        </div>
+      </button>
+      {expanded && (
+        <div className="border-t border-slate-800 p-3 space-y-2">
+          {row.photoUrl && (
+            <TappablePhoto
+              url={row.photoUrl}
+              label={`${row.tail} · ${itemLabel}`}
+              subtitle={`${when} · ${who}`}
+              className="w-full block bg-slate-900 border border-slate-700"
+            />
+          )}
+          {row.notes && (
+            <div className="text-[11px] text-slate-300 italic"
+              style={{ fontFamily: 'DM Sans, sans-serif' }}>
+              "{row.notes}"
+            </div>
+          )}
+          {row.aiAssessment && (
+            <div className="border border-slate-700 px-2 py-1.5">
+              <div className="text-[9px] tracking-widest text-amber-300"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}>AI ASSESSMENT</div>
+              <div className="text-[11px] text-slate-300 flex items-center gap-2 mt-1">
+                <StatusPill status={row.aiAssessment.status} />
+                <span className="italic text-slate-400">{row.aiAssessment.reasoning}</span>
+              </div>
+            </div>
+          )}
+          <div className="text-[10px] text-slate-500 tracking-widest"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {INSPECTION_TYPES[row.inspectionType] || row.inspectionType || ''}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CrewWearTailCard({ tail, currentUser, onOpenCreate }) {
+  // One card per assigned tail. Subscribes to ALL inspections for the
+  // tail (from every pilot, every inspection type — ad_hoc, mx_share,
+  // structured-check) and shows them newest-first. Collapsed to the
+  // five most recent by default with a SEE ALL toggle for the long list.
+  const [inspections, setInspections] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [expanded, setExpanded] = useState({});
+  const [showAll, setShowAll] = useState(false);
+
+  useEffect(() => {
+    setLoading(true);
+    const u = subscribeWearInspections(tail, (rows) => {
+      // Newest first. Defensive — the subscription may return either
+      // order depending on Firestore index state.
+      const sorted = [...rows].sort((a, b) => (b.inspectedAtMs || 0) - (a.inspectedAtMs || 0));
+      setInspections(sorted);
+      setLoading(false);
+    });
+    return () => u && u();
+  }, [tail]);
+
+  const aircraftType = configForTail(tail).type || TAIL_AIRCRAFT_TYPES[tail] || '';
+  const visible = showAll ? inspections : inspections.slice(0, 5);
+  const hiddenCount = Math.max(0, inspections.length - visible.length);
+
+  return (
+    <div className="border border-slate-800 bg-slate-900/40">
+      <div className="px-4 py-3 border-b border-slate-800 flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-baseline gap-2">
+            <h3 className="text-2xl tracking-wider text-slate-100"
+              style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
+              {tail}
+            </h3>
+            {aircraftType && (
+              <div className="text-[10px] tracking-widest text-slate-500"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                {String(aircraftType).toUpperCase()}
+              </div>
+            )}
+          </div>
+          <div className="text-[10px] text-slate-500 mt-0.5"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {loading ? 'LOADING…' : `${inspections.length} INSPECTION${inspections.length === 1 ? '' : 'S'} LOGGED`}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => onOpenCreate(tail)}
+          className="shrink-0 inline-flex items-center gap-1.5 px-3 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-[11px] tracking-widest"
+          style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}
+        >
+          <Plus className="w-3.5 h-3.5" /> CREATE INSPECTION
+        </button>
+      </div>
+      <div className="p-3 space-y-2">
+        {loading ? (
+          <div className="flex items-center gap-2 text-[11px] text-slate-500"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            <Loader2 className="w-3 h-3 animate-spin" /> LOADING INSPECTIONS…
+          </div>
+        ) : inspections.length === 0 ? (
+          <div className="text-sm text-slate-500 italic p-3 text-center">
+            No inspections logged for {tail} yet. Tap CREATE INSPECTION to start one.
+          </div>
+        ) : (
+          <>
+            {visible.map((row) => (
+              <CrewWearInspectionRow
+                key={row.id}
+                row={row}
+                expanded={!!expanded[row.id]}
+                onToggle={() => setExpanded((e) => ({ ...e, [row.id]: !e[row.id] }))}
+              />
+            ))}
+            {hiddenCount > 0 && (
+              <button
+                type="button"
+                onClick={() => setShowAll(true)}
+                className="w-full p-2 border border-slate-800 text-[11px] tracking-widest text-slate-400 hover:text-slate-200 hover:border-slate-700"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              >
+                SEE {hiddenCount} OLDER · TOTAL {inspections.length}
+              </button>
+            )}
+            {showAll && inspections.length > 5 && (
+              <button
+                type="button"
+                onClick={() => setShowAll(false)}
+                className="w-full p-2 border border-slate-800 text-[11px] tracking-widest text-slate-500 hover:text-slate-300 hover:border-slate-700"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              >
+                COLLAPSE
+              </button>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function CrewWearTab({ currentUser, myTails = [] }) {
+  // Inspection-creation modal state. The modal we open is the existing
+  // <WearCheckModal/> with inspectionType='ad_hoc' — same component the
+  // landings-cadence flow uses, but invoked outside the cadence. Note
+  // that there's no `tripId`/`legId` here: ad-hoc inspections aren't
+  // tied to a specific leg, which is fine; the schema allows null.
+  const [createTail, setCreateTail] = useState(null);
+
+  // Distinct, trimmed, upper-cased tails. Defensive in case App.jsx
+  // hands in duplicates or empty strings (e.g. a trip with no tail set).
+  const tails = useMemo(() => {
+    const set = new Set();
+    for (const t of (Array.isArray(myTails) ? myTails : [])) {
+      const norm = String(t || '').trim().toUpperCase();
+      if (norm) set.add(norm);
+    }
+    return [...set].sort();
+  }, [myTails]);
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="text-2xl tracking-wider text-slate-100"
+          style={{ fontFamily: 'Bebas Neue, sans-serif' }}>WEAR</h2>
+        <p className="text-xs text-slate-500 mt-1">
+          Aircraft from your current and upcoming trips. Tap CREATE INSPECTION on any tail to log a wear check at any time —
+          you don't have to wait for the landings cadence. Every inspection logged on this aircraft by any pilot shows below.
+        </p>
+      </div>
+
+      {tails.length === 0 ? (
+        <div className="border border-slate-800 bg-slate-900/40 p-8 text-center">
+          <Plane className="w-8 h-8 text-slate-700 mx-auto mb-3" />
+          <div className="text-sm text-slate-400" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+            No assigned aircraft right now.
+          </div>
+          <div className="text-[11px] text-slate-500 mt-2 max-w-md mx-auto leading-relaxed">
+            This tab shows aircraft from your current and upcoming trips. Once you're assigned to a trip, the tail will
+            appear here and you can log inspections.
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {tails.map((tail) => (
+            <CrewWearTailCard
+              key={tail}
+              tail={tail}
+              currentUser={currentUser}
+              onOpenCreate={setCreateTail}
+            />
+          ))}
+        </div>
+      )}
+
+      {createTail && (
+        <WearCheckModal
+          tail={createTail}
+          currentUser={currentUser}
+          inspectionType="ad_hoc"
+          onClose={() => setCreateTail(null)}
+        />
+      )}
+    </div>
+  );
+}
