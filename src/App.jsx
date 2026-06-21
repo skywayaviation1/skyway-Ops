@@ -2100,10 +2100,25 @@ function getStepDisplay(step, trip) {
   return step;
 }
 
-function StatusButton({ step, status, onTrigger, onUntrigger, locked, isNext, autoNotify, airportCode }) {
+function StatusButton({ step, status, onTrigger, onUntrigger, onResendNotify, locked, isNext, autoNotify, airportCode }) {
   const Icon = step.icon;
   const completed = !!status;
   const pulsing = isNext && !completed && !locked;
+  // EMAIL FAILED state — manual fire stored `notified: false` because the
+  // email send failed silently. Show the red retry pill instead of the
+  // green "notification sent" indicator. We also track an in-flight resend
+  // so the pill can show a spinner and ignore double-taps.
+  const emailFailed = completed && autoNotify && status?.notified === false;
+  const [resending, setResending] = useState(false);
+
+  const handleResend = async (e) => {
+    e.stopPropagation();          // don't trigger the parent's confirm-undo flow
+    if (resending) return;
+    if (!onResendNotify) return;
+    setResending(true);
+    try { await onResendNotify(step); }
+    finally { setResending(false); }
+  };
 
   const handleClick = () => {
     if (locked) return;
@@ -2166,6 +2181,22 @@ function StatusButton({ step, status, onTrigger, onUntrigger, locked, isNext, au
             <p className="text-[10px] text-cyan-400 mt-1 flex items-center gap-1">
               <Mail className="w-3 h-3" /> Notification sent
             </p>
+          )}
+          {emailFailed && (
+            <button
+              type="button"
+              onClick={handleResend}
+              disabled={resending}
+              className="mt-1 inline-flex items-center gap-1.5 px-2 py-1 border border-red-500/50 text-red-300 bg-red-500/10 hover:bg-red-500/20 disabled:opacity-50 text-[10px] tracking-widest"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              title="The broker email didn't send when this status was triggered. Tap to retry the email only (the status stays marked as triggered)."
+            >
+              {resending ? (
+                <><Loader2 className="w-3 h-3 animate-spin" /> RESENDING…</>
+              ) : (
+                <><AlertCircle className="w-3 h-3" /> EMAIL FAILED · TAP TO RESEND</>
+              )}
+            </button>
           )}
         </div>
       </div>
@@ -5279,7 +5310,66 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
     }
   };
 
-  // === Update ETA flow ===
+  // === Resend broker notification for an existing status step ===
+  //
+  // Used when the original updateStatus tap had its email send fail
+  // silently (network error, missing template, missing recipient). The
+  // status is already triggered and persisted; we don't re-fire it. We
+  // just rebuild the same email and try sending again. On success, the
+  // status's `notified` flag flips true and the EMAIL FAILED pill clears.
+  //
+  // Returns nothing; throws are caught and surfaced via the spinner
+  // returning to "EMAIL FAILED · TAP TO RESEND" state.
+  const resendStatusNotification = async (step) => {
+    const existing = statuses[step.id];
+    if (!existing) {
+      console.warn('[resend] no existing status for step', step.id);
+      return;
+    }
+    const brokerEmails = (brokerEmail || '')
+      .split(/[,;\s]+/)
+      .map(e => e.trim())
+      .filter(e => e.length > 0 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
+    const recipients = [opsEmail, ...brokerEmails]
+      .filter(Boolean)
+      .map(e => e.trim())
+      .filter(e => e.length > 0);
+    if (recipients.length === 0) {
+      alert('No recipients configured. Add a broker email on the NOTIFY tab first.');
+      return;
+    }
+    const emailContent = buildStatusEmail(step, trip, brokerEmails[0] || '');
+    if (!emailContent) {
+      alert(`No email template available for "${step.label}" on this leg type.`);
+      return;
+    }
+    try {
+      const r = await sendEmailViaApi({
+        to: recipients,
+        subject: emailContent.subject,
+        text: emailContent.text,
+        tripId: trip.uid,
+        includeTrackingButton: true,
+      });
+      const respData = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        console.error('[resend] failed:', r.status, respData);
+        alert(`Resend failed: ${respData.error || r.status}. Try again or check NOTIFY tab.`);
+        return;
+      }
+      // Success — flip notified=true on the same status object
+      const updatedStatuses = {
+        ...statuses,
+        [step.id]: { ...existing, notified: true, notifiedAt: Date.now(), notifiedBy: 'manual-resend' },
+      };
+      setStatuses(updatedStatuses);
+      await persist({ statuses: updatedStatuses, passengers, brokerEmail, autoNotify, completed, hasCatering, paxOverride });
+    } catch (err) {
+      console.error('[resend] network error:', err);
+      alert(`Resend failed: ${err.message || 'network error'}. Check your connection and try again.`);
+    }
+  };
+
   // Fetches the current FlightAware position for this trip's tail and emails
   // all broker emails with the latest estimated arrival time. Ops/admin only.
   // Always sends the email regardless of whether ETA differs from scheduled.
@@ -6134,6 +6224,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
                   status={statuses[step.id]}
                   onTrigger={() => handleStatusTrigger(step)}
                   onUntrigger={() => handleStatusUntrigger(step)}
+                  onResendNotify={resendStatusNotification}
                   locked={blocked}
                   isNext={nextStep?.id === step.id && !blocked}
                   autoNotify={autoNotify}
