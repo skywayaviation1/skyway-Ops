@@ -87,12 +87,30 @@ function airportsMatch(a, b) {
   return false;
 }
 
-// Format an ISO timestamp as UTC HH:MM. Brokers will know which timezone
-// based on the airport.
-function fmtTime(iso) {
+// Format an ISO timestamp in the airport's LOCAL time. timezone is an IANA
+// zone string like 'America/New_York' (FlightAware returns this in
+// flight.origin.timezone and flight.destination.timezone — we just pass it
+// through). Output looks like "10:30 PM EDT" — same format as the manual
+// path's emails, which brokers are used to.
+//
+// If timezone is missing (very rare — some uncommon airports), fall back to
+// Zulu so brokers at least get a parseable time rather than blank.
+function fmtTime(iso, timezone) {
   if (!iso) return '';
   try {
     const d = new Date(iso);
+    if (timezone) {
+      const tf = new Intl.DateTimeFormat('en-US', {
+        timeZone: timezone,
+        hour: 'numeric',
+        minute: '2-digit',
+        timeZoneName: 'short',
+        hour12: true,
+      });
+      return tf.format(d);
+    }
+    // Fallback for missing timezone — log so we can add the airport
+    console.warn(`[fmtTime] no timezone for iso=${iso}, falling back to Zulu`);
     const hh = String(d.getUTCHours()).padStart(2, '0');
     const mm = String(d.getUTCMinutes()).padStart(2, '0');
     return `${hh}:${mm}Z`;
@@ -241,7 +259,7 @@ async function sendEmail(req, to, subject, text, meta) {
   }
 }
 
-function buildBrokerEmail({ tail, eventType, originCode, destCode, estimatedOn, actualOff, actualOn, scheduledArrivalIso }) {
+function buildBrokerEmail({ tail, eventType, originCode, destCode, originTz, destTz, estimatedOn, actualOff, actualOn, scheduledArrivalIso }) {
   const action = EVENT_LABELS[eventType] || eventType;
   const subject = `Skyway ${tail} — ${action.toUpperCase()}`;
 
@@ -250,24 +268,27 @@ function buildBrokerEmail({ tail, eventType, originCode, destCode, estimatedOn, 
     lines.push(`Skyway flight ${tail} has begun taxi for departure from ${originCode || 'origin'}.`);
     lines.push(`Destination: ${destCode || 'unknown'}`);
   } else if (eventType === 'off') {
+    // actualOff is at the ORIGIN, so format with originTz. ETA / scheduled
+    // are at the DESTINATION, so format with destTz.
     lines.push(`Skyway flight ${tail} is wheels up.`);
-    lines.push(`Departed: ${originCode || ''} at ${fmtTime(actualOff)}`);
+    lines.push(`Departed: ${originCode || ''} at ${fmtTime(actualOff, originTz)}`);
     lines.push(`Destination: ${destCode || 'unknown'}`);
     if (estimatedOn) {
-      const predicted = fmtTime(estimatedOn);
+      const predicted = fmtTime(estimatedOn, destTz);
       let line = `ETA: ${predicted}`;
       if (scheduledArrivalIso) {
         const predMs = new Date(estimatedOn).getTime();
         const schedMs = new Date(scheduledArrivalIso).getTime();
         if (Math.abs(predMs - schedMs) > 10 * 60 * 1000) {
-          line += ` (sched ${fmtTime(scheduledArrivalIso)})`;
+          line += ` (sched ${fmtTime(scheduledArrivalIso, destTz)})`;
         }
       }
       lines.push(line);
     }
   } else if (eventType === 'on') {
+    // actualOn is at the DESTINATION.
     lines.push(`Skyway flight ${tail} has landed at ${destCode || 'destination'}.`);
-    lines.push(`Touchdown: ${fmtTime(actualOn)}`);
+    lines.push(`Touchdown: ${fmtTime(actualOn, destTz)}`);
   }
   lines.push('');
   lines.push('— Skyway Aviation Operations');
@@ -413,6 +434,12 @@ export default async function handler(req, res) {
                   || flight.destination?.code
                   || flight.destination?.code_iata
                   || null;
+    // FlightAware returns IANA timezone strings like 'America/New_York' on
+    // origin and destination objects. We pass these through to fmtTime so
+    // broker emails show "10:30 PM EDT" (local airport time) instead of
+    // "02:30Z" (which brokers had to mentally convert).
+    const originTz = flight.origin?.timezone || null;
+    const destTz = flight.destination?.timezone || null;
     const divertedToCode = flight.diverted_to?.code_icao
                         || flight.diverted_to?.code
                         || flight.diverted_to?.code_iata
@@ -564,6 +591,8 @@ export default async function handler(req, res) {
           eventType,
           originCode,
           destCode,
+          originTz,
+          destTz,
           estimatedOn,
           actualOff,
           actualOn,

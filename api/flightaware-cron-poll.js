@@ -59,10 +59,21 @@ function airportsMatch(a, b) {
   return false;
 }
 
-function fmtTime(iso) {
+function fmtTime(iso, timezone) {
   if (!iso) return '';
   try {
     const d = new Date(iso);
+    if (timezone) {
+      const tf = new Intl.DateTimeFormat('en-US', {
+        timeZone: timezone,
+        hour: 'numeric',
+        minute: '2-digit',
+        timeZoneName: 'short',
+        hour12: true,
+      });
+      return tf.format(d);
+    }
+    console.warn(`[fmtTime] no timezone for iso=${iso}, falling back to Zulu`);
     const hh = String(d.getUTCHours()).padStart(2, '0');
     const mm = String(d.getUTCMinutes()).padStart(2, '0');
     return `${hh}:${mm}Z`;
@@ -111,10 +122,12 @@ async function fetchTailState(ident, apiKey) {
       origin: active.origin?.code_icao || active.origin?.code || null,
       originLat: active.origin?.latitude ?? null,
       originLon: active.origin?.longitude ?? null,
+      originTz: active.origin?.timezone || null,
       destination: active.destination?.code_icao || active.destination?.code || null,
       destinationLat: active.destination?.latitude ?? null,
       destinationLon: active.destination?.longitude ?? null,
       destinationCity: active.destination?.city || null,
+      destinationTz: active.destination?.timezone || null,
       actualOff: active.actual_off,
       actualOn: null,
       estimatedOn: active.estimated_on || null,
@@ -145,8 +158,10 @@ async function fetchTailState(ident, apiKey) {
       airborne: false,
       faFlightId: lastLanded.fa_flight_id,
       origin: lastLanded.origin?.code_icao || lastLanded.origin?.code || null,
+      originTz: lastLanded.origin?.timezone || null,
       destination: dest.code_icao || dest.code || null,
       destinationCity: dest.city || null,
+      destinationTz: dest.timezone || null,
       actualOff: lastLanded.actual_off || null,
       actualOn: lastLanded.actual_on,
       estimatedOn: null,
@@ -299,7 +314,7 @@ async function sendEmail(host, to, subject, text, meta) {
   }
 }
 
-function buildBrokerEmail({ tail, eventType, originCode, destCode, estimatedOn, actualOff, actualOn, scheduledArrivalIso }) {
+function buildBrokerEmail({ tail, eventType, originCode, destCode, originTz, destTz, estimatedOn, actualOff, actualOn, scheduledArrivalIso }) {
   const signature = '\n\n— Skyway Aviation\nPrivate Jet & Helicopter Charter Services';
   let subject, body;
   if (eventType === 'wheels_up') {
@@ -308,15 +323,17 @@ function buildBrokerEmail({ tail, eventType, originCode, destCode, estimatedOn, 
       'Hello,',
       '',
       `${tail} is wheels up from ${originCode || 'origin'} and en route to ${destCode || 'destination'}.`,
-      `Departed: ${fmtTime(actualOff)}`,
+      // actualOff is at the ORIGIN airport.
+      `Departed: ${fmtTime(actualOff, originTz)}`,
     ];
     if (estimatedOn) {
-      let etaLine = `ETA: ${fmtTime(estimatedOn)}`;
+      // ETA is at the DESTINATION airport.
+      let etaLine = `ETA: ${fmtTime(estimatedOn, destTz)}`;
       if (scheduledArrivalIso) {
         const predMs = new Date(estimatedOn).getTime();
         const schedMs = new Date(scheduledArrivalIso).getTime();
         if (Math.abs(predMs - schedMs) > 10 * 60 * 1000) {
-          etaLine += ` (sched ${fmtTime(scheduledArrivalIso)})`;
+          etaLine += ` (sched ${fmtTime(scheduledArrivalIso, destTz)})`;
         }
       }
       lines.push(etaLine);
@@ -329,7 +346,8 @@ function buildBrokerEmail({ tail, eventType, originCode, destCode, estimatedOn, 
       'Hello,',
       '',
       `${tail} has landed at ${destCode || 'destination'}.`,
-      `Touchdown: ${fmtTime(actualOn)}`,
+      // Touchdown is at the DESTINATION airport.
+      `Touchdown: ${fmtTime(actualOn, destTz)}`,
       '',
       'Thank you for choosing Skyway Aviation.',
     ].join('\n') + signature;
@@ -401,6 +419,8 @@ async function fireStatus({ db, host, tripUid, tripState, stepId, eventTimeMs, e
     eventType: stepId,
     originCode: eventState.origin,
     destCode: eventState.destination,
+    originTz: eventState.originTz,
+    destTz: eventState.destinationTz,
     estimatedOn: eventState.estimatedOn,
     actualOff: eventState.actualOff,
     actualOn: eventState.actualOn,
