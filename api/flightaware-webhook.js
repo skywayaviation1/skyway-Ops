@@ -102,19 +102,31 @@ function fmtTime(iso) {
 }
 
 // Find a Skyway trip that matches a FlightAware event.
-// Strict: tail + origin airport + ±4h window around trip start.
 //
-// Trip-state docs use opaque hash UIDs that contain no route info, so we
-// read tripMeta (written by App.jsx persist()) which has the routing data:
-//   { tail, from, to, start (ISO), legType }
-async function findMatchingTrip(db, ident, originCode, eventTimeMs) {
+// Window: -2h (early take-offs are rare) to +12h (delays push events later
+// than scheduled — common for charter). Asymmetric on purpose; the old
+// symmetric ±4h window dropped any flight delayed >4h.
+//
+// Tiebreaker (the OLD bug): when multiple trips for the same tail+from are
+// in the window, the old code picked the one with smallest |startMs -
+// eventTimeMs|. If today's trip is 3.5h delayed and tomorrow's is in 30
+// minutes, that picked tomorrow's. We now use a scoring system:
+//   +10000  trip has the matching PRIOR step already fired (sequential)
+//   +5000   trip's scheduled start is in the past (it's actually in progress)
+//   -minutes between start and event time (closest-in-time as a final tiebreak)
+//
+// stepId is passed in so the matcher knows which prior step to weight:
+//   wheels_up event → look for trips with taxi_dep already fired
+//   landed event    → look for trips with wheels_up already fired
+async function findMatchingTrip(db, ident, originCode, eventTimeMs, stepId) {
   if (!ident) return null;
 
-  const FOUR_HOURS_MS = 4 * 60 * 60 * 1000;
-  const windowStart = eventTimeMs - FOUR_HOURS_MS;
-  const windowEnd = eventTimeMs + FOUR_HOURS_MS;
+  const WINDOW_EARLY_MS = 2 * 60 * 60 * 1000;   // event up to 2h before scheduled
+  const WINDOW_LATE_MS = 12 * 60 * 60 * 1000;   // event up to 12h after scheduled
+  const windowStart = eventTimeMs - WINDOW_LATE_MS;
+  const windowEnd = eventTimeMs + WINDOW_EARLY_MS;
 
-  console.log(`[matcher] looking for ${ident} from=${originCode} eventAt=${new Date(eventTimeMs).toISOString()}`);
+  console.log(`[matcher] looking for ${ident} from=${originCode} eventAt=${new Date(eventTimeMs).toISOString()} for step=${stepId}`);
 
   const snap = await db.collection('trip-state').get();
   const candidates = [];
@@ -138,22 +150,48 @@ async function findMatchingTrip(db, ident, originCode, eventTimeMs) {
     const startMs = new Date(meta.start).getTime();
     if (isNaN(startMs)) continue;
     if (startMs < windowStart || startMs > windowEnd) {
-      console.log(`[matcher]   rejecting ${doc.id}: start=${meta.start} outside window`);
+      console.log(`[matcher]   rejecting ${doc.id}: start=${meta.start} outside window (${new Date(windowStart).toISOString()} .. ${new Date(windowEnd).toISOString()})`);
       continue;
     }
 
-    console.log(`[matcher]   candidate: ${doc.id} from=${meta.from} start=${meta.start} diff=${Math.abs(startMs - eventTimeMs)}ms`);
     candidates.push({ uid: doc.id, data, startMs });
   }
 
   console.log(`[matcher] tailMatches=${tailMatchCount} candidates=${candidates.length}`);
 
   if (candidates.length === 0) return null;
-  candidates.sort((a, b) =>
-    Math.abs(a.startMs - eventTimeMs) - Math.abs(b.startMs - eventTimeMs)
-  );
-  console.log(`[matcher] PICKED ${candidates[0].uid}`);
-  return candidates[0];
+  if (candidates.length === 1) {
+    console.log(`[matcher] PICKED ${candidates[0].uid} (only candidate)`);
+    return candidates[0];
+  }
+
+  // Multiple candidates — score and pick the highest.
+  function scoreCandidate(c) {
+    const statuses = c.data.statuses || {};
+    let score = 0;
+    // Heavy: trip has the prior step already fired. This is the strongest
+    // signal that THIS trip is the one in progress, not a sibling trip
+    // scheduled for later today/tomorrow.
+    if (stepId === 'wheels_up' && statuses.taxi_dep) score += 10000;
+    if (stepId === 'landed' && statuses.wheels_up) score += 10000;
+    if (stepId === 'landed' && statuses.taxi_dep) score += 5000;   // partial credit
+    // Strong: scheduled start is in the past — it's actually happening now,
+    // not scheduled for later.
+    if (c.startMs <= eventTimeMs) score += 5000;
+    // Light: closest in time as a final tiebreaker.
+    score -= Math.abs(c.startMs - eventTimeMs) / 60000; // minutes diff
+    return score;
+  }
+
+  const scored = candidates.map(c => ({ ...c, score: scoreCandidate(c) }));
+  scored.sort((a, b) => b.score - a.score);
+
+  for (const c of scored) {
+    console.log(`[matcher]   candidate ${c.uid}: score=${c.score.toFixed(0)} start=${new Date(c.startMs).toISOString()} diff=${((c.startMs - eventTimeMs) / 60000).toFixed(0)}min`);
+  }
+  console.log(`[matcher] PICKED ${scored[0].uid} (score ${scored[0].score.toFixed(0)} vs runner-up ${scored[1]?.score?.toFixed(0) ?? 'n/a'})`);
+
+  return scored[0];
 }
 
 // Internal call to /api/email-enqueue (reliable queue with retry).
@@ -443,7 +481,7 @@ export default async function handler(req, res) {
     }
 
     // === 7. Find matching trip ===
-    const match = await findMatchingTrip(db, ident, originCode, eventTimeMs);
+    const match = await findMatchingTrip(db, ident, originCode, eventTimeMs, stepId);
     if (!match) {
       console.log(`[fa-webhook] no matching trip for ${ident} from ${originCode}`);
       await eventRef.update({ processed: true });
@@ -497,12 +535,27 @@ export default async function handler(req, res) {
       firedAuto = true;
       console.log(`[fa-webhook] auto-fired ${stepId} for ${tripUid}`);
     } else {
-      console.log(`[fa-webhook] ${stepId} already manually fired for ${tripUid} — skipping email`);
+      console.log(`[fa-webhook] ${stepId} already manually fired for ${tripUid}`);
     }
 
-    // === 10. Send broker email (only if auto-fired AND autoNotify on AND brokerEmail set) ===
+    // === 10. Send broker email ===
+    //
+    // Two paths reach this point:
+    //   (a) We just auto-fired the step → send the broker email
+    //   (b) Step was already manually fired but `notified !== true` → the
+    //       manual path tried to email and FAILED (network, missing
+    //       recipient, no template, etc.) silently. Recover by sending now.
+    //
+    // The old code only sent under (a). That's the second half of the
+    // "broker never got notified" bug — manual tap with a failed email
+    // would never be recovered because the webhook saw alreadyFired=true
+    // and stopped.
+    const alreadyNotified = !!existingStatus?.notified;
+    const isRecovery = alreadyFired && !alreadyNotified;
+    const shouldSendEmail = firedAuto || isRecovery;
+
     let emailSent = false;
-    if (firedAuto) {
+    if (shouldSendEmail) {
       const brokerEmail = tripState.brokerEmail;
       const autoNotify = tripState.autoNotify === true;
       if (brokerEmail && autoNotify) {
@@ -516,16 +569,44 @@ export default async function handler(req, res) {
           actualOn,
           scheduledArrivalIso: scheduledIn || scheduledOn,
         });
-        emailSent = await sendEmail(req, brokerEmail, subject, emailBody);
-        console.log(`[fa-webhook] broker email ${emailSent ? 'sent' : 'failed'} → ${brokerEmail}`);
+        emailSent = await sendEmail(req, brokerEmail, subject, emailBody, {
+          source: isRecovery ? 'fa-webhook-recovery' : 'fa-webhook',
+          tripId: tripUid,
+          statusKey: stepId,
+        });
+        console.log(`[fa-webhook] broker email ${emailSent ? 'sent' : 'failed'} → ${brokerEmail} ${isRecovery ? '(RECOVERY)' : ''}`);
+
+        // If recovery succeeded, mark the manual status as notified so the
+        // App.jsx "EMAIL FAILED" pill clears and we don't try recovering
+        // again on the next webhook event for this step.
+        if (emailSent && isRecovery) {
+          try {
+            const recoveredStatus = {
+              ...existingStatus,
+              notified: true,
+              notifiedAt: Date.now(),
+              notifiedBy: 'fa-webhook-recovery',
+            };
+            await db.collection('trip-state').doc(tripUid).update({
+              [`statuses.${stepId}`]: recoveredStatus,
+              updatedAt: Date.now(),
+            });
+            console.log(`[fa-webhook] cleared EMAIL_FAILED on ${tripUid}.${stepId}`);
+          } catch (err) {
+            console.warn('[fa-webhook] could not update notified flag:', err.message);
+          }
+        }
       } else {
         console.log(`[fa-webhook] no broker email or autoNotify off for ${tripUid}`);
       }
+    } else {
+      console.log(`[fa-webhook] step already fired AND notified — no email needed`);
     }
 
     await eventRef.update({
       processed: true,
       autoFired: firedAuto,
+      isRecovery,
       emailSent,
     });
 
@@ -535,6 +616,7 @@ export default async function handler(req, res) {
       tripUid,
       stepId,
       autoFired: firedAuto,
+      isRecovery,
       emailSent,
     });
   } catch (err) {

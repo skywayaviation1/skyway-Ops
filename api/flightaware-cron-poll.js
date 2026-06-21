@@ -167,14 +167,27 @@ async function fetchTailState(ident, apiKey) {
 }
 
 // === Find a matching trip-state doc for an event ===
-async function findMatchingTrip(db, ident, originCode, eventTimeMs) {
+//
+// Window: -2h (early take-offs are rare) to +12h (delays push events later
+// than scheduled — common for charter). Asymmetric on purpose; the old
+// symmetric ±4h window dropped any flight delayed >4h.
+//
+// Tiebreaker (the OLD bug): when multiple trips for the same tail+from are
+// in the window, the old code picked the one with smallest |startMs -
+// eventTimeMs|. That picked the WRONG trip when today's was delayed and
+// tomorrow's was scheduled soon. We now use a scoring system:
+//   +10000  trip has the matching PRIOR step already fired (sequential)
+//   +5000   trip's scheduled start is in the past (it's actually in progress)
+//   -minutes between start and event time (closest-in-time as a final tiebreak)
+async function findMatchingTrip(db, ident, originCode, eventTimeMs, stepId) {
   if (!ident) return null;
 
-  const FOUR_HOURS_MS = 4 * 60 * 60 * 1000;
-  const windowStart = eventTimeMs - FOUR_HOURS_MS;
-  const windowEnd = eventTimeMs + FOUR_HOURS_MS;
+  const WINDOW_EARLY_MS = 2 * 60 * 60 * 1000;
+  const WINDOW_LATE_MS = 12 * 60 * 60 * 1000;
+  const windowStart = eventTimeMs - WINDOW_LATE_MS;
+  const windowEnd = eventTimeMs + WINDOW_EARLY_MS;
 
-  console.log(`[matcher] looking for ${ident} from=${originCode} eventAt=${new Date(eventTimeMs).toISOString()}`);
+  console.log(`[matcher] looking for ${ident} from=${originCode} eventAt=${new Date(eventTimeMs).toISOString()} for step=${stepId}`);
 
   const snap = await db.collection('trip-state').get();
   const candidates = [];
@@ -206,18 +219,37 @@ async function findMatchingTrip(db, ident, originCode, eventTimeMs) {
       continue;
     }
 
-    console.log(`[matcher]   candidate: ${doc.id} from=${meta.from} start=${meta.start} diff=${Math.abs(startMs - eventTimeMs)}ms`);
     candidates.push({ uid: doc.id, data, startMs });
   }
 
   console.log(`[matcher] tailMatches=${tailMatchCount} originRejected=${originRejectCount} timeRejected=${timeRejectCount} candidates=${candidates.length}`);
 
   if (candidates.length === 0) return null;
-  candidates.sort((a, b) =>
-    Math.abs(a.startMs - eventTimeMs) - Math.abs(b.startMs - eventTimeMs)
-  );
-  console.log(`[matcher] PICKED ${candidates[0].uid} (closest in time)`);
-  return candidates[0];
+  if (candidates.length === 1) {
+    console.log(`[matcher] PICKED ${candidates[0].uid} (only candidate)`);
+    return candidates[0];
+  }
+
+  function scoreCandidate(c) {
+    const statuses = c.data.statuses || {};
+    let score = 0;
+    if (stepId === 'wheels_up' && statuses.taxi_dep) score += 10000;
+    if (stepId === 'landed' && statuses.wheels_up) score += 10000;
+    if (stepId === 'landed' && statuses.taxi_dep) score += 5000;
+    if (c.startMs <= eventTimeMs) score += 5000;
+    score -= Math.abs(c.startMs - eventTimeMs) / 60000;
+    return score;
+  }
+
+  const scored = candidates.map(c => ({ ...c, score: scoreCandidate(c) }));
+  scored.sort((a, b) => b.score - a.score);
+
+  for (const c of scored) {
+    console.log(`[matcher]   candidate ${c.uid}: score=${c.score.toFixed(0)} start=${new Date(c.startMs).toISOString()} diff=${((c.startMs - eventTimeMs) / 60000).toFixed(0)}min`);
+  }
+  console.log(`[matcher] PICKED ${scored[0].uid} (score ${scored[0].score.toFixed(0)} vs runner-up ${scored[1]?.score?.toFixed(0) ?? 'n/a'})`);
+
+  return scored[0];
 }
 
 // === Send email via internal /api/email-enqueue (reliable queue) ===
@@ -315,42 +347,53 @@ async function fireStatus({ db, host, tripUid, tripState, stepId, eventTimeMs, e
     return { skipped: 'already-auto-fired' };
   }
 
-  // Manual wins: if already fired by a human, skip
-  if (existingStatuses[stepId]) {
-    // Still mark autoFiredEvents so we don't email later
+  const existingStatus = existingStatuses[stepId];
+  const alreadyFired = !!existingStatus;
+  const alreadyNotified = !!existingStatus?.notified;
+  const isRecovery = alreadyFired && !alreadyNotified;
+
+  // Manual fire path: if already fired by a human AND already notified,
+  // nothing to do. If already fired but notified=false, the manual
+  // path's email failed silently — recover by sending the email even
+  // though we don't re-fire the step.
+  if (alreadyFired && !isRecovery) {
+    // Track so we don't try again
     await db.collection('trip-state').doc(tripUid).update({
       autoFiredEvents: { ...autoFiredEvents, [stepId]: `tracked-manual-${Date.now()}` },
     });
-    return { skipped: 'manual-already-fired' };
+    return { skipped: 'manual-already-fired-and-notified' };
   }
 
-  const newStatus = {
-    timestamp: eventTimeMs,
-    author: 'FlightAware Tracking',
-    coords: null,
-    autoFired: true,
-    eventType,
-  };
-  const newStatuses = { ...existingStatuses, [stepId]: newStatus };
-  const update = {
-    statuses: newStatuses,
-    autoFiredEvents: { ...autoFiredEvents, [stepId]: `tracked-${Date.now()}` },
-    updatedAt: Date.now(),
-  };
-  if (eventType === 'on') {
-    update.archived = true;
-    update.archivedAt = Date.now();
+  // Build the new status (only if we're auto-firing for the first time)
+  if (!alreadyFired) {
+    const newStatus = {
+      timestamp: eventTimeMs,
+      author: 'FlightAware Tracking',
+      coords: null,
+      autoFired: true,
+      eventType,
+    };
+    const newStatuses = { ...existingStatuses, [stepId]: newStatus };
+    const update = {
+      statuses: newStatuses,
+      autoFiredEvents: { ...autoFiredEvents, [stepId]: `tracked-${Date.now()}` },
+      updatedAt: Date.now(),
+    };
+    if (eventType === 'on') {
+      update.archived = true;
+      update.archivedAt = Date.now();
+    }
+    await db.collection('trip-state').doc(tripUid).update(update);
   }
-  await db.collection('trip-state').doc(tripUid).update(update);
 
-  // Send broker email
+  // Send broker email — same path whether new auto-fire or recovery
   const brokerEmails = (tripState.brokerEmail || '')
     .split(/[,;\s]+/)
     .map(e => e.trim())
     .filter(e => e.length > 0 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
 
   if (brokerEmails.length === 0 || tripState.autoNotify !== true) {
-    return { fired: true, emailed: false, reason: 'no-broker-or-autonotify-off' };
+    return { fired: !alreadyFired, isRecovery, emailed: false, reason: 'no-broker-or-autonotify-off' };
   }
 
   const { subject, body } = buildBrokerEmail({
@@ -364,7 +407,27 @@ async function fireStatus({ db, host, tripUid, tripState, stepId, eventTimeMs, e
     scheduledArrivalIso: eventState.scheduledIn || eventState.scheduledOn,
   });
   const sent = await sendEmail(host, brokerEmails, subject, body);
-  return { fired: true, emailed: sent };
+
+  // Recovery: mark the manual status notified=true so the App.jsx
+  // "EMAIL FAILED" pill clears and the next poll skips this step.
+  if (sent && isRecovery) {
+    try {
+      const recoveredStatus = {
+        ...existingStatus,
+        notified: true,
+        notifiedAt: Date.now(),
+        notifiedBy: 'fa-cron-recovery',
+      };
+      await db.collection('trip-state').doc(tripUid).update({
+        [`statuses.${stepId}`]: recoveredStatus,
+        updatedAt: Date.now(),
+      });
+    } catch (err) {
+      console.warn('[fa-cron-poll] could not update notified flag:', err.message);
+    }
+  }
+
+  return { fired: !alreadyFired, isRecovery, emailed: sent };
 }
 
 // === Main handler ===
@@ -472,7 +535,7 @@ export default async function handler(req, res) {
             const eventTimeMs = current.actualOff
               ? new Date(current.actualOff).getTime()
               : Date.now();
-            const match = await findMatchingTrip(db, ident, current.origin, eventTimeMs);
+            const match = await findMatchingTrip(db, ident, current.origin, eventTimeMs, 'wheels_up');
             if (match) {
               const result = await fireStatus({
                 db, host,
@@ -495,7 +558,7 @@ export default async function handler(req, res) {
             const eventTimeMs = new Date(current.actualOn).getTime();
             // For landed, match by the trip's origin (which is current.origin
             // since we're looking at the flight that just landed)
-            const match = await findMatchingTrip(db, ident, current.origin, eventTimeMs);
+            const match = await findMatchingTrip(db, ident, current.origin, eventTimeMs, 'landed');
             if (match) {
               const result = await fireStatus({
                 db, host,
