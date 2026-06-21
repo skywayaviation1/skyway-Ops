@@ -26089,6 +26089,66 @@ export default function CharterOps() {
     return () => { if (unsub) unsub(); };
   }, []);
 
+  // Auto-backfill tripMeta for upcoming trips so the FlightAware webhook +
+  // cron-poll matcher can find them. Before this, tripMeta was only written
+  // when someone opened the trip detail in the app — and FA events for
+  // trips that hadn't been opened silently failed to attach (the WHEELS UP
+  // status never got fired, no email went out).
+  //
+  // Runs ONCE per session, on first non-empty allTrips load, only for trips
+  // starting within the next 7 days. ~10-30 writes per session, fire-and-
+  // forget, failures don't block the UI. The seedTripMeta helper uses
+  // setDoc with merge:true so it's safe — existing fields like statuses,
+  // brokerEmail, autoNotify are never touched.
+  const tripMetaBackfilledRef = useRef(false);
+  useEffect(() => {
+    if (tripMetaBackfilledRef.current) return;
+    if (!allTrips || allTrips.length === 0) return;
+    if (!currentUser?.uid) return;
+    tripMetaBackfilledRef.current = true;
+
+    const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+    const ONE_HOUR_MS = 60 * 60 * 1000;
+    const nowMs = Date.now();
+    const upcoming = allTrips.filter(t => {
+      const startMs = t.start instanceof Date ? t.start.getTime() : new Date(t.start).getTime();
+      // Include trips up to 1h in the past (handles trips that are currently
+      // taxiing — start time has just passed). Cap at 7 days out.
+      return !isNaN(startMs) && startMs > nowMs - ONE_HOUR_MS && startMs < nowMs + SEVEN_DAYS_MS;
+    });
+
+    if (upcoming.length === 0) return;
+    console.log(`[tripMeta-backfill] queuing ${upcoming.length} upcoming trips for tripMeta seeding`);
+
+    (async () => {
+      try {
+        const { seedTripMeta } = await import('./firebase-data.js');
+        let ok = 0, fail = 0;
+        for (const t of upcoming) {
+          const tail = (t.info?.tail || '').toUpperCase();
+          const from = (t.info?.from || '').toUpperCase();
+          const startIso = t.start instanceof Date ? t.start.toISOString() : t.start;
+          if (!tail || !from || !startIso) { fail++; continue; }
+          try {
+            await seedTripMeta(t.uid, {
+              tail, from,
+              to: (t.info?.to || '').toUpperCase(),
+              start: startIso,
+              legType: t.info?.legType || 'REVENUE',
+            });
+            ok++;
+          } catch (err) {
+            console.warn(`[tripMeta-backfill] ${t.uid} failed:`, err?.message || err);
+            fail++;
+          }
+        }
+        console.log(`[tripMeta-backfill] done — seeded=${ok} skipped/failed=${fail}`);
+      } catch (err) {
+        console.warn('[tripMeta-backfill] import failed:', err?.message || err);
+      }
+    })();
+  }, [allTrips, currentUser?.uid]);
+
   // Refresh status counts for sidebar — only for visible upcoming trips
   // (limited to ~50 to keep Firestore reads reasonable; full scan of 1000+ trips would burn quota)
   useEffect(() => {

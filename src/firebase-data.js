@@ -210,6 +210,45 @@ export async function saveTripState(tripId, state) {
 }
 
 /**
+ * Write tripMeta to a trip-state doc, creating the doc if it doesn't exist.
+ *
+ * Used by App.jsx auto-backfill (see PilotHomeScreen / ScheduleScreen
+ * effects). The FlightAware webhook + cron matcher REQUIRES tripMeta to
+ * find the trip — without it, FA events for the trip silently fail to
+ * attach (the WHEELS UP status never gets fired, no email goes out, the
+ * tab shows nothing happened).
+ *
+ * Until this helper existed, tripMeta was only written when someone
+ * opened the trip detail in the app (which triggers persist()). If no
+ * one opened the trip before FA fired, the doc was matcher-invisible.
+ * The auto-backfill closes that gap by writing tripMeta as soon as the
+ * trip appears in the user's schedule.
+ *
+ * Uses setDoc with merge:true so it's safe:
+ *   - if the doc exists, we update tripMeta + updatedAt, nothing else
+ *   - if the doc doesn't exist, we create it with just tripMeta and the
+ *     matcher will accept it (archived === undefined evaluates falsy)
+ */
+export async function seedTripMeta(tripUid, meta) {
+  if (!tripUid) throw new Error('seedTripMeta: tripUid required');
+  if (!meta || !meta.tail || !meta.from || !meta.start) {
+    throw new Error('seedTripMeta: meta needs tail, from, start');
+  }
+  const safeId = sanitizeKey(tripUid);
+  const ref = doc(db, 'trip-state', safeId);
+  await setDoc(ref, {
+    tripMeta: {
+      tail: String(meta.tail).toUpperCase(),
+      from: String(meta.from).toUpperCase(),
+      to: String(meta.to || '').toUpperCase(),
+      start: meta.start,
+      legType: meta.legType || 'REVENUE',
+    },
+    updatedAt: Date.now(),
+  }, { merge: true });
+}
+
+/**
  * Attach (or clear) trip-sheet metadata + pre-loaded pax to a single leg.
  * Uses merge:true so we don't clobber statuses, passengers, etc.
  *
