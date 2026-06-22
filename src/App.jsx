@@ -4991,6 +4991,20 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   //      a long tab would misbehave on a short one.
   const [heroCollapsed, setHeroCollapsed] = useState(false);
   const tripScrollRef = useRef(null);
+  // Bounce-back fix: two refs guarding against the post-collapse clamp loop.
+  //
+  // expectingClampRef: set true the moment we decide to collapse. The very
+  // next scroll event is almost certainly the browser clamping scrollTop
+  // because the layout shrank — NOT a user gesture. We swallow that one
+  // event. A 250ms timeout clears the flag if no clamp ever arrives, so
+  // the next real scroll isn't accidentally dropped.
+  //
+  // lastTopRef: lets us detect scroll DIRECTION. The expand-on-scroll-up
+  // branch now requires an actual upward gesture, not just "scrollTop
+  // happens to be near 0" — which the clamp can also produce.
+  const expectingClampRef = useRef(false);
+  const clampTimerRef = useRef(null);
+  const lastTopRef = useRef(0);
   useEffect(() => {
     const el = tripScrollRef.current;
     if (!el) return;
@@ -5005,23 +5019,52 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       // simply don't run the handler at all; the check-in panel owns
       // the full vertical area.
       if (scanning) return;
+      // BOUNCE-BACK FIX (1/2): swallow the first scroll event after we
+      // decided to collapse. That event is the browser's reflow clamp,
+      // not a user gesture — processing it would trigger re-expand.
+      if (expectingClampRef.current) {
+        expectingClampRef.current = false;
+        if (clampTimerRef.current) {
+          clearTimeout(clampTimerRef.current);
+          clampTimerRef.current = null;
+        }
+        lastTopRef.current = el.scrollTop;
+        return;
+      }
       if (raf) return;
       raf = requestAnimationFrame(() => {
         raf = null;
         const top = el.scrollTop;
+        // BOUNCE-BACK FIX (2/2): direction tracking. The expand branch
+        // now requires both "near the top" AND "user is actually
+        // scrolling up." A clamp that lands at top=5 will not re-expand
+        // because direction would be 'down' (or no change).
+        const direction = top < lastTopRef.current ? 'up'
+                        : top > lastTopRef.current ? 'down'
+                        : 'none';
+        lastTopRef.current = top;
         setHeroCollapsed((cur) => {
           if (cur) {
-            // Currently collapsed — only expand when the user has
-            // scrolled back near the very top. Keeps the hero stable
-            // through normal mid-content scrolling.
-            return top > 20;
+            // Currently collapsed — only expand on a genuine upward
+            // gesture reaching the very top. "top > 20" alone wasn't
+            // enough: the clamp also produces low values.
+            if (direction === 'up' && top <= 20) return false;
+            return true;
           }
           // Currently expanded — collapse only past 120px AND only if
-          // collapsing would leave enough room to scroll without the
-          // browser snapping scrollTop down (the feedback loop fix).
+          // there's enough headroom that the user's scroll position
+          // will survive the reflow without the browser slamming it
+          // back to 0.
           if (top <= 120) return false;
           const scrollableHeadroom = el.scrollHeight - el.clientHeight;
           if (scrollableHeadroom < 250) return false;
+          // ABOUT TO COLLAPSE — arm the clamp swallow.
+          expectingClampRef.current = true;
+          if (clampTimerRef.current) clearTimeout(clampTimerRef.current);
+          clampTimerRef.current = setTimeout(() => {
+            expectingClampRef.current = false;
+            clampTimerRef.current = null;
+          }, 250);
           return true;
         });
       });
@@ -5030,6 +5073,10 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
     return () => {
       el.removeEventListener('scroll', onScroll);
       if (raf) cancelAnimationFrame(raf);
+      if (clampTimerRef.current) {
+        clearTimeout(clampTimerRef.current);
+        clampTimerRef.current = null;
+      }
     };
   }, [tab, scanning]);  // scanning is now a dep so the handler rebinds on enter/exit of check-in
   // Tab-change reset for the hero — see comment block above.
@@ -5040,6 +5087,16 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
     // the previous tab and can land mid-content on a tab they haven't
     // looked at yet.
     if (tripScrollRef.current) tripScrollRef.current.scrollTop = 0;
+    // Reset direction tracker so the first scroll on the new tab is
+    // measured against 0, not the old tab's last position. Otherwise
+    // a forward scroll on the new tab could read as 'up' (and re-expand
+    // the hero) just because the old tab was scrolled deeper.
+    lastTopRef.current = 0;
+    expectingClampRef.current = false;
+    if (clampTimerRef.current) {
+      clearTimeout(clampTimerRef.current);
+      clampTimerRef.current = null;
+    }
   }, [tab]);
   // Auto-collapse the hero when a passenger check-in starts so the
   // scanner / verification UI has the screen. Triggers on both the
