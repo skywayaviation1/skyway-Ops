@@ -17,7 +17,9 @@
     "pdfjs-dist": "4.7.76",
     "pdfkit": "0.15.0",
     "react": "18.3.1",
-    "react-dom": "18.3.1"
+    "react-dom": "18.3.1",
+    "stream-chat": "9.44.2",
+    "stream-chat-react": "14.1.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "4.3.1",
