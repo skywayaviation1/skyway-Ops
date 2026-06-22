@@ -26,11 +26,12 @@ import {
   MessageList,
   Thread,
   Window,
+  useChatContext,
 } from 'stream-chat-react';
 import 'stream-chat-react/dist/css/v2/index.css';
 import './commsStream.css';
 
-import { Loader2, Plus, X, MessageCircle, Users as UsersIcon, Check } from 'lucide-react';
+import { Loader2, Plus, X, MessageCircle, Users as UsersIcon, Check, ChevronLeft } from 'lucide-react';
 
 /* ─────────────────────────────────────────────────────────────────────
    Channel id helpers
@@ -434,56 +435,14 @@ export default function CommsStreamScreen({ currentUser, users = [], allTrips = 
   return (
     <div className="flex-1 flex flex-col min-h-0 comms-stream">
       <Chat client={client} theme="str-chat__theme-dark">
-        <div className="flex h-full min-h-0">
-          {/* SIDEBAR — DMs + groups only. Trip channels excluded. */}
-          <aside className="w-72 shrink-0 border-r border-slate-800 flex flex-col bg-slate-950/60">
-            <div className="p-3 border-b border-slate-800">
-              <h2 className="text-sm tracking-widest text-slate-200 mb-3"
-                style={{ fontFamily: 'JetBrains Mono, monospace' }}>COMMS</h2>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setShowNewDm(true)}
-                  className="flex items-center justify-center gap-1.5 px-2 py-1.5 text-[10px] tracking-widest text-cyan-300 hover:text-cyan-200 border border-cyan-500/30 hover:border-cyan-400"
-                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
-                  title="Start a 1:1 direct message"
-                >
-                  <MessageCircle className="w-3 h-3" /> NEW DM
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowNewGroup(true)}
-                  className="flex items-center justify-center gap-1.5 px-2 py-1.5 text-[10px] tracking-widest text-cyan-300 hover:text-cyan-200 border border-cyan-500/30 hover:border-cyan-400"
-                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
-                  title="Create an ad-hoc group chat with selected members"
-                >
-                  <UsersIcon className="w-3 h-3" /> NEW GROUP
-                </button>
-              </div>
-            </div>
-            <div className="flex-1 min-h-0 overflow-y-auto">
-              <ChannelList
-                filters={filters}
-                sort={sort}
-                options={options}
-                showChannelSearch
-                channelRenderFilterFn={channelRenderFilterFn}
-              />
-            </div>
-          </aside>
-
-          {/* MAIN PANE */}
-          <main className="flex-1 flex flex-col min-w-0">
-            <Channel>
-              <Window>
-                <ChannelHeader />
-                <MessageList />
-                <MessageInput />
-              </Window>
-              <Thread />
-            </Channel>
-          </main>
-        </div>
+        <CommsLayoutInner
+          filters={filters}
+          sort={sort}
+          options={options}
+          channelRenderFilterFn={channelRenderFilterFn}
+          onNewDm={() => setShowNewDm(true)}
+          onNewGroup={() => setShowNewGroup(true)}
+        />
       </Chat>
 
       {showNewDm && (
@@ -502,6 +461,113 @@ export default function CommsStreamScreen({ currentUser, users = [], allTrips = 
           onClose={() => setShowNewGroup(false)}
         />
       )}
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+   <CommsLayoutInner> — responsive sidebar + main with mobile back button
+
+   This sub-component lives inside <Chat> so it can call useChatContext()
+   and react to channel selection. On mobile (<768px) we render a single
+   pane at a time, swapping between the channel list and the active
+   channel; on desktop both render side by side. A "← BACK TO COMMS"
+   button surfaces only on mobile so the user can return to the list.
+
+   Why this split: tablet/desktop usage is fine with a two-pane layout,
+   but on a phone the 288px sidebar would leave only ~100px for the
+   chat area — Jake was seeing the message bar clipped off-screen and
+   couldn't actually send messages.
+   ───────────────────────────────────────────────────────────────────── */
+
+function CommsLayoutInner({ filters, sort, options, channelRenderFilterFn, onNewDm, onNewGroup }) {
+  const { channel } = useChatContext();
+  // 'list'   → sidebar full-width, main hidden (mobile only)
+  // 'channel'→ main full-width, sidebar hidden (mobile only)
+  // On md+ both panes always show, so this state is mobile-only signal.
+  const [mobileView, setMobileView] = useState('list');
+
+  // When a channel becomes selected (user tapped one), flip to channel
+  // view on mobile. We only react to cid changes — re-renders due to
+  // message updates etc. won't bounce us back.
+  useEffect(() => {
+    if (channel?.cid) setMobileView('channel');
+  }, [channel?.cid]);
+
+  return (
+    <div className="flex h-full min-h-0">
+      {/* SIDEBAR */}
+      <aside
+        className={`
+          ${mobileView === 'channel' ? 'hidden' : 'flex'}
+          md:flex
+          w-full md:w-72 md:shrink-0
+          border-r border-slate-800 flex-col bg-slate-950/60
+        `}
+      >
+        <div className="p-3 border-b border-slate-800">
+          <h2 className="text-sm tracking-widest text-slate-200 mb-3"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}>COMMS</h2>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={onNewDm}
+              className="flex items-center justify-center gap-1.5 px-2 py-1.5 text-[10px] tracking-widest text-cyan-300 hover:text-cyan-200 border border-cyan-500/30 hover:border-cyan-400"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              title="Start a 1:1 direct message"
+            >
+              <MessageCircle className="w-3 h-3" /> NEW DM
+            </button>
+            <button
+              type="button"
+              onClick={onNewGroup}
+              className="flex items-center justify-center gap-1.5 px-2 py-1.5 text-[10px] tracking-widest text-cyan-300 hover:text-cyan-200 border border-cyan-500/30 hover:border-cyan-400"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              title="Create an ad-hoc group chat with selected members"
+            >
+              <UsersIcon className="w-3 h-3" /> NEW GROUP
+            </button>
+          </div>
+        </div>
+        <div className="flex-1 min-h-0 overflow-y-auto">
+          <ChannelList
+            filters={filters}
+            sort={sort}
+            options={options}
+            showChannelSearch
+            channelRenderFilterFn={channelRenderFilterFn}
+          />
+        </div>
+      </aside>
+
+      {/* MAIN PANE */}
+      <main
+        className={`
+          ${mobileView === 'list' ? 'hidden' : 'flex'}
+          md:flex
+          flex-1 flex-col min-w-0
+        `}
+      >
+        {/* Mobile-only back button so users can return to the channel list.
+            md:hidden keeps it out of the way on tablets and desktops. */}
+        <button
+          type="button"
+          onClick={() => setMobileView('list')}
+          className="md:hidden flex items-center gap-2 px-3 py-2.5 border-b border-slate-800 bg-slate-950/80 text-[11px] tracking-widest text-cyan-300 hover:text-cyan-200 shrink-0"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        >
+          <ChevronLeft className="w-4 h-4" />
+          BACK TO COMMS
+        </button>
+        <Channel>
+          <Window>
+            <ChannelHeader />
+            <MessageList />
+            <MessageInput />
+          </Window>
+          <Thread />
+        </Channel>
+      </main>
     </div>
   );
 }
