@@ -9,6 +9,13 @@ import './theme-classy.css';
 // Code-split: Comms screen loads only when the user opens the COMMS tab.
 const CommsScreenLazy = lazy(() => import('./CommsStream.jsx'));
 
+// Code-split: TripChatStream is the same Stream-Chat-powered chat surface,
+// but scoped to a single trip. Rendered inside TripDetail's COMMS tab.
+// Pulls the named export from the same module so we don't double-bundle.
+const TripChatStreamLazy = lazy(() =>
+  import('./CommsStream.jsx').then((m) => ({ default: m.TripChatStream }))
+);
+
 // Code-split: PushSettings loads only when the user opens their profile.
 const PushSettingsLazy = lazy(() => import('./PushSettings.jsx'));
 
@@ -6412,7 +6419,27 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
             <LodgingLazy trip={trip} currentUser={currentUser} users={users} />
           </Suspense>
         ) : tab === 'chat' ? (
-          <ChatPanel tripId={trip.uid} trip={trip} currentUser={currentUser} />
+          <Suspense fallback={
+            <div className="p-8 flex items-center justify-center text-slate-500">
+              <Loader2 className="w-5 h-5 animate-spin mr-2" /> Opening trip chat…
+            </div>
+          }>
+            <TripChatStreamLazy
+              trip={trip}
+              currentUser={currentUser}
+              users={users}
+              getIdToken={async () => {
+                try {
+                  const { auth } = await import('./firebase.js');
+                  if (!auth.currentUser) return null;
+                  return auth.currentUser.getIdToken();
+                } catch (err) {
+                  console.warn('[TripChatStream] getIdToken failed:', err);
+                  return null;
+                }
+              }}
+            />
+          </Suspense>
         ) : tab === 'notify' ? (
           <div className="p-6 max-w-2xl">
             <NotifyPanel
