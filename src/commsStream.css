@@ -1,0 +1,205 @@
+/* src/commsStream.css
+ *
+ * Override Stream Chat's default theme to match Skyway's cyan-on-dark
+ * palette. Stream uses CSS variables on .str-chat__theme-dark — we
+ * scope our overrides to .comms-stream so they don't leak into anywhere
+ * else in the app that might (someday) use the default Stream styling.
+ *
+ * Token rationale:
+ *   surface  #0a0e14 (warm charcoal — same as app bg)
+ *   raised   #10151c (cards / channel rows)
+ *   hairline #1f2630
+ *   text     #e5edf5 (warm white)
+ *   muted    #8a95a8
+ *   accent   #1ec0e9 (Skyway brand cyan)
+ */
+
+.comms-stream {
+  --skyway-bg: #0a0e14;
+  --skyway-surface: #10151c;
+  --skyway-raised: #161c25;
+  --skyway-hairline: #1f2630;
+  --skyway-text: #e5edf5;
+  --skyway-muted: #8a95a8;
+  --skyway-dim: #525c6e;
+  --skyway-cyan: #1ec0e9;
+}
+
+/* Root Stream wrapper */
+.comms-stream .str-chat,
+.comms-stream .str-chat__theme-dark {
+  --str-chat__primary-color: var(--skyway-cyan);
+  --str-chat__active-primary-color: var(--skyway-cyan);
+  --str-chat__on-primary-color: var(--skyway-bg);
+  --str-chat__background-color: var(--skyway-bg);
+  --str-chat__secondary-background-color: var(--skyway-surface);
+  --str-chat__tertiary-background-color: var(--skyway-raised);
+  --str-chat__primary-overlay-color: rgba(30, 192, 233, 0.1);
+  --str-chat__text-color: var(--skyway-text);
+  --str-chat__text-low-emphasis-color: var(--skyway-muted);
+  --str-chat__disabled-color: var(--skyway-dim);
+  --str-chat__border-radius-circle: 4px;       /* squarer feel, matches rest of app */
+  --str-chat__border-radius-md: 2px;
+  --str-chat__border-radius-sm: 2px;
+  --str-chat__border-radius-xs: 0;
+  --str-chat__font-family: 'Inter', system-ui, sans-serif;
+  --str-chat__caption-text-font-family: 'JetBrains Mono', ui-monospace, monospace;
+
+  background: var(--skyway-bg);
+  color: var(--skyway-text);
+  height: 100%;
+}
+
+/* Channel list — collapse Stream's default padding so the channel rows
+   read like the rest of our app's denser lists. */
+.comms-stream .str-chat__channel-list {
+  background: transparent;
+  border-right: none;
+  padding: 0;
+}
+
+.comms-stream .str-chat__channel-list-messenger,
+.comms-stream .str-chat__channel-list-messenger__main {
+  background: transparent;
+  padding: 0;
+}
+
+.comms-stream .str-chat__channel-preview-messenger {
+  background: transparent;
+  border-bottom: 1px solid var(--skyway-hairline);
+  padding: 12px;
+}
+.comms-stream .str-chat__channel-preview-messenger:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+.comms-stream .str-chat__channel-preview-messenger--active {
+  background: rgba(30, 192, 233, 0.06) !important;
+  border-left: 2px solid var(--skyway-cyan);
+}
+
+.comms-stream .str-chat__channel-preview-messenger__name {
+  color: var(--skyway-text);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+
+.comms-stream .str-chat__channel-preview-messenger__last-message {
+  color: var(--skyway-muted);
+  font-size: 11px;
+}
+
+.comms-stream .str-chat__channel-preview-messenger__unread-count {
+  background: var(--skyway-cyan);
+  color: var(--skyway-bg);
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 2px;
+  font-size: 10px;
+}
+
+/* Channel header */
+.comms-stream .str-chat__header-livestream,
+.comms-stream .str-chat__channel-header {
+  background: var(--skyway-surface);
+  border-bottom: 1px solid var(--skyway-hairline);
+  padding: 12px 16px;
+}
+
+.comms-stream .str-chat__channel-header .str-chat__avatar {
+  display: none;            /* avatars not needed for trip channels */
+}
+
+/* Message list */
+.comms-stream .str-chat__list,
+.comms-stream .str-chat__main-panel {
+  background: var(--skyway-bg);
+}
+
+.comms-stream .str-chat__message,
+.comms-stream .str-chat__message-text {
+  font-family: 'Inter', system-ui, sans-serif;
+}
+
+.comms-stream .str-chat__message-bubble {
+  background: var(--skyway-surface);
+  color: var(--skyway-text);
+}
+
+.comms-stream .str-chat__message--me .str-chat__message-bubble {
+  background: var(--skyway-cyan);
+  color: var(--skyway-bg);
+}
+
+.comms-stream .str-chat__message-author-name {
+  color: var(--skyway-cyan);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.03em;
+}
+
+.comms-stream .str-chat__message-timestamp,
+.comms-stream .str-chat__message-status {
+  color: var(--skyway-dim);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+}
+
+/* Date separator */
+.comms-stream .str-chat__date-separator {
+  color: var(--skyway-dim);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+/* Message input */
+.comms-stream .str-chat__message-input,
+.comms-stream .str-chat__input-flat,
+.comms-stream .str-chat__input-flat-wrapper {
+  background: var(--skyway-surface);
+  border-top: 1px solid var(--skyway-hairline);
+}
+
+.comms-stream .str-chat__textarea textarea,
+.comms-stream .str-chat__message-textarea {
+  background: var(--skyway-raised);
+  color: var(--skyway-text);
+  border: 1px solid var(--skyway-hairline);
+}
+
+.comms-stream .str-chat__send-button {
+  background: var(--skyway-cyan);
+  color: var(--skyway-bg);
+}
+
+/* Thread */
+.comms-stream .str-chat__thread {
+  background: var(--skyway-bg);
+  border-left: 1px solid var(--skyway-hairline);
+}
+
+/* Scrollbars — match the rest of the app */
+.comms-stream *::-webkit-scrollbar { width: 8px; height: 8px; }
+.comms-stream *::-webkit-scrollbar-track { background: transparent; }
+.comms-stream *::-webkit-scrollbar-thumb {
+  background: var(--skyway-hairline);
+  border-radius: 4px;
+}
+.comms-stream *::-webkit-scrollbar-thumb:hover {
+  background: var(--skyway-muted);
+}
+
+/* Reactions — keep them subtle */
+.comms-stream .str-chat__reaction-list {
+  background: var(--skyway-surface);
+  border: 1px solid var(--skyway-hairline);
+}
+
+/* Empty state when no channel selected */
+.comms-stream .str-chat__channel--empty {
+  background: var(--skyway-bg);
+  color: var(--skyway-muted);
+}

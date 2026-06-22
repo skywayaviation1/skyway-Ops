@@ -7,7 +7,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback, Suspense, laz
 import './theme-classy.css';
 
 // Code-split: Comms screen loads only when the user opens the COMMS tab.
-const CommsScreenLazy = lazy(() => import('./CommsScreen.jsx'));
+const CommsScreenLazy = lazy(() => import('./CommsStream.jsx'));
 
 // Code-split: PushSettings loads only when the user opens their profile.
 const PushSettingsLazy = lazy(() => import('./PushSettings.jsx'));
@@ -27128,14 +27128,32 @@ export default function CharterOps() {
           </Suspense>
         )}
 
-        {/* === COMMS SECTION === */}
+        {/* === COMMS SECTION ===
+            Stream Chat-powered. Replaces the old CommsScreen.jsx (which
+            stays on disk as archive — see deploy README). The screen
+            needs allTrips so it can auto-create trip channels, and a
+            way to fetch the Firebase idToken to mint a Stream token. */}
         {section === 'comms' && (
           <Suspense fallback={
             <div className="flex-1 flex items-center justify-center text-slate-500">
               <Loader2 className="w-5 h-5 animate-spin" />
             </div>
           }>
-            <CommsScreenLazy currentUser={currentUser} users={users} />
+            <CommsScreenLazy
+              currentUser={currentUser}
+              users={users}
+              allTrips={allTrips}
+              getIdToken={async () => {
+                try {
+                  const { auth } = await import('./firebase.js');
+                  if (!auth.currentUser) return null;
+                  return auth.currentUser.getIdToken();
+                } catch (err) {
+                  console.warn('[CommsStream] getIdToken failed:', err);
+                  return null;
+                }
+              }}
+            />
           </Suspense>
         )}
 
