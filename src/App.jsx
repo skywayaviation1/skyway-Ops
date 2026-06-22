@@ -16,6 +16,13 @@ const TripChatStreamLazy = lazy(() =>
   import('./CommsStream.jsx').then((m) => ({ default: m.TripChatStream }))
 );
 
+// Stream presence layer (unread tracking + FCM device registration).
+// This module is light — it dynamic-imports stream-chat inside the
+// provider's effect, so a static import here doesn't bloat the sign-in
+// screen. The hooks (useStreamPresence, useTripUnread) need to be
+// statically imported because hooks can't be lazy-loaded.
+import { StreamPresenceProvider, useStreamPresence, useTripUnread } from './stream-presence.jsx';
+
 // Code-split: PushSettings loads only when the user opens their profile.
 const PushSettingsLazy = lazy(() => import('./PushSettings.jsx'));
 
@@ -4931,6 +4938,10 @@ function PlanField({ label, value, onChange, type = 'text', placeholder }) {
    ============================================================ */
 function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], allTrips, opsEmail, onBack, onArchive, tripDetailOrder, onReorderTripDetail }) {
   const [tab, setTab] = useState(trip.info.isOps ? 'status' : 'chat');
+  // Unread count for THIS trip's chat channel. Updates live via the
+  // global StreamPresenceProvider — no per-mount API call needed. Shows
+  // as a cyan badge on the COMMS tab whenever the user is not on it.
+  const tripChatUnread = useTripUnread(trip?.uid);
   const [statuses, setStatuses] = useState({});
   const [passengers, setPassengers] = useState([]);
   const [scanning, setScanning] = useState(false);
@@ -6215,7 +6226,10 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
             // hotel info for the trip. Hidden on non-ops (HOLD/MX/etc)
             // since they don't have crew lodging in the operational sense.
             { id: 'lodging', label: 'LODGING', icon: Hotel, hidden: !trip.info.isOps },
-            { id: 'chat', label: 'COMMS', icon: MessageSquare },
+            { id: 'chat', label: 'COMMS', icon: MessageSquare,
+              badge: tripChatUnread > 0 ? (tripChatUnread > 9 ? '9+' : String(tripChatUnread)) : null,
+              badgeTone: tripChatUnread > 0 ? 'unread' : undefined,
+            },
             { id: 'notify', label: 'NOTIFY', icon: Bell, hidden: !trip.info.isOps },
             { id: 'delay', label: 'DELAY', icon: AlertCircle, hidden: !trip.info.isOps },
           ].filter(t => !t.hidden);
@@ -6237,7 +6251,17 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
                   <t.icon className="w-3.5 h-3.5" />
                   {t.label}
                   {t.badge && (
-                    <span className={`text-[10px] px-1.5 py-0.5 ${active ? 'bg-cyan-500/20 text-cyan-300' : 'bg-slate-800 text-slate-400'}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    <span
+                      className={
+                        t.badgeTone === 'unread'
+                          // Unread badge — pops in solid cyan regardless of
+                          // tab active state, so the user sees new messages
+                          // even when looking at another tab.
+                          ? 'text-[10px] px-1.5 py-0.5 bg-cyan-400 text-slate-950'
+                          : `text-[10px] px-1.5 py-0.5 ${active ? 'bg-cyan-500/20 text-cyan-300' : 'bg-slate-800 text-slate-400'}`
+                      }
+                      style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: t.badgeTone === 'unread' ? 700 : 400 }}
+                    >
                       {t.badge}
                     </span>
                   )}
@@ -20196,6 +20220,12 @@ function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, sync
     s.roles.includes(currentUser.role) || (s.id === 'duty' && isAdminContext)
   );
 
+  // Unread count for the COMMS tab badge. Sums DMs and group chats only;
+  // trip channels surface as per-trip badges inside trip detail. The
+  // hook returns 0 until StreamPresenceProvider has connected, so the
+  // badge is invisible during sign-in or before the first message.
+  const { totalUnread: commsUnread } = useStreamPresence();
+
   return (
     <header className="border-b border-slate-800 bg-slate-950/80 backdrop-blur sticky top-0 z-30">
       <div className="px-4 md:px-6 py-3 flex items-center justify-between gap-3">
@@ -20283,6 +20313,15 @@ function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, sync
           >
             <s.icon className="w-3.5 h-3.5" />
             {s.label}
+            {s.id === 'comms' && commsUnread > 0 && (
+              <span
+                className="inline-flex items-center justify-center min-w-[16px] h-4 px-1 text-[9px] bg-cyan-400 text-slate-950 leading-none"
+                style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}
+                title={`${commsUnread} unread message${commsUnread === 1 ? '' : 's'}`}
+              >
+                {commsUnread > 99 ? '99+' : commsUnread}
+              </span>
+            )}
             {active && <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-cyan-400" />}
           </button>
         )}
@@ -26623,6 +26662,18 @@ export default function CharterOps() {
         .scroll-area::-webkit-scrollbar-thumb { background: #334155; }
       `}</style>
 
+      <StreamPresenceProvider
+        currentUser={currentUser}
+        getIdToken={async () => {
+          try {
+            const { auth } = await import('./firebase.js');
+            if (!auth.currentUser) return null;
+            return auth.currentUser.getIdToken();
+          } catch {
+            return null;
+          }
+        }}
+      >
       <div className="grid-bg h-full flex flex-col">
         {/* iOS install banner — dismissible, shown only on iOS Safari
             when the app isn't already installed. Surfaces the Share →
@@ -27252,6 +27303,7 @@ export default function CharterOps() {
           }}
         />
       )}
+      </StreamPresenceProvider>
     </div>
   );
 }
