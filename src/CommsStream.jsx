@@ -31,7 +31,7 @@ import {
   Thread,
   Window,
 } from 'stream-chat-react';
-import 'stream-chat-react/dist/css/index.css';
+import 'stream-chat-react/dist/css/v2/index.css';
 import './commsStream.css';
 
 import { Loader2, Plus, MessageCircle, X } from 'lucide-react';
