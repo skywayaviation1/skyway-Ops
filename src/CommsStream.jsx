@@ -515,19 +515,29 @@ export function TripChatStream({ trip, currentUser, users = [], getIdToken }) {
   const [channel, setChannel] = useState(null);
   const [ensureError, setEnsureError] = useState(null);
 
-  // On mount (and when trip/client changes), ensure the trip's channel
-  // exists with the right members. Channel.create() is idempotent — if
-  // the channel exists with the same members it's a no-op; if a member
-  // is missing it's added. This is what makes trip channels "lazy" —
-  // they spring into existence the first time anyone opens this tab.
+  // Compute trip member uids. This re-derives on every users-prop change,
+  // BUT the effect below does NOT depend on the array reference — it
+  // depends only on whether the list is ready. That keeps the channel
+  // watch from being re-fired every React render, which is what was
+  // tripping Stream's "Too many requests" rate limit (HTTP 429, code 9).
+  const memberUids = useMemo(() => {
+    if (!client?.userID || !trip?.uid || users.length === 0) return [];
+    return deriveTripMemberUids(trip, client.userID, users);
+  }, [client?.userID, trip?.uid, users]);
+  const memberUidsReady = memberUids.length > 0;
+
+  // Ensure the trip's channel exists with the right members. Fires
+  // ONCE per (user, trip, users-loaded) combo — never on plain parent
+  // re-renders. channel.create()/watch() is idempotent for the same
+  // channel id; if a teammate later opens this same trip's chat, their
+  // own call will add them. We don't have to track membership here.
   useEffect(() => {
-    if (!client?.userID || !trip?.uid) return;
+    if (!client?.userID || !trip?.uid || !memberUidsReady) return;
     let cancelled = false;
 
-    (async () => {
+    const tryWatch = async (attempt = 1) => {
       try {
         const id = tripChannelId(trip.uid);
-        const memberUids = deriveTripMemberUids(trip, client.userID, users);
         const ch = client.channel('messaging', id, {
           name: `${trip.info?.tail || ''} ${trip.info?.from || ''}→${trip.info?.to || ''}`.trim(),
           members: memberUids,
@@ -546,13 +556,40 @@ export function TripChatStream({ trip, currentUser, users = [], getIdToken }) {
         if (cancelled) return;
         setChannel(ch);
       } catch (err) {
+        // Stream rate-limits at ~5-10 req/sec per channel. If we hit it
+        // (most often after a fresh page load when many things race),
+        // wait and retry up to 3 times with exponential backoff. The
+        // bulk-user-sync in the token endpoint also draws from the same
+        // budget, so backoff is genuinely useful here.
+        const msg = String(err?.message || '');
+        const isRateLimit = err?.code === 9 || msg.includes('Too many requests');
+        if (isRateLimit && attempt < 3 && !cancelled) {
+          const delayMs = 1500 * attempt; // 1.5s, then 3s
+          console.warn(`[TripChatStream] rate-limited, retrying in ${delayMs}ms (attempt ${attempt})`);
+          await new Promise((r) => setTimeout(r, delayMs));
+          if (cancelled) return;
+          return tryWatch(attempt + 1);
+        }
         console.error('[TripChatStream] ensure failed:', err);
-        if (!cancelled) setEnsureError(err?.message || 'Could not open chat');
+        if (!cancelled) {
+          setEnsureError(
+            isRateLimit
+              ? 'Chat is rate-limited right now. Wait a moment and reopen this tab.'
+              : (err?.message || 'Could not open chat')
+          );
+        }
       }
-    })();
+    };
 
+    tryWatch();
     return () => { cancelled = true; };
-  }, [client?.userID, trip?.uid, users]);
+    // Intentionally NOT depending on memberUids (array ref) or `users`.
+    // We re-fire only when:
+    //   - the signed-in user changes (impersonation/sign-out)
+    //   - the trip changes (user navigated to a different trip)
+    //   - the users roster transitioned from empty → loaded
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client?.userID, trip?.uid, memberUidsReady]);
 
   if (error) {
     return (
