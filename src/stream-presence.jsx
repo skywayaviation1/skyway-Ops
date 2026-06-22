@@ -200,28 +200,34 @@ export function StreamPresenceProvider({ currentUser, getIdToken, children }) {
         cleanups.push(() => streamClient.off('notification.mark_unread', onMsgNew));
         cleanups.push(() => streamClient.off('notification.mark_read', onMarkRead));
 
-        // 5. FCM device registration. Skyway's existing PushSettings
-        //    flow stores tokens at users/{uid}.fcmTokens. We watch that
-        //    array and register every new token with Stream so Stream's
-        //    server can fire FCM pushes when the user is offline.
+        // 5. FCM device registration. Skyway's PushSettings flow writes
+        //    each device's FCM token as a document in the SUBCOLLECTION
+        //    `users/{uid}/push-tokens`. Each doc looks like:
+        //      { token: 'cfSz6YM9...:APA91bFI...',
+        //        platform: 'ios' | 'web' | 'android',
+        //        userAgent: '...',
+        //        createdAt, lastSeenAt }
+        //    The token field is what Stream's 'firebase' provider needs;
+        //    Stream relays it through FCM to APNs for iOS PWAs.
         //
-        //    Stream dedupes devices by id, so re-registering the same
-        //    token is cheap. We still gate on registeredFcmTokens to
-        //    avoid the API hit on every snapshot.
+        //    We watch the subcollection and register each token with
+        //    Stream as a separate device. registeredFcmTokens guards
+        //    against duplicate API calls — Stream dedupes server-side
+        //    too, but skipping when we know we already pushed it is
+        //    cheaper.
         try {
           const { db } = await import('./firebase.js');
-          const { doc, onSnapshot } = await import('firebase/firestore');
-          const userRef = doc(db, 'users', user.id);
+          const { collection, onSnapshot } = await import('firebase/firestore');
+          const tokensRef = collection(db, 'users', user.id, 'push-tokens');
 
-          const unsubUser = onSnapshot(
-            userRef,
+          const unsubTokens = onSnapshot(
+            tokensRef,
             async (snap) => {
               if (cancelled) return;
-              const data = snap.data();
-              const tokens = Array.isArray(data?.fcmTokens)
-                ? data.fcmTokens.filter(Boolean)
-                : [];
-              for (const fcmToken of tokens) {
+              for (const docSnap of snap.docs) {
+                const data = docSnap.data();
+                const fcmToken = data?.token;
+                if (!fcmToken) continue;
                 if (registeredFcmTokens.has(fcmToken)) continue;
                 try {
                   // Device id can be any stable string per device. The
@@ -238,7 +244,8 @@ export function StreamPresenceProvider({ currentUser, getIdToken, children }) {
                   registeredFcmTokens.add(fcmToken);
                   console.log(
                     '[StreamPresence] FCM device registered with Stream:',
-                    deviceId
+                    deviceId,
+                    '(platform:', data.platform || 'unknown', ')'
                   );
                 } catch (err) {
                   // Most commonly fails with "InvalidArgument" if the
@@ -253,10 +260,10 @@ export function StreamPresenceProvider({ currentUser, getIdToken, children }) {
               }
             },
             (err) => {
-              console.warn('[StreamPresence] fcmTokens snapshot error:', err);
+              console.warn('[StreamPresence] push-tokens snapshot error:', err);
             }
           );
-          cleanups.push(unsubUser);
+          cleanups.push(unsubTokens);
         } catch (err) {
           console.warn(
             '[StreamPresence] FCM device hookup failed (push will not work for this session):',
