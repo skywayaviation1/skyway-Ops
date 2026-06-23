@@ -215,13 +215,24 @@ function tokenizeJetInsightText(text) {
 // per row, but the name column (with its multi-line wrapping) gets
 // pushed to the end of each page's reading.
 //
+// The pilot names appear with NO delimiter between them — JetInsight
+// wraps long names onto multiple lines in their fixed-width column,
+// which pdfjs streams as a continuous run of capitalized words:
+//   "Daniel Agop Sarkis Olivia Shareen Caldwell Timothy Michael Woods ..."
+// We use the live `users` roster as a dictionary to split this stream:
+// at each position, try matching candidate name lengths 5→2 against
+// real users; pick the best match, advance past it, repeat. Falls back
+// to a 3-word slice (most common pilot-name length) if no match — the
+// preview step lets admin override any wrong matches manually.
+//
 // Strategy:
 //   1. Find the LAST cell token (date/na/missing/never).
-//   2. Everything before+including it = cells. Everything after = name
-//      tokens, which we group into multi-word names.
-//   3. Slice cells into 24-token chunks; each chunk pairs with the
-//      next name by order.
-function parsePdfTokens(tokens) {
+//   2. Everything before+including it = cells.
+//   3. Slice cells into 24-token chunks → expected pilot count.
+//   4. Everything after = the run of name tokens. Run the dictionary
+//      splitter against `users` to break it into individual names,
+//      capped at the expected pilot count.
+function parsePdfTokens(tokens, users = []) {
   // Find the last index of a cell-like token.
   let lastCellIdx = -1;
   for (let i = tokens.length - 1; i >= 0; i--) {
@@ -246,54 +257,145 @@ function parsePdfTokens(tokens) {
     // grace and word tokens skipped
   }
 
-  // After lastCellIdx, group consecutive Capitalized words into names.
-  // A name is at least 2 capitalized words. Numbers, lowercase tokens,
-  // or punctuation between word runs break the name.
-  const names = [];
-  let buffer = [];
-  const flush = () => {
-    if (buffer.length >= 2) names.push(buffer.join(' '));
-    buffer = [];
-  };
+  // Expected pilot count from cell count. Tells the splitter when to stop.
+  const expectedPilots = Math.floor(cells.length / 24);
+
+  // Collect the run of name tokens after lastCellIdx. Keep only words
+  // that look like name fragments (start with uppercase, contain at
+  // least one lowercase letter) and skip known footer junk.
+  const FORBIDDEN_WORDS = new Set([
+    'Copyright', 'Contact', 'Us', 'JetInsight', 'Crewmember', 'Inc',
+    'Skyway', 'Aviation', 'Services', 'Crew', 'Checks', 'Page',
+  ]);
+  const nameWords = [];
   for (let i = lastCellIdx + 1; i < tokens.length; i++) {
     const t = tokens[i];
-    if (t.type === 'word' && /^[A-Z][A-Za-z'.\-]*$/.test(t.value)) {
-      buffer.push(t.value);
-    } else {
-      flush();
+    if (t.type !== 'word') continue;
+    const v = t.value;
+    // First char uppercase + at least one lowercase letter elsewhere.
+    if (!/^[A-Z]/.test(v) || !/[a-z]/.test(v)) continue;
+    if (FORBIDDEN_WORDS.has(v)) continue;
+    nameWords.push(v);
+  }
+
+  // Dictionary-driven splitter using dynamic programming. Greedy
+  // length-by-length matching breaks on cases like:
+  //   "Joseph Daniel Ditroia Daniel Alejandro Gonzalez Crocier..."
+  // where "Joseph Daniel Ditroia Daniel" (4 words) tied-score-matches
+  // "Joseph Ditroia" just as well as the correct 3-word slice, but
+  // taking 4 words cascades into wrong splits for the next 3 names.
+  //
+  // DP fixes this: for each starting position i, dp[i] = best total
+  // score across all partitions of words[i..end]. Each segment's
+  // score combines:
+  //   - User-match score (with bonus when all user-name tokens are
+  //     present in the candidate — favors taking middle names like
+  //     "Daniel Alejandro Gonzalez Crocier" when stored user is
+  //     just "Daniel Gonzalez")
+  //   - Penalty when the candidate's LAST word isn't a token in the
+  //     matched user's name AND the next word past the candidate
+  //     starts a known user's name (suggests trailing leakage)
+  //   - LOOKAHEAD bonus when the next word past this segment is a
+  //     first-of-name in some user (indicates a clean split point)
+  //
+  // The optimum balances local match quality against what's left.
+  const firstNameSet = new Set();
+  for (const u of users) {
+    if (!u.uid || u.approved === false) continue;
+    // Pull first name from both fields. If a user has jetinsightName
+    // set (e.g. "James Edward Reed" while the user's stored name is
+    // "Jim Reed"), we get BOTH "jim" and "james" as known first names,
+    // letting the DP find clean splits regardless of which form the
+    // PDF uses.
+    for (const candidate of [u.name, u.jetinsightName]) {
+      const first = (candidate || '').toLowerCase().split(/\s+/)[0];
+      if (first) firstNameSet.add(first);
     }
   }
-  flush();
 
-  // Filter obvious non-names. JetInsight footer has things like
-  // "Copyright JetInsight" "Contact Us" "Crewmember badge". The 24
-  // column headers like "Medical 1st class" don't survive the
-  // post-lastCellIdx filter because they precede data, not follow it.
-  // But the footer copyright might. Drop anything containing forbidden
-  // substrings.
-  const FORBIDDEN = /copyright|contact|jetinsight|crewmember|crew checks/i;
-  const cleanNames = names.filter(n => !FORBIDDEN.test(n));
+  const names = [];
+  if (nameWords.length > 0 && expectedPilots > 0) {
+    const W = nameWords.length;
+    const dp = Array(W + 1).fill(null).map(() => ({ score: -Infinity, len: 0 }));
+    dp[W] = { score: 0, len: 0 };
+
+    for (let i = W - 1; i >= 0; i--) {
+      for (let len = 2; len <= 5 && i + len <= W; len++) {
+        const candidate = nameWords.slice(i, i + len).join(' ');
+        const match = pickBestMatch(candidate, users);
+        let segScore = -20;
+        if (match) {
+          const userTokens = (match.name || '')
+            .toLowerCase().split(/\s+/).filter(Boolean);
+          const candTokens = candidate.toLowerCase().split(/\s+/);
+          const allPresent = userTokens.every(t => candTokens.includes(t));
+          const sharedCount = userTokens.filter(t => candTokens.includes(t)).length;
+          // Binary score: strong base if all user tokens present
+          // (the matched user's name is fully contained), weaker if
+          // only some are. Overlap percentages aren't useful here
+          // because long candidates with valid middle names get
+          // unfairly penalized.
+          if (allPresent) segScore = 80;
+          else if (sharedCount >= 1) segScore = 40;
+          else segScore = 20;
+        }
+        // Lookahead — the single most informative signal for split
+        // points. If the next word starts a known user's name, the
+        // current segment terminates cleanly. If it doesn't, the
+        // current segment probably should absorb it.
+        if (i + len < W) {
+          const nextWord = nameWords[i + len].toLowerCase();
+          if (firstNameSet.has(nextWord)) segScore += 25;
+          else segScore -= 15;
+        }
+        const total = segScore + dp[i + len].score;
+        if (total > dp[i].score) {
+          dp[i] = { score: total, len };
+        }
+      }
+    }
+
+    let i = 0;
+    while (i < W && names.length < expectedPilots) {
+      const seg = dp[i];
+      if (seg.len === 0) {
+        const fb = Math.min(3, W - i);
+        names.push(nameWords.slice(i, i + fb).join(' '));
+        i += fb;
+      } else {
+        names.push(nameWords.slice(i, i + seg.len).join(' '));
+        i += seg.len;
+      }
+    }
+  }
 
   // Group cells into 24-cell chunks, one per pilot in order.
   const pilots = [];
   const warnings = [];
-  const expectedTotal = cleanNames.length * 24;
-  if (cells.length < expectedTotal) {
+  if (cells.length % 24 !== 0) {
     warnings.push(
-      `PDF gave ${cells.length} cells but expected ${expectedTotal} for ` +
-      `${cleanNames.length} pilots — some rows may be truncated.`
-    );
-  } else if (cells.length > expectedTotal) {
-    warnings.push(
-      `PDF gave ${cells.length} cells, ${cells.length - expectedTotal} more than ` +
-      `expected for ${cleanNames.length} pilots — extra cells will be ignored.`
+      `PDF gave ${cells.length} cells, not a clean multiple of 24 — ` +
+      `${cells.length % 24} leftover cells will be ignored. ` +
+      `If a pilot looks wrong, recheck the PDF.`
     );
   }
-  for (let i = 0; i < cleanNames.length; i++) {
-    const start = i * 24;
+  if (names.length < expectedPilots) {
+    warnings.push(
+      `Found ${expectedPilots} pilot rows but only matched ${names.length} names. ` +
+      `Unmatched rows will show as 3-word fallback splits — use the preview to fix.`
+    );
+  }
+  if (i < nameWords.length) {
+    warnings.push(
+      `${nameWords.length - i} extra name word${nameWords.length - i === 1 ? '' : 's'} ` +
+      `after expected pilots — likely PDF footer text, ignored.`
+    );
+  }
+  for (let n = 0; n < names.length; n++) {
+    const start = n * 24;
     const chunk = cells.slice(start, start + 24);
     pilots.push({
-      name: cleanNames[i],
+      name: names[n],
       cells: chunk,
       rawLen: chunk.length,
     });
@@ -664,7 +766,7 @@ export default function CurrencyImporter({ users, currentUserUid, onClose, onImp
     try {
       const text = await extractPdfText(file);
       const tokens = tokenizeJetInsightText(text);
-      const { pilots, warnings } = parsePdfTokens(tokens);
+      const { pilots, warnings } = parsePdfTokens(tokens, users);
       if (pilots.length === 0) {
         setErr(
           'Couldn\'t extract any pilot rows from this PDF. Either the format ' +
