@@ -119,87 +119,136 @@ async function loadPdfjs() {
   return pdfjs;
 }
 
-// Extract all text from a PDF as a single concatenated string. Each
-// item gets a trailing space so words don't run together. Reading order
-// follows the PDF's text stream, which for JetInsight's report comes
-// out as headers → data cells (left-to-right, top-to-bottom) → pilot
-// name column at the end (since name column sits leftmost visually but
-// pdfjs streams it last because the names are vertically tall blocks).
-async function extractPdfText(file) {
+// Extract every text item from a PDF with its X/Y position and page
+// number. Y is normalized so larger Y = lower on the page (reading
+// order), regardless of pdfjs's bottom-origin coordinate system.
+//
+// We need positions because the JetInsight pilot-name column streams
+// every pilot's name as separate capitalized words with no delimiter
+// between pilots. The only reliable way to know where one name ends
+// and the next begins is to look at the vertical spacing in the table.
+async function extractPdfItems(file) {
   const pdfjs = await loadPdfjs();
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
-  const parts = [];
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i);
+  const items = [];
+  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+    const page = await pdf.getPage(pageNum);
     const content = await page.getTextContent();
-    for (const item of content.items) {
-      if (item.str && item.str.trim()) parts.push(item.str);
+    const viewport = page.getViewport({ scale: 1.0 });
+    for (const it of content.items) {
+      if (!it.str || !it.str.trim()) continue;
+      items.push({
+        str: it.str,
+        x: it.transform[4],
+        // Flip so top=0, bottom=large. Easier to think about.
+        y: viewport.height - it.transform[5],
+        page: pageNum,
+      });
     }
-    // Page break marker (safe — our tokenizer ignores it)
-    parts.push(' ');
   }
-  return parts.join(' ');
+  return items;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   TEXT TOKENIZER — used by PDF path
+   TEXT TOKENIZER — emit tokens with X/Y positions preserved
    ═══════════════════════════════════════════════════════════════════ */
 
-// Walk through extracted text and emit typed tokens. Cells are dates,
-// "n/a", "Missing", or "Never". Anything wrapped in (grace: …) is its
-// own token type so we can discard it. Everything else becomes either
-// a "word" (alphabetic, candidate for pilot name) or skipped.
-function tokenizeJetInsightText(text) {
-  // Normalize whitespace and collapse newlines.
-  const t = text.replace(/\s+/g, ' ').trim();
+// Walk text items from pdfjs and emit typed tokens. Each token keeps
+// the x/y/page of its source item so downstream parsing can use spatial
+// information. Cells are dates, "n/a", "Missing", or "Never". Anything
+// wrapped in (grace: …) is its own token type so we can discard it.
+// Everything else becomes either a "word" (alphabetic, candidate for
+// pilot name or column header) or skipped.
+//
+// IMPORTANT: JetInsight wraps "(grace: MM/DD/YYYY)" across multiple
+// text items vertically — typically "(grace:" on one line, the date on
+// the next, and ")" on a third. We track grace-block state ACROSS
+// items so the inner date isn't emitted as a separate cell. Without
+// this, every dated cell with grace doubles the cell count and breaks
+// the 24-cell-per-pilot math.
+function tokenizeItems(items) {
   const tokens = [];
-  let i = 0;
-  while (i < t.length) {
-    while (i < t.length && t[i] === ' ') i++;
-    if (i >= t.length) break;
+  let inGrace = false; // when true, swallow dates and other tokens
+                        // until we see a ")" closing the grace block.
 
-    // Date M/D/YYYY or MM/DD/YYYY
-    const dm = t.slice(i).match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
-    if (dm) {
-      const mm = String(dm[1]).padStart(2, '0');
-      const dd = String(dm[2]).padStart(2, '0');
-      tokens.push({ type: 'date', value: `${dm[3]}-${mm}-${dd}` });
-      i += dm[0].length;
-      continue;
-    }
+  for (const item of items) {
+    const text = item.str;
+    let i = 0;
+    while (i < text.length) {
+      while (i < text.length && /\s/.test(text[i])) i++;
+      if (i >= text.length) break;
 
-    // (grace: M/D/YYYY) — entire block, skip
-    if (t.slice(i, i + 7).toLowerCase() === '(grace:') {
-      const close = t.indexOf(')', i);
-      if (close > i) {
-        tokens.push({ type: 'grace' });
-        i = close + 1;
+      // ")" — closes a grace block (single char).
+      if (text[i] === ')') {
+        if (inGrace) inGrace = false;
+        i++;
         continue;
       }
-    }
 
-    // "n/a"
-    if (t.slice(i, i + 3).toLowerCase() === 'n/a') {
-      tokens.push({ type: 'na' });
-      i += 3;
-      continue;
-    }
+      // "(grace:" — opens a grace block. Closing ")" may be in this
+      // same item or several items later.
+      if (text.slice(i, i + 7).toLowerCase() === '(grace:') {
+        const close = text.indexOf(')', i);
+        if (close > i) {
+          // Closes within this item.
+          tokens.push({ type: 'grace', x: item.x, y: item.y, page: item.page });
+          i = close + 1;
+        } else {
+          // Opens here, closes later — flag state and skip the prefix.
+          tokens.push({ type: 'grace', x: item.x, y: item.y, page: item.page });
+          inGrace = true;
+          i += 7;
+        }
+        continue;
+      }
 
-    // Word: alphabetic, can include /, ., -, '
-    const wm = t.slice(i).match(/^[A-Za-z][A-Za-z0-9'.\-/]*/);
-    if (wm) {
-      const w = wm[0];
-      const lower = w.toLowerCase();
-      if (lower === 'missing') tokens.push({ type: 'missing' });
-      else if (lower === 'never') tokens.push({ type: 'never' });
-      else tokens.push({ type: 'word', value: w });
-      i += w.length;
-      continue;
-    }
+      // Date M/D/YYYY or MM/DD/YYYY
+      const dm = text.slice(i).match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+      if (dm) {
+        if (!inGrace) {
+          const mm = String(dm[1]).padStart(2, '0');
+          const dd = String(dm[2]).padStart(2, '0');
+          tokens.push({
+            type: 'date', value: `${dm[3]}-${mm}-${dd}`,
+            x: item.x, y: item.y, page: item.page,
+          });
+        }
+        // else: this is the grace inner date — silently skip.
+        i += dm[0].length;
+        continue;
+      }
 
-    // Skip punctuation / other
-    i++;
+      // "n/a"
+      if (text.slice(i, i + 3).toLowerCase() === 'n/a') {
+        if (!inGrace) {
+          tokens.push({ type: 'na', x: item.x, y: item.y, page: item.page });
+        }
+        i += 3;
+        continue;
+      }
+
+      // Word: alphabetic, can include /, ., -, ', digits after first char
+      const wm = text.slice(i).match(/^[A-Za-z][A-Za-z0-9'.\-/]*/);
+      if (wm) {
+        const w = wm[0];
+        if (!inGrace) {
+          const lower = w.toLowerCase();
+          let type = 'word';
+          if (lower === 'missing') type = 'missing';
+          else if (lower === 'never') type = 'never';
+          tokens.push({
+            type, value: w,
+            x: item.x, y: item.y, page: item.page,
+          });
+        }
+        i += w.length;
+        continue;
+      }
+
+      // Skip punctuation / other
+      i++;
+    }
   }
   return tokens;
 }
@@ -208,198 +257,214 @@ function tokenizeJetInsightText(text) {
    PARSE — token stream → pilot rows
    ═══════════════════════════════════════════════════════════════════ */
 
-// JetInsight PDF text streams in this order:
-//   [headers]  [24 cells × N pilots]  [N pilot names]
-// The data cells come first as one long contiguous run; pilot names
-// stream after all data because pdfjs reads the table left-to-right
-// per row, but the name column (with its multi-line wrapping) gets
-// pushed to the end of each page's reading.
+// JetInsight PDF layout:
 //
-// The pilot names appear with NO delimiter between them — JetInsight
-// wraps long names onto multiple lines in their fixed-width column,
-// which pdfjs streams as a continuous run of capitalized words:
-//   "Daniel Agop Sarkis Olivia Shareen Caldwell Timothy Michael Woods ..."
-// We use the live `users` roster as a dictionary to split this stream:
-// at each position, try matching candidate name lengths 5→2 against
-// real users; pick the best match, advance past it, repeat. Falls back
-// to a 3-word slice (most common pilot-name length) if no match — the
-// preview step lets admin override any wrong matches manually.
+//   [report date at top, e.g. "06/23/2026"]
+//   [CBP warning, page title]
+//   [24 column headers — last word of last header is "badge"
+//      (from "Known Crewmember badge")]
+//   [N pilot rows × 24 cells, multi-line cells for grace periods]
+//   [footer: "Copyright © 2026 - JetInsight (0.491 s) Contact Us"]
+//   [N pilot names, multi-line, each name 1-4 words]
+//
+// Pilot names in the name column are separate text items per word and
+// stream as a continuous run of capitalized words with NO delimiter
+// between pilots. The only reliable signal is vertical spacing — each
+// pilot occupies one table row, so name words for one pilot share a
+// similar Y range while the next pilot starts at a noticeably larger Y.
 //
 // Strategy:
-//   1. Find the LAST cell token (date/na/missing/never).
-//   2. Everything before+including it = cells.
-//   3. Slice cells into 24-token chunks → expected pilot count.
-//   4. Everything after = the run of name tokens. Run the dictionary
-//      splitter against `users` to break it into individual names,
-//      capped at the expected pilot count.
-function parsePdfTokens(tokens, users = []) {
-  // Find the last index of a cell-like token.
-  let lastCellIdx = -1;
-  for (let i = tokens.length - 1; i >= 0; i--) {
-    const k = tokens[i].type;
-    if (k === 'date' || k === 'na' || k === 'missing' || k === 'never') {
-      lastCellIdx = i;
-      break;
+//   1. Find "badge" marker → end of column headers, start of data.
+//   2. Find "Copyright" marker → end of data, start of names.
+//   3. Collect cells in [dataStart, copyrightIdx). Derive
+//      N = round(cells.length / 24).
+//   4. If cells.length > N*24, trim extras from the FRONT (drops the
+//      PDF's report date that gets picked up by the tokenizer).
+//   5. Collect Capitalized-word tokens after Copyright, filtering
+//      footer junk (Copyright, JetInsight, Contact, Us, etc.).
+//   6. Sort name tokens by (page, y, x). Find the (N-1) LARGEST Y-gaps
+//      between adjacent tokens — those are the row boundaries.
+//   7. Split into N groups at those boundaries; join each group's
+//      words into the pilot's full name.
+//   8. Pair the i-th 24-cell chunk with the i-th name.
+//
+// This works regardless of whether pilot names match the Firestore
+// roster — the preview step lets admin override matches manually.
+function findWordIndex(tokens, value, fromIdx = 0) {
+  const lower = value.toLowerCase();
+  for (let i = fromIdx; i < tokens.length; i++) {
+    if (tokens[i].type === 'word' && tokens[i].value.toLowerCase() === lower) {
+      return i;
     }
   }
+  return -1;
+}
 
-  if (lastCellIdx < 0) return { pilots: [], warnings: ['No cell data found in PDF text.'] };
+function parsePdfTokens(tokens, users = []) {
+  const warnings = [];
 
-  // Pull only cell tokens up to lastCellIdx; ignore words mixed in
-  // (those would be header text like "Medical" or "Ground / oral").
-  const cells = [];
-  for (let i = 0; i <= lastCellIdx; i++) {
-    const t = tokens[i];
-    if (t.type === 'date') cells.push({ kind: 'date', dueDate: t.value });
-    else if (t.type === 'na') cells.push({ kind: 'na' });
-    else if (t.type === 'missing') cells.push({ kind: 'missing' });
-    else if (t.type === 'never') cells.push({ kind: 'never' });
-    // grace and word tokens skipped
+  // Step 1: data start = after "badge" marker (last column header word).
+  let dataStart = -1;
+  const badgeIdx = findWordIndex(tokens, 'badge');
+  if (badgeIdx >= 0) {
+    dataStart = badgeIdx + 1;
+  } else {
+    // Fallback: first cell-like token.
+    for (let i = 0; i < tokens.length; i++) {
+      const k = tokens[i].type;
+      if (k === 'date' || k === 'na' || k === 'missing' || k === 'never') {
+        dataStart = i;
+        break;
+      }
+    }
+    warnings.push('Could not find "badge" header marker — using first cell. Verify the parsed rows look right.');
+  }
+  if (dataStart < 0) {
+    return { pilots: [], warnings: ['No cell data found in PDF.'] };
   }
 
-  // Expected pilot count from cell count. Tells the splitter when to stop.
-  const expectedPilots = Math.floor(cells.length / 24);
+  // Step 2: data end = "Copyright" footer marker.
+  let dataEnd = findWordIndex(tokens, 'Copyright', dataStart);
+  if (dataEnd < 0) {
+    // Fallback: last cell-like token + 1.
+    for (let i = tokens.length - 1; i >= dataStart; i--) {
+      const k = tokens[i].type;
+      if (k === 'date' || k === 'na' || k === 'missing' || k === 'never') {
+        dataEnd = i + 1;
+        break;
+      }
+    }
+    warnings.push('Could not find "Copyright" footer marker — using last cell.');
+  }
+  if (dataEnd < 0) dataEnd = tokens.length;
 
-  // Collect the run of name tokens after lastCellIdx. Keep only words
-  // that look like name fragments (start with uppercase, contain at
-  // least one lowercase letter) and skip known footer junk.
-  const FORBIDDEN_WORDS = new Set([
-    'Copyright', 'Contact', 'Us', 'JetInsight', 'Crewmember', 'Inc',
-    'Skyway', 'Aviation', 'Services', 'Crew', 'Checks', 'Page',
+  // Step 3: collect cell TOKENS (keep position info) in data section.
+  // We need positions so we can cluster cells by Y to find row primary
+  // positions in the next step.
+  const cellTokens = [];
+  for (let i = dataStart; i < dataEnd; i++) {
+    const t = tokens[i];
+    if (t.type === 'date' || t.type === 'na' || t.type === 'missing' || t.type === 'never') {
+      cellTokens.push(t);
+    }
+  }
+  if (cellTokens.length === 0) {
+    return { pilots: [], warnings: ['No cells extracted from data section.'] };
+  }
+
+  // Step 4: cluster cell tokens by Y to find pilot row primary positions.
+  // Each pilot row has 24 cells at the same Y (the FIRST line of each
+  // cell). Multi-line cells (grace periods) live BELOW this primary Y
+  // and are already excluded by the tokenizer's grace-swallowing state.
+  // So clustering cells by Y with a small tolerance gives us one cluster
+  // per pilot row, each containing ~24 cells.
+  //
+  // We use a running-average refY for stability — if there's any drift
+  // within a cluster, we don't bias the early/late members.
+  const Y_CLUSTER_TOLERANCE = 4;
+  const cellsSortedByY = [...cellTokens].sort((a, b) => a.y - b.y);
+  const cellClusters = [];
+  let curCluster = null;
+  for (const t of cellsSortedByY) {
+    if (!curCluster || Math.abs(t.y - curCluster.refY) > Y_CLUSTER_TOLERANCE) {
+      curCluster = { refY: t.y, items: [] };
+      cellClusters.push(curCluster);
+    }
+    curCluster.items.push(t);
+    curCluster.refY = curCluster.items.reduce((s, x) => s + x.y, 0) / curCluster.items.length;
+  }
+
+  // Real pilot rows have many cells (close to 24). Filter out smaller
+  // clusters which are noise — leftover grace fragments, page-break
+  // artifacts, etc. 15 is the threshold (≥ 60% of 24).
+  const dataRows = cellClusters.filter(c => c.items.length >= 15);
+  if (dataRows.length === 0) {
+    return {
+      pilots: [],
+      warnings: [
+        `Found ${cellClusters.length} Y-clusters of cells but none had ≥15 cells per row. ` +
+        `Layout may not be standard JetInsight format. Largest cluster: ${
+          Math.max(...cellClusters.map(c => c.items.length), 0)
+        } cells.`,
+      ],
+    };
+  }
+  dataRows.sort((a, b) => a.refY - b.refY);
+  const N = dataRows.length;
+
+  // Step 5: collect name-candidate tokens after Copyright marker.
+  const FOOTER_JUNK = new Set([
+    'copyright', 'jetinsight', 'contact', 'us', 'crewmember',
+    'aviation', 'services', 'skyway', 'crew', 'checks', 'inc', 'page',
   ]);
-  const nameWords = [];
-  for (let i = lastCellIdx + 1; i < tokens.length; i++) {
+  const nameTokens = [];
+  for (let i = dataEnd + 1; i < tokens.length; i++) {
     const t = tokens[i];
     if (t.type !== 'word') continue;
-    const v = t.value;
-    // First char uppercase + at least one lowercase letter elsewhere.
-    if (!/^[A-Z]/.test(v) || !/[a-z]/.test(v)) continue;
-    if (FORBIDDEN_WORDS.has(v)) continue;
-    nameWords.push(v);
+    if (!/^[A-Z]/.test(t.value)) continue;
+    // Reject footer junk only when it's the standalone word, not part of
+    // a multi-word actual name. (e.g. "Jake" should not be filtered even
+    // though it might appear as part of a non-name elsewhere.)
+    if (FOOTER_JUNK.has(t.value.toLowerCase())) continue;
+    nameTokens.push(t);
   }
 
-  // Dictionary-driven splitter using dynamic programming. Greedy
-  // length-by-length matching breaks on cases like:
-  //   "Joseph Daniel Ditroia Daniel Alejandro Gonzalez Crocier..."
-  // where "Joseph Daniel Ditroia Daniel" (4 words) tied-score-matches
-  // "Joseph Ditroia" just as well as the correct 3-word slice, but
-  // taking 4 words cascades into wrong splits for the next 3 names.
+  // Step 6: assign each name token to its pilot row by Y proximity.
+  // The name lives in the same row band as the cells. Names can wrap
+  // to multiple lines within a row, so a name token's Y may be slightly
+  // BELOW the row's primary cell Y. The row band runs from the row's
+  // primary Y down to just above the NEXT row's primary Y.
   //
-  // DP fixes this: for each starting position i, dp[i] = best total
-  // score across all partitions of words[i..end]. Each segment's
-  // score combines:
-  //   - User-match score (with bonus when all user-name tokens are
-  //     present in the candidate — favors taking middle names like
-  //     "Daniel Alejandro Gonzalez Crocier" when stored user is
-  //     just "Daniel Gonzalez")
-  //   - Penalty when the candidate's LAST word isn't a token in the
-  //     matched user's name AND the next word past the candidate
-  //     starts a known user's name (suggests trailing leakage)
-  //   - LOOKAHEAD bonus when the next word past this segment is a
-  //     first-of-name in some user (indicates a clean split point)
-  //
-  // The optimum balances local match quality against what's left.
-  const firstNameSet = new Set();
-  for (const u of users) {
-    if (!u.uid || u.approved === false) continue;
-    // Pull first name from both fields. If a user has jetinsightName
-    // set (e.g. "James Edward Reed" while the user's stored name is
-    // "Jim Reed"), we get BOTH "jim" and "james" as known first names,
-    // letting the DP find clean splits regardless of which form the
-    // PDF uses.
-    for (const candidate of [u.name, u.jetinsightName]) {
-      const first = (candidate || '').toLowerCase().split(/\s+/)[0];
-      if (first) firstNameSet.add(first);
-    }
+  // We also extend a bit upward (-10 units) to catch a name that might
+  // be on the row's first line, slightly above the cell's Y center.
+  const rowBands = dataRows.map((row, i) => {
+    const next = dataRows[i + 1];
+    return {
+      idx: i,
+      yStart: row.refY - 10,
+      yEnd: next ? next.refY - 4 : row.refY + 100,
+      row,
+    };
+  });
+
+  const namesByRow = Array.from({ length: N }, () => []);
+  for (const nt of nameTokens) {
+    const band = rowBands.find(b => nt.y >= b.yStart && nt.y < b.yEnd);
+    if (band) namesByRow[band.idx].push(nt);
   }
 
-  const names = [];
-  if (nameWords.length > 0 && expectedPilots > 0) {
-    const W = nameWords.length;
-    const dp = Array(W + 1).fill(null).map(() => ({ score: -Infinity, len: 0 }));
-    dp[W] = { score: 0, len: 0 };
-
-    for (let i = W - 1; i >= 0; i--) {
-      for (let len = 2; len <= 5 && i + len <= W; len++) {
-        const candidate = nameWords.slice(i, i + len).join(' ');
-        const match = pickBestMatch(candidate, users);
-        let segScore = -20;
-        if (match) {
-          const userTokens = (match.name || '')
-            .toLowerCase().split(/\s+/).filter(Boolean);
-          const candTokens = candidate.toLowerCase().split(/\s+/);
-          const allPresent = userTokens.every(t => candTokens.includes(t));
-          const sharedCount = userTokens.filter(t => candTokens.includes(t)).length;
-          // Binary score: strong base if all user tokens present
-          // (the matched user's name is fully contained), weaker if
-          // only some are. Overlap percentages aren't useful here
-          // because long candidates with valid middle names get
-          // unfairly penalized.
-          if (allPresent) segScore = 80;
-          else if (sharedCount >= 1) segScore = 40;
-          else segScore = 20;
-        }
-        // Lookahead — the single most informative signal for split
-        // points. If the next word starts a known user's name, the
-        // current segment terminates cleanly. If it doesn't, the
-        // current segment probably should absorb it.
-        if (i + len < W) {
-          const nextWord = nameWords[i + len].toLowerCase();
-          if (firstNameSet.has(nextWord)) segScore += 25;
-          else segScore -= 15;
-        }
-        const total = segScore + dp[i + len].score;
-        if (total > dp[i].score) {
-          dp[i] = { score: total, len };
-        }
-      }
-    }
-
-    let i = 0;
-    while (i < W && names.length < expectedPilots) {
-      const seg = dp[i];
-      if (seg.len === 0) {
-        const fb = Math.min(3, W - i);
-        names.push(nameWords.slice(i, i + fb).join(' '));
-        i += fb;
-      } else {
-        names.push(nameWords.slice(i, i + seg.len).join(' '));
-        i += seg.len;
-      }
-    }
-  }
-
-  // Group cells into 24-cell chunks, one per pilot in order.
+  // Step 7: build the pilots array. For each row, join name tokens in
+  // (y, x) order and pair with the row's 24 cells (also in x order).
   const pilots = [];
-  const warnings = [];
-  if (cells.length % 24 !== 0) {
-    warnings.push(
-      `PDF gave ${cells.length} cells, not a clean multiple of 24 — ` +
-      `${cells.length % 24} leftover cells will be ignored. ` +
-      `If a pilot looks wrong, recheck the PDF.`
-    );
-  }
-  if (names.length < expectedPilots) {
-    warnings.push(
-      `Found ${expectedPilots} pilot rows but only matched ${names.length} names. ` +
-      `Unmatched rows will show as 3-word fallback splits — use the preview to fix.`
-    );
-  }
-  if (i < nameWords.length) {
-    warnings.push(
-      `${nameWords.length - i} extra name word${nameWords.length - i === 1 ? '' : 's'} ` +
-      `after expected pilots — likely PDF footer text, ignored.`
-    );
-  }
-  for (let n = 0; n < names.length; n++) {
-    const start = n * 24;
-    const chunk = cells.slice(start, start + 24);
+  for (let i = 0; i < N; i++) {
+    const sortedNames = [...namesByRow[i]].sort((a, b) => a.y - b.y || a.x - b.x);
+    const pilotName = sortedNames.map(n => n.value).join(' ').trim();
+    const rowCells = [...dataRows[i].items].sort((a, b) => a.x - b.x);
+    const cellArr = rowCells.map(t => {
+      if (t.type === 'date') return { kind: 'date', dueDate: t.value };
+      if (t.type === 'na') return { kind: 'na' };
+      if (t.type === 'missing') return { kind: 'missing' };
+      if (t.type === 'never') return { kind: 'never' };
+      return null;
+    }).filter(Boolean);
+
     pilots.push({
-      name: names[n],
-      cells: chunk,
-      rawLen: chunk.length,
+      name: pilotName || `(row ${i + 1} — no name detected)`,
+      cells: cellArr,
+      rawLen: cellArr.length,
     });
   }
+
+  // Warnings
+  const unnamedCount = pilots.filter(p => p.name.startsWith('(row ')).length;
+  if (unnamedCount > 0) {
+    warnings.push(`${unnamedCount} row(s) had cells but no detectable pilot name. Pick the matching pilot manually in the preview.`);
+  }
+  const wrongCellCount = pilots.filter(p => p.cells.length !== 24).length;
+  if (wrongCellCount > 0) {
+    warnings.push(`${wrongCellCount} row(s) had a cell count other than 24. Review carefully before importing.`);
+  }
+
   return { pilots, warnings };
 }
 
@@ -764,8 +829,8 @@ export default function CurrencyImporter({ users, currentUserUid, onClose, onImp
     }
     setPdfLoading(true);
     try {
-      const text = await extractPdfText(file);
-      const tokens = tokenizeJetInsightText(text);
+      const items = await extractPdfItems(file);
+      const tokens = tokenizeItems(items);
       const { pilots, warnings } = parsePdfTokens(tokens, users);
       if (pilots.length === 0) {
         setErr(
