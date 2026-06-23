@@ -1,32 +1,42 @@
 // src/PilotCurrency.jsx
 //
-// Pilot Currency & Training Dashboard
+// Pilot Currency & Training Dashboard — v2
 //
-// Single screen that surfaces every tracked pilot's compliance status
-// for FAA currencies (61.57), Part 135 checkrides (293/297/299), and
-// recurrent training (351), plus medical certificate expiration.
+// Tracks all 24 items from the JetInsight "Crew checks by crew member"
+// report:
+//   - FAA recency (61.57 a/b/c)
+//   - Part 135 general (basic indoc, 293(a) general ground/oral)
+//   - Part 135 aircraft-specific (293(a)(2-3) and 293(b) × 4 type variants)
+//   - Part 135 checks (297, 299)
+//   - Training (emergency, hazmat, recurrent 351)
+//   - Special ops (RVSM, TFSSP, DASSP)
+//   - Badges (KCM — no expiration)
+//   - Medical (separate, uses class + explicit expirationDate)
 //
-// Audience:
-//   - Admin / ops: full view of all crew, can edit any pilot's dates
-//   - Crew: read-only view of THEIR OWN record (auto-filtered)
+// Three view modes (admin toggles):
 //
-// Surface design:
-//   Sticky header with summary counts + filter chips
-//   Vertical list of pilot cards (mobile-first, scales fine to desktop)
-//   Each card collapsed shows worst-status badge + summary line
-//   Expanded shows every currency type with its own status + due date
-//   Admin sees Edit icon on each card → modal editor
+//   MATRIX  — JetInsight-style grid. Rows = pilots, columns = items.
+//             Color-coded cells (green/yellow/orange/red/gray). Tap any
+//             cell to drill into that pilot's item editor. Best for
+//             "fleet at a glance."
 //
-// Data flow:
-//   subscribePilotCurrencies → currenciesByUid (admin)
-//   subscribeMyPilotCurrency → {[uid]: doc} (crew)
-//   For each pilot in users[] (filtered to role='crew'), join the
-//   currency doc, compute statuses, render.
+//   CARDS   — Pilot-first. Each pilot is a card; expand to see all
+//             their items grouped by category. Best for per-pilot
+//             review and editing.
+//
+//   AGENDA  — Item-first. Each currency type listed with pilots due
+//             soonest at top. Best for "schedule the sims this month."
+//
+// Editing happens through one modal regardless of view mode. Modal
+// understands both direct due-date entry (matches JetInsight) and
+// last-completed entry (system computes due).
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, lazy, Suspense } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  ShieldCheck, ChevronDown, ChevronUp, X, Save, Edit3,
+  ShieldCheck, ChevronDown, ChevronUp, X, Save, Edit3, Grid3x3,
+  LayoutList, ListTree, AlertTriangle, CheckCircle2, Minus,
+  Search, Upload, Loader2,
 } from 'lucide-react';
 import {
   CURRENCY_TYPES,
@@ -40,581 +50,625 @@ import {
   computeAutoTakeoffLanding,
 } from './firebase-currency.js';
 
+// Lazy-loaded bulk importer modal. Only pulled in when admin clicks
+// IMPORT — keeps the dashboard load light for everyone else.
+const CurrencyImporterLazy = lazy(() => import('./CurrencyImporter.jsx'));
+
+const ACTIVE_TYPES = CURRENCY_TYPES.filter(t => !t.hidden && t.category !== 'LEGACY');
+
+const CATEGORY_ORDER = [
+  'FAA RECENCY',
+  'PART 135 GENERAL',
+  'AIRCRAFT-SPECIFIC',
+  'PART 135 CHECKS',
+  'TRAINING',
+  'SPECIAL OPS',
+  'BADGES',
+];
+
+const CATEGORY_COLORS = {
+  'FAA RECENCY':       'text-cyan-400 border-cyan-500/40',
+  'PART 135 GENERAL':  'text-violet-400 border-violet-500/40',
+  'AIRCRAFT-SPECIFIC': 'text-orange-400 border-orange-500/40',
+  'PART 135 CHECKS':   'text-blue-400 border-blue-500/40',
+  'TRAINING':          'text-emerald-400 border-emerald-500/40',
+  'SPECIAL OPS':       'text-pink-400 border-pink-500/40',
+  'BADGES':            'text-yellow-400 border-yellow-500/40',
+  'MEDICAL':           'text-red-400 border-red-500/40',
+};
+
+const TYPES_BY_CATEGORY = (() => {
+  const map = {};
+  for (const cat of CATEGORY_ORDER) map[cat] = [];
+  for (const t of ACTIVE_TYPES) {
+    if (!map[t.category]) map[t.category] = [];
+    map[t.category].push(t);
+  }
+  return map;
+})();
+
+/* ═══════════════════════════════════════════════════════════════════
+   ROOT
+   ═══════════════════════════════════════════════════════════════════ */
+
 export default function PilotCurrencyScreen({ currentUser, users, allTrips }) {
-  // Role gating: admin + ops can see everyone and edit; crew sees self
-  // only, read-only. We treat 'admin' and 'ops' as the editable roles
-  // here — chief pilot duties usually fall to ops, and admin has god
-  // mode by convention elsewhere in the app.
   const isAdminOrOps = currentUser?.role === 'admin' || currentUser?.role === 'ops';
   const isCrew = currentUser?.role === 'crew';
 
   const [currenciesByUid, setCurrenciesByUid] = useState({});
-  const [filterMode, setFilterMode] = useState('all');     // all | expired | expiring | current
-  const [sortMode, setSortMode] = useState('soonest');     // soonest | name
-  const [expandedUid, setExpandedUid] = useState(null);
-  const [editingUid, setEditingUid] = useState(null);
-
   useEffect(() => {
+    if (!currentUser) return;
+    let unsub = null;
     if (isAdminOrOps) {
-      return subscribePilotCurrencies(setCurrenciesByUid);
+      unsub = subscribePilotCurrencies(setCurrenciesByUid);
+    } else if (isCrew) {
+      unsub = subscribeMyPilotCurrency(currentUser.uid, setCurrenciesByUid);
     }
-    if (isCrew && currentUser?.uid) {
-      return subscribeMyPilotCurrency(currentUser.uid, (d) => {
-        setCurrenciesByUid(d ? { [currentUser.uid]: d } : {});
-      });
-    }
-    return undefined;
-  }, [isAdminOrOps, isCrew, currentUser?.uid]);
+    return () => { if (unsub) unsub(); };
+  }, [currentUser, isAdminOrOps, isCrew]);
 
-  // Pilot universe. Admin/ops sees all approved crew. Crew sees just
-  // themselves. We deliberately exclude unapproved users — they haven't
-  // been activated and shouldn't appear on a compliance dashboard.
-  const pilots = useMemo(() => {
-    if (isCrew && currentUser) return [currentUser];
-    return (users || []).filter((u) => u.role === 'crew' && u.approved !== false);
-  }, [users, isCrew, currentUser]);
-
-  // Today snapshot — computed once per render. For status calcs to
-  // remain stable across renders during one user session this is fine;
-  // a multi-day-open tab will see updates re-flow on the next re-render.
   const todayMs = Date.now();
-
-  // Join + roll up per pilot. We compute the auto T/O+L and Night
-  // currencies here from allTrips so each card has them in scope.
-  //
-  // For 61.57(a) T/O+L and 61.57(b) Night, we take the BETTER of
-  // (auto-computed, manual-entered) — auto reflects real flight data,
-  // manual lets admin record sim-only completions or flights Skyway
-  // doesn't track. If either qualifies, the pilot is current.
-  const pilotRows = useMemo(() => {
-    const statusRank = { current: 0, caution: 1, warning: 2, critical: 3, expired: 4, unknown: 5 };
-    const betterStatus = (a, b) => {
-      if (a === 'unknown') return b;
-      if (b === 'unknown') return a;
-      return statusRank[a] < statusRank[b] ? a : b;
-    };
-
-    return pilots.map((p) => {
-      const docForPilot = currenciesByUid[p.uid] || null;
-      const auto = p.name
-        ? computeAutoTakeoffLanding(p.name, allTrips, todayMs)
-        : { takeoffLanding: { status: 'unknown', count: 0 }, nightCurrency: { status: 'unknown', count: 0 } };
-
-      // Compute combined status for the two event-count currencies.
-      // If a pilot has 3+ T/O+L by either path, they're current.
-      const manualTLStatus = computeStatus(
-        docForPilot?.takeoffLanding,
-        CURRENCY_TYPES.find((t) => t.key === 'takeoffLanding').interval,
-        todayMs
-      ).status;
-      const manualNightStatus = computeStatus(
-        docForPilot?.nightCurrency,
-        CURRENCY_TYPES.find((t) => t.key === 'nightCurrency').interval,
-        todayMs
-      ).status;
-      const combinedTLStatus    = betterStatus(auto.takeoffLanding.status, manualTLStatus);
-      const combinedNightStatus = betterStatus(auto.nightCurrency.status, manualNightStatus);
-
-      // Roll up across ALL items using combined statuses for the two
-      // auto-aware types. The base rollupPilotStatus is unaware of auto;
-      // we re-do it inline here using the same status-rank logic.
-      let worstStatus = 'current';
-      let expiredCount = 0;
-      let warningCount = 0;
-      const accumulate = (s) => {
-        if (s === 'expired') expiredCount++;
-        if (['warning', 'critical'].includes(s)) warningCount++;
-        if (statusRank[s] > statusRank[worstStatus]) worstStatus = s;
-      };
-      // The five non-auto types use manual lastDate alone
-      for (const type of CURRENCY_TYPES) {
-        if (type.key === 'takeoffLanding' || type.key === 'nightCurrency') continue;
-        accumulate(computeStatus(docForPilot?.[type.key], type.interval, todayMs).status);
+  const currenciesEnriched = useMemo(() => {
+    const out = { ...currenciesByUid };
+    if (Array.isArray(allTrips) && allTrips.length > 0) {
+      for (const u of users) {
+        if (!u?.uid) continue;
+        const existing = out[u.uid] || {};
+        const auto = computeAutoTakeoffLanding(u, allTrips, todayMs);
+        if (auto?.lastDate && (!existing.takeoffLanding?.lastDate || existing.takeoffLanding?.lastDate < auto.lastDate)) {
+          out[u.uid] = {
+            ...existing,
+            takeoffLanding: { ...(existing.takeoffLanding || {}), lastDate: auto.lastDate, auto: true },
+          };
+        }
       }
-      accumulate(computeMedicalStatus(docForPilot?.medical, todayMs).status);
-      // Auto-aware: T/O+L and Night
-      accumulate(combinedTLStatus);
-      accumulate(combinedNightStatus);
-
-      const rollup = {
-        status: worstStatus === 'unknown' ? 'unknown' : worstStatus,
-        expiredCount,
-        warningCount,
-        worstDays: null, // not used downstream when computing this inline
-      };
-
-      return {
-        pilot: p,
-        doc: docForPilot,
-        rollup,
-        auto,
-        combinedTLStatus,
-        combinedNightStatus,
-      };
-    });
-  }, [pilots, currenciesByUid, todayMs, allTrips]);
-
-  // Apply filter chips
-  const filteredRows = useMemo(() => {
-    if (filterMode === 'all') return pilotRows;
-    if (filterMode === 'expired')  return pilotRows.filter((r) => r.rollup.expiredCount > 0);
-    if (filterMode === 'expiring') return pilotRows.filter((r) => r.rollup.expiredCount > 0 || r.rollup.warningCount > 0);
-    if (filterMode === 'current')  return pilotRows.filter((r) => r.rollup.expiredCount === 0 && r.rollup.warningCount === 0 && r.rollup.status !== 'unknown');
-    return pilotRows;
-  }, [pilotRows, filterMode]);
-
-  // Sort. SOONEST puts the most urgent at the top — what an ops manager
-  // wants to see first thing in the morning.
-  const sortedRows = useMemo(() => {
-    const rows = [...filteredRows];
-    if (sortMode === 'name') {
-      rows.sort((a, b) => (a.pilot.name || a.pilot.email || '').localeCompare(b.pilot.name || b.pilot.email || ''));
-    } else {
-      rows.sort((a, b) => {
-        const aDays = a.rollup.worstDays;
-        const bDays = b.rollup.worstDays;
-        if (aDays == null && bDays == null) return 0;
-        if (aDays == null) return 1;
-        if (bDays == null) return -1;
-        return aDays - bDays;
-      });
     }
-    return rows;
-  }, [filteredRows, sortMode]);
+    return out;
+  }, [currenciesByUid, users, allTrips, todayMs]);
 
-  // Header summary counts. "unset" surfaces pilots that need their
-  // currency data initialized — invisible work the dashboard makes
-  // visible.
+  const pilots = useMemo(() => {
+    if (isCrew) return users.filter(u => u.uid === currentUser.uid);
+    return users
+      .filter(u => u.uid && u.approved !== false)
+      .filter(u => ['crew', 'admin', 'ops'].includes(u.role) || currenciesEnriched[u.uid])
+      .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  }, [users, currenciesEnriched, isCrew, currentUser?.uid]);
+
+  const [view, setView] = useState('matrix');
+  useEffect(() => { if (isCrew) setView('cards'); }, [isCrew]);
+
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [search, setSearch] = useState('');
+  const [editTarget, setEditTarget] = useState(null);
+  const [showImporter, setShowImporter] = useState(false);
+
   const summary = useMemo(() => {
-    let expired = 0, warning = 0, current = 0, unset = 0;
-    for (const r of pilotRows) {
-      if (r.rollup.status === 'unknown') unset++;
-      else if (r.rollup.expiredCount > 0) expired++;
-      else if (r.rollup.warningCount > 0) warning++;
-      else current++;
+    let expired = 0, warning = 0, current = 0, unknown = 0;
+    for (const p of pilots) {
+      const r = rollupPilotStatus(currenciesEnriched[p.uid], todayMs);
+      if (r.status === 'expired') expired++;
+      else if (['critical', 'warning'].includes(r.status)) warning++;
+      else if (r.status === 'current') current++;
+      else unknown++;
     }
-    return { expired, warning, current, unset, total: pilotRows.length };
-  }, [pilotRows]);
+    return { expired, warning, current, unknown, total: pilots.length };
+  }, [pilots, currenciesEnriched, todayMs]);
+
+  const filteredPilots = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return pilots.filter(p => {
+      if (q && !(p.name || '').toLowerCase().includes(q) && !(p.email || '').toLowerCase().includes(q)) return false;
+      if (statusFilter === 'all') return true;
+      const r = rollupPilotStatus(currenciesEnriched[p.uid], todayMs);
+      if (statusFilter === 'expired') return r.status === 'expired';
+      if (statusFilter === 'expiring') return ['critical', 'warning'].includes(r.status);
+      if (statusFilter === 'current') return r.status === 'current';
+      if (statusFilter === 'unknown') return r.status === 'unknown';
+      return true;
+    });
+  }, [pilots, search, statusFilter, currenciesEnriched, todayMs]);
+
+  if (!currentUser) return <div className="p-6 text-slate-500 text-sm">Sign in required.</div>;
 
   return (
-    <div className="flex-1 overflow-y-auto scroll-area">
-      {/* HEADER — sticky so the title + filters stay visible as ops scrolls. */}
-      <div className="sticky top-0 z-10 bg-slate-950 border-b border-slate-800 px-4 py-3">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h1 className="text-xl tracking-wider text-slate-100 flex items-center gap-2" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
-              <ShieldCheck className="w-5 h-5 text-cyan-400" />
-              PILOT CURRENCY & TRAINING
+    <div className="flex-1 flex flex-col min-h-0 bg-slate-950">
+      <header className="px-4 py-3 border-b border-slate-800 bg-slate-900/40 shrink-0">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="w-5 h-5 text-cyan-400" />
+            <h1 className="text-sm tracking-widest text-slate-200"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              PILOT CURRENCY &amp; TRAINING
             </h1>
-            <div className="text-xs text-slate-500 mt-1 flex flex-wrap gap-x-3">
-              <span>{summary.total} pilot{summary.total !== 1 ? 's' : ''}</span>
-              {summary.expired > 0 && <span className="text-red-400">{summary.expired} EXPIRED</span>}
-              {summary.warning > 0 && <span className="text-orange-400">{summary.warning} EXPIRING</span>}
-              {summary.unset > 0 && <span className="text-slate-500">{summary.unset} not set up</span>}
-              {summary.current > 0 && <span className="text-emerald-400">{summary.current} CURRENT</span>}
-            </div>
           </div>
+          {isAdminOrOps && (
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setShowImporter(true)}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 text-[10px] tracking-widest border border-cyan-500/40 hover:border-cyan-400 text-cyan-300 hover:text-cyan-200"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                title="Bulk-import currency data from JetInsight"
+              >
+                <Upload className="w-3 h-3" /> IMPORT
+              </button>
+              <ViewToggle current={view} onChange={setView} />
+            </div>
+          )}
         </div>
 
-        {isAdminOrOps && (
-          <div className="flex flex-wrap items-center gap-2 mt-3">
-            <div className="flex gap-1 text-xs">
-              {[
-                { id: 'all',      label: 'ALL' },
-                { id: 'expired',  label: 'EXPIRED' },
-                { id: 'expiring', label: 'EXPIRING' },
-                { id: 'current',  label: 'CURRENT' },
-              ].map((f) => (
-                <button
-                  key={f.id}
-                  onClick={() => setFilterMode(f.id)}
-                  className={`px-3 py-1.5 border tracking-wider transition-colors ${
-                    filterMode === f.id
-                      ? 'bg-cyan-500/20 border-cyan-500/50 text-cyan-300'
-                      : 'bg-slate-900/50 border-slate-800 text-slate-400 hover:text-slate-200'
-                  }`}
-                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
-                >
-                  {f.label}
-                </button>
-              ))}
-            </div>
-            <div className="ml-auto flex gap-1 text-xs">
-              <span className="text-slate-600 self-center mr-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>SORT</span>
-              {[
-                { id: 'soonest', label: 'SOONEST' },
-                { id: 'name',    label: 'NAME' },
-              ].map((s) => (
-                <button
-                  key={s.id}
-                  onClick={() => setSortMode(s.id)}
-                  className={`px-3 py-1.5 border tracking-wider transition-colors ${
-                    sortMode === s.id
-                      ? 'bg-slate-700/50 border-slate-600 text-slate-200'
-                      : 'bg-slate-900/50 border-slate-800 text-slate-400 hover:text-slate-200'
-                  }`}
-                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
-                >
-                  {s.label}
-                </button>
-              ))}
-            </div>
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mt-3">
+          <SummaryStat label="TOTAL" value={summary.total} tone="cyan" />
+          <SummaryStat label="EXPIRED" value={summary.expired} tone="red" onClick={() => setStatusFilter('expired')} active={statusFilter === 'expired'} />
+          <SummaryStat label="EXPIRING" value={summary.warning} tone="orange" onClick={() => setStatusFilter('expiring')} active={statusFilter === 'expiring'} />
+          <SummaryStat label="CURRENT" value={summary.current} tone="emerald" onClick={() => setStatusFilter('current')} active={statusFilter === 'current'} />
+          <SummaryStat label="NOT SET" value={summary.unknown} tone="slate" onClick={() => setStatusFilter('unknown')} active={statusFilter === 'unknown'} />
+        </div>
+
+        <div className="flex items-center gap-2 mt-3">
+          <div className="relative flex-1 min-w-0">
+            <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
+            <input
+              type="text"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search pilot…"
+              className="w-full bg-slate-950 border border-slate-800 pl-7 pr-2 py-1.5 text-xs text-slate-100"
+            />
           </div>
+          {statusFilter !== 'all' && (
+            <button
+              type="button"
+              onClick={() => setStatusFilter('all')}
+              className="px-2 py-1.5 text-[10px] tracking-widest text-slate-400 hover:text-slate-200 border border-slate-800"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >CLEAR FILTER</button>
+          )}
+        </div>
+      </header>
+
+      <main className="flex-1 min-h-0 overflow-auto">
+        {view === 'matrix' && (
+          <MatrixView pilots={filteredPilots} currencies={currenciesEnriched} todayMs={todayMs} canEdit={isAdminOrOps} onEdit={(uid, focusKey) => setEditTarget({ pilotUid: uid, focusKey })} />
         )}
-      </div>
+        {view === 'cards' && (
+          <CardsView pilots={filteredPilots} currencies={currenciesEnriched} todayMs={todayMs} canEdit={isAdminOrOps} onEdit={(uid, focusKey) => setEditTarget({ pilotUid: uid, focusKey })} />
+        )}
+        {view === 'agenda' && (
+          <AgendaView pilots={filteredPilots} currencies={currenciesEnriched} todayMs={todayMs} canEdit={isAdminOrOps} onEdit={(uid, focusKey) => setEditTarget({ pilotUid: uid, focusKey })} />
+        )}
+      </main>
 
-      {/* PILOT CARDS */}
-      <div className="p-4 space-y-3 max-w-4xl mx-auto">
-        {sortedRows.length === 0 ? (
-          <div className="text-center py-16 text-slate-500 text-sm">
-            {filterMode === 'all'
-              ? 'No pilots visible yet. Approved users with role=crew will show up here.'
-              : 'No pilots match this filter.'}
-          </div>
-        ) : sortedRows.map(({ pilot, doc: pilotDoc, rollup, auto, combinedTLStatus, combinedNightStatus }) => (
-          <PilotCard
-            key={pilot.uid}
-            pilot={pilot}
-            currencyDoc={pilotDoc}
-            rollup={rollup}
-            auto={auto}
-            combinedTLStatus={combinedTLStatus}
-            combinedNightStatus={combinedNightStatus}
-            expanded={expandedUid === pilot.uid}
-            onToggle={() => setExpandedUid(expandedUid === pilot.uid ? null : pilot.uid)}
-            onEdit={isAdminOrOps ? () => setEditingUid(pilot.uid) : null}
-            todayMs={todayMs}
-          />
-        ))}
-      </div>
-
-      {/* EDIT MODAL — admin/ops only */}
-      {editingUid && isAdminOrOps && (
-        <PilotCurrencyEditor
-          pilot={pilots.find((p) => p.uid === editingUid)}
-          existing={currenciesByUid[editingUid] || null}
-          currentUser={currentUser}
-          onClose={() => setEditingUid(null)}
+      {editTarget && (
+        <EditCurrencyModal
+          pilot={pilots.find(p => p.uid === editTarget.pilotUid)}
+          existing={currenciesEnriched[editTarget.pilotUid]}
+          focusKey={editTarget.focusKey}
+          onClose={() => setEditTarget(null)}
+          onSave={async (patch) => {
+            await savePilotCurrency(editTarget.pilotUid, patch, currentUser.uid);
+            setEditTarget(null);
+          }}
         />
       )}
-    </div>
-  );
-}
 
-// ============================================================
-// PILOT CARD
-// ============================================================
-//
-// Collapsed: status badge + name + summary line
-// Expanded: every currency type as its own row with status + due date
-
-function PilotCard({ pilot, currencyDoc, rollup, auto, combinedTLStatus, combinedNightStatus, expanded, onToggle, onEdit, todayMs }) {
-  const statusColor = STATUS_COLORS[rollup.status] || STATUS_COLORS.unknown;
-
-  return (
-    <div className={`bg-slate-900/60 border ${statusColor.border}`}>
-      <button
-        onClick={onToggle}
-        className="w-full flex items-center justify-between p-4 hover:bg-slate-800/30 transition-colors text-left"
-      >
-        <div className="flex items-center gap-3 min-w-0 flex-1">
-          <div
-            className={`px-2 py-1 ${statusColor.bg} ${statusColor.border} border text-xs tracking-wider ${statusColor.text} shrink-0`}
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}
-          >
-            {statusColor.label}
+      {showImporter && isAdminOrOps && (
+        <Suspense fallback={
+          <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center">
+            <Loader2 className="w-6 h-6 animate-spin text-slate-400" />
           </div>
-          <div className="min-w-0 flex-1">
-            <div className="text-slate-100 text-base font-medium truncate">
-              {pilot.name || pilot.email || 'Unknown'}
-            </div>
-            <div className="text-xs text-slate-500 mt-0.5">
-              {rollup.status === 'unknown' && 'Currency data not yet entered'}
-              {rollup.expiredCount > 0 && (
-                <span className="text-red-400">
-                  {rollup.expiredCount} expired item{rollup.expiredCount !== 1 ? 's' : ''}
-                </span>
-              )}
-              {rollup.expiredCount === 0 && rollup.warningCount > 0 && (
-                <span className="text-orange-400">
-                  {rollup.warningCount} expiring soon
-                  {rollup.worstDays != null && ` · ${rollup.worstDays}d`}
-                </span>
-              )}
-              {rollup.expiredCount === 0 && rollup.warningCount === 0 && rollup.status !== 'unknown' && (
-                <span className="text-emerald-400">
-                  All current{rollup.worstDays != null && ` · next due in ${rollup.worstDays}d`}
-                </span>
-              )}
-            </div>
-          </div>
-        </div>
-        <div className="flex items-center gap-1 shrink-0">
-          {onEdit && (
-            <button
-              onClick={(e) => { e.stopPropagation(); onEdit(); }}
-              className="p-2 text-slate-400 hover:text-cyan-300 hover:bg-slate-800/50 transition-colors"
-              title="Edit"
-            >
-              <Edit3 className="w-4 h-4" />
-            </button>
-          )}
-          {expanded ? <ChevronUp className="w-4 h-4 text-slate-500" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
-        </div>
-      </button>
-
-      {expanded && (
-        <div className="border-t border-slate-800 px-4 py-2 bg-slate-950/40">
-          {CURRENCY_TYPES.map((type) => {
-            // T/O+L and Night are event-count based — render the auto-aware
-            // row that combines flight history with any manual entry.
-            if (type.key === 'takeoffLanding') {
-              return (
-                <AutoCurrencyRow
-                  key={type.key}
-                  type={type}
-                  manualItem={currencyDoc?.[type.key]}
-                  autoResult={auto.takeoffLanding}
-                  combinedStatus={combinedTLStatus}
-                  todayMs={todayMs}
-                />
-              );
-            }
-            if (type.key === 'nightCurrency') {
-              return (
-                <AutoCurrencyRow
-                  key={type.key}
-                  type={type}
-                  manualItem={currencyDoc?.[type.key]}
-                  autoResult={auto.nightCurrency}
-                  combinedStatus={combinedNightStatus}
-                  todayMs={todayMs}
-                />
-              );
-            }
-            return (
-              <CurrencyRow
-                key={type.key}
-                type={type}
-                item={currencyDoc?.[type.key]}
-                todayMs={todayMs}
-              />
-            );
-          })}
-          <MedicalRow medical={currencyDoc?.medical} todayMs={todayMs} />
-        </div>
+        }>
+          <CurrencyImporterLazy
+            users={users}
+            currentUserUid={currentUser.uid}
+            onClose={() => setShowImporter(false)}
+            onImported={() => {
+              // Subscription auto-refreshes; just close.
+              setShowImporter(false);
+            }}
+          />
+        </Suspense>
       )}
     </div>
   );
 }
 
-// One row in the expanded card — either a CURRENCY_TYPE or medical.
-function CurrencyRow({ type, item, todayMs }) {
-  const r = computeStatus(item, type.interval, todayMs);
-  const colors = STATUS_COLORS[r.status] || STATUS_COLORS.unknown;
+/* ═══════════════════════════════════════════════════════════════════
+   VIEW TOGGLE + SUMMARY STAT + STATUS PILL
+   ═══════════════════════════════════════════════════════════════════ */
+
+function ViewToggle({ current, onChange }) {
+  const opts = [
+    { id: 'matrix', icon: Grid3x3,    label: 'MATRIX' },
+    { id: 'cards',  icon: LayoutList, label: 'CARDS' },
+    { id: 'agenda', icon: ListTree,   label: 'AGENDA' },
+  ];
   return (
-    <div className="flex items-start justify-between py-3 border-b border-slate-800/50 last:border-b-0">
-      <div className="flex-1 min-w-0 pr-3">
-        <div className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-          {type.category}
-        </div>
-        <div className="text-sm text-slate-200 mt-0.5">{type.abbrev}</div>
-        <div className="text-xs text-slate-500 mt-0.5">{type.notes}</div>
-        {item?.notes && (
-          <div className="text-xs text-slate-400 mt-1 italic">"{item.notes}"</div>
-        )}
+    <div className="flex items-center bg-slate-950 border border-slate-800 p-0.5">
+      {opts.map(o => {
+        const active = o.id === current;
+        return (
+          <button
+            key={o.id}
+            type="button"
+            onClick={() => onChange(o.id)}
+            className={`flex items-center gap-1.5 px-2.5 py-1 text-[10px] tracking-widest ${active ? 'bg-cyan-500/20 text-cyan-300' : 'text-slate-500 hover:text-slate-300'}`}
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            <o.icon className="w-3 h-3" /> {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function SummaryStat({ label, value, tone, onClick, active }) {
+  const tones = {
+    cyan:    'text-cyan-400 border-cyan-500/30',
+    red:     'text-red-300 border-red-500/40',
+    orange:  'text-orange-300 border-orange-500/40',
+    emerald: 'text-emerald-300 border-emerald-500/40',
+    slate:   'text-slate-400 border-slate-700',
+  };
+  const Comp = onClick ? 'button' : 'div';
+  return (
+    <Comp
+      type={onClick ? 'button' : undefined}
+      onClick={onClick}
+      className={`text-left p-2 border ${tones[tone]} ${active ? 'bg-cyan-500/10 ring-1 ring-cyan-500/40' : 'bg-slate-950/40'} ${onClick ? 'hover:bg-slate-900 cursor-pointer' : ''}`}
+    >
+      <div className="text-[9px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{label}</div>
+      <div className={`text-2xl ${tones[tone].split(' ')[0]}`} style={{ fontFamily: 'Bebas Neue, sans-serif' }}>{value}</div>
+    </Comp>
+  );
+}
+
+function StatusPill({ status, daysUntil, compact = false }) {
+  const c = STATUS_COLORS[status] || STATUS_COLORS.unknown;
+  let txt = c.label;
+  if (status === 'expired' && daysUntil != null) txt = `EXP ${Math.abs(daysUntil)}d`;
+  else if (status === 'current' && daysUntil != null) txt = `${daysUntil}d`;
+  else if (['caution', 'warning', 'critical'].includes(status) && daysUntil != null) txt = `${daysUntil}d`;
+  return (
+    <span className={`inline-block px-1.5 ${compact ? 'py-0' : 'py-0.5'} text-[9px] ${c.bg} ${c.border} ${c.text} border`}
+      style={{ fontFamily: 'JetBrains Mono, monospace' }}>{txt}</span>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   MATRIX
+   ═══════════════════════════════════════════════════════════════════ */
+
+function MatrixView({ pilots, currencies, todayMs, canEdit, onEdit }) {
+  const cellClick = (uid, key) => { if (canEdit) onEdit(uid, key); };
+  return (
+    <div className="overflow-auto">
+      <table className="border-separate" style={{ borderSpacing: 0 }}>
+        <thead className="sticky top-0 z-20">
+          <tr>
+            <th className="bg-slate-900/95 border-b border-slate-800 px-3 py-2 text-left sticky left-0 z-30 min-w-[180px]">
+              <span className="text-[9px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>PILOT</span>
+            </th>
+            <th className="bg-slate-900/95 border-b border-slate-800 px-3 py-2 text-left sticky left-[180px] z-30 min-w-[60px]">
+              <span className="text-[9px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>MED</span>
+            </th>
+            {CATEGORY_ORDER.map(cat => {
+              const list = TYPES_BY_CATEGORY[cat] || [];
+              if (list.length === 0) return null;
+              const color = CATEGORY_COLORS[cat] || 'text-slate-400 border-slate-700';
+              return (
+                <th key={cat} colSpan={list.length} className={`bg-slate-900/95 border-b border-l ${color} px-2 py-1.5 text-left whitespace-nowrap`}>
+                  <span className="text-[9px] tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{cat}</span>
+                </th>
+              );
+            })}
+          </tr>
+          <tr>
+            <th className="bg-slate-900/95 border-b border-slate-800 sticky left-0 z-30"></th>
+            <th className="bg-slate-900/95 border-b border-slate-800 sticky left-[180px] z-30"></th>
+            {CATEGORY_ORDER.flatMap(cat => (TYPES_BY_CATEGORY[cat] || []).map((t, i) => (
+              <th key={t.key} className={`bg-slate-900/95 border-b border-slate-800 ${i === 0 ? 'border-l border-slate-700' : ''} px-2 py-2 text-left whitespace-nowrap min-w-[100px]`} title={t.label}>
+                <span className="text-[10px] text-slate-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{t.abbrev}</span>
+              </th>
+            )))}
+          </tr>
+        </thead>
+        <tbody>
+          {pilots.length === 0 && (
+            <tr>
+              <td colSpan={ACTIVE_TYPES.length + 2} className="px-3 py-10 text-center text-slate-500 text-sm italic">
+                No pilots match the current filter.
+              </td>
+            </tr>
+          )}
+          {pilots.map(pilot => {
+            const doc = currencies[pilot.uid] || {};
+            const rollup = rollupPilotStatus(doc, todayMs);
+            const rowColor = rollup.status === 'expired' ? 'bg-red-950/20' : ['critical', 'warning'].includes(rollup.status) ? 'bg-orange-950/15' : '';
+            return (
+              <tr key={pilot.uid} className={`${rowColor} hover:bg-slate-800/30 transition-colors`}>
+                <td
+                  className={`sticky left-0 z-10 bg-slate-950 border-r border-slate-800 px-3 py-1.5 text-sm text-slate-100 cursor-pointer ${rowColor}`}
+                  onClick={() => canEdit && onEdit(pilot.uid)}
+                >
+                  <div className="text-slate-100 leading-tight">{pilot.name || pilot.email}</div>
+                  <div className="text-[9px] text-slate-500 leading-tight" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    {(pilot.role || 'crew').toUpperCase()}
+                  </div>
+                </td>
+                <td
+                  className={`sticky left-[180px] z-10 bg-slate-950 border-r border-slate-800 px-2 py-1.5 cursor-pointer ${rowColor}`}
+                  onClick={() => cellClick(pilot.uid, '__medical__')}
+                >
+                  <MatrixCell result={computeMedicalStatus(doc.medical, todayMs)} />
+                </td>
+                {CATEGORY_ORDER.flatMap(cat => (TYPES_BY_CATEGORY[cat] || []).map((t, i) => {
+                  const r = computeStatus(doc[t.key], t.interval, todayMs, t);
+                  return (
+                    <td key={t.key} className={`px-2 py-1.5 ${i === 0 ? 'border-l border-slate-800' : ''} cursor-pointer`} onClick={() => cellClick(pilot.uid, t.key)}>
+                      <MatrixCell result={r} />
+                    </td>
+                  );
+                }))}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function MatrixCell({ result }) {
+  const c = STATUS_COLORS[result.status] || STATUS_COLORS.unknown;
+  if (result.status === 'na') {
+    return <div className="flex items-center justify-center h-7"><Minus className="w-3 h-3 text-slate-700" /></div>;
+  }
+  if (result.status === 'noExpiration') {
+    return <div className={`flex items-center justify-center h-7 ${c.bg} border ${c.border}`}><CheckCircle2 className="w-3 h-3 text-cyan-300" /></div>;
+  }
+  if (result.status === 'unknown') {
+    return (
+      <div className="flex items-center justify-center h-7 border border-slate-800 bg-slate-900/30">
+        <span className="text-[9px] text-slate-600" style={{ fontFamily: 'JetBrains Mono, monospace' }}>—</span>
       </div>
-      <div className="text-right shrink-0">
-        <div
-          className={`text-[10px] tracking-widest ${colors.text}`}
-          style={{ fontFamily: 'JetBrains Mono, monospace' }}
-        >
-          {colors.label}
-        </div>
-        {r.dueDate && (
-          <div className="text-xs text-slate-400 mt-1">
-            {r.daysUntil >= 0 ? `due ${r.dueDate}` : `was due ${r.dueDate}`}
+    );
+  }
+  return (
+    <div className={`flex flex-col items-center justify-center h-7 ${c.bg} border ${c.border}`} title={`${result.status.toUpperCase()} · due ${result.dueDate || '—'}`}>
+      <span className={`text-[9px] ${c.text} leading-none`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        {result.dueDate ? result.dueDate.slice(5).replace('-', '/') : ''}
+      </span>
+      <span className={`text-[8px] ${c.text} leading-none opacity-70`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        {result.daysUntil < 0 ? `${Math.abs(result.daysUntil)}d AGO` : `${result.daysUntil}d`}
+      </span>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   CARDS
+   ═══════════════════════════════════════════════════════════════════ */
+
+function CardsView({ pilots, currencies, todayMs, canEdit, onEdit }) {
+  const [expandedUid, setExpandedUid] = useState(null);
+  return (
+    <div className="p-4 space-y-3">
+      {pilots.length === 0 && (
+        <div className="text-center text-slate-500 text-sm italic py-10">No pilots match the current filter.</div>
+      )}
+      {pilots.map(p => {
+        const doc = currencies[p.uid] || {};
+        const rollup = rollupPilotStatus(doc, todayMs);
+        const isExpanded = expandedUid === p.uid;
+        const c = STATUS_COLORS[rollup.status] || STATUS_COLORS.unknown;
+        return (
+          <div key={p.uid} className={`border ${c.border} bg-slate-900/40`}>
+            <button type="button" onClick={() => setExpandedUid(isExpanded ? null : p.uid)} className="w-full flex items-center justify-between gap-3 p-3 hover:bg-slate-800/40">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className={`w-1 h-10 ${c.bg.replace('/15', '/40').replace('/30', '/40')}`}></div>
+                <div className="min-w-0 text-left">
+                  <div className="text-sm text-slate-100 truncate">{p.name || p.email}</div>
+                  <div className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    {(p.role || 'crew').toUpperCase()}
+                    {rollup.expiredCount > 0 && <span className="text-red-300 ml-2">· {rollup.expiredCount} EXPIRED</span>}
+                    {rollup.warningCount > 0 && <span className="text-orange-300 ml-2">· {rollup.warningCount} EXPIRING</span>}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-3 shrink-0">
+                <StatusPill status={rollup.status} daysUntil={rollup.worstDays} />
+                {isExpanded ? <ChevronUp className="w-4 h-4 text-slate-500" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
+              </div>
+            </button>
+            {isExpanded && (
+              <div className="border-t border-slate-800 p-3 space-y-3">
+                <CategoryBlock cat="MEDICAL" rows={[{ type: { key: '__medical__', label: 'FAA / BasicMed Medical' }, result: computeMedicalStatus(doc.medical, todayMs), extra: doc.medical?.class || '' }]} pilotUid={p.uid} canEdit={canEdit} onEdit={onEdit} />
+                {CATEGORY_ORDER.map(cat => {
+                  const types = TYPES_BY_CATEGORY[cat] || [];
+                  if (types.length === 0) return null;
+                  const rows = types.map(t => ({ type: t, result: computeStatus(doc[t.key], t.interval, todayMs, t) }));
+                  const visible = rows.filter(r => r.result.status !== 'na');
+                  if (visible.length === 0) return null;
+                  return <CategoryBlock key={cat} cat={cat} rows={visible} pilotUid={p.uid} canEdit={canEdit} onEdit={onEdit} />;
+                })}
+                {canEdit && (
+                  <div className="pt-2">
+                    <button type="button" onClick={() => onEdit(p.uid)} className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] tracking-widest text-cyan-300 hover:text-cyan-200 border border-cyan-500/30 hover:border-cyan-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                      <Edit3 className="w-3 h-3" /> EDIT ALL ITEMS
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
-        )}
-        {r.daysUntil != null && (
-          <div className={`text-xs mt-0.5 ${r.status === 'expired' ? 'text-red-400' : 'text-slate-500'}`}>
-            {r.daysUntil >= 0 ? `${r.daysUntil}d remaining` : `${-r.daysUntil}d overdue`}
-          </div>
-        )}
+        );
+      })}
+    </div>
+  );
+}
+
+function CategoryBlock({ cat, rows, pilotUid, canEdit, onEdit }) {
+  const color = CATEGORY_COLORS[cat] || 'text-slate-400 border-slate-700';
+  return (
+    <div className={`border-l-2 ${color.split(' ')[1]} pl-3`}>
+      <div className={`text-[10px] tracking-widest ${color.split(' ')[0]} mb-1.5`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>{cat}</div>
+      <div className="space-y-1">
+        {rows.map(({ type, result, extra }) => (
+          <button key={type.key} type="button" onClick={() => canEdit && onEdit(pilotUid, type.key)} className="w-full flex items-center justify-between gap-3 p-1.5 hover:bg-slate-800/40 text-left">
+            <div className="min-w-0">
+              <div className="text-xs text-slate-200 truncate">{type.label}</div>
+              {extra && <div className="text-[9px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{extra}</div>}
+              {result.dueDate && (
+                <div className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>Due {result.dueDate}</div>
+              )}
+            </div>
+            <StatusPill status={result.status} daysUntil={result.daysUntil} />
+          </button>
+        ))}
       </div>
     </div>
   );
 }
 
-// Auto-aware row for 61.57(a) T/O+L and (b) Night. Surfaces:
-//   - the auto count (e.g. "5 T/O+L in last 90d")
-//   - the expiration date based on the 3rd-most-recent qualifying flight
-//   - the manual override status (lower priority)
-//   - the combined status (better of auto vs manual)
-//
-// When auto count >= 3 → CURRENT and the "due date" is when the rolling
-// 90-day window will drop below 3 if no new flights happen.
-// When auto count < 3 → shows "need X more" prominently and falls back
-// to manual entry if admin set a recent date (e.g. sim-only completion).
-function AutoCurrencyRow({ type, manualItem, autoResult, combinedStatus, todayMs }) {
-  const autoStatus = autoResult.status;
-  const manual = computeStatus(manualItem, type.interval, todayMs);
-  const colors = STATUS_COLORS[combinedStatus] || STATUS_COLORS.unknown;
+/* ═══════════════════════════════════════════════════════════════════
+   AGENDA
+   ═══════════════════════════════════════════════════════════════════ */
 
-  // Decide which source the headline status comes from
-  const autoIsBetter = (() => {
-    const statusRank = { current: 0, caution: 1, warning: 2, critical: 3, expired: 4, unknown: 5 };
-    if (autoStatus === 'unknown') return false;
-    if (manual.status === 'unknown') return true;
-    return statusRank[autoStatus] < statusRank[manual.status];
-  })();
+function AgendaView({ pilots, currencies, todayMs, canEdit, onEdit }) {
+  const groups = useMemo(() => {
+    const out = [];
+    for (const cat of CATEGORY_ORDER) {
+      const types = TYPES_BY_CATEGORY[cat] || [];
+      for (const t of types) {
+        const items = [];
+        for (const p of pilots) {
+          const doc = currencies[p.uid] || {};
+          const r = computeStatus(doc[t.key], t.interval, todayMs, t);
+          if (r.status === 'na') continue;
+          items.push({ pilot: p, result: r });
+        }
+        const ord = (status) => ({ expired: 0, critical: 1, warning: 2, caution: 3, unknown: 4, current: 5, noExpiration: 6 }[status] ?? 9);
+        items.sort((a, b) => {
+          const d = ord(a.result.status) - ord(b.result.status);
+          if (d !== 0) return d;
+          return (a.result.daysUntil ?? 99999) - (b.result.daysUntil ?? 99999);
+        });
+        out.push({ type: t, category: cat, items });
+      }
+    }
+    return out;
+  }, [pilots, currencies, todayMs]);
 
   return (
-    <div className="flex items-start justify-between py-3 border-b border-slate-800/50 last:border-b-0">
-      <div className="flex-1 min-w-0 pr-3">
-        <div className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-          {type.category}
-        </div>
-        <div className="text-sm text-slate-200 mt-0.5">{type.abbrev}</div>
-        <div className="text-xs text-slate-500 mt-0.5">{type.notes}</div>
-        {/* Auto row — actual flight history */}
-        <div className="text-xs mt-1.5 flex items-center gap-1.5">
-          <span className="text-cyan-400/80 tracking-wider" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            AUTO
-          </span>
-          <span className="text-slate-300">
-            {autoResult.count} {type.key === 'nightCurrency' ? 'night T/O+L' : 'T/O+L'} in last 90d
-          </span>
-        </div>
-        {autoResult.count > 0 && autoResult.count < 3 && (
-          <div className="text-xs text-orange-300 mt-0.5">
-            Need {autoResult.needed} more
+    <div className="p-4 space-y-4">
+      {CATEGORY_ORDER.map(cat => {
+        const inCat = groups.filter(g => g.category === cat);
+        if (inCat.length === 0) return null;
+        const color = CATEGORY_COLORS[cat] || 'text-slate-400 border-slate-700';
+        return (
+          <div key={cat}>
+            <div className={`text-xs tracking-widest mb-2 ${color.split(' ')[0]}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>{cat}</div>
+            <div className="space-y-2">
+              {inCat.map(g => (
+                <details key={g.type.key} className="border border-slate-800 bg-slate-900/40">
+                  <summary className="flex items-center justify-between gap-3 p-3 cursor-pointer hover:bg-slate-800/40 select-none">
+                    <div className="min-w-0">
+                      <div className="text-sm text-slate-200">{g.type.label}</div>
+                      <div className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                        {g.items.length} pilot{g.items.length === 1 ? '' : 's'} tracked
+                        {g.type.interval ? ` · ${g.type.interval}-day cadence` : g.type.noExpiration ? ' · no expiration' : ''}
+                      </div>
+                    </div>
+                    <div className="shrink-0"><ChevronDown className="w-4 h-4 text-slate-500" /></div>
+                  </summary>
+                  <div className="border-t border-slate-800 divide-y divide-slate-800/50">
+                    {g.items.length === 0 && (
+                      <div className="p-3 text-xs text-slate-500 italic text-center">No applicable pilots</div>
+                    )}
+                    {g.items.map(({ pilot, result }) => (
+                      <button key={pilot.uid} type="button" onClick={() => canEdit && onEdit(pilot.uid, g.type.key)} className="w-full flex items-center justify-between gap-3 p-3 hover:bg-slate-800/40 text-left">
+                        <div className="min-w-0">
+                          <div className="text-sm text-slate-100 truncate">{pilot.name || pilot.email}</div>
+                          {result.dueDate && (
+                            <div className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>Due {result.dueDate}</div>
+                          )}
+                        </div>
+                        <StatusPill status={result.status} daysUntil={result.daysUntil} />
+                      </button>
+                    ))}
+                  </div>
+                </details>
+              ))}
+            </div>
           </div>
-        )}
-        {/* Manual row — only shown if admin entered something */}
-        {manualItem?.lastDate && (
-          <div className="text-xs mt-0.5 flex items-center gap-1.5">
-            <span className="text-slate-500 tracking-wider" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              MANUAL
-            </span>
-            <span className="text-slate-400">
-              last {manualItem.lastDate}
-              {manualItem.notes && ` · ${manualItem.notes}`}
-            </span>
-          </div>
-        )}
-      </div>
-      <div className="text-right shrink-0">
-        <div
-          className={`text-[10px] tracking-widest ${colors.text}`}
-          style={{ fontFamily: 'JetBrains Mono, monospace' }}
-        >
-          {colors.label}
-        </div>
-        {autoIsBetter && autoResult.dueDate && (
-          <div className="text-xs text-slate-400 mt-1">
-            {autoResult.daysUntil >= 0
-              ? `lapses ${autoResult.dueDate}`
-              : `lapsed ${autoResult.dueDate}`}
-          </div>
-        )}
-        {autoIsBetter && autoResult.daysUntil != null && (
-          <div className={`text-xs mt-0.5 ${combinedStatus === 'expired' ? 'text-red-400' : 'text-slate-500'}`}>
-            {autoResult.daysUntil >= 0
-              ? `${autoResult.daysUntil}d remaining`
-              : `${-autoResult.daysUntil}d overdue`}
-          </div>
-        )}
-        {!autoIsBetter && manual.dueDate && (
-          <div className="text-xs text-slate-400 mt-1">
-            {manual.daysUntil >= 0
-              ? `due ${manual.dueDate}`
-              : `was due ${manual.dueDate}`}
-          </div>
-        )}
-        {!autoIsBetter && manual.daysUntil != null && (
-          <div className={`text-xs mt-0.5 ${combinedStatus === 'expired' ? 'text-red-400' : 'text-slate-500'}`}>
-            {manual.daysUntil >= 0
-              ? `${manual.daysUntil}d remaining`
-              : `${-manual.daysUntil}d overdue`}
-          </div>
-        )}
-      </div>
+        );
+      })}
     </div>
   );
 }
 
-function MedicalRow({ medical, todayMs }) {
-  const r = computeMedicalStatus(medical, todayMs);
-  const colors = STATUS_COLORS[r.status] || STATUS_COLORS.unknown;
-  return (
-    <div className="flex items-start justify-between py-3">
-      <div className="flex-1 min-w-0 pr-3">
-        <div className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-          MEDICAL
-        </div>
-        <div className="text-sm text-slate-200 mt-0.5">
-          {medical?.class ? `${medical.class} Class` : 'FAA / BasicMed'}
-        </div>
-        <div className="text-xs text-slate-500 mt-0.5">Certificate expiration</div>
-        {medical?.notes && (
-          <div className="text-xs text-slate-400 mt-1 italic">"{medical.notes}"</div>
-        )}
-      </div>
-      <div className="text-right shrink-0">
-        <div className={`text-[10px] tracking-widest ${colors.text}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-          {colors.label}
-        </div>
-        {r.dueDate && (
-          <div className="text-xs text-slate-400 mt-1">
-            {r.daysUntil >= 0 ? `expires ${r.dueDate}` : `expired ${r.dueDate}`}
-          </div>
-        )}
-        {r.daysUntil != null && (
-          <div className={`text-xs mt-0.5 ${r.status === 'expired' ? 'text-red-400' : 'text-slate-500'}`}>
-            {r.daysUntil >= 0 ? `${r.daysUntil}d remaining` : `${-r.daysUntil}d overdue`}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
+/* ═══════════════════════════════════════════════════════════════════
+   EDIT MODAL
+   ═══════════════════════════════════════════════════════════════════ */
 
-// ============================================================
-// EDIT MODAL
-// ============================================================
-//
-// Admin / ops only. Renders every CURRENCY_TYPE as a date+notes pair
-// plus the medical block (class dropdown + explicit expiration date).
-//
-// Note: dates use <input type="date"> so we get the native picker on
-// every platform without a date-picker library.
+function EditCurrencyModal({ pilot, existing, focusKey, onClose, onSave }) {
+  if (!pilot) return null;
 
-function PilotCurrencyEditor({ pilot, existing, currentUser, onClose }) {
-  const [draft, setDraft] = useState(() => {
+  const buildInitial = () => {
     const d = {};
-    for (const type of CURRENCY_TYPES) {
-      d[type.key] = {
-        lastDate: existing?.[type.key]?.lastDate || '',
-        notes:    existing?.[type.key]?.notes || '',
+    for (const t of CURRENCY_TYPES) {
+      const ex = existing?.[t.key] || {};
+      d[t.key] = {
+        dueDate: ex.dueDate || '',
+        lastDate: ex.lastDate || '',
+        graceDate: ex.graceDate || '',
+        notes: ex.notes || '',
+        notApplicable: ex.notApplicable === true,
+        present: ex.present === true,
       };
     }
     d.medical = {
-      class:           existing?.medical?.class || '',
-      expirationDate:  existing?.medical?.expirationDate || '',
-      notes:           existing?.medical?.notes || '',
+      class: existing?.medical?.class || '',
+      expirationDate: existing?.medical?.expirationDate || '',
+      notes: existing?.medical?.notes || '',
     };
     return d;
-  });
+  };
+  const [draft, setDraft] = useState(buildInitial());
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState(null);
 
-  const onSave = async () => {
-    setSaving(true);
-    setErr(null);
+  const setItem = (key, patch) => setDraft(d => ({ ...d, [key]: { ...d[key], ...patch } }));
+
+  const handleSave = async () => {
+    setErr(null); setSaving(true);
     try {
-      await savePilotCurrency(pilot.uid, draft, currentUser?.uid, pilot.name);
-      onClose();
+      const patch = {};
+      for (const t of CURRENCY_TYPES) {
+        const cur = draft[t.key] || {};
+        const hasData = cur.dueDate || cur.lastDate || cur.graceDate || cur.notes || cur.notApplicable || cur.present;
+        if (hasData) {
+          patch[t.key] = {
+            ...(cur.dueDate ? { dueDate: cur.dueDate } : {}),
+            ...(cur.lastDate ? { lastDate: cur.lastDate } : {}),
+            ...(cur.graceDate ? { graceDate: cur.graceDate } : {}),
+            ...(cur.notes ? { notes: cur.notes } : {}),
+            ...(cur.notApplicable ? { notApplicable: true } : {}),
+            ...(t.noExpiration && cur.present ? { present: true } : {}),
+          };
+        }
+      }
+      if (draft.medical?.class || draft.medical?.expirationDate || draft.medical?.notes) {
+        patch.medical = {
+          class: draft.medical.class || '',
+          expirationDate: draft.medical.expirationDate || '',
+          notes: draft.medical.notes || '',
+        };
+      }
+      patch.pilotName = pilot.name || '';
+      await onSave(patch);
     } catch (e) {
       setErr(e?.message || 'Save failed');
     } finally {
@@ -623,112 +677,131 @@ function PilotCurrencyEditor({ pilot, existing, currentUser, onClose }) {
   };
 
   return createPortal(
-    <div className="fixed inset-0 z-[100] bg-slate-950/80 backdrop-blur-sm flex items-start sm:items-center justify-center p-0 sm:p-4 overflow-y-auto">
-      <div className="bg-slate-900 border border-slate-700 w-full max-w-lg sm:my-8 flex flex-col min-h-screen sm:min-h-0 sm:max-h-[90vh]">
-        <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3 shrink-0">
+    <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-2">
+      <div className="w-full max-w-4xl bg-slate-900 border border-slate-700 flex flex-col max-h-[95vh]">
+        <div className="flex items-center justify-between p-3 border-b border-slate-800 shrink-0">
           <div className="min-w-0">
-            <h3 className="text-lg tracking-wider text-slate-100 truncate" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
-              EDIT CURRENCY · {pilot?.name || pilot?.email || 'PILOT'}
+            <h3 className="text-sm tracking-widest text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              EDIT CURRENCY · {pilot.name || pilot.email}
             </h3>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Enter the LAST completed date. System computes when each item next comes due.
-            </p>
+            <div className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              Enter DUE DATE (printed on certificate) — or LAST date and let the system compute due.
+            </div>
           </div>
-          <button onClick={onClose} className="p-2 text-slate-400 hover:text-slate-200 shrink-0">
-            <X className="w-5 h-5" />
-          </button>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-200"><X className="w-4 h-4" /></button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4 space-y-3">
-          {CURRENCY_TYPES.map((type) => (
-            <div key={type.key} className="border border-slate-800 p-3">
-              <div className="text-[10px] text-slate-500 tracking-widest mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                {type.category} · {type.abbrev}
-              </div>
-              <div className="text-sm text-slate-200 mb-1">{type.label}</div>
-              <div className="text-xs text-slate-500 mb-3">{type.notes} ({type.interval}d cycle)</div>
-              <input
-                type="date"
-                value={draft[type.key].lastDate}
-                onChange={(e) => setDraft((d) => ({
-                  ...d,
-                  [type.key]: { ...d[type.key], lastDate: e.target.value },
-                }))}
-                className="w-full bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-100"
-              />
-              <input
-                type="text"
-                value={draft[type.key].notes}
-                onChange={(e) => setDraft((d) => ({
-                  ...d,
-                  [type.key]: { ...d[type.key], notes: e.target.value },
-                }))}
-                placeholder="Notes (sim center, instructor, aircraft, etc.)"
-                className="w-full bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-100 mt-2"
-              />
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
+          <CategoryEditBlock label="MEDICAL" color={CATEGORY_COLORS.MEDICAL} defaultOpen={focusKey === '__medical__'}>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <FieldLabel label="CLASS">
+                <select value={draft.medical.class} onChange={e => setDraft(d => ({ ...d, medical: { ...d.medical, class: e.target.value } }))} className="w-full bg-slate-950 border border-slate-700 px-2 py-1.5 text-sm text-slate-100">
+                  <option value="">—</option>
+                  <option value="First">First</option>
+                  <option value="Second">Second</option>
+                  <option value="Third">Third</option>
+                  <option value="BasicMed">BasicMed</option>
+                </select>
+              </FieldLabel>
+              <FieldLabel label="EXPIRATION (YYYY-MM-DD)">
+                <input type="date" value={draft.medical.expirationDate} onChange={e => setDraft(d => ({ ...d, medical: { ...d.medical, expirationDate: e.target.value } }))} className="w-full bg-slate-950 border border-slate-700 px-2 py-1.5 text-sm text-slate-100" />
+              </FieldLabel>
+              <FieldLabel label="NOTES">
+                <input type="text" value={draft.medical.notes} onChange={e => setDraft(d => ({ ...d, medical: { ...d.medical, notes: e.target.value } }))} className="w-full bg-slate-950 border border-slate-700 px-2 py-1.5 text-sm text-slate-100" />
+              </FieldLabel>
             </div>
-          ))}
+          </CategoryEditBlock>
 
-          {/* Medical block */}
-          <div className="border border-slate-800 p-3">
-            <div className="text-[10px] text-slate-500 tracking-widest mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              MEDICAL
+          {CATEGORY_ORDER.map(cat => {
+            const types = TYPES_BY_CATEGORY[cat] || [];
+            if (types.length === 0) return null;
+            const hasFocus = focusKey && types.some(t => t.key === focusKey);
+            return (
+              <CategoryEditBlock key={cat} label={cat} color={CATEGORY_COLORS[cat]} defaultOpen={hasFocus}>
+                <div className="space-y-3">
+                  {types.map(t => (
+                    <ItemEditRow key={t.key} type={t} value={draft[t.key]} onChange={(patch) => setItem(t.key, patch)} focused={focusKey === t.key} />
+                  ))}
+                </div>
+              </CategoryEditBlock>
+            );
+          })}
+
+          {err && (
+            <div className="border border-red-500/40 bg-red-500/10 p-2 text-xs text-red-300 flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" /> {err}
             </div>
-            <div className="text-sm text-slate-200 mb-1">FAA Medical / BasicMed</div>
-            <div className="text-xs text-slate-500 mb-3">Use the expiration printed on the certificate.</div>
-            <div className="grid grid-cols-2 gap-2">
-              <select
-                value={draft.medical.class}
-                onChange={(e) => setDraft((d) => ({ ...d, medical: { ...d.medical, class: e.target.value } }))}
-                className="bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-100"
-              >
-                <option value="">— Class —</option>
-                <option value="First">First Class</option>
-                <option value="Second">Second Class</option>
-                <option value="Third">Third Class</option>
-                <option value="BasicMed">BasicMed</option>
-              </select>
-              <input
-                type="date"
-                value={draft.medical.expirationDate}
-                onChange={(e) => setDraft((d) => ({ ...d, medical: { ...d.medical, expirationDate: e.target.value } }))}
-                className="bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-100"
-              />
-            </div>
-            <input
-              type="text"
-              value={draft.medical.notes}
-              onChange={(e) => setDraft((d) => ({ ...d, medical: { ...d.medical, notes: e.target.value } }))}
-              placeholder="Notes (AME, restrictions, etc.)"
-              className="w-full bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-100 mt-2"
-            />
-          </div>
+          )}
         </div>
 
-        {err && (
-          <div className="px-4 py-2 text-xs text-red-400 border-t border-slate-800 shrink-0">{err}</div>
-        )}
-
-        <div className="border-t border-slate-800 px-4 py-3 flex items-center justify-end gap-2 shrink-0">
-          <button
-            onClick={onClose}
-            disabled={saving}
-            className="px-4 py-2 text-sm text-slate-400 hover:text-slate-200 disabled:opacity-50"
-          >
-            CANCEL
-          </button>
-          <button
-            onClick={onSave}
-            disabled={saving}
-            className="px-4 py-2 text-sm bg-cyan-500 text-slate-950 tracking-wider hover:bg-cyan-400 disabled:opacity-50 flex items-center gap-2"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}
-          >
-            <Save className="w-4 h-4" />
-            {saving ? 'SAVING…' : 'SAVE'}
+        <div className="p-3 border-t border-slate-800 flex items-center justify-end gap-2 shrink-0">
+          <button type="button" onClick={onClose} className="px-3 py-2 text-[11px] tracking-widest text-slate-400 hover:text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>CANCEL</button>
+          <button type="button" onClick={handleSave} disabled={saving} className="px-4 py-2 text-[11px] tracking-widest bg-cyan-500 hover:bg-cyan-400 text-slate-950 disabled:opacity-50 inline-flex items-center gap-2" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
+            <Save className="w-3 h-3" /> SAVE
           </button>
         </div>
       </div>
     </div>,
     document.body
+  );
+}
+
+function CategoryEditBlock({ label, color, defaultOpen, children }) {
+  const [open, setOpen] = useState(defaultOpen);
+  const c = color || 'text-slate-400 border-slate-700';
+  return (
+    <div className={`border ${c.split(' ')[1]}`}>
+      <button type="button" onClick={() => setOpen(o => !o)} className="w-full flex items-center justify-between gap-3 p-2.5 bg-slate-950/40 hover:bg-slate-900">
+        <span className={`text-[10px] tracking-widest ${c.split(' ')[0]}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>{label}</span>
+        {open ? <ChevronUp className="w-3.5 h-3.5 text-slate-500" /> : <ChevronDown className="w-3.5 h-3.5 text-slate-500" />}
+      </button>
+      {open && <div className="p-3 border-t border-slate-800">{children}</div>}
+    </div>
+  );
+}
+
+function ItemEditRow({ type, value, onChange, focused }) {
+  return (
+    <div className={`border border-slate-800 ${focused ? 'ring-1 ring-cyan-500/40' : ''} p-2.5 bg-slate-950/30`}>
+      <div className="flex items-center justify-between gap-3 mb-2">
+        <div className="min-w-0">
+          <div className="text-xs text-slate-200">{type.label}</div>
+          {type.notes && <div className="text-[10px] text-slate-500 italic">{type.notes}</div>}
+        </div>
+        <label className="flex items-center gap-1.5 text-[10px] text-slate-500 shrink-0 cursor-pointer">
+          <input type="checkbox" checked={value.notApplicable} onChange={e => onChange({ notApplicable: e.target.checked })} className="accent-slate-500" />
+          <span style={{ fontFamily: 'JetBrains Mono, monospace' }}>N/A</span>
+        </label>
+      </div>
+      {!value.notApplicable && (
+        type.noExpiration ? (
+          <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+            <input type="checkbox" checked={value.present} onChange={e => onChange({ present: e.target.checked })} className="accent-cyan-500" />
+            <span>Active / on file</span>
+          </label>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+            <FieldLabel label="DUE DATE (from cert)">
+              <input type="date" value={value.dueDate} onChange={e => onChange({ dueDate: e.target.value })} className="w-full bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs text-slate-100" />
+            </FieldLabel>
+            <FieldLabel label="GRACE (optional)">
+              <input type="date" value={value.graceDate} onChange={e => onChange({ graceDate: e.target.value })} className="w-full bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs text-slate-100" />
+            </FieldLabel>
+            <FieldLabel label="OR LAST COMPLETED">
+              <input type="date" value={value.lastDate} onChange={e => onChange({ lastDate: e.target.value })} className="w-full bg-slate-950 border border-slate-700 px-2 py-1.5 text-xs text-slate-100" />
+            </FieldLabel>
+          </div>
+        )
+      )}
+    </div>
+  );
+}
+
+function FieldLabel({ label, children }) {
+  return (
+    <label className="block">
+      <div className="text-[9px] tracking-widest text-slate-500 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{label}</div>
+      {children}
+    </label>
   );
 }
