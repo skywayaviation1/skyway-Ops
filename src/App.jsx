@@ -23,6 +23,11 @@ const TripChatStreamLazy = lazy(() =>
 // statically imported because hooks can't be lazy-loaded.
 import { StreamPresenceProvider, useStreamPresence, useTripUnread } from './stream-presence.jsx';
 
+// Admin Duty Tools — manual day editor, copy-from-pilot flow, JetInsight
+// paste importer. Loads only when admin opens the modal from the DUTY
+// section. The whole feature is one self-contained file.
+const AdminDutyToolsLazy = lazy(() => import('./AdminDutyTools.jsx'));
+
 // Code-split: PushSettings loads only when the user opens their profile.
 const PushSettingsLazy = lazy(() => import('./PushSettings.jsx'));
 
@@ -90,7 +95,7 @@ import {
   Mail, Navigation, Loader2, Wifi, WifiOff, Settings as SettingsIcon,
   Download, Trash2, Plus, FileText, Zap, Radio, AlertCircle, Upload,
   CheckCheck, UserCheck, Sparkles, Hash, Cloud, Wrench, Hotel, BookOpen, Search,
-  Activity, Palette, ShieldCheck,
+  Activity, Palette, ShieldCheck, Edit2,
 } from 'lucide-react';
 import { formatLocalTime, formatLocalDate } from './airports.js';
 import {
@@ -1795,9 +1800,15 @@ function useFirestoreUsers(currentProfile) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!currentProfile || (currentProfile.role !== 'admin' && currentProfile.role !== 'ops')) {
-      // Non-admins can only see themselves
-      if (currentProfile) setUsers([currentProfile]);
+    // Every signed-in user subscribes to the full users roster.
+    // Originally this was admin/ops-only to save bandwidth, but the chat
+    // picker (NEW DM, NEW GROUP) and trip-channel member derivation both
+    // need the full roster on EVERY account — without it, crew see an
+    // empty picker and trip channels can't auto-add the right people.
+    // Firestore rules already allow any signed-in user to read /users,
+    // and the collection is small (~25 docs for Skyway). Net cost is
+    // negligible.
+    if (!currentProfile) {
       setLoading(false);
       return;
     }
@@ -1811,6 +1822,9 @@ function useFirestoreUsers(currentProfile) {
         });
       } catch (err) {
         console.error('Failed to load users:', err);
+        // Fall back to just the current profile so the rest of the app
+        // doesn't blow up.
+        setUsers([currentProfile]);
         setLoading(false);
       }
     })();
@@ -25734,6 +25748,7 @@ export default function CharterOps() {
     return false;
   });
   const [showProfile, setShowProfile] = useState(false);
+  const [showAdminDutyTools, setShowAdminDutyTools] = useState(false);
   // UI theme — 'dark' (default cyan/slate) or 'classy' (warm + gold).
   // Persisted in localStorage so the choice survives reloads. The actual
   // visual switch happens via the data-theme attribute on the html
@@ -27253,6 +27268,25 @@ export default function CharterOps() {
         {/* === DUTY SECTION (admin duty/rest oversight) === */}
         {section === 'duty' && (currentUser.role === 'admin' || currentUser._impersonating === true) && config?.dutyTrackerEnabled && (
           <div className="flex-1 overflow-y-auto scroll-area bg-slate-950 p-4">
+            {/* Admin tools — manual day editor, copy-from-pilot, JetInsight
+                paste importer. Lives above the read-only calendar because
+                it's the action surface; the calendar is the report. */}
+            <div className="mb-4 flex items-center justify-between gap-3 flex-wrap">
+              <div className="text-[11px] tracking-widest text-slate-500"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                DUTY · ADMIN OVERSIGHT
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAdminDutyTools(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] tracking-widest border border-cyan-500/40 hover:border-cyan-400 text-cyan-300 hover:text-cyan-200"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                title="Add, edit, copy, or import duty days for any pilot"
+              >
+                <Edit2 className="w-3 h-3" />
+                ADMIN DUTY TOOLS
+              </button>
+            </div>
             {/* Admin duty calendar — month grid → click a day → expanded
                 day detail with 24-hour timeline, duty bubbles, rest gaps,
                 time-remaining indicators, edit modals, and crew linking.
@@ -27302,6 +27336,19 @@ export default function CharterOps() {
             await updateUser(currentUser.uid || currentUser.id, patch);
           }}
         />
+      )}
+
+      {showAdminDutyTools && (currentUser?.role === 'admin' || currentUser?._impersonating === true) && (
+        <Suspense fallback={
+          <div className="fixed inset-0 bg-black/70 z-40 flex items-center justify-center">
+            <Loader2 className="w-6 h-6 animate-spin text-slate-400" />
+          </div>
+        }>
+          <AdminDutyToolsLazy
+            users={users}
+            onClose={() => setShowAdminDutyTools(false)}
+          />
+        </Suspense>
       )}
       </StreamPresenceProvider>
     </div>
