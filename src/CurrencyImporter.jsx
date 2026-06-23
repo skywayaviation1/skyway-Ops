@@ -1,19 +1,15 @@
 // src/CurrencyImporter.jsx
 //
 // Bulk-import pilot currency data from a JetInsight "Crew checks by crew
-// member" grid. The flow:
+// member" grid. Two input modes:
 //
-//   1. Admin opens the importer from the Pilot Currency dashboard.
-//   2. Pastes the table from JetInsight — either the raw browser table
-//      copy (tab-separated cells), or a pipe-separated format.
-//   3. Parser splits into pilot rows × 24 columns. Each row's first cell
-//      is the pilot name; the remaining 24 map to the schema in
-//      firebase-currency.js.
-//   4. Per-pilot match: each parsed pilot name is fuzzy-matched against
-//      the Firestore `users` collection. Admin can override matches
-//      manually if needed.
-//   5. Per-pilot preview shows what fields will be written. Admin checks
-//      boxes for which pilots to include, then commits.
+//   1. Upload PDF — drop the JetInsight PDF export, we extract text
+//      with pdfjs-dist and parse it.
+//   2. Paste text — paste a tab/pipe/comma-separated table.
+//
+// Both feed the same preview → commit pipeline. The PDF path is the
+// happy path; the paste path is a fallback if JetInsight changes its
+// PDF format or admin only has partial data.
 //
 // JetInsight column order (left-to-right in their compliance grid):
 //   1. Medical 1st class (under 40)
@@ -50,7 +46,7 @@
 // store as doc.medical = { class, expirationDate, notes }.
 
 import React, { useMemo, useState } from 'react';
-import { X, Upload, Check, Loader2, AlertTriangle, Search, ChevronDown } from 'lucide-react';
+import { X, Upload, Check, Loader2, AlertTriangle, Search, ChevronDown, FileText } from 'lucide-react';
 import { savePilotCurrency, CURRENCY_TYPES } from './firebase-currency.js';
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -99,8 +95,211 @@ const COLUMN_LABELS = [
 ];
 
 /* ═══════════════════════════════════════════════════════════════════
-   CELL PARSING
+   PDF EXTRACTION — pdfjs-dist
    ═══════════════════════════════════════════════════════════════════ */
+
+// Lazy-load pdfjs only when we actually use it. Configures the worker
+// from the same package so Vite bundles it.
+async function loadPdfjs() {
+  const pdfjs = await import('pdfjs-dist');
+  if (!pdfjs.GlobalWorkerOptions.workerSrc) {
+    // Vite-friendly worker URL. pdfjs-dist 4.x ships .mjs.
+    try {
+      const workerUrl = new URL(
+        'pdfjs-dist/build/pdf.worker.min.mjs',
+        import.meta.url
+      ).href;
+      pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
+    } catch {
+      // Fallback to CDN matching our installed version.
+      pdfjs.GlobalWorkerOptions.workerSrc =
+        'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.7.76/build/pdf.worker.min.mjs';
+    }
+  }
+  return pdfjs;
+}
+
+// Extract all text from a PDF as a single concatenated string. Each
+// item gets a trailing space so words don't run together. Reading order
+// follows the PDF's text stream, which for JetInsight's report comes
+// out as headers → data cells (left-to-right, top-to-bottom) → pilot
+// name column at the end (since name column sits leftmost visually but
+// pdfjs streams it last because the names are vertically tall blocks).
+async function extractPdfText(file) {
+  const pdfjs = await loadPdfjs();
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+  const parts = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    for (const item of content.items) {
+      if (item.str && item.str.trim()) parts.push(item.str);
+    }
+    // Page break marker (safe — our tokenizer ignores it)
+    parts.push(' ');
+  }
+  return parts.join(' ');
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   TEXT TOKENIZER — used by PDF path
+   ═══════════════════════════════════════════════════════════════════ */
+
+// Walk through extracted text and emit typed tokens. Cells are dates,
+// "n/a", "Missing", or "Never". Anything wrapped in (grace: …) is its
+// own token type so we can discard it. Everything else becomes either
+// a "word" (alphabetic, candidate for pilot name) or skipped.
+function tokenizeJetInsightText(text) {
+  // Normalize whitespace and collapse newlines.
+  const t = text.replace(/\s+/g, ' ').trim();
+  const tokens = [];
+  let i = 0;
+  while (i < t.length) {
+    while (i < t.length && t[i] === ' ') i++;
+    if (i >= t.length) break;
+
+    // Date M/D/YYYY or MM/DD/YYYY
+    const dm = t.slice(i).match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+    if (dm) {
+      const mm = String(dm[1]).padStart(2, '0');
+      const dd = String(dm[2]).padStart(2, '0');
+      tokens.push({ type: 'date', value: `${dm[3]}-${mm}-${dd}` });
+      i += dm[0].length;
+      continue;
+    }
+
+    // (grace: M/D/YYYY) — entire block, skip
+    if (t.slice(i, i + 7).toLowerCase() === '(grace:') {
+      const close = t.indexOf(')', i);
+      if (close > i) {
+        tokens.push({ type: 'grace' });
+        i = close + 1;
+        continue;
+      }
+    }
+
+    // "n/a"
+    if (t.slice(i, i + 3).toLowerCase() === 'n/a') {
+      tokens.push({ type: 'na' });
+      i += 3;
+      continue;
+    }
+
+    // Word: alphabetic, can include /, ., -, '
+    const wm = t.slice(i).match(/^[A-Za-z][A-Za-z0-9'.\-/]*/);
+    if (wm) {
+      const w = wm[0];
+      const lower = w.toLowerCase();
+      if (lower === 'missing') tokens.push({ type: 'missing' });
+      else if (lower === 'never') tokens.push({ type: 'never' });
+      else tokens.push({ type: 'word', value: w });
+      i += w.length;
+      continue;
+    }
+
+    // Skip punctuation / other
+    i++;
+  }
+  return tokens;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   PARSE — token stream → pilot rows
+   ═══════════════════════════════════════════════════════════════════ */
+
+// JetInsight PDF text streams in this order:
+//   [headers]  [24 cells × N pilots]  [N pilot names]
+// The data cells come first as one long contiguous run; pilot names
+// stream after all data because pdfjs reads the table left-to-right
+// per row, but the name column (with its multi-line wrapping) gets
+// pushed to the end of each page's reading.
+//
+// Strategy:
+//   1. Find the LAST cell token (date/na/missing/never).
+//   2. Everything before+including it = cells. Everything after = name
+//      tokens, which we group into multi-word names.
+//   3. Slice cells into 24-token chunks; each chunk pairs with the
+//      next name by order.
+function parsePdfTokens(tokens) {
+  // Find the last index of a cell-like token.
+  let lastCellIdx = -1;
+  for (let i = tokens.length - 1; i >= 0; i--) {
+    const k = tokens[i].type;
+    if (k === 'date' || k === 'na' || k === 'missing' || k === 'never') {
+      lastCellIdx = i;
+      break;
+    }
+  }
+
+  if (lastCellIdx < 0) return { pilots: [], warnings: ['No cell data found in PDF text.'] };
+
+  // Pull only cell tokens up to lastCellIdx; ignore words mixed in
+  // (those would be header text like "Medical" or "Ground / oral").
+  const cells = [];
+  for (let i = 0; i <= lastCellIdx; i++) {
+    const t = tokens[i];
+    if (t.type === 'date') cells.push({ kind: 'date', dueDate: t.value });
+    else if (t.type === 'na') cells.push({ kind: 'na' });
+    else if (t.type === 'missing') cells.push({ kind: 'missing' });
+    else if (t.type === 'never') cells.push({ kind: 'never' });
+    // grace and word tokens skipped
+  }
+
+  // After lastCellIdx, group consecutive Capitalized words into names.
+  // A name is at least 2 capitalized words. Numbers, lowercase tokens,
+  // or punctuation between word runs break the name.
+  const names = [];
+  let buffer = [];
+  const flush = () => {
+    if (buffer.length >= 2) names.push(buffer.join(' '));
+    buffer = [];
+  };
+  for (let i = lastCellIdx + 1; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t.type === 'word' && /^[A-Z][A-Za-z'.\-]*$/.test(t.value)) {
+      buffer.push(t.value);
+    } else {
+      flush();
+    }
+  }
+  flush();
+
+  // Filter obvious non-names. JetInsight footer has things like
+  // "Copyright JetInsight" "Contact Us" "Crewmember badge". The 24
+  // column headers like "Medical 1st class" don't survive the
+  // post-lastCellIdx filter because they precede data, not follow it.
+  // But the footer copyright might. Drop anything containing forbidden
+  // substrings.
+  const FORBIDDEN = /copyright|contact|jetinsight|crewmember|crew checks/i;
+  const cleanNames = names.filter(n => !FORBIDDEN.test(n));
+
+  // Group cells into 24-cell chunks, one per pilot in order.
+  const pilots = [];
+  const warnings = [];
+  const expectedTotal = cleanNames.length * 24;
+  if (cells.length < expectedTotal) {
+    warnings.push(
+      `PDF gave ${cells.length} cells but expected ${expectedTotal} for ` +
+      `${cleanNames.length} pilots — some rows may be truncated.`
+    );
+  } else if (cells.length > expectedTotal) {
+    warnings.push(
+      `PDF gave ${cells.length} cells, ${cells.length - expectedTotal} more than ` +
+      `expected for ${cleanNames.length} pilots — extra cells will be ignored.`
+    );
+  }
+  for (let i = 0; i < cleanNames.length; i++) {
+    const start = i * 24;
+    const chunk = cells.slice(start, start + 24);
+    pilots.push({
+      name: cleanNames[i],
+      cells: chunk,
+      rawLen: chunk.length,
+    });
+  }
+  return { pilots, warnings };
+}
 
 // One JetInsight cell can be:
 //   - "n/a"                            → notApplicable
@@ -425,36 +624,83 @@ export default function CurrencyImporter({ users, currentUserUid, onClose, onImp
   const [err, setErr] = useState(null);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [doneSummary, setDoneSummary] = useState(null);
+  const [pdfLoading, setPdfLoading] = useState(false);
+  const [pdfWarnings, setPdfWarnings] = useState([]);
+
+  // Build the preview-row array from any parsed pilot list. Shared by
+  // both the PDF and paste paths so name matching, patch building, and
+  // checkbox state work identically downstream.
+  const buildRowsFromParsed = (parsedList) => {
+    const built = [];
+    for (const parsed of parsedList) {
+      // Filter out header-like rows the PDF parser might emit if the
+      // page header text leaked through.
+      const looksLikeHeader =
+        /pilot|name|medical|ground|simulator|instrument/i.test(parsed.name)
+        && !parsed.cells.some(c => c.kind === 'date');
+      if (looksLikeHeader) continue;
+
+      const patch = buildPatchFromParsedRow(parsed);
+      const match = pickBestMatch(parsed.name, users);
+      built.push({
+        parsed,
+        patch,
+        matchUid: match?.uid || null,
+        include: !!match,
+      });
+    }
+    return built;
+  };
+
+  const handlePdfUpload = async (file) => {
+    setErr(null);
+    setPdfWarnings([]);
+    if (!file) return;
+    if (!/\.pdf$/i.test(file.name) && file.type !== 'application/pdf') {
+      setErr('Please upload a PDF file.');
+      return;
+    }
+    setPdfLoading(true);
+    try {
+      const text = await extractPdfText(file);
+      const tokens = tokenizeJetInsightText(text);
+      const { pilots, warnings } = parsePdfTokens(tokens);
+      if (pilots.length === 0) {
+        setErr(
+          'Couldn\'t extract any pilot rows from this PDF. Either the format ' +
+          'doesn\'t match JetInsight\'s "Crew checks by crew member" report, ' +
+          'or the PDF is image-scanned (not text). Try copy/paste instead.'
+        );
+        return;
+      }
+      const built = buildRowsFromParsed(pilots);
+      if (built.length === 0) {
+        setErr('Parser ran but every row looked like a header — check the PDF.');
+        return;
+      }
+      setRows(built);
+      setPdfWarnings(warnings);
+      setStep('preview');
+    } catch (e) {
+      console.error('PDF parse failed:', e);
+      setErr(`PDF parse failed: ${e?.message || e}`);
+    } finally {
+      setPdfLoading(false);
+    }
+  };
 
   const handleParse = () => {
     setErr(null);
     if (!pasteText.trim()) {
-      setErr('Paste some data first.');
+      setErr('Paste some data first, or upload a PDF.');
       return;
     }
     try {
       const tableRows = parseTable(pasteText);
-      const built = [];
-      for (const row of tableRows) {
-        const parsed = parsePilotRow(row);
-        if (!parsed) continue;
-        // Filter out header rows. We treat a row as a header if NONE
-        // of its cells look like a date and the first cell contains
-        // words like "Medical" or "Pilot" or "Name".
-        const looksLikeHeader =
-          /pilot|name|medical|ground|simulator|instrument/i.test(parsed.name)
-          && !parsed.cells.some(c => c.kind === 'date');
-        if (looksLikeHeader) continue;
-
-        const patch = buildPatchFromParsedRow(parsed);
-        const match = pickBestMatch(parsed.name, users);
-        built.push({
-          parsed,
-          patch,
-          matchUid: match?.uid || null,
-          include: !!match, // auto-include matched, skip unmatched by default
-        });
-      }
+      const parsedList = tableRows
+        .map(parsePilotRow)
+        .filter(Boolean);
+      const built = buildRowsFromParsed(parsedList);
       if (built.length === 0) {
         setErr('No pilot rows recognized. Make sure each line starts with the pilot name and is followed by 24 tab- or pipe-separated cells.');
         return;
@@ -519,40 +765,83 @@ export default function CurrencyImporter({ users, currentUserUid, onClose, onImp
         {/* STEP: PASTE */}
         {step === 'paste' && (
           <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
-            <div className="border border-slate-800 bg-slate-950/40 p-3">
-              <h3 className="text-xs tracking-widest text-slate-300 mb-2"
+
+            {/* PRIMARY PATH — PDF UPLOAD */}
+            <div className="border border-cyan-500/40 bg-cyan-500/5 p-4">
+              <h3 className="text-xs tracking-widest text-cyan-300 mb-2 flex items-center gap-2"
                 style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                HOW TO COPY FROM JETINSIGHT
+                <FileText className="w-4 h-4" /> UPLOAD JETINSIGHT PDF (RECOMMENDED)
               </h3>
-              <ol className="text-xs text-slate-400 space-y-1 list-decimal pl-5">
-                <li>Open JetInsight → Compliance → Reports → Crew checks by crew member</li>
-                <li>Click anywhere in the table, then Cmd+A (or Ctrl+A) to select all</li>
-                <li>Cmd+C (or Ctrl+C) to copy</li>
-                <li>Paste below. Tabs are preserved between cells.</li>
-                <li>Each row should start with the pilot's full name followed by 24 cells (6 medical columns + 18 training/checks).</li>
+              <ol className="text-xs text-slate-400 space-y-1 list-decimal pl-5 mb-3">
+                <li>JetInsight → Compliance → Reports → Crew checks by crew member</li>
+                <li>Click the print/export icon → save as PDF</li>
+                <li>Drop the PDF below — we'll parse all pilots in one shot</li>
               </ol>
+              <label
+                className={`flex items-center justify-center gap-3 border-2 border-dashed border-cyan-500/40 hover:border-cyan-400 bg-slate-950/40 hover:bg-cyan-500/5 p-6 cursor-pointer transition-colors ${
+                  pdfLoading ? 'opacity-50 pointer-events-none' : ''
+                }`}
+              >
+                <input
+                  type="file"
+                  accept="application/pdf,.pdf"
+                  className="hidden"
+                  disabled={pdfLoading}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) handlePdfUpload(file);
+                    // reset input so same file can be re-picked after fix
+                    e.target.value = '';
+                  }}
+                />
+                {pdfLoading ? (
+                  <>
+                    <Loader2 className="w-5 h-5 animate-spin text-cyan-300" />
+                    <span className="text-sm text-slate-300">Reading PDF…</span>
+                  </>
+                ) : (
+                  <>
+                    <Upload className="w-5 h-5 text-cyan-300" />
+                    <span className="text-sm text-cyan-100">
+                      Click to choose PDF, or drag and drop
+                    </span>
+                  </>
+                )}
+              </label>
             </div>
 
-            <div>
-              <label className="block text-[10px] tracking-widest text-slate-500 mb-1"
+            {/* SECONDARY PATH — PASTE */}
+            <details className="border border-slate-800 bg-slate-950/40">
+              <summary className="cursor-pointer p-3 text-xs tracking-widest text-slate-400 hover:text-slate-200 select-none"
                 style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                PASTE JETINSIGHT TABLE DATA
-              </label>
-              <textarea
-                value={pasteText}
-                onChange={e => setPasteText(e.target.value)}
-                rows={14}
-                placeholder={
-                  "Pilot Name\tMed1<40\tMed2<40\tMed3<40\tMed1 40+\tMed2 40+\tMed3 40+\tBasic Indoc\t...\n" +
-                  "Daniel Sarkis\tn/a\tn/a\tn/a\t10/31/2026\t04/30/2027\t04/30/2028\t02/28/2027\t...\n" +
-                  "Olivia Caldwell\t12/31/2026\t12/31/2026\t12/31/2030\tn/a\tn/a\tn/a\t06/30/2027\t..."
-                }
-                className="w-full bg-slate-950 border border-slate-700 p-2 text-xs text-slate-100 font-mono focus:border-cyan-500/60 outline-none"
-              />
-              <div className="text-[10px] text-slate-500 mt-1">
-                Tab-separated (browser copy), pipe-separated, or comma-separated all work. Header row is auto-skipped.
+                ALTERNATE: PASTE TABLE TEXT (TAB/PIPE/COMMA-SEPARATED)
+              </summary>
+              <div className="p-3 pt-0 space-y-3">
+                <div className="text-xs text-slate-400 leading-relaxed">
+                  Cmd+A in the JetInsight table → Cmd+C → paste here. Each row should
+                  start with the pilot name followed by 24 cells (6 medical + 18
+                  training/checks). Header row is auto-skipped.
+                </div>
+                <textarea
+                  value={pasteText}
+                  onChange={e => setPasteText(e.target.value)}
+                  rows={10}
+                  placeholder={
+                    "Daniel Sarkis\tn/a\tn/a\tn/a\t10/31/2026\t04/30/2027\t04/30/2028\t02/28/2027\t...\n" +
+                    "Olivia Caldwell\t12/31/2026\t12/31/2026\t12/31/2030\tn/a\tn/a\tn/a\t06/30/2027\t..."
+                  }
+                  className="w-full bg-slate-950 border border-slate-700 p-2 text-xs text-slate-100 font-mono focus:border-cyan-500/60 outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={handleParse}
+                  className="px-4 py-2 text-[11px] tracking-widest border border-cyan-500/40 hover:border-cyan-400 text-cyan-300 hover:text-cyan-200 inline-flex items-center gap-2"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                >
+                  <Search className="w-3 h-3" /> PARSE PASTED TEXT
+                </button>
               </div>
-            </div>
+            </details>
 
             {err && (
               <div className="border border-red-500/40 bg-red-500/10 p-2 text-xs text-red-300 flex items-start gap-2">
@@ -568,14 +857,6 @@ export default function CurrencyImporter({ users, currentUserUid, onClose, onImp
                 className="px-3 py-2 text-[11px] tracking-widest text-slate-400 hover:text-slate-200"
                 style={{ fontFamily: 'JetBrains Mono, monospace' }}
               >CANCEL</button>
-              <button
-                type="button"
-                onClick={handleParse}
-                className="px-4 py-2 text-[11px] tracking-widest bg-cyan-500 hover:bg-cyan-400 text-slate-950 inline-flex items-center gap-2"
-                style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}
-              >
-                <Search className="w-3 h-3" /> PARSE PREVIEW
-              </button>
             </div>
           </div>
         )}
@@ -584,6 +865,16 @@ export default function CurrencyImporter({ users, currentUserUid, onClose, onImp
         {step === 'preview' && (
           <>
             <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-2">
+              {pdfWarnings.length > 0 && (
+                <div className="border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-200 space-y-1">
+                  {pdfWarnings.map((w, i) => (
+                    <div key={i} className="flex items-start gap-2">
+                      <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                      <div>{w}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
               <div className="flex items-center justify-between gap-3 flex-wrap">
                 <div className="text-xs text-slate-400">
                   {rows.length} row{rows.length === 1 ? '' : 's'} parsed ·{' '}
