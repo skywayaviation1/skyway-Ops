@@ -1,16 +1,21 @@
-@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600;9..40,700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/* ─── DARK THEME BASE ────────────────────────────────────────────────────────
+   Tailwind's slate-950 is now #0D1829 (aviation navy) via tailwind.config.js.
+   We match that here for the outermost shell.
+   ─────────────────────────────────────────────────────────────────────────── */
 html, body, #root {
   height: 100%;
   margin: 0;
-  background: #020617;
-  color: #f1f5f9;
+  background: #0D1829;
+  color: #e2e8f0;
   font-family: 'DM Sans', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   overscroll-behavior: none;
 }
 
@@ -23,4 +28,37 @@ body {
 #root {
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
+}
+
+/* ─── SCROLLBAR ──────────────────────────────────────────────────────────────
+   Thin, subtle. Better than the default chunky system scrollbar on dark
+   backgrounds. The scroll-area class below is used by content panels.
+   ─────────────────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar            { width: 3px; height: 3px; }
+::-webkit-scrollbar-track      { background: transparent; }
+::-webkit-scrollbar-thumb      { background: rgba(148,163,184,0.18); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover{ background: rgba(148,163,184,0.32); }
+
+.scroll-area {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148,163,184,0.18) transparent;
+}
+
+/* ─── MICRO-INTERACTIONS ─────────────────────────────────────────────────────
+   Smooth state transitions on interactive elements. Keeps the UI feeling
+   responsive without animation overkill.
+   ─────────────────────────────────────────────────────────────────────────── */
+button, a, [role="button"] {
+  transition: color 0.1s ease, background-color 0.1s ease,
+              border-color 0.12s ease, opacity 0.1s ease;
+}
+
+/* ─── FOCUS RINGS ─────────────────────────────────────────────────────────── */
+:focus-visible {
+  outline: 2px solid rgba(34,211,238,0.5);
+  outline-offset: 2px;
+}
+button:focus:not(:focus-visible),
+a:focus:not(:focus-visible) {
+  outline: none;
 }
