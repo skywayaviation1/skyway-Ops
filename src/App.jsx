@@ -85,6 +85,9 @@ const CrewBoardV2Lazy = lazy(() => import('./CrewBoardV2.jsx'));
 // import is retained above only because settings still mounts it
 // (small status panel inside Settings). The Duty tab itself uses this.
 const DutyAdminCalendarLazy = lazy(() => import('./DutyAdminCalendar.jsx'));
+// Unified admin Duty Dashboard (Calendar + Timeline + Grid). Wraps the
+// calendar above as its first view and adds the timeline + grid views.
+const DutyDashboardLazy = lazy(() => import('./DutyDashboard.jsx'));
 import AppTimezoneSwitch from './AppTimezoneSwitch.jsx';
 import { todayInAppTz } from './app-timezone.js';
 import { createPortal } from 'react-dom';
@@ -27300,7 +27303,7 @@ export default function CharterOps() {
                 LOADING DUTY CALENDAR
               </div>
             }>
-              <DutyAdminCalendarLazy currentUser={currentUser} users={users} />
+              <DutyDashboardLazy currentUser={currentUser} users={users} />
             </Suspense>
           </div>
         )}
