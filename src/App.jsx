@@ -85,9 +85,6 @@ const CrewBoardV2Lazy = lazy(() => import('./CrewBoardV2.jsx'));
 // import is retained above only because settings still mounts it
 // (small status panel inside Settings). The Duty tab itself uses this.
 const DutyAdminCalendarLazy = lazy(() => import('./DutyAdminCalendar.jsx'));
-// Unified admin Duty Dashboard (Calendar + Timeline + Grid). Wraps the
-// calendar above as its first view and adds the timeline + grid views.
-const DutyDashboardLazy = lazy(() => import('./DutyDashboard.jsx'));
 import AppTimezoneSwitch from './AppTimezoneSwitch.jsx';
 import { todayInAppTz } from './app-timezone.js';
 import { createPortal } from 'react-dom';
@@ -5057,12 +5054,17 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       // BOUNCE-BACK FIX (1/2): swallow the first scroll event after we
       // decided to collapse. That event is the browser's reflow clamp,
       // not a user gesture — processing it would trigger re-expand.
+      //
+      // FIX: original code cleared the flag on the FIRST swallowed event.
+      // But the hero uses `transition-all duration-300`, so layout changes
+      // fire scroll events for every animation frame over 300ms. Only the
+      // first was swallowed; subsequent events arrived with scrollTop≈0
+      // and direction='up', re-expanding the hero and producing the
+      // bounce-back loop. Now the 400ms timer below clears the flag AFTER
+      // the transition finishes — all intermediate events are swallowed.
+      // We still update lastTopRef so direction tracking is accurate
+      // the moment the guard lifts.
       if (expectingClampRef.current) {
-        expectingClampRef.current = false;
-        if (clampTimerRef.current) {
-          clearTimeout(clampTimerRef.current);
-          clampTimerRef.current = null;
-        }
         lastTopRef.current = el.scrollTop;
         return;
       }
@@ -5094,12 +5096,19 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
           const scrollableHeadroom = el.scrollHeight - el.clientHeight;
           if (scrollableHeadroom < 250) return false;
           // ABOUT TO COLLAPSE — arm the clamp swallow.
+          // Timeout is 400ms: the hero CSS transition is 300ms, so we
+          // need to outlast it. Every scroll event fired during layout
+          // animation is swallowed by the guard above; the timer clears
+          // the flag only after the transition finishes.
           expectingClampRef.current = true;
           if (clampTimerRef.current) clearTimeout(clampTimerRef.current);
           clampTimerRef.current = setTimeout(() => {
             expectingClampRef.current = false;
             clampTimerRef.current = null;
-          }, 250);
+            // Resync direction tracking after the guard lifts so the
+            // first real post-transition scroll reads direction correctly.
+            if (el) lastTopRef.current = el.scrollTop;
+          }, 400);
           return true;
         });
       });
@@ -27303,7 +27312,7 @@ export default function CharterOps() {
                 LOADING DUTY CALENDAR
               </div>
             }>
-              <DutyDashboardLazy currentUser={currentUser} users={users} />
+              <DutyAdminCalendarLazy currentUser={currentUser} users={users} />
             </Suspense>
           </div>
         )}
