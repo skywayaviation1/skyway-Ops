@@ -42,6 +42,7 @@ import { AlertTriangle, X, Edit3, Users, UserCheck, UserMinus, UserPlus, Square 
 import {
   editPeriod as fbEditPeriod,
   endDuty as fbEndDuty,
+  endDutyPair as fbEndDutyPair,
   addPartnerToActiveDuty,
   removePartnerFromDuty,
   changePartner,
@@ -190,7 +191,7 @@ export default function CrewManagePanel({ period, partnerPeriod, currentUser, cr
             setBusy(true); setError(null);
             try {
               const flightTimeMs = Math.round(parseFloat(flightTimeHours) * MS_HR) || 0;
-              await fbEndDuty(period.id, {
+              await fbEndDutyPair(period.id, {
                 dutyOffAt,
                 flightTimeMs,
                 endedBy: editorName,

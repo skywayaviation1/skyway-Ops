@@ -40,6 +40,7 @@ import {
   confirmPendingDuty as fbConfirmPendingDuty,
   declinePendingDuty as fbDeclinePendingDuty,
   endDuty as fbEndDuty,
+  endDutyPair as fbEndDutyPair,
   editPeriod as fbEditPeriod,
   requestOverride as fbRequestOverride,
   addOutsideFlying as fbAddOutsideFlying,
@@ -275,7 +276,10 @@ export default function DutyV2({ currentUser, myTrips = [], users = [] }) {
     if (!current?.id) return;
     setBusy(true); setError(null);
     try {
-      await fbEndDuty(current.id, { ...opts, endedBy: name });
+      // endDutyPair closes BOTH paired pilots atomically (server-side) so the
+      // partner doesn't get stranded on duty. Falls back to a clear error if
+      // the endpoint is unreachable.
+      await fbEndDutyPair(current.id, { ...opts, endedBy: name });
       setOpenForm(null);
     } catch (e) {
       setError(e.message || 'Failed to end duty');

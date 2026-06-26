@@ -77,7 +77,7 @@
 //   - Admin / ops / chief-pilot can read ALL pilots' records
 //   - Deletes are not permitted — periods are corrected via edits, not removed
 
-import { db } from './firebase.js';
+import { db, auth } from './firebase.js';
 import {
   collection, doc, query, where, onSnapshot, getDoc, getDocs,
   setDoc, updateDoc, addDoc, orderBy, limit, Timestamp, writeBatch
@@ -698,6 +698,122 @@ export async function endDuty(periodId, opts = {}) {
   };
   await updateDoc(ref, patch);
   return { id: periodId, ...cur, ...patch };
+}
+
+/**
+ * Crew-synced DUTY OFF. Closes THIS period AND its paired partner (if any)
+ * atomically, at the same dutyOffAt, so both pilots go off duty together and
+ * both rest timers start together.
+ *
+ * Routed through the /api/duty-end-pair Admin-SDK endpoint because closing the
+ * partner's record is a cross-user write that client security rules (correctly)
+ * don't allow. This is the function the pilot DUTY OFF button and the admin
+ * crew-manage end button should call — NOT the low-level endDuty() above, which
+ * only closes a single period and is kept for completeness / single-pilot use.
+ *
+ * opts: { dutyOffAt?, flightTimeMs?, excursionReason?, endedBy? }
+ * Returns: { ok, closed: [ids], dutyOffAt, alreadyClosed? }
+ */
+export async function endDutyPair(periodId, opts = {}) {
+  if (!periodId) throw new Error('periodId required');
+  const user = auth.currentUser;
+  if (!user) throw new Error('not signed in');
+  const idToken = await user.getIdToken();
+
+  const resp = await fetch('/api/duty-end-pair', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      idToken,
+      periodId,
+      dutyOffAt: Number.isFinite(opts.dutyOffAt) ? opts.dutyOffAt : undefined,
+      flightTimeMs: Number.isFinite(opts.flightTimeMs) ? opts.flightTimeMs : undefined,
+      excursionReason: opts.excursionReason || undefined,
+      endedByName: opts.endedBy || user.displayName || null,
+    }),
+  });
+
+  let data = null;
+  try { data = await resp.json(); } catch { /* non-JSON error body */ }
+  if (!resp.ok || !data?.ok) {
+    throw new Error(data?.error || `Duty off failed (${resp.status})`);
+  }
+  return data;
+}
+
+/**
+ * Collision-safe creation of a duty-period doc — used by import + backfill.
+ *
+ * THE BUG THIS FIXES: import and adminAddBackfillPeriod derived the doc id as
+ * `${pilotUid}_${dutyOnAt}` at MINUTE resolution and wrote with
+ * setDoc(merge:false) — a full overwrite. Re-running an import (or backfilling a
+ * minute that collided with an existing record) SILENTLY DESTROYED the prior
+ * record, wiping its edits, partner link, and flight time.
+ *
+ * This writer never destroys data:
+ *   - no existing doc at id          -> create it
+ *   - existing doc, same on/off/ft   -> idempotent skip (returns {skipped})
+ *   - existing doc, materially differs:
+ *       onConflict 'overwrite' -> UPDATE the time/flight fields + append audit
+ *                                 (preserves adminEdits / partnerPeriodId)
+ *       onConflict 'skip'      -> leave existing untouched
+ *       onConflict 'new'       -> create at a unique id `${id}__${rand}`
+ *       onConflict 'error'     -> throw err.code='duty/conflict' (default)
+ */
+export async function safeCreatePeriodDoc(id, docData, opts = {}) {
+  const onConflict = opts.onConflict || 'error';
+  const ref = doc(db, COLL, id);
+  const snap = await getDoc(ref);
+
+  if (!snap.exists()) {
+    await setDoc(ref, { ...docData, id });
+    return { id, created: true };
+  }
+
+  const cur = snap.data();
+  const same =
+    cur.dutyOnAt === docData.dutyOnAt &&
+    cur.dutyOffAt === docData.dutyOffAt &&
+    (cur.flightTimeMs || 0) === (docData.flightTimeMs || 0) &&
+    cur.pilotUid === docData.pilotUid;
+  if (same) return { id, skipped: true, reason: 'identical' };
+
+  if (onConflict === 'skip') return { id, skipped: true, reason: 'conflict' };
+
+  if (onConflict === 'overwrite') {
+    const edits = Array.isArray(cur.adminEdits) ? cur.adminEdits : [];
+    await updateDoc(ref, {
+      dutyOnAt: docData.dutyOnAt,
+      dutyOffAt: docData.dutyOffAt,
+      flightTimeMs: docData.flightTimeMs ?? cur.flightTimeMs ?? 0,
+      status: docData.status ?? cur.status,
+      over14: docData.over14 ?? cur.over14 ?? false,
+      updatedAt: Date.now(),
+      adminEdits: [...edits, {
+        by: opts.editedBy || 'import',
+        at: Date.now(),
+        field: 'overwrite-import',
+        from: { dutyOnAt: cur.dutyOnAt, dutyOffAt: cur.dutyOffAt, flightTimeMs: cur.flightTimeMs ?? 0 },
+        to: { dutyOnAt: docData.dutyOnAt, dutyOffAt: docData.dutyOffAt, flightTimeMs: docData.flightTimeMs ?? 0 },
+        note: opts.note || 'Existing record updated by import (non-destructive)',
+      }],
+    });
+    return { id, overwritten: true };
+  }
+
+  if (onConflict === 'new') {
+    const newId = `${id}__${Math.random().toString(36).slice(2, 8)}`;
+    await setDoc(doc(db, COLL, newId), { ...docData, id: newId });
+    return { id: newId, created: true, reason: 'conflict-uniquified' };
+  }
+
+  const err = new Error(
+    `A different duty period already exists at this start time (id ${id}). ` +
+    `Choose overwrite or skip.`
+  );
+  err.code = 'duty/conflict';
+  err.existing = cur;
+  throw err;
 }
 
 /**
@@ -1390,8 +1506,15 @@ export async function adminAddBackfillPeriod(opts) {
     status: 'off',
     over14: elapsed > 14 * 3600 * 1000,
   };
-  await setDoc(doc(db, COLL, id), docData);
-  return docData;
+  // Collision-safe write. Identical re-runs are skipped (idempotent); a
+  // DIFFERENT period landing on the same pilot+minute is preserved under a
+  // unique id instead of clobbering the existing record.
+  const result = await safeCreatePeriodDoc(id, docData, {
+    onConflict: opts.onConflict || 'new',
+    editedBy: opts.editedBy,
+    note: opts.note,
+  });
+  return { ...docData, id: result.id, _writeResult: result };
 }
 
 /**

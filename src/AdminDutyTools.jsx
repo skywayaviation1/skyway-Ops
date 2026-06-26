@@ -147,8 +147,19 @@ async function saveDutyPeriod(period) {
     updatedAt: Date.now(),
   };
   if (id) {
-    await setDoc(doc(db, DUTY_COLLECTION, id), payload, { merge: false });
-    return id;
+    // Collision-safe upsert. The old setDoc(merge:false) overwrote the whole
+    // doc, so re-importing a month wiped any edits/partner links/flight-time on
+    // the existing record. safeCreatePeriodDoc skips identical re-imports and,
+    // on a real difference, UPDATES the time/flight fields while preserving
+    // adminEdits + partnerPeriodId. Pass period.__onConflict ('skip' | 'new')
+    // to change behavior from a per-day chooser.
+    const { safeCreatePeriodDoc } = await import('./firebase-duty-v2.js');
+    const res = await safeCreatePeriodDoc(id, { ...payload, id }, {
+      onConflict: period.__onConflict || 'overwrite',
+      editedBy: period.__editedBy || 'JetInsight import',
+      note: 'JetInsight import',
+    });
+    return res.id;
   }
   payload.createdAt = Date.now();
   const ref = await addDoc(collection(db, DUTY_COLLECTION), payload);
