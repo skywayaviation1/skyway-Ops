@@ -5214,6 +5214,85 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
     return () => { if (unsub) unsub(); };
   }, [trip.uid, trip.info.broker]);
 
+  // ── PAX CARRY-OVER ────────────────────────────────────────────────────────
+  // On multi-leg trips (fuel stop, same-day round trip), skip the ID re-scan
+  // for passengers already verified on the immediately preceding leg.
+  // Uses exact/close name match from name-matching.js — won't fire on
+  // partial surname-only matches so common last names don't false-positive.
+  // Runs once after load; crew can always override via the RE-SCAN button.
+  useEffect(() => {
+    if (loading) return;
+    if (isFirstFlightOfDay) return;              // this IS the first leg
+    if (!preloadedPax.some(p => p.checkInStatus === 'pending')) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const { fetchTripStateForShare } = await import('./firebase-data.js');
+        const { compareNames } = await import('./name-matching.js');
+
+        // Find the immediately preceding same-tail leg on the same calendar day.
+        const myStart = trip.start instanceof Date ? trip.start : new Date(trip.start);
+        const dayKey = myStart.toDateString();
+        const sameDayLegs = allTrips
+          .filter(t =>
+            t?.info?.tail === trip.info.tail &&
+            t?.info?.isFlight &&
+            t?.start instanceof Date &&
+            t.start.toDateString() === dayKey
+          )
+          .sort((a, b) => a.start.getTime() - b.start.getTime());
+
+        const myIdx = sameDayLegs.findIndex(t => t.uid === trip.uid);
+        if (myIdx <= 0) return;                  // can't find self or IS first
+
+        const prevLeg = sameDayLegs[myIdx - 1];
+        const prevState = await fetchTripStateForShare(prevLeg.uid);
+        const prevPassengers = (prevState.passengers || []).filter(p => !p.noShow);
+
+        if (cancelled || prevPassengers.length === 0) return;
+
+        let anyCarried = false;
+        const nextPreloaded = preloadedPax.map(p => {
+          if (p.checkInStatus !== 'pending') return p;
+
+          // Match against prev-leg verified passengers (exact or close only)
+          const prevMatch = prevPassengers.find(prev => {
+            const result = compareNames(
+              { firstName: prev.firstName, lastName: prev.lastName },
+              { firstName: p.firstName,    lastName: p.lastName    }
+            );
+            return result.level === 'exact' || result.level === 'close';
+          });
+          if (!prevMatch) return p;
+
+          anyCarried = true;
+          return {
+            ...p,
+            checkInStatus: 'carried_over',
+            carriedFromLegId: prevLeg.uid,
+            carriedFromRoute: `${prevLeg.info?.from || ''}\u2192${prevLeg.info?.to || ''}`,
+            carriedAt: Date.now(),
+          };
+        });
+
+        if (!anyCarried || cancelled) return;
+
+        setPreloadedPax(nextPreloaded);
+        const { saveTripState } = await import('./firebase-data.js');
+        await saveTripState(trip.uid, {
+          statuses, passengers, brokerEmail, autoNotify,
+          completed, hasCatering, paxOverride,
+          preloadedPax: nextPreloaded,
+        });
+      } catch (err) {
+        console.error('[carry-over] pax carry-over check failed:', err);
+      }
+    })();
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, trip.uid]); // intentionally minimal — runs once per leg load
+
   // Auto-recovery for missing FBOs. When a trip has a trip-sheet PDF
   // attached but no FBO populated (parser missed it on the original upload,
   // or the parser was upgraded after the upload), automatically re-parse
@@ -5738,6 +5817,17 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
     // Adult — open the scanner with target name
     setPendingScanPax(preloadPax);
     setScanning(true);
+  };
+
+  // Reset a carried-over pax back to pending so crew can force a manual scan.
+  const rescanCarriedPax = async (pax) => {
+    const next = preloadedPax.map(p =>
+      p.id === pax.id
+        ? { ...p, checkInStatus: 'pending', carriedFromLegId: null, carriedFromRoute: null, carriedAt: null }
+        : p
+    );
+    setPreloadedPax(next);
+    await persist({ statuses, passengers, brokerEmail, autoNotify, completed, hasCatering, paxOverride, preloadedPax: next });
   };
 
   // Toggle skip status on a preloaded pax. Doesn't add to passengers[],
@@ -6399,6 +6489,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
                         scanned={passengers.find(s => s.id === p.scannedPaxId)}
                         onCheckIn={startPreloadedCheckIn}
                         onSkip={togglePreloadedSkip}
+                        onRescan={rescanCarriedPax}
                       />
                     ))}
                   </div>
@@ -10938,14 +11029,15 @@ function TripNotesPanel({ tripUid, currentUser, notes, editedMeta }) {
   );
 }
 
-function PreloadedPaxRow({ pax, onCheckIn, onSkip, scanned }) {
+function PreloadedPaxRow({ pax, onCheckIn, onSkip, scanned, onRescan }) {
   // Find the scanned pax matched to this preloaded entry
   const isMatched = pax.checkInStatus === 'matched';
   const isMismatch = pax.checkInStatus === 'mismatch';
   const isOverride = pax.checkInStatus === 'manual_override';
   const isChildVerified = pax.checkInStatus === 'child_verified';
+  const isCarriedOver = pax.checkInStatus === 'carried_over';
   const isSkipped = pax.checkInStatus === 'skipped';
-  const checkedIn = isMatched || isMismatch || isOverride || isChildVerified;
+  const checkedIn = isMatched || isMismatch || isOverride || isChildVerified || isCarriedOver;
 
   // Detect if this pax is a minor by DOB (for button label)
   const computeAge = (dobStr) => {
@@ -10966,6 +11058,7 @@ function PreloadedPaxRow({ pax, onCheckIn, onSkip, scanned }) {
   else if (isMatched || isChildVerified) borderClass = 'border-emerald-500/30 bg-emerald-500/5';
   else if (isOverride) borderClass = 'border-amber-500/30 bg-amber-500/5';
   else if (isMismatch) borderClass = 'border-red-500/30 bg-red-500/5';
+  else if (isCarriedOver) borderClass = 'border-sky-500/40 bg-sky-500/5';
   else if (isMinor) borderClass = 'border-violet-500/40 bg-violet-500/5';
   else borderClass = 'border-slate-700 bg-slate-900/40 hover:border-cyan-500/40';
 
@@ -10978,6 +11071,7 @@ function PreloadedPaxRow({ pax, onCheckIn, onSkip, scanned }) {
               {pax.firstName} {pax.lastName}
             </span>
             {pax.primary && <Pill tone="cyan">PRIMARY</Pill>}
+            {isCarriedOver && <Pill tone="cyan">✈ CARRIED{pax.carriedFromRoute ? ` · ${pax.carriedFromRoute}` : ''}</Pill>}
             {isMatched && <Pill tone="green"><Shield className="w-2.5 h-2.5" /> MATCHED</Pill>}
             {isChildVerified && <Pill tone="green"><Users className="w-2.5 h-2.5" /> CHILD ✓</Pill>}
             {isOverride && <Pill tone="amber">OVERRIDE</Pill>}
@@ -10993,6 +11087,14 @@ function PreloadedPaxRow({ pax, onCheckIn, onSkip, scanned }) {
           </div>
         </div>
         <div className="flex gap-1 shrink-0">
+          {isCarriedOver && onRescan && (
+            <button
+              onClick={() => onRescan(pax)}
+              className="text-[10px] px-2 py-1 border border-slate-600 text-slate-400 hover:text-slate-200 hover:border-slate-500 tracking-widest"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              title="Force manual ID scan for this passenger"
+            >RE-SCAN</button>
+          )}
           {!checkedIn && !isSkipped && (
             <>
               <button
