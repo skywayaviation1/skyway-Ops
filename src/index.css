@@ -5,18 +5,32 @@
 @tailwind utilities;
 
 /* ─── DARK THEME BASE ────────────────────────────────────────────────────────
-   Tailwind's slate-950 is now #0D1829 (aviation navy) via tailwind.config.js.
-   We match that here for the outermost shell.
+   Two-layer system for depth:
+     Shell (html/body/#root) → deep gradient — darker than components
+     Components (bg-slate-950 = #0D1829) → sit ON TOP of the gradient
+
+   The gradient gives a cockpit-instrument-glow feel: a blue bloom in the
+   upper-right (overhead light), a secondary bloom lower-left, dissolving
+   into deep navy at the edges. Slate-950 components at #0D1829 appear as
+   slightly lighter panels floating above it → natural depth without any
+   card-by-card changes.
    ─────────────────────────────────────────────────────────────────────────── */
 html, body, #root {
   height: 100%;
   margin: 0;
-  background: #0D1829;
   color: #e2e8f0;
   font-family: 'DM Sans', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   overscroll-behavior: none;
+
+  /* Gradient base — components (#0D1829) float above this */
+  background-color: #070D1A;
+  background-image:
+    radial-gradient(ellipse 130% 55% at 72% -8%,  #173154 0%, transparent 62%),
+    radial-gradient(ellipse  65% 50% at -8% 98%,  #0F2441 0%, transparent 58%),
+    linear-gradient(168deg, #0F1F38 0%, #09131F 55%, #060C16 100%);
+  background-attachment: fixed;
 }
 
 body {
@@ -26,14 +40,12 @@ body {
 }
 
 #root {
+  background: transparent; /* let the html gradient show through */
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
 }
 
-/* ─── SCROLLBAR ──────────────────────────────────────────────────────────────
-   Thin, subtle. Better than the default chunky system scrollbar on dark
-   backgrounds. The scroll-area class below is used by content panels.
-   ─────────────────────────────────────────────────────────────────────────── */
+/* ─── SCROLLBAR ──────────────────────────────────────────────────────────────*/
 ::-webkit-scrollbar            { width: 3px; height: 3px; }
 ::-webkit-scrollbar-track      { background: transparent; }
 ::-webkit-scrollbar-thumb      { background: rgba(148,163,184,0.18); border-radius: 3px; }
@@ -44,10 +56,7 @@ body {
   scrollbar-color: rgba(148,163,184,0.18) transparent;
 }
 
-/* ─── MICRO-INTERACTIONS ─────────────────────────────────────────────────────
-   Smooth state transitions on interactive elements. Keeps the UI feeling
-   responsive without animation overkill.
-   ─────────────────────────────────────────────────────────────────────────── */
+/* ─── MICRO-INTERACTIONS ─────────────────────────────────────────────────────*/
 button, a, [role="button"] {
   transition: color 0.1s ease, background-color 0.1s ease,
               border-color 0.12s ease, opacity 0.1s ease;
@@ -59,6 +68,4 @@ button, a, [role="button"] {
   outline-offset: 2px;
 }
 button:focus:not(:focus-visible),
-a:focus:not(:focus-visible) {
-  outline: none;
-}
+a:focus:not(:focus-visible) { outline: none; }
