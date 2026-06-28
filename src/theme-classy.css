@@ -74,7 +74,10 @@ html[data-theme="classy"] body {
    ─────────────────────────────────────────────────────────────────────────── */
 
 /* App shell */
-[data-theme="classy"] .bg-slate-950  { background-color: #E8EFF8 !important; }
+[data-theme="classy"] .bg-slate-950 {
+  background-color: #E8EFF8 !important;
+  background-image: none !important;
+}
 
 /* Alpha variants of the shell */
 [data-theme="classy"] .bg-slate-950\/5  { background-color: rgba(232,239,248,0.10) !important; }
@@ -85,7 +88,12 @@ html[data-theme="classy"] body {
 [data-theme="classy"] .bg-slate-950\/50 { background-color: rgba(232,239,248,0.75) !important; }
 [data-theme="classy"] .bg-slate-950\/60 { background-color: rgba(232,239,248,0.80) !important; }
 [data-theme="classy"] .bg-slate-950\/70 { background-color: rgba(232,239,248,0.88) !important; }
-[data-theme="classy"] .bg-slate-950\/80 { background-color: rgba(232,239,248,0.92) !important; }
+[data-theme="classy"] .bg-slate-950\/80 {
+  background-color: rgba(232,239,248,0.92) !important;
+  background-image: none !important;
+  backdrop-filter: blur(12px) !important;
+  -webkit-backdrop-filter: blur(12px) !important;
+}
 [data-theme="classy"] .bg-slate-950\/90 { background-color: rgba(232,239,248,0.96) !important; }
 [data-theme="classy"] .bg-slate-950\/95 { background-color: #E8EFF8 !important; }
 

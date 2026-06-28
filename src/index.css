@@ -5,32 +5,49 @@
 @tailwind utilities;
 
 /* ─── DARK THEME BASE ────────────────────────────────────────────────────────
-   Two-layer system for depth:
-     Shell (html/body/#root) → deep gradient — darker than components
-     Components (bg-slate-950 = #0D1829) → sit ON TOP of the gradient
+   The main app wrapper is <div class="h-screen w-full bg-slate-950 …">.
+   Putting the gradient on html/body does nothing — that div's solid
+   bg-slate-950 covers it. The fix: apply the gradient directly to
+   .bg-slate-950 so the wrapper IS the gradient.
 
-   The gradient gives a cockpit-instrument-glow feel: a blue bloom in the
-   upper-right (overhead light), a secondary bloom lower-left, dissolving
-   into deep navy at the edges. Slate-950 components at #0D1829 appear as
-   slightly lighter panels floating above it → natural depth without any
-   card-by-card changes.
+   Two-layer depth system:
+     bg-slate-950 → gradient shell  (the main wrapper + any full-screen divs)
+     bg-slate-900 → cards / panels  (slightly lighter, floating above it)
+
+   Gradient anatomy:
+     • Upper-right bloom  — cockpit ambient glow, deep blue
+     • Lower-left bloom   — secondary fill, keeps edges from going flat
+     • Linear base        — diagonal falloff from navy to near-black
    ─────────────────────────────────────────────────────────────────────────── */
+.bg-slate-950 {
+  background-color: #060C16 !important;
+  background-image:
+    radial-gradient(ellipse 130% 55% at 72% -8%,  rgba(23, 49, 84, 0.85) 0%, transparent 62%),
+    radial-gradient(ellipse  65% 50% at -8% 98%,  rgba(15, 36, 65, 0.70) 0%, transparent 58%),
+    linear-gradient(168deg, #0F1F38 0%, #09131F 55%, #060C16 100%) !important;
+}
+
+/* Semi-transparent shell variants — keep them visually consistent */
+.bg-slate-950\/80 {
+  background-color: rgba(6, 12, 22, 0.80) !important;
+  background-image:
+    radial-gradient(ellipse 130% 55% at 72% -8%,  rgba(23, 49, 84, 0.70) 0%, transparent 62%),
+    radial-gradient(ellipse  65% 50% at -8% 98%,  rgba(15, 36, 65, 0.55) 0%, transparent 58%),
+    linear-gradient(168deg, rgba(15,31,56,0.8) 0%, rgba(9,19,31,0.8) 55%, rgba(6,12,22,0.8) 100%) !important;
+  backdrop-filter: blur(12px) !important;
+  -webkit-backdrop-filter: blur(12px) !important;
+}
+
+/* html/body reset — transparent now that the wrapper carries the gradient */
 html, body, #root {
   height: 100%;
   margin: 0;
+  background: #060C16;
   color: #e2e8f0;
   font-family: 'DM Sans', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   overscroll-behavior: none;
-
-  /* Gradient base — components (#0D1829) float above this */
-  background-color: #070D1A;
-  background-image:
-    radial-gradient(ellipse 130% 55% at 72% -8%,  #173154 0%, transparent 62%),
-    radial-gradient(ellipse  65% 50% at -8% 98%,  #0F2441 0%, transparent 58%),
-    linear-gradient(168deg, #0F1F38 0%, #09131F 55%, #060C16 100%);
-  background-attachment: fixed;
 }
 
 body {
@@ -40,7 +57,6 @@ body {
 }
 
 #root {
-  background: transparent; /* let the html gradient show through */
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
 }
@@ -63,9 +79,6 @@ button, a, [role="button"] {
 }
 
 /* ─── FOCUS RINGS ─────────────────────────────────────────────────────────── */
-:focus-visible {
-  outline: 2px solid rgba(34,211,238,0.5);
-  outline-offset: 2px;
-}
+:focus-visible { outline: 2px solid rgba(34,211,238,0.5); outline-offset: 2px; }
 button:focus:not(:focus-visible),
 a:focus:not(:focus-visible) { outline: none; }
