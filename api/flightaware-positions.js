@@ -115,12 +115,20 @@ async function fetchPositionForTail(ident, apiKey) {
         console.log(`[fa-positions] ${ident} missing lat/lon/code in dest, skipping ground render`);
         return { ident, airborne: false };
       }
+      // Origin of the flight that JUST landed — lets the client draw a
+      // faint "last completed route" line into the grounded position,
+      // matching FlightBoard's faded-line-for-completed-trips look.
+      // Additive only — every existing field below is unchanged.
+      const lastOrigin = lastLanded.origin || {};
       return {
         ident,
         airborne: false,
         groundedAt: destCode,
         groundedLat: destLat,
         groundedLon: destLon,
+        lastOrigin: lastOrigin.code_icao || lastOrigin.code || lastOrigin.code_iata || null,
+        lastOriginLat: lastOrigin.latitude ?? null,
+        lastOriginLon: lastOrigin.longitude ?? null,
         groundedSince: lastLanded.actual_on,
         groundedCity: dest.city || null,
       };
