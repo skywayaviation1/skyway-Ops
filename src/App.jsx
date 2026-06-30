@@ -21280,10 +21280,6 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
   const [mapReady, setMapReady] = useState(false);
   const [mapError, setMapError] = useState(null);
 
-  // Selected tail detail (for showing the track polyline + airport markers)
-  const [selectedDetail, setSelectedDetail] = useState(null);
-  const [selectedTrack, setSelectedTrack] = useState(null);
-
   // ====== Init map once ======
   useEffect(() => {
     let cancelled = false;
@@ -21369,49 +21365,22 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
     };
   }, [mapReady]);
 
-  // ====== Fetch selected tail's detail + track log ======
-  useEffect(() => {
-    if (!selectedTail) { setSelectedDetail(null); setSelectedTrack(null); return; }
-    let cancelled = false;
-    let timer = null;
-
-    // Clear previous aircraft's data immediately so the renderer doesn't
-    // show stale data while we wait for the new fetch.
-    setSelectedDetail(null);
-    setSelectedTrack(null);
-
-    async function fetchSelected() {
-      try {
-        const { auth } = await import('./firebase.js');
-        const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : null;
-        if (!idToken) return;
-        const authH = { 'Authorization': `Bearer ${idToken}` };
-
-        const [detR, trkR] = await Promise.all([
-          fetch(`/api/flightaware-flight-detail?ident=${encodeURIComponent(selectedTail)}`, { headers: authH }),
-          fetch(`/api/flightaware-track-log?ident=${encodeURIComponent(selectedTail)}`, { headers: authH }),
-        ]);
-        const det = detR.ok ? await detR.json() : null;
-        const trk = trkR.ok ? await trkR.json() : null;
-        if (cancelled) return;
-
-        // Discard stale responses (user clicked another tail while we fetched)
-        if (det?.flight?.ident && det.flight.ident.toUpperCase() !== selectedTail.toUpperCase()) return;
-
-        setSelectedDetail(det?.flight || null);
-        setSelectedTrack(Array.isArray(trk?.points) ? trk.points : []);
-      } catch (_) { /* non-fatal */ }
-    }
-
-    fetchSelected();
-    timer = setInterval(fetchSelected, 30000);
-    return () => { cancelled = true; if (timer) clearInterval(timer); };
-  }, [selectedTail]);
-
   // ====== Render all map overlays ======
   // SINGLE effect that clears the layer group and rebuilds everything from
   // current state. No marker references kept across renders — no stale
-  // state bugs possible. The performance cost is negligible (12-30 DOM nodes).
+  // state bugs possible.
+  //
+  // REWRITE (Jun 2026): previously, route lines + origin/destination airport
+  // markers were drawn ONLY for the selected tail (fetched via 2 extra API
+  // calls per click: flight-detail + track-log). That meant the map only
+  // ever showed ONE aircraft's route at a time — selecting a different tail
+  // would zoom into its tiny route and the rest of the fleet would scroll
+  // out of view entirely. Now EVERY airborne tail gets its flown/projected
+  // route line and EVERY grounded tail (with data) gets its last-completed
+  // route line, all drawn from the cheap bulk-polled `tailStates` — zero
+  // extra network calls. Styling mirrors FlightBoard.jsx (the TV display)
+  // for visual consistency across the app: solid cyan = flown, dashed cyan
+  // = projected remainder, faint green = completed/grounded.
   useEffect(() => {
     if (!mapReady || !mapRef.current || !layersRef.current) return;
     const L = window.L;
@@ -21425,6 +21394,37 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
     const groundedTails = fleetTails.filter(t => {
       const s = tailStates[t];
       return s?.airborne === false && s?.groundedLat != null && s?.groundedLon != null;
+    });
+
+    // ----- Airport dots (background layer, drawn first) -----
+    // Small unobtrusive markers for every airport that appears as an
+    // origin/destination across the whole fleet's current routes — same
+    // 6px-dot-with-code-label treatment as FlightBoard.jsx, deduped by
+    // airport code so a hub like KTPA used by 3 tails only gets one dot.
+    const airportMap = new Map(); // code -> { lat, lon }
+    airborneTails.forEach(tail => {
+      const s = tailStates[tail];
+      if (s.origin && s.originLat != null && s.originLon != null) {
+        airportMap.set(s.origin, { lat: s.originLat, lon: s.originLon });
+      }
+      if (s.destination && s.destinationLat != null && s.destinationLon != null) {
+        airportMap.set(s.destination, { lat: s.destinationLat, lon: s.destinationLon });
+      }
+    });
+    groundedTails.forEach(tail => {
+      const s = tailStates[tail];
+      if (s.lastOrigin && s.lastOriginLat != null && s.lastOriginLon != null) {
+        airportMap.set(s.lastOrigin, { lat: s.lastOriginLat, lon: s.lastOriginLon });
+      }
+    });
+    airportMap.forEach((pos, code) => {
+      const icon = L.divIcon({
+        html: `<div style="width: 6px; height: 6px; background: #94a3b8; border: 1px solid #1e293b; border-radius: 50%;"></div><div style="position: absolute; left: 10px; top: -4px; color: #94a3b8; font-family: 'JetBrains Mono', monospace; font-size: 10px; white-space: nowrap; text-shadow: 0 0 4px #020617, 0 0 4px #020617;">${code}</div>`,
+        className: '',
+        iconSize: [60, 12],
+        iconAnchor: [3, 6],
+      });
+      L.marker([pos.lat, pos.lon], { icon, interactive: false, zIndexOffset: 0 }).addTo(grp);
     });
 
     // ----- Grounded aircraft (dim slate dots at last known airport) -----
@@ -21442,6 +21442,19 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
       // Airport code next to the tail so "where it's sitting" is readable
       // directly on the map — no click required to find the parked location.
       const groundedCode = state.groundedAt || '';
+
+      // Faint "last completed route" line into the parked position — mirrors
+      // FlightBoard's treatment of completed trips (solid, low-opacity green).
+      // Drawn first so it sits visually under everything else.
+      if (state.lastOriginLat != null && state.lastOriginLon != null) {
+        L.polyline([[state.lastOriginLat, state.lastOriginLon], [lat, lon]], {
+          color: '#10b981',
+          weight: isSelected ? 2.5 : 2,
+          opacity: isSelected ? 0.65 : 0.4,
+          lineCap: 'round',
+          lineJoin: 'round',
+        }).addTo(grp);
+      }
 
       const html = `
         <div style="position: relative; cursor: pointer;">
@@ -21464,7 +21477,7 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
       marker.on('click', () => onSelectTail(tail));
     });
 
-    // ----- All airborne aircraft icons -----
+    // ----- All airborne aircraft: route line + plane icon -----
     airborneTails.forEach(tail => {
       const state = tailStates[tail];
       const lat = state?.latitude;
@@ -21472,6 +21485,28 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
       const heading = state?.heading ?? 0;
       if (lat == null || lon == null) return;
       const isSelected = tail === selectedTail;
+
+      // Route line — flown portion (origin → current, solid) + projected
+      // remainder (current → destination, dashed). Drawn for EVERY airborne
+      // tail, not just the selected one, so the whole fleet's routes are
+      // visible at once. The selected tail's line renders bolder/brighter
+      // so it still stands out without anyone else disappearing.
+      const flownWeight = isSelected ? 4 : 2.5;
+      const flownOpacity = isSelected ? 1 : 0.6;
+      const projWeight = isSelected ? 2.5 : 1.5;
+      const projOpacity = isSelected ? 0.6 : 0.32;
+      if (state.originLat != null && state.originLon != null) {
+        L.polyline([[state.originLat, state.originLon], [lat, lon]], {
+          color: '#22d3ee', weight: flownWeight, opacity: flownOpacity,
+          lineCap: 'round', lineJoin: 'round',
+        }).addTo(grp);
+      }
+      if (state.destinationLat != null && state.destinationLon != null) {
+        L.polyline([[lat, lon], [state.destinationLat, state.destinationLon]], {
+          color: '#22d3ee', weight: projWeight, opacity: projOpacity,
+          dashArray: '6 6', lineCap: 'round', lineJoin: 'round',
+        }).addTo(grp);
+      }
 
       // Build the plane icon as an HTML div, rotated to heading
       const ringSize = isSelected ? 40 : 32;
@@ -21519,99 +21554,66 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
       const marker = L.marker([lat, lon], { icon, zIndexOffset: isSelected ? 1000 : 100 }).addTo(grp);
       marker.on('click', () => onSelectTail(tail));
     });
+  }, [fleetTails, tailStates, selectedTail, mapReady, onSelectTail]);
 
-    // ----- Selected aircraft's track + airports -----
-    if (selectedTail && selectedDetail) {
-      const o = selectedDetail.origin || {};
-      const d = selectedDetail.destination || {};
-      const pts = Array.isArray(selectedTrack) ? selectedTrack.filter(p => p.lat != null && p.lon != null) : [];
+  // ====== Fit map to the WHOLE fleet ======
+  // Auto-fits once, the first time we have usable position data — NOT on
+  // every 30s poll, which would otherwise yank the map out from under
+  // anyone trying to inspect it. The RECENTER button (in the returned JSX
+  // below) lets the user re-trigger this anytime.
+  const hasAutoFitRef = useRef(false);
 
-      // Flown track (solid green line)
-      if (pts.length >= 2) {
-        L.polyline(pts.map(p => [p.lat, p.lon]), {
-          color: '#22c55e',
-          weight: 3,
-          opacity: 0.9,
-          lineCap: 'round',
-          lineJoin: 'round',
-        }).addTo(grp);
-      }
-
-      // Projected track (dashed line from last position to destination)
-      if (d.latitude != null && d.longitude != null && pts.length >= 1) {
-        const last = pts[pts.length - 1];
-        L.polyline([[last.lat, last.lon], [d.latitude, d.longitude]], {
-          color: '#22c55e',
-          weight: 2,
-          opacity: 0.7,
-          dashArray: '6,8',
-          lineCap: 'round',
-        }).addTo(grp);
-      }
-
-      // Origin marker (green)
-      if (o.latitude != null && o.longitude != null) {
-        const html = `
-          <div style="position: relative;">
-            <div style="width: 14px; height: 14px; border-radius: 50%; background: #22c55e; border: 2px solid #0b0f17; box-shadow: 0 0 0 2px rgba(34,197,94,0.4);"></div>
-            <div style="position: absolute; left: 20px; top: -2px; color: #86efac; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; white-space: nowrap; background: rgba(11,15,23,0.85); padding: 2px 6px; border-radius: 2px;">${o.code || ''}</div>
-          </div>
-        `;
-        const icon = L.divIcon({
-          html,
-          className: 'fleet-airport-marker',
-          iconSize: [14, 14],
-          iconAnchor: [7, 7],
-        });
-        L.marker([o.latitude, o.longitude], { icon, zIndexOffset: 500 }).addTo(grp);
-      }
-
-      // Destination marker (orange)
-      if (d.latitude != null && d.longitude != null) {
-        const html = `
-          <div style="position: relative;">
-            <div style="width: 14px; height: 14px; border-radius: 50%; background: #fb923c; border: 2px solid #0b0f17; box-shadow: 0 0 0 2px rgba(251,146,60,0.4);"></div>
-            <div style="position: absolute; left: 20px; top: -2px; color: #fdba74; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; white-space: nowrap; background: rgba(11,15,23,0.85); padding: 2px 6px; border-radius: 2px;">${d.code || ''}</div>
-          </div>
-        `;
-        const icon = L.divIcon({
-          html,
-          className: 'fleet-airport-marker',
-          iconSize: [14, 14],
-          iconAnchor: [7, 7],
-        });
-        L.marker([d.latitude, d.longitude], { icon, zIndexOffset: 500 }).addTo(grp);
-      }
-    }
-  }, [fleetTails, tailStates, selectedTail, selectedDetail, selectedTrack, mapReady, onSelectTail]);
-
-  // ====== Fit map bounds when selected tail or its data changes ======
-  useEffect(() => {
-    if (!mapReady || !mapRef.current || !selectedTail) return;
+  const fitToFleet = useCallback(() => {
+    if (!mapRef.current) return;
     const L = window.L;
     const map = mapRef.current;
-    const state = tailStates[selectedTail];
-    const airborne = state?.airborne === true && state?.latitude != null && state?.longitude != null;
-    const grounded = state?.airborne === false && state?.groundedLat != null && state?.groundedLon != null;
-    const o = selectedDetail?.origin || {};
-    const d = selectedDetail?.destination || {};
-    const pts = Array.isArray(selectedTrack) ? selectedTrack.filter(p => p.lat != null && p.lon != null) : [];
-
-    const points = [
-      ...(airborne ? [[state.latitude, state.longitude]] : []),
-      ...(grounded ? [[state.groundedLat, state.groundedLon]] : []),
-      ...(o.latitude != null && o.longitude != null ? [[o.latitude, o.longitude]] : []),
-      ...(d.latitude != null && d.longitude != null ? [[d.latitude, d.longitude]] : []),
-      ...pts.map(p => [p.lat, p.lon]),
-    ];
-
+    const points = [];
+    fleetTails.forEach(tail => {
+      const s = tailStates[tail];
+      if (!s) return;
+      if (s.airborne === true && s.latitude != null && s.longitude != null) {
+        points.push([s.latitude, s.longitude]);
+        if (s.originLat != null && s.originLon != null) points.push([s.originLat, s.originLon]);
+        if (s.destinationLat != null && s.destinationLon != null) points.push([s.destinationLat, s.destinationLon]);
+      } else if (s.airborne === false && s.groundedLat != null && s.groundedLon != null) {
+        points.push([s.groundedLat, s.groundedLon]);
+      }
+    });
     if (points.length >= 2) {
-      const bounds = L.latLngBounds(points);
-      map.fitBounds(bounds, { padding: [60, 60], maxZoom: 9, animate: true, duration: 0.7 });
+      map.fitBounds(L.latLngBounds(points), { padding: [50, 50], maxZoom: 9, animate: true, duration: 0.7 });
     } else if (points.length === 1) {
-      map.setView(points[0], 10, { animate: true });
+      map.setView(points[0], 8, { animate: true });
     }
-  }, [selectedTail, selectedDetail, selectedTrack, mapReady, tailStates]);
+  }, [fleetTails, tailStates]);
+
+  useEffect(() => {
+    if (!mapReady) return;
+    const tailsWithData = fleetTails.filter(t => tailStates[t]);
+    if (!hasAutoFitRef.current && tailsWithData.length > 0) {
+      hasAutoFitRef.current = true;
+      fitToFleet();
+    }
+  }, [mapReady, fleetTails, tailStates, fitToFleet]);
+
+  // Gently pan (never zoom) to a newly-selected tail if it's currently
+  // off-screen, so clicking an aircraft in the list never "loses" the rest
+  // of the fleet from view the way the old hard-zoom-to-selected did.
+  useEffect(() => {
+    if (!mapReady || !mapRef.current || !selectedTail) return;
+    const map = mapRef.current;
+    const state = tailStates[selectedTail];
+    const pos = state?.airborne === true && state.latitude != null && state.longitude != null
+      ? [state.latitude, state.longitude]
+      : state?.airborne === false && state.groundedLat != null && state.groundedLon != null
+        ? [state.groundedLat, state.groundedLon]
+        : null;
+    if (!pos) return;
+    try {
+      if (!map.getBounds().contains(pos)) {
+        map.panTo(pos, { animate: true, duration: 0.6 });
+      }
+    } catch (_) { /* map not fully initialized yet — skip */ }
+  }, [selectedTail, mapReady, tailStates]);
 
   if (mapError) {
     return (
@@ -21629,9 +21631,20 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
           <Loader2 className="w-4 h-4 animate-spin mr-2" /> Loading map…
         </div>
       )}
+      {mapReady && (
+        <button
+          onClick={fitToFleet}
+          className="absolute top-2 right-2 z-[1000] px-2.5 py-1.5 text-[10px] tracking-widest text-slate-300 bg-slate-900/85 border border-slate-700 hover:border-cyan-500/50 hover:text-cyan-300 rounded-sm backdrop-blur-sm"
+          style={{ fontFamily: "'JetBrains Mono', monospace" }}
+          title="Re-fit the map to show the whole fleet"
+        >
+          RECENTER
+        </button>
+      )}
     </div>
   );
 }
+
 
 /* ===========================
    Fleet list item — one row per tail
