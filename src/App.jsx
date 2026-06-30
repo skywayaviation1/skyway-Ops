@@ -106,6 +106,7 @@ import {
   buildCheckInUrl, buildHotelDirectionsUrl, buildHotelPhoneUrl,
 } from './travel-actions.js';
 import { compareNames } from './name-matching.js';
+import { lookupCoords } from './airport-coords.js';
 
 /* ============================================================
    iCal parser — handles line folding & VEVENT extraction
@@ -21271,6 +21272,28 @@ function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
 /* ============================================================
    FLEET LIVE MAP — shows all aircraft on one Mapbox map
    ============================================================ */
+// Resolves a position from an airport CODE first (via the same
+// 24,000+-airport lookupCoords database FlightBoard already uses
+// successfully), falling back to whatever lat/lon FlightAware's
+// position endpoint supplied only if the code lookup misses.
+//
+// THE BUG THIS FIXES: FA's /flights/{ident} list endpoint (used by
+// flightaware-positions.js) often omits lat/lon for smaller regional
+// and private airports — exactly the kind of FBO destinations a Part
+// 135 charter operator flies into. When those fields were null, BOTH
+// the route line AND the grounded-aircraft dot silently failed to
+// render (the airborneTails/groundedTails filters require non-null
+// coords). The airport CODE itself is reliably present even when its
+// coordinates aren't, so resolving through lookupCoords (which has
+// hand-curated + bulk OurAirports + runtime-cached tiers) fixes both
+// symptoms at once.
+function resolvePos(code, apiLat, apiLon) {
+  const hit = lookupCoords(code);
+  if (hit) return { lat: hit.lat, lon: hit.lng };
+  if (apiLat != null && apiLon != null) return { lat: apiLat, lon: apiLon };
+  return null;
+}
+
 function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
@@ -21391,9 +21414,15 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
     grp.clearLayers();
 
     const airborneTails = fleetTails.filter(t => tailStates[t]?.airborne === true);
+    // FIX: was gated on API-only groundedLat/groundedLon, which FA's
+    // lightweight position endpoint frequently omits for smaller/private
+    // airports. Now accepts anything resolvable via airport CODE lookup
+    // too (see resolvePos above) — this is why grounded tails were
+    // vanishing from the map entirely.
     const groundedTails = fleetTails.filter(t => {
       const s = tailStates[t];
-      return s?.airborne === false && s?.groundedLat != null && s?.groundedLon != null;
+      if (s?.airborne !== false) return false;
+      return resolvePos(s?.groundedAt, s?.groundedLat, s?.groundedLon) != null;
     });
 
     // ----- Airport dots (background layer, drawn first) -----
@@ -21404,17 +21433,20 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
     const airportMap = new Map(); // code -> { lat, lon }
     airborneTails.forEach(tail => {
       const s = tailStates[tail];
-      if (s.origin && s.originLat != null && s.originLon != null) {
-        airportMap.set(s.origin, { lat: s.originLat, lon: s.originLon });
+      if (s.origin) {
+        const p = resolvePos(s.origin, s.originLat, s.originLon);
+        if (p) airportMap.set(s.origin, p);
       }
-      if (s.destination && s.destinationLat != null && s.destinationLon != null) {
-        airportMap.set(s.destination, { lat: s.destinationLat, lon: s.destinationLon });
+      if (s.destination) {
+        const p = resolvePos(s.destination, s.destinationLat, s.destinationLon);
+        if (p) airportMap.set(s.destination, p);
       }
     });
     groundedTails.forEach(tail => {
       const s = tailStates[tail];
-      if (s.lastOrigin && s.lastOriginLat != null && s.lastOriginLon != null) {
-        airportMap.set(s.lastOrigin, { lat: s.lastOriginLat, lon: s.lastOriginLon });
+      if (s.lastOrigin) {
+        const p = resolvePos(s.lastOrigin, s.lastOriginLat, s.lastOriginLon);
+        if (p) airportMap.set(s.lastOrigin, p);
       }
     });
     airportMap.forEach((pos, code) => {
@@ -21430,8 +21462,10 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
     // ----- Grounded aircraft (dim slate dots at last known airport) -----
     groundedTails.forEach(tail => {
       const state = tailStates[tail];
-      const lat = state.groundedLat;
-      const lon = state.groundedLon;
+      const pos = resolvePos(state.groundedAt, state.groundedLat, state.groundedLon);
+      if (!pos) return; // belt-and-suspenders; groundedTails filter already guarantees this
+      const lat = pos.lat;
+      const lon = pos.lon;
       const isSelected = tail === selectedTail;
       const dotSize = isSelected ? 14 : 10;
       const ringStyle = isSelected
@@ -21445,9 +21479,11 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
 
       // Faint "last completed route" line into the parked position — mirrors
       // FlightBoard's treatment of completed trips (solid, low-opacity green).
-      // Drawn first so it sits visually under everything else.
-      if (state.lastOriginLat != null && state.lastOriginLon != null) {
-        L.polyline([[state.lastOriginLat, state.lastOriginLon], [lat, lon]], {
+      // Drawn first so it sits visually under everything else. Resolves the
+      // departure endpoint via airport-code lookup too, same as everything else.
+      const lastOriginPos = resolvePos(state.lastOrigin, state.lastOriginLat, state.lastOriginLon);
+      if (lastOriginPos) {
+        L.polyline([[lastOriginPos.lat, lastOriginPos.lon], [lat, lon]], {
           color: '#10b981',
           weight: isSelected ? 2.5 : 2,
           opacity: isSelected ? 0.65 : 0.4,
@@ -21495,14 +21531,21 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
       const flownOpacity = isSelected ? 1 : 0.6;
       const projWeight = isSelected ? 2.5 : 1.5;
       const projOpacity = isSelected ? 0.6 : 0.32;
-      if (state.originLat != null && state.originLon != null) {
-        L.polyline([[state.originLat, state.originLon], [lat, lon]], {
+      // THE FIX: previously used state.originLat/destinationLat straight
+      // from the API only. FA's lightweight position endpoint frequently
+      // omits these for smaller/private airports, so the route line just
+      // silently failed to draw. resolvePos falls back to the same
+      // airport-code lookup FlightBoard already relies on successfully.
+      const originPos = resolvePos(state.origin, state.originLat, state.originLon);
+      const destPos = resolvePos(state.destination, state.destinationLat, state.destinationLon);
+      if (originPos) {
+        L.polyline([[originPos.lat, originPos.lon], [lat, lon]], {
           color: '#22d3ee', weight: flownWeight, opacity: flownOpacity,
           lineCap: 'round', lineJoin: 'round',
         }).addTo(grp);
       }
-      if (state.destinationLat != null && state.destinationLon != null) {
-        L.polyline([[lat, lon], [state.destinationLat, state.destinationLon]], {
+      if (destPos) {
+        L.polyline([[lat, lon], [destPos.lat, destPos.lon]], {
           color: '#22d3ee', weight: projWeight, opacity: projOpacity,
           dashArray: '6 6', lineCap: 'round', lineJoin: 'round',
         }).addTo(grp);
@@ -21534,7 +21577,7 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
           <div style="position: absolute; inset: 0; border-radius: 50%; ${ringStyle}"></div>
           <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%) rotate(${heading}deg); width: ${planeSize}px; height: ${planeSize}px; color: #22d3ee; display: flex; align-items: center; justify-content: center;">
             <svg viewBox="0 0 24 24" width="${planeSize}" height="${planeSize}" fill="currentColor">
-              <path d="M12 2 L14 9 L22 11 L22 13 L14 14 L13 22 L11 22 L10 14 L2 13 L2 11 L10 9 Z"/>
+              <path d="M12,1 L13,8 L12.5,21 L12,23 L11.5,21 L11,8 Z M12,9 L23,16 L12,14 L1,16 Z M12,18 L17,22 L12,20.5 L7,22 Z"/>
             </svg>
           </div>
           <div style="position: absolute; left: ${ringSize + 4}px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; align-items: flex-start; gap: 3px; pointer-events: none;">
@@ -21573,10 +21616,13 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
       if (!s) return;
       if (s.airborne === true && s.latitude != null && s.longitude != null) {
         points.push([s.latitude, s.longitude]);
-        if (s.originLat != null && s.originLon != null) points.push([s.originLat, s.originLon]);
-        if (s.destinationLat != null && s.destinationLon != null) points.push([s.destinationLat, s.destinationLon]);
-      } else if (s.airborne === false && s.groundedLat != null && s.groundedLon != null) {
-        points.push([s.groundedLat, s.groundedLon]);
+        const o = resolvePos(s.origin, s.originLat, s.originLon);
+        const d = resolvePos(s.destination, s.destinationLat, s.destinationLon);
+        if (o) points.push([o.lat, o.lon]);
+        if (d) points.push([d.lat, d.lon]);
+      } else if (s.airborne === false) {
+        const g = resolvePos(s.groundedAt, s.groundedLat, s.groundedLon);
+        if (g) points.push([g.lat, g.lon]);
       }
     });
     if (points.length >= 2) {
@@ -22058,7 +22104,7 @@ function DetailMap({ tail, detail, trackLog }) {
           color: #22d3ee; transform: rotate(${heading}deg);
         `;
         inner.innerHTML = `<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
-          <path d="M12 2 L14 9 L22 11 L22 13 L14 14 L13 22 L11 22 L10 14 L2 13 L2 11 L10 9 Z"/>
+          <path d="M12,1 L13,8 L12.5,21 L12,23 L11.5,21 L11,8 Z M12,9 L23,16 L12,14 L1,16 Z M12,18 L17,22 L12,20.5 L7,22 Z"/>
         </svg>`;
         wrap.appendChild(inner);
         wrap.dataset.heading = heading;
