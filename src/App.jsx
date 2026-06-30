@@ -5253,6 +5253,9 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
         if (cancelled || prevPassengers.length === 0) return;
 
         let anyCarried = false;
+        const newPassengers = []; // passengers[] entries for broker page + manifest
+        const now = Date.now();
+
         const nextPreloaded = preloadedPax.map(p => {
           if (p.checkInStatus !== 'pending') return p;
 
@@ -5267,21 +5270,47 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
           if (!prevMatch) return p;
 
           anyCarried = true;
+          // Build a passengers[] entry so the broker page, manifest, and
+          // load sheet all see this person as checked in. Use the prev-leg
+          // scan data so name/DOB/ID info is accurate.
+          const newPaxId = `pax-co-${now}-${Math.random().toString(36).slice(2, 6)}`;
+          newPassengers.push({
+            id: newPaxId,
+            firstName: prevMatch.firstName || p.firstName,
+            lastName:  prevMatch.lastName  || p.lastName,
+            dob:           prevMatch.dob           || p.dob || '',
+            expiration:    prevMatch.expiration    || '',
+            licenseNumber: prevMatch.licenseNumber || '',
+            state:         prevMatch.state         || '',
+            realIdCompliant: prevMatch.realIdCompliant ?? false,
+            expired: false,
+            photo:   prevMatch.photo || null,
+            scannedAt: now,
+            method: 'CARRIED_OVER',
+            paxType: prevMatch.paxType || 'ADULT',
+            noShow: false,
+            preloadedRefId: p.id,
+            carriedFromLegId: prevLeg.uid,
+            carriedFromRoute: `${prevLeg.info?.from || ''}\u2192${prevLeg.info?.to || ''}`,
+          });
           return {
             ...p,
             checkInStatus: 'carried_over',
+            scannedPaxId: newPaxId,
             carriedFromLegId: prevLeg.uid,
             carriedFromRoute: `${prevLeg.info?.from || ''}\u2192${prevLeg.info?.to || ''}`,
-            carriedAt: Date.now(),
+            carriedAt: now,
           };
         });
 
         if (!anyCarried || cancelled) return;
 
+        const nextPassengers = [...passengers, ...newPassengers];
+        setPassengers(nextPassengers);
         setPreloadedPax(nextPreloaded);
         const { saveTripState } = await import('./firebase-data.js');
         await saveTripState(trip.uid, {
-          statuses, passengers, brokerEmail, autoNotify,
+          statuses, passengers: nextPassengers, brokerEmail, autoNotify,
           completed, hasCatering, paxOverride,
           preloadedPax: nextPreloaded,
         });
@@ -5820,14 +5849,22 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   };
 
   // Reset a carried-over pax back to pending so crew can force a manual scan.
+  // Also removes the synthetic passengers[] entry that carry-over created,
+  // so there's no ghost entry after a real scan adds a new one.
   const rescanCarriedPax = async (pax) => {
+    const nextPassengers = pax.scannedPaxId
+      ? passengers.filter(p => p.id !== pax.scannedPaxId)
+      : passengers;
     const next = preloadedPax.map(p =>
       p.id === pax.id
-        ? { ...p, checkInStatus: 'pending', carriedFromLegId: null, carriedFromRoute: null, carriedAt: null }
+        ? { ...p, checkInStatus: 'pending', scannedPaxId: null,
+            carriedFromLegId: null, carriedFromRoute: null, carriedAt: null }
         : p
     );
+    setPassengers(nextPassengers);
     setPreloadedPax(next);
-    await persist({ statuses, passengers, brokerEmail, autoNotify, completed, hasCatering, paxOverride, preloadedPax: next });
+    await persist({ statuses, passengers: nextPassengers, brokerEmail, autoNotify,
+      completed, hasCatering, paxOverride, preloadedPax: next });
   };
 
   // Toggle skip status on a preloaded pax. Doesn't add to passengers[],
@@ -5953,7 +5990,9 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
     p.checkInStatus === 'manual_override' ||
     p.checkInStatus === 'mismatch' ||
     // Children are auto-verified by DOB — no scan required
-    (p.checkInStatus === 'child_verified')
+    (p.checkInStatus === 'child_verified') ||
+    // Same passengers on a consecutive leg — no re-scan required
+    p.checkInStatus === 'carried_over'
   ).length;
   // Pax tab progression: complete when (verified scanned pax + verified preloaded pax) >= expected count
   // OR if there are no preloaded pax and the manifest is full
@@ -21400,11 +21439,17 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
         : `border: 1.5px solid #475569;`;
       const labelColor = isSelected ? '#cbd5e1' : '#64748b';
       const labelWeight = isSelected ? 700 : 500;
+      // Airport code next to the tail so "where it's sitting" is readable
+      // directly on the map — no click required to find the parked location.
+      const groundedCode = state.groundedAt || '';
 
       const html = `
         <div style="position: relative; cursor: pointer;">
           <div style="width: ${dotSize}px; height: ${dotSize}px; border-radius: 50%; background: #1e293b; ${ringStyle}"></div>
-          <div style="position: absolute; left: ${dotSize + 6}px; top: 50%; transform: translateY(-50%); font-family: 'JetBrains Mono', monospace; font-size: 9px; font-weight: ${labelWeight}; color: ${labelColor}; background: rgba(11,15,23,0.78); padding: 2px 5px; border-radius: 2px; white-space: nowrap; pointer-events: none;">${tail}</div>
+          <div style="position: absolute; left: ${dotSize + 6}px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; gap: 4px; pointer-events: none;">
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 9px; font-weight: ${labelWeight}; color: ${labelColor}; background: rgba(11,15,23,0.78); padding: 2px 5px; border-radius: 2px; white-space: nowrap;">${tail}</span>
+            ${groundedCode ? `<span style="font-family: 'JetBrains Mono', monospace; font-size: 8px; font-weight: 500; color: #64748b; background: rgba(11,15,23,0.6); padding: 2px 5px; border-radius: 2px; white-space: nowrap; border: 0.5px solid rgba(100,116,139,0.3);">@ ${groundedCode}</span>` : ''}
+          </div>
         </div>
       `;
 
@@ -21435,6 +21480,20 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
         ? `background: #0b0f17; border: 2px solid #22d3ee; box-shadow: 0 0 0 3px rgba(34,211,238,0.35), 0 0 16px rgba(34,211,238,0.5);`
         : `background: #0b0f17; border: 2px solid #22d3ee;`;
 
+      // ETA bubble — shown under the tail label for every airborne aircraft.
+      // Same time format already used by the UPDATE ETA broker-email flow
+      // elsewhere in the app, for consistency (browser-local time + short
+      // timezone abbreviation). Omitted entirely if FA hasn't supplied an
+      // ETA yet (e.g. just after takeoff).
+      let etaLabel = '';
+      if (state?.estimatedOn) {
+        try {
+          etaLabel = new Date(state.estimatedOn).toLocaleString('en-US', {
+            hour: '2-digit', minute: '2-digit', timeZoneName: 'short',
+          });
+        } catch (_) { etaLabel = ''; }
+      }
+
       const html = `
         <div style="position: relative; cursor: pointer; width: ${ringSize}px; height: ${ringSize}px;">
           <div style="position: absolute; inset: 0; border-radius: 50%; ${ringStyle}"></div>
@@ -21443,7 +21502,10 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
               <path d="M12 2 L14 9 L22 11 L22 13 L14 14 L13 22 L11 22 L10 14 L2 13 L2 11 L10 9 Z"/>
             </svg>
           </div>
-          <div style="position: absolute; left: ${ringSize + 4}px; top: 50%; transform: translateY(-50%); font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: ${isSelected ? 700 : 600}; color: #22d3ee; background: rgba(11,15,23,0.92); padding: 3px 7px; border-radius: 2px; white-space: nowrap; pointer-events: none; border: 0.5px solid rgba(34,211,238,${isSelected ? '0.5' : '0.3'});">${tail}</div>
+          <div style="position: absolute; left: ${ringSize + 4}px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; align-items: flex-start; gap: 3px; pointer-events: none;">
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: ${isSelected ? 700 : 600}; color: #22d3ee; background: rgba(11,15,23,0.92); padding: 3px 7px; border-radius: 2px; white-space: nowrap; border: 0.5px solid rgba(34,211,238,${isSelected ? '0.5' : '0.3'});">${tail}</span>
+            ${etaLabel ? `<span style="font-family: 'JetBrains Mono', monospace; font-size: 9px; font-weight: 600; color: #fbbf24; background: rgba(11,15,23,0.92); padding: 2px 7px; border-radius: 8px; white-space: nowrap; border: 0.5px solid rgba(251,191,36,0.35);">ETA ${etaLabel}</span>` : ''}
+          </div>
         </div>
       `;
 
@@ -21577,13 +21639,27 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
 function FleetListItem({ tail, state, trips, tripStates, isSelected, onClick }) {
   // /api/flightaware-positions returns FLAT fields when airborne:
   //   { ident, airborne: true, altitude (already in feet), groundspeed,
-  //     origin (ICAO string), destination (ICAO string), ... }
-  // When grounded: { ident, airborne: false }
+  //     origin (ICAO string), destination (ICAO string), estimatedOn, ... }
+  // When grounded: { ident, airborne: false, groundedAt, groundedCity,
+  //   groundedLat/Lon, groundedSince } — NOTE: no `origin` field is set in
+  // the grounded branch, so reading state.origin here always returns null.
+  // FIX: use groundedAt/groundedCity (the same fields the map already
+  // uses correctly) instead of origin, or this always showed 'Idle'.
   const airborne = state?.airborne === true;
   const altFt = state?.altitude != null ? state.altitude : null;
   const speedKt = state?.groundspeed ?? null;
   const origin = state?.origin || null;
   const destination = state?.destination || null;
+  const groundedAt = state?.groundedAt || null;
+  const groundedCity = state?.groundedCity || null;
+  let etaLabel = '';
+  if (state?.estimatedOn) {
+    try {
+      etaLabel = new Date(state.estimatedOn).toLocaleString('en-US', {
+        hour: '2-digit', minute: '2-digit', timeZoneName: 'short',
+      });
+    } catch (_) { etaLabel = ''; }
+  }
 
   const statusColor = airborne ? 'text-cyan-400' : 'text-slate-500';
   const statusLabel = airborne ? 'En route' : 'On ground';
@@ -21612,10 +21688,16 @@ function FleetListItem({ tail, state, trips, tripStates, isSelected, onClick }) 
             {altFt != null && <span>{altFt.toLocaleString()} ft</span>}
             {speedKt != null && <span>{speedKt} kt</span>}
           </div>
+          {etaLabel && (
+            <div className="text-[10px] text-amber-400 mt-1"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>ETA {etaLabel}</div>
+          )}
         </>
       ) : (
         <div className="text-[10px] text-slate-500">
-          {origin ? `Last at ${origin}` : 'Idle'}
+          {groundedAt
+            ? `Parked at ${groundedAt}${groundedCity ? ` · ${groundedCity}` : ''}`
+            : 'Idle'}
         </div>
       )}
     </button>
