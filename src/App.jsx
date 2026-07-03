@@ -6868,31 +6868,121 @@ function shareCandidateLegs(canonical, allTrips) {
   const tail = String(canonical.info?.tail || '').toUpperCase();
   if (!tail) return [];
   const anchorMs = canonical.start ? new Date(canonical.start).getTime() : Date.now();
-  // ±48h: covers multi-day charters where day-1 outbound + day-2 return
-  // is the same logical trip. Previously ±24h missed these — e.g. a
-  // 10am day-1 outbound + 4pm day-2 return is 30 hours apart and wasn't
-  // showing up as a checkable leg in the SHARE dialog.
-  // The anchor is still always pre-checked; siblings remain opt-in.
-  const WINDOW = 48 * 3600 * 1000;
+
+  // Airport-code normalizer: strips leading 'K' from 4-letter US codes
+  // so "KFOK" and "FOK" match. Applied to every from/to comparison.
   const norm = (c) => {
     const u = String(c || '').toUpperCase().trim();
     return u.length === 4 && u.startsWith('K') ? u.slice(1) : u;
   };
-  return allTrips
-    .filter(t => t && t.info && String(t.info.tail || '').toUpperCase() === tail)
-    .filter(t => {
-      if (t.info.isFlight === false) return false;
-      const rawCat = String(t.info.category || '').toUpperCase();
-      if (['HOLD', 'MX', 'TRAINING'].includes(rawCat)) return false;
-      if (t.info.from && t.info.to && norm(t.info.from) === norm(t.info.to)) return false;
-      return true;
-    })
-    .filter(t => {
-      if (!t.start) return false;
-      const ms = new Date(t.start).getTime();
-      return Number.isFinite(ms) && Math.abs(ms - anchorMs) <= WINDOW;
-    })
-    .sort((a, b) => new Date(a.start || 0).getTime() - new Date(b.start || 0).getTime());
+
+  // Category helper — treats HOLD/MX/TRAINING as non-share-eligible.
+  // Same as before but factored out so we can use it in multiple filters.
+  const isEligibleLeg = (t) => {
+    if (!t || !t.info) return false;
+    if (String(t.info.tail || '').toUpperCase() !== tail) return false;
+    if (t.info.isFlight === false) return false;
+    const rawCat = String(t.info.category || '').toUpperCase();
+    if (['HOLD', 'MX', 'TRAINING'].includes(rawCat)) return false;
+    if (t.info.from && t.info.to && norm(t.info.from) === norm(t.info.to)) return false;
+    if (!t.start) return false;
+    const ms = new Date(t.start).getTime();
+    if (!Number.isFinite(ms)) return false;
+    return true;
+  };
+
+  const isRepo = (t) => {
+    const lt  = String(t?.info?.legType || '').toUpperCase();
+    const cat = String(t?.info?.category || '').toUpperCase();
+    return lt === 'REPO' || lt === 'DEADHEAD' || cat === 'REPO' || cat === 'DEADHEAD';
+  };
+
+  // Get eligible legs on this tail, sorted chronologically. This is the
+  // full universe we filter from — same-tail same-schedule with sane
+  // categories.
+  const allTailLegs = allTrips
+    .filter(isEligibleLeg)
+    .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+
+  // Find the anchor's index in the sequence.
+  const anchorIdx = allTailLegs.findIndex(t => t.uid === canonical.uid);
+  if (anchorIdx < 0) return [canonical];
+
+  const anchor  = allTailLegs[anchorIdx];
+  const anchorFrom = norm(anchor.info?.from);
+  const anchorTo   = norm(anchor.info?.to);
+
+  // The result set — Map so we can tag each with a _shareReason without
+  // duplicating entries if a leg qualifies under multiple rules.
+  const result = new Map();
+  const add = (leg, reason) => {
+    if (!leg) return;
+    if (!result.has(leg.uid)) {
+      result.set(leg.uid, { ...leg, _shareReason: reason });
+    }
+  };
+
+  // ── Rule 1: anchor always included ────────────────────────────────────
+  add(anchor, 'anchor');
+
+  // ── Rule 2: positioning REPO chain INTO the anchor's origin ───────────
+  // Walk backwards from anchor while:
+  //   (a) the leg is a REPO
+  //   (b) its destination chains to the next leg's origin (aircraft actually
+  //       flew from that leg's terminus to the anchor's origin unbroken)
+  //   (c) the time gap between legs is small (< 12h) — larger gaps mean
+  //       the plane was parked doing other work, not positioning for us
+  const MAX_CHAIN_GAP_MS = 12 * 3600 * 1000;
+  {
+    let nextOrigin = anchorFrom;
+    let nextStartMs = new Date(anchor.start).getTime();
+    for (let i = anchorIdx - 1; i >= 0; i--) {
+      const leg = allTailLegs[i];
+      if (!isRepo(leg)) break;                   // rev leg breaks the chain
+      const legTo   = norm(leg.info?.to);
+      const legFrom = norm(leg.info?.from);
+      if (legTo !== nextOrigin) break;           // destination doesn't chain
+      const legEndMs = new Date(leg.start).getTime();
+      if (nextStartMs - legEndMs > MAX_CHAIN_GAP_MS) break;
+      add(leg, 'positioning-in');
+      nextOrigin = legFrom;
+      nextStartMs = legEndMs;
+    }
+  }
+
+  // NOTE: same-passenger and same-trip-sheet matching are handled ASYNC
+  // inside the dialog itself (see enrichCandidatesFromTripStates useEffect
+  // below). They can't run here because they need per-leg trip-state docs
+  // (tripSheetData.tripCode + preloadedPax name arrays), and this function
+  // is the fast synchronous seed. The dialog EXPANDS this seed with
+  // ({trip-code-match, pax-name-match}) once trip-states finish loading.
+
+  // ── Rule 4: positioning REPO chain FROM anchor destination ────────────
+  // Optional but useful — if the plane deadheads out of the anchor's
+  // destination immediately (< 6h), the broker's charter is what booked
+  // that positioning too. Small window to avoid pulling in the plane's
+  // next unrelated assignment.
+  const POST_REPO_GAP_MS = 6 * 3600 * 1000;
+  {
+    let prevDest = anchorTo;
+    let prevEndMs = new Date(anchor.start).getTime();
+    for (let i = anchorIdx + 1; i < allTailLegs.length; i++) {
+      const leg = allTailLegs[i];
+      if (!isRepo(leg)) break;
+      const legFrom = norm(leg.info?.from);
+      const legTo   = norm(leg.info?.to);
+      if (legFrom !== prevDest) break;
+      const legStartMs = new Date(leg.start).getTime();
+      if (legStartMs - prevEndMs > POST_REPO_GAP_MS) break;
+      add(leg, 'positioning-out');
+      prevDest = legTo;
+      prevEndMs = legStartMs;
+    }
+  }
+
+  // Return chronologically sorted, all with their _shareReason tag.
+  return Array.from(result.values())
+    .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
 }
 
 // ============================================================
@@ -6939,10 +7029,165 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
   //
   // The canonical anchor is forced on and disabled — it's the leg
   // the URL is keyed to and can never be removed.
-  const allCandidateLegs = useMemo(
+  // Synchronous seed of candidate legs — anchor + positioning REPO chain
+  // in/out. This renders IMMEDIATELY so ops sees something on dialog open,
+  // even before the async trip-state enrichment (below) completes.
+  const syncCandidateLegs = useMemo(
     () => shareCandidateLegs(canonicalTrip, allTrips),
     [canonicalTrip, allTrips]
   );
+
+  // ── ASYNC ENRICHMENT — trip-code + pax-name matching ──────────────────
+  // The synchronous seed can only look at iCal-level data (tail, route,
+  // times, category). The AUTHORITATIVE signal for "which legs belong to
+  // this broker's charter" lives in the trip-state doc — specifically:
+  //   1. tripSheetData.tripCode  → same 6-char code across every leg
+  //      parsed from the same PDF. Definitive: same trip sheet = same
+  //      broker charter.
+  //   2. preloadedPax names      → passenger names actually on the sheet.
+  //      Catches multi-leg charters where the same passengers stay on the
+  //      plane (round trips, tours) even if trip codes drift.
+  //
+  // These are on trip-state (Firestore trip-state/{uid} doc), not on the
+  // iCal-derived trip object. So we fetch them once when the dialog opens
+  // for every same-tail leg within the SHARE window, then merge those
+  // matches into the candidate list. This is the same enrichment layer
+  // buildPublicTripData already does at URL-generation time — we're just
+  // running it earlier so it can inform the picker too.
+  const [tripStatesByUid, setTripStatesByUid] = useState({});
+  const [enriching, setEnriching] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadTripStates() {
+      setEnriching(true);
+      try {
+        // Universe: all same-tail same-schedule legs within ±48h — same
+        // superset shareCandidateLegs and buildPublicTripData look at.
+        // We fetch trip-states for ALL of them, then let the filter
+        // below decide what's actually related.
+        const tail = String(canonicalTrip.info?.tail || '').toUpperCase();
+        const anchorMs = canonicalTrip.start ? new Date(canonicalTrip.start).getTime() : Date.now();
+        const WINDOW = 48 * 3600 * 1000;
+        const norm = (c) => {
+          const u = String(c || '').toUpperCase().trim();
+          return u.length === 4 && u.startsWith('K') ? u.slice(1) : u;
+        };
+        const universe = (allTrips || []).filter(t => {
+          if (!t?.info || !t.start) return false;
+          if (String(t.info.tail || '').toUpperCase() !== tail) return false;
+          if (t.info.isFlight === false) return false;
+          const rawCat = String(t.info.category || '').toUpperCase();
+          if (['HOLD', 'MX', 'TRAINING'].includes(rawCat)) return false;
+          if (t.info.from && t.info.to && norm(t.info.from) === norm(t.info.to)) return false;
+          const ms = new Date(t.start).getTime();
+          return Number.isFinite(ms) && Math.abs(ms - anchorMs) <= WINDOW;
+        });
+
+        let fetchTripStateForShare;
+        try {
+          ({ fetchTripStateForShare } = await import('./firebase-data.js'));
+        } catch (e) {
+          console.warn('[share] trip-state module load failed — using sync-only candidates');
+          return;
+        }
+
+        const results = await Promise.all(
+          universe.map(async (t) => {
+            try {
+              const s = await fetchTripStateForShare(t.uid);
+              return [t.uid, s];
+            } catch { return [t.uid, null]; }
+          })
+        );
+
+        if (cancelled) return;
+        const map = {};
+        results.forEach(([uid, s]) => { if (s) map[uid] = s; });
+        setTripStatesByUid(map);
+      } finally {
+        if (!cancelled) setEnriching(false);
+      }
+    }
+    loadTripStates();
+    return () => { cancelled = true; };
+    // Only need to re-run if the anchor changes — allTrips references
+    // are stable within a dialog open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canonicalTrip.uid]);
+
+  // Combine sync seed + async enrichment into the final candidate list.
+  const allCandidateLegs = useMemo(() => {
+    // Start from the sync seed (anchor + positioning chain, tagged).
+    const byUid = new Map(syncCandidateLegs.map(l => [l.uid, l]));
+
+    // Nothing more to add if trip-states haven't loaded yet.
+    if (Object.keys(tripStatesByUid).length === 0) {
+      return Array.from(byUid.values());
+    }
+
+    const anchorState = tripStatesByUid[canonicalTrip.uid] || {};
+    const anchorTripCode = anchorState.tripSheetData?.tripCode || null;
+
+    // Normalize a pax entry to a comparable "first last" lowercase key.
+    const paxKey = (p) => {
+      if (!p) return '';
+      const f = String(p.firstName || '').trim().toLowerCase();
+      const l = String(p.lastName  || '').trim().toLowerCase();
+      return f && l ? `${f} ${l}` : (f || l);
+    };
+    const anchorPaxKeys = new Set(
+      (anchorState.preloadedPax || []).map(paxKey).filter(Boolean)
+    );
+
+    // Airport normalizer (same as shareCandidateLegs).
+    const norm = (c) => {
+      const u = String(c || '').toUpperCase().trim();
+      return u.length === 4 && u.startsWith('K') ? u.slice(1) : u;
+    };
+    const tail = String(canonicalTrip.info?.tail || '').toUpperCase();
+    const anchorMs = canonicalTrip.start ? new Date(canonicalTrip.start).getTime() : Date.now();
+    const WINDOW = 48 * 3600 * 1000;
+
+    // Walk every candidate in the ±48h universe. Add if it matches by
+    // tripCode OR by pax-name overlap. Skip if it's the anchor itself
+    // (already in) or a non-flight event.
+    (allTrips || []).forEach(t => {
+      if (!t?.info || !t.uid || t.uid === canonicalTrip.uid) return;
+      if (byUid.has(t.uid)) return; // already in from sync seed
+      if (String(t.info.tail || '').toUpperCase() !== tail) return;
+      if (t.info.isFlight === false) return;
+      const rawCat = String(t.info.category || '').toUpperCase();
+      if (['HOLD', 'MX', 'TRAINING'].includes(rawCat)) return;
+      if (t.info.from && t.info.to && norm(t.info.from) === norm(t.info.to)) return;
+      if (!t.start) return;
+      const ms = new Date(t.start).getTime();
+      if (!Number.isFinite(ms) || Math.abs(ms - anchorMs) > WINDOW) return;
+
+      const state = tripStatesByUid[t.uid];
+      if (!state) return; // no trip-state fetched — can't judge
+
+      // Rule A: same trip code = same trip sheet = same charter. Definitive.
+      const thisTripCode = state.tripSheetData?.tripCode || null;
+      if (anchorTripCode && thisTripCode && thisTripCode === anchorTripCode) {
+        byUid.set(t.uid, { ...t, _shareReason: 'same-trip-sheet' });
+        return;
+      }
+
+      // Rule B: pax names on this leg overlap the anchor's pax names.
+      // At least one shared name = same passenger group traveling.
+      const thisPaxKeys = (state.preloadedPax || []).map(paxKey).filter(Boolean);
+      const hasOverlap = thisPaxKeys.some(k => anchorPaxKeys.has(k));
+      if (hasOverlap && anchorPaxKeys.size > 0) {
+        byUid.set(t.uid, { ...t, _shareReason: 'same-pax' });
+        return;
+      }
+    });
+
+    // Return chronologically sorted.
+    return Array.from(byUid.values())
+      .sort((a, b) => new Date(a.start || 0).getTime() - new Date(b.start || 0).getTime());
+  }, [syncCandidateLegs, tripStatesByUid, canonicalTrip, allTrips]);
   // Initial selection: just the canonical anchor. useState's lazy
   // initializer runs once at mount; the dialog unmounts between
   // openings, so this is the correct lifecycle.
@@ -7535,6 +7780,9 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
             <div className="text-[10px] tracking-widest text-slate-400 mb-1.5"
               style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
               LEGS TO SHARE · {selectedUids.size} of {allCandidateLegs.length}
+              {enriching && (
+                <span className="ml-2 text-slate-500" style={{ fontWeight: 400 }}>· scanning trip sheets…</span>
+              )}
             </div>
             <div className="text-[9px] text-slate-500 mb-2"
               style={{ fontFamily: 'JetBrains Mono, monospace' }}>
@@ -7556,6 +7804,15 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
                 const broker = leg.info?.broker || '(no broker)';
                 const pax = leg.info?.paxCount || leg.info?.pax || '';
                 const cat = String(leg.info?.legType || leg.info?.category || '').toUpperCase();
+                // _shareReason is set by shareCandidateLegs — tells the operator
+                // WHY this leg is in the picker (their broker's context).
+                const reasonLabel = ({
+                  'anchor':          null,           // anchor already gets the ★ badge
+                  'positioning-in':  'POSITIONING',  // deadhead getting the plane to the anchor
+                  'positioning-out': 'DEADHEAD OUT', // deadhead leaving anchor's destination
+                  'same-trip-sheet': 'SAME TRIP',    // parsed from the same trip sheet PDF
+                  'same-pax':        'SAME PAX',    // pax name overlap with anchor's manifest
+                })[leg._shareReason] ?? null;
                 return (
                   <label
                     key={leg.uid}
@@ -7587,6 +7844,15 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
                         )}
                         {isClickedFrom && (
                           <span className="text-[9px] text-cyan-400 tracking-widest" title="You opened SHARE from this leg">← OPENED FROM</span>
+                        )}
+                        {reasonLabel && (
+                          <span className="text-[9px] text-slate-500 tracking-widest ml-auto shrink-0" title={
+                            leg._shareReason === 'positioning-in'  ? 'Repo leg — deadhead into your anchor origin' :
+                            leg._shareReason === 'positioning-out' ? 'Repo leg — deadhead out of your anchor destination' :
+                            leg._shareReason === 'same-trip-sheet' ? 'Parsed from the same trip sheet PDF as the anchor — same broker charter' :
+                            leg._shareReason === 'same-pax'        ? 'One or more passenger names match the anchor manifest — same customer group' :
+                            ''
+                          }>{reasonLabel}</span>
                         )}
                       </div>
                       <div className="text-[10px] text-slate-500 truncate">
@@ -21393,77 +21659,121 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
   // current state. No marker references kept across renders — no stale
   // state bugs possible.
   //
-  // REWRITE (Jun 2026): previously, route lines + origin/destination airport
-  // markers were drawn ONLY for the selected tail (fetched via 2 extra API
-  // calls per click: flight-detail + track-log). That meant the map only
-  // ever showed ONE aircraft's route at a time — selecting a different tail
-  // would zoom into its tiny route and the rest of the fleet would scroll
-  // out of view entirely. Now EVERY airborne tail gets its flown/projected
-  // route line and EVERY grounded tail (with data) gets its last-completed
-  // route line, all drawn from the cheap bulk-polled `tailStates` — zero
-  // extra network calls. Styling mirrors FlightBoard.jsx (the TV display)
-  // for visual consistency across the app: solid cyan = flown, dashed cyan
-  // = projected remainder, faint green = completed/grounded.
+  // Design (Jun 2026):
+  //   ALWAYS VISIBLE — dots for all parked aircraft, plane icons for all airborne
+  //   SELECTED TAIL ONLY — flown breadcrumb track, projected dashed route,
+  //     origin/destination airport markers. Unselected tails show their icon
+  //     only, no clutter. User clicks a tail → sees its full story.
+  //   BREADCRUMBS — uses the actual GPS track (state.track, a [[lon,lat]…]
+  //     GeoJSON array from the bulk position poll) instead of a straight line
+  //     from origin. Falls back to a straight line from origin only when no
+  //     track is available yet (e.g. immediately after takeoff).
   useEffect(() => {
     if (!mapReady || !mapRef.current || !layersRef.current) return;
     const L = window.L;
-    const map = mapRef.current;
     const grp = layersRef.current;
 
     // Clear everything
     grp.clearLayers();
 
     const airborneTails = fleetTails.filter(t => tailStates[t]?.airborne === true);
-    // FIX: was gated on API-only groundedLat/groundedLon, which FA's
-    // lightweight position endpoint frequently omits for smaller/private
-    // airports. Now accepts anything resolvable via airport CODE lookup
-    // too (see resolvePos above) — this is why grounded tails were
-    // vanishing from the map entirely.
     const groundedTails = fleetTails.filter(t => {
       const s = tailStates[t];
       if (s?.airborne !== false) return false;
       return resolvePos(s?.groundedAt, s?.groundedLat, s?.groundedLon) != null;
     });
 
-    // ----- Airport dots (background layer, drawn first) -----
-    // Small unobtrusive markers for every airport that appears as an
-    // origin/destination across the whole fleet's current routes — same
-    // 6px-dot-with-code-label treatment as FlightBoard.jsx, deduped by
-    // airport code so a hub like KTPA used by 3 tails only gets one dot.
-    const airportMap = new Map(); // code -> { lat, lon }
-    airborneTails.forEach(tail => {
-      const s = tailStates[tail];
-      if (s.origin) {
-        const p = resolvePos(s.origin, s.originLat, s.originLon);
-        if (p) airportMap.set(s.origin, p);
-      }
-      if (s.destination) {
-        const p = resolvePos(s.destination, s.destinationLat, s.destinationLon);
-        if (p) airportMap.set(s.destination, p);
-      }
-    });
-    groundedTails.forEach(tail => {
-      const s = tailStates[tail];
-      if (s.lastOrigin) {
-        const p = resolvePos(s.lastOrigin, s.lastOriginLat, s.lastOriginLon);
-        if (p) airportMap.set(s.lastOrigin, p);
-      }
-    });
-    airportMap.forEach((pos, code) => {
-      const icon = L.divIcon({
-        html: `<div style="width: 6px; height: 6px; background: #94a3b8; border: 1px solid #1e293b; border-radius: 50%;"></div><div style="position: absolute; left: 10px; top: -4px; color: #94a3b8; font-family: 'JetBrains Mono', monospace; font-size: 10px; white-space: nowrap; text-shadow: 0 0 4px #020617, 0 0 4px #020617;">${code}</div>`,
-        className: '',
-        iconSize: [60, 12],
-        iconAnchor: [3, 6],
-      });
-      L.marker([pos.lat, pos.lon], { icon, interactive: false, zIndexOffset: 0 }).addTo(grp);
-    });
+    // ── SELECTED TAIL: route + breadcrumbs + airport markers ───────────────
+    // Drawn BELOW aircraft icons so the markers overlay the lines.
+    if (selectedTail) {
+      const sel = tailStates[selectedTail];
+      if (sel?.airborne === true && sel.latitude != null && sel.longitude != null) {
+        const originPos = resolvePos(sel.origin, sel.originLat, sel.originLon);
+        const destPos   = resolvePos(sel.destination, sel.destinationLat, sel.destinationLon);
 
-    // ----- Grounded aircraft (dim slate dots at last known airport) -----
+        // Flown breadcrumb track ─────────────────────────────────────────────
+        // state.track is [[lon,lat],...] GeoJSON order from the positions API.
+        // Flip to [lat,lon] for Leaflet. If no track yet (brand-new flight),
+        // fall back to a straight line from origin to current position.
+        const rawTrack = Array.isArray(sel.track) ? sel.track : [];
+        const trackPts = rawTrack
+          .filter(pt => Array.isArray(pt) && pt[0] != null && pt[1] != null)
+          .map(([lon, lat]) => [lat, lon]); // GeoJSON [lng,lat] → Leaflet [lat,lng]
+
+        if (trackPts.length >= 2) {
+          L.polyline(trackPts, {
+            color: '#22d3ee', weight: 3, opacity: 0.95,
+            lineCap: 'round', lineJoin: 'round',
+          }).addTo(grp);
+          // Tiny dot at the START of the track so "where it took off" is clear
+          if (trackPts.length > 0) {
+            L.circleMarker(trackPts[0], {
+              radius: 4, color: '#22d3ee', fillColor: '#22d3ee',
+              fillOpacity: 0.6, weight: 1, interactive: false,
+            }).addTo(grp);
+          }
+        } else if (originPos) {
+          // No GPS history yet — draw a simple straight line from origin
+          L.polyline([[originPos.lat, originPos.lon], [sel.latitude, sel.longitude]], {
+            color: '#22d3ee', weight: 3, opacity: 0.8,
+            lineCap: 'round', lineJoin: 'round',
+          }).addTo(grp);
+        }
+
+        // Projected dashed remainder ─────────────────────────────────────────
+        if (destPos) {
+          L.polyline([[sel.latitude, sel.longitude], [destPos.lat, destPos.lon]], {
+            color: '#22d3ee', weight: 2, opacity: 0.45,
+            dashArray: '7 7', lineCap: 'round', lineJoin: 'round',
+          }).addTo(grp);
+        }
+
+        // Origin airport dot (green) ─────────────────────────────────────────
+        if (originPos) {
+          const oCode = sel.origin || '';
+          const oHtml = `
+            <div style="position: relative;">
+              <div style="width: 12px; height: 12px; border-radius: 50%; background: #22c55e; border: 2px solid #0b0f17; box-shadow: 0 0 0 2px rgba(34,197,94,0.4);"></div>
+              <div style="position: absolute; left: 16px; top: -2px; color: #86efac; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; white-space: nowrap; background: rgba(11,15,23,0.88); padding: 2px 6px; border-radius: 2px;">${oCode}</div>
+            </div>`;
+          const oIcon = L.divIcon({ html: oHtml, className: '', iconSize: [12,12], iconAnchor: [6,6] });
+          L.marker([originPos.lat, originPos.lon], { icon: oIcon, zIndexOffset: 400, interactive: false }).addTo(grp);
+        }
+
+        // Destination airport dot (amber) ─────────────────────────────────────
+        if (destPos) {
+          const dCode = sel.destination || '';
+          const dHtml = `
+            <div style="position: relative;">
+              <div style="width: 12px; height: 12px; border-radius: 50%; background: #f59e0b; border: 2px solid #0b0f17; box-shadow: 0 0 0 2px rgba(245,158,11,0.4);"></div>
+              <div style="position: absolute; left: 16px; top: -2px; color: #fcd34d; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; white-space: nowrap; background: rgba(11,15,23,0.88); padding: 2px 6px; border-radius: 2px;">${dCode}</div>
+            </div>`;
+          const dIcon = L.divIcon({ html: dHtml, className: '', iconSize: [12,12], iconAnchor: [6,6] });
+          L.marker([destPos.lat, destPos.lon], { icon: dIcon, zIndexOffset: 400, interactive: false }).addTo(grp);
+        }
+      } else if (sel?.airborne === false) {
+        // SELECTED GROUNDED: faint completed-route line (if we have the departure airport)
+        const gPos  = resolvePos(sel.groundedAt, sel.groundedLat, sel.groundedLon);
+        const loPos = resolvePos(sel.lastOrigin, sel.lastOriginLat, sel.lastOriginLon);
+        if (gPos && loPos) {
+          L.polyline([[loPos.lat, loPos.lon], [gPos.lat, gPos.lon]], {
+            color: '#10b981', weight: 2.5, opacity: 0.7,
+            lineCap: 'round', lineJoin: 'round',
+          }).addTo(grp);
+          // Origin dot
+          const loCode = sel.lastOrigin || '';
+          const loHtml = `<div style="position: relative;"><div style="width: 10px; height: 10px; border-radius: 50%; background: #10b981; border: 2px solid #0b0f17; opacity: 0.7;"></div><div style="position: absolute; left: 14px; top: -3px; color: #6ee7b7; font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 600; white-space: nowrap; background: rgba(11,15,23,0.85); padding: 2px 5px; border-radius: 2px; opacity: 0.85;">${loCode}</div></div>`;
+          const loIcon = L.divIcon({ html: loHtml, className: '', iconSize: [10,10], iconAnchor: [5,5] });
+          L.marker([loPos.lat, loPos.lon], { icon: loIcon, zIndexOffset: 200, interactive: false }).addTo(grp);
+        }
+      }
+    }
+
+    // ── GROUNDED aircraft dots (all tails) ─────────────────────────────────
     groundedTails.forEach(tail => {
       const state = tailStates[tail];
       const pos = resolvePos(state.groundedAt, state.groundedLat, state.groundedLon);
-      if (!pos) return; // belt-and-suspenders; groundedTails filter already guarantees this
+      if (!pos) return;
       const lat = pos.lat;
       const lon = pos.lon;
       const isSelected = tail === selectedTail;
@@ -21471,26 +21781,9 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
       const ringStyle = isSelected
         ? `border: 2px solid #94a3b8; box-shadow: 0 0 0 2px rgba(148,163,184,0.35);`
         : `border: 1.5px solid #475569;`;
-      const labelColor = isSelected ? '#cbd5e1' : '#64748b';
-      const labelWeight = isSelected ? 700 : 500;
-      // Airport code next to the tail so "where it's sitting" is readable
-      // directly on the map — no click required to find the parked location.
+      const labelColor   = isSelected ? '#cbd5e1' : '#64748b';
+      const labelWeight  = isSelected ? 700 : 500;
       const groundedCode = state.groundedAt || '';
-
-      // Faint "last completed route" line into the parked position — mirrors
-      // FlightBoard's treatment of completed trips (solid, low-opacity green).
-      // Drawn first so it sits visually under everything else. Resolves the
-      // departure endpoint via airport-code lookup too, same as everything else.
-      const lastOriginPos = resolvePos(state.lastOrigin, state.lastOriginLat, state.lastOriginLon);
-      if (lastOriginPos) {
-        L.polyline([[lastOriginPos.lat, lastOriginPos.lon], [lat, lon]], {
-          color: '#10b981',
-          weight: isSelected ? 2.5 : 2,
-          opacity: isSelected ? 0.65 : 0.4,
-          lineCap: 'round',
-          lineJoin: 'round',
-        }).addTo(grp);
-      }
 
       const html = `
         <div style="position: relative; cursor: pointer;">
@@ -21499,21 +21792,14 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
             <span style="font-family: 'JetBrains Mono', monospace; font-size: 9px; font-weight: ${labelWeight}; color: ${labelColor}; background: rgba(11,15,23,0.78); padding: 2px 5px; border-radius: 2px; white-space: nowrap;">${tail}</span>
             ${groundedCode ? `<span style="font-family: 'JetBrains Mono', monospace; font-size: 8px; font-weight: 500; color: #64748b; background: rgba(11,15,23,0.6); padding: 2px 5px; border-radius: 2px; white-space: nowrap; border: 0.5px solid rgba(100,116,139,0.3);">@ ${groundedCode}</span>` : ''}
           </div>
-        </div>
-      `;
+        </div>`;
 
-      const icon = L.divIcon({
-        html,
-        className: 'fleet-grounded-marker',
-        iconSize: [dotSize, dotSize],
-        iconAnchor: [dotSize / 2, dotSize / 2],
-      });
-
+      const icon = L.divIcon({ html, className: 'fleet-grounded-marker', iconSize: [dotSize,dotSize], iconAnchor: [dotSize/2, dotSize/2] });
       const marker = L.marker([lat, lon], { icon, zIndexOffset: isSelected ? 800 : 50 }).addTo(grp);
       marker.on('click', () => onSelectTail(tail));
     });
 
-    // ----- All airborne aircraft: route line + plane icon -----
+    // ── AIRBORNE aircraft icons (all tails, NO route lines for unselected) ─
     airborneTails.forEach(tail => {
       const state = tailStates[tail];
       const lat = state?.latitude;
@@ -21522,47 +21808,12 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
       if (lat == null || lon == null) return;
       const isSelected = tail === selectedTail;
 
-      // Route line — flown portion (origin → current, solid) + projected
-      // remainder (current → destination, dashed). Drawn for EVERY airborne
-      // tail, not just the selected one, so the whole fleet's routes are
-      // visible at once. The selected tail's line renders bolder/brighter
-      // so it still stands out without anyone else disappearing.
-      const flownWeight = isSelected ? 4 : 2.5;
-      const flownOpacity = isSelected ? 1 : 0.6;
-      const projWeight = isSelected ? 2.5 : 1.5;
-      const projOpacity = isSelected ? 0.6 : 0.32;
-      // THE FIX: previously used state.originLat/destinationLat straight
-      // from the API only. FA's lightweight position endpoint frequently
-      // omits these for smaller/private airports, so the route line just
-      // silently failed to draw. resolvePos falls back to the same
-      // airport-code lookup FlightBoard already relies on successfully.
-      const originPos = resolvePos(state.origin, state.originLat, state.originLon);
-      const destPos = resolvePos(state.destination, state.destinationLat, state.destinationLon);
-      if (originPos) {
-        L.polyline([[originPos.lat, originPos.lon], [lat, lon]], {
-          color: '#22d3ee', weight: flownWeight, opacity: flownOpacity,
-          lineCap: 'round', lineJoin: 'round',
-        }).addTo(grp);
-      }
-      if (destPos) {
-        L.polyline([[lat, lon], [destPos.lat, destPos.lon]], {
-          color: '#22d3ee', weight: projWeight, opacity: projOpacity,
-          dashArray: '6 6', lineCap: 'round', lineJoin: 'round',
-        }).addTo(grp);
-      }
-
-      // Build the plane icon as an HTML div, rotated to heading
       const ringSize = isSelected ? 40 : 32;
       const planeSize = isSelected ? 22 : 18;
       const ringStyle = isSelected
         ? `background: #0b0f17; border: 2px solid #22d3ee; box-shadow: 0 0 0 3px rgba(34,211,238,0.35), 0 0 16px rgba(34,211,238,0.5);`
         : `background: #0b0f17; border: 2px solid #22d3ee;`;
 
-      // ETA bubble — shown under the tail label for every airborne aircraft.
-      // Same time format already used by the UPDATE ETA broker-email flow
-      // elsewhere in the app, for consistency (browser-local time + short
-      // timezone abbreviation). Omitted entirely if FA hasn't supplied an
-      // ETA yet (e.g. just after takeoff).
       let etaLabel = '';
       if (state?.estimatedOn) {
         try {
@@ -21584,26 +21835,19 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
             <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: ${isSelected ? 700 : 600}; color: #22d3ee; background: rgba(11,15,23,0.92); padding: 3px 7px; border-radius: 2px; white-space: nowrap; border: 0.5px solid rgba(34,211,238,${isSelected ? '0.5' : '0.3'});">${tail}</span>
             ${etaLabel ? `<span style="font-family: 'JetBrains Mono', monospace; font-size: 9px; font-weight: 600; color: #fbbf24; background: rgba(11,15,23,0.92); padding: 2px 7px; border-radius: 8px; white-space: nowrap; border: 0.5px solid rgba(251,191,36,0.35);">ETA ${etaLabel}</span>` : ''}
           </div>
-        </div>
-      `;
+        </div>`;
 
-      const icon = L.divIcon({
-        html,
-        className: 'fleet-aircraft-marker',
-        iconSize: [ringSize, ringSize],
-        iconAnchor: [ringSize / 2, ringSize / 2],
-      });
-
+      const icon = L.divIcon({ html, className: 'fleet-aircraft-marker', iconSize: [ringSize,ringSize], iconAnchor: [ringSize/2, ringSize/2] });
       const marker = L.marker([lat, lon], { icon, zIndexOffset: isSelected ? 1000 : 100 }).addTo(grp);
       marker.on('click', () => onSelectTail(tail));
     });
   }, [fleetTails, tailStates, selectedTail, mapReady, onSelectTail]);
 
-  // ====== Fit map to the WHOLE fleet ======
-  // Auto-fits once, the first time we have usable position data — NOT on
-  // every 30s poll, which would otherwise yank the map out from under
-  // anyone trying to inspect it. The RECENTER button (in the returned JSX
-  // below) lets the user re-trigger this anytime.
+  // ====== Fit to SELECTED TAIL's full route when selection changes =========
+  // Zooms to show the complete flight (origin → current position → destination)
+  // whenever a different tail is clicked, so you always see the full context
+  // of that flight — not just a sliver of the map around the plane's icon.
+  // RECENTER re-fits to the whole fleet.
   const hasAutoFitRef = useRef(false);
 
   const fitToFleet = useCallback(() => {
@@ -21632,6 +21876,7 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
     }
   }, [fleetTails, tailStates]);
 
+  // Auto-fit to the whole fleet once on first data load
   useEffect(() => {
     if (!mapReady) return;
     const tailsWithData = fleetTails.filter(t => tailStates[t]);
@@ -21641,24 +21886,41 @@ function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
     }
   }, [mapReady, fleetTails, tailStates, fitToFleet]);
 
-  // Gently pan (never zoom) to a newly-selected tail if it's currently
-  // off-screen, so clicking an aircraft in the list never "loses" the rest
-  // of the fleet from view the way the old hard-zoom-to-selected did.
+  // Fit to the SELECTED TAIL's route (origin → current → destination) whenever
+  // the selection changes. This gives you the breadcrumb + projected path in
+  // context, rather than a zoomed-out view of the whole country.
   useEffect(() => {
     if (!mapReady || !mapRef.current || !selectedTail) return;
+    const L = window.L;
     const map = mapRef.current;
-    const state = tailStates[selectedTail];
-    const pos = state?.airborne === true && state.latitude != null && state.longitude != null
-      ? [state.latitude, state.longitude]
-      : state?.airborne === false && state.groundedLat != null && state.groundedLon != null
-        ? [state.groundedLat, state.groundedLon]
-        : null;
-    if (!pos) return;
-    try {
-      if (!map.getBounds().contains(pos)) {
-        map.panTo(pos, { animate: true, duration: 0.6 });
+    const s = tailStates[selectedTail];
+    if (!s) return;
+
+    const points = [];
+    if (s.airborne === true && s.latitude != null && s.longitude != null) {
+      points.push([s.latitude, s.longitude]);
+      const o = resolvePos(s.origin, s.originLat, s.originLon);
+      const d = resolvePos(s.destination, s.destinationLat, s.destinationLon);
+      if (o) points.push([o.lat, o.lon]);
+      if (d) points.push([d.lat, d.lon]);
+      // Sample some breadcrumb points for a tighter fit
+      const rawTrack = Array.isArray(s.track) ? s.track : [];
+      if (rawTrack.length > 0) {
+        const sample = [rawTrack[0], rawTrack[rawTrack.length - 1]];
+        sample.forEach(([lon, lat]) => { if (lat != null && lon != null) points.push([lat, lon]); });
       }
-    } catch (_) { /* map not fully initialized yet — skip */ }
+    } else if (s.airborne === false) {
+      const g  = resolvePos(s.groundedAt,  s.groundedLat,  s.groundedLon);
+      const lo = resolvePos(s.lastOrigin,   s.lastOriginLat, s.lastOriginLon);
+      if (g)  points.push([g.lat,  g.lon]);
+      if (lo) points.push([lo.lat, lo.lon]);
+    }
+
+    if (points.length >= 2) {
+      map.fitBounds(L.latLngBounds(points), { padding: [70, 70], maxZoom: 10, animate: true, duration: 0.7 });
+    } else if (points.length === 1) {
+      map.setView(points[0], 10, { animate: true });
+    }
   }, [selectedTail, mapReady, tailStates]);
 
   if (mapError) {
