@@ -6930,9 +6930,15 @@ function shareCandidateLegs(canonical, allTrips) {
   //   (a) the leg is a REPO
   //   (b) its destination chains to the next leg's origin (aircraft actually
   //       flew from that leg's terminus to the anchor's origin unbroken)
-  //   (c) the time gap between legs is small (< 12h) — larger gaps mean
-  //       the plane was parked doing other work, not positioning for us
-  const MAX_CHAIN_GAP_MS = 12 * 3600 * 1000;
+  //   (c) the time gap between legs is small (< 30h) — the plane
+  //       repositions the day before a morning departure all the time
+  //       (land 6 PM, sit overnight, fly at 10 AM next day = 16h gap).
+  //       A 12h cap missed those; 30h comfortably covers overnight
+  //       positioning and even a Fri-night → Sun-morning gap. Larger
+  //       gaps mean the plane was probably doing other work in between,
+  //       and the chain-walker will already have broken on that other
+  //       leg's presence (rule (a) requires REPO throughout the walk).
+  const MAX_CHAIN_GAP_MS = 30 * 3600 * 1000;
   {
     let nextOrigin = anchorFrom;
     let nextStartMs = new Date(anchor.start).getTime();
@@ -6959,10 +6965,11 @@ function shareCandidateLegs(canonical, allTrips) {
 
   // ── Rule 4: positioning REPO chain FROM anchor destination ────────────
   // Optional but useful — if the plane deadheads out of the anchor's
-  // destination immediately (< 6h), the broker's charter is what booked
-  // that positioning too. Small window to avoid pulling in the plane's
-  // next unrelated assignment.
-  const POST_REPO_GAP_MS = 6 * 3600 * 1000;
+  // destination soon after landing, the broker's charter is what booked
+  // that positioning too. 12h window captures the common "land, wait
+  // for pax to clear, ferry to next base" pattern without pulling in
+  // the plane's next unrelated assignment the following day.
+  const POST_REPO_GAP_MS = 12 * 3600 * 1000;
   {
     let prevDest = anchorTo;
     let prevEndMs = new Date(anchor.start).getTime();
