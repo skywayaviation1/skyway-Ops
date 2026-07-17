@@ -1,19 +1,14 @@
-// Shared helper: sign and verify AOG external-access tokens.
+// api/_aog-token.js
 //
-// Token format (URL-safe):  base64url(aogId).base64url(issuedAtMs).hexHmac
-//
-// The signature is an HMAC-SHA256 over `${aogId}.${issuedAt}` using
-// AOG_LINK_SECRET. We do NOT bake an expiry into the token itself —
-// validity is decided at request time by the calling endpoint:
-//   - token signature must verify
-//   - the AOG must still exist and NOT be resolved
-//   - the AOG.linkRevoked flag must be falsy
-//   - issuedAt must not predate AOG.linkTokenIssuedAt (rotation kills old links)
-//
-// This means "valid until the AOG is resolved" + instant revocation, without
-// needing to store the token anywhere.
+// HMAC-signed tokens for broker accept/decline URLs.
+// Format: base64url(coverageId).base64url(issuedAtMs).hexHmac
+// Payload: `${coverageId}.${issuedAtMs}` signed with AOG_OFFER_SECRET.
+// Validity: 30 days. Broker gets a single URL that stays valid until
+// they respond or the window expires.
 
 import crypto from 'crypto';
+
+export const AOG_TOKEN_TTL_MS = 30 * 24 * 3600 * 1000;
 
 function b64url(buf) {
   return Buffer.from(buf).toString('base64')
@@ -26,52 +21,40 @@ function b64urlDecode(str) {
 }
 
 function getSecret() {
-  const s = process.env.AOG_LINK_SECRET;
-  if (!s || s.length < 16) {
-    throw new Error('AOG_LINK_SECRET not configured (min 16 chars)');
-  }
+  const s = process.env.AOG_OFFER_SECRET;
+  if (!s || s.length < 24) throw new Error('AOG_OFFER_SECRET not configured (min 24 chars)');
   return s;
 }
 
-export function signAogToken(aogId, issuedAtMs) {
-  if (!aogId) throw new Error('aogId required');
-  const issued = String(issuedAtMs || Date.now());
-  const payload = `${aogId}.${issued}`;
-  const sig = crypto.createHmac('sha256', getSecret()).update(payload).digest('hex');
-  return `${b64url(aogId)}.${b64url(issued)}.${sig}`;
+export function signAogToken(coverageId, issuedAtMs) {
+  if (!coverageId) throw new Error('coverageId required');
+  const t = issuedAtMs || Date.now();
+  const payload = `${coverageId}.${t}`;
+  const hmac = crypto.createHmac('sha256', getSecret()).update(payload).digest('hex');
+  return `${b64url(coverageId)}.${b64url(String(t))}.${hmac}`;
 }
 
-// Returns { ok, aogId, issuedAt } or { ok:false, reason }
 export function verifyAogToken(token) {
-  if (!token || typeof token !== 'string') {
-    return { ok: false, reason: 'missing token' };
-  }
+  if (typeof token !== 'string' || !token) return { ok: false, reason: 'missing token' };
   const parts = token.split('.');
-  if (parts.length !== 3) {
-    return { ok: false, reason: 'malformed token' };
-  }
-  let aogId, issuedRaw;
+  if (parts.length !== 3) return { ok: false, reason: 'malformed token' };
+  let coverageId, issuedAtMs;
   try {
-    aogId = b64urlDecode(parts[0]);
-    issuedRaw = b64urlDecode(parts[1]);
-  } catch {
-    return { ok: false, reason: 'token decode failed' };
+    coverageId = b64urlDecode(parts[0]);
+    issuedAtMs = parseInt(b64urlDecode(parts[1]), 10);
+  } catch { return { ok: false, reason: 'unparseable token' }; }
+  if (!coverageId || !Number.isFinite(issuedAtMs)) return { ok: false, reason: 'invalid payload' };
+
+  const expected = crypto.createHmac('sha256', getSecret())
+    .update(`${coverageId}.${issuedAtMs}`).digest('hex');
+  if (expected.length !== parts[2].length) return { ok: false, reason: 'bad signature' };
+  if (!crypto.timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(parts[2], 'hex'))) {
+    return { ok: false, reason: 'bad signature' };
   }
-  const issuedAt = parseInt(issuedRaw, 10);
-  if (!aogId || !Number.isFinite(issuedAt)) {
-    return { ok: false, reason: 'bad token payload' };
-  }
-  const expected = crypto
-    .createHmac('sha256', getSecret())
-    .update(`${aogId}.${issuedAt}`)
-    .digest('hex');
-  const got = parts[2];
-  // constant-time compare
-  if (
-    expected.length !== got.length ||
-    !crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(got))
-  ) {
-    return { ok: false, reason: 'signature mismatch' };
-  }
-  return { ok: true, aogId, issuedAt };
+
+  const age = Date.now() - issuedAtMs;
+  if (age < 0) return { ok: false, reason: 'issued in future' };
+  if (age > AOG_TOKEN_TTL_MS) return { ok: false, reason: 'expired' };
+
+  return { ok: true, coverageId, issuedAtMs };
 }
