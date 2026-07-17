@@ -15,8 +15,15 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { collection, query, orderBy, onSnapshot, addDoc, doc, getDoc, setDoc, updateDoc, serverTimestamp, Timestamp } from 'firebase/firestore';
-import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { db, storage } from './firebase.js';
+import { ref as storageRef, uploadBytes, getDownloadURL, getStorage } from 'firebase/storage';
+import { db } from './firebase.js';
+
+// Your firebase.js only exports `db`. Storage isn't exported, so we
+// grab the default Storage instance from the already-initialized
+// Firebase app that firebase.js set up. getStorage() with no args uses
+// the default app — safe because if the app weren't initialized, the
+// `db` import above would have failed first.
+const storage = getStorage();
 import {
   AOG_ELIGIBLE_TAILS, AOG_TAIL_CLASS, AOG_COVERAGE_RATES,
   classifyTail, computeCoverage, fmtCurrency, fmtPct, DEFAULT_FET_RATE,
