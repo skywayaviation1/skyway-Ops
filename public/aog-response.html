@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AOG Coverage Response — Skyway Aviation</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #f8fafc;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  color: #0f172a;
+}
+.card {
+  background: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.08);
+  max-width: 560px;
+  width: 100%;
+  overflow: hidden;
+}
+.brand {
+  background: #0f172a;
+  color: white;
+  padding: 24px 32px;
+  border-bottom: 2px solid #0ea5e9;
+}
+.brand-title { font-size: 12px; letter-spacing: 0.2em; color: #38bdf8; text-transform: uppercase; font-family: ui-monospace, monospace; }
+.brand-sub { font-size: 22px; font-weight: 600; margin-top: 4px; }
+.body { padding: 32px; }
+.spinner {
+  width: 40px; height: 40px;
+  border: 3px solid #e2e8f0;
+  border-top-color: #0ea5e9;
+  border-radius: 50%;
+  margin: 24px auto;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+h1 { font-size: 20px; font-weight: 600; margin: 0 0 8px; }
+.msg { color: #475569; font-size: 15px; line-height: 1.6; margin: 0 0 16px; }
+.trip-box {
+  background: #f1f5f9;
+  border-radius: 8px;
+  padding: 16px 20px;
+  margin: 20px 0;
+  font-size: 14px;
+}
+.trip-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  color: #475569;
+}
+.trip-row strong { color: #0f172a; font-family: ui-monospace, monospace; }
+.big-cost {
+  font-size: 30px;
+  font-weight: 700;
+  color: #0ea5e9;
+  text-align: center;
+  padding: 16px 0;
+  margin-top: 12px;
+  border-top: 1px solid #e2e8f0;
+}
+.status-ok { color: #059669; font-weight: 600; }
+.status-declined { color: #64748b; font-weight: 600; }
+.err {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #b91c1c;
+  padding: 14px 16px;
+  border-radius: 6px;
+  font-size: 14px;
+  line-height: 1.5;
+  margin-top: 16px;
+}
+.email-input {
+  display: block;
+  width: 100%;
+  padding: 12px 14px;
+  font-size: 15px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  margin: 8px 0 16px;
+  font-family: inherit;
+}
+.email-input:focus { outline: none; border-color: #0ea5e9; }
+.label { display: block; font-size: 12px; color: #64748b; letter-spacing: 0.05em; text-transform: uppercase; margin-top: 4px; font-family: ui-monospace, monospace; }
+.confirm-btn {
+  display: block;
+  width: 100%;
+  padding: 14px;
+  background: #0ea5e9;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+}
+.confirm-btn:hover { background: #0284c7; }
+.confirm-btn:disabled { background: #94a3b8; cursor: not-allowed; }
+.confirm-btn.decline { background: #64748b; }
+.confirm-btn.decline:hover { background: #475569; }
+.footer { border-top: 1px solid #e2e8f0; padding: 16px 32px; font-size: 12px; color: #94a3b8; text-align: center; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="brand">
+    <div class="brand-title">SKYWAY AVIATION SERVICES</div>
+    <div class="brand-sub">AOG Additional Coverage</div>
+  </div>
+  <div class="body">
+    <div id="loading">
+      <div class="spinner"></div>
+      <p class="msg" style="text-align:center">Loading your offer…</p>
+    </div>
+
+    <div id="confirm" style="display:none">
+      <h1 id="action-title">Confirm coverage</h1>
+      <p class="msg" id="action-msg"></p>
+      <div class="trip-box" id="trip-box"></div>
+      <div id="cost-box" class="big-cost" style="display:none"></div>
+
+      <label class="label" for="email">Your email (for our records)</label>
+      <input type="email" id="email" class="email-input" placeholder="you@company.com">
+
+      <button id="confirm-btn" class="confirm-btn">Confirm</button>
+    </div>
+
+    <div id="done" style="display:none">
+      <h1 id="done-title"></h1>
+      <p class="msg" id="done-msg"></p>
+      <div class="trip-box" id="done-trip-box"></div>
+    </div>
+
+    <div id="failed" style="display:none">
+      <h1>Something went wrong</h1>
+      <div class="err" id="err-msg"></div>
+      <p class="msg" style="margin-top:16px">If you need to respond to this offer, please reply to the original email or contact Skyway Aviation Ops directly.</p>
+    </div>
+  </div>
+  <div class="footer">Charter Flight Support / JetSure AOG Coverage · Skyway Aviation Services</div>
+</div>
+
+<script>
+function fmtDate(d) {
+  if (!d) return '';
+  const dt = new Date(d);
+  return dt.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+}
+function fmtCurrency(n) {
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(n) || 0);
+}
+function show(id) { ['loading','confirm','done','failed'].forEach(x => document.getElementById(x).style.display = x === id ? 'block' : 'none'); }
+function fail(msg) {
+  document.getElementById('err-msg').textContent = msg;
+  show('failed');
+}
+
+const params = new URLSearchParams(location.search);
+const token = params.get('token');
+const action = (params.get('action') || '').toLowerCase();
+
+if (!token) fail('No token in URL. This link may be malformed. Please use the link from the original email.');
+else if (!['accept','decline'].includes(action)) fail('Invalid action. Please use the link from the original email.');
+else {
+  // Show the confirmation UI with parsed URL data (no API call yet — the
+  // preview shows tail/route from a separate GET, but we can also just
+  // ask them to confirm before firing the final POST).
+  // We do a preflight fetch to load trip details.
+  fetch('/api/aog-offer-respond', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token, action, preview: true }),
+  }).catch(() => null); // best effort — actual response happens on click
+
+  // Simpler: just render a friendly action confirmation. Trip details
+  // will be shown by the endpoint response after they click.
+  const isAccept = action === 'accept';
+  document.getElementById('action-title').textContent = isAccept ? 'Accept AOG coverage' : 'Decline AOG coverage';
+  document.getElementById('action-msg').textContent = isAccept
+    ? 'You are confirming acceptance of the additional 50% AOG coverage for this trip. The amount will be added to your JetInsight invoice.'
+    : 'You are confirming that you do not wish to purchase the additional 50% AOG coverage for this trip.';
+  document.getElementById('trip-box').innerHTML = '<div style="color:#64748b;text-align:center;padding:8px 0">Trip details in the original email</div>';
+  const btn = document.getElementById('confirm-btn');
+  btn.textContent = isAccept ? 'Accept Coverage' : 'Confirm Decline';
+  if (!isAccept) btn.classList.add('decline');
+  show('confirm');
+
+  btn.addEventListener('click', async () => {
+    const email = (document.getElementById('email').value || '').trim();
+    btn.disabled = true; btn.textContent = 'Submitting…';
+    try {
+      const r = await fetch('/api/aog-offer-respond', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token, action, respondedByEmail: email }),
+      });
+      const j = await r.json();
+      if (!r.ok) return fail(j.error || 'Response could not be recorded.');
+
+      show('done');
+      const isAccept = j.status === 'accepted';
+      document.getElementById('done-title').innerHTML = isAccept
+        ? '<span class="status-ok">✓ Coverage accepted</span>'
+        : '<span class="status-declined">Coverage declined</span>';
+      document.getElementById('done-msg').textContent = isAccept
+        ? 'Thank you. This coverage has been recorded and Skyway Ops has been notified. The additional cost will appear on your JetInsight invoice for this trip.'
+        : 'Thank you. Your decision has been recorded. No changes will be made to your JetInsight invoice.';
+
+      if (j.trip) {
+        const t = j.trip;
+        document.getElementById('done-trip-box').innerHTML = `
+          <div class="trip-row"><span>Aircraft</span><strong>${t.tail} (${t.class || ''})</strong></div>
+          <div class="trip-row"><span>Route</span><strong>${t.routeFrom || ''} → ${t.routeTo || ''}</strong></div>
+          <div class="trip-row"><span>Date</span><strong>${fmtDate(t.tripDate)}</strong></div>
+          ${isAccept ? `<div class="big-cost">${fmtCurrency(t.coverageCost)}</div>` : ''}
+        `;
+      }
+      if (j.alreadyResponded) {
+        document.getElementById('done-msg').textContent = 'This offer was already responded to. No change was made.';
+      }
+    } catch (e) {
+      fail('Network error: ' + e.message);
+    }
+  });
+}
+</script>
+</body>
+</html>
