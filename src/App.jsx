@@ -85,6 +85,12 @@ const CrewBoardV2Lazy = lazy(() => import('./CrewBoardV2.jsx'));
 // import is retained above only because settings still mounts it
 // (small status panel inside Settings). The Duty tab itself uses this.
 const DutyAdminCalendarLazy = lazy(() => import('./DutyAdminCalendar.jsx'));
+// AOG Coverage tab — ops+admin only. Tracks additional AOG coverage
+// offered to brokers on eligible CJ3 + LR60 trips through the JetSure /
+// Charter Flight Support policy. Lazy because non-ops roles never see
+// it and even ops only opens it when new coverage records need
+// creating or reviewing.
+const AogTabLazy = lazy(() => import('./AogTab.jsx'));
 import AppTimezoneSwitch from './AppTimezoneSwitch.jsx';
 import { todayInAppTz } from './app-timezone.js';
 import { createPortal } from 'react-dom';
@@ -20646,6 +20652,7 @@ function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, sync
     // MAINT > MEL respectively. Role gating moves into MaintScreen.
     { id: 'ops',      label: 'OPS',       icon: Zap,      roles: ['ops', 'admin'] },
     { id: 'maint',    label: 'MAINT',     icon: AlertTriangle, roles: ['maint', 'ops', 'admin'] },
+    { id: 'aog',      label: 'AOG',       icon: Shield,   roles: ['ops', 'admin'] },
     { id: 'wear',     label: 'WEAR',      icon: Activity, roles: ['crew', 'maint', 'ops', 'admin'] },
     { id: 'users',    label: 'USERS',     icon: Users,    roles: ['ops', 'admin'] },
     // Pilot currency & training compliance — crew sees their own status,
@@ -27697,6 +27704,19 @@ export default function CharterOps() {
             allTrips={allTrips}
             fleetTails={Array.isArray(config?.fleetTails) ? config.fleetTails : ['N20UF', 'N168ZZ', 'N286N', 'N444AM', 'N651TW', 'N551FP', 'N85AH', 'N525CR']}
           />
+        )}
+
+        {/* === AOG COVERAGE SECTION ===
+            Ops + admin only. TopNav's role filter already prevents other
+            roles from seeing the tab, but we double-gate here in case
+            section state gets set via URL query or restored from
+            localStorage after a role change. */}
+        {section === 'aog' && (currentUser.role === 'ops' || currentUser.role === 'admin') && (
+          <div className="flex-1 overflow-y-auto scroll-area">
+            <Suspense fallback={<div className="flex items-center justify-center py-16 text-slate-500"><Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading AOG coverage...</div>}>
+              <AogTabLazy currentUser={currentUser} />
+            </Suspense>
+          </div>
         )}
 
         {/* === WEAR WATCH SECTION ===
