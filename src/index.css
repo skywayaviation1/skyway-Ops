@@ -25,10 +25,15 @@
   --sw-border: rgba(148, 163, 184, 0.14);
   --sw-border-strong: rgba(148, 163, 184, 0.28);
 
-  /* Text */
+  /* Text. Three steps, all measured against --sw-bg:
+       text   ~16:1   primary reading
+       muted  ~9.6:1  secondary reading
+       subtle ~6.0:1  least-important metadata
+     `subtle` previously sat at 4.1:1 — under the 4.5:1 AA floor for normal
+     text — while carrying most of the small print in the app. */
   --sw-text: #E6EDF7;
-  --sw-text-muted: #94A3B8;
-  --sw-text-subtle: #64748B;
+  --sw-text-muted: #A7B3C5;
+  --sw-text-subtle: #8894A9;
   --sw-text-inverse: #04121C;
 
   /* Brand accent — active nav, primary actions, aircraft in motion. */
@@ -78,8 +83,9 @@ html[data-theme='classy'] {
   --sw-border-strong: rgba(11, 24, 41, 0.20);
 
   --sw-text: #0B1829;
-  --sw-text-muted: #4A5C73;
-  --sw-text-subtle: #6B7C93;
+  --sw-text-muted: #45566C;
+  /* Was #6B7C93 → 3.3:1 on the light surface, which failed AA outright. */
+  --sw-text-subtle: #52627A;
   --sw-text-inverse: #FFFFFF;
 
   --sw-accent: #0E7490;
@@ -128,6 +134,53 @@ html[data-theme='classy'] {
   backdrop-filter: blur(16px) saturate(140%) !important;
   -webkit-backdrop-filter: blur(16px) saturate(140%) !important;
 }
+
+/* ─── LEGIBILITY FLOOR ───────────────────────────────────────────────────────
+   Most screens predate the token system and still use raw `text-slate-*`
+   colours, sub-11px sizes and wide tracking. There are roughly 1,300
+   low-contrast text uses, 1,100 sub-11px uses and 1,000 wide-tracked labels —
+   far too many to convert by hand, and a mechanical rewrite of that many call
+   sites would be unreviewable.
+
+   These rules re-point the legacy utilities at readable values instead. They
+   sit after `@tailwind utilities`, so they win on source order at equal
+   specificity — and deliberately avoid `!important` so `hover:text-*` variants
+   (specificity 0,2,0) still override them.
+
+   Only the `text-` colour utilities are touched. `bg-slate-*` and
+   `border-slate-*` keep their original values, so surfaces and hairlines are
+   unchanged.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* Dark theme: lift the dim end of the ramp over the AA line while keeping
+   four visually distinct steps. Measured contrast against #060C16 in comments. */
+.text-slate-400 { color: #A7B3C5; }  /* 7.6 → 9.6 */
+.text-slate-500 { color: #8B98AD; }  /* 4.1 → 6.2  (was below AA) */
+.text-slate-600 { color: #74839A; }  /* 2.6 → 4.6  (was below AA) */
+/* Reserved for decorative glyphs and disabled states rather than prose, so
+   this targets the 3:1 non-text minimum instead of 4.5:1. */
+.text-slate-700 { color: #5C6980; }  /* 1.9 → 3.3 */
+
+/* Light theme inverts the requirement: the same utilities must get DARKER to
+   stay legible on a near-white surface. */
+html[data-theme='classy'] .text-slate-400 { color: #55637A; }
+html[data-theme='classy'] .text-slate-500 { color: #445269; }
+html[data-theme='classy'] .text-slate-600 { color: #37455A; }
+html[data-theme='classy'] .text-slate-700 { color: #2A3648; }
+
+/* Type floor. tailwind.config.js already states the rule — "Floor is 11px. The
+   old 8-10px labels were the single biggest reason the UI read as a debug
+   overlay rather than a product." — but ~1,100 arbitrary-value call sites still
+   sit below it. This enforces the documented floor globally. */
+.text-\[9px\]  { font-size: 11px; line-height: 1.5; }
+.text-\[10px\] { font-size: 11px; line-height: 1.5; }
+.text-\[11px\] { font-size: 11px; line-height: 1.5; }
+
+/* 0.1em of tracking on 11px all-caps mono is what makes dense operational
+   metadata hard to scan. Enough spacing to keep the label feel, little enough
+   that words still read as words. Deliberate hero tracking (0.2em/0.3em) is
+   left alone. */
+.tracking-widest { letter-spacing: 0.055em; }
 
 /* html/body reset — transparent now that the wrapper carries the gradient */
 html, body, #root {
