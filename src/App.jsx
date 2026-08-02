@@ -4670,6 +4670,41 @@ function DutyCard({ currentUser, config, myTrips, users }) {
   );
 }
 
+/** Full-screen Duty destination for pilots (phone primary + desktop Crew → Duty). */
+function CrewDutyScreen({ currentUser, trips, users, config }) {
+  const myTrips = useMemo(() => {
+    if (!Array.isArray(trips)) return [];
+    return trips
+      .filter((t) => tripIsAssignedToUser(t, currentUser))
+      .sort((a, b) => new Date(a.start || 0) - new Date(b.start || 0));
+  }, [trips, currentUser]);
+
+  if (!config?.dutyTrackerEnabled) {
+    return (
+      <div className="flex-1 overflow-y-auto scroll-area bg-slate-950 p-6">
+        <EmptyState
+          icon={Clock}
+          title="Duty tracker is off"
+          description="Ask an admin to enable Settings → Duty Tracker when your operation is ready to log duty and rest here."
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-1 flex-col overflow-hidden bg-slate-950">
+      <ScreenHeader title="Duty" subtitle="Part 135 duty & rest" />
+      <div className="flex-1 overflow-y-auto scroll-area">
+        <div className="mx-auto max-w-3xl space-y-4 p-4 pb-8 md:p-6">
+          <DutyErrorBoundary>
+            <DutyV2 currentUser={currentUser} myTrips={myTrips} users={users} />
+          </DutyErrorBoundary>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ============================================================
    ADMIN DUTY OVERSIGHT
    Shows all currently on-duty crew. Admin can edit duty-on /
@@ -4828,10 +4863,10 @@ function PilotHomeScreen({ currentUser, trips, tripStates, config, users, onSele
         <Card>
           <CardHeader title="Quick actions" />
           <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
-            <QuickActionButton icon={Calendar} label="All flights" onClick={() => onSwitchSection?.('schedule')} />
-            <QuickActionButton icon={FileText} label="Manifests" onClick={() => onSwitchSection?.('manifests')} />
+            <QuickActionButton icon={Calendar} label="Schedule" onClick={() => onSwitchSection?.('schedule')} />
+            <QuickActionButton icon={Clock} label="Duty" onClick={() => onSwitchSection?.('duty')} />
+            <QuickActionButton icon={MessageSquare} label="Comms" onClick={() => onSwitchSection?.('comms')} />
             <QuickActionButton icon={Mail} label="Expenses" onClick={() => onSwitchSection?.('expenses')} />
-            <QuickActionButton icon={AlertCircle} label="Report" onClick={() => onSwitchSection?.('reports')} />
           </div>
         </Card>
 
@@ -21677,6 +21712,10 @@ function DraggableTabBar({
    tabs in one scrolling rail, which made a daily destination
    (Schedule) indistinguishable from a monthly one (Users).
 
+   On phones, crew gets a tighter primary IA (Home / Schedule /
+   Duty / Comms + More) via MobileNav — ops/admin keep the dense
+   group toolset. Desktop always uses NAV_GROUPS.
+
    Adding a screen means adding a leaf here and listing its id in
    a group's `children`. A leaf missing from every group would be
    unreachable, so NAV_GROUPS is asserted against NAV_SECTIONS in
@@ -21694,7 +21733,9 @@ const NAV_SECTIONS = [
 
   { id: 'comms',     label: 'Comms',       icon: MessageSquare, roles: ['crew', 'sales', 'ops', 'maint', 'accounting', 'admin'] },
 
-  { id: 'duty',      label: 'Duty',        icon: Clock,         roles: ['admin'] },
+  // Crew uses DutyV2 self-service; admin (and impersonation) gets the
+  // oversight calendar/report. Phone primary for pilots.
+  { id: 'duty',      label: 'Duty',        icon: Clock,         roles: ['crew', 'admin'] },
   { id: 'currency',  label: 'Currency',    icon: ShieldCheck,   roles: ['crew', 'ops', 'admin'] },
   { id: 'wear',      label: 'Wear',        icon: Activity,      roles: ['crew', 'maint', 'ops', 'admin'] },
   { id: 'reports',   label: 'Reports',     icon: AlertCircle,   roles: ['crew', 'ops', 'admin'] },
@@ -21717,6 +21758,13 @@ const NAV_GROUPS = [
   { id: 'admin',    label: 'Admin',    icon: Building2,     altLabel: 'Finance', children: ['wallet', 'users'] },
 ];
 
+/** Phone bottom-bar primaries for pilots. Everything else lands in More. */
+const CREW_MOBILE_PRIMARY_IDS = ['home', 'schedule', 'duty', 'comms'];
+
+function isCrewPhoneRole(role) {
+  return role === 'crew';
+}
+
 if (import.meta.env?.DEV) {
   const grouped = new Set(NAV_GROUPS.flatMap(g => g.children));
   const orphans = NAV_SECTIONS.filter(s => !grouped.has(s.id)).map(s => s.id);
@@ -21736,8 +21784,8 @@ function groupIdForSection(sectionId) {
 
 /** Leaf sections this user may open, in canonical order. */
 function useAllowedSections(currentUser) {
-  // The Duty oversight screen also opens while an admin is impersonating a
-  // crew member; impersonation is admin-only, so the flag is a safe signal.
+  // Impersonation is admin-only. Keep Duty reachable while viewing as any
+  // role so admins can still open oversight tools mid-impersonation.
   const isAdminContext = currentUser?.role === 'admin' || currentUser?._impersonating === true;
   return useMemo(() => NAV_SECTIONS.filter(s =>
     s.roles.includes(currentUser?.role) || (s.id === 'duty' && isAdminContext)
@@ -21997,29 +22045,80 @@ function UnreadBadge({ count, className = '' }) {
 /* ============================================================
    MobileNav — fixed bottom bar, the primary switch on phones.
    ------------------------------------------------------------
-   Replaces horizontally scrolling through up to seventeen tabs.
-   At most five slots: if the role has more than five groups, the
-   last slot becomes "More", which opens a sheet listing every
-   remaining destination by group.
+   Crew (pilots): Home / Schedule / Duty / Comms + More. Secondary
+   destinations (manifests, expenses, wallet, …) live only in More
+   so the flight-day surface stays four taps deep.
+
+   Ops / admin / other roles: dense group toolset. At most five
+   slots; if there are more than five groups, the last slot becomes
+   "More" with the remaining destinations by group.
    ============================================================ */
 function MobileNav({ currentSection, setCurrentSection, currentUser, onOpenSettings, onToggleTheme, themeMode, onLogout }) {
   const groups = useNavGroups(currentUser);
+  const allowed = useAllowedSections(currentUser);
   const activeGroupId = groupIdForSection(currentSection);
   const { totalUnread: commsUnread } = useStreamPresence();
   const [sheetOpen, setSheetOpen] = useState(false);
+  const crewPhone = isCrewPhoneRole(currentUser?.role);
 
-  const needsMore = groups.length > 5;
-  const primary = needsMore ? groups.slice(0, 4) : groups;
-  const overflow = needsMore ? groups.slice(4) : [];
-  const overflowActive = overflow.some(g => g.id === activeGroupId);
-  const activeGroup = groups.find(g => g.id === activeGroupId);
-  const subTabs = activeGroup?.children || [];
+  // Crew: leaf tabs. Ops: group tabs (first child is the landing section).
+  const primaryTabs = useMemo(() => {
+    if (crewPhone) {
+      const byId = new Map(allowed.map((s) => [s.id, s]));
+      return CREW_MOBILE_PRIMARY_IDS
+        .map((id) => {
+          const s = byId.get(id);
+          if (!s) return null;
+          return { key: s.id, label: s.label, icon: s.icon, sectionId: s.id };
+        })
+        .filter(Boolean);
+    }
+    const needsMore = groups.length > 5;
+    const slice = needsMore ? groups.slice(0, 4) : groups;
+    return slice.map((g) => ({
+      key: g.id,
+      label: g.label,
+      icon: g.icon,
+      sectionId: g.children[0].id,
+      groupId: g.id,
+    }));
+  }, [crewPhone, allowed, groups]);
+
+  const overflowSections = useMemo(() => {
+    if (crewPhone) {
+      const primaryIds = new Set(CREW_MOBILE_PRIMARY_IDS);
+      return allowed.filter((s) => !primaryIds.has(s.id));
+    }
+    return [];
+  }, [crewPhone, allowed]);
+
+  const overflowGroups = useMemo(() => {
+    if (crewPhone) return [];
+    return groups.length > 5 ? groups.slice(4) : [];
+  }, [crewPhone, groups]);
+
+  const needsMore = crewPhone
+    ? overflowSections.length > 0
+    : overflowGroups.length > 0;
+
+  const overflowActive = crewPhone
+    ? overflowSections.some((s) => s.id === currentSection)
+    : overflowGroups.some((g) => g.id === activeGroupId);
+
+  const activeGroup = groups.find((g) => g.id === activeGroupId);
+  // Crew phone IA is leaf-primary — no secondary rail of admin-adjacent tabs.
+  const subTabs = (!crewPhone && activeGroup?.children) || [];
 
   const go = (sectionId) => { setCurrentSection(sectionId); setSheetOpen(false); };
 
+  const tabIsActive = (tab) => (
+    crewPhone ? currentSection === tab.sectionId : tab.groupId === activeGroupId
+  );
+
   return (
     <>
-      {/* Secondary rail for the active group, pinned above the bar. */}
+      {/* Secondary rail for the active group, pinned above the bar.
+          Hidden for crew — their secondary destinations are in More. */}
       {subTabs.length > 1 && (
         <div className="md:hidden shrink-0 border-t border-edge bg-surface-sunken">
           <div className="sw-no-scrollbar flex gap-1 overflow-x-auto px-2 py-1.5">
@@ -22049,14 +22148,14 @@ function MobileNav({ currentSection, setCurrentSection, currentUser, onOpenSetti
         className="md:hidden shrink-0 border-t border-edge bg-surface sw-safe-bottom"
       >
         <div className="flex items-stretch">
-          {primary.map((g) => {
-            const active = g.id === activeGroupId;
-            const unread = g.id === 'comms' ? commsUnread : 0;
+          {primaryTabs.map((tab) => {
+            const active = tabIsActive(tab);
+            const unread = tab.sectionId === 'comms' || tab.key === 'comms' ? commsUnread : 0;
             return (
               <button
-                key={g.id}
+                key={tab.key}
                 type="button"
-                onClick={() => go(g.children[0].id)}
+                onClick={() => go(tab.sectionId)}
                 aria-current={active ? 'page' : undefined}
                 className={cx(
                   'sw-mobile-tab relative flex flex-1 flex-col items-center justify-center gap-1 py-2.5 transition-colors',
@@ -22064,10 +22163,10 @@ function MobileNav({ currentSection, setCurrentSection, currentUser, onOpenSetti
                 )}
               >
                 <span className="relative">
-                  <g.icon className="h-5 w-5" />
+                  <tab.icon className="h-5 w-5" />
                   {unread > 0 && <UnreadBadge count={unread} className="absolute -right-2.5 -top-1.5" />}
                 </span>
-                <span className="text-[10px] font-semibold leading-none">{g.label}</span>
+                <span className="text-[10px] font-semibold leading-none">{tab.label}</span>
               </button>
             );
           })}
@@ -22103,10 +22202,10 @@ function MobileNav({ currentSection, setCurrentSection, currentUser, onOpenSetti
               <IconButton icon={X} title="Close" onClick={() => setSheetOpen(false)} />
             </div>
             <div className="p-2">
-              {overflow.map((g) => (
-                <div key={g.id} className="mb-1">
-                  <SectionLabel className="px-3 py-2">{g.label}</SectionLabel>
-                  {g.children.map((s) => (
+              {crewPhone ? (
+                <div className="mb-1">
+                  <SectionLabel className="px-3 py-2">Tools</SectionLabel>
+                  {overflowSections.map((s) => (
                     <button
                       key={s.id}
                       type="button"
@@ -22124,7 +22223,30 @@ function MobileNav({ currentSection, setCurrentSection, currentUser, onOpenSetti
                     </button>
                   ))}
                 </div>
-              ))}
+              ) : (
+                overflowGroups.map((g) => (
+                  <div key={g.id} className="mb-1">
+                    <SectionLabel className="px-3 py-2">{g.label}</SectionLabel>
+                    {g.children.map((s) => (
+                      <button
+                        key={s.id}
+                        type="button"
+                        onClick={() => go(s.id)}
+                        className={cx(
+                          'flex w-full items-center gap-3 rounded px-3 py-3 text-left text-sm transition-colors',
+                          s.id === currentSection
+                            ? 'bg-accent-soft font-semibold text-accent'
+                            : 'text-content hover:bg-surface-raised',
+                        )}
+                      >
+                        <s.icon className="h-4 w-4 shrink-0 text-content-muted" />
+                        <span className="flex-1">{s.label}</span>
+                        <ChevronRight className="h-4 w-4 text-content-subtle" />
+                      </button>
+                    ))}
+                  </div>
+                ))
+              )}
               <div className="mt-2 border-t border-edge pt-2">
                 <button
                   type="button"
@@ -29104,8 +29226,22 @@ export default function CharterOps() {
           </div>
         )}
 
-        {/* === DUTY SECTION (admin duty/rest oversight) === */}
-        {section === 'duty' && (currentUser.role === 'admin' || currentUser._impersonating === true) && config?.dutyTrackerEnabled && (
+        {/* === DUTY SECTION ===
+            Crew → self-service DutyV2 (phone primary tab).
+            Admin (or impersonating a non-crew role) → oversight report/calendar.
+            Impersonating a crew member keeps the pilot DutyV2 surface so the
+            admin sees the same phone IA the pilot does. */}
+        {section === 'duty' && currentUser.role === 'crew' && (
+          <CrewDutyScreen
+            currentUser={currentUser}
+            trips={allTrips}
+            users={users}
+            config={config}
+          />
+        )}
+        {section === 'duty' && currentUser.role !== 'crew'
+          && (currentUser.role === 'admin' || currentUser._impersonating === true)
+          && config?.dutyTrackerEnabled && (
           <div className="flex-1 overflow-y-auto scroll-area bg-slate-950 p-4 md:p-6">
             <div className="mx-auto mb-5 flex max-w-[1500px] flex-wrap items-center justify-between gap-3">
               <div className="inline-flex rounded-lg border border-edge bg-surface p-1">
@@ -29159,7 +29295,9 @@ export default function CharterOps() {
             </Suspense>
           </div>
         )}
-        {section === 'duty' && (currentUser.role === 'admin' || currentUser._impersonating === true) && !config?.dutyTrackerEnabled && (
+        {section === 'duty' && currentUser.role !== 'crew'
+          && (currentUser.role === 'admin' || currentUser._impersonating === true)
+          && !config?.dutyTrackerEnabled && (
           <div className="flex-1 overflow-y-auto scroll-area bg-slate-950 p-6">
             <div className="max-w-2xl mx-auto bg-slate-900 border border-slate-800 p-4 text-sm text-slate-400">
               The duty tracker is currently disabled. Enable it in Settings → DUTY TRACKER (ADMIN) to use this dashboard.
