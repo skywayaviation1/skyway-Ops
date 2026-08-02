@@ -101,8 +101,15 @@ import {
   Mail, Navigation, Loader2, Wifi, WifiOff, Settings as SettingsIcon,
   Download, Trash2, Plus, FileText, Zap, Radio, AlertCircle, Upload,
   CheckCheck, UserCheck, Sparkles, Hash, Cloud, Wrench, Hotel, BookOpen, Search,
-  Activity, Palette, ShieldCheck, Edit2,
+  Activity, Palette, ShieldCheck, Edit2, Home, CreditCard, Fuel, Building2,
+  MoreHorizontal, LogOut, ChevronRight,
 } from 'lucide-react';
+// Shared design-system primitives. New UI should compose these rather than
+// re-deriving borders, spacing and tone colors inline.
+import {
+  cx, Button, IconButton, StatusChip, StatusDot, Card, CardHeader, PageHeader,
+  SectionLabel, MetricTile, EmptyState, Spinner, ToastProvider, useToast,
+} from './ui.jsx';
 import { formatLocalTime, formatLocalDate } from './airports.js';
 import {
   logoUrl, fuelCardDomain, cachedAirlineDomain, cachedHotelDomain,
@@ -1913,35 +1920,16 @@ function useFirestoreUsers(currentProfile) {
 /* ============================================================
    UI primitives
    ============================================================ */
+/**
+ * Legacy tone names (amber/green/red/violet…) are mapped onto the semantic
+ * palette in ui.jsx. Previously `amber` and `cyan` both rendered cyan, so a
+ * warning was indistinguishable from an informational accent.
+ */
 function Pill({ children, tone = 'neutral', className = '' }) {
-  const tones = {
-    neutral: 'bg-slate-800/60 text-slate-300 border-slate-700',
-    amber: 'bg-cyan-500/10 text-cyan-300 border-cyan-500/40',
-    cyan: 'bg-cyan-500/10 text-cyan-300 border-cyan-500/40',
-    green: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/40',
-    red: 'bg-red-500/10 text-red-300 border-red-500/40',
-    violet: 'bg-violet-500/10 text-violet-300 border-violet-500/40',
-  };
   return (
-    <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] uppercase tracking-[0.15em] border ${tones[tone]} ${className}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+    <StatusChip tone={tone} mono className={cx('uppercase tracking-wider', className)}>
       {children}
-    </span>
-  );
-}
-
-function StatusDot({ tone = 'neutral', pulse = false }) {
-  const colors = {
-    neutral: 'bg-slate-500',
-    amber: 'bg-cyan-400',
-    cyan: 'bg-cyan-400',
-    green: 'bg-emerald-400',
-    red: 'bg-red-400',
-  };
-  return (
-    <span className="relative inline-flex h-2 w-2">
-      {pulse && <span className={`absolute inset-0 rounded-full ${colors[tone]} opacity-50 animate-ping`}></span>}
-      <span className={`relative rounded-full h-2 w-2 ${colors[tone]}`}></span>
-    </span>
+    </StatusChip>
   );
 }
 
@@ -20635,44 +20623,113 @@ function DraggableTabBar({
   );
 }
 
+/* ============================================================
+   NAVIGATION MODEL
+   ------------------------------------------------------------
+   The flat list below is still the routing surface — `section`
+   state holds a leaf id and every `{section === '…'}` render
+   block keeps working untouched.
+
+   What changed is the presentation: leaves are bucketed into six
+   top-level groups. Previously an admin saw seventeen equal-weight
+   tabs in one scrolling rail, which made a daily destination
+   (Schedule) indistinguishable from a monthly one (Users).
+
+   Adding a screen means adding a leaf here and listing its id in
+   a group's `children`. A leaf missing from every group would be
+   unreachable, so NAV_GROUPS is asserted against NAV_SECTIONS in
+   development below.
+   ============================================================ */
+const NAV_SECTIONS = [
+  { id: 'home',      label: 'Home',        icon: Home,          roles: ['crew', 'sales', 'ops', 'maint', 'accounting', 'admin'] },
+
+  { id: 'schedule',  label: 'Schedule',    icon: Calendar,      roles: ['crew', 'ops', 'admin'] },
+  { id: 'ops',       label: 'Dispatch',    icon: Zap,           roles: ['ops', 'admin'] },
+  { id: 'tracking',  label: 'Tracking',    icon: Navigation,    roles: ['ops', 'admin'] },
+  { id: 'manifests', label: 'Manifests',   icon: FileText,      roles: ['crew', 'ops', 'admin'] },
+  { id: 'lodging',   label: 'Lodging',     icon: Hotel,         roles: ['crew', 'ops', 'admin'] },
+  { id: 'archive',   label: 'Archive',     icon: Hash,          roles: ['crew', 'ops', 'admin'] },
+
+  { id: 'comms',     label: 'Comms',       icon: MessageSquare, roles: ['crew', 'sales', 'ops', 'maint', 'accounting', 'admin'] },
+
+  { id: 'duty',      label: 'Duty',        icon: Clock,         roles: ['admin'] },
+  { id: 'currency',  label: 'Currency',    icon: ShieldCheck,   roles: ['crew', 'ops', 'admin'] },
+  { id: 'wear',      label: 'Wear',        icon: Activity,      roles: ['crew', 'maint', 'ops', 'admin'] },
+  { id: 'reports',   label: 'Reports',     icon: AlertCircle,   roles: ['crew', 'ops', 'admin'] },
+
+  { id: 'maint',     label: 'Maintenance', icon: Wrench,        roles: ['maint', 'ops', 'admin'] },
+  { id: 'aog',       label: 'AOG',         icon: AlertTriangle, roles: ['ops', 'admin'] },
+
+  { id: 'expenses',  label: 'Expenses',    icon: Mail,          roles: ['crew', 'sales', 'ops', 'accounting', 'admin'] },
+  { id: 'wallet',    label: 'Wallet',      icon: CreditCard,    roles: ['crew', 'sales', 'ops', 'accounting', 'admin'] },
+  { id: 'users',     label: 'Users',       icon: Users,         roles: ['ops', 'admin'] },
+];
+
+const NAV_GROUPS = [
+  { id: 'home',     label: 'Home',     icon: Home,          children: ['home'] },
+  { id: 'flights',  label: 'Flights',  icon: Plane,         children: ['schedule', 'ops', 'tracking', 'manifests', 'lodging', 'archive'] },
+  { id: 'comms',    label: 'Comms',    icon: MessageSquare, children: ['comms'] },
+  { id: 'crew',     label: 'Crew',     icon: Users,         children: ['duty', 'currency', 'wear', 'reports'] },
+  { id: 'aircraft', label: 'Aircraft', icon: Wrench,        children: ['maint', 'aog'] },
+  // Labelled "Finance" for roles without user administration, since for them
+  // the group only contains Expenses and Wallet.
+  { id: 'admin',    label: 'Admin',    icon: Building2,     altLabel: 'Finance', children: ['expenses', 'wallet', 'users'] },
+];
+
+if (import.meta.env?.DEV) {
+  const grouped = new Set(NAV_GROUPS.flatMap(g => g.children));
+  const orphans = NAV_SECTIONS.filter(s => !grouped.has(s.id)).map(s => s.id);
+  if (orphans.length) {
+    console.error('[nav] sections are unreachable — add them to a NAV_GROUPS entry:', orphans);
+  }
+}
+
+const SECTION_TO_GROUP = NAV_GROUPS.reduce((acc, g) => {
+  g.children.forEach((id) => { acc[id] = g.id; });
+  return acc;
+}, {});
+
+function groupIdForSection(sectionId) {
+  return SECTION_TO_GROUP[sectionId] || 'home';
+}
+
+/** Leaf sections this user may open, in canonical order. */
+function useAllowedSections(currentUser) {
+  // The Duty oversight screen also opens while an admin is impersonating a
+  // crew member; impersonation is admin-only, so the flag is a safe signal.
+  const isAdminContext = currentUser?.role === 'admin' || currentUser?._impersonating === true;
+  return useMemo(() => NAV_SECTIONS.filter(s =>
+    s.roles.includes(currentUser?.role) || (s.id === 'duty' && isAdminContext)
+  ), [currentUser?.role, isAdminContext]);
+}
+
+/** Groups with their role-filtered children; groups with nothing left drop out. */
+function useNavGroups(currentUser) {
+  const allowed = useAllowedSections(currentUser);
+  return useMemo(() => {
+    const byId = new Map(allowed.map(s => [s.id, s]));
+    return NAV_GROUPS
+      .map((g) => {
+        const children = g.children.map(id => byId.get(id)).filter(Boolean);
+        const label = (g.altLabel && !children.some(c => c.id === 'users')) ? g.altLabel : g.label;
+        return { ...g, label, children };
+      })
+      .filter(g => g.children.length > 0);
+  }, [allowed]);
+}
+
 function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, syncStatus, now, tripCount, onOpenSettings, onOpenProfile, themeMode, onToggleTheme, topNavOrder, onReorderTopNav }) {
-  const sections = [
-    { id: 'home',     label: 'HOME',      icon: Sparkles, roles: ['crew', 'sales', 'ops', 'admin'] },
-    { id: 'schedule', label: 'SCHEDULE',  icon: Calendar, roles: ['crew', 'ops', 'admin'] },
-    { id: 'comms',    label: 'COMMS',     icon: MessageSquare, roles: ['crew', 'sales', 'ops', 'maint', 'accounting', 'admin'] },
-    { id: 'tracking', label: 'TRACKING',  icon: Plane,    roles: ['ops', 'admin'] },
-    { id: 'archive',  label: 'ARCHIVE',   icon: Hash,     roles: ['crew', 'ops', 'admin'] },
-    { id: 'expenses', label: 'EXPENSES',  icon: Mail,     roles: ['crew', 'sales', 'ops', 'accounting', 'admin'] },
-    { id: 'manifests',label: 'MANIFESTS', icon: FileText, roles: ['crew', 'ops', 'admin'] },
-    { id: 'reports',  label: 'REPORT',    icon: AlertCircle, roles: ['crew', 'ops', 'admin'] },
-    { id: 'wallet',   label: 'WALLET',    icon: Mail, roles: ['crew', 'sales', 'ops', 'accounting', 'admin'] },
-    { id: 'lodging',  label: 'LODGING',   icon: Hotel, roles: ['crew', 'ops', 'admin'] },
-    // MAINT LOG and MEL were promoted into MAINT sub-tabs to clean up
-    // the top nav (16 → 14). Their content lives at MAINT > AML LOG and
-    // MAINT > MEL respectively. Role gating moves into MaintScreen.
-    { id: 'ops',      label: 'OPS',       icon: Zap,      roles: ['ops', 'admin'] },
-    { id: 'maint',    label: 'MAINT',     icon: AlertTriangle, roles: ['maint', 'ops', 'admin'] },
-    { id: 'aog',      label: 'AOG',       icon: Shield,   roles: ['ops', 'admin'] },
-    { id: 'wear',     label: 'WEAR',      icon: Activity, roles: ['crew', 'maint', 'ops', 'admin'] },
-    { id: 'users',    label: 'USERS',     icon: Users,    roles: ['ops', 'admin'] },
-    // Pilot currency & training compliance — crew sees their own status,
-    // ops/admin see all crew and can edit dates. Surfacing 61.57, Part
-    // 135 checkrides, recurrent training, and medical on one screen.
-    { id: 'currency', label: 'CURRENCY',  icon: ShieldCheck, roles: ['crew', 'ops', 'admin'] },
-    { id: 'duty',     label: 'DUTY',      icon: Clock,    roles: ['admin'] },
-  ];
-  // DUTY tab also shows when an admin is impersonating a crew member
-  // (impersonation is admin-only, so _impersonating is a safe signal).
-  const isAdminContext = currentUser.role === 'admin' || currentUser._impersonating === true;
-  const allowed = sections.filter(s =>
-    s.roles.includes(currentUser.role) || (s.id === 'duty' && isAdminContext)
-  );
+  const groups = useNavGroups(currentUser);
+  const activeGroupId = groupIdForSection(currentSection);
+  const activeGroup = groups.find(g => g.id === activeGroupId) || groups[0];
+  const subTabs = activeGroup?.children || [];
 
   // Unread count for the COMMS tab badge. Sums DMs and group chats only;
   // trip channels surface as per-trip badges inside trip detail. The
   // hook returns 0 until StreamPresenceProvider has connected, so the
   // badge is invisible during sign-in or before the first message.
   const { totalUnread: commsUnread } = useStreamPresence();
+  const groupUnread = (groupId) => (groupId === 'comms' ? commsUnread : 0);
 
   return (
     <header className="border-b border-slate-800 bg-slate-950/80 backdrop-blur sticky top-0 z-30">
@@ -20693,88 +20750,298 @@ function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, sync
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          {syncStatus.status === 'ok' && (
-            <Pill tone="green"><Wifi className="w-2.5 h-2.5" /> SYNC</Pill>
-          )}
-          {syncStatus.status === 'syncing' && (
-            <Pill tone="amber"><Loader2 className="w-2.5 h-2.5 animate-spin" /> SYNC</Pill>
-          )}
-          {syncStatus.status === 'error' && (
-            <Pill tone="red"><WifiOff className="w-2.5 h-2.5" /> SYNC</Pill>
-          )}
+          <SyncIndicator status={syncStatus.status} />
           <button
             onClick={onOpenProfile}
-            className="hidden md:flex items-center gap-2 px-2.5 py-1.5 border border-slate-800 hover:border-cyan-500/40"
+            className="hidden md:flex items-center gap-2 rounded border border-edge px-2 py-1.5 transition-colors hover:border-accent-border"
             title="Edit my profile (signature, name, callsign)"
           >
-            <div className="w-7 h-7 bg-cyan-500/10 border border-cyan-500/40 flex items-center justify-center text-cyan-300 text-sm" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
+            <span className="flex h-7 w-7 items-center justify-center rounded bg-accent-soft font-display text-base leading-none text-accent">
               {currentUser.name.charAt(0).toUpperCase()}
-            </div>
-            <div className="text-xs text-left">
-              <div className="text-slate-200 leading-tight" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
+            </span>
+            <span className="text-left">
+              <span className="block text-2xs font-semibold leading-tight text-content">
                 {currentUser.callsign || currentUser.name.split(' ').slice(-1)[0]}
-              </div>
-              <div className="text-[9px] text-slate-500 leading-tight" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                {USER_ROLES[currentUser.role]?.label || currentUser.role.toUpperCase()}
-              </div>
-            </div>
+              </span>
+              <span className="block text-2xs leading-tight text-content-subtle">
+                {USER_ROLES[currentUser.role]?.label || currentUser.role}
+              </span>
+            </span>
           </button>
-          <button onClick={onOpenProfile} className="md:hidden p-2 border border-slate-800 hover:border-cyan-500/40 text-cyan-300" title="My profile">
-            <UserCheck className="w-4 h-4" />
-          </button>
-          {/* Theme toggle — switches between dark (cyan/slate, the default
-              tactical look) and classy (warm charcoal + champagne gold,
-              boutique brand feel). State persists in localStorage. The
-              actual color swap lives in theme-classy.css scoped to
-              [data-theme="classy"] on <html>. */}
+          <IconButton
+            icon={UserCheck}
+            title="My profile"
+            onClick={onOpenProfile}
+            variant="outline"
+            className="md:hidden"
+          />
+          {/* Theme toggle — dark ops mode vs. the light "classy" theme.
+              Persisted in localStorage; the palette swap itself is driven by
+              the token overrides under [data-theme="classy"]. */}
           {onToggleTheme && (
-            <button
+            <IconButton
+              icon={Palette}
+              title={`Switch theme (currently ${themeMode || 'dark'})`}
               onClick={onToggleTheme}
-              className="p-2 border border-slate-800 hover:border-slate-600 text-slate-400 hover:text-slate-200"
-              title={`Switch theme · current: ${(themeMode || 'dark').toUpperCase()}`}
-            >
-              <Palette className="w-4 h-4" />
-            </button>
+              variant="outline"
+            />
           )}
-          <button onClick={onOpenSettings} className="p-2 border border-slate-800 hover:border-slate-600 text-slate-400 hover:text-slate-200" title="Settings">
-            <SettingsIcon className="w-4 h-4" />
-          </button>
-          <button onClick={onLogout} className="text-[10px] text-slate-500 hover:text-red-400 tracking-widest px-2 py-2 border border-slate-800 hover:border-red-500/40" style={{ fontFamily: 'JetBrains Mono, monospace' }} title="Logout">
-            EXIT
-          </button>
+          <IconButton icon={SettingsIcon} title="Settings" onClick={onOpenSettings} variant="outline" />
+          <IconButton
+            icon={LogOut}
+            title="Sign out"
+            onClick={onLogout}
+            variant="outline"
+            className="hover:!border-danger-border hover:!text-danger"
+          />
         </div>
       </div>
-      <DraggableTabBar
-        tabs={allowed}
-        order={topNavOrder}
-        activeId={currentSection}
-        onSelect={(id) => setCurrentSection(id)}
-        onReorder={(newOrder) => onReorderTopNav?.(newOrder)}
-        containerClassName="border-t border-slate-800"
-        renderTab={(s, active /*, dragging */) => (
+
+      {/* Primary rail — six curated groups. Hidden on small screens, where
+          the fixed bottom bar takes over as the primary destination switch. */}
+      <nav aria-label="Primary" className="hidden md:block border-t border-edge">
+        <div className="flex items-center gap-1 px-3">
+          {groups.map((g) => {
+            const active = g.id === activeGroupId;
+            const unread = groupUnread(g.id);
+            return (
+              <button
+                key={g.id}
+                type="button"
+                onClick={() => setCurrentSection(g.children[0].id)}
+                aria-current={active ? 'page' : undefined}
+                className={cx(
+                  'relative flex shrink-0 items-center gap-2 px-3 py-3 text-sm font-semibold transition-colors',
+                  active ? 'text-accent' : 'text-content-muted hover:text-content',
+                )}
+              >
+                <g.icon className="h-4 w-4" />
+                {g.label}
+                {unread > 0 && <UnreadBadge count={unread} />}
+                {active && <span className="absolute inset-x-2 bottom-0 h-0.5 rounded-t bg-accent" />}
+              </button>
+            );
+          })}
+        </div>
+      </nav>
+
+      {/* Secondary rail — only rendered when the active group actually has
+          somewhere else to go, so single-screen groups stay uncluttered.
+          Long-press reordering lives here (ids match the saved preference
+          arrays, which are keyed by section id). */}
+      {subTabs.length > 1 && (
+        <div className="hidden md:flex items-center gap-2 border-t border-edge bg-surface-sunken px-3">
+          <DraggableTabBar
+            tabs={subTabs}
+            order={topNavOrder}
+            activeId={currentSection}
+            onSelect={(id) => setCurrentSection(id)}
+            onReorder={(newOrder) => onReorderTopNav?.(newOrder)}
+            containerClassName="sw-no-scrollbar flex-1"
+            renderTab={(s, active) => (
+              <button
+                type="button"
+                className={cx(
+                  'flex shrink-0 items-center gap-1.5 rounded px-3 py-2 text-2xs font-semibold transition-colors',
+                  active
+                    ? 'bg-accent-soft text-accent'
+                    : 'text-content-muted hover:bg-surface-raised hover:text-content',
+                )}
+              >
+                <s.icon className="h-3.5 w-3.5" />
+                {s.label}
+              </button>
+            )}
+          />
+          <span className="hidden shrink-0 text-2xs text-content-subtle lg:block">
+            Hold a tab to reorder
+          </span>
+        </div>
+      )}
+    </header>
+  );
+}
+
+/** Feed sync state. One component so the three states can't drift apart. */
+function SyncIndicator({ status }) {
+  if (status === 'ok') {
+    return <StatusChip tone="success" icon={Wifi} className="hidden sm:inline-flex">Synced</StatusChip>;
+  }
+  if (status === 'syncing') {
+    return (
+      <StatusChip tone="info" className="hidden sm:inline-flex">
+        <Loader2 className="h-3 w-3 animate-spin" /> Syncing
+      </StatusChip>
+    );
+  }
+  if (status === 'error') {
+    return <StatusChip tone="danger" icon={WifiOff}>Sync failed</StatusChip>;
+  }
+  return null;
+}
+
+function UnreadBadge({ count, className = '' }) {
+  return (
+    <span
+      className={cx(
+        'inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1',
+        'bg-accent font-mono text-[10px] font-bold leading-none text-accent-contrast',
+        className,
+      )}
+      title={`${count} unread message${count === 1 ? '' : 's'}`}
+    >
+      {count > 99 ? '99+' : count}
+    </span>
+  );
+}
+
+/* ============================================================
+   MobileNav — fixed bottom bar, the primary switch on phones.
+   ------------------------------------------------------------
+   Replaces horizontally scrolling through up to seventeen tabs.
+   At most five slots: if the role has more than five groups, the
+   last slot becomes "More", which opens a sheet listing every
+   remaining destination by group.
+   ============================================================ */
+function MobileNav({ currentSection, setCurrentSection, currentUser, onOpenSettings }) {
+  const groups = useNavGroups(currentUser);
+  const activeGroupId = groupIdForSection(currentSection);
+  const { totalUnread: commsUnread } = useStreamPresence();
+  const [sheetOpen, setSheetOpen] = useState(false);
+
+  const needsMore = groups.length > 5;
+  const primary = needsMore ? groups.slice(0, 4) : groups;
+  const overflow = needsMore ? groups.slice(4) : [];
+  const overflowActive = overflow.some(g => g.id === activeGroupId);
+  const activeGroup = groups.find(g => g.id === activeGroupId);
+  const subTabs = activeGroup?.children || [];
+
+  const go = (sectionId) => { setCurrentSection(sectionId); setSheetOpen(false); };
+
+  return (
+    <>
+      {/* Secondary rail for the active group, pinned above the bar. */}
+      {subTabs.length > 1 && (
+        <div className="md:hidden shrink-0 border-t border-edge bg-surface-sunken">
+          <div className="sw-no-scrollbar flex gap-1 overflow-x-auto px-2 py-1.5">
+            {subTabs.map((s) => {
+              const active = s.id === currentSection;
+              return (
+                <button
+                  key={s.id}
+                  type="button"
+                  onClick={() => setCurrentSection(s.id)}
+                  className={cx(
+                    'flex shrink-0 items-center gap-1.5 rounded px-3 py-1.5 text-2xs font-semibold transition-colors',
+                    active ? 'bg-accent-soft text-accent' : 'text-content-muted',
+                  )}
+                >
+                  <s.icon className="h-3.5 w-3.5" />
+                  {s.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      <nav
+        aria-label="Primary"
+        className="md:hidden shrink-0 border-t border-edge bg-surface sw-safe-bottom"
+      >
+        <div className="flex items-stretch">
+          {primary.map((g) => {
+            const active = g.id === activeGroupId;
+            const unread = g.id === 'comms' ? commsUnread : 0;
+            return (
+              <button
+                key={g.id}
+                type="button"
+                onClick={() => go(g.children[0].id)}
+                aria-current={active ? 'page' : undefined}
+                className={cx(
+                  'relative flex flex-1 flex-col items-center justify-center gap-1 py-2 transition-colors',
+                  active ? 'text-accent' : 'text-content-subtle',
+                )}
+              >
+                <span className="relative">
+                  <g.icon className="h-5 w-5" />
+                  {unread > 0 && <UnreadBadge count={unread} className="absolute -right-2.5 -top-1.5" />}
+                </span>
+                <span className="text-[10px] font-semibold leading-none">{g.label}</span>
+              </button>
+            );
+          })}
+          {needsMore && (
+            <button
+              type="button"
+              onClick={() => setSheetOpen(true)}
+              aria-haspopup="dialog"
+              aria-expanded={sheetOpen}
+              className={cx(
+                'flex flex-1 flex-col items-center justify-center gap-1 py-2 transition-colors',
+                overflowActive ? 'text-accent' : 'text-content-subtle',
+              )}
+            >
+              <MoreHorizontal className="h-5 w-5" />
+              <span className="text-[10px] font-semibold leading-none">More</span>
+            </button>
+          )}
+        </div>
+      </nav>
+
+      {sheetOpen && (
+        <div className="fixed inset-0 z-50 md:hidden" role="dialog" aria-modal="true" aria-label="More destinations">
           <button
             type="button"
-            className={`flex items-center gap-2 px-5 py-2.5 text-xs tracking-widest transition-colors relative shrink-0 ${
-              active ? 'text-cyan-400' : 'text-slate-500 hover:text-slate-300'
-            }`}
-            style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}
-          >
-            <s.icon className="w-3.5 h-3.5" />
-            {s.label}
-            {s.id === 'comms' && commsUnread > 0 && (
-              <span
-                className="inline-flex items-center justify-center min-w-[16px] h-4 px-1 text-[9px] bg-cyan-400 text-slate-950 leading-none"
-                style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}
-                title={`${commsUnread} unread message${commsUnread === 1 ? '' : 's'}`}
-              >
-                {commsUnread > 99 ? '99+' : commsUnread}
-              </span>
-            )}
-            {active && <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-cyan-400" />}
-          </button>
-        )}
-      />
-    </header>
+            aria-label="Close menu"
+            className="absolute inset-0 animate-fade-in bg-black/60 backdrop-blur-sm"
+            onClick={() => setSheetOpen(false)}
+          />
+          <div className="absolute inset-x-0 bottom-0 max-h-[75vh] overflow-y-auto rounded-t-xl border-t border-edge bg-surface pb-[calc(env(safe-area-inset-bottom,0px)+12px)] shadow-overlay">
+            <div className="sticky top-0 flex items-center justify-between border-b border-edge bg-surface px-4 py-3">
+              <h2 className="text-sm font-semibold text-content">More</h2>
+              <IconButton icon={X} title="Close" onClick={() => setSheetOpen(false)} />
+            </div>
+            <div className="p-2">
+              {overflow.map((g) => (
+                <div key={g.id} className="mb-1">
+                  <SectionLabel className="px-3 py-2">{g.label}</SectionLabel>
+                  {g.children.map((s) => (
+                    <button
+                      key={s.id}
+                      type="button"
+                      onClick={() => go(s.id)}
+                      className={cx(
+                        'flex w-full items-center gap-3 rounded px-3 py-3 text-left text-sm transition-colors',
+                        s.id === currentSection
+                          ? 'bg-accent-soft font-semibold text-accent'
+                          : 'text-content hover:bg-surface-raised',
+                      )}
+                    >
+                      <s.icon className="h-4 w-4 shrink-0 text-content-muted" />
+                      <span className="flex-1">{s.label}</span>
+                      <ChevronRight className="h-4 w-4 text-content-subtle" />
+                    </button>
+                  ))}
+                </div>
+              ))}
+              <div className="mt-2 border-t border-edge pt-2">
+                <button
+                  type="button"
+                  onClick={() => { setSheetOpen(false); onOpenSettings?.(); }}
+                  className="flex w-full items-center gap-3 rounded px-3 py-3 text-left text-sm text-content transition-colors hover:bg-surface-raised"
+                >
+                  <SettingsIcon className="h-4 w-4 shrink-0 text-content-muted" />
+                  <span className="flex-1">Settings</span>
+                  <ChevronRight className="h-4 w-4 text-content-subtle" />
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -27192,20 +27459,15 @@ export default function CharterOps() {
 
   // === Authenticated app ===
   return (
+    <ToastProvider>
     <div className="h-screen w-full bg-slate-950 text-slate-100 antialiased overflow-hidden">
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
-        body { font-family: 'DM Sans', sans-serif; }
-        * { font-feature-settings: "ss01", "cv11"; }
         .grid-bg {
           background-image:
             linear-gradient(rgba(148, 163, 184, 0.04) 1px, transparent 1px),
             linear-gradient(90deg, rgba(148, 163, 184, 0.04) 1px, transparent 1px);
           background-size: 32px 32px;
         }
-        .scroll-area::-webkit-scrollbar { width: 6px; }
-        .scroll-area::-webkit-scrollbar-track { background: transparent; }
-        .scroll-area::-webkit-scrollbar-thumb { background: #334155; }
       `}</style>
 
       <StreamPresenceProvider
@@ -27855,6 +28117,13 @@ export default function CharterOps() {
             </div>
           </div>
         )}
+
+        <MobileNav
+          currentSection={section}
+          setCurrentSection={(s) => { setSection(s); setSelectedId(null); }}
+          currentUser={currentUser}
+          onOpenSettings={() => setShowSettings(true)}
+        />
       </div>
 
       {showSettings && (
@@ -27896,19 +28165,10 @@ export default function CharterOps() {
       )}
       </StreamPresenceProvider>
     </div>
+    </ToastProvider>
   );
 }
 
-function Stat({ label, value, tone = 'amber' }) {
-  const colors = {
-    amber: 'text-cyan-400 border-cyan-500/30',
-    cyan: 'text-cyan-400 border-cyan-500/30',
-    violet: 'text-violet-400 border-violet-500/30',
-  };
-  return (
-    <div className={`p-3 border ${colors[tone]}`}>
-      <div className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{label}</div>
-      <div className={`text-2xl ${colors[tone].split(' ')[0]}`} style={{ fontFamily: 'Bebas Neue, sans-serif' }}>{value}</div>
-    </div>
-  );
+function Stat({ label, value, tone = 'neutral' }) {
+  return <MetricTile label={label} value={value} tone={tone} />;
 }
