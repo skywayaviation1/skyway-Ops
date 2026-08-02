@@ -110,7 +110,7 @@ import {
 import {
   cx, Button, IconButton, StatusChip, StatusDot, Card, CardHeader, PageHeader,
   ScreenHeader, RouteLine, InfoRow, SectionLabel, MetricTile, EmptyState, Spinner,
-  ToastProvider, useToast, notify,
+  ToastProvider, useToast, notify, Wordmark,
 } from './ui.jsx';
 // Shared tracking-map toolkit. Every map surface (ops Tracking, TV flight
 // board, public broker page) draws aircraft, trails and weather through these
@@ -15932,12 +15932,7 @@ function LoginScreen({ authError = null }) {
 
       <div className="relative mx-auto grid min-h-screen w-full max-w-6xl items-center gap-10 px-5 py-10 md:grid-cols-[1.1fr_0.9fr] md:px-10 lg:gap-20">
         <section className="hidden md:block">
-          <img
-            src="/skyway-logo.png"
-            srcSet="/skyway-logo.png 1x, /skyway-logo@2x.png 2x"
-            alt="Skyway Aviation"
-            className="h-20 w-auto"
-          />
+          <Wordmark className="h-20 w-auto" />
           <p className="mt-8 max-w-xl text-4xl font-semibold leading-tight text-content">
             Your operation.<br />
             <span className="text-accent">One secure workspace.</span>
@@ -15962,12 +15957,7 @@ function LoginScreen({ authError = null }) {
 
         <section className="mx-auto w-full max-w-md">
           <div className="mb-8 text-center md:hidden">
-            <img
-              src="/skyway-logo.png"
-              srcSet="/skyway-logo.png 1x, /skyway-logo@2x.png 2x"
-              alt="Skyway Aviation"
-              className="mx-auto h-16 w-auto"
-            />
+            <Wordmark className="mx-auto h-16 w-auto" />
           </div>
 
           <Card className="border-edge-strong bg-surface/95 p-6 shadow-overlay sm:p-8">
@@ -16003,7 +15993,10 @@ function LoginScreen({ authError = null }) {
               type="button"
               onClick={handleMicrosoftLogin}
               disabled={submitting}
-              className="mt-6 flex h-13 w-full items-center justify-center gap-3 rounded-lg bg-white px-4 text-sm font-semibold text-slate-900 shadow-card transition hover:bg-slate-100 disabled:cursor-wait disabled:opacity-60"
+              /* The grey edge is Microsoft's specified treatment for the white
+                 button, and it is what keeps the control visible at all on the
+                 light theme, where it would otherwise be white on white. */
+              className="mt-6 flex h-13 w-full items-center justify-center gap-3 rounded-lg border border-slate-400 bg-white px-4 text-sm font-semibold text-slate-900 shadow-card transition hover:bg-slate-100 disabled:cursor-wait disabled:opacity-60"
             >
               {submitting
                 ? <Loader2 className="h-5 w-5 animate-spin" />
@@ -16137,8 +16130,8 @@ function LegacyLoginScreen({ initialMode = 'login' }) {
       <div className="max-w-md w-full relative">
         <div className="text-center mb-8">
           <img
-            src="/skyway-logo.png"
-            srcSet="/skyway-logo.png 1x, /skyway-logo@2x.png 2x"
+            src="/skyway-logo-reverse.png"
+            srcSet="/skyway-logo-reverse.png 1x, /skyway-logo-reverse@2x.png 2x"
             alt="Skyway Aviation"
             className="mx-auto mb-4 h-16 w-auto"
           />
@@ -16380,7 +16373,7 @@ function VerificationScreen({ user, profile, onSignOut }) {
     <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6 text-slate-100">
       <div className="max-w-md w-full">
         <div className="text-center mb-8">
-          <img src="/skyway-logo.png" srcSet="/skyway-logo.png 1x, /skyway-logo@2x.png 2x" alt="Skyway Aviation" className="mx-auto mb-4 h-16 w-auto" />
+          <Wordmark className="mx-auto mb-4 h-16 w-auto" />
         </div>
         <div className="border border-cyan-500/30 bg-cyan-500/5 p-5">
           <h2 className="text-xl tracking-wider mb-2" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>VERIFY YOUR EMAIL</h2>
@@ -16412,7 +16405,7 @@ function PendingApprovalScreen({ user, profile, onSignOut }) {
     <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6 text-slate-100">
       <div className="max-w-md w-full">
         <div className="text-center mb-8">
-          <img src="/skyway-logo.png" srcSet="/skyway-logo.png 1x, /skyway-logo@2x.png 2x" alt="Skyway Aviation" className="mx-auto mb-4 h-16 w-auto" />
+          <Wordmark className="mx-auto mb-4 h-16 w-auto" />
         </div>
         <div className="border border-cyan-500/30 bg-cyan-500/5 p-5">
           <h2 className="text-xl tracking-wider mb-2" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>AWAITING APPROVAL</h2>
@@ -16452,7 +16445,7 @@ function NoProfileScreen({ user, onSignOut }) {
     <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6 text-content sw-safe-inset">
       <div className="max-w-md w-full">
         <div className="text-center mb-8">
-          <img src="/skyway-logo.png" srcSet="/skyway-logo.png 1x, /skyway-logo@2x.png 2x" alt="Skyway Aviation" className="mx-auto h-16 w-auto" />
+          <Wordmark className="mx-auto h-16 w-auto" />
         </div>
         <Card className="border-warning-border bg-warning-soft p-6">
           <AlertTriangle className="h-6 w-6 text-warning" />
@@ -21777,10 +21770,9 @@ function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, sync
       <div className="px-4 md:px-6 py-3 flex items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
           <div className="min-w-0">
-            <img
-              src="/skyway-logo-nav.png"
-              srcSet="/skyway-logo-nav.png 1x, /skyway-logo-nav@2x.png 2x"
-              alt="Skyway Aviation"
+            <Wordmark
+              variant="compact"
+              surface="dark"
               className="h-8 w-auto block"
             />
             {/* App timezone switcher. Click the clock to choose a TZ
@@ -22798,7 +22790,7 @@ function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
         if (originPos && trackPoints.length < 2) {
           routes.push({
             points: [[originPos.lat, originPos.lon], [selectedState.latitude, selectedState.longitude]],
-            color: '#22d3ee', weight: 3, opacity: 0.8,
+            color: '#3FA9CC', weight: 3, opacity: 0.8,
           });
         }
       } else if (selectedState.airborne === false) {
@@ -23634,7 +23626,7 @@ function DetailMap({ tail, detail, trackLog }) {
         const inner = document.createElement('div');
         inner.style.cssText = `
           width: 18px; height: 18px; display: flex; align-items: center; justify-content: center;
-          color: #22d3ee; transform: rotate(${heading}deg);
+          color: #3FA9CC; transform: rotate(${heading}deg);
         `;
         inner.innerHTML = `<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
           <path d="M12,1 L13,8 L12.5,21 L12,23 L11.5,21 L11,8 Z M12,9 L23,16 L12,14 L1,16 Z M12,18 L17,22 L12,20.5 L7,22 Z"/>
@@ -24042,12 +24034,12 @@ function DetailAltSpeedChart({ trackLog, detail }) {
         <path d={altPath} stroke="#22c55e" strokeWidth="2" fill="none"/>
         {spdPath && <path d={spdPath} stroke="#fbbf24" strokeWidth="1.5" fill="none"/>}
 
-        <line x1={lastX} y1={padT} x2={lastX} y2={padT + innerH} stroke="#22d3ee" strokeWidth="1" strokeDasharray="3,3"/>
-        <circle cx={lastX} cy={lastAltY} r="4" fill="#22d3ee"/>
+        <line x1={lastX} y1={padT} x2={lastX} y2={padT + innerH} stroke="#3FA9CC" strokeWidth="1" strokeDasharray="3,3"/>
+        <circle cx={lastX} cy={lastAltY} r="4" fill="#3FA9CC"/>
         {lastSpdY != null && <circle cx={lastX} cy={lastSpdY} r="3" fill="#fbbf24"/>}
 
         <text x={padL} y={H - 4} fill="#64748b" fontSize="9" fontFamily="JetBrains Mono">{fmtTime(minT)}</text>
-        <text x={W - padR - 30} y={H - 4} fill="#22d3ee" fontSize="9" fontFamily="JetBrains Mono">{fmtTime(maxT)}</text>
+        <text x={W - padR - 30} y={H - 4} fill="#3FA9CC" fontSize="9" fontFamily="JetBrains Mono">{fmtTime(maxT)}</text>
       </svg>
 
       <div className="grid grid-cols-4 gap-3 mt-3 pt-3 border-t border-slate-800">
@@ -26883,10 +26875,8 @@ export function ExternalTechPage({ token }) {
       <div className="max-w-2xl mx-auto px-4 py-6 pt-[max(1.5rem,env(safe-area-inset-top))]">
         {/* Header */}
         <div className="flex items-center justify-between mb-1">
-          <img
-            src="/skyway-logo-nav.png"
-            srcSet="/skyway-logo-nav.png 1x, /skyway-logo-nav@2x.png 2x"
-            alt="Skyway Aviation"
+          <Wordmark
+            variant="compact"
             className="h-8 w-auto block"
           />
           <span className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
@@ -27574,7 +27564,7 @@ export default function CharterOps() {
     try { localStorage.setItem('skyway-theme', themeMode); } catch (_) {}
     // Keep iOS status-bar / theme-color in sync with the active palette so
     // the homescreen chrome doesn't flash the wrong color on theme toggle.
-    const color = themeMode === 'classy' ? '#E8EFF8' : '#060C16';
+    const color = themeMode === 'classy' ? '#EFF1F3' : '#0A0B0D';
     document.querySelectorAll('meta[name="theme-color"]').forEach((m) => {
       m.setAttribute('content', color);
     });

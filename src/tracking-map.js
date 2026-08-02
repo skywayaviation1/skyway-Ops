@@ -225,7 +225,7 @@ export const ALTITUDE_LEGEND = [
 
 /** Interpolated altitude colour. Falls back to the accent cyan when unknown. */
 export function altitudeColor(ft) {
-  if (!Number.isFinite(ft)) return '#22d3ee';
+  if (!Number.isFinite(ft)) return '#3FA9CC';
   const alt = Math.max(0, ft);
   let lower = ALTITUDE_STOPS[0];
   let upper = ALTITUDE_STOPS[ALTITUDE_STOPS.length - 1];
@@ -288,7 +288,7 @@ export function drawAltitudeTrail(L, group, trail, { weight = 4, opacity = 0.95,
 
   if (!hasAltitude) {
     L.polyline(pts.map((p) => [p.lat, p.lon]), {
-      color: '#22d3ee', weight, opacity, lineCap: 'round', lineJoin: 'round',
+      color: '#3FA9CC', weight, opacity, lineCap: 'round', lineJoin: 'round',
     }).addTo(group);
     return pts.map((p) => [p.lat, p.lon]);
   }
@@ -343,7 +343,7 @@ export function aircraftIcon(L, {
   showLabel = true,
 } = {}) {
   const size = selected ? 34 : 26;
-  const color = selected ? '#22d3ee' : '#7dd3fc';
+  const color = selected ? '#3FA9CC' : '#8FCADF';
   const glow = selected
     ? 'filter: drop-shadow(0 0 6px rgba(34,211,238,0.85));'
     : 'filter: drop-shadow(0 0 3px rgba(14,165,233,0.5));';

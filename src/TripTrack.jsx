@@ -28,6 +28,7 @@ import {
 import { formatLocalTime, formatLocalDate } from './airports.js';
 // The same map component and visual language the ops Tracking screen uses, so
 // a broker and a dispatcher are looking at the identical picture of the flight.
+import { Wordmark } from './ui.jsx';
 import TrackingMap from './TrackingMap.jsx';
 import { flightCategoryStyle, normalizeTrail, distanceNm } from './tracking-map.js';
 // FAA NOTAM badge — renders silently when no significant NOTAMs are active,
@@ -321,7 +322,7 @@ function StatusDot({ on, label, ts, iataCode }) {
 const BROKER_PHASE_COLORS = {
   pending:    '#64748b',
   preflight:  '#f59e0b',
-  airborne:   '#22d3ee',
+  airborne:   '#3FA9CC',
   landed:     '#10b981',
   completed:  '#475569',
 };
@@ -904,10 +905,9 @@ export default function TripTrackPage({ token }) {
       <header className="border-b border-slate-800 bg-slate-900/50 px-4 py-4 sticky top-0 z-10 backdrop-blur">
         <div className="max-w-3xl mx-auto flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
-            <img
-              src="/skyway-logo-nav.png"
-              srcSet="/skyway-logo-nav.png 1x, /skyway-logo-nav@2x.png 2x"
-              alt="Skyway Aviation"
+            <Wordmark
+              variant="compact"
+              surface="dark"
               className="h-7 w-auto shrink-0"
             />
             <div className="min-w-0">
