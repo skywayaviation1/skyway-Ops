@@ -64,3 +64,33 @@ export function subscribeToUserBookings(userUid, onUpdate) {
     }
   );
 }
+
+/**
+ * Subscribe to hotel/flight bookings linked to a trip (`tripUid`).
+ * Client-sorts by check-in / start date ascending so overnight stays
+ * read in trip order. Avoids a composite index on tripUid + startDate.
+ */
+export function subscribeToTripBookings(tripUid, onUpdate) {
+  if (!tripUid) { onUpdate([]); return () => {}; }
+  const q = query(
+    collection(db, 'travel-bookings'),
+    where('tripUid', '==', tripUid)
+  );
+  return onSnapshot(
+    q,
+    (snap) => {
+      const list = [];
+      snap.forEach((d) => list.push({ ...d.data(), id: d.id }));
+      list.sort((a, b) => {
+        const aDate = a.checkInDate || a.startDate || a.createdAt || 0;
+        const bDate = b.checkInDate || b.startDate || b.createdAt || 0;
+        return new Date(aDate).getTime() - new Date(bDate).getTime();
+      });
+      onUpdate(list);
+    },
+    (err) => {
+      console.error('[travel] subscribeToTripBookings error:', err);
+      onUpdate([]);
+    }
+  );
+}

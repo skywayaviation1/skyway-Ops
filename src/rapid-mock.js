@@ -139,6 +139,8 @@ const MOCK_ROOMS = [
         cancel_penalties: [],
         total_in_request_currency: { request_currency: { value: 219, currency: 'USD' } },
         nightly_rate: { request_currency: { value: 219, currency: 'USD' } },
+        marketing_fee: { request_currency: { value: 21.90, currency: 'USD' } },
+        commission_pct: 10,
         meal_plan: 'Room Only',
       },
       {
@@ -148,6 +150,8 @@ const MOCK_ROOMS = [
         cancel_penalties: [{ amount: { request_currency: { value: 219, currency: 'USD' } } }],
         total_in_request_currency: { request_currency: { value: 189, currency: 'USD' } },
         nightly_rate: { request_currency: { value: 189, currency: 'USD' } },
+        marketing_fee: { request_currency: { value: 22.68, currency: 'USD' } },
+        commission_pct: 12,
         meal_plan: 'Room Only',
       },
     ],
@@ -165,6 +169,8 @@ const MOCK_ROOMS = [
         cancel_penalties: [],
         total_in_request_currency: { request_currency: { value: 239, currency: 'USD' } },
         nightly_rate: { request_currency: { value: 239, currency: 'USD' } },
+        marketing_fee: { request_currency: { value: 23.90, currency: 'USD' } },
+        commission_pct: 10,
         meal_plan: 'Room Only',
       },
     ],
@@ -182,11 +188,31 @@ const MOCK_ROOMS = [
         cancel_penalties: [],
         total_in_request_currency: { request_currency: { value: 329, currency: 'USD' } },
         nightly_rate: { request_currency: { value: 329, currency: 'USD' } },
+        marketing_fee: { request_currency: { value: 39.48, currency: 'USD' } },
+        commission_pct: 12,
         meal_plan: 'Breakfast included',
       },
     ],
   },
 ];
+
+/** Attach commission estimates using the org default % when a rate lacks marketing_fee. */
+export function applyCommissionEstimate(rooms, defaultCommissionPct = 10) {
+  const pct = Number(defaultCommissionPct) || 10;
+  return (rooms || []).map((room) => ({
+    ...room,
+    rates: (room.rates || []).map((rate) => {
+      if (rate.marketing_fee?.request_currency?.value != null) return rate;
+      const total = Number(rate.total_in_request_currency?.request_currency?.value || 0);
+      const fee = Math.round(total * (pct / 100) * 100) / 100;
+      return {
+        ...rate,
+        marketing_fee: { request_currency: { value: fee, currency: rate.total_in_request_currency?.request_currency?.currency || 'USD' } },
+        commission_pct: pct,
+      };
+    }),
+  }));
+}
 
 // === MOCK API FUNCTIONS ===
 // Each one matches the shape of the corresponding Rapid endpoint
