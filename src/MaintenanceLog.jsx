@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { createAML, subscribeAMLEntries } from './firebase-aml.js';
 import SignaturePad from './SignaturePad.jsx';
+import { notify } from './ui.jsx';
 
 // ====================================================================
 // MAIN
@@ -42,7 +43,7 @@ export default function MaintenanceLog({ currentUser, users = [], allTrips = [] 
       await downloadAMLPdf(entry);
     } catch (e) {
       console.error('[aml-pdf] failed:', e);
-      window.alert(`PDF generation failed: ${e.message}`);
+      notify.error(`PDF generation failed: ${e.message}`);
     }
   }
 
@@ -136,7 +137,7 @@ export default function MaintenanceLog({ currentUser, users = [], allTrips = [] 
       await deleteAML({ amlId: entry.id, deleter, reason, force: true });
     } catch (e) {
       console.error('[aml-delete] failed:', e);
-      window.alert(`Delete failed: ${e.message}`);
+      notify.error(`Delete failed: ${e.message}`);
     }
   }
 

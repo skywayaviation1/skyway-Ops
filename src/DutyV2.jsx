@@ -31,6 +31,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Play, Square, AlertTriangle, CheckCircle2, Edit3, Plus, X,
   ChevronDown, ChevronUp, Clock, Plane, MapPin, Shield, Users, UserCheck,
+  Hourglass, XCircle,
 } from 'lucide-react';
 import {
   subscribePeriodsForPilot,
@@ -622,21 +623,30 @@ function OnDutyCard({ period, now, busy, openForm, setOpenForm, legality, partne
           Three states: confirmed (subtle info), pending (amber warning),
           declined (red, partner backed out — PIC is now effectively solo). */}
       {partnerPeriod && (
-        <div className={`text-[11px] mb-3 px-2.5 py-2 border ${
+        <div className={`text-2xs mb-3 px-2.5 py-2 rounded border flex items-start gap-2 ${
           partnerNeedsConfirm
-            ? 'border-amber-500/40 bg-amber-500/5 text-amber-300'
+            ? 'border-warning-border bg-warning-soft text-warning'
             : partnerDeclined
-              ? 'border-red-500/40 bg-red-500/5 text-red-300'
-              : 'border-cyan-500/30 bg-cyan-500/5 text-cyan-300'
-        }`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              ? 'border-danger-border bg-danger-soft text-danger'
+              : 'border-success-border bg-success-soft text-success'
+        }`}>
           {partnerNeedsConfirm && (
-            <>⏳ <strong>{partnerPeriod.pilotName}</strong> has not confirmed pending duty yet.</>
+            <>
+              <Hourglass className="w-3.5 h-3.5 shrink-0 mt-px" />
+              <span><strong>{partnerPeriod.pilotName}</strong> has not confirmed pending duty yet.</span>
+            </>
           )}
           {partnerDeclined && (
-            <>✗ <strong>{partnerPeriod.pilotName}</strong> declined the pair. You are flying single-pilot.</>
+            <>
+              <XCircle className="w-3.5 h-3.5 shrink-0 mt-px" />
+              <span><strong>{partnerPeriod.pilotName}</strong> declined the pair. You are flying single-pilot.</span>
+            </>
           )}
           {!partnerNeedsConfirm && !partnerDeclined && (
-            <>✓ Paired with <strong>{partnerPeriod.pilotName}</strong> ({partnerPeriod.role || 'SIC'})</>
+            <>
+              <CheckCircle2 className="w-3.5 h-3.5 shrink-0 mt-px" />
+              <span>Paired with <strong>{partnerPeriod.pilotName}</strong> ({partnerPeriod.role || 'SIC'})</span>
+            </>
           )}
         </div>
       )}
@@ -1066,8 +1076,9 @@ function StartDutyForm({ busy, onCancel, onConfirm, myTrips = [], users = [], cu
             className="w-full bg-slate-950/80 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
           />
           {matchedTrip && (
-            <div className="text-[10px] text-cyan-400 mt-1">
-              ✓ {matchedTrip.info?.from || ''}→{matchedTrip.info?.to || ''}
+            <div className="text-2xs text-success mt-1 flex items-center gap-1">
+              <CheckCircle2 className="w-3 h-3 shrink-0" />
+              {matchedTrip.info?.from || ''}→{matchedTrip.info?.to || ''}
               {matchedTrip.info?.tail && ` · ${matchedTrip.info.tail}`}
             </div>
           )}

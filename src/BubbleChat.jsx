@@ -31,6 +31,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Paperclip, Image as ImageIcon, ArrowUp, Loader2, Trash2, Reply, CornerDownRight, X as XIcon } from 'lucide-react';
+import { notify } from './ui.jsx';
 
 /* ------------------------------------------------------------------
    Pure helpers — easy to unit-test.
@@ -215,7 +216,7 @@ function BubbleChat({
       // Keep the text AND the reply draft so the user can retry; surface
       // a minimal hint.
       console.error('[BubbleChat] send failed:', e);
-      window.alert('Couldn’t send — try again.');
+      notify.error('Couldn’t send — try again.');
     } finally {
       setSending(false);
       if (onTyping) onTyping(false);
@@ -252,7 +253,7 @@ function BubbleChat({
     const file = e.target.files && e.target.files[0];
     if (!file || !onAttach) return;
     try { await onAttach(file); }
-    catch (err) { console.error('[BubbleChat] attach failed:', err); window.alert('Attach failed.'); }
+    catch (err) { console.error('[BubbleChat] attach failed:', err); notify.error('Attach failed.'); }
     finally { e.target.value = ''; }
   };
 
@@ -445,7 +446,7 @@ function BubbleChat({
                                     if (!window.confirm('Delete this message? Anyone in the chat will see it disappear.')) return;
                                     try { await onDelete(msg); } catch (err) {
                                       console.error('[BubbleChat] delete failed:', err);
-                                      window.alert('Couldn’t delete — try again.');
+                                      notify.error('Couldn’t delete — try again.');
                                     }
                                   }}
                                   className="w-6 h-6 rounded-full bg-white border border-slate-300 text-slate-500 hover:text-red-500 hover:border-red-300 flex items-center justify-center"

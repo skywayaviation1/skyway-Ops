@@ -108,7 +108,7 @@ import {
 // re-deriving borders, spacing and tone colors inline.
 import {
   cx, Button, IconButton, StatusChip, StatusDot, Card, CardHeader, PageHeader,
-  SectionLabel, MetricTile, EmptyState, Spinner, ToastProvider, useToast,
+  SectionLabel, MetricTile, EmptyState, Spinner, ToastProvider, useToast, notify,
 } from './ui.jsx';
 import { formatLocalTime, formatLocalDate } from './airports.js';
 import {
@@ -1851,7 +1851,7 @@ function useFirestoreUsers(currentProfile) {
       await updateUserProfile(uid, patch);
     } catch (err) {
       console.error('Update failed:', err);
-      alert('Failed to update user: ' + err.message);
+      notify.error('Failed to update user: ' + err.message);
     }
   };
 
@@ -1878,7 +1878,7 @@ function useFirestoreUsers(currentProfile) {
         if (fallback) {
           const { deleteUserProfile } = await import('./firebase-auth.js');
           await deleteUserProfile(uid);
-          alert(
+          notify.error(
             `Profile deleted from Firestore, but the Firebase Auth account ` +
             `still exists (server delete is not configured).\n\n` +
             `To free up the email for re-registration:\n` +
@@ -1896,11 +1896,11 @@ function useFirestoreUsers(currentProfile) {
         const issues = [];
         if (!data.authDeleted) issues.push(`Auth: ${data.authError || 'unknown'}`);
         if (!data.firestoreDeleted) issues.push(`Firestore: ${data.firestoreError || 'unknown'}`);
-        alert(`User partially deleted. Issues: ${issues.join('; ')}`);
+        notify.warning('User partially deleted', { description: issues.join('; ') });
       }
     } catch (err) {
       console.error('Remove failed:', err);
-      alert('Failed to remove user: ' + err.message);
+      notify.error('Failed to remove user: ' + err.message);
     }
   };
 
@@ -1910,7 +1910,7 @@ function useFirestoreUsers(currentProfile) {
       await approveUser(uid);
     } catch (err) {
       console.error('Approve failed:', err);
-      alert('Failed to approve user: ' + err.message);
+      notify.error('Failed to approve user: ' + err.message);
     }
   };
 
@@ -3224,7 +3224,7 @@ function DelayPanel({ trip, opsEmail, brokerEmail, currentUser, statuses, setSta
 
   const send = async () => {
     if (!reason.trim()) {
-      alert('Reason for delay is required.');
+      notify.error('Reason for delay is required.');
       return;
     }
     setSending(true);
@@ -5423,7 +5423,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       await saveTripState(trip.uid, merged);
     } catch (err) {
       console.error('Failed to save trip state:', err);
-      alert('Failed to save — check your connection');
+      notify.error('Failed to save — check your connection');
     }
   }, [trip.uid, trip.info?.tail, trip.info?.from, trip.info?.to, trip.start, trip.info?.legType, tripSheetUrl, tripSheetPath, tripSheetFilename, tripSheetUploadedAt, tripSheetUploadedBy, preloadedPax, tripSheetNotes, fromFbo, toFbo]);
 
@@ -5539,12 +5539,12 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       .map(e => e.trim())
       .filter(e => e.length > 0);
     if (recipients.length === 0) {
-      alert('No recipients configured. Add a broker email on the NOTIFY tab first.');
+      notify.error('No recipients configured. Add a broker email on the NOTIFY tab first.');
       return;
     }
     const emailContent = buildStatusEmail(step, trip, brokerEmails[0] || '');
     if (!emailContent) {
-      alert(`No email template available for "${step.label}" on this leg type.`);
+      notify.error(`No email template available for "${step.label}" on this leg type.`);
       return;
     }
     try {
@@ -5558,7 +5558,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       const respData = await r.json().catch(() => ({}));
       if (!r.ok) {
         console.error('[resend] failed:', r.status, respData);
-        alert(`Resend failed: ${respData.error || r.status}. Try again or check NOTIFY tab.`);
+        notify.error(`Resend failed: ${respData.error || r.status}. Try again or check NOTIFY tab.`);
         return;
       }
       // Success — flip notified=true on the same status object
@@ -5570,7 +5570,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       await persist({ statuses: updatedStatuses, passengers, brokerEmail, autoNotify, completed, hasCatering, paxOverride });
     } catch (err) {
       console.error('[resend] network error:', err);
-      alert(`Resend failed: ${err.message || 'network error'}. Check your connection and try again.`);
+      notify.error(`Resend failed: ${err.message || 'network error'}. Check your connection and try again.`);
     }
   };
 
@@ -5887,7 +5887,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       await attachTripSheetToLeg({ tripUid: trip.uid, clear: true });
     } catch (err) {
       console.error('Failed to clear trip sheet:', err);
-      alert('Failed to clear — check your connection');
+      notify.error('Failed to clear — check your connection');
     }
   };
 
@@ -6357,68 +6357,113 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       </>
       )}
 
-      {/* Tabs */}
-      <div className="border-b border-slate-800 bg-slate-950 sticky top-0 z-10">
+      {/* Tabs — grouped the same way as the primary nav. `tab` still holds a
+          leaf id so every `tab === '…'` content branch below is untouched;
+          only the chrome above it changed. Ten peer tabs meant Status (opened
+          on every flight) sat beside Delay (opened rarely). */}
+      <div className="border-b border-edge bg-surface-shell sticky top-0 z-10">
         {(() => {
-          const hasNotes = tripSheetNotes && (tripSheetNotes.crew || tripSheetNotes.pax || tripSheetNotes.customer || tripSheetNotes.specialItems);
           const canManageSheet = ['ops', 'admin'].includes(currentUser?.role);
           // SHEET tab: visible if trip sheet exists OR user can upload one
           const showSheetTab = trip.info.isOps && (tripSheetUrl || canManageSheet);
+          const canSeeFlightPlanning = ['admin', 'ops', 'crew'].includes(currentUser?.role);
           const tripTabs = [
-            { id: 'status', label: 'STATUS', icon: Zap, badge: `${completedCount}/${applicableSteps.length}`, hidden: !trip.info.isOps },
-            { id: 'pax', label: 'PAX', icon: Users, badge: trip.info.pax === 0 ? null : `${totalVerified}/${totalExpected}`, hidden: trip.info.pax === 0 || !trip.info.isOps },
-            { id: 'sheet', label: 'SHEET', icon: FileText, badge: tripSheetUrl ? '✓' : null, hidden: !showSheetTab },
-            { id: 'notes', label: 'NOTES', icon: AlertCircle },
-            { id: 'weather', label: 'WEATHER', icon: Cloud, hidden: !['admin', 'ops', 'crew'].includes(currentUser?.role) },
-            { id: 'plan', label: 'PLAN', icon: Navigation, hidden: !['admin', 'ops', 'crew'].includes(currentUser?.role) },
+            { id: 'status', label: 'Status', icon: Zap, badge: `${completedCount}/${applicableSteps.length}`, hidden: !trip.info.isOps },
+            { id: 'pax', label: 'Passengers', icon: Users, badge: trip.info.pax === 0 ? null : `${totalVerified}/${totalExpected}`, hidden: trip.info.pax === 0 || !trip.info.isOps },
+            { id: 'sheet', label: 'Trip sheet', icon: FileText, hidden: !showSheetTab },
+            { id: 'notes', label: 'Notes', icon: BookOpen },
+            { id: 'weather', label: 'Weather', icon: Cloud, hidden: !canSeeFlightPlanning },
+            { id: 'plan', label: 'Flight plan', icon: Navigation, hidden: !canSeeFlightPlanning },
             // LODGING: crew hotels for this trip. Visible to ops/admin
             // always; visible to crew because crew want to see their own
             // hotel info for the trip. Hidden on non-ops (HOLD/MX/etc)
             // since they don't have crew lodging in the operational sense.
-            { id: 'lodging', label: 'LODGING', icon: Hotel, hidden: !trip.info.isOps },
-            { id: 'chat', label: 'COMMS', icon: MessageSquare,
-              badge: tripChatUnread > 0 ? (tripChatUnread > 9 ? '9+' : String(tripChatUnread)) : null,
-              badgeTone: tripChatUnread > 0 ? 'unread' : undefined,
-            },
-            { id: 'notify', label: 'NOTIFY', icon: Bell, hidden: !trip.info.isOps },
-            { id: 'delay', label: 'DELAY', icon: AlertCircle, hidden: !trip.info.isOps },
+            { id: 'lodging', label: 'Lodging', icon: Hotel, hidden: !trip.info.isOps },
+            { id: 'chat', label: 'Comms', icon: MessageSquare, unread: tripChatUnread },
+            { id: 'notify', label: 'Notify', icon: Bell, hidden: !trip.info.isOps },
+            { id: 'delay', label: 'Delay', icon: AlertTriangle, hidden: !trip.info.isOps },
           ].filter(t => !t.hidden);
+
+          const byId = new Map(tripTabs.map(t => [t.id, t]));
+          const pick = (ids) => ids.map(id => byId.get(id)).filter(Boolean);
+          const tripGroups = [
+            { id: 'status', label: 'Status', icon: Zap, children: pick(['status']) },
+            { id: 'pax', label: 'Passengers', icon: Users, children: pick(['pax']) },
+            {
+              id: 'operations',
+              label: 'Operations',
+              icon: Navigation,
+              children: pick(['sheet', 'weather', 'plan', 'lodging', 'notes', 'notify', 'delay']),
+            },
+            { id: 'chat', label: 'Comms', icon: MessageSquare, children: pick(['chat']) },
+          ].filter(g => g.children.length > 0);
+
+          const activeGroup = tripGroups.find(g => g.children.some(c => c.id === tab)) || tripGroups[0];
+          const subTabs = activeGroup?.children || [];
+          // Surface unread on the group tab when the user is looking elsewhere.
+          const groupUnread = (g) => g.children.reduce((n, c) => n + (c.unread || 0), 0);
+
           return (
-            <DraggableTabBar
-              tabs={tripTabs}
-              order={tripDetailOrder}
-              activeId={tab}
-              onSelect={(id) => setTab(id)}
-              onReorder={(newOrder) => onReorderTripDetail?.(newOrder)}
-              renderTab={(t, active /*, dragging */) => (
-                <button
-                  type="button"
-                  className={`flex items-center gap-2 px-3 py-3 text-xs tracking-widest transition-colors relative shrink-0 ${
-                    active ? 'text-cyan-400' : 'text-slate-500 hover:text-slate-300'
-                  }`}
-                  style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}
-                >
-                  <t.icon className="w-3.5 h-3.5" />
-                  {t.label}
-                  {t.badge && (
-                    <span
-                      className={
-                        t.badgeTone === 'unread'
-                          // Unread badge — pops in solid cyan regardless of
-                          // tab active state, so the user sees new messages
-                          // even when looking at another tab.
-                          ? 'text-[10px] px-1.5 py-0.5 bg-cyan-400 text-slate-950'
-                          : `text-[10px] px-1.5 py-0.5 ${active ? 'bg-cyan-500/20 text-cyan-300' : 'bg-slate-800 text-slate-400'}`
-                      }
-                      style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: t.badgeTone === 'unread' ? 700 : 400 }}
+            <>
+              <div className="sw-no-scrollbar flex items-center gap-1 overflow-x-auto px-2">
+                {tripGroups.map((g) => {
+                  const active = g.id === activeGroup?.id;
+                  const unread = groupUnread(g);
+                  const badge = g.children.length === 1 ? g.children[0].badge : null;
+                  return (
+                    <button
+                      key={g.id}
+                      type="button"
+                      onClick={() => setTab(g.children[0].id)}
+                      aria-current={active ? 'page' : undefined}
+                      className={cx(
+                        'relative flex shrink-0 items-center gap-2 px-3 py-3 text-sm font-semibold transition-colors',
+                        active ? 'text-accent' : 'text-content-muted hover:text-content',
+                      )}
                     >
-                      {t.badge}
-                    </span>
+                      <g.icon className="h-4 w-4" />
+                      {g.label}
+                      {badge && (
+                        <span className={cx(
+                          'rounded px-1.5 py-0.5 font-mono text-[10px]',
+                          active ? 'bg-accent-soft text-accent' : 'bg-surface-raised text-content-muted',
+                        )}>
+                          {badge}
+                        </span>
+                      )}
+                      {unread > 0 && !active && <UnreadBadge count={unread} />}
+                      {active && <span className="absolute inset-x-2 bottom-0 h-0.5 rounded-t bg-accent" />}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {subTabs.length > 1 && (
+                <DraggableTabBar
+                  tabs={subTabs}
+                  order={tripDetailOrder}
+                  activeId={tab}
+                  onSelect={(id) => setTab(id)}
+                  onReorder={(newOrder) => onReorderTripDetail?.(newOrder)}
+                  containerClassName="sw-no-scrollbar gap-1 border-t border-edge bg-surface-sunken px-2 py-1.5"
+                  renderTab={(t, active) => (
+                    <button
+                      type="button"
+                      className={cx(
+                        'flex shrink-0 items-center gap-1.5 rounded px-2.5 py-1.5 text-2xs font-semibold transition-colors',
+                        active
+                          ? 'bg-accent-soft text-accent'
+                          : 'text-content-muted hover:bg-surface-raised hover:text-content',
+                      )}
+                    >
+                      <t.icon className="h-3.5 w-3.5" />
+                      {t.label}
+                      {t.badge && <span className="font-mono text-[10px] opacity-70">{t.badge}</span>}
+                    </button>
                   )}
-                  {active && <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-cyan-400" />}
-                </button>
+                />
               )}
-            />
+            </>
           );
         })()}
       </div>
@@ -9992,7 +10037,7 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
   const addLeg = () => {
     if (readOnly) return;
     if ((draft.legs || []).length >= 7) {
-      alert('Maximum 7 legs per manifest. Start a new manifest if needed.');
+      notify.error('Maximum 7 legs per manifest. Start a new manifest if needed.');
       return;
     }
     setDraft(d => ({
@@ -10058,15 +10103,15 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
 
   const completeSign = async (role, typedName, signatureDataUrl) => {
     if (!canSign) {
-      alert('Only crew (PIC/SIC) can sign. Admin can edit but cannot sign.');
+      notify.error('Only crew (PIC/SIC) can sign. Admin can edit but cannot sign.');
       return;
     }
     if (!typedName || !typedName.trim()) {
-      alert('Type your name before confirming.');
+      notify.error('Type your name before confirming.');
       return;
     }
     if (!signatureDataUrl) {
-      alert('Draw your signature before confirming.');
+      notify.error('Draw your signature before confirming.');
       return;
     }
     const sig = {
@@ -10084,7 +10129,7 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
       await m.saveManifest(next);
     } catch (err) {
       console.error('[manifest] sign save failed:', err);
-      alert('Signature recorded locally but failed to save. Try again.');
+      notify.error('Signature recorded locally but failed to save. Try again.');
     }
   };
 
@@ -10107,7 +10152,7 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
 
   const previewPdf = async () => {
     if (!(draft.legs || []).length) {
-      alert('Manifest has no legs. Add at least one leg before previewing.');
+      notify.error('Manifest has no legs. Add at least one leg before previewing.');
       return;
     }
     setGeneratingPreview(true);
@@ -10142,11 +10187,11 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
 
   const submitManifest = async () => {
     if (!draft.picSig || !draft.sicSig) {
-      alert('Both PIC and SIC must sign before submitting.');
+      notify.error('Both PIC and SIC must sign before submitting.');
       return;
     }
     if (!(draft.legs || []).length) {
-      alert('Manifest has no legs. Add at least one leg before submitting.');
+      notify.error('Manifest has no legs. Add at least one leg before submitting.');
       return;
     }
     if (!window.confirm(
@@ -10227,7 +10272,7 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
                 onBack();
               } catch (err) {
                 console.error('[manifest] delete failed:', err);
-                alert('Delete failed: ' + err.message);
+                notify.error('Delete failed: ' + err.message);
               }
             }}
             className="text-[10px] px-2 py-1 border border-red-500/40 text-red-300 hover:bg-red-500/10 tracking-widest"
@@ -10365,7 +10410,7 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
                   const manifestModule = await import('./firebase-manifests.js');
                   const tripUids = (draft.legs || []).filter(l => l.tripUid).map(l => l.tripUid);
                   if (tripUids.length === 0) {
-                    alert('No legs are linked to scheduled trips — nothing to refresh.');
+                    notify.info('No legs are linked to scheduled trips — nothing to refresh.');
                     return;
                   }
                   const paxByTripUid = {};
@@ -11729,11 +11774,11 @@ function NewReport({ currentUser, onCancel, onSubmitted }) {
 
   const submit = async () => {
     // Required-field validation
-    if (!form.tail) { alert('Aircraft Registration is required.'); return; }
-    if (!form.pic) { alert('PIC is required.'); return; }
-    if (!form.textOfEvent.trim()) { alert('Description of event is required.'); return; }
-    if (!form.affectedSystem.trim()) { alert('Affected System is required.'); return; }
-    if (!form.certificateNumber.trim()) { alert('Certificate # is required.'); return; }
+    if (!form.tail) { notify.error('Aircraft Registration is required.'); return; }
+    if (!form.pic) { notify.error('PIC is required.'); return; }
+    if (!form.textOfEvent.trim()) { notify.error('Description of event is required.'); return; }
+    if (!form.affectedSystem.trim()) { notify.error('Affected System is required.'); return; }
+    if (!form.certificateNumber.trim()) { notify.error('Certificate # is required.'); return; }
 
     if (!window.confirm(
       'Submit this Malfunction/Incident Report?\n\n' +
@@ -12012,7 +12057,7 @@ function ReportDetail({ report, currentUser, onBack, isAdmin }) {
       });
       const data = await r.json().catch(() => ({}));
       if (!r.ok || !data.pdfBase64) {
-        alert('PDF generation failed: ' + (data.error || r.status));
+        notify.error('PDF generation failed: ' + (data.error || r.status));
         return;
       }
       setPreviewPdfUrl(`data:application/pdf;base64,${data.pdfBase64}`);
@@ -12032,7 +12077,7 @@ function ReportDetail({ report, currentUser, onBack, isAdmin }) {
       await m.deleteReport(report.id);
       onBack();
     } catch (err) {
-      alert('Delete failed: ' + err.message);
+      notify.error('Delete failed: ' + err.message);
     }
   };
 
@@ -12222,16 +12267,21 @@ function RDisplay({ label, value }) {
 //   2. TRAVEL — per-user hotel + commercial flight bookings. Each user sees
 //      their own. Ops + admin can view and edit any user's travel.
 
+/**
+ * `Icon` is a Lucide component rather than an emoji: emoji render with
+ * per-platform color and metrics, so a card list looked different on iOS,
+ * Android and desktop and clashed with the line icons used everywhere else.
+ */
 const CARD_TYPES = [
-  { value: 'credit', label: 'Credit Card', defaultColor: '#1E40AF', icon: '💳' },
-  { value: 'multi-service', label: 'Multi Service Aviation', defaultColor: '#0891B2', icon: '⛽' },
-  { value: 'avfuel', label: 'AVfuel', defaultColor: '#15803D', icon: '⛽' },
-  { value: 'colt', label: 'Colt International', defaultColor: '#9333EA', icon: '⛽' },
-  { value: 'phillips66', label: 'Phillips 66', defaultColor: '#DC2626', icon: '⛽' },
-  { value: 'epic', label: 'Epic Card', defaultColor: '#EA580C', icon: '⛽' },
-  { value: 'shell', label: 'Shell', defaultColor: '#FCD34D', icon: '⛽' },
-  { value: 'fbo', label: 'FBO Card', defaultColor: '#475569', icon: '🏢' },
-  { value: 'other', label: 'Other', defaultColor: '#64748B', icon: '💳' },
+  { value: 'credit', label: 'Credit Card', defaultColor: '#1E40AF', Icon: CreditCard },
+  { value: 'multi-service', label: 'Multi Service Aviation', defaultColor: '#0891B2', Icon: Fuel },
+  { value: 'avfuel', label: 'AVfuel', defaultColor: '#15803D', Icon: Fuel },
+  { value: 'colt', label: 'Colt International', defaultColor: '#9333EA', Icon: Fuel },
+  { value: 'phillips66', label: 'Phillips 66', defaultColor: '#DC2626', Icon: Fuel },
+  { value: 'epic', label: 'Epic Card', defaultColor: '#EA580C', Icon: Fuel },
+  { value: 'shell', label: 'Shell', defaultColor: '#FCD34D', Icon: Fuel },
+  { value: 'fbo', label: 'FBO Card', defaultColor: '#475569', Icon: Building2 },
+  { value: 'other', label: 'Other', defaultColor: '#64748B', Icon: CreditCard },
 ];
 
 /**
@@ -12507,7 +12557,7 @@ function FleetCard({ card, canEdit, onEdit }) {
         </div>
         <ProviderLogo
           domain={logoDomain}
-          fallback={<span className="text-2xl">{typeMeta.icon}</span>}
+          fallback={<typeMeta.Icon className="h-6 w-6 text-slate-700" />}
           size={40}
           theme="dark"
           alt={logoLabel}
@@ -12590,8 +12640,8 @@ function CardEditModal({ card, currentUser, onClose }) {
   const setField = (key) => (val) => setForm(f => ({ ...f, [key]: val }));
 
   const save = async () => {
-    if (!form.nickname.trim()) { alert('Nickname is required.'); return; }
-    if (!form.cardNumber.trim()) { alert('Card number is required.'); return; }
+    if (!form.nickname.trim()) { notify.error('Nickname is required.'); return; }
+    if (!form.cardNumber.trim()) { notify.error('Card number is required.'); return; }
     setSaving(true);
     setError(null);
     try {
@@ -12664,7 +12714,7 @@ function CardEditModal({ card, currentUser, onClose }) {
               style={{ fontFamily: 'JetBrains Mono, monospace' }}
             >
               {CARD_TYPES.map(t => (
-                <option key={t.value} value={t.value}>{t.icon} {t.label}</option>
+                <option key={t.value} value={t.value}>{t.label}</option>
               ))}
             </select>
           </div>
@@ -12911,7 +12961,7 @@ function FlightCard({ booking, canEdit }) {
           <div className="flex items-start gap-3 min-w-0 flex-1">
             <ProviderLogo
               domain={cachedAirlineDomain(booking.airline || booking.airlineCode)}
-              fallback={<span className="text-3xl">✈</span>}
+              fallback={<Plane className="h-7 w-7 text-slate-700" />}
               size={48}
               theme="dark"
               alt={booking.airline || 'Airline'}
@@ -13040,7 +13090,7 @@ function HotelCard({ booking, canEdit }) {
           <div className="flex items-start gap-3 min-w-0 flex-1">
             <ProviderLogo
               domain={cachedHotelDomain(booking.hotelBrand || booking.hotelName)}
-              fallback={<span className="text-3xl">🏨</span>}
+              fallback={<Hotel className="h-7 w-7 text-slate-700" />}
               size={48}
               theme="dark"
               alt={booking.hotelBrand || booking.hotelName || 'Hotel'}
@@ -13144,7 +13194,7 @@ function BookingDetailModal({ booking, canEdit, onClose }) {
       await m.deleteBooking(booking.id);
       onClose();
     } catch (err) {
-      alert('Delete failed: ' + err.message);
+      notify.error('Delete failed: ' + err.message);
       setDeleting(false);
     }
   };
@@ -13157,8 +13207,9 @@ function BookingDetailModal({ booking, canEdit, onClose }) {
         <div className={`p-4 border-b border-slate-800 ${isFlight ? 'bg-emerald-500/10' : 'bg-amber-500/10'}`}>
           <div className="flex items-center justify-between gap-2">
             <div>
-              <div className="text-[10px] tracking-widest text-slate-300" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
-                {isFlight ? `✈ ${booking.airline || 'FLIGHT'}` : `🏨 ${booking.hotelBrand || 'HOTEL'}`}
+              <div className="flex items-center gap-1.5 text-2xs font-semibold text-content-muted">
+                {isFlight ? <Plane className="h-3.5 w-3.5" /> : <Hotel className="h-3.5 w-3.5" />}
+                {isFlight ? (booking.airline || 'Flight') : (booking.hotelBrand || 'Hotel')}
               </div>
               <h2 className="text-2xl tracking-wider mt-1" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
                 {isFlight
@@ -13459,26 +13510,28 @@ function AddBookingModal({ targetUser, currentUser, onClose }) {
                 </label>
                 <div className="mt-1 flex gap-2">
                   <button
+                    type="button"
                     onClick={() => setBookingType('flight')}
-                    className={`flex-1 py-3 border text-sm tracking-widest ${
+                    className={cx(
+                      'flex flex-1 items-center justify-center gap-2 rounded border py-3 text-sm font-semibold transition-colors',
                       bookingType === 'flight'
-                        ? 'border-emerald-500 bg-emerald-500/10 text-emerald-300'
-                        : 'border-slate-700 text-slate-400'
-                    }`}
-                    style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                        ? 'border-accent-border bg-accent-soft text-accent'
+                        : 'border-edge text-content-muted hover:text-content',
+                    )}
                   >
-                    ✈ FLIGHT
+                    <Plane className="h-4 w-4" /> Flight
                   </button>
                   <button
+                    type="button"
                     onClick={() => setBookingType('hotel')}
-                    className={`flex-1 py-3 border text-sm tracking-widest ${
+                    className={cx(
+                      'flex flex-1 items-center justify-center gap-2 rounded border py-3 text-sm font-semibold transition-colors',
                       bookingType === 'hotel'
-                        ? 'border-amber-500 bg-amber-500/10 text-amber-300'
-                        : 'border-slate-700 text-slate-400'
-                    }`}
-                    style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                        ? 'border-accent-border bg-accent-soft text-accent'
+                        : 'border-edge text-content-muted hover:text-content',
+                    )}
                   >
-                    🏨 HOTEL
+                    <Hotel className="h-4 w-4" /> Hotel
                   </button>
                 </div>
               </div>
@@ -15743,7 +15796,7 @@ function MelLibraryTab({ currentUser, fleetTails, onAssignToDeferral }) {
     try {
       const m = await import('./firebase-mel.js');
       await m.activateRevision(revId, { byUid: currentUser?.uid || currentUser?.id, byName: currentUser?.displayName || currentUser?.name || 'Unknown' });
-    } catch (e) { window.alert('Activate failed: ' + e.message); } finally { setBusy(null); }
+    } catch (e) { notify.error('Activate failed: ' + e.message); } finally { setBusy(null); }
   };
   const delDraft = async (revId) => {
     if (!window.confirm('Delete this DRAFT revision?')) return;
@@ -15751,7 +15804,7 @@ function MelLibraryTab({ currentUser, fleetTails, onAssignToDeferral }) {
     try {
       const m = await import('./firebase-mel.js');
       await m.deleteDraftRevision(revId);
-    } catch (e) { window.alert(e.message); } finally { setBusy(null); }
+    } catch (e) { notify.error(e.message); } finally { setBusy(null); }
   };
 
   const assign = async (it) => {
@@ -17021,7 +17074,7 @@ function AogDetail({ aog, currentUser, onBack, mode = 'aog' }) {
         }).catch(e => console.warn('close email failed:', e));
       }
     } catch (err) {
-      alert('Failed: ' + err.message);
+      notify.error('Failed: ' + err.message);
     }
   }
 
@@ -17051,7 +17104,7 @@ function AogDetail({ aog, currentUser, onBack, mode = 'aog' }) {
       const mod = await loadMaintModule(M.mode);
       await mod.removeReferenceDoc(aog.id, refDoc.id, reporter);
     } catch (err) {
-      alert('Failed to remove: ' + err.message);
+      notify.error('Failed to remove: ' + err.message);
     }
   }
 
@@ -19387,7 +19440,7 @@ function MxProjectDetail({ project, currentUser, users, onBack }) {
       await mxMod.setProjectStatus(project.id, 'complete', actor, 'Marked complete by lead');
       setShowLogbookFromComplete(true);
     } catch (err) {
-      alert('Failed to complete: ' + err.message);
+      notify.error('Failed to complete: ' + err.message);
     }
   }
 
@@ -19576,14 +19629,14 @@ function TasksSection({ project, currentUser, users, canEdit, canManage, actor, 
         await mxMod.uncompleteTask(project.id, task.id, actor);
       } else {
         if (task.status === 'blocked_parts') {
-          alert('This task is blocked on parts. Resolve the part request first.');
+          notify.error('This task is blocked on parts. Resolve the part request first.');
           return;
         }
         await mxMod.completeTask(project.id, task.id, actor);
       }
       await mxMod.maybeApplyAutoStatus(project.id, actor);
     } catch (err) {
-      alert('Update failed: ' + err.message);
+      notify.error('Update failed: ' + err.message);
     }
   }
 
@@ -19595,7 +19648,7 @@ function TasksSection({ project, currentUser, users, canEdit, canManage, actor, 
       await mxMod.deleteTask(project.id, task.id, actor);
       await mxMod.maybeApplyAutoStatus(project.id, actor);
     } catch (err) {
-      alert('Delete failed: ' + err.message);
+      notify.error('Delete failed: ' + err.message);
     }
   }
 
@@ -19684,7 +19737,7 @@ function PartsSection({ project, currentUser, canApproveParts, canEdit, actor, o
       const mxMod = await import('./firebase-mx.js');
       await mxMod.approvePart(project.id, part.id, actor);
     } catch (err) {
-      alert('Approve failed: ' + err.message);
+      notify.error('Approve failed: ' + err.message);
     }
   }
   async function handleDeny(part) {
@@ -19694,7 +19747,7 @@ function PartsSection({ project, currentUser, canApproveParts, canEdit, actor, o
       await mxMod.denyPart(project.id, part.id, actor, reason);
       await mxMod.maybeApplyAutoStatus(project.id, actor);
     } catch (err) {
-      alert('Deny failed: ' + err.message);
+      notify.error('Deny failed: ' + err.message);
     }
   }
   async function handleMarkOrdered(part) {
@@ -19704,7 +19757,7 @@ function PartsSection({ project, currentUser, canApproveParts, canEdit, actor, o
       const mxMod = await import('./firebase-mx.js');
       await mxMod.updatePartStatus(project.id, part.id, 'ordered', { trackingNumber, shipMethod }, actor);
     } catch (err) {
-      alert('Failed: ' + err.message);
+      notify.error('Failed: ' + err.message);
     }
   }
   async function handleMarkDelivered(part) {
@@ -19714,7 +19767,7 @@ function PartsSection({ project, currentUser, canApproveParts, canEdit, actor, o
       await mxMod.updatePartStatus(project.id, part.id, 'delivered', {}, actor);
       await mxMod.maybeApplyAutoStatus(project.id, actor);
     } catch (err) {
-      alert('Failed: ' + err.message);
+      notify.error('Failed: ' + err.message);
     }
   }
 
@@ -19866,7 +19919,7 @@ function InspectionSection({ project, currentUser, canEdit, canManage, actor, on
       await mxMod.toggleChecklistItem(project.id, item.id, actor);
       await mxMod.maybeApplyAutoStatus(project.id, actor);
     } catch (err) {
-      alert('Toggle failed: ' + err.message);
+      notify.error('Toggle failed: ' + err.message);
     }
   }
 
@@ -19877,7 +19930,7 @@ function InspectionSection({ project, currentUser, canEdit, canManage, actor, on
       const mxMod = await import('./firebase-mx.js');
       await mxMod.deleteChecklistItem(project.id, item.id);
     } catch (err) {
-      alert('Delete failed: ' + err.message);
+      notify.error('Delete failed: ' + err.message);
     }
   }
 
@@ -23996,7 +24049,7 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
   const requestReviewExpense = async (expense, question) => {
     if (!canApprove) return;
     if (!question || !question.trim()) {
-      alert('Review question is required.');
+      notify.error('Review question is required.');
       return;
     }
     const reviewerName = currentUserDisplayName || currentUser?.name || 'Accounting';
@@ -24026,7 +24079,7 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
     // Send email to submitter
     const recipient = expense.authorEmail;
     if (!recipient || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipient)) {
-      alert('Status updated, but no valid email on file for submitter — could not notify them. They can still see the request in the app.');
+      notify.warning('Status updated', { description: 'No valid email on file for the submitter, so they were not notified. They can still see the request in the app.' });
       return;
     }
     try {
@@ -24056,12 +24109,12 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
       if (!r.ok) {
         const data = await r.json().catch(() => ({}));
         console.error('[expenses] review email failed:', r.status, data.error || '');
-        alert(`Status updated, but the email failed to send (${data.error || r.status}). The submitter can still see the request in the app.`);
+        notify.warning('Status updated', { description: `The email failed to send (${data.error || r.status}). The submitter can still see the request in the app.` });
       } else {
       }
     } catch (err) {
       console.error('[expenses] review email error:', err);
-      alert('Status updated, but the email could not be sent. The submitter can still see the request in the app.');
+      notify.warning('Status updated', { description: 'The email could not be sent. The submitter can still see the request in the app.' });
     }
   };
   const updateExpense = async (expense, changes) => {
@@ -24086,7 +24139,7 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
       toExport = toExport.filter(e => !e.exportedAt);
     }
     if (toExport.length === 0) {
-      alert(mode === 'new'
+      notify.error(mode === 'new'
         ? 'No new approved expenses to export. Switch to "FULL EXPORT" to re-download previously exported items.'
         : 'No approved expenses to export.');
       return;
@@ -27344,7 +27397,7 @@ export default function CharterOps() {
       log('success', `Manual trip created: ${trip.info.tail} ${trip.info.from}→${trip.info.to}`);
     } catch (err) {
       console.error('Failed to save manual trip:', err);
-      alert('Failed to save trip — check your connection');
+      notify.error('Failed to save trip — check your connection');
     }
   };
 
@@ -27354,7 +27407,7 @@ export default function CharterOps() {
       await deleteManualTrip(uid);
     } catch (err) {
       console.error('Failed to delete manual trip:', err);
-      alert('Failed to delete trip — check your connection');
+      notify.error('Failed to delete trip — check your connection');
     }
   };
 

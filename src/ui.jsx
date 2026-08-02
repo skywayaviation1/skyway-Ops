@@ -317,6 +317,33 @@ const TOAST_ICONS = {
 
 let toastSeq = 0;
 
+/* Module-level bridge so non-component code — event handlers deep inside
+   large screens, async callbacks, catch blocks — can raise a toast without
+   threading a hook through. ToastProvider registers itself on mount; before
+   that (or on the public token-only routes) it degrades to console. */
+let activeToastSink = null;
+
+function emit(tone, message, opts) {
+  if (activeToastSink) return activeToastSink(tone, message, opts);
+  const line = `[toast:${tone}] ${message}`;
+  if (tone === 'danger') console.error(line);
+  else if (tone === 'warning') console.warn(line);
+  else console.info(line);
+  return null;
+}
+
+/**
+ * Drop-in replacement for window.alert(). Native alerts block the main
+ * thread, ignore the app theme, and on an installed iOS PWA render with the
+ * raw origin in the title bar.
+ */
+export const notify = {
+  success: (message, opts) => emit('success', message, opts),
+  error: (message, opts) => emit('danger', message, opts),
+  warning: (message, opts) => emit('warning', message, opts),
+  info: (message, opts) => emit('info', message, opts),
+};
+
 export function ToastProvider({ children }) {
   const [toasts, setToasts] = useState([]);
   const timers = useRef(new Map());
@@ -343,6 +370,11 @@ export function ToastProvider({ children }) {
     }
     return id;
   }, [dismiss]);
+
+  useEffect(() => {
+    activeToastSink = push;
+    return () => { if (activeToastSink === push) activeToastSink = null; };
+  }, [push]);
 
   useEffect(() => {
     const map = timers.current;
