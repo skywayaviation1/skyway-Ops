@@ -15,12 +15,11 @@
 // Both share the same Stream client (singleton — Stream's React SDK is
 // designed so multiple <Channel> components can coexist on one client).
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { StreamChat } from 'stream-chat';
 import {
   Chat,
   Channel,
-  ChannelHeader,
   ChannelList,
   MessageInput,
   MessageList,
@@ -31,8 +30,15 @@ import {
 import 'stream-chat-react/dist/css/v2/index.css';
 import './commsStream.css';
 
-import { Loader2, Plus, X, MessageCircle, Users as UsersIcon, Check, ChevronLeft } from 'lucide-react';
+import {
+  Bell, BellRing, Check, ChevronLeft, Info, Loader2, MessageCircle,
+  Search, ShieldCheck, Users as UsersIcon, X,
+} from 'lucide-react';
 import { notify } from './ui.jsx';
+import MuteToggle from './MuteToggle.jsx';
+import {
+  enablePush, iosNeedsHomeScreenInstall, notificationPermissionState, pushSupported,
+} from './firebase-push.js';
 
 /* ─────────────────────────────────────────────────────────────────────
    Channel id helpers
@@ -162,6 +168,261 @@ function deriveTripMemberUids(trip, currentUid, users) {
   if (sicUid) set.add(sicUid);
 
   return [...set];
+}
+
+function channelMembers(channel) {
+  return Object.values(channel?.state?.members || {})
+    .map((member) => member?.user || member)
+    .filter((user) => user?.id);
+}
+
+function channelTitle(channel, currentUid) {
+  if (!channel) return 'Messages';
+  if (channel.data?.name) return channel.data.name;
+  const other = channelMembers(channel).find((user) => user.id !== currentUid);
+  return other?.name || other?.email || 'Direct message';
+}
+
+function ChannelToolbar({ currentUser, onSearch, onInfo }) {
+  const { channel, client } = useChatContext();
+  const members = channelMembers(channel);
+  const other = members.find((user) => user.id !== client.userID);
+  const isDirect = !channel?.data?.is_group && !channel?.data?.is_trip && members.length <= 2;
+  const online = members.filter((user) => user.online).length;
+  const subtitle = isDirect
+    ? (other?.online ? 'Online now' : 'Direct message')
+    : `${members.length} members${online ? ` · ${online} online` : ''}`;
+
+  return (
+    <header className="comms-channel-toolbar">
+      <div className="min-w-0">
+        <h3 className="truncate text-sm font-semibold text-content">
+          {channelTitle(channel, client.userID)}
+        </h3>
+        <p className="mt-0.5 truncate text-[11px] text-content-subtle">{subtitle}</p>
+      </div>
+      <div className="flex shrink-0 items-center gap-1">
+        <button
+          type="button"
+          onClick={onSearch}
+          className="comms-icon-button"
+          title="Search messages"
+          aria-label="Search messages"
+        >
+          <Search className="h-4 w-4" />
+        </button>
+        <MuteToggle
+          currentUser={currentUser}
+          target={{ id: `stream-${channel?.id || ''}`, kind: 'stream' }}
+          className="comms-icon-button"
+        />
+        <button
+          type="button"
+          onClick={onInfo}
+          className="comms-icon-button"
+          title="Conversation details"
+          aria-label="Conversation details"
+        >
+          <Info className="h-4 w-4" />
+        </button>
+      </div>
+    </header>
+  );
+}
+
+function ChannelInfoPanel({ channel, currentUid, onClose }) {
+  const members = channelMembers(channel);
+  return (
+    <aside className="comms-details-panel">
+      <div className="flex items-center justify-between border-b border-edge px-4 py-3">
+        <div>
+          <h3 className="text-sm font-semibold text-content">Conversation details</h3>
+          <p className="mt-0.5 text-[11px] text-content-subtle">
+            {members.length} {members.length === 1 ? 'member' : 'members'}
+          </p>
+        </div>
+        <button type="button" onClick={onClose} className="comms-icon-button" aria-label="Close details">
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+      <div className="p-3">
+        <p className="mb-2 px-1 text-[10px] font-semibold uppercase tracking-widest text-content-subtle">Members</p>
+        <div className="space-y-1">
+          {members.map((user) => (
+            <div key={user.id} className="flex items-center gap-3 rounded-lg px-2 py-2 hover:bg-surface-raised">
+              <div className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-edge bg-surface-raised text-xs font-semibold text-content">
+                {(user.name || user.id).split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase()}
+                <span className={`absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-surface ${
+                  user.online ? 'bg-success' : 'bg-slate-600'
+                }`} />
+              </div>
+              <div className="min-w-0">
+                <p className="truncate text-sm text-content">
+                  {user.name || user.email || user.id}{user.id === currentUid ? ' (you)' : ''}
+                </p>
+                <p className="truncate text-[11px] text-content-subtle">
+                  {user.skyway_role || (user.online ? 'online' : 'offline')}
+                </p>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="mt-4 rounded-lg border border-edge bg-surface-sunken p-3 text-[11px] leading-relaxed text-content-subtle">
+          <ShieldCheck className="mb-2 h-4 w-4 text-success" />
+          Messages are carried by Skyway’s managed Stream workspace. Access follows channel membership and your approved company profile.
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+function MessageSearchPanel({ client, currentUid, onOpenResult, onClose }) {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    const term = query.trim();
+    if (term.length < 2) {
+      setResults([]);
+      setError('');
+      return undefined;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setLoading(true);
+      setError('');
+      try {
+        const response = await client.search(
+          { type: 'messaging', members: { $in: [currentUid] } },
+          term,
+          { limit: 40, sort: [{ created_at: -1 }] },
+        );
+        if (!cancelled) setResults(response.results || []);
+      } catch (err) {
+        if (!cancelled) setError(err?.message || 'Search failed');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }, 300);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [client, currentUid, query]);
+
+  return (
+    <div className="comms-search-panel">
+      <div className="flex items-center gap-2 border-b border-edge p-3">
+        <Search className="h-4 w-4 shrink-0 text-content-subtle" />
+        <input
+          autoFocus
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search every conversation…"
+          className="min-w-0 flex-1 bg-transparent text-sm text-content outline-none placeholder:text-content-subtle"
+        />
+        {loading && <Loader2 className="h-4 w-4 animate-spin text-accent" />}
+        <button type="button" onClick={onClose} className="comms-icon-button" aria-label="Close search">
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+      <div className="flex-1 overflow-y-auto p-2">
+        {!query.trim() ? (
+          <div className="p-8 text-center">
+            <Search className="mx-auto h-6 w-6 text-content-subtle" />
+            <p className="mt-3 text-sm text-content-muted">Search messages across DMs and groups</p>
+            <p className="mt-1 text-[11px] text-content-subtle">Type at least two characters.</p>
+          </div>
+        ) : error ? (
+          <p className="p-4 text-sm text-danger">{error}</p>
+        ) : !loading && results.length === 0 ? (
+          <p className="p-8 text-center text-sm text-content-subtle">No messages found</p>
+        ) : (
+          results.map((result) => {
+            const message = result.message || result;
+            const channel = result.channel;
+            return (
+              <button
+                type="button"
+                key={message.id}
+                onClick={() => onOpenResult(channel, message)}
+                className="w-full rounded-lg border-b border-edge px-3 py-3 text-left hover:bg-surface-raised"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <span className="truncate text-xs font-semibold text-content">
+                    {channel?.name || message.user?.name || 'Conversation'}
+                  </span>
+                  <span className="shrink-0 text-[10px] text-content-subtle">
+                    {message.created_at ? new Date(message.created_at).toLocaleDateString() : ''}
+                  </span>
+                </div>
+                <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-content-muted">
+                  {message.user?.name ? `${message.user.name}: ` : ''}{message.text || 'Attachment'}
+                </p>
+              </button>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+function NotificationOnboarding({ currentUser }) {
+  const [permission, setPermission] = useState(notificationPermissionState());
+  const [enabled, setEnabled] = useState(() => {
+    try { return localStorage.getItem('skyway_push_enabled') === '1'; }
+    catch { return false; }
+  });
+  const [busy, setBusy] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
+
+  if (dismissed || enabled || !pushSupported() || permission === 'denied') return null;
+  const needsInstall = iosNeedsHomeScreenInstall();
+
+  const activate = async () => {
+    setBusy(true);
+    try {
+      await enablePush(currentUser);
+      localStorage.setItem('skyway_push_enabled', '1');
+      setPermission(notificationPermissionState());
+      setEnabled(true);
+      notify.success('Message notifications enabled on this device.');
+    } catch (err) {
+      notify.error(err?.message || 'Could not enable notifications.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="m-3 rounded-xl border border-accent-border bg-accent-soft p-3">
+      <div className="flex items-start gap-2.5">
+        <BellRing className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-semibold text-content">Never miss a message</p>
+          <p className="mt-1 text-[11px] leading-relaxed text-content-muted">
+            {needsInstall
+              ? 'On iPhone, add Skyway to your Home Screen first, then enable notifications here.'
+              : 'Enable lock-screen alerts for DMs, groups and trip comms.'}
+          </p>
+          {!needsInstall && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={activate}
+              className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-accent px-2.5 py-1.5 text-[11px] font-semibold text-content-inverse disabled:opacity-50"
+            >
+              {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Bell className="h-3 w-3" />}
+              Enable notifications
+            </button>
+          )}
+        </div>
+        <button type="button" onClick={() => setDismissed(true)} className="text-content-subtle hover:text-content" aria-label="Dismiss">
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </div>
+    </div>
+  );
 }
 
 /* ─────────────────────────────────────────────────────────────────────
@@ -380,7 +641,13 @@ function NewGroupModal({ users, currentUser, client, onClose }) {
    <CommsStreamScreen> — main COMMS top-nav section
    ───────────────────────────────────────────────────────────────────── */
 
-export default function CommsStreamScreen({ currentUser, users = [], allTrips = [], getIdToken }) {
+export default function CommsStreamScreen({
+  currentUser,
+  users = [],
+  allTrips = [],
+  getIdToken,
+  initialChannelId = '',
+}) {
   const { client, error } = useStreamClient(currentUser, getIdToken);
   const [showNewDm, setShowNewDm] = useState(false);
   const [showNewGroup, setShowNewGroup] = useState(false);
@@ -441,6 +708,8 @@ export default function CommsStreamScreen({ currentUser, users = [], allTrips = 
           sort={sort}
           options={options}
           channelRenderFilterFn={channelRenderFilterFn}
+          currentUser={currentUser}
+          initialChannelId={initialChannelId}
           onNewDm={() => setShowNewDm(true)}
           onNewGroup={() => setShowNewGroup(true)}
         />
@@ -481,12 +750,24 @@ export default function CommsStreamScreen({ currentUser, users = [], allTrips = 
    couldn't actually send messages.
    ───────────────────────────────────────────────────────────────────── */
 
-function CommsLayoutInner({ filters, sort, options, channelRenderFilterFn, onNewDm, onNewGroup }) {
-  const { channel } = useChatContext();
+function CommsLayoutInner({
+  filters,
+  sort,
+  options,
+  channelRenderFilterFn,
+  currentUser,
+  initialChannelId,
+  onNewDm,
+  onNewGroup,
+}) {
+  const { channel, client, setActiveChannel } = useChatContext();
   // 'list'   → sidebar full-width, main hidden (mobile only)
   // 'channel'→ main full-width, sidebar hidden (mobile only)
   // On md+ both panes always show, so this state is mobile-only signal.
   const [mobileView, setMobileView] = useState('list');
+  const [listMode, setListMode] = useState('all');
+  const [showSearch, setShowSearch] = useState(false);
+  const [showInfo, setShowInfo] = useState(false);
 
   // When a channel becomes selected (user tapped one), flip to channel
   // view on mobile. We only react to cid changes — re-renders due to
@@ -494,6 +775,47 @@ function CommsLayoutInner({ filters, sort, options, channelRenderFilterFn, onNew
   useEffect(() => {
     if (channel?.cid) setMobileView('channel');
   }, [channel?.cid]);
+
+  // Push notifications and copied links deep-link to a Stream channel id.
+  // Resolve it after the Stream client connects, then clear the query so a
+  // refresh does not repeatedly force the same conversation open.
+  useEffect(() => {
+    if (!initialChannelId || !client?.userID) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const target = client.channel('messaging', safeChannelId(initialChannelId));
+        await target.watch();
+        if (!cancelled) {
+          setActiveChannel(target);
+          setMobileView('channel');
+        }
+      } catch (err) {
+        console.warn('[CommsStream] deep-linked channel unavailable:', err?.message || err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [client, initialChannelId, setActiveChannel]);
+
+  useEffect(() => {
+    setShowInfo(false);
+  }, [channel?.cid]);
+
+  const visibleChannels = useCallback((channels) => {
+    const withoutTrips = channelRenderFilterFn(channels);
+    return listMode === 'unread'
+      ? withoutTrips.filter((candidate) => candidate.countUnread() > 0)
+      : withoutTrips;
+  }, [channelRenderFilterFn, listMode]);
+
+  const openSearchResult = useCallback(async (channelData) => {
+    if (!channelData?.id) return;
+    const target = client.channel(channelData.type || 'messaging', channelData.id);
+    await target.watch();
+    setActiveChannel(target);
+    setShowSearch(false);
+    setMobileView('channel');
+  }, [client, setActiveChannel]);
 
   return (
     <div className="flex h-full min-h-0">
@@ -506,37 +828,68 @@ function CommsLayoutInner({ filters, sort, options, channelRenderFilterFn, onNew
           border-r border-slate-800 flex-col bg-slate-950/60
         `}
       >
-        <div className="p-3 border-b border-slate-800">
-          <h2 className="text-sm tracking-widest text-slate-200 mb-3"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}>COMMS</h2>
+        <div className="border-b border-slate-800 p-3">
+          <div className="mb-3 flex items-center justify-between">
+            <div>
+              <h2 className="text-sm font-semibold text-content">Messages</h2>
+              <p className="mt-0.5 text-[11px] text-content-subtle">Skyway team communications</p>
+            </div>
+            <span className="inline-flex items-center gap-1 text-[10px] text-success">
+              <span className="h-1.5 w-1.5 rounded-full bg-success" /> Connected
+            </span>
+          </div>
           <div className="grid grid-cols-2 gap-2">
             <button
               type="button"
               onClick={onNewDm}
-              className="flex items-center justify-center gap-1.5 px-2 py-1.5 text-[10px] tracking-widest text-cyan-300 hover:text-cyan-200 border border-cyan-500/30 hover:border-cyan-400"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              className="flex items-center justify-center gap-1.5 rounded-lg border border-accent-border bg-accent-soft px-2 py-2 text-[11px] font-semibold text-accent hover:bg-accent-soft"
               title="Start a 1:1 direct message"
             >
-              <MessageCircle className="w-3 h-3" /> NEW DM
+              <MessageCircle className="w-3.5 h-3.5" /> New message
             </button>
             <button
               type="button"
               onClick={onNewGroup}
-              className="flex items-center justify-center gap-1.5 px-2 py-1.5 text-[10px] tracking-widest text-cyan-300 hover:text-cyan-200 border border-cyan-500/30 hover:border-cyan-400"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              className="flex items-center justify-center gap-1.5 rounded-lg border border-edge px-2 py-2 text-[11px] font-semibold text-content-muted hover:border-edge-strong hover:text-content"
               title="Create an ad-hoc group chat with selected members"
             >
-              <UsersIcon className="w-3 h-3" /> NEW GROUP
+              <UsersIcon className="w-3.5 h-3.5" /> New group
+            </button>
+          </div>
+          <div className="mt-3 flex items-center gap-1 rounded-lg bg-surface-sunken p-1">
+            {[
+              ['all', 'Inbox'],
+              ['unread', 'Unread'],
+            ].map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setListMode(id)}
+                className={`flex-1 rounded-md px-2 py-1.5 text-[11px] font-medium ${
+                  listMode === id ? 'bg-surface-raised text-content shadow-card' : 'text-content-subtle hover:text-content-muted'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={() => client.markAllRead()}
+              className="rounded-md px-2 py-1.5 text-[10px] text-content-subtle hover:text-content"
+              title="Mark every conversation read"
+            >
+              <Check className="h-3.5 w-3.5" />
             </button>
           </div>
         </div>
+        <NotificationOnboarding currentUser={currentUser} />
         <div className="flex-1 min-h-0 overflow-y-auto">
           <ChannelList
             filters={filters}
             sort={sort}
             options={options}
             showChannelSearch
-            channelRenderFilterFn={channelRenderFilterFn}
+            channelRenderFilterFn={visibleChannels}
           />
         </div>
       </aside>
@@ -562,13 +915,28 @@ function CommsLayoutInner({ filters, sort, options, channelRenderFilterFn, onNew
         </button>
         <Channel>
           <Window>
-            <ChannelHeader />
+            <ChannelToolbar
+              currentUser={currentUser}
+              onSearch={() => setShowSearch(true)}
+              onInfo={() => setShowInfo((value) => !value)}
+            />
             <MessageList />
-            <MessageInput />
+            <MessageInput focus />
           </Window>
           <Thread />
         </Channel>
+        {showInfo && channel && (
+          <ChannelInfoPanel channel={channel} currentUid={client.userID} onClose={() => setShowInfo(false)} />
+        )}
       </main>
+      {showSearch && (
+        <MessageSearchPanel
+          client={client}
+          currentUid={client.userID}
+          onOpenResult={openSearchResult}
+          onClose={() => setShowSearch(false)}
+        />
+      )}
     </div>
   );
 }
@@ -689,8 +1057,13 @@ export function TripChatStream({ trip, currentUser, users = [], getIdToken }) {
       <Chat client={client} theme="str-chat__theme-dark">
         <Channel channel={channel}>
           <Window>
+            <ChannelToolbar
+              currentUser={currentUser}
+              onSearch={() => notify.info('Open Messages to search across all conversations.')}
+              onInfo={() => notify.info(`${channelMembers(channel).length} members in this trip channel.`)}
+            />
             <MessageList />
-            <MessageInput />
+            <MessageInput focus />
           </Window>
           <Thread />
         </Channel>

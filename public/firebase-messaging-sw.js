@@ -17,7 +17,7 @@
 // users who want to hide content can use OS-level notification privacy.
 //
 // VERSION: bump this on any non-trivial change so the SW updates correctly.
-const SW_VERSION = '2026-05-19-1';
+const SW_VERSION = '2026-08-02-2';
 
 // Firebase compat builds — required for the FCM service worker. Version
 // must roughly match the firebase npm package we import on the client side
@@ -54,7 +54,7 @@ messaging.onBackgroundMessage((payload) => {
     const data = payload.data || {};
     const title = data.title || 'Skyway';
     const body = data.body || '';
-    const tag = data.conversationId || 'skyway-msg';
+    const tag = data.channelId || data.conversationId || data.tripId || 'skyway-msg';
     const url = data.url || '/';
 
     // tag: collapses multiple notifications from the same conversation
@@ -67,7 +67,13 @@ messaging.onBackgroundMessage((payload) => {
       renotify: true,
       icon: '/icon-192.png',
       badge: '/icon-192.png',
-      data: { url, conversationId: data.conversationId || null, kind: data.kind || null },
+      data: {
+        url,
+        channelId: data.channelId || null,
+        conversationId: data.conversationId || null,
+        tripId: data.tripId || null,
+        kind: data.kind || null,
+      },
     });
   } catch (e) {
     // Never throw out of onBackgroundMessage — it would kill the SW.

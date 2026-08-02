@@ -5360,7 +5360,14 @@ function PlanField({ label, value, onChange, type = 'text', placeholder }) {
    Trip detail view
    ============================================================ */
 function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], allTrips, opsEmail, onBack, onArchive, tripDetailOrder, onReorderTripDetail }) {
-  const [tab, setTab] = useState(trip.info.isOps ? 'status' : 'chat');
+  const requestedTripTab = () => {
+    if (typeof window === 'undefined') return null;
+    const id = window.location.hash.replace(/^#/, '').toLowerCase();
+    return ['status', 'pax', 'sheet', 'notes', 'weather', 'plan', 'lodging', 'chat', 'notify', 'delay'].includes(id)
+      ? id
+      : null;
+  };
+  const [tab, setTab] = useState(() => requestedTripTab() || (trip.info.isOps ? 'status' : 'chat'));
   // Unread count for THIS trip's chat channel. Updates live via the
   // global StreamPresenceProvider — no per-mount API call needed. Shows
   // as a cyan badge on the COMMS tab whenever the user is not on it.
@@ -5565,7 +5572,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
 
   // Reset tab when switching trips
   useEffect(() => {
-    setTab(trip.info.isOps ? 'status' : 'chat');
+    setTab(requestedTripTab() || (trip.info.isOps ? 'status' : 'chat'));
   }, [trip.uid, trip.info.isOps]);
 
   // Clear the UPDATE ETA result banner when switching trips so the message
@@ -9554,7 +9561,10 @@ function TripSheetPanel({
 function ManifestsScreen({ currentUser, allTrips }) {
   const [manifests, setManifests] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [selectedId, setSelectedId] = useState(null);
+  const [selectedId, setSelectedId] = useState(() => {
+    if (typeof window === 'undefined') return null;
+    return new URLSearchParams(window.location.search).get('trip') || null;
+  });
   const [showNewModal, setShowNewModal] = useState(false);
 
   const isCrew = currentUser?.role === 'crew';
@@ -27605,7 +27615,11 @@ export default function CharterOps() {
   // Default landing section for ALL roles is HOME — gives everyone the
   // personalized landing experience (focus trip, mini flight board, etc).
   // Users can navigate to SCHEDULE or any other tab from there.
-  const [section, setSection] = useState('home');
+  const [section, setSection] = useState(() => {
+    if (typeof window === 'undefined') return 'home';
+    const params = new URLSearchParams(window.location.search);
+    return params.get('channel') || window.location.hash === '#comms' ? 'comms' : 'home';
+  });
   // FlightAware live tracking kill switch — synced from Firestore so admin can
   // disable it cluster-wide if costs spike. Default: enabled.
   const [trackingEnabled, setTrackingEnabled] = useState(true);
@@ -29065,6 +29079,9 @@ export default function CharterOps() {
               currentUser={currentUser}
               users={users}
               allTrips={allTrips}
+              initialChannelId={typeof window !== 'undefined'
+                ? new URLSearchParams(window.location.search).get('channel') || ''
+                : ''}
               getIdToken={async () => {
                 try {
                   const { auth } = await import('./firebase.js');

@@ -31,7 +31,7 @@
   --str-chat__background-color: var(--skyway-bg);
   --str-chat__secondary-background-color: var(--skyway-surface);
   --str-chat__tertiary-background-color: var(--skyway-raised);
-  --str-chat__primary-overlay-color: rgba(30, 192, 233, 0.1);
+  --str-chat__primary-overlay-color: var(--sw-accent-soft);
   --str-chat__text-color: var(--skyway-text);
   --str-chat__text-low-emphasis-color: var(--skyway-muted);
   --str-chat__disabled-color: var(--skyway-dim);
@@ -199,4 +199,82 @@
 .comms-stream .str-chat__channel--empty {
   background: var(--skyway-bg);
   color: var(--skyway-muted);
+}
+
+/* Skyway conversation chrome. Stream owns the transport and message
+   primitives; these surfaces make the product around them feel like one
+   messaging app rather than an embedded vendor widget. */
+.comms-channel-toolbar {
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px 10px 16px;
+  background: var(--skyway-surface);
+  border-bottom: 1px solid var(--skyway-hairline);
+}
+
+.comms-icon-button {
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  color: var(--skyway-muted);
+  transition: color 120ms ease, background-color 120ms ease;
+}
+
+.comms-icon-button:hover {
+  color: var(--skyway-text);
+  background: var(--skyway-raised);
+}
+
+.comms-details-panel {
+  width: 280px;
+  flex: 0 0 280px;
+  overflow-y: auto;
+  background: var(--skyway-surface);
+  border-left: 1px solid var(--skyway-hairline);
+}
+
+.comms-search-panel {
+  position: absolute;
+  inset: 12px;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--sw-border-strong);
+  border-radius: 14px;
+  background: var(--skyway-surface);
+  box-shadow: var(--sw-shadow-overlay);
+}
+
+.comms-stream {
+  position: relative;
+}
+
+/* Preserve a comfortable tap target on phones and keep the details panel
+   from squeezing the message column. */
+@media (max-width: 767px) {
+  .comms-details-panel {
+    position: absolute;
+    inset: 0;
+    z-index: 35;
+    width: 100%;
+    background: var(--skyway-surface);
+  }
+
+  .comms-search-panel {
+    inset: 0;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .comms-channel-toolbar {
+    min-height: 54px;
+    padding-left: 12px;
+  }
 }

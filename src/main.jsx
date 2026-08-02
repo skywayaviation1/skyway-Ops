@@ -118,6 +118,20 @@ if (typeof window !== 'undefined' && 'serviceWorker' in navigator
         console.warn('[pwa] service worker registration skipped:', err && err.message);
       });
   });
+
+  // When a lock-screen notification focuses an already-open PWA, the service
+  // worker cannot navigate React directly. It posts the deep link here. A
+  // full same-origin navigation is deliberate: auth state is persisted, and
+  // a clean boot lets App.jsx resolve the trip/channel before rendering.
+  navigator.serviceWorker.addEventListener('message', (event) => {
+    if (event?.data?.type !== 'navigate' || !event.data.url) return;
+    try {
+      const target = new URL(event.data.url, window.location.origin);
+      if (target.origin === window.location.origin) window.location.assign(target.href);
+    } catch (err) {
+      console.warn('[pwa] ignored malformed notification URL:', err?.message || err);
+    }
+  });
 }
 
 const rootEl = ReactDOM.createRoot(document.getElementById('root'));
