@@ -7,11 +7,10 @@
 //      unread-count events flow even when the user is not on COMMS.
 //      Exposes totalUnread and per-channel unread via React Context.
 //
-//   2. Register the user's FCM push tokens with Stream's 'firebase'
-//      push provider so Stream's server can send pushes when the user
-//      is offline. Reads tokens from users/{uid}.fcmTokens — the same
-//      array Skyway's existing PushSettings flow writes to. Re-syncs
-//      whenever the doc changes.
+//   2. Keep unread state live across every app screen. Push delivery itself
+//      is handled by api/stream-webhook.js -> FCM, not Stream native push.
+//      That is intentional: only the Skyway bridge can enforce the profile's
+//      quiet hours, lock-screen preview privacy and Firestore mute settings.
 //
 // Why "persistent": CommsStream and TripChatStream each call their own
 // useStreamClient hook, but those only fire when their component is
@@ -30,6 +29,7 @@
 // user signs in).
 
 import React, { createContext, useContext, useEffect, useState } from 'react';
+import { notify } from './ui.jsx';
 
 /* ─────────────────────────────────────────────────────────────────────
    Context
@@ -92,7 +92,6 @@ export function StreamPresenceProvider({ currentUser, getIdToken, children }) {
     let cancelled = false;
     let streamClient = null;
     const cleanups = [];
-    const registeredFcmTokens = new Set();
 
     (async () => {
       try {
@@ -156,6 +155,18 @@ export function StreamPresenceProvider({ currentUser, getIdToken, children }) {
         }
         if (!cancelled) setIsConnected(true);
 
+        // FCM routes background messages through the service worker. While the
+        // app is open, surface the same event as a lightweight in-app banner.
+        // The listener is restored here on every app boot, not only when the
+        // user happens to open Push Settings.
+        const { listenForForegroundPush } = await import('./firebase-push.js');
+        listenForForegroundPush({ uid: user.id }, (message) => {
+          notify.info(
+            [message.title, message.body].filter(Boolean).join(' · '),
+            { duration: 5000 },
+          );
+        });
+
         // 4. Live updates. Stream fires:
         //      notification.message_new — message arrived in a channel the
         //        user is a member of but NOT actively watching. Has cid and
@@ -200,76 +211,6 @@ export function StreamPresenceProvider({ currentUser, getIdToken, children }) {
         cleanups.push(() => streamClient.off('notification.mark_unread', onMsgNew));
         cleanups.push(() => streamClient.off('notification.mark_read', onMarkRead));
 
-        // 5. FCM device registration. Skyway's PushSettings flow writes
-        //    each device's FCM token as a document in the SUBCOLLECTION
-        //    `users/{uid}/push-tokens`. Each doc looks like:
-        //      { token: 'cfSz6YM9...:APA91bFI...',
-        //        platform: 'ios' | 'web' | 'android',
-        //        userAgent: '...',
-        //        createdAt, lastSeenAt }
-        //    The token field is what Stream's 'firebase' provider needs;
-        //    Stream relays it through FCM to APNs for iOS PWAs.
-        //
-        //    We watch the subcollection and register each token with
-        //    Stream as a separate device. registeredFcmTokens guards
-        //    against duplicate API calls — Stream dedupes server-side
-        //    too, but skipping when we know we already pushed it is
-        //    cheaper.
-        try {
-          const { db } = await import('./firebase.js');
-          const { collection, onSnapshot } = await import('firebase/firestore');
-          const tokensRef = collection(db, 'users', user.id, 'push-tokens');
-
-          const unsubTokens = onSnapshot(
-            tokensRef,
-            async (snap) => {
-              if (cancelled) return;
-              for (const docSnap of snap.docs) {
-                const data = docSnap.data();
-                const fcmToken = data?.token;
-                if (!fcmToken) continue;
-                if (registeredFcmTokens.has(fcmToken)) continue;
-                try {
-                  // Device id can be any stable string per device. The
-                  // FCM token itself is the most stable identifier we
-                  // have (per device + per app install). Sanitize to
-                  // Stream's allowed chars and trim to a tail slice so
-                  // it fits comfortably in Stream's 60-char limit.
-                  const deviceId =
-                    'fcm-' +
-                    fcmToken
-                      .slice(-32)
-                      .replace(/[^A-Za-z0-9_-]/g, '_');
-                  await streamClient.addDevice(fcmToken, 'firebase', deviceId);
-                  registeredFcmTokens.add(fcmToken);
-                  console.log(
-                    '[StreamPresence] FCM device registered with Stream:',
-                    deviceId,
-                    '(platform:', data.platform || 'unknown', ')'
-                  );
-                } catch (err) {
-                  // Most commonly fails with "InvalidArgument" if the
-                  // Stream dashboard hasn't been configured with a
-                  // Firebase service account yet, or if the token is
-                  // dead. Both are recoverable — log and move on.
-                  console.warn(
-                    '[StreamPresence] addDevice failed (token may be stale or dashboard not configured):',
-                    err?.message || err
-                  );
-                }
-              }
-            },
-            (err) => {
-              console.warn('[StreamPresence] push-tokens snapshot error:', err);
-            }
-          );
-          cleanups.push(unsubTokens);
-        } catch (err) {
-          console.warn(
-            '[StreamPresence] FCM device hookup failed (push will not work for this session):',
-            err?.message || err
-          );
-        }
       } catch (err) {
         console.warn('[StreamPresence] connect failed:', err?.message || err);
         if (!cancelled) setIsConnected(false);
