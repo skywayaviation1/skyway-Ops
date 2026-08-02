@@ -351,7 +351,8 @@ function legsFromTrip(data) {
 //   [{ name, status, checkedInAt, walkUp }, ...]
 //
 // Status mapping (matches client code):
-//   matched / manual_override / child_verified  → 'checked_in'
+//   matched / mismatch / manual_override / child_verified / carried_over
+//                                               → 'checked_in'
 //   skipped                                     → 'skipped'
 //   else                                        → 'pending'
 //   scanned record with noShow:true             → 'no_show' (overrides above)
@@ -376,13 +377,15 @@ function buildPaxRecordsFromLiveData(preloadedPax, scannedPassengers) {
     const scan = p.id ? scannedByRef.get(p.id) : null;
     const cs = p.checkInStatus || '';
     let status = 'pending';
-    if (cs === 'matched' || cs === 'manual_override' || cs === 'child_verified') status = 'checked_in';
+    if (['matched', 'mismatch', 'manual_override', 'child_verified', 'carried_over'].includes(cs)) {
+      status = 'checked_in';
+    }
     else if (cs === 'skipped') status = 'skipped';
     if (scan?.noShow) status = 'no_show';
     records.push({
       name,
       status,
-      checkedInAt: scan?.verifiedAt || null,
+      checkedInAt: scan?.verifiedAt || scan?.scannedAt || p?.carriedAt || null,
       walkUp: false,
     });
   }

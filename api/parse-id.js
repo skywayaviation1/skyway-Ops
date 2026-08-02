@@ -29,7 +29,26 @@
 // request lifetime. The caller is responsible for storing the image in
 // Firebase Storage if they want a retained record.
 
+import { getFirestore } from 'firebase-admin/firestore';
+
 export const config = { runtime: 'nodejs' };
+
+// Authentication is required before an ID image can spend the organization's
+// Anthropic quota. Any approved Skyway user may check in a passenger; role
+// authorization remains in the app and Firestore rules.
+let cachedAdmin = null;
+async function getAdmin() {
+  if (cachedAdmin) return cachedAdmin;
+  const mod = await import('firebase-admin');
+  const admin = mod.default;
+  if (!admin.apps.length) {
+    const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+    if (!raw) throw new Error('FIREBASE_SERVICE_ACCOUNT_JSON not configured on server');
+    admin.initializeApp({ credential: admin.credential.cert(JSON.parse(raw)) });
+  }
+  cachedAdmin = admin;
+  return cachedAdmin;
+}
 
 const SYSTEM_PROMPT = `You extract structured data from government-issued ID documents for a Part 135 charter aviation operator. Your output is used to verify passenger identity against trip manifests.
 
@@ -74,7 +93,33 @@ export default async function handler(req, res) {
     try { body = JSON.parse(body); }
     catch { return res.status(400).json({ error: 'Invalid JSON body' }); }
   }
-  const { imageBase64, mediaType } = body || {};
+  const { idToken, imageBase64, mediaType } = body || {};
+  if (!idToken || typeof idToken !== 'string') {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+  try {
+    const admin = await getAdmin();
+    const decoded = await admin.auth().verifyIdToken(idToken, true);
+    const profileSnap = await getFirestore(admin.app(), 'appusers')
+      .collection('users')
+      .doc(decoded.uid)
+      .get();
+    const profile = profileSnap.exists ? profileSnap.data() : null;
+    if (
+      !profile
+      || profile.approved !== true
+      || profile.active === false
+      || !['crew', 'ops', 'admin'].includes(profile.role)
+    ) {
+      return res.status(403).json({ error: 'Passenger check-in access required' });
+    }
+  } catch (err) {
+    if (/FIREBASE_SERVICE_ACCOUNT_JSON/.test(err?.message || '')) {
+      console.error('[parse-id] admin init failed:', err.message);
+      return res.status(500).json({ error: 'Auth not configured on server' });
+    }
+    return res.status(401).json({ error: 'Invalid or expired auth token' });
+  }
   if (!imageBase64) return res.status(400).json({ error: 'Missing imageBase64' });
 
   // Validate media type — Claude vision supports jpeg, png, gif, webp
@@ -82,6 +127,11 @@ export default async function handler(req, res) {
   const mt = mediaType || 'image/jpeg';
   if (!allowedMedia.includes(mt)) {
     return res.status(400).json({ error: `Unsupported mediaType: ${mt}` });
+  }
+  // Base64 is ~33% larger than binary. Keep the request below Vercel and
+  // Anthropic limits and reject accidental full-resolution camera originals.
+  if (imageBase64.length > 10 * 1024 * 1024) {
+    return res.status(400).json({ error: 'Image too large for parsing' });
   }
 
   const apiKey = process.env.ANTHROPIC_API_KEY;

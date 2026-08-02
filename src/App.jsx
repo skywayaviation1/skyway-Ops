@@ -2610,8 +2610,8 @@ const BubbleChatLazyTrip = lazy(() => import('./BubbleChat.jsx'));
 
 // Document types crew can capture during check-in.
 const DOCUMENT_TYPES = [
-  { value: 'ID',       label: 'ID',       icon: '\u{1F4C4}' },
-  { value: 'PASSPORT', label: 'Passport', icon: '\u{1F4D8}' },
+  { value: 'ID',       label: 'Driver license / ID', icon: CreditCard },
+  { value: 'PASSPORT', label: 'Passport',            icon: BookOpen },
 ];
 
 /**
@@ -2638,12 +2638,31 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
   // Camera state
   const [phase, setPhase] = useState('intro'); // intro | capturing | review
   const [photo, setPhoto] = useState(null);    // dataURL once captured
+  const [photoSource, setPhotoSource] = useState(null); // camera | library
+  const [imageMeta, setImageMeta] = useState(null);     // { width, height }
   const [error, setError] = useState(null);
   const [torchSupported, setTorchSupported] = useState(false);
   const [torchOn, setTorchOn] = useState(false);
 
   // Verification checkbox
   const [idVerified, setIdVerified] = useState(false);
+  const [mismatchAcknowledged, setMismatchAcknowledged] = useState(false);
+  const [documentExceptionAcknowledged, setDocumentExceptionAcknowledged] = useState(false);
+
+  // Automated extraction is advisory. Crew still sees the image and makes
+  // the legal identity decision; AI never checks someone in on its own.
+  const [scanStatus, setScanStatus] = useState('idle'); // idle | analyzing | complete | failed
+  const [scanError, setScanError] = useState(null);
+  const [parsedId, setParsedId] = useState(null);
+  const [reviewFields, setReviewFields] = useState({
+    firstName: '',
+    middleName: '',
+    lastName: '',
+    dob: '',
+    expiration: '',
+    issuingAuthority: '',
+    documentNumber: '',
+  });
 
   // Camera refs
   const videoRef = useRef(null);
@@ -2801,11 +2820,24 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
     }
   };
 
-  // Fallback path when camera permissions are bricked: pick a photo
-  // from the device library. We resize via a canvas before storing so
-  // a 12MP iPhone photo doesn't blow up the dataURL. End state matches
-  // capturePhoto() so the rest of the verification flow is identical.
+  // Camera-roll path. It is a first-class capture option, not just an error
+  // fallback: crew frequently receive a clear ID photo from a passenger before
+  // arrival. Images are resized in memory before OCR/upload.
   const fileInputRef = useRef(null);
+  const applyPhoto = useCallback((result, source) => {
+    stopCamera();
+    setPhoto(result.dataUrl);
+    setPhotoSource(source);
+    setImageMeta({ width: result.width, height: result.height });
+    setIdVerified(false);
+    setMismatchAcknowledged(false);
+    setDocumentExceptionAcknowledged(false);
+    setParsedId(null);
+    setScanError(null);
+    setScanStatus('idle');
+    setPhase('review');
+  }, [stopCamera]);
+
   const onFileSelected = async (e) => {
     const file = e.target.files?.[0];
     // Always clear the input so re-picking the same file fires onChange
@@ -2813,10 +2845,14 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
     if (!file) return;
     setError(null);
     try {
-      const dataUrl = await readImageAsResizedDataUrl(file, 1280);
-      stopCamera();
-      setPhoto(dataUrl);
-      setPhase('review');
+      if (file.type && !String(file.type).startsWith('image/')) {
+        throw new Error('Choose an image file (JPEG, PNG, HEIC, or WebP).');
+      }
+      if (file.size > 15 * 1024 * 1024) {
+        throw new Error('That image is larger than 15 MB. Choose a smaller photo.');
+      }
+      const result = await readImageAsResizedDataUrl(file, 1600);
+      applyPhoto(result, 'library');
     } catch (err) {
       setError({
         title: 'Couldn\'t read that photo',
@@ -2843,7 +2879,11 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
           cnv.height = Math.round(img.height * scale);
           const ctx = cnv.getContext('2d');
           ctx.drawImage(img, 0, 0, cnv.width, cnv.height);
-          resolve(cnv.toDataURL('image/jpeg', 0.75));
+          resolve({
+            dataUrl: cnv.toDataURL('image/jpeg', 0.82),
+            width: cnv.width,
+            height: cnv.height,
+          });
         };
         img.onerror = () => reject(new Error('Image decode failed'));
         img.src = fr.result;
@@ -2887,28 +2927,119 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
     if (!videoRef.current || !canvasRef.current) return;
     const v = videoRef.current;
     const c = canvasRef.current;
-    const maxW = 1280;
+    const maxW = 1600;
     const scale = Math.min(1, maxW / v.videoWidth);
     c.width = Math.round(v.videoWidth * scale);
     c.height = Math.round(v.videoHeight * scale);
     const ctx = c.getContext('2d');
     ctx.drawImage(v, 0, 0, c.width, c.height);
-    const dataUrl = c.toDataURL('image/jpeg', 0.75);
-    setPhoto(dataUrl);
-    stopCamera();
-    setPhase('review');
+    applyPhoto({
+      dataUrl: c.toDataURL('image/jpeg', 0.82),
+      width: c.width,
+      height: c.height,
+    }, 'camera');
   };
 
-  const retake = () => {
+  const retake = (source = 'camera') => {
     setPhoto(null);
-    startCamera();
+    setPhotoSource(null);
+    setImageMeta(null);
+    setParsedId(null);
+    setScanStatus('idle');
+    setIdVerified(false);
+    setMismatchAcknowledged(false);
+    setDocumentExceptionAcknowledged(false);
+    if (source === 'library') {
+      setPhase('intro');
+      setTimeout(() => fileInputRef.current?.click(), 0);
+    } else {
+      startCamera();
+    }
   };
+
+  const analyzePhoto = useCallback(async () => {
+    if (!photo || scanStatus === 'analyzing') return;
+    setScanStatus('analyzing');
+    setScanError(null);
+    try {
+      const { auth } = await import('./firebase.js');
+      const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : null;
+      if (!idToken) throw new Error('Your session expired. Sign in and try again.');
+      const comma = photo.indexOf(',');
+      const imageBase64 = comma >= 0 ? photo.slice(comma + 1) : photo;
+      const response = await fetch('/api/parse-id', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken, imageBase64, mediaType: 'image/jpeg' }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.parsed) {
+        throw new Error(data?.error || 'Document scan failed');
+      }
+      const parsed = data.parsed;
+      setParsedId(parsed);
+      setReviewFields({
+        firstName: parsed.firstName || '',
+        middleName: parsed.middleName || '',
+        lastName: parsed.lastName || '',
+        dob: parsed.dob || '',
+        expiration: parsed.expiration || '',
+        issuingAuthority: parsed.issuingAuthority || '',
+        documentNumber: parsed.documentNumber || '',
+      });
+      if (/passport/i.test(parsed.documentType || '')) setDocumentType('PASSPORT');
+      else if (parsed.documentType && parsed.documentType !== 'unknown') setDocumentType('ID');
+      // A walk-up name starts with the extracted identity but remains editable.
+      if (isWalkup) {
+        if (!firstName.trim() && parsed.firstName) setFirstName(parsed.firstName);
+        if (!lastName.trim() && parsed.lastName) setLastName(parsed.lastName);
+      }
+      setScanStatus('complete');
+    } catch (err) {
+      setScanError(err?.message || 'Could not read this document.');
+      setScanStatus('failed');
+    }
+  }, [photo, scanStatus, isWalkup, firstName, lastName]);
+
+  // Scan immediately after camera capture or library selection. The result is
+  // advisory and the image remains visible throughout review.
+  useEffect(() => {
+    if (phase === 'review' && photo && scanStatus === 'idle') analyzePhoto();
+  }, [phase, photo, scanStatus, analyzePhoto]);
+
+  const nameMatch = useMemo(() => {
+    if (!parsedId || isWalkup || !expectedPax) return null;
+    return compareNames(reviewFields, expectedPax);
+  }, [parsedId, reviewFields, expectedPax, isWalkup]);
+
+  const expiryDate = reviewFields.expiration ? new Date(`${reviewFields.expiration}T12:00:00`) : null;
+  const documentExpired = expiryDate && !Number.isNaN(expiryDate.getTime())
+    ? expiryDate.getTime() < Date.now()
+    : false;
+  const nameMismatch = nameMatch?.level === 'mismatch';
+  const expectedDobNormalized = normalizeIdentityDate(expectedPax?.dob);
+  const scannedDobNormalized = normalizeIdentityDate(reviewFields.dob);
+  const dobMismatch = Boolean(
+    !isWalkup
+    && expectedDobNormalized
+    && scannedDobNormalized
+    && expectedDobNormalized !== scannedDobNormalized
+  );
+  const identityMismatch = nameMismatch || dobMismatch;
+  const lowResolution = imageMeta
+    ? Math.min(imageMeta.width || 0, imageMeta.height || 0) < 600
+    : false;
 
   const walkupNamesValid = isWalkup
-    ? firstName.trim().length > 0 && lastName.trim().length > 0
+    ? (parsedId ? reviewFields.firstName : firstName).trim().length > 0
+      && (parsedId ? reviewFields.lastName : lastName).trim().length > 0
     : true;
 
-  const canSubmit = walkupNamesValid && photo && idVerified;
+  const canSubmit = walkupNamesValid
+    && photo
+    && idVerified
+    && (!identityMismatch || mismatchAcknowledged)
+    && (!documentExpired || documentExceptionAcknowledged);
 
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState(null);
@@ -2942,6 +3073,8 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
           tripUid: String(tripContext.tripUid || ''),
           verifiedBy: String(tripContext.verifiedBy || ''),
           documentType,
+          imageSource: String(photoSource || 'unknown'),
+          aiParsed: parsedId ? 'true' : 'false',
         },
       });
       const photoUrl = await getDownloadURL(snap.ref);
@@ -2949,13 +3082,24 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
       const paxData = isWalkup
         ? {
             id: paxId,
-            firstName: firstName.trim(),
-            lastName: lastName.trim(),
+            firstName: (parsedId ? reviewFields.firstName : firstName).trim(),
+            lastName: (parsedId ? reviewFields.lastName : lastName).trim(),
             documentType,
             photoUrl,           // ← URL instead of inline dataURL
             photoPath: path,    // for future delete-on-trip-removal
+            imageSource: photoSource,
             idVerified: true,
-            method: 'PHOTO_VERIFY_WALKUP',
+            method: parsedId ? 'DOCUMENT_SCAN_WALKUP' : 'PHOTO_VERIFY_WALKUP',
+            dob: reviewFields.dob || '',
+            expiration: reviewFields.expiration || '',
+            issuingAuthority: reviewFields.issuingAuthority || '',
+            documentLast4: reviewFields.documentNumber
+              ? reviewFields.documentNumber.slice(-4)
+              : '',
+            scanConfidence: parsedId?.confidence || null,
+            nameMatchLevel: null,
+            documentExpired: Boolean(documentExpired),
+            documentExceptionAcknowledged: Boolean(documentExpired && documentExceptionAcknowledged),
           }
         : {
             ...expectedPax,
@@ -2963,8 +3107,25 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
             documentType,
             photoUrl,
             photoPath: path,
+            imageSource: photoSource,
             idVerified: true,
-            method: 'PHOTO_VERIFY',
+            method: parsedId ? 'DOCUMENT_SCAN' : 'PHOTO_VERIFY',
+            // Keep only the operational fields needed at check-in. The full
+            // document number and MRZ are deliberately not persisted.
+            dob: reviewFields.dob || expectedPax?.dob || '',
+            expiration: reviewFields.expiration || '',
+            issuingAuthority: reviewFields.issuingAuthority || '',
+            documentLast4: reviewFields.documentNumber
+              ? reviewFields.documentNumber.slice(-4)
+              : '',
+            scanConfidence: parsedId?.confidence || null,
+            nameMatchLevel: nameMatch?.level || 'no-data',
+            documentExpired: Boolean(documentExpired),
+            mismatchAcknowledged: Boolean(identityMismatch && mismatchAcknowledged),
+            dobMatch: scannedDobNormalized && expectedDobNormalized
+              ? scannedDobNormalized === expectedDobNormalized
+              : null,
+            documentExceptionAcknowledged: Boolean(documentExpired && documentExceptionAcknowledged),
           };
       onComplete(paxData);
     } catch (err) {
@@ -3009,19 +3170,14 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
                 </button>
               )}
               {error.canUpload && (
-                <label
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
                   className="px-3 py-1.5 text-xs bg-slate-700 border border-slate-600 text-slate-200 hover:bg-slate-600 tracking-wider transition cursor-pointer"
                   style={{ fontFamily: 'JetBrains Mono, monospace' }}
                 >
                   UPLOAD PHOTO
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={onFileSelected}
-                  />
-                </label>
+                </button>
               )}
             </div>
           )}
@@ -3040,6 +3196,38 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
           {uploadError}
         </div>
       )}
+
+      {/* Single camera-roll input shared by the normal flow and every error
+          recovery action. No `capture` attribute: on iPhone that is what
+          allows Camera Roll / Files instead of forcing the camera. */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
+        className="hidden"
+        onChange={onFileSelected}
+      />
+
+      <div className="grid grid-cols-3 gap-1" aria-label="Check-in progress">
+        {[
+          { label: 'Capture', active: phase === 'intro' || phase === 'capturing', done: Boolean(photo) },
+          { label: 'Review', active: phase === 'review' && !idVerified, done: Boolean(photo && idVerified) },
+          { label: 'Verify', active: Boolean(photo && idVerified), done: false },
+        ].map((step, index) => (
+          <div key={step.label}>
+            <div className={cx(
+              'h-1 rounded-full',
+              step.done ? 'bg-success' : step.active ? 'bg-accent' : 'bg-surface-raised',
+            )} />
+            <p className={cx(
+              'mt-1 text-center text-[10px] font-semibold',
+              step.active || step.done ? 'text-content' : 'text-content-subtle',
+            )}>
+              {index + 1}. {step.label}
+            </p>
+          </div>
+        ))}
+      </div>
 
       {/* Trip-sheet details (preloaded only) */}
       {!isWalkup && expectedPax && (
@@ -3086,7 +3274,8 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
               }`}
               style={{ fontFamily: 'DM Sans, sans-serif' }}
             >
-              <span className="mr-2">{d.icon}</span>{d.label}
+              <d.icon className="mr-2 inline h-4 w-4 align-text-bottom" />
+              {d.label}
             </button>
           ))}
         </div>
@@ -3094,13 +3283,39 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
 
       {/* Camera area */}
       {phase === 'intro' && !photo && (
-        <button
-          onClick={startCamera}
-          className="w-full py-3 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-medium tracking-widest flex items-center justify-center gap-2"
-          style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}
-        >
-          <Camera className="w-4 h-4" /> TAKE PHOTO OF {documentType === 'PASSPORT' ? 'PASSPORT' : 'ID'}
-        </button>
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-2">
+            <Button variant="primary" size="lg" icon={Camera} block onClick={startCamera}>
+              Use camera
+            </Button>
+            <Button
+              variant="outline"
+              size="lg"
+              icon={Upload}
+              block
+              onClick={() => fileInputRef.current?.click()}
+            >
+              Camera roll
+            </Button>
+          </div>
+          <div className="rounded-lg border border-edge bg-surface-sunken p-3">
+            <div className="flex items-start gap-2">
+              <ScanLine className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
+              <div>
+                <p className="text-2xs font-semibold text-content">
+                  {documentType === 'PASSPORT'
+                    ? 'Photograph the biographic page'
+                    : 'Photograph the front of the document'}
+                </p>
+                <p className="mt-0.5 text-2xs leading-relaxed text-content-muted">
+                  Fill the frame, avoid glare, and keep all four corners visible.
+                  Skyway will read the document and compare it with the trip sheet;
+                  crew makes the final decision.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {phase === 'capturing' && (
@@ -3115,6 +3330,13 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
               muted
             />
             <canvas ref={canvasRef} className="hidden" />
+            {/* Capture guide: the saved image is still the complete frame; this
+                overlay only helps crew keep all document edges visible. */}
+            <div className="pointer-events-none absolute inset-[8%] rounded-lg border-2 border-white/70 shadow-[0_0_0_999px_rgba(0,0,0,0.28)]">
+              <span className="absolute -bottom-7 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-black/60 px-2 py-1 text-[10px] text-white">
+                Align all four corners
+              </span>
+            </div>
             {torchSupported && (
               <button
                 onClick={toggleTorch}
@@ -3149,33 +3371,211 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
       )}
 
       {phase === 'review' && photo && (
-        <div className="space-y-2">
-          <div className="border border-emerald-500/30 bg-slate-950 overflow-hidden">
+        <div className="space-y-3">
+          <div className="relative overflow-hidden rounded-lg border border-edge bg-slate-950">
             <img src={photo} alt={`${documentType} captured`} className="w-full h-auto" />
+            <span className="absolute left-2 top-2 rounded bg-black/70 px-2 py-1 font-mono text-[10px] text-white">
+              {photoSource === 'library' ? 'CAMERA ROLL' : 'CAMERA'}
+              {imageMeta ? ` · ${imageMeta.width}×${imageMeta.height}` : ''}
+            </span>
           </div>
-          <button
-            onClick={retake}
-            className="w-full py-1.5 border border-slate-700 text-slate-400 hover:bg-slate-800 text-xs tracking-widest"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}
-          >
-            RETAKE PHOTO
-          </button>
+          {lowResolution && (
+            <div className="flex items-start gap-2 rounded-lg border border-warning-border bg-warning-soft p-2.5 text-2xs text-warning">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>This image is low resolution. Names and dates may be harder to read; use a sharper photo if available.</span>
+            </div>
+          )}
+          <div className="grid grid-cols-2 gap-2">
+            <Button variant="outline" size="sm" icon={Camera} block onClick={() => retake('camera')}>
+              Retake
+            </Button>
+            <Button variant="outline" size="sm" icon={Upload} block onClick={() => retake('library')}>
+              Choose another
+            </Button>
+          </div>
+
+          {scanStatus === 'analyzing' && (
+            <div className="flex items-center gap-3 rounded-lg border border-accent-border bg-accent-soft p-3">
+              <Loader2 className="h-4 w-4 shrink-0 animate-spin text-accent" />
+              <div>
+                <p className="text-sm font-semibold text-content">Reading document…</p>
+                <p className="text-2xs text-content-muted">Extracting the name, date of birth, and expiration for crew review.</p>
+              </div>
+            </div>
+          )}
+
+          {scanStatus === 'failed' && (
+            <div className="rounded-lg border border-warning-border bg-warning-soft p-3">
+              <div className="flex items-start gap-2 text-warning">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                <div>
+                  <p className="text-sm font-semibold">Automatic reading unavailable</p>
+                  <p className="mt-0.5 text-2xs leading-relaxed">{scanError}</p>
+                </div>
+              </div>
+              <Button variant="outline" size="sm" icon={RefreshCw} className="mt-2.5" onClick={analyzePhoto}>
+                Try reading again
+              </Button>
+              <p className="mt-2 text-2xs text-content-muted">
+                You can still inspect the image manually and check in the passenger.
+              </p>
+            </div>
+          )}
+
+          {scanStatus === 'complete' && parsedId && (
+            <div className="overflow-hidden rounded-xl border border-edge bg-surface">
+              <div className="flex items-start justify-between gap-3 border-b border-edge p-3">
+                <div className="flex items-start gap-2">
+                  <ScanLine className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
+                  <div>
+                    <p className="text-sm font-semibold text-content">Review scanned details</p>
+                    <p className="text-2xs text-content-muted">Correct anything the scanner misread before continuing.</p>
+                  </div>
+                </div>
+                <StatusChip
+                  tone={parsedId.confidence === 'high' ? 'success' : parsedId.confidence === 'medium' ? 'warning' : 'danger'}
+                  size="sm"
+                >
+                  {parsedId.confidence || 'Unknown'} confidence
+                </StatusChip>
+              </div>
+
+              <div className="grid gap-3 p-3 sm:grid-cols-2">
+                <ScannerField
+                  label="First name"
+                  value={reviewFields.firstName}
+                  onChange={(v) => setReviewFields(f => ({ ...f, firstName: v }))}
+                />
+                <ScannerField
+                  label="Last name"
+                  value={reviewFields.lastName}
+                  onChange={(v) => setReviewFields(f => ({ ...f, lastName: v }))}
+                />
+                <ScannerField
+                  label="Date of birth"
+                  type="date"
+                  value={reviewFields.dob}
+                  onChange={(v) => setReviewFields(f => ({ ...f, dob: v }))}
+                />
+                <ScannerField
+                  label="Expiration"
+                  type="date"
+                  value={reviewFields.expiration}
+                  onChange={(v) => setReviewFields(f => ({ ...f, expiration: v }))}
+                  invalid={documentExpired}
+                />
+                <ScannerField
+                  label="Document number"
+                  value={reviewFields.documentNumber}
+                  onChange={(v) => setReviewFields(f => ({ ...f, documentNumber: v }))}
+                  hint="Only the last 4 characters are stored"
+                />
+                <ScannerField
+                  label="Issued by"
+                  value={reviewFields.issuingAuthority}
+                  onChange={(v) => setReviewFields(f => ({ ...f, issuingAuthority: v }))}
+                />
+              </div>
+
+              {parsedId.notes && (
+                <p className="border-t border-edge px-3 py-2 text-2xs leading-relaxed text-content-muted">
+                  Scanner note: {parsedId.notes}
+                </p>
+              )}
+            </div>
+          )}
+
+          {nameMatch && (
+            <NameMatchReview
+              result={nameMatch}
+              expected={expectedPax}
+              extracted={reviewFields}
+            />
+          )}
+
+          {identityMismatch && (
+            <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-danger-border bg-danger-soft p-3">
+              <input
+                type="checkbox"
+                checked={mismatchAcknowledged}
+                onChange={(e) => setMismatchAcknowledged(e.target.checked)}
+                className="mt-0.5 h-4 w-4 accent-red-500"
+              />
+              <span className="text-2xs leading-relaxed text-danger">
+                I reviewed the passenger and document in person and am overriding the scanner's identity mismatch. This decision will be recorded.
+              </span>
+            </label>
+          )}
+
+          {documentExpired && (
+            <div className="rounded-lg border border-danger-border bg-danger-soft p-3 text-danger">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                <div>
+                  <p className="text-sm font-semibold">Document expired</p>
+                  <p className="text-2xs">Expiration: {reviewFields.expiration}. Confirm another acceptable document before check-in.</p>
+                </div>
+              </div>
+              <label className="mt-3 flex cursor-pointer items-start gap-2.5 border-t border-danger-border pt-3">
+                <input
+                  type="checkbox"
+                  checked={documentExceptionAcknowledged}
+                  onChange={(e) => setDocumentExceptionAcknowledged(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 accent-red-500"
+                />
+                <span className="text-2xs leading-relaxed">
+                  I inspected another current acceptable document and am recording this exception.
+                </span>
+              </label>
+            </div>
+          )}
         </div>
       )}
 
       {/* Verification checkbox */}
       {photo && (
-        <label className="flex items-start gap-2 p-2.5 border border-slate-700 bg-slate-900/40 cursor-pointer hover:bg-slate-900/70">
+        <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-edge bg-surface p-3.5 hover:border-accent-border">
           <input
             type="checkbox"
             checked={idVerified}
             onChange={(e) => setIdVerified(e.target.checked)}
-            className="mt-0.5 accent-cyan-400"
+            className="mt-0.5 h-4 w-4 accent-cyan-400"
           />
-          <span className="text-sm text-slate-200" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-            <strong>ID Verified.</strong> I have visually inspected the {documentType === 'PASSPORT' ? 'passport' : 'ID'} and confirm it matches the passenger.
+          <span>
+            <span className="flex items-center gap-1.5 text-sm font-semibold text-content">
+              <ShieldCheck className="h-4 w-4 text-accent" /> Crew verification
+            </span>
+            <span className="mt-1 block text-2xs leading-relaxed text-content-muted">
+              I inspected the original {documentType === 'PASSPORT' ? 'passport' : 'identification'},
+              compared the person to the photo and name, and reviewed all scanner warnings.
+              The scanner is advisory; this attestation is the check-in decision.
+            </span>
           </span>
         </label>
+      )}
+
+      {photo && (
+        <div className="flex items-start gap-2 px-1 text-[10px] leading-relaxed text-content-subtle">
+          <Shield className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>
+            The image is stored in restricted passenger-ID storage for operational verification
+            and scheduled for automatic deletion after 5 days. Full document numbers are not saved to the passenger record.
+          </span>
+        </div>
+      )}
+
+      {photo && !canSubmit && (
+        <p className="rounded-lg border border-edge bg-surface-sunken px-3 py-2 text-2xs text-content-muted">
+          Next: {!walkupNamesValid
+            ? 'enter the passenger’s first and last name.'
+            : identityMismatch && !mismatchAcknowledged
+              ? 'review and acknowledge the identity mismatch.'
+              : documentExpired && !documentExceptionAcknowledged
+                ? 'confirm another current document.'
+                : !idVerified
+                  ? 'complete the crew verification attestation.'
+                  : 'finish reviewing this document.'}
+        </p>
       )}
 
       {/* Action buttons */}
@@ -3204,6 +3604,90 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
           )}
         </button>
       </div>
+    </div>
+  );
+}
+
+function ScannerField({ label, value, onChange, type = 'text', hint, invalid = false }) {
+  return (
+    <label className="block">
+      <span className="text-[10px] font-semibold uppercase tracking-wider text-content-subtle">{label}</span>
+      <input
+        type={type}
+        value={value || ''}
+        onChange={(e) => onChange(e.target.value)}
+        className={cx(
+          'mt-1 h-10 w-full rounded-lg border bg-surface-sunken px-3 font-mono text-xs text-content outline-none transition-colors',
+          invalid
+            ? 'border-danger-border focus:border-danger'
+            : 'border-edge focus:border-accent-border',
+        )}
+      />
+      {hint && <span className="mt-1 block text-[10px] text-content-subtle">{hint}</span>}
+    </label>
+  );
+}
+
+function normalizeIdentityDate(value) {
+  if (!value) return null;
+  const iso = String(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  const slash = String(value).match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/);
+  if (!slash) return null;
+  let year = Number(slash[3]);
+  if (year < 100) year += year > 30 ? 1900 : 2000;
+  return `${year}-${String(slash[1]).padStart(2, '0')}-${String(slash[2]).padStart(2, '0')}`;
+}
+
+function NameMatchReview({ result, expected, extracted }) {
+  const tone = result.level === 'exact' || result.level === 'close'
+    ? 'success'
+    : result.level === 'partial'
+      ? 'warning'
+      : result.level === 'mismatch'
+        ? 'danger'
+        : 'neutral';
+  const label = {
+    exact: 'Name matches',
+    close: 'Likely match',
+    partial: 'Review name',
+    mismatch: 'Name mismatch',
+    'no-data': 'Manual review',
+  }[result.level] || 'Manual review';
+  const expectedDob = normalizeIdentityDate(expected?.dob);
+  const extractedDob = normalizeIdentityDate(extracted?.dob);
+  const dobMismatch = expectedDob && extractedDob && expectedDob !== extractedDob;
+
+  return (
+    <div className={cx(
+      'rounded-xl border p-3',
+      tone === 'success' ? 'border-success-border bg-success-soft'
+        : tone === 'warning' ? 'border-warning-border bg-warning-soft'
+          : tone === 'danger' ? 'border-danger-border bg-danger-soft'
+            : 'border-edge bg-surface-sunken',
+    )}>
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm font-semibold text-content">Trip-sheet comparison</p>
+        <StatusChip tone={tone} size="sm">{label}</StatusChip>
+      </div>
+      <div className="mt-2 grid grid-cols-2 gap-3 text-2xs">
+        <div>
+          <p className="text-content-subtle">Expected</p>
+          <p className="mt-0.5 text-content">{expected?.firstName} {expected?.lastName}</p>
+          {expected?.dob && <p className="font-mono text-content-muted">DOB {expected.dob}</p>}
+        </div>
+        <div>
+          <p className="text-content-subtle">Document</p>
+          <p className="mt-0.5 text-content">{extracted?.firstName || '—'} {extracted?.lastName || ''}</p>
+          {extracted?.dob && <p className={cx('font-mono', dobMismatch ? 'text-danger' : 'text-content-muted')}>DOB {extracted.dob}</p>}
+        </div>
+      </div>
+      {(result.warnings?.length > 0 || dobMismatch) && (
+        <div className="mt-2 border-t border-current/10 pt-2 text-2xs leading-relaxed text-content-muted">
+          {result.warnings?.map((w) => <p key={w}>{w}</p>)}
+          {dobMismatch && <p className="font-semibold text-danger">Date of birth does not match the trip sheet.</p>}
+        </div>
+      )}
     </div>
   );
 }
@@ -5210,8 +5694,15 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
             state:         prevMatch.state         || '',
             realIdCompliant: prevMatch.realIdCompliant ?? false,
             expired: false,
-            photo:   prevMatch.photo || null,
+            photoUrl: prevMatch.photoUrl || null,
+            photoPath: prevMatch.photoPath || null,
+            imageSource: prevMatch.imageSource || null,
+            documentType: prevMatch.documentType || null,
+            documentLast4: prevMatch.documentLast4 || '',
+            scanConfidence: prevMatch.scanConfidence || null,
+            idVerified: prevMatch.idVerified === true,
             scannedAt: now,
+            verifiedAt: now,
             method: 'CARRIED_OVER',
             paxType: prevMatch.paxType || 'ADULT',
             noShow: false,
@@ -5648,9 +6139,20 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
         scannedAt: Date.now(),
       };
       const nextPassengers = [...passengers, newPax];
+      const checkInStatus = newPax.nameMatchLevel === 'mismatch'
+        ? 'mismatch'
+        : newPax.method === 'PHOTO_VERIFY'
+          ? 'manual_override'
+          : 'matched';
       const nextPreloaded = preloadedPax.map(p =>
         p.id === target.id
-          ? { ...p, scannedPaxId: newPax.id, checkInStatus: 'matched' }
+          ? {
+              ...p,
+              scannedPaxId: newPax.id,
+              checkInStatus,
+              nameMatchLevel: newPax.nameMatchLevel || null,
+              scanConfidence: newPax.scanConfidence || null,
+            }
           : p
       );
       setPassengers(nextPassengers);
@@ -5676,9 +6178,20 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   };
 
   const removePassenger = async (id) => {
+    const removed = passengers.find(p => p.id === id);
     const next = passengers.filter(p => p.id !== id);
     setPassengers(next);
     await persist({ statuses, passengers: next, brokerEmail, autoNotify, completed, hasCatering, paxOverride });
+    // Best-effort deletion of the retained ID image. The bucket lifecycle is
+    // the backstop, but removing a passenger should remove their photo now.
+    if (removed?.photoPath) {
+      try {
+        const { getStorage, ref, deleteObject } = await import('firebase/storage');
+        await deleteObject(ref(getStorage(), removed.photoPath));
+      } catch (err) {
+        console.warn('[pax] could not delete ID photo:', err?.message || err);
+      }
+    }
   };
 
   // Toggle a passenger's no-show flag. Keeps the record (chain of custody)
@@ -7836,12 +8349,15 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
         if (!name) continue;
         const scan = p.id ? scannedByRef.get(p.id) : null;
         // Status mapping for the broker:
-        //   matched / manual_override / child_verified → 'checked_in'
-        //   skipped                                    → 'skipped'
-        //   anything else                              → 'pending'
+        //   Any crew-accepted identity state → 'checked_in'. Mismatch is
+        //   included because it can only be produced after an explicit crew
+        //   override; carried-over is a verified previous-leg identity.
+        //   skipped → 'skipped'; anything else → 'pending'.
         const cs = p.checkInStatus || '';
         let status = 'pending';
-        if (cs === 'matched' || cs === 'manual_override' || cs === 'child_verified') status = 'checked_in';
+        if (['matched', 'mismatch', 'manual_override', 'child_verified', 'carried_over'].includes(cs)) {
+          status = 'checked_in';
+        }
         else if (cs === 'skipped') status = 'skipped';
         // Pax marked no-show at boarding time get a distinct status so the
         // broker can see they weren't on the actual flight.
@@ -7849,7 +8365,7 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
         paxRecords.push({
           name,
           status,
-          checkedInAt: scan?.verifiedAt || null,
+          checkedInAt: scan?.verifiedAt || scan?.scannedAt || p?.carriedAt || null,
           walkUp: false,
         });
       }
@@ -11762,6 +12278,9 @@ function PassengerRow({ passenger, onRemove, onToggleNoShow }) {
   const isPhotoVerified = passenger.idVerified === true;
   const isManualCapture = passenger.paxType === 'MANUAL_CAPTURE';
   const isNoShow = passenger.noShow === true;
+  const hasIdentityOverride = passenger.mismatchAcknowledged === true;
+  const hasExpiredOverride = passenger.documentExpired === true
+    && passenger.documentExceptionAcknowledged === true;
   const displayName = (passenger.firstName || passenger.lastName)
     ? `${passenger.firstName} ${passenger.lastName}`.trim()
     : (isManualCapture ? 'PHOTO ONLY' : 'UNKNOWN');
@@ -11793,6 +12312,12 @@ function PassengerRow({ passenger, onRemove, onToggleNoShow }) {
             <Pill tone="neutral">NO SHOW</Pill>
           ) : isChild ? (
             <Pill tone="amber"><Users className="w-2.5 h-2.5" /> CHILD</Pill>
+          ) : hasExpiredOverride ? (
+            <Pill tone="amber"><AlertTriangle className="w-2.5 h-2.5" /> EXPIRED · OVERRIDE</Pill>
+          ) : passenger.documentExpired || expired ? (
+            <Pill tone="red">EXPIRED</Pill>
+          ) : hasIdentityOverride ? (
+            <Pill tone="amber"><AlertTriangle className="w-2.5 h-2.5" /> MATCH OVERRIDE</Pill>
           ) : isPassport && isPhotoVerified ? (
             <Pill tone="green"><Shield className="w-2.5 h-2.5" /> PASSPORT VERIFIED</Pill>
           ) : isPassport ? (
@@ -11803,8 +12328,6 @@ function PassengerRow({ passenger, onRemove, onToggleNoShow }) {
             <Pill tone="amber"><Camera className="w-2.5 h-2.5" /> PHOTO</Pill>
           ) : compliant ? (
             <Pill tone="green"><Shield className="w-2.5 h-2.5" /> REAL ID</Pill>
-          ) : expired ? (
-            <Pill tone="red">EXPIRED</Pill>
           ) : (
             <Pill tone="amber">UNVERIFIED</Pill>
           )}
@@ -11812,8 +12335,10 @@ function PassengerRow({ passenger, onRemove, onToggleNoShow }) {
         <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1 text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
           {passenger.dob && <span>DOB {passenger.dob}</span>}
           {passenger.expiration && <span>EXP {passenger.expiration}</span>}
-          {passenger.licenseNumber && <span>{passenger.state} {passenger.licenseNumber}</span>}
-          <span>· {passenger.method}</span>
+          {passenger.documentLast4 && <span>DOC ••••{passenger.documentLast4}</span>}
+          {passenger.scanConfidence && <span>SCAN {String(passenger.scanConfidence).toUpperCase()}</span>}
+          {passenger.imageSource && <span>{passenger.imageSource === 'library' ? 'CAMERA ROLL' : 'CAMERA'}</span>}
+          <span>· {String(passenger.method || '').replaceAll('_', ' ')}</span>
         </div>
       </div>
       <div className="flex items-center gap-1 shrink-0">
