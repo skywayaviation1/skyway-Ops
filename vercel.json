@@ -38,6 +38,10 @@
   },
   "rewrites": [
     {
+      "source": "/__/auth/:path*",
+      "destination": "https://skyway-ops-app.firebaseapp.com/__/auth/:path*"
+    },
+    {
       "source": "/((?!api/|assets/).*)",
       "destination": "/index.html",
       "has": [

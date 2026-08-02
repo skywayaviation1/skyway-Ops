@@ -3,9 +3,21 @@ import { initializeApp } from 'firebase/app';
 import { initializeFirestore } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
 
+// signInWithRedirect sends the browser to `authDomain` to run the sign-in
+// helper, then back here. When authDomain is a different origin from the app,
+// Safari and other browsers that partition third-party storage block that
+// helper's storage access and the redirect returns with no session.
+//
+// Setting VITE_FIREBASE_AUTH_DOMAIN to the app's own hostname makes the two
+// same-origin and fixes it — the /__/auth/ rewrite in vercel.json proxies the
+// helper transparently. Left unset, behaviour is unchanged.
+// See https://firebase.google.com/docs/auth/web/redirect-best-practices
+const AUTH_DOMAIN = String(import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || '').trim()
+  || 'skyway-ops-app.firebaseapp.com';
+
 const firebaseConfig = {
   apiKey: 'AIzaSyBeF0B3h2yphkoxk5CSGmrNgboafb-zG6Y',
-  authDomain: 'skyway-ops-app.firebaseapp.com',
+  authDomain: AUTH_DOMAIN,
   projectId: 'skyway-ops-app',
   storageBucket: 'skyway-ops-app.firebasestorage.app',
   messagingSenderId: '12464871520',

@@ -15359,7 +15359,7 @@ function MicrosoftMark({ className = '' }) {
 
 function LoginScreen() {
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     let active = true;
@@ -15368,7 +15368,7 @@ function LoginScreen() {
         const { completeMicrosoftRedirect } = await import('./firebase-auth.js');
         await completeMicrosoftRedirect();
       } catch (err) {
-        if (active) setError(prettyAuthError(err));
+        if (active) setError(describeAuthError(err));
       }
     })();
     return () => { active = false; };
@@ -15376,7 +15376,7 @@ function LoginScreen() {
 
   const handleMicrosoftLogin = async () => {
     setSubmitting(true);
-    setError('');
+    setError(null);
     try {
       const { signInWithMicrosoft } = await import('./firebase-auth.js');
       await signInWithMicrosoft();
@@ -15384,7 +15384,7 @@ function LoginScreen() {
       // launch two OAuth transactions.
     } catch (err) {
       setSubmitting(false);
-      setError(prettyAuthError(err));
+      setError(describeAuthError(err));
     }
   };
 
@@ -15445,9 +15445,22 @@ function LoginScreen() {
             </p>
 
             {error && (
-              <div className="mt-5 flex items-start gap-2.5 rounded-lg border border-danger-border bg-danger-soft p-3 text-2xs leading-relaxed text-danger">
-                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-                <span>{error}</span>
+              <div className="mt-5 rounded-lg border border-danger-border bg-danger-soft p-3">
+                <div className="flex items-start gap-2.5 text-2xs leading-relaxed text-danger">
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span>{error.message}</span>
+                </div>
+                {/* Configuration faults are shown with the exact console
+                    setting to change, so an administrator is not left guessing
+                    which "domain" Firebase is complaining about. */}
+                {error.fix && (
+                  <p className="mt-2 border-t border-danger-border pt-2 text-2xs leading-relaxed text-content-muted">
+                    {error.fix}
+                  </p>
+                )}
+                {error.code && (
+                  <p className="mt-1.5 font-mono text-[10px] text-content-subtle">{error.code}</p>
+                )}
               </div>
             )}
 
@@ -15701,27 +15714,64 @@ function LegacyLoginScreen({ initialMode = 'login' }) {
   );
 }
 
-/* Translates Firebase error codes into human-readable messages. */
-function prettyAuthError(err) {
+/**
+ * Turns a Firebase error into a message for the person looking at the screen
+ * and, where the cause is a project misconfiguration rather than user error, a
+ * `fix` line naming the exact console setting to change.
+ *
+ * The distinction matters most for `auth/unauthorized-domain`: Firebase raises
+ * it about the web address the app is served from, which reads as if it were
+ * about the company email domain. Naming the host removes the ambiguity.
+ */
+function describeAuthError(err) {
   const code = err?.code || '';
-  const map = {
+  const host = typeof window !== 'undefined' ? window.location.hostname : 'this address';
+
+  const CONFIG_ERRORS = {
+    'auth/unauthorized-domain': {
+      message: `Microsoft sign-in is not enabled for ${host}.`,
+      fix: `An administrator needs to add ${host} under Firebase Authentication → Settings → Authorized domains. This is the web address the app is served from — not the @flyskyway.com email domain.`,
+    },
+    'auth/operation-not-allowed': {
+      message: 'Microsoft sign-in is not switched on for this project.',
+      fix: 'Enable the Microsoft provider under Firebase Authentication → Sign-in method.',
+    },
+    'auth/invalid-oauth-client-id': {
+      message: 'The Microsoft application details are not accepted by Firebase.',
+      fix: 'Re-check the Entra application (client) ID and secret in Firebase Authentication → Sign-in method → Microsoft.',
+    },
+    'auth/invalid-oauth-provider': {
+      message: 'Microsoft is not configured as a sign-in provider.',
+      fix: 'Enable the Microsoft provider under Firebase Authentication → Sign-in method.',
+    },
+  };
+  if (CONFIG_ERRORS[code]) return { code, ...CONFIG_ERRORS[code] };
+
+  const SIMPLE = {
     'auth/company-account-required': 'Use your @flyskyway.com Microsoft account.',
-    'auth/unauthorized-domain': 'This company domain is not authorized.',
     'auth/account-exists-with-different-credential': 'This email was previously registered another way. Ask an administrator to migrate the account to Microsoft.',
     'auth/popup-blocked': 'Microsoft sign-in was blocked by the browser. Allow pop-ups and try again.',
     'auth/cancelled-popup-request': 'The sign-in request was cancelled. Please try again.',
-    'auth/operation-not-allowed': 'Microsoft sign-in is not enabled yet. Contact the Skyway administrator.',
+    'auth/redirect-cancelled-by-user': 'Sign-in was cancelled before it finished.',
+    'auth/timeout': 'Microsoft sign-in timed out. Please try again.',
     'auth/email-already-in-use': 'An account with this email already exists. Try signing in instead.',
     'auth/invalid-email': 'That email address looks invalid.',
-    'auth/weak-password': 'Password is too weak. Use at least 8 characters.',
     'auth/user-not-found': 'No account with that email.',
-    'auth/wrong-password': 'Incorrect password.',
-    'auth/invalid-credential': 'Email or password is incorrect.',
+    'auth/invalid-credential': 'Microsoft rejected those sign-in details.',
     'auth/too-many-requests': 'Too many failed attempts. Try again in a few minutes.',
     'auth/network-request-failed': 'Network error. Check your connection.',
     'auth/user-disabled': 'This account has been disabled.',
   };
-  return map[code] || err?.message || 'Something went wrong. Please try again.';
+  return {
+    code,
+    message: SIMPLE[code] || err?.message || 'Something went wrong. Please try again.',
+    fix: null,
+  };
+}
+
+/* Message-only wrapper for the screens that just need a single line. */
+function prettyAuthError(err) {
+  return describeAuthError(err).message;
 }
 
 /* Screen shown when user is signed in but email is not yet verified. */
