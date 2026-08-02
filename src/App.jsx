@@ -1996,14 +1996,33 @@ function TripCard({ trip, selected, onClick, statusCount, hasUpdate, onArchive }
   };
 
   return (
-    <div className="relative overflow-hidden">
-      {/* Red ARCHIVE background revealed by swipe */}
+    <div className="group/card relative overflow-hidden">
+      {/* Archive affordance revealed by the swipe gesture. */}
       {dragX < 0 && (
-        <div className="absolute inset-y-0 right-0 flex items-center justify-end px-4 bg-red-500/20" style={{ width: Math.abs(dragX) }}>
-          <span className="text-[10px] tracking-widest text-red-300" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
-            ARCHIVE
+        <div
+          className={cx(
+            'absolute inset-y-0 right-0 flex items-center justify-end px-4',
+            dragX < -80 ? 'bg-danger-soft' : 'bg-surface-raised',
+          )}
+          style={{ width: Math.abs(dragX) }}
+        >
+          <span className={cx('text-2xs font-semibold', dragX < -80 ? 'text-danger' : 'text-content-muted')}>
+            Archive
           </span>
         </div>
+      )}
+      {/* Pointer equivalent of the swipe. Without this the gesture was the
+          only way to archive, and it is invisible on desktop. */}
+      {onArchive && dragX === 0 && (
+        <button
+          type="button"
+          title="Archive this trip"
+          aria-label="Archive this trip"
+          onClick={(e) => { e.stopPropagation(); onArchive(trip.uid); }}
+          className="absolute right-2 top-2 z-10 hidden rounded p-1.5 text-content-subtle opacity-0 transition-opacity hover:bg-surface-raised hover:text-danger focus-visible:opacity-100 group-hover/card:opacity-100 md:block"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
       )}
       <button
         onClick={handleClick}
@@ -21215,10 +21234,13 @@ function OpsDashboard({ trips, currentUser, onSelectTrip, onAddManualTrip, onRem
   return (
     <div className="p-4 md:p-6 max-w-7xl mx-auto">
       <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
+        {/* Subordinate heading: this panel renders directly beneath the ops
+            readiness console, so it reads as the second section of one page
+            rather than a competing dashboard. */}
         <div>
-          <h2 className="text-3xl tracking-wider" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>OPS DASHBOARD</h2>
-          <p className="text-xs text-slate-500 mt-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            {currentUser.callsign || currentUser.name} · {USER_ROLES[currentUser.role]?.label}
+          <h2 className="text-base font-semibold text-content">Schedule tools</h2>
+          <p className="mt-0.5 text-2xs text-content-muted">
+            Sync the feed, paste an iCal export, or add a trip by hand.
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
@@ -26780,6 +26802,7 @@ export default function CharterOps() {
       setTripArchived(prev => ({ ...prev, [tripUid]: Date.now() }));
     } catch (err) {
       console.error('Failed to archive trip:', err);
+      notify.error('Could not archive the trip', { description: err.message });
     }
   }, []);
 
@@ -26804,8 +26827,24 @@ export default function CharterOps() {
       });
     } catch (err) {
       console.error('Failed to unarchive trip:', err);
+      notify.error('Could not restore the trip', { description: err.message });
     }
   }, []);
+
+  /**
+   * Archiving is reachable by a left-swipe on a trip card, which is easy to
+   * trigger by accident while scrolling a dense list. Confirm it happened and
+   * offer a one-tap undo rather than silently removing the trip.
+   */
+  const archiveTripWithUndo = useCallback(async (tripUid) => {
+    const trip = allTrips.find(t => t.uid === tripUid);
+    const label = trip ? `${trip.info?.from || '?'} → ${trip.info?.to || '?'}` : 'Trip';
+    await archiveTrip(tripUid);
+    notify.info(`${label} archived`, {
+      action: { label: 'Undo', onClick: () => unarchiveTrip(tripUid) },
+      duration: 8000,
+    });
+  }, [allTrips, archiveTrip, unarchiveTrip]);
 
   // Map Firebase profile to legacy currentUser shape so the rest of the app keeps working
   // Admin impersonation: when set to another user's uid, currentUser appears as that user
@@ -27727,7 +27766,7 @@ export default function CharterOps() {
                         TODAY · {groupedTrips.today.length}
                       </div>
                       {groupedTrips.today.map(trip => (
-                        <TripCard key={trip.uid} trip={trip} selected={trip.uid === selectedId} statusCount={tripStatusCounts[trip.uid] || 0} hasUpdate={tripHasUpdates(trip.uid)} onArchive={archiveTrip} onClick={() => { setSelectedId(trip.uid); markTripSeen(trip.uid); }} />
+                        <TripCard key={trip.uid} trip={trip} selected={trip.uid === selectedId} statusCount={tripStatusCounts[trip.uid] || 0} hasUpdate={tripHasUpdates(trip.uid)} onArchive={archiveTripWithUndo} onClick={() => { setSelectedId(trip.uid); markTripSeen(trip.uid); }} />
                       ))}
                     </div>
                   )}
@@ -27737,7 +27776,7 @@ export default function CharterOps() {
                         TOMORROW · {groupedTrips.tomorrow.length}
                       </div>
                       {groupedTrips.tomorrow.map(trip => (
-                        <TripCard key={trip.uid} trip={trip} selected={trip.uid === selectedId} statusCount={tripStatusCounts[trip.uid] || 0} hasUpdate={tripHasUpdates(trip.uid)} onArchive={archiveTrip} onClick={() => { setSelectedId(trip.uid); markTripSeen(trip.uid); }} />
+                        <TripCard key={trip.uid} trip={trip} selected={trip.uid === selectedId} statusCount={tripStatusCounts[trip.uid] || 0} hasUpdate={tripHasUpdates(trip.uid)} onArchive={archiveTripWithUndo} onClick={() => { setSelectedId(trip.uid); markTripSeen(trip.uid); }} />
                       ))}
                     </div>
                   )}
@@ -27747,7 +27786,7 @@ export default function CharterOps() {
                         UPCOMING · {groupedTrips.later.length}
                       </div>
                       {groupedTrips.later.map(trip => (
-                        <TripCard key={trip.uid} trip={trip} selected={trip.uid === selectedId} statusCount={tripStatusCounts[trip.uid] || 0} hasUpdate={tripHasUpdates(trip.uid)} onArchive={archiveTrip} onClick={() => { setSelectedId(trip.uid); markTripSeen(trip.uid); }} />
+                        <TripCard key={trip.uid} trip={trip} selected={trip.uid === selectedId} statusCount={tripStatusCounts[trip.uid] || 0} hasUpdate={tripHasUpdates(trip.uid)} onArchive={archiveTripWithUndo} onClick={() => { setSelectedId(trip.uid); markTripSeen(trip.uid); }} />
                       ))}
                     </div>
                   )}
@@ -27757,7 +27796,7 @@ export default function CharterOps() {
                         PAST · {groupedTrips.past.length} · NEWEST FIRST
                       </div>
                       {groupedTrips.past.map(trip => (
-                        <TripCard key={trip.uid} trip={trip} selected={trip.uid === selectedId} statusCount={tripStatusCounts[trip.uid] || 0} hasUpdate={tripHasUpdates(trip.uid)} onArchive={archiveTrip} onClick={() => { setSelectedId(trip.uid); markTripSeen(trip.uid); }} />
+                        <TripCard key={trip.uid} trip={trip} selected={trip.uid === selectedId} statusCount={tripStatusCounts[trip.uid] || 0} hasUpdate={tripHasUpdates(trip.uid)} onArchive={archiveTripWithUndo} onClick={() => { setSelectedId(trip.uid); markTripSeen(trip.uid); }} />
                       ))}
                     </div>
                   )}
