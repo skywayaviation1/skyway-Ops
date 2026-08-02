@@ -946,7 +946,7 @@ function CommsLayoutInner({
                   onInfo={() => setShowInfo((value) => !value)}
                 />
                 <MessageList />
-                <MessageInput focus />
+                <MessageInput focus audioRecordingEnabled />
               </Window>
               <Thread />
             </Channel>
@@ -1090,7 +1090,7 @@ export function TripChatStream({ trip, currentUser, users = [], getIdToken }) {
               onInfo={() => notify.info(`${channelMembers(channel).length} members in this trip channel.`)}
             />
             <MessageList />
-            <MessageInput focus />
+            <MessageInput focus audioRecordingEnabled />
           </Window>
           <Thread />
         </Channel>
