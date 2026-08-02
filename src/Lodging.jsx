@@ -1,48 +1,39 @@
-// Lodging.jsx — crew lodging on a trip. Shown as a tab on the trip
-// detail page (ops/admin/crew can see it). Each booking is a record
-// in the existing `travel-bookings` collection, with a `tripUid` field
-// linking it to this trip.
+// Lodging.jsx — trip crew lodging + IATA commission hotel booking.
 //
-// What this shows:
-//   - All hotel + flight bookings linked to the trip
-//   - Who the booking is for (crewmember name from userUid)
-//   - Dates, confirmation #, hotel name + brand
-//   - For lodging, a "+ Add Lodging" button that opens a form pre-filled
-//     with trip context (tripUid, suggested dates from trip departure)
+// Surfaces:
+//   1. Trip lodging list (travel-bookings where tripUid matches)
+//   2. Full booking window: search → results → rooms → checkout → confirm
+//   3. Manual add (outside-app reservations)
 //
-// What this does NOT do (yet):
-//   - Search Expedia / Booking.com for hotels (no API access — manual entry)
-//   - Take payment (out of scope — corporate card / invoice happens externally)
-//   - Send confirmations to crew (could be added — for now bookings are
-//     visible in the crew's own TRAVEL tab + on this trip)
-//
-// When TAAP Lodging Shopping API access arrives, the manual form will
-// gain a search button that auto-fills hotel name/address/conf# from
-// the API. The data model below already supports it — no schema change
-// needed when search is added.
+// Commission: agency IATA is stored in app-config/lodging. Rates show
+// Expedia marketing_fee (live Rapid) or an estimated % (demo / fallback).
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Hotel, Plane, Plus, Loader2, X, Search, Star, AlertTriangle, ChevronLeft } from 'lucide-react';
-import { searchProperties, getPropertyDetail, bookRoom, DEMO_MODE } from './rapid-mock.js';
-
-// ====================================================================
-// MAIN COMPONENT
-// ====================================================================
+import {
+  Hotel, Plane, Plus, X, Search, Star, AlertTriangle,
+  ChevronLeft, DollarSign, ExternalLink, Trash2, Shield,
+} from 'lucide-react';
+import {
+  Button, EmptyState, StatusChip, Spinner, cx, notify,
+} from './ui.jsx';
+import {
+  searchHotels, getHotelDetail, bookHotel, getHotelApiStatus,
+} from './hotel-api.js';
+import {
+  subscribeToLodgingConfig, buildTaapSearchUrl, DEFAULT_LODGING_CONFIG,
+} from './firebase-lodging.js';
 
 export default function Lodging({ trip, currentUser, users = [] }) {
   const [bookings, setBookings] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
-  // FIND HOTELS flow — opens the search modal. Currently powered by
-  // mock data; when real Rapid API credentials arrive, the mock client
-  // gets swapped for real fetches and DEMO_MODE flips to false.
-  const [showFind, setShowFind] = useState(false);
+  const [showBook, setShowBook] = useState(false);
+  const [lodgingConfig, setLodgingConfig] = useState(DEFAULT_LODGING_CONFIG);
+  const [apiStatus, setApiStatus] = useState(null);
 
-  // Subscribe to all bookings linked to this trip. Updates in real time
-  // as crew or dispatch add hotels.
   useEffect(() => {
-    if (!trip?.uid) return;
+    if (!trip?.uid) return undefined;
     let unsub = () => {};
     let cancelled = false;
     setLoading(true);
@@ -54,108 +45,122 @@ export default function Lodging({ trip, currentUser, users = [] }) {
         setLoading(false);
       });
     })();
-    return () => { cancelled = true; try { unsub(); } catch (_) {} };
+    return () => { cancelled = true; try { unsub(); } catch (_) { /* ignore */ } };
   }, [trip?.uid]);
 
-  // Look up crewmember name from userUid for the booking-belongs-to display
+  useEffect(() => {
+    const unsub = subscribeToLodgingConfig(setLodgingConfig);
+    getHotelApiStatus().then(setApiStatus).catch(() => {});
+    return () => { try { unsub(); } catch (_) { /* ignore */ } };
+  }, []);
+
   const lookupUser = (uid) => {
     const u = users.find((x) => x.uid === uid || x.id === uid);
     return u?.name || u?.displayName || 'Unknown';
   };
 
-  // Permissions: anyone on the trip + ops/admin can see this tab.
-  // Only ops/admin and the booking's own crewmember can add/edit.
   const isOpsOrAdmin = ['ops', 'admin'].includes(currentUser?.role);
+  const iata = lodgingConfig.agencyIata;
+  const commissionTotal = useMemo(() => bookings.reduce((sum, b) => {
+    const n = Number(b.commissionAmount);
+    return sum + (Number.isFinite(n) ? n : 0);
+  }, 0), [bookings]);
+
+  async function handleDelete(booking) {
+    if (!isOpsOrAdmin && booking.userUid !== currentUser?.uid) return;
+    if (!window.confirm(`Remove lodging record ${booking.confirmationCode || booking.hotelName || ''}?`)) return;
+    try {
+      const { deleteBooking } = await import('./firebase-travel.js');
+      await deleteBooking(booking.id);
+      notify.success('Lodging removed');
+    } catch (e) {
+      notify.error(e.message || 'Could not delete');
+    }
+  }
 
   return (
-    <div className="space-y-4 p-4">
-      {/* Header */}
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <div>
-          <h2 className="text-2xl tracking-wider" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
-            CREW LODGING
-          </h2>
-          <p className="text-xs text-slate-500 mt-1">
-            Hotels and overnight stays for this trip.
+    <div className="space-y-4 p-4 md:p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="text-xl font-semibold text-content">Crew lodging</h2>
+          <p className="mt-1 text-2xs text-content-muted">
+            Book commissionable hotels under Skyway’s IATA, or log a reservation made outside the app.
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setShowFind(true)}
-            className="px-3 py-2 border border-amber-500/60 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20 text-sm font-medium tracking-widest"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}
-            title="Search Expedia for hotels (currently DEMO mode)"
-          >
-            <Search className="w-4 h-4 inline-block mr-1 -mt-0.5" /> FIND HOTELS
-          </button>
-          <button
-            onClick={() => setShowAdd(true)}
-            className="px-3 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-sm font-medium tracking-widest"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}
-          >
-            <Plus className="w-4 h-4 inline-block mr-1 -mt-0.5" /> ADD MANUALLY
-          </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {iata ? (
+            <StatusChip tone="accent" icon={Shield}>IATA {iata}</StatusChip>
+          ) : (
+            <StatusChip tone="warning" icon={AlertTriangle}>Set IATA in Settings</StatusChip>
+          )}
+          {apiStatus?.live ? (
+            <StatusChip tone="success">Live Rapid</StatusChip>
+          ) : (
+            <StatusChip tone="warning">Demo rates</StatusChip>
+          )}
+          <Button variant="outline" size="sm" icon={Plus} onClick={() => setShowAdd(true)}>
+            Log booking
+          </Button>
+          <Button variant="primary" size="sm" icon={Search} onClick={() => setShowBook(true)}>
+            Book hotel
+          </Button>
         </div>
       </div>
 
-      {/* Demo-mode banner — only rendered while DEMO_MODE is true. When
-          real Rapid credentials are wired up and DEMO_MODE flips to
-          false, this disappears entirely. Until then it's a persistent,
-          unmissable signal that any "booking" made via FIND HOTELS is
-          not a real reservation. */}
-      {DEMO_MODE && (
-        <div className="border border-amber-500/40 bg-amber-500/10 px-3 py-2 flex items-center gap-2">
-          <AlertTriangle className="w-4 h-4 text-amber-300 shrink-0" />
-          <span className="text-xs text-amber-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            FIND HOTELS is in DEMO mode — searches return mock data and bookings are not real. ADD MANUALLY records real bookings made outside the app.
+      {!iata && (
+        <div className="flex items-start gap-2 rounded-lg border border-warning-border bg-warning-soft px-3 py-2.5 text-2xs text-warning">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>
+            Add your agency IATA number in Settings → Lodging &amp; IATA so bookings are tagged for commission.
+            {apiStatus?.live ? '' : ' Demo inventory is available now; connect Expedia Rapid on Vercel for live rates.'}
           </span>
         </div>
       )}
 
-      {/* Trip context strip — show key trip info so dispatch doesn't have
-          to switch tabs to remember dates / destination */}
-      <div className="border border-slate-800 bg-slate-900/40 p-3 text-xs text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-        <span className="text-slate-500">TRIP</span>{' '}
-        <span className="text-slate-200">{trip.info?.tail || '?'}</span>
-        <span className="text-slate-600 mx-2">·</span>
-        <span className="text-slate-200">{trip.info?.from} → {trip.info?.to}</span>
-        <span className="text-slate-600 mx-2">·</span>
-        <span className="text-slate-200">
+      <div className="flex flex-wrap gap-3 rounded-xl border border-edge bg-surface-sunken px-3 py-2.5 font-mono text-2xs text-content-muted">
+        <span>
+          <span className="text-content-subtle">Trip</span>{' '}
+          <span className="text-content">{trip.info?.tail || '?'}</span>
+        </span>
+        <span className="text-content-subtle">·</span>
+        <span className="text-content">{trip.info?.from} → {trip.info?.to}</span>
+        <span className="text-content-subtle">·</span>
+        <span className="text-content">
           {trip.start ? new Date(trip.start).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—'}
         </span>
-        {trip.info?.pic && (
+        {commissionTotal > 0 && (
           <>
-            <span className="text-slate-600 mx-2">·</span>
-            <span className="text-slate-500">PIC</span>{' '}
-            <span className="text-slate-200">{trip.info.pic}</span>
-          </>
-        )}
-        {trip.info?.sic && (
-          <>
-            <span className="text-slate-600 mx-1">/</span>
-            <span className="text-slate-200">{trip.info.sic}</span>
+            <span className="text-content-subtle">·</span>
+            <span className="text-accent">
+              Est. commission ${commissionTotal.toFixed(2)}
+            </span>
           </>
         )}
       </div>
 
-      {/* Bookings list */}
       {loading ? (
-        <div className="p-8 text-center text-slate-500">
-          <Loader2 className="w-5 h-5 animate-spin mx-auto mb-2" />
-          Loading lodging...
-        </div>
+        <Spinner label="Loading lodging…" />
       ) : bookings.length === 0 ? (
-        <div className="border border-dashed border-slate-700 p-12 text-center">
-          <Hotel className="w-8 h-8 text-slate-700 mx-auto mb-2" />
-          <p className="text-sm text-slate-500">No lodging booked yet</p>
-          <p className="text-xs text-slate-600 mt-1">
-            Tap FIND HOTELS to search, or ADD MANUALLY to record an existing reservation.
-          </p>
-        </div>
+        <EmptyState
+          icon={Hotel}
+          title="No lodging booked yet"
+          description="Book a hotel under your IATA for commission, or log a confirmation from Marriott / another channel."
+          action={(
+            <Button variant="primary" size="sm" icon={Search} onClick={() => setShowBook(true)}>
+              Book hotel
+            </Button>
+          )}
+        />
       ) : (
         <div className="space-y-3">
           {bookings.map((b) => (
-            <LodgingRow key={b.id} booking={b} crewName={lookupUser(b.userUid)} />
+            <LodgingRow
+              key={b.id}
+              booking={b}
+              crewName={lookupUser(b.userUid)}
+              canDelete={isOpsOrAdmin || b.userUid === currentUser?.uid}
+              onDelete={() => handleDelete(b)}
+            />
           ))}
         </div>
       )}
@@ -166,444 +171,201 @@ export default function Lodging({ trip, currentUser, users = [] }) {
           currentUser={currentUser}
           users={users}
           isOpsOrAdmin={isOpsOrAdmin}
+          lodgingConfig={lodgingConfig}
           onClose={() => setShowAdd(false)}
         />
       )}
 
-      {showFind && (
-        <FindHotelsModal
+      {showBook && (
+        <HotelBookingWindow
           trip={trip}
           currentUser={currentUser}
           users={users}
           isOpsOrAdmin={isOpsOrAdmin}
-          onClose={() => setShowFind(false)}
+          lodgingConfig={lodgingConfig}
+          apiStatus={apiStatus}
+          onClose={() => setShowBook(false)}
         />
       )}
     </div>
   );
 }
 
-// ====================================================================
-// SINGLE BOOKING ROW
-// ====================================================================
-
-function LodgingRow({ booking, crewName }) {
+function LodgingRow({ booking, crewName, canDelete, onDelete }) {
   const fmtDate = (d) => {
     if (!d) return '—';
-    const dt = new Date(d + 'T00:00:00');
-    if (isNaN(dt.getTime())) return d;
+    const dt = new Date(`${d}T00:00:00`);
+    if (Number.isNaN(dt.getTime())) return d;
     return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   };
   const nights = (() => {
     if (!booking.checkInDate || !booking.checkOutDate) return null;
-    const diff = (new Date(booking.checkOutDate) - new Date(booking.checkInDate)) / (1000 * 60 * 60 * 24);
+    const diff = (new Date(booking.checkOutDate) - new Date(booking.checkInDate)) / 86400000;
     return Math.round(diff);
   })();
   const isFlight = booking.type === 'flight';
   const Icon = isFlight ? Plane : Hotel;
-  const accentColor = isFlight ? 'border-cyan-500' : 'border-amber-500';
+  const commission = Number(booking.commissionAmount);
 
   return (
-    <div className={`border-l-4 ${accentColor} bg-slate-900/40 p-4`}>
+    <div className="rounded-xl border border-edge bg-surface p-4 shadow-card">
       <div className="flex items-start justify-between gap-3">
-        <div className="flex items-start gap-3 min-w-0 flex-1">
-          <div className="bg-slate-800 rounded p-2 shrink-0">
-            <Icon className="w-5 h-5 text-slate-300" />
+        <div className="flex min-w-0 flex-1 items-start gap-3">
+          <div className="rounded-lg border border-edge bg-surface-raised p-2">
+            <Icon className="h-5 w-5 text-content-muted" />
           </div>
           <div className="min-w-0">
-            <div className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+            <div className="font-mono text-[10px] font-semibold tracking-wide text-content-subtle">
               {isFlight ? 'FLIGHT' : (booking.hotelBrand || 'HOTEL').toUpperCase()}
+              {booking.sourceDemo ? ' · DEMO' : ''}
+              {booking.agencyIata ? ` · IATA ${booking.agencyIata}` : ''}
             </div>
-            <h3 className="text-base mt-0.5" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
+            <h3 className="mt-0.5 truncate text-base font-semibold text-content">
               {isFlight
                 ? `${booking.airline || ''} ${booking.flightNumber || ''}`.trim() || '(flight)'
                 : (booking.hotelName || '(unnamed)')}
             </h3>
             {!isFlight && booking.city && (
-              <p className="text-xs text-slate-500 mt-0.5">
+              <p className="mt-0.5 text-2xs text-content-muted">
                 {booking.city}{booking.state ? `, ${booking.state}` : ''}
               </p>
             )}
-            <p className="text-xs text-slate-400 mt-2">
-              <span className="text-slate-500">For:</span> {crewName}
+            <p className="mt-2 text-2xs text-content-muted">
+              For <span className="text-content">{crewName}</span>
             </p>
           </div>
         </div>
-        <div className="text-right shrink-0">
-          <div className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            CONF
-          </div>
-          <div className="text-sm font-mono text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+        <div className="shrink-0 text-right">
+          <div className="font-mono text-[10px] text-content-subtle">CONF</div>
+          <div className="font-mono text-sm font-semibold text-content">
             {booking.confirmationCode || '—'}
           </div>
+          {canDelete && (
+            <button
+              type="button"
+              onClick={onDelete}
+              className="mt-2 inline-flex items-center gap-1 text-2xs text-content-subtle hover:text-danger"
+              title="Remove record"
+            >
+              <Trash2 className="h-3.5 w-3.5" /> Remove
+            </button>
+          )}
         </div>
       </div>
 
-      <div className="border-t border-slate-800 pt-2 mt-3 text-xs" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-        <span className="text-slate-500">
-          {isFlight ? 'DEPART' : 'CHECK-IN → CHECK-OUT'}
-        </span>
-        <div className="text-slate-200 mt-0.5">
-          {isFlight
-            ? fmtDate(booking.departDate)
-            : <>
-                {fmtDate(booking.checkInDate)} → {fmtDate(booking.checkOutDate)}
-                {nights !== null && <span className="text-slate-500 ml-2">({nights} night{nights === 1 ? '' : 's'})</span>}
-              </>
-          }
+      <div className="mt-3 flex flex-wrap items-end justify-between gap-3 border-t border-edge pt-3 font-mono text-2xs">
+        <div>
+          <div className="text-content-subtle">
+            {isFlight ? 'Depart' : 'Check-in → check-out'}
+          </div>
+          <div className="mt-0.5 text-content">
+            {isFlight
+              ? fmtDate(booking.departDate)
+              : (
+                <>
+                  {fmtDate(booking.checkInDate)} → {fmtDate(booking.checkOutDate)}
+                  {nights != null && (
+                    <span className="ml-2 text-content-subtle">
+                      ({nights} night{nights === 1 ? '' : 's'})
+                    </span>
+                  )}
+                </>
+              )}
+          </div>
+        </div>
+        <div className="text-right">
+          {booking.nightlyRate != null && (
+            <div className="text-content">${Number(booking.nightlyRate).toFixed(0)}/night</div>
+          )}
+          {Number.isFinite(commission) && commission > 0 && (
+            <div className="text-accent">
+              Commission ${commission.toFixed(2)}
+              {booking.commissionPct != null ? ` · ${booking.commissionPct}%` : ''}
+            </div>
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-// ====================================================================
-// ADD LODGING MODAL
-// ====================================================================
+/* =========================================================================
+   FULL HOTEL BOOKING WINDOW
+   ========================================================================= */
 
-function AddLodgingModal({ trip, currentUser, users, isOpsOrAdmin, onClose }) {
-  // Pre-fill from trip context. Check-in date = trip start date (crew
-  // usually checks in same day as arrival); check-out 1 day later.
-  // Crewmember defaults to current user, but ops/admin can pick from
-  // PIC/SIC.
+function HotelBookingWindow({
+  trip, currentUser, users, isOpsOrAdmin, lodgingConfig, apiStatus, onClose,
+}) {
   const tripDate = trip.start ? new Date(trip.start) : new Date();
   const defaultCheckIn = tripDate.toISOString().slice(0, 10);
   const defaultCheckOut = new Date(tripDate.getTime() + 86400000).toISOString().slice(0, 10);
 
-  // Build the crewmember picker options. PIC + SIC if we have them in
-  // the users list; otherwise fall back to current user.
-  const crewOptions = (() => {
-    const opts = [];
-    const seen = new Set();
-    const tryAddByName = (name) => {
-      if (!name) return;
-      const u = users.find((x) => x.name === name || x.displayName === name);
-      if (u && !seen.has(u.uid)) {
-        opts.push({ uid: u.uid, name: u.name || u.displayName });
-        seen.add(u.uid);
-      }
-    };
-    tryAddByName(trip.info?.pic);
-    tryAddByName(trip.info?.sic);
-    if (currentUser && !seen.has(currentUser.uid)) {
-      opts.push({ uid: currentUser.uid, name: currentUser.name || currentUser.displayName || 'Me' });
-    }
-    return opts;
-  })();
+  const crewOptions = useMemo(() => buildCrewOptions(trip, currentUser, users), [trip, currentUser, users]);
 
-  const [forUid, setForUid] = useState(crewOptions[0]?.uid || currentUser?.uid || '');
-  const [hotelName, setHotelName] = useState('');
-  const [hotelBrand, setHotelBrand] = useState('');
-  const [city, setCity] = useState('');
-  const [state, setState] = useState('');
-  const [checkInDate, setCheckInDate] = useState(defaultCheckIn);
-  const [checkOutDate, setCheckOutDate] = useState(defaultCheckOut);
-  const [confirmationCode, setConfirmationCode] = useState('');
-  const [nightlyRate, setNightlyRate] = useState('');
-  const [notes, setNotes] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState(null);
-
-  async function handleSave() {
-    setSaving(true);
-    setError(null);
-    try {
-      const { saveBooking, newBookingId } = await import('./firebase-travel.js');
-      const id = newBookingId('hotel');
-      await saveBooking({
-        id,
-        type: 'hotel',
-        // Linkage: this is what surfaces it on the trip
-        tripUid: trip.uid,
-        tripContext: {
-          tail: trip.info?.tail || null,
-          from: trip.info?.from || null,
-          to: trip.info?.to || null,
-          startDate: trip.start ? new Date(trip.start).toISOString() : null,
-        },
-        // Who the lodging is for
-        userUid: forUid,
-        // Hotel fields (matching existing AddBookingModal schema)
-        hotelName: hotelName.trim(),
-        hotelBrand: hotelBrand.trim() || null,
-        city: city.trim() || null,
-        state: state.trim() || null,
-        checkInDate: checkInDate || null,
-        checkOutDate: checkOutDate || null,
-        confirmationCode: confirmationCode.trim() || null,
-        nightlyRate: nightlyRate ? Number(nightlyRate) : null,
-        notes: notes.trim() || null,
-        // For sorting in user travel view
-        startDate: checkInDate || null,
-        // Who created the record (audit)
-        createdBy: currentUser?.uid || null,
-        createdByName: currentUser?.name || currentUser?.displayName || null,
-      });
-      onClose();
-    } catch (e) {
-      setError(e.message || 'Failed to save');
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  const canSave = hotelName.trim() && forUid && checkInDate && checkOutDate;
-
-  // Render via portal directly to document.body so the modal escapes any
-  // ancestor stacking context / containing block. Without this, the
-  // modal can render inside the trip detail's scroll container and end
-  // up visually behind sticky headers — the modal title and X get hidden
-  // behind the top app bar / trip tab strip even though z-50 should win.
-  return createPortal(
-    <div className="fixed inset-0 z-[100] bg-slate-950/80 backdrop-blur-sm flex items-start sm:items-center justify-center p-0 sm:p-4 overflow-y-auto">
-      <div className="bg-slate-900 border border-slate-700 w-full max-w-lg sm:my-8 flex flex-col min-h-screen sm:min-h-0 sm:max-h-[90vh]">
-        <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3 shrink-0">
-          <h3 className="text-lg tracking-wider" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
-            ADD LODGING
-          </h3>
-          <button onClick={onClose} className="text-slate-500 hover:text-slate-200">
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        <div className="p-4 space-y-3 flex-1 overflow-y-auto">
-          {/* Crewmember */}
-          <div>
-            <label className="text-[10px] tracking-widest text-slate-400 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              FOR CREWMEMBER
-            </label>
-            <select
-              value={forUid}
-              onChange={(e) => setForUid(e.target.value)}
-              disabled={!isOpsOrAdmin && crewOptions.length === 1}
-              className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}
-            >
-              {crewOptions.map((c) => (
-                <option key={c.uid} value={c.uid}>{c.name}</option>
-              ))}
-              {isOpsOrAdmin && (
-                <optgroup label="Other crew">
-                  {users
-                    .filter((u) => u.approved !== false && !crewOptions.find((c) => c.uid === u.uid))
-                    .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
-                    .map((u) => (
-                      <option key={u.uid} value={u.uid}>{u.name} ({u.role})</option>
-                    ))}
-                </optgroup>
-              )}
-            </select>
-          </div>
-
-          {/* Hotel name + brand */}
-          <div>
-            <label className="text-[10px] tracking-widest text-slate-400 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              HOTEL NAME *
-            </label>
-            <input
-              type="text"
-              value={hotelName}
-              onChange={(e) => setHotelName(e.target.value)}
-              placeholder="e.g. Hilton Garden Inn"
-              className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
-            />
-          </div>
-          <div>
-            <label className="text-[10px] tracking-widest text-slate-400 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              BRAND (optional)
-            </label>
-            <input
-              type="text"
-              value={hotelBrand}
-              onChange={(e) => setHotelBrand(e.target.value)}
-              placeholder="e.g. Hilton"
-              className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-[10px] tracking-widest text-slate-400 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                CITY
-              </label>
-              <input
-                type="text"
-                value={city}
-                onChange={(e) => setCity(e.target.value)}
-                className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
-              />
-            </div>
-            <div>
-              <label className="text-[10px] tracking-widest text-slate-400 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                STATE
-              </label>
-              <input
-                type="text"
-                value={state}
-                onChange={(e) => setState(e.target.value)}
-                maxLength={2}
-                className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
-              />
-            </div>
-          </div>
-
-          {/* Dates */}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-[10px] tracking-widest text-slate-400 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                CHECK-IN *
-              </label>
-              <input
-                type="date"
-                value={checkInDate}
-                onChange={(e) => setCheckInDate(e.target.value)}
-                className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
-              />
-            </div>
-            <div>
-              <label className="text-[10px] tracking-widest text-slate-400 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                CHECK-OUT *
-              </label>
-              <input
-                type="date"
-                value={checkOutDate}
-                onChange={(e) => setCheckOutDate(e.target.value)}
-                className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
-              />
-            </div>
-          </div>
-
-          {/* Conf # + rate */}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-[10px] tracking-widest text-slate-400 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                CONFIRMATION #
-              </label>
-              <input
-                type="text"
-                value={confirmationCode}
-                onChange={(e) => setConfirmationCode(e.target.value)}
-                className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 font-mono"
-                style={{ fontFamily: 'JetBrains Mono, monospace' }}
-              />
-            </div>
-            <div>
-              <label className="text-[10px] tracking-widest text-slate-400 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                NIGHTLY RATE ($)
-              </label>
-              <input
-                type="number"
-                value={nightlyRate}
-                onChange={(e) => setNightlyRate(e.target.value)}
-                min="0"
-                step="0.01"
-                className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
-              />
-            </div>
-          </div>
-
-          {/* Notes */}
-          <div>
-            <label className="text-[10px] tracking-widest text-slate-400 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              NOTES
-            </label>
-            <textarea
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              rows={2}
-              placeholder="Special requests, room type, etc."
-              className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 text-sm"
-            />
-          </div>
-
-          {error && (
-            <div className="border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">
-              {error}
-            </div>
-          )}
-        </div>
-
-        <div className="border-t border-slate-800 px-4 py-3 flex items-center justify-end gap-2 shrink-0">
-          <button
-            onClick={onClose}
-            disabled={saving}
-            className="px-4 py-2 text-sm text-slate-400 hover:text-slate-200"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}
-          >
-            CANCEL
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={!canSave || saving}
-            className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-700 disabled:text-slate-500 text-slate-950 text-sm font-medium tracking-widest"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}
-          >
-            {saving ? <Loader2 className="w-4 h-4 inline-block mr-1 animate-spin" /> : null}
-            {saving ? 'SAVING...' : 'SAVE'}
-          </button>
-        </div>
-      </div>
-    </div>,
-    document.body
-  );
-}
-
-// ====================================================================
-// FIND HOTELS MODAL  (DEMO — mock data; swap rapid-mock.js for real)
-// ====================================================================
-
-function FindHotelsModal({ trip, currentUser, users, isOpsOrAdmin, onClose }) {
-  // Modal has three steps:
-  //   'search'  — entry: airport + dates + crewmember picker
-  //   'results' — list of hotels matching search
-  //   'detail'  — picked one hotel: shows rooms + rate options
-  //   'success' — booking complete, shows confirmation
-  const [step, setStep] = useState('search');
-
-  // Search params — pre-filled from trip context
-  const tripDate = trip.start ? new Date(trip.start) : new Date();
-  const defaultCheckIn = tripDate.toISOString().slice(0, 10);
-  const defaultCheckOut = new Date(tripDate.getTime() + 86400000).toISOString().slice(0, 10);
+  const [step, setStep] = useState('search'); // search|results|detail|checkout|success
   const [airportCode, setAirportCode] = useState(trip.info?.to || '');
   const [checkInDate, setCheckInDate] = useState(defaultCheckIn);
   const [checkOutDate, setCheckOutDate] = useState(defaultCheckOut);
-
-  // Crewmember picker — same logic as AddLodgingModal
-  const crewOptions = (() => {
-    const opts = [];
-    const seen = new Set();
-    const tryAddByName = (name) => {
-      if (!name) return;
-      const u = users.find((x) => x.name === name || x.displayName === name);
-      if (u && !seen.has(u.uid)) {
-        opts.push({ uid: u.uid, name: u.name || u.displayName });
-        seen.add(u.uid);
-      }
-    };
-    tryAddByName(trip.info?.pic);
-    tryAddByName(trip.info?.sic);
-    if (currentUser && !seen.has(currentUser.uid)) {
-      opts.push({ uid: currentUser.uid, name: currentUser.name || currentUser.displayName || 'Me' });
-    }
-    return opts;
-  })();
   const [forUid, setForUid] = useState(crewOptions[0]?.uid || currentUser?.uid || '');
+  const [occupancyAdults, setOccupancyAdults] = useState(1);
 
-  // Results + detail state
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState([]);
+  const [demoMode, setDemoMode] = useState(!apiStatus?.live);
+  const [statusMessage, setStatusMessage] = useState(apiStatus?.message || '');
   const [selectedProperty, setSelectedProperty] = useState(null);
   const [selectedRooms, setSelectedRooms] = useState([]);
+  const [selectedRoom, setSelectedRoom] = useState(null);
+  const [selectedRate, setSelectedRate] = useState(null);
   const [booking, setBooking] = useState(false);
   const [bookingResult, setBookingResult] = useState(null);
   const [error, setError] = useState(null);
+
+  const guestUser = users.find((u) => u.uid === forUid) || currentUser;
+  const [givenName, setGivenName] = useState(() => splitName(guestUser?.name).given);
+  const [familyName, setFamilyName] = useState(() => splitName(guestUser?.name).family);
+  const [email, setEmail] = useState(currentUser?.email || '');
+  const [phone, setPhone] = useState('');
+  const [cardNumber, setCardNumber] = useState('');
+  const [cardExpMonth, setCardExpMonth] = useState('');
+  const [cardExpYear, setCardExpYear] = useState('');
+  const [cardCvv, setCardCvv] = useState('');
+
+  useEffect(() => {
+    const parts = splitName(guestUser?.name);
+    setGivenName(parts.given);
+    setFamilyName(parts.family);
+  }, [forUid]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const nights = useMemo(() => {
+    const a = new Date(`${checkInDate}T00:00:00`).getTime();
+    const b = new Date(`${checkOutDate}T00:00:00`).getTime();
+    if (!Number.isFinite(a) || !Number.isFinite(b) || b <= a) return 1;
+    return Math.max(1, Math.round((b - a) / 86400000));
+  }, [checkInDate, checkOutDate]);
+
+  const iata = lodgingConfig.agencyIata;
+  const taapUrl = buildTaapSearchUrl(lodgingConfig, {
+    destination: airportCode,
+    checkIn: checkInDate,
+    checkOut: checkOutDate,
+  });
 
   async function handleSearch() {
     setSearching(true);
     setError(null);
     try {
-      const data = await searchProperties({ airportCode, checkInDate, checkOutDate });
+      const data = await searchHotels({
+        airportCode,
+        checkInDate,
+        checkOutDate,
+        occupancyAdults,
+        agencyIata: iata,
+        defaultCommissionPct: lodgingConfig.defaultCommissionPct,
+      });
       setResults(data.properties || []);
+      setDemoMode(!!data.demo);
+      setStatusMessage(data.message || '');
       setStep('results');
     } catch (e) {
       setError(e.message || 'Search failed');
@@ -617,35 +379,68 @@ function FindHotelsModal({ trip, currentUser, users, isOpsOrAdmin, onClose }) {
     setSearching(true);
     setError(null);
     try {
-      const data = await getPropertyDetail(property.property_id, { checkInDate, checkOutDate });
-      setSelectedRooms(data.rooms || []);
+      const data = await getHotelDetail({
+        propertyId: property.property_id,
+        checkInDate,
+        checkOutDate,
+        occupancyAdults,
+        defaultCommissionPct: lodgingConfig.defaultCommissionPct,
+      });
+      setSelectedProperty(data.property || property);
+      setSelectedRooms(data.rooms || property.rooms || []);
+      setDemoMode(!!data.demo);
       setStep('detail');
     } catch (e) {
-      setError(e.message || 'Failed to load hotel details');
+      setError(e.message || 'Failed to load hotel');
     } finally {
       setSearching(false);
     }
   }
 
-  async function handleBookRoom(room, rate) {
+  function goCheckout(room, rate) {
+    setSelectedRoom(room);
+    setSelectedRate(rate);
+    setStep('checkout');
+  }
+
+  async function handleConfirmBook() {
+    if (!selectedProperty || !selectedRoom || !selectedRate) return;
+    if (!givenName.trim() || !familyName.trim()) {
+      setError('Guest first and last name are required');
+      return;
+    }
     setBooking(true);
     setError(null);
     try {
-      const result = await bookRoom({
+      const payment = (!demoMode && cardNumber) ? {
+        card_number: cardNumber,
+        security_code: cardCvv,
+        expiration_month: cardExpMonth,
+        expiration_year: cardExpYear,
+      } : undefined;
+
+      const result = await bookHotel({
         propertyId: selectedProperty.property_id,
-        roomId: room.room_id,
-        rateId: rate.rate_id,
-        guests: [{ first_name: 'Crew', last_name: 'Member', occupants: 1 }],
-        dates: { checkIn: checkInDate, checkOut: checkOutDate },
+        roomId: selectedRoom.room_id,
+        rateId: selectedRate.rate_id,
+        checkInDate,
+        checkOutDate,
+        guests: [{ given_name: givenName.trim(), family_name: familyName.trim() }],
+        email: email.trim(),
+        phone: phone.trim(),
+        agencyIata: iata,
+        priceCheckHref: selectedRate.price_check_href,
+        bedGroupId: selectedRate.bed_group_id,
+        payment,
       });
+
       if (!result.ok) {
         setError(result.error || 'Booking failed');
         return;
       }
-      // Save the booking to Firestore — same data path as the manual
-      // AddLodgingModal, so the new booking appears in the LODGING list
-      // immediately. Conf number is prefixed DEMO- so it's clear at a
-      // glance which bookings came from mock data.
+
+      const commissionAmount = Number(selectedRate.marketing_fee?.request_currency?.value || 0);
+      const nightly = Number(selectedRate.nightly_rate?.request_currency?.value || 0);
       const { saveBooking, newBookingId } = await import('./firebase-travel.js');
       const id = newBookingId('hotel');
       const addr = selectedProperty.address || {};
@@ -664,245 +459,289 @@ function FindHotelsModal({ trip, currentUser, users, isOpsOrAdmin, onClose }) {
         hotelBrand: selectedProperty.brand || null,
         city: addr.city || null,
         state: addr.state_province_code || null,
+        address: addr.line_1 || null,
         checkInDate,
         checkOutDate,
         confirmationCode: result.confirmation_code,
-        nightlyRate: rate.nightly_rate?.request_currency?.value || null,
-        notes: `${room.room_name} · ${rate.refundable ? 'Refundable' : 'Non-refundable'} · ${rate.meal_plan || ''}`.trim(),
-        // Tag fields so we know this came from the search flow + which mock IDs
-        source: 'rapid-search',
-        sourceDemo: true,
+        nightlyRate: nightly || null,
+        totalRate: Number(selectedRate.total_in_request_currency?.request_currency?.value || 0) || null,
+        commissionAmount: commissionAmount || null,
+        commissionPct: selectedRate.commission_pct || lodgingConfig.defaultCommissionPct || null,
+        agencyIata: iata || null,
+        notes: [
+          selectedRoom.room_name,
+          selectedRate.refundable ? 'Refundable' : 'Non-refundable',
+          selectedRate.meal_plan,
+          result.demo ? 'DEMO — not a real reservation' : 'Expedia Rapid',
+        ].filter(Boolean).join(' · '),
+        source: result.demo ? 'rapid-demo' : 'rapid-live',
+        sourceDemo: !!result.demo,
         rapidPropertyId: selectedProperty.property_id,
-        rapidRoomId: room.room_id,
-        rapidRateId: rate.rate_id,
+        rapidRoomId: selectedRoom.room_id,
+        rapidRateId: selectedRate.rate_id,
+        itineraryId: result.itinerary_id || null,
         startDate: checkInDate,
         createdBy: currentUser?.uid || null,
         createdByName: currentUser?.name || currentUser?.displayName || null,
       });
-      setBookingResult({ ...result, room, rate });
+
+      setBookingResult({ ...result, room: selectedRoom, rate: selectedRate, property: selectedProperty, commissionAmount });
       setStep('success');
+      notify.success(result.demo ? 'Demo lodging saved' : 'Hotel booked');
     } catch (e) {
-      setError(e.message || 'Failed to save booking');
+      setError(e.message || 'Failed to book');
     } finally {
       setBooking(false);
     }
   }
 
-  // Render via portal directly to document.body so the modal escapes any
-  // ancestor stacking context / containing block. Without this, the
-  // modal can render inside the trip detail's scroll container and end
-  // up visually behind sticky headers — the modal title and X get hidden
-  // behind the top app bar / trip tab strip even though z-50 should win.
+  const title = {
+    search: 'Book hotel',
+    results: `${results.length} hotel${results.length === 1 ? '' : 's'} near ${airportCode.toUpperCase()}`,
+    detail: selectedProperty?.name || 'Hotel',
+    checkout: 'Confirm booking',
+    success: bookingResult?.demo ? 'Demo booking saved' : 'Booking confirmed',
+  }[step];
+
   return createPortal(
-    <div className="fixed inset-0 z-[100] bg-slate-950/80 backdrop-blur-sm flex items-start sm:items-center justify-center p-0 sm:p-4 overflow-y-auto">
-      <div className="bg-slate-900 border-2 border-amber-500/60 w-full max-w-3xl sm:my-8 flex flex-col min-h-screen sm:min-h-0 sm:max-h-[90vh]">
-        {/* Demo banner — runs across the top of EVERY step so the user
-            never loses sight of what mode they're in. */}
-        {DEMO_MODE && (
-          <div className="bg-amber-500/20 border-b border-amber-500/40 px-4 py-2 flex items-center gap-2 shrink-0">
-            <AlertTriangle className="w-4 h-4 text-amber-300 shrink-0" />
-            <span className="text-xs text-amber-100" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              DEMO MODE — NO REAL BOOKINGS WILL BE MADE. Hotels and prices are mock data for testing the UI.
+    <div className="fixed inset-0 z-[100] flex items-stretch justify-center bg-black/70 backdrop-blur-sm sm:items-center sm:p-4">
+      <div className="flex h-full w-full max-w-3xl flex-col overflow-hidden border border-edge bg-surface shadow-overlay sm:h-auto sm:max-h-[92vh] sm:rounded-xl">
+        {(demoMode || !iata) && (
+          <div className="flex items-start gap-2 border-b border-warning-border bg-warning-soft px-4 py-2.5 text-2xs text-warning">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>
+              {demoMode
+                ? 'Demo inventory — rates and confirmations are not real. '
+                : ''}
+              {iata
+                ? `Booking under IATA ${iata}${lodgingConfig.agencyName ? ` · ${lodgingConfig.agencyName}` : ''}.`
+                : 'No IATA on file — add it in Settings so commission is attributed to Skyway.'}
             </span>
           </div>
         )}
 
-        <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3 shrink-0">
-          <div className="flex items-center gap-3">
+        <div className="flex items-center justify-between gap-3 border-b border-edge px-4 py-3">
+          <div className="flex min-w-0 items-center gap-2">
             {step !== 'search' && (
               <button
+                type="button"
+                className="rounded p-1 text-content-muted hover:bg-surface-raised hover:text-content"
                 onClick={() => {
                   if (step === 'success') { onClose(); return; }
-                  if (step === 'detail') setStep('results');
+                  if (step === 'checkout') setStep('detail');
+                  else if (step === 'detail') setStep('results');
                   else if (step === 'results') setStep('search');
                 }}
-                className="text-slate-500 hover:text-slate-200"
-                title="Back"
+                aria-label="Back"
               >
-                <ChevronLeft className="w-5 h-5" />
+                <ChevronLeft className="h-5 w-5" />
               </button>
             )}
-            <h3 className="text-lg tracking-wider" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
-              {step === 'search' && 'FIND HOTELS'}
-              {step === 'results' && `${results.length} HOTELS NEAR ${airportCode.toUpperCase()}`}
-              {step === 'detail' && (selectedProperty?.name || 'HOTEL DETAILS')}
-              {step === 'success' && 'BOOKING CONFIRMED (DEMO)'}
-            </h3>
+            <div className="min-w-0">
+              <h3 className="truncate text-base font-semibold text-content">{title}</h3>
+              <p className="font-mono text-[10px] text-content-subtle">
+                {checkInDate} → {checkOutDate} · {nights} night{nights === 1 ? '' : 's'}
+                {iata ? ` · IATA ${iata}` : ''}
+              </p>
+            </div>
           </div>
-          <button onClick={onClose} className="text-slate-500 hover:text-slate-200">
-            <X className="w-5 h-5" />
+          <button type="button" onClick={onClose} className="rounded p-1 text-content-muted hover:text-content" aria-label="Close">
+            <X className="h-5 w-5" />
           </button>
         </div>
 
-        <div className="p-4 flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto p-4">
           {error && (
-            <div className="border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300 mb-3">
+            <div className="mb-3 rounded-lg border border-danger-border bg-danger-soft px-3 py-2 text-2xs text-danger">
               {error}
             </div>
           )}
+          {statusMessage && step === 'results' && (
+            <p className="mb-3 text-2xs text-content-muted">{statusMessage}</p>
+          )}
 
-          {/* STEP: SEARCH */}
           {step === 'search' && (
-            <div className="space-y-3">
+            <div className="space-y-4">
               <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-[10px] tracking-widest text-slate-400 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                    AIRPORT
-                  </label>
+                <Field label="Airport">
                   <input
-                    type="text"
                     value={airportCode}
                     onChange={(e) => setAirportCode(e.target.value.toUpperCase())}
-                    placeholder="e.g. FXE or CYYZ"
-                    className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 font-mono"
-                    style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                    placeholder="FXE"
+                    className={inputClass}
                   />
-                </div>
-                <div>
-                  <label className="text-[10px] tracking-widest text-slate-400 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                    FOR
-                  </label>
-                  <select
-                    value={forUid}
-                    onChange={(e) => setForUid(e.target.value)}
-                    className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
-                    style={{ fontFamily: 'JetBrains Mono, monospace' }}
-                  >
+                </Field>
+                <Field label="For crew">
+                  <select value={forUid} onChange={(e) => setForUid(e.target.value)} className={inputClass}>
                     {crewOptions.map((c) => (
                       <option key={c.uid} value={c.uid}>{c.name}</option>
                     ))}
+                    {isOpsOrAdmin && users
+                      .filter((u) => u.approved !== false && !crewOptions.find((c) => c.uid === u.uid))
+                      .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+                      .map((u) => (
+                        <option key={u.uid} value={u.uid}>{u.name}</option>
+                      ))}
                   </select>
+                </Field>
+                <Field label="Check-in">
+                  <input type="date" value={checkInDate} onChange={(e) => setCheckInDate(e.target.value)} className={inputClass} />
+                </Field>
+                <Field label="Check-out">
+                  <input type="date" value={checkOutDate} onChange={(e) => setCheckOutDate(e.target.value)} className={inputClass} />
+                </Field>
+                <Field label="Adults">
+                  <select value={occupancyAdults} onChange={(e) => setOccupancyAdults(Number(e.target.value))} className={inputClass}>
+                    {[1, 2, 3, 4].map((n) => <option key={n} value={n}>{n}</option>)}
+                  </select>
+                </Field>
+              </div>
+
+              <div className="rounded-xl border border-edge bg-surface-sunken p-3">
+                <div className="flex items-center gap-2 text-sm font-semibold text-content">
+                  <DollarSign className="h-4 w-4 text-accent" />
+                  Commission under IATA
                 </div>
-                <div>
-                  <label className="text-[10px] tracking-widest text-slate-400 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                    CHECK-IN
-                  </label>
-                  <input
-                    type="date"
-                    value={checkInDate}
-                    onChange={(e) => setCheckInDate(e.target.value)}
-                    className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] tracking-widest text-slate-400 block mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                    CHECK-OUT
-                  </label>
-                  <input
-                    type="date"
-                    value={checkOutDate}
-                    onChange={(e) => setCheckOutDate(e.target.value)}
-                    className="w-full bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100"
-                  />
-                </div>
+                <p className="mt-1 text-2xs leading-relaxed text-content-muted">
+                  {iata
+                    ? `Rates below include estimated marketing fee / commission for agency IATA ${iata}. Default estimate ${lodgingConfig.defaultCommissionPct}% when Expedia doesn’t return a fee.`
+                    : `Set your IATA in Settings to attribute commission. Default estimate ${lodgingConfig.defaultCommissionPct}% will still show on rates.`}
+                </p>
+                <a
+                  href={taapUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-2 inline-flex items-center gap-1 text-2xs font-semibold text-accent hover:underline"
+                >
+                  Open Expedia TAAP portal <ExternalLink className="h-3.5 w-3.5" />
+                </a>
               </div>
             </div>
           )}
 
-          {/* STEP: RESULTS */}
           {step === 'results' && (
             <div className="space-y-2">
               {results.length === 0 ? (
-                <div className="p-8 text-center text-slate-500 text-sm">
-                  No hotels found near {airportCode.toUpperCase()}.
-                  <div className="text-xs text-slate-600 mt-1">
-                    (Demo data covers a limited set of airports.)
-                  </div>
-                </div>
-              ) : (
-                results.map((p) => (
+                <EmptyState
+                  icon={Hotel}
+                  title={`No hotels near ${airportCode.toUpperCase()}`}
+                  description="Try another airport code, or open TAAP to shop the full Expedia inventory."
+                  action={(
+                    <a href={taapUrl} target="_blank" rel="noreferrer">
+                      <Button variant="outline" size="sm" icon={ExternalLink}>Open TAAP</Button>
+                    </a>
+                  )}
+                />
+              ) : results.map((p) => {
+                const nightly = p.from_nightly?.request_currency?.value;
+                const commission = p.from_commission?.request_currency?.value;
+                return (
                   <button
                     key={p.property_id}
+                    type="button"
                     onClick={() => handleSelectProperty(p)}
                     disabled={searching}
-                    className="w-full text-left bg-slate-800/50 hover:bg-slate-800 border border-slate-700 p-3 flex gap-3 disabled:opacity-50"
+                    className="flex w-full gap-3 rounded-xl border border-edge bg-surface-raised p-3 text-left transition-colors hover:border-accent-border disabled:opacity-50"
                   >
-                    {p.images?.[0]?.url && (
-                      <img src={p.images[0].url} alt={p.name} className="w-20 h-20 object-cover rounded shrink-0" />
+                    {p.images?.[0]?.url ? (
+                      <img src={p.images[0].url} alt="" className="h-20 w-20 shrink-0 rounded-lg object-cover" />
+                    ) : (
+                      <div className="flex h-20 w-20 shrink-0 items-center justify-center rounded-lg bg-surface-sunken">
+                        <Hotel className="h-6 w-6 text-content-subtle" />
+                      </div>
                     )}
                     <div className="min-w-0 flex-1">
-                      <div className="text-[10px] tracking-widest text-amber-300 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
-                        {(p.brand || 'HOTEL').toUpperCase()}
+                      <div className="font-mono text-[10px] font-semibold text-accent">
+                        {(p.brand || 'Hotel').toUpperCase()}
                       </div>
-                      <div className="text-base text-slate-100" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
-                        {p.name}
+                      <div className="truncate text-sm font-semibold text-content">{p.name}</div>
+                      <div className="mt-0.5 truncate text-2xs text-content-muted">
+                        {[p.address?.line_1, p.address?.city].filter(Boolean).join(', ')}
                       </div>
-                      <div className="text-xs text-slate-400 mt-0.5">
-                        {p.address?.line_1}{p.address?.city ? `, ${p.address.city}` : ''}
-                      </div>
-                      <div className="flex items-center gap-3 mt-2 text-xs">
-                        <span className="flex items-center gap-1 text-amber-300">
-                          <Star className="w-3 h-3 fill-current" />
-                          {p.star_rating}
-                        </span>
-                        <span className="text-slate-500">·</span>
-                        <span className="text-slate-300">{p.guest_rating}/5 guest rating</span>
+                      <div className="mt-2 flex flex-wrap items-center gap-3 text-2xs">
+                        {p.star_rating != null && (
+                          <span className="inline-flex items-center gap-1 text-warning">
+                            <Star className="h-3 w-3 fill-current" /> {p.star_rating}
+                          </span>
+                        )}
+                        {nightly != null && (
+                          <span className="font-mono text-content">${Number(nightly).toFixed(0)}/night</span>
+                        )}
+                        {commission != null && (
+                          <span className="font-mono text-accent">Est. commission ${Number(commission).toFixed(2)}</span>
+                        )}
                       </div>
                     </div>
                   </button>
-                ))
-              )}
+                );
+              })}
             </div>
           )}
 
-          {/* STEP: DETAIL */}
           {step === 'detail' && selectedProperty && (
             <div className="space-y-4">
               {selectedProperty.images?.[0]?.url && (
-                <img src={selectedProperty.images[0].url} alt={selectedProperty.name} className="w-full h-48 object-cover rounded" />
+                <img
+                  src={selectedProperty.images[0].url}
+                  alt=""
+                  className="h-44 w-full rounded-xl object-cover"
+                />
               )}
-              <div className="text-sm text-slate-300">
-                {selectedProperty.address?.line_1}, {selectedProperty.address?.city}, {selectedProperty.address?.state_province_code}
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {selectedProperty.amenities?.map((a, i) => (
-                  <span key={i} className="text-[10px] text-slate-300 bg-slate-800 border border-slate-700 px-2 py-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                    {a}
-                  </span>
-                ))}
+              <div>
+                <p className="text-sm text-content-muted">
+                  {[selectedProperty.address?.line_1, selectedProperty.address?.city, selectedProperty.address?.state_province_code]
+                    .filter(Boolean).join(', ')}
+                </p>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {(selectedProperty.amenities || []).slice(0, 8).map((a) => (
+                    <span key={a} className="rounded border border-edge bg-surface-sunken px-2 py-1 text-[10px] text-content-muted">
+                      {a}
+                    </span>
+                  ))}
+                </div>
               </div>
 
-              <div className="space-y-2">
-                <h4 className="text-sm tracking-widest text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                  AVAILABLE ROOMS
-                </h4>
+              <div className="space-y-3">
+                <h4 className="text-2xs font-semibold text-content-muted">Available rooms</h4>
                 {selectedRooms.map((room) => (
-                  <div key={room.room_id} className="border border-slate-700 p-3">
-                    <div className="text-sm text-slate-100" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
-                      {room.room_name}
+                  <div key={room.room_id} className="rounded-xl border border-edge p-3">
+                    <div className="text-sm font-semibold text-content">{room.room_name}</div>
+                    <div className="mt-0.5 text-2xs text-content-subtle">
+                      Sleeps {room.max_occupancy?.total || '—'}
                     </div>
-                    <div className="text-xs text-slate-500 mt-0.5">
-                      Sleeps {room.max_occupancy?.total} ·{' '}
-                      {room.bed_groups?.[0]?.configuration?.map(c => `${c.quantity} ${c.type}`).join(', ')}
-                    </div>
-                    <div className="mt-2 space-y-1">
-                      {room.rates.map((rate) => (
-                        <button
-                          key={rate.rate_id}
-                          onClick={() => handleBookRoom(room, rate)}
-                          disabled={booking}
-                          className="w-full flex items-center justify-between bg-slate-800/60 hover:bg-amber-500/10 border border-slate-700 hover:border-amber-500/40 px-3 py-2 text-left disabled:opacity-50"
-                        >
-                          <div>
-                            <div className="text-xs text-slate-300">
-                              {rate.refundable ? 'Refundable' : 'Non-refundable'}{rate.meal_plan ? ` · ${rate.meal_plan}` : ''}
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-3">
-                            <div className="text-right">
-                              <div className="text-base text-slate-100 tabular-nums" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
-                                ${rate.nightly_rate?.request_currency?.value}
+                    <div className="mt-2 space-y-2">
+                      {(room.rates || []).map((rate) => {
+                        const nightly = rate.nightly_rate?.request_currency?.value;
+                        const total = rate.total_in_request_currency?.request_currency?.value;
+                        const commission = rate.marketing_fee?.request_currency?.value;
+                        return (
+                          <button
+                            key={rate.rate_id}
+                            type="button"
+                            onClick={() => goCheckout(room, rate)}
+                            className="flex w-full items-center justify-between gap-3 rounded-lg border border-edge bg-surface-sunken px-3 py-2.5 text-left transition-colors hover:border-accent-border"
+                          >
+                            <div className="min-w-0">
+                              <div className="text-2xs text-content">
+                                {rate.refundable ? 'Refundable' : 'Non-refundable'}
+                                {rate.meal_plan ? ` · ${rate.meal_plan}` : ''}
                               </div>
-                              <div className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                                /night
-                              </div>
+                              {commission != null && (
+                                <div className="mt-1 font-mono text-[11px] text-accent">
+                                  Skyway commission ${Number(commission).toFixed(2)}
+                                  {rate.commission_pct != null ? ` (${rate.commission_pct}%)` : ''}
+                                </div>
+                              )}
                             </div>
-                            <span className="text-amber-300 text-xs tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                              {booking ? <Loader2 className="w-4 h-4 animate-spin" /> : 'BOOK'}
-                            </span>
-                          </div>
-                        </button>
-                      ))}
+                            <div className="shrink-0 text-right">
+                              <div className="font-mono text-base font-semibold text-content">
+                                ${Number(nightly || 0).toFixed(0)}
+                              </div>
+                              <div className="text-[10px] text-content-subtle">/night · ${Number(total || 0).toFixed(0)} total</div>
+                            </div>
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
                 ))}
@@ -910,69 +749,321 @@ function FindHotelsModal({ trip, currentUser, users, isOpsOrAdmin, onClose }) {
             </div>
           )}
 
-          {/* STEP: SUCCESS */}
-          {step === 'success' && bookingResult && (
+          {step === 'checkout' && selectedProperty && selectedRoom && selectedRate && (
             <div className="space-y-4">
-              <div className="border border-emerald-500/40 bg-emerald-500/10 p-4">
-                <div className="text-sm text-emerald-200" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
-                  Demo booking saved
+              <div className="rounded-xl border border-edge bg-surface-sunken p-3">
+                <div className="text-sm font-semibold text-content">{selectedProperty.name}</div>
+                <div className="mt-1 text-2xs text-content-muted">
+                  {selectedRoom.room_name} · {selectedRate.refundable ? 'Refundable' : 'Non-refundable'}
                 </div>
-                <div className="text-xs text-emerald-300/80 mt-1">
-                  This booking has been recorded in the trip's lodging list for tracking purposes. No real reservation was created. When live Rapid API access is configured, this same flow will create actual bookings.
+                <div className="mt-3 grid grid-cols-2 gap-2 font-mono text-2xs">
+                  <div>
+                    <div className="text-content-subtle">Stay total</div>
+                    <div className="text-content">
+                      ${Number(selectedRate.total_in_request_currency?.request_currency?.value || 0).toFixed(2)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-content-subtle">Est. commission</div>
+                    <div className="text-accent">
+                      ${Number(selectedRate.marketing_fee?.request_currency?.value || 0).toFixed(2)}
+                    </div>
+                  </div>
                 </div>
               </div>
-              <div className="bg-slate-800/60 border border-slate-700 p-4 space-y-2">
-                <div>
-                  <div className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>HOTEL</div>
-                  <div className="text-sm text-slate-100">{bookingResult.property.name}</div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Guest first name">
+                  <input value={givenName} onChange={(e) => setGivenName(e.target.value)} className={inputClass} />
+                </Field>
+                <Field label="Guest last name">
+                  <input value={familyName} onChange={(e) => setFamilyName(e.target.value)} className={inputClass} />
+                </Field>
+                <Field label="Email">
+                  <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className={inputClass} />
+                </Field>
+                <Field label="Phone">
+                  <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="5551234567" className={inputClass} />
+                </Field>
+              </div>
+
+              {!demoMode && (
+                <div className="space-y-3 rounded-xl border border-edge p-3">
+                  <div className="text-2xs font-semibold text-content-muted">
+                    Corporate card (sent to Expedia — not stored in Skyway)
+                  </div>
+                  <Field label="Card number">
+                    <input value={cardNumber} onChange={(e) => setCardNumber(e.target.value)} inputMode="numeric" className={inputClass} autoComplete="off" />
+                  </Field>
+                  <div className="grid grid-cols-3 gap-3">
+                    <Field label="Exp month">
+                      <input value={cardExpMonth} onChange={(e) => setCardExpMonth(e.target.value)} placeholder="MM" className={inputClass} />
+                    </Field>
+                    <Field label="Exp year">
+                      <input value={cardExpYear} onChange={(e) => setCardExpYear(e.target.value)} placeholder="YYYY" className={inputClass} />
+                    </Field>
+                    <Field label="CVV">
+                      <input value={cardCvv} onChange={(e) => setCardCvv(e.target.value)} className={inputClass} autoComplete="off" />
+                    </Field>
+                  </div>
                 </div>
-                <div>
-                  <div className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>CONFIRMATION</div>
-                  <div className="text-sm font-mono text-slate-100" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{bookingResult.confirmation_code}</div>
+              )}
+
+              {demoMode && (
+                <p className="text-2xs text-content-muted">
+                  Demo mode skips payment. The lodging record will be saved to this trip with a DEMO confirmation code and estimated commission.
+                </p>
+              )}
+            </div>
+          )}
+
+          {step === 'success' && bookingResult && (
+            <div className="space-y-4">
+              <div className={cx(
+                'rounded-xl border p-4',
+                bookingResult.demo ? 'border-warning-border bg-warning-soft' : 'border-success-border bg-success-soft',
+              )}>
+                <div className={cx('text-sm font-semibold', bookingResult.demo ? 'text-warning' : 'text-success')}>
+                  {bookingResult.demo ? 'Demo lodging recorded on this trip' : 'Reservation confirmed'}
                 </div>
-                <div>
-                  <div className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>ROOM</div>
-                  <div className="text-sm text-slate-100">{bookingResult.room.room_name} · ${bookingResult.rate.nightly_rate?.request_currency?.value}/night</div>
-                </div>
+                <p className={cx('mt-1 text-2xs', bookingResult.demo ? 'text-warning' : 'text-success')}>
+                  {bookingResult.demo
+                    ? 'No real hotel reservation was created. Connect Expedia Rapid credentials to book live under your IATA.'
+                    : 'Confirmation is on the trip lodging list and the crew member’s travel wallet.'}
+                </p>
+              </div>
+              <div className="space-y-2 rounded-xl border border-edge p-4 text-sm">
+                <Row label="Hotel" value={bookingResult.property.name} />
+                <Row label="Confirmation" value={bookingResult.confirmation_code} mono />
+                <Row label="Room" value={bookingResult.room.room_name} />
+                <Row
+                  label="Commission"
+                  value={`$${Number(bookingResult.commissionAmount || bookingResult.rate.marketing_fee?.request_currency?.value || 0).toFixed(2)}`}
+                  accent
+                />
+                {iata && <Row label="IATA" value={iata} mono />}
               </div>
             </div>
           )}
         </div>
 
-        <div className="border-t border-slate-800 px-4 py-3 flex items-center justify-end gap-2 shrink-0">
+        <div className="flex items-center justify-end gap-2 border-t border-edge px-4 py-3">
           {step === 'search' && (
             <>
-              <button
-                onClick={onClose}
-                disabled={searching}
-                className="px-4 py-2 text-sm text-slate-400 hover:text-slate-200"
-                style={{ fontFamily: 'JetBrains Mono, monospace' }}
-              >
-                CANCEL
-              </button>
-              <button
-                onClick={handleSearch}
+              <Button variant="ghost" onClick={onClose}>Cancel</Button>
+              <Button
+                variant="primary"
+                icon={Search}
+                loading={searching}
                 disabled={!airportCode || !checkInDate || !checkOutDate || searching}
-                className="px-4 py-2 bg-amber-500 hover:bg-amber-400 disabled:bg-slate-700 disabled:text-slate-500 text-slate-950 text-sm font-medium tracking-widest"
-                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                onClick={handleSearch}
               >
-                {searching ? <Loader2 className="w-4 h-4 inline-block mr-1 animate-spin" /> : <Search className="w-4 h-4 inline-block mr-1 -mt-0.5" />}
-                {searching ? 'SEARCHING...' : 'SEARCH'}
-              </button>
+                {searching ? 'Searching…' : 'Search hotels'}
+              </Button>
+            </>
+          )}
+          {step === 'checkout' && (
+            <>
+              <Button variant="ghost" onClick={() => setStep('detail')} disabled={booking}>Back</Button>
+              <Button variant="primary" loading={booking} disabled={booking} onClick={handleConfirmBook}>
+                {booking ? 'Booking…' : (demoMode ? 'Save demo booking' : 'Book & earn commission')}
+              </Button>
             </>
           )}
           {step === 'success' && (
-            <button
-              onClick={onClose}
-              className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-sm font-medium tracking-widest"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}
-            >
-              DONE
-            </button>
+            <Button variant="primary" onClick={onClose}>Done</Button>
           )}
         </div>
       </div>
     </div>,
-    document.body
+    document.body,
   );
+}
+
+/* =========================================================================
+   MANUAL ADD
+   ========================================================================= */
+
+function AddLodgingModal({ trip, currentUser, users, isOpsOrAdmin, lodgingConfig, onClose }) {
+  const tripDate = trip.start ? new Date(trip.start) : new Date();
+  const defaultCheckIn = tripDate.toISOString().slice(0, 10);
+  const defaultCheckOut = new Date(tripDate.getTime() + 86400000).toISOString().slice(0, 10);
+  const crewOptions = useMemo(() => buildCrewOptions(trip, currentUser, users), [trip, currentUser, users]);
+
+  const [forUid, setForUid] = useState(crewOptions[0]?.uid || currentUser?.uid || '');
+  const [hotelName, setHotelName] = useState('');
+  const [hotelBrand, setHotelBrand] = useState('');
+  const [city, setCity] = useState('');
+  const [state, setState] = useState('');
+  const [checkInDate, setCheckInDate] = useState(defaultCheckIn);
+  const [checkOutDate, setCheckOutDate] = useState(defaultCheckOut);
+  const [confirmationCode, setConfirmationCode] = useState('');
+  const [nightlyRate, setNightlyRate] = useState('');
+  const [commissionAmount, setCommissionAmount] = useState('');
+  const [notes, setNotes] = useState('');
+  const [channel, setChannel] = useState('taap');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+
+  async function handleSave() {
+    setSaving(true);
+    setError(null);
+    try {
+      const { saveBooking, newBookingId } = await import('./firebase-travel.js');
+      const id = newBookingId('hotel');
+      const nightly = nightlyRate ? Number(nightlyRate) : null;
+      let commission = commissionAmount ? Number(commissionAmount) : null;
+      if (commission == null && nightly != null && lodgingConfig.defaultCommissionPct) {
+        const nights = Math.max(1, Math.round((new Date(checkOutDate) - new Date(checkInDate)) / 86400000));
+        commission = Math.round(nightly * nights * (lodgingConfig.defaultCommissionPct / 100) * 100) / 100;
+      }
+      await saveBooking({
+        id,
+        type: 'hotel',
+        tripUid: trip.uid,
+        tripContext: {
+          tail: trip.info?.tail || null,
+          from: trip.info?.from || null,
+          to: trip.info?.to || null,
+          startDate: trip.start ? new Date(trip.start).toISOString() : null,
+        },
+        userUid: forUid,
+        hotelName: hotelName.trim(),
+        hotelBrand: hotelBrand.trim() || null,
+        city: city.trim() || null,
+        state: state.trim() || null,
+        checkInDate: checkInDate || null,
+        checkOutDate: checkOutDate || null,
+        confirmationCode: confirmationCode.trim() || null,
+        nightlyRate: nightly,
+        commissionAmount: commission,
+        commissionPct: lodgingConfig.defaultCommissionPct || null,
+        agencyIata: lodgingConfig.agencyIata || null,
+        channel,
+        notes: notes.trim() || null,
+        source: 'manual',
+        sourceDemo: false,
+        startDate: checkInDate || null,
+        createdBy: currentUser?.uid || null,
+        createdByName: currentUser?.name || currentUser?.displayName || null,
+      });
+      notify.success('Lodging saved');
+      onClose();
+    } catch (e) {
+      setError(e.message || 'Failed to save');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const canSave = hotelName.trim() && forUid && checkInDate && checkOutDate;
+
+  return createPortal(
+    <div className="fixed inset-0 z-[100] flex items-start justify-center overflow-y-auto bg-black/70 backdrop-blur-sm p-0 sm:items-center sm:p-4">
+      <div className="flex min-h-screen w-full max-w-lg flex-col border border-edge bg-surface sm:min-h-0 sm:max-h-[90vh] sm:rounded-xl">
+        <div className="flex items-center justify-between border-b border-edge px-4 py-3">
+          <h3 className="text-base font-semibold text-content">Log lodging</h3>
+          <button type="button" onClick={onClose} className="text-content-muted hover:text-content"><X className="h-5 w-5" /></button>
+        </div>
+        <div className="flex-1 space-y-3 overflow-y-auto p-4">
+          <Field label="For crewmember">
+            <select value={forUid} onChange={(e) => setForUid(e.target.value)} className={inputClass}>
+              {crewOptions.map((c) => <option key={c.uid} value={c.uid}>{c.name}</option>)}
+              {isOpsOrAdmin && (
+                <optgroup label="Other crew">
+                  {users
+                    .filter((u) => u.approved !== false && !crewOptions.find((c) => c.uid === u.uid))
+                    .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+                    .map((u) => <option key={u.uid} value={u.uid}>{u.name}</option>)}
+                </optgroup>
+              )}
+            </select>
+          </Field>
+          <Field label="Channel">
+            <select value={channel} onChange={(e) => setChannel(e.target.value)} className={inputClass}>
+              <option value="taap">Expedia TAAP (commission)</option>
+              <option value="marriott">Marriott direct</option>
+              <option value="other">Other</option>
+            </select>
+          </Field>
+          <Field label="Hotel name *">
+            <input value={hotelName} onChange={(e) => setHotelName(e.target.value)} className={inputClass} placeholder="Hilton Garden Inn" />
+          </Field>
+          <Field label="Brand">
+            <input value={hotelBrand} onChange={(e) => setHotelBrand(e.target.value)} className={inputClass} />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="City"><input value={city} onChange={(e) => setCity(e.target.value)} className={inputClass} /></Field>
+            <Field label="State"><input value={state} onChange={(e) => setState(e.target.value)} maxLength={2} className={inputClass} /></Field>
+            <Field label="Check-in *"><input type="date" value={checkInDate} onChange={(e) => setCheckInDate(e.target.value)} className={inputClass} /></Field>
+            <Field label="Check-out *"><input type="date" value={checkOutDate} onChange={(e) => setCheckOutDate(e.target.value)} className={inputClass} /></Field>
+            <Field label="Confirmation #"><input value={confirmationCode} onChange={(e) => setConfirmationCode(e.target.value)} className={inputClass} /></Field>
+            <Field label="Nightly rate ($)"><input type="number" value={nightlyRate} onChange={(e) => setNightlyRate(e.target.value)} className={inputClass} /></Field>
+            <Field label="Commission earned ($)">
+              <input type="number" value={commissionAmount} onChange={(e) => setCommissionAmount(e.target.value)} className={inputClass} placeholder="Auto from %" />
+            </Field>
+          </div>
+          <Field label="Notes">
+            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} className={inputClass} />
+          </Field>
+          {error && <div className="rounded border border-danger-border bg-danger-soft px-3 py-2 text-2xs text-danger">{error}</div>}
+        </div>
+        <div className="flex justify-end gap-2 border-t border-edge px-4 py-3">
+          <Button variant="ghost" onClick={onClose} disabled={saving}>Cancel</Button>
+          <Button variant="primary" onClick={handleSave} disabled={!canSave || saving}>
+            {saving ? 'Saving…' : 'Save'}
+          </Button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+/* ---- tiny helpers ---- */
+
+const inputClass = 'mt-1 w-full rounded-lg border border-edge bg-surface-sunken px-3 py-2 text-sm text-content outline-none focus:border-accent-border';
+
+function Field({ label, children }) {
+  return (
+    <label className="block">
+      <span className="text-[10px] font-semibold uppercase tracking-wide text-content-subtle">{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function Row({ label, value, mono, accent }) {
+  return (
+    <div className="flex items-baseline justify-between gap-3">
+      <span className="text-2xs text-content-subtle">{label}</span>
+      <span className={cx('text-sm', mono && 'font-mono', accent ? 'font-semibold text-accent' : 'text-content')}>{value}</span>
+    </div>
+  );
+}
+
+function splitName(name) {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return { given: 'Crew', family: 'Member' };
+  if (parts.length === 1) return { given: parts[0], family: 'Crew' };
+  return { given: parts[0], family: parts.slice(1).join(' ') };
+}
+
+function buildCrewOptions(trip, currentUser, users) {
+  const opts = [];
+  const seen = new Set();
+  const tryAddByName = (name) => {
+    if (!name) return;
+    const u = users.find((x) => x.name === name || x.displayName === name);
+    if (u && !seen.has(u.uid)) {
+      opts.push({ uid: u.uid, name: u.name || u.displayName });
+      seen.add(u.uid);
+    }
+  };
+  tryAddByName(trip.info?.pic);
+  tryAddByName(trip.info?.sic);
+  if (currentUser && !seen.has(currentUser.uid)) {
+    opts.push({ uid: currentUser.uid, name: currentUser.name || currentUser.displayName || 'Me' });
+  }
+  return opts;
 }

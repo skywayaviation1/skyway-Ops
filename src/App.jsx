@@ -15549,6 +15549,46 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
   const [dutyBusy, setDutyBusy] = useState(false);
   const [dutyMsg, setDutyMsg] = useState('');
 
+  // ---- Lodging / IATA (admin) ----------------------------------------
+  const [lodgingIata, setLodgingIata] = useState('');
+  const [lodgingAgencyName, setLodgingAgencyName] = useState('Skyway Aviation');
+  const [lodgingTaapUrl, setLodgingTaapUrl] = useState('https://www.expedia.com/affiliates');
+  const [lodgingCommPct, setLodgingCommPct] = useState('10');
+  const [lodgingBusy, setLodgingBusy] = useState(false);
+  const [lodgingMsg, setLodgingMsg] = useState('');
+  useEffect(() => {
+    if (!isAdminUser) return undefined;
+    let unsub = () => {};
+    (async () => {
+      const { subscribeToLodgingConfig } = await import('./firebase-lodging.js');
+      unsub = subscribeToLodgingConfig((cfg) => {
+        setLodgingIata(cfg.agencyIata || '');
+        setLodgingAgencyName(cfg.agencyName || 'Skyway Aviation');
+        setLodgingTaapUrl(cfg.taapPortalUrl || 'https://www.expedia.com/affiliates');
+        setLodgingCommPct(String(cfg.defaultCommissionPct ?? 10));
+      });
+    })();
+    return () => { try { unsub(); } catch (_) { /* ignore */ } };
+  }, [isAdminUser]);
+
+  async function saveLodgingSettings() {
+    setLodgingBusy(true); setLodgingMsg('');
+    try {
+      const { saveLodgingConfig } = await import('./firebase-lodging.js');
+      await saveLodgingConfig({
+        agencyIata: lodgingIata,
+        agencyName: lodgingAgencyName,
+        taapPortalUrl: lodgingTaapUrl,
+        defaultCommissionPct: Number(lodgingCommPct),
+      }, { updatedBy: currentUser?.uid || null });
+      setLodgingMsg(`Saved. IATA ${lodgingIata.trim().toUpperCase() || '(none)'} · default commission ${lodgingCommPct}%.`);
+    } catch (e) {
+      setLodgingMsg('Failed: ' + (e.message || 'error'));
+    } finally {
+      setLodgingBusy(false);
+    }
+  }
+
   // ---- Trip-sheet FBO backfill (admin one-time migration) -------------
   const [fboBusy, setFboBusy] = useState(false);
   const [fboProgress, setFboProgress] = useState(null); // {done,total,ok,skip,fail}
@@ -15724,6 +15764,83 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
               )}
               {fboMsg && (
                 <div className={`mt-2 text-xs ${fboMsg.startsWith('Backfill failed') ? 'text-amber-400' : 'text-green-400'}`}>{fboMsg}</div>
+              )}
+            </section>
+          )}
+
+          {isAdminUser && (
+            <section>
+              <h3 className="text-xs tracking-widest text-cyan-400 mb-3" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
+                LODGING &amp; IATA (ADMIN)
+              </h3>
+              <p className="text-[11px] text-slate-500 mb-3 leading-relaxed">
+                Agency IATA / IATAN number used when booking hotels so Skyway
+                earns Expedia TAAP / Rapid commission. Also set your TAAP
+                portal URL and the default commission % used when a rate
+                doesn’t return a marketing fee.
+              </p>
+              <label className="block mb-3">
+                <span className="text-[10px] tracking-widest text-slate-500 uppercase" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  AGENCY IATA / IATAN #
+                </span>
+                <input
+                  value={lodgingIata}
+                  onChange={(e) => setLodgingIata(e.target.value)}
+                  placeholder="12345678"
+                  className="mt-1 w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400 font-mono"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                />
+              </label>
+              <label className="block mb-3">
+                <span className="text-[10px] tracking-widest text-slate-500 uppercase" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  AGENCY NAME
+                </span>
+                <input
+                  value={lodgingAgencyName}
+                  onChange={(e) => setLodgingAgencyName(e.target.value)}
+                  className="mt-1 w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
+                />
+              </label>
+              <label className="block mb-3">
+                <span className="text-[10px] tracking-widest text-slate-500 uppercase" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  TAAP PORTAL URL
+                </span>
+                <input
+                  value={lodgingTaapUrl}
+                  onChange={(e) => setLodgingTaapUrl(e.target.value)}
+                  placeholder="https://www.expedia.com/affiliates/…"
+                  className="mt-1 w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
+                />
+              </label>
+              <label className="block mb-3">
+                <span className="text-[10px] tracking-widest text-slate-500 uppercase" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  DEFAULT COMMISSION %
+                </span>
+                <input
+                  type="number"
+                  min="0"
+                  max="40"
+                  step="0.5"
+                  value={lodgingCommPct}
+                  onChange={(e) => setLodgingCommPct(e.target.value)}
+                  className="mt-1 w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400 font-mono"
+                />
+              </label>
+              <p className="text-[11px] text-slate-500 mb-3 leading-relaxed">
+                Live Rapid shopping needs <code className="text-slate-400">EXPEDIA_RAPID_API_KEY</code> and{' '}
+                <code className="text-slate-400">EXPEDIA_RAPID_SHARED_SECRET</code> on Vercel.
+                Until then the Book Hotel window uses demo inventory with estimated commission.
+              </p>
+              <button
+                onClick={saveLodgingSettings}
+                disabled={lodgingBusy}
+                className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 text-xs tracking-widest font-medium"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              >
+                {lodgingBusy ? 'SAVING…' : 'SAVE LODGING SETTINGS'}
+              </button>
+              {lodgingMsg && (
+                <div className={`mt-2 text-xs ${lodgingMsg.startsWith('Failed') ? 'text-amber-400' : 'text-green-400'}`}>{lodgingMsg}</div>
               )}
             </section>
           )}
