@@ -16,6 +16,7 @@ import {
   AlertTriangle, CheckCircle2, Clock, FileText, Mail,
   Users, MessageSquare, Send, Loader2, X, ExternalLink,
 } from 'lucide-react';
+import { statusEventAt } from './trip-status.js';
 
 // Inject the pulse keyframes once. Inline <style> rather than a CSS
 // import so this code-split chunk is self-contained — no separate CSS
@@ -144,7 +145,7 @@ function StatusStrip({ trip, statuses }) {
     const done = !!entry;
     let tip = step.label;
     if (done) {
-      const at = entry.at;
+      const at = statusEventAt(entry);
       if (at) {
         try {
           tip += ' · ' + new Date(at).toLocaleString('en-US', {

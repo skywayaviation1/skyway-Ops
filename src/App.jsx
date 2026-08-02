@@ -26621,7 +26621,6 @@ export default function CharterOps() {
   const [tripStateAt, setTripStateAt] = useState({});      // { [tripUid]: timestamp } — latest state change
   const [tripLastSeen, setTripLastSeen] = useState({});  // { [tripUid]: timestamp }
   const [tripArchived, setTripArchived] = useState({});  // { [tripUid]: true } — manually archived
-  const [showArchived, setShowArchived] = useState(false);
   const [now, setNow] = useState(new Date());
   const [showAllCategories, setShowAllCategories] = useState(false);
   // Tail filter — single-select. Empty string means "ALL". Persists in
@@ -27762,16 +27761,8 @@ export default function CharterOps() {
                       ))}
                     </div>
                   )}
-                  {showArchived && false && groupedTrips.archived.length > 0 && (
-                    <div>
-                      <div className="px-4 py-2 text-[10px] tracking-[0.2em] text-slate-600 bg-slate-900/40" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                        ARCHIVED · {groupedTrips.archived.length}
-                      </div>
-                      {groupedTrips.archived.map(trip => (
-                        <TripCard key={trip.uid} trip={trip} selected={trip.uid === selectedId} statusCount={tripStatusCounts[trip.uid] || 0} hasUpdate={tripHasUpdates(trip.uid)} onClick={() => { setSelectedId(trip.uid); markTripSeen(trip.uid); }} />
-                      ))}
-                    </div>
-                  )}
+                  {/* Archived trips render in the dedicated Archive section
+                      (Flights › Archive), not inline in the schedule list. */}
                 </div>
               )}
             </aside>
@@ -28081,10 +28072,9 @@ export default function CharterOps() {
         )}
 
         {/* === COMMS SECTION ===
-            Stream Chat-powered. Replaces the old CommsScreen.jsx (which
-            stays on disk as archive — see deploy README). The screen
-            needs allTrips so it can auto-create trip channels, and a
-            way to fetch the Firebase idToken to mint a Stream token. */}
+            Stream Chat-powered. The screen needs allTrips so it can
+            auto-create trip channels, and a way to fetch the Firebase
+            idToken to mint a Stream token. */}
         {section === 'comms' && (
           <Suspense fallback={
             <div className="flex-1 flex items-center justify-center text-slate-500">

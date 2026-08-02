@@ -510,16 +510,18 @@ export default function OpsCommandCenter({ currentUser, trips, users, onSelectTr
             </span>
           </div>
 
-          <div className="border border-slate-800 bg-slate-900/30 overflow-hidden">
-            {/* Header row */}
-            <div className="grid items-center gap-3 px-3 py-2 border-b border-slate-800 text-[10px] tracking-widest text-slate-500"
-              style={{ fontFamily: 'JetBrains Mono, monospace', gridTemplateColumns: '100px 110px 60px 60px 1fr 110px 110px' }}>
-              <div>TAIL</div>
-              <div>STATUS</div>
-              <div className="text-right">LEGS</div>
-              <div className="text-right">HRS</div>
-              <div>ROUTE · CREW</div>
-              <div>NEXT DEP</div>
+          {/* The header row is desktop-only: below `lg` each aircraft renders
+              as a stacked card. The previous fixed seven-column grid summed to
+              ~590px inside an overflow-hidden container, so on a phone the
+              right-hand columns were simply clipped away. */}
+          <div className="border border-edge bg-surface rounded-md overflow-hidden">
+            <div className={`${FLEET_GRID} hidden lg:grid items-center gap-3 px-3 py-2 border-b border-edge text-2xs font-semibold text-content-muted`}>
+              <div>Tail</div>
+              <div>Status</div>
+              <div className="text-right">Legs</div>
+              <div className="text-right">Hours</div>
+              <div>Route &amp; crew</div>
+              <div>Next departure</div>
               <div></div>
             </div>
 
@@ -665,6 +667,9 @@ function StatTile({ label, value, tone = 'muted', pulse = false, suffix = '' }) 
   );
 }
 
+/* Shared column template so the header and the rows can never drift. */
+const FLEET_GRID = 'lg:grid-cols-[100px_112px_60px_64px_minmax(0,1fr)_120px_72px]';
+
 function AircraftRow({ row, now, onSelectTrip }) {
   const pill = statusPill(row.state);
   const showLeg = row.showLeg;
@@ -683,74 +688,84 @@ function AircraftRow({ row, now, onSelectTrip }) {
     if (clickable && showLeg?.uid) onSelectTrip?.(showLeg.uid);
   };
 
+  const statusBadge = (
+    <span className={`inline-flex items-center gap-1.5 rounded border px-2 py-0.5 text-2xs font-semibold ${pill.cls}`}>
+      {pill.pulse && <span className="h-1 w-1 rounded-full bg-current animate-pulse" />}
+      {pill.label}
+    </span>
+  );
+
   return (
     <div
-      className={`grid items-center gap-3 px-3 py-3 border-b border-slate-800 last:border-b-0 ${clickable ? 'hover:bg-slate-900/40 cursor-pointer' : ''}`}
-      style={{ gridTemplateColumns: '100px 110px 60px 60px 1fr 110px 110px' }}
+      className={`border-b border-edge last:border-b-0 ${clickable ? 'cursor-pointer hover:bg-surface-raised' : ''}`}
       onClick={handleClick}
+      role={clickable ? 'button' : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      onKeyDown={clickable ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleClick(); } } : undefined}
     >
-      {/* TAIL */}
-      <div>
-        <div className="text-base text-slate-100 font-medium" style={{ fontFamily: 'Bebas Neue, sans-serif', letterSpacing: '0.08em' }}>
-          {row.tail}
-        </div>
-        {row.type && (
-          <div className="text-[9px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            {row.type.toUpperCase()}
+      {/* ── Mobile: stacked card ─────────────────────────────────────── */}
+      <div className="lg:hidden px-3 py-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="font-mono text-base font-semibold tracking-wide text-content">{row.tail}</div>
+            {row.type && <div className="text-2xs text-content-subtle">{row.type}</div>}
           </div>
-        )}
-      </div>
-      {/* STATUS */}
-      <div>
-        <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 border text-[10px] tracking-widest ${pill.cls}`}
-          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-          {pill.pulse && <span className="w-1 h-1 bg-current rounded-full animate-pulse"></span>}
-          {pill.label}
-        </span>
-      </div>
-      {/* LEGS */}
-      <div className="text-right text-slate-300 text-sm" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-        {row.legCount > 0 ? row.legCount : '—'}
-      </div>
-      {/* HRS */}
-      <div className="text-right text-slate-300 text-sm" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-        {row.hours > 0 ? row.hours.toFixed(1) : '—'}
-      </div>
-      {/* ROUTE + CREW */}
-      <div className="min-w-0">
-        <div className="text-sm text-slate-200 truncate" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-          {route}
+          {statusBadge}
         </div>
+        <div className="mt-2 truncate text-sm text-content">{route}</div>
         {(pic || sic) && (
-          <div className="text-[10px] text-slate-500 truncate" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          <div className="mt-0.5 truncate text-2xs text-content-muted">
             {pic && <>PIC {pic}</>}
-            {pic && sic && <span className="mx-2 text-slate-700">·</span>}
+            {pic && sic && <span className="mx-2 text-content-subtle">·</span>}
             {sic && <>SIC {sic}</>}
           </div>
         )}
-      </div>
-      {/* NEXT DEP */}
-      <div>
-        {row.nextDep ? (
-          <>
-            <div className="text-sm text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              {nextDepStr}
-            </div>
-            <div className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              {nextDepDate}
-            </div>
-          </>
-        ) : (
-          <span className="text-slate-700 text-sm" style={{ fontFamily: 'JetBrains Mono, monospace' }}>—</span>
-        )}
-      </div>
-      {/* Click-through hint */}
-      <div className="text-right">
-        {clickable && (
-          <span className="text-[10px] text-cyan-400/60 hover:text-cyan-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            VIEW →
+        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-2xs text-content-muted">
+          <span>Legs <span className="font-mono text-content">{row.legCount > 0 ? row.legCount : '—'}</span></span>
+          <span>Hours <span className="font-mono text-content">{row.hours > 0 ? row.hours.toFixed(1) : '—'}</span></span>
+          <span>
+            Next dep{' '}
+            <span className="font-mono text-content">{row.nextDep ? `${nextDepStr}${nextDepDate ? ` · ${nextDepDate}` : ''}` : '—'}</span>
           </span>
-        )}
+        </div>
+      </div>
+
+      {/* ── Desktop: aligned table row ───────────────────────────────── */}
+      <div className={`${FLEET_GRID} hidden lg:grid items-center gap-3 px-3 py-3`}>
+        <div>
+          <div className="font-mono text-sm font-semibold tracking-wide text-content">{row.tail}</div>
+          {row.type && <div className="text-2xs text-content-subtle">{row.type}</div>}
+        </div>
+        <div>{statusBadge}</div>
+        <div className="text-right font-mono text-sm text-content">
+          {row.legCount > 0 ? row.legCount : '—'}
+        </div>
+        <div className="text-right font-mono text-sm text-content">
+          {row.hours > 0 ? row.hours.toFixed(1) : '—'}
+        </div>
+        <div className="min-w-0">
+          <div className="truncate text-sm text-content">{route}</div>
+          {(pic || sic) && (
+            <div className="truncate text-2xs text-content-muted">
+              {pic && <>PIC {pic}</>}
+              {pic && sic && <span className="mx-2 text-content-subtle">·</span>}
+              {sic && <>SIC {sic}</>}
+            </div>
+          )}
+        </div>
+        <div>
+          {row.nextDep ? (
+            <>
+              <div className="font-mono text-sm text-content">{nextDepStr}</div>
+              <div className="text-2xs text-content-subtle">{nextDepDate}</div>
+            </>
+          ) : (
+            <span className="font-mono text-sm text-content-subtle">—</span>
+          )}
+        </div>
+        <div className="text-right">
+          {clickable && <span className="text-2xs font-semibold text-accent">View</span>}
+        </div>
       </div>
     </div>
   );
