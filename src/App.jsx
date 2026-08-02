@@ -85,6 +85,7 @@ const CrewBoardV2Lazy = lazy(() => import('./CrewBoardV2.jsx'));
 // import is retained above only because settings still mounts it
 // (small status panel inside Settings). The Duty tab itself uses this.
 const DutyAdminCalendarLazy = lazy(() => import('./DutyAdminCalendar.jsx'));
+const AdminDutyReportLazy = lazy(() => import('./AdminDutyReport.jsx'));
 // AOG Coverage tab — ops+admin only. Tracks additional AOG coverage
 // offered to brokers on eligible CJ3 + LR60 trips through the JetSure /
 // Charter Flight Support policy. Lazy because non-ops roles never see
@@ -27558,6 +27559,7 @@ export default function CharterOps() {
   });
   const [showProfile, setShowProfile] = useState(false);
   const [showAdminDutyTools, setShowAdminDutyTools] = useState(false);
+  const [adminDutyView, setAdminDutyView] = useState('report'); // report | calendar
   // UI theme — 'dark' (default cyan/slate) or 'classy' (warm + gold).
   // Persisted in localStorage so the choice survives reloads. The actual
   // visual switch happens via the data-theme attribute on the html
@@ -29104,40 +29106,56 @@ export default function CharterOps() {
 
         {/* === DUTY SECTION (admin duty/rest oversight) === */}
         {section === 'duty' && (currentUser.role === 'admin' || currentUser._impersonating === true) && config?.dutyTrackerEnabled && (
-          <div className="flex-1 overflow-y-auto scroll-area bg-slate-950 p-4">
-            {/* Admin tools — manual day editor, copy-from-pilot, JetInsight
-                paste importer. Lives above the read-only calendar because
-                it's the action surface; the calendar is the report. */}
-            <div className="mb-4 flex items-center justify-between gap-3 flex-wrap">
-              <div className="text-[11px] tracking-widest text-slate-500"
-                style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                DUTY · ADMIN OVERSIGHT
+          <div className="flex-1 overflow-y-auto scroll-area bg-slate-950 p-4 md:p-6">
+            <div className="mx-auto mb-5 flex max-w-[1500px] flex-wrap items-center justify-between gap-3">
+              <div className="inline-flex rounded-lg border border-edge bg-surface p-1">
+                <button
+                  type="button"
+                  onClick={() => setAdminDutyView('report')}
+                  className={cx(
+                    'rounded-md px-4 py-2 text-sm font-semibold transition-colors',
+                    adminDutyView === 'report'
+                      ? 'bg-accent-soft text-accent'
+                      : 'text-content-muted hover:text-content',
+                  )}
+                >
+                  Report
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAdminDutyView('calendar')}
+                  className={cx(
+                    'rounded-md px-4 py-2 text-sm font-semibold transition-colors',
+                    adminDutyView === 'calendar'
+                      ? 'bg-accent-soft text-accent'
+                      : 'text-content-muted hover:text-content',
+                  )}
+                >
+                  Calendar
+                </button>
               </div>
-              <button
-                type="button"
+              <Button
+                variant="outline"
+                size="sm"
+                icon={Edit2}
                 onClick={() => setShowAdminDutyTools(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] tracking-widest border border-cyan-500/40 hover:border-cyan-400 text-cyan-300 hover:text-cyan-200"
-                style={{ fontFamily: 'JetBrains Mono, monospace' }}
                 title="Add, edit, copy, or import duty days for any pilot"
               >
-                <Edit2 className="w-3 h-3" />
-                ADMIN DUTY TOOLS
-              </button>
+                Admin duty tools
+              </Button>
             </div>
-            {/* Admin duty calendar — month grid → click a day → expanded
-                day detail with 24-hour timeline, duty bubbles, rest gaps,
-                time-remaining indicators, edit modals, and crew linking.
-                Reads all 365 days of duty-periods-v2 records. The
-                pilot-facing DutyV2 console on home stays untouched —
-                pilots still duty-on and duty-off themselves there. */}
+
             <Suspense fallback={
-              <div className="border border-slate-800 bg-slate-900/30 p-6 text-center text-slate-500"
-                style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                <Loader2 className="w-4 h-4 animate-spin inline mr-2" />
-                LOADING DUTY CALENDAR
-              </div>
+              <Spinner label={`Loading duty ${adminDutyView}…`} />
             }>
-              <DutyAdminCalendarLazy currentUser={currentUser} users={users} />
+              {adminDutyView === 'report' ? (
+                <AdminDutyReportLazy
+                  currentUser={currentUser}
+                  users={users}
+                />
+              ) : (
+                <DutyAdminCalendarLazy currentUser={currentUser} users={users} />
+              )}
             </Suspense>
           </div>
         )}
