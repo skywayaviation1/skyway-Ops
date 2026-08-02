@@ -38,6 +38,10 @@ html[data-theme="classy"] body {
    The <header> (top nav + tab bar) keeps its dark navy look. This gives the
    app a "dark crown / light body" feel — professional and distinctive.
    ─────────────────────────────────────────────────────────────────────────── */
+/* NOTE: this is an element selector with !important, so it captures EVERY
+   <header> in the app, not just the nav. Section and card headings must use a
+   <div>; a nested <header> renders dark-on-dark here because its text colours
+   still follow the light theme. */
 [data-theme="classy"] header {
   background-color: #16181C !important;
   background-image: none !important;

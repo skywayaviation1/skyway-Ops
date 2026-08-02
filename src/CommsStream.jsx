@@ -217,7 +217,10 @@ function ChannelToolbar({ currentUser, onSearch, onInfo }) {
     : `${members.length} members${online ? ` · ${online} online` : ''}`;
 
   return (
-    <header className="comms-channel-toolbar">
+    /* A div, not a <header>: theme-classy.css paints every <header> as the
+       dark app crown, which would leave this toolbar dark-on-dark in the
+       light theme. */
+    <div className="comms-channel-toolbar">
       <div className="min-w-0">
         <h3 className="truncate text-sm font-semibold text-content">
           {channelTitle(channel, client.userID)}
@@ -249,7 +252,7 @@ function ChannelToolbar({ currentUser, onSearch, onInfo }) {
           <Info className="h-4 w-4" />
         </button>
       </div>
-    </header>
+    </div>
   );
 }
 
