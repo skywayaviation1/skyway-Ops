@@ -1950,6 +1950,9 @@ function TripCard({ trip, selected, onClick, statusCount, hasUpdate, onArchive }
   const touchStartRef = useRef(null);
   const draggingRef = useRef(false);
 
+  // Route label for the archive confirmation toast.
+  const archiveLabel = `${trip.info?.from || '?'} → ${trip.info?.to || '?'}`;
+
   const handleTouchStart = (e) => {
     if (!onArchive) return;
     const t = e.touches[0];
@@ -1978,7 +1981,7 @@ function TripCard({ trip, selected, onClick, statusCount, hasUpdate, onArchive }
     const wasDragging = draggingRef.current;
     if (wasDragging && dragX < -80) {
       // Past threshold — archive
-      onArchive(trip.uid);
+      onArchive(trip.uid, archiveLabel);
     }
     setDragX(0);
     draggingRef.current = false;
@@ -2018,7 +2021,7 @@ function TripCard({ trip, selected, onClick, statusCount, hasUpdate, onArchive }
           type="button"
           title="Archive this trip"
           aria-label="Archive this trip"
-          onClick={(e) => { e.stopPropagation(); onArchive(trip.uid); }}
+          onClick={(e) => { e.stopPropagation(); onArchive(trip.uid, archiveLabel); }}
           className="absolute right-2 top-2 z-10 hidden rounded p-1.5 text-content-subtle opacity-0 transition-opacity hover:bg-surface-raised hover:text-danger focus-visible:opacity-100 group-hover/card:opacity-100 md:block"
         >
           <Trash2 className="h-3.5 w-3.5" />
@@ -26835,16 +26838,17 @@ export default function CharterOps() {
    * Archiving is reachable by a left-swipe on a trip card, which is easy to
    * trigger by accident while scrolling a dense list. Confirm it happened and
    * offer a one-tap undo rather than silently removing the trip.
+   *
+   * The caller supplies the route label — looking it up from `allTrips` here
+   * would reference it before its declaration further down the component.
    */
-  const archiveTripWithUndo = useCallback(async (tripUid) => {
-    const trip = allTrips.find(t => t.uid === tripUid);
-    const label = trip ? `${trip.info?.from || '?'} → ${trip.info?.to || '?'}` : 'Trip';
+  const archiveTripWithUndo = useCallback(async (tripUid, label) => {
     await archiveTrip(tripUid);
-    notify.info(`${label} archived`, {
+    notify.info(`${label || 'Trip'} archived`, {
       action: { label: 'Undo', onClick: () => unarchiveTrip(tripUid) },
       duration: 8000,
     });
-  }, [allTrips, archiveTrip, unarchiveTrip]);
+  }, [archiveTrip, unarchiveTrip]);
 
   // Map Firebase profile to legacy currentUser shape so the rest of the app keeps working
   // Admin impersonation: when set to another user's uid, currentUser appears as that user
