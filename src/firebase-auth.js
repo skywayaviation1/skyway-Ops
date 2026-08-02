@@ -42,7 +42,35 @@ function microsoftProvider() {
     domain_hint: COMPANY_DOMAIN,
     ...(tenant ? { tenant } : {}),
   });
+  // Entra only issues an `email` claim when it is actually asked for. Without
+  // these scopes Firebase leaves user.email null for most work accounts, the
+  // company-domain check below can never pass, and sign-in bounces straight
+  // back to the login screen.
+  provider.addScope('openid');
+  provider.addScope('profile');
+  provider.addScope('email');
   return provider;
+}
+
+/**
+ * Every email address Firebase resolved from verified provider claims. These
+ * come from the signed OAuth token, never from anything the user typed, so
+ * they are safe to authorize against. Microsoft puts the address on the
+ * provider entry rather than the top-level user record often enough that
+ * checking only `user.email` rejects legitimate company accounts.
+ */
+function verifiedEmails(user) {
+  const found = [];
+  if (user?.email) found.push(user.email);
+  for (const p of user?.providerData || []) {
+    if (p?.email) found.push(p.email);
+  }
+  return found.map((e) => String(e).trim().toLowerCase()).filter(Boolean);
+}
+
+/** The company address for this user, or null if none of them qualify. */
+function companyEmailFor(user) {
+  return verifiedEmails(user).find(isCompanyEmail) || null;
 }
 
 // Diagnostic state — exposed for the UI to show error details
@@ -71,15 +99,29 @@ export function watchAuth(onChange) {
     }
 
     // This is an authorization boundary, not just login-screen decoration.
-    // Reject legacy password sessions and non-company Microsoft identities
-    // before any Firestore data is read.
-    if (!isMicrosoftUser(user) || !isCompanyEmail(user.email)) {
+    // Reject legacy password sessions and non-company identities before any
+    // Firestore data is read. Each rejection carries a code so the login
+    // screen can explain itself instead of silently reappearing.
+    const emails = verifiedEmails(user);
+    const companyEmail = companyEmailFor(user);
+    if (!isMicrosoftUser(user) || (emails.length > 0 && !companyEmail)) {
       setDiag('identity-policy', new Error('Unauthorized identity'), {
-        email: user.email || null,
+        emails,
         providers: user.providerData?.map(p => p.providerId) || [],
       });
       await fbSignOut(auth).catch(() => {});
-      onChange({ state: 'signed-out', authError: 'company-account-required' });
+      onChange({ state: 'signed-out', authError: 'auth/company-account-required' });
+      return;
+    }
+    if (!companyEmail) {
+      // Authenticated by Microsoft, but the token carried no address at all —
+      // an Entra claims configuration problem, not a rejected user.
+      setDiag('identity-no-email', new Error('No email claim on Microsoft token'), {
+        uid: user.uid,
+        providers: user.providerData?.map(p => p.providerId) || [],
+      });
+      await fbSignOut(auth).catch(() => {});
+      onChange({ state: 'signed-out', authError: 'auth/missing-email' });
       return;
     }
 
@@ -116,19 +158,19 @@ export function watchAuth(onChange) {
     }
     if (
       !isCompanyEmail(profile.email)
-      || String(profile.email).trim().toLowerCase() !== String(user.email).trim().toLowerCase()
+      || String(profile.email).trim().toLowerCase() !== companyEmail
     ) {
       setDiag('profile-identity-mismatch', new Error('Profile identity mismatch'), {
         uid: user.uid,
       });
       await fbSignOut(auth).catch(() => {});
-      onChange({ state: 'signed-out', authError: 'company-account-required' });
+      onChange({ state: 'signed-out', authError: 'auth/profile-identity-mismatch' });
       return;
     }
     // Disabled profiles and unapproved profiles never enter the app.
     if (profile.active === false) {
       await fbSignOut(auth).catch(() => {});
-      onChange({ state: 'signed-out', authError: 'account-disabled' });
+      onChange({ state: 'signed-out', authError: 'auth/account-disabled' });
       return;
     }
     if (profile.approved !== true) {
@@ -154,20 +196,71 @@ async function bootstrapCompanyProfile(user) {
   return data.profile;
 }
 
+// Marks that we handed the browser to Microsoft. If we come back with no
+// credential and this is still set, the round-trip itself lost the session —
+// the signature of a browser blocking the cross-origin sign-in helper's
+// storage — rather than the user cancelling or being rejected.
+const REDIRECT_FLAG = 'skyway_oauth_redirect_at';
+const REDIRECT_WINDOW_MS = 10 * 60 * 1000;
+
+function markRedirectStarted() {
+  try { sessionStorage.setItem(REDIRECT_FLAG, String(Date.now())); } catch { /* private mode */ }
+}
+function consumeRedirectFlag() {
+  try {
+    const at = Number(sessionStorage.getItem(REDIRECT_FLAG) || 0);
+    sessionStorage.removeItem(REDIRECT_FLAG);
+    return at;
+  } catch {
+    return 0;
+  }
+}
+
 export async function signInWithMicrosoft() {
-  await signInWithRedirect(auth, microsoftProvider());
+  markRedirectStarted();
+  try {
+    await signInWithRedirect(auth, microsoftProvider());
+  } catch (err) {
+    consumeRedirectFlag();
+    throw err;
+  }
 }
 
 export async function completeMicrosoftRedirect() {
+  // Resolves once Firebase has finished restoring persisted auth state, so
+  // auth.currentUser is trustworthy immediately afterwards.
   const result = await getRedirectResult(auth);
-  if (!result?.user) return null;
-  if (!isMicrosoftUser(result.user) || !isCompanyEmail(result.user.email)) {
-    await fbSignOut(auth).catch(() => {});
-    const err = new Error('Use your @flyskyway.com Microsoft account');
-    err.code = 'auth/company-account-required';
+
+  if (result?.user) {
+    consumeRedirectFlag();
+    if (!isMicrosoftUser(result.user)) {
+      await fbSignOut(auth).catch(() => {});
+      const err = new Error('Use your @flyskyway.com Microsoft account');
+      err.code = 'auth/company-account-required';
+      throw err;
+    }
+    if (verifiedEmails(result.user).length === 0) {
+      await fbSignOut(auth).catch(() => {});
+      const err = new Error('Microsoft returned no email address');
+      err.code = 'auth/missing-email';
+      throw err;
+    }
+    if (!companyEmailFor(result.user)) {
+      await fbSignOut(auth).catch(() => {});
+      const err = new Error('Use your @flyskyway.com Microsoft account');
+      err.code = 'auth/company-account-required';
+      throw err;
+    }
+    return result.user;
+  }
+
+  const startedAt = consumeRedirectFlag();
+  if (startedAt && (Date.now() - startedAt) < REDIRECT_WINDOW_MS && !auth.currentUser) {
+    const err = new Error('Sign-in did not carry back to the app');
+    err.code = 'auth/redirect-session-lost';
     throw err;
   }
-  return result.user;
+  return null;
 }
 
 export async function signOut() {

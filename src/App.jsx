@@ -1784,16 +1784,21 @@ function useAuth() {
   const [authState, setAuthState] = useState('loading');
   const [profile, setProfile] = useState(null);
   const [user, setUser] = useState(null);
+  // Why the last sign-in attempt was refused, when it was refused by our own
+  // policy rather than by Firebase. Without this the login screen reappears
+  // with no explanation.
+  const [authError, setAuthError] = useState(null);
 
   useEffect(() => {
     let unsub = null;
     (async () => {
       try {
         const { watchAuth } = await import('./firebase-auth.js');
-        unsub = watchAuth(({ state, user: u, profile: p }) => {
+        unsub = watchAuth(({ state, user: u, profile: p, authError: reason }) => {
           setAuthState(state);
           setUser(u || null);
           setProfile(p || null);
+          setAuthError(reason || null);
         });
       } catch (err) {
         console.error('Failed to load auth module:', err);
@@ -1812,7 +1817,7 @@ function useAuth() {
     }
   };
 
-  return { authState, profile, user, signOut: doSignOut };
+  return { authState, profile, user, authError, signOut: doSignOut };
 }
 
 /* useFirestoreUsers: subscribes to all user profiles in Firestore.
@@ -15357,9 +15362,13 @@ function MicrosoftMark({ className = '' }) {
   );
 }
 
-function LoginScreen() {
+function LoginScreen({ authError = null }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
+  // A rejection raised while completing the redirect wins, since it is the
+  // more specific of the two; otherwise fall back to whatever watchAuth
+  // refused the session for.
+  const shownError = error || (authError ? describeAuthError({ code: authError }) : null);
 
   useEffect(() => {
     let active = true;
@@ -15444,22 +15453,22 @@ function LoginScreen() {
               Use your company Microsoft account to continue.
             </p>
 
-            {error && (
+            {shownError && (
               <div className="mt-5 rounded-lg border border-danger-border bg-danger-soft p-3">
                 <div className="flex items-start gap-2.5 text-2xs leading-relaxed text-danger">
                   <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-                  <span>{error.message}</span>
+                  <span>{shownError.message}</span>
                 </div>
                 {/* Configuration faults are shown with the exact console
                     setting to change, so an administrator is not left guessing
                     which "domain" Firebase is complaining about. */}
-                {error.fix && (
+                {shownError.fix && (
                   <p className="mt-2 border-t border-danger-border pt-2 text-2xs leading-relaxed text-content-muted">
-                    {error.fix}
+                    {shownError.fix}
                   </p>
                 )}
-                {error.code && (
-                  <p className="mt-1.5 font-mono text-[10px] text-content-subtle">{error.code}</p>
+                {shownError.code && (
+                  <p className="mt-1.5 font-mono text-[10px] text-content-subtle">{shownError.code}</p>
                 )}
               </div>
             )}
@@ -15744,11 +15753,21 @@ function describeAuthError(err) {
       message: 'Microsoft is not configured as a sign-in provider.',
       fix: 'Enable the Microsoft provider under Firebase Authentication → Sign-in method.',
     },
+    'auth/missing-email': {
+      message: 'Microsoft signed you in but returned no email address.',
+      fix: 'In Entra ID, confirm the account has a mail address and that the app registration requests the "email" scope and includes the email optional claim. Skyway Ops authorizes accounts by their verified company address, so it cannot proceed without one.',
+    },
+    'auth/redirect-session-lost': {
+      message: 'Microsoft accepted the sign-in, but the session did not carry back to the app.',
+      fix: `This is the browser blocking the cross-origin sign-in helper, which Safari and installed iPhone apps do by default. An administrator can fix it by setting VITE_FIREBASE_AUTH_DOMAIN to ${host} and adding https://${host}/__/auth/handler to the Entra app's redirect URIs. See docs/microsoft-sso-setup.md.`,
+    },
   };
   if (CONFIG_ERRORS[code]) return { code, ...CONFIG_ERRORS[code] };
 
   const SIMPLE = {
     'auth/company-account-required': 'Use your @flyskyway.com Microsoft account.',
+    'auth/profile-identity-mismatch': 'This Microsoft account does not match the Skyway profile on file. Contact an administrator to relink it.',
+    'auth/account-disabled': 'This account has been deactivated. Contact a Skyway administrator.',
     'auth/account-exists-with-different-credential': 'This email was previously registered another way. Ask an administrator to migrate the account to Microsoft.',
     'auth/popup-blocked': 'Microsoft sign-in was blocked by the browser. Allow pop-ups and try again.',
     'auth/cancelled-popup-request': 'The sign-in request was cancelled. Please try again.',
@@ -26973,7 +26992,7 @@ function IosInstallBanner() {
 
 export default function CharterOps() {
   // Auth & users
-  const { authState, profile, user, signOut } = useAuth();
+  const { authState, profile, user, authError, signOut } = useAuth();
   const { users, loading: usersLoading, updateUser, removeUser, approveUser } = useFirestoreUsers(profile);
 
   // App state
@@ -27898,7 +27917,7 @@ export default function CharterOps() {
   }
 
   if (authState === 'signed-out') {
-    return <LoginScreen />;
+    return <LoginScreen authError={authError} />;
   }
 
   if (authState === 'unverified') {

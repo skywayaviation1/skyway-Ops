@@ -12,6 +12,12 @@ exactly in `@flyskyway.com`. New identities receive a `crew` profile with
    the Microsoft provider. It looks like
    `https://skyway-ops-app.firebaseapp.com/__/auth/handler` — the trailing
    `/__/auth/handler` matters.
+   **Also grant the `email` claim.** The app requests the `openid`, `profile`
+   and `email` scopes, but Entra only issues an address if the account has a
+   mail attribute and the app registration is configured to return it (Token
+   configuration → add optional claim → `email`). Without it, sign-in
+   completes and is then refused with `auth/missing-email`, because
+   authorization is by verified company address.
 3. **Enable the provider.** In Firebase Authentication → Sign-in method, enable
    Microsoft with the Entra application (client) ID and client secret.
 4. **Authorize the app's web address.** In Firebase Authentication → Settings →
@@ -48,7 +54,9 @@ pass through React.
 | `auth/invalid-oauth-client-id` | Entra client ID or secret is wrong or expired. | Re-enter both in the Firebase Microsoft provider. Entra client secrets expire — check the expiry date. |
 | `AADSTS50011: redirect URI does not match` (shown on the Microsoft page, not in the app) | The Entra app registration does not list the Firebase handler URL. | Add the exact `https://<authDomain>/__/auth/handler` URL to the Entra app's redirect URIs (step 2). |
 | `auth/account-exists-with-different-credential` | The email already exists as a password account. | Link or migrate the user in Firebase Authentication rather than creating a second profile. |
-| Sign-in loops back to the login screen on iPhone with no error | Safari blocks the cross-origin sign-in helper's storage. | Apply the same-origin auth domain below. |
+| `auth/missing-email` — "Microsoft signed you in but returned no email address" | Entra issued a token with no `email` claim. Access is granted by verified company address, so there is nothing to authorize against. | Confirm the account has a mail address in Entra, and that the app registration requests the `email` scope and includes the email optional claim. The app requests `openid profile email`; Entra still has to be willing to issue it. |
+| `auth/redirect-session-lost` — sign-in succeeds at Microsoft, then returns to the login page | The browser blocked the cross-origin sign-in helper's storage. Standard behaviour in Safari and installed iPhone apps. | Apply the same-origin auth domain below. |
+| `auth/profile-identity-mismatch` | The Microsoft address does not match `users/{uid}.email`. | Relink or correct the profile in Firestore rather than creating a second one. |
 
 The login screen prints the failing error code and, for the configuration
 faults above, the specific console setting to change.

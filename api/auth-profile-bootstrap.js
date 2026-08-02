@@ -58,7 +58,20 @@ export default async function handler(req, res) {
 
     const email = normalizedEmail(decoded);
     const provider = decoded.firebase?.sign_in_provider;
-    if (provider !== 'microsoft.com' || !hasAllowedDomain(email)) {
+    if (provider !== 'microsoft.com') {
+      res.status(403).json({ error: 'A @flyskyway.com Microsoft account is required' });
+      return;
+    }
+    // A Microsoft token with no email claim is an Entra configuration problem,
+    // not a rejected user. Saying so keeps the operator off the wrong trail.
+    if (!email) {
+      res.status(403).json({
+        code: 'missing-email',
+        error: 'Microsoft did not return an email address for this account. Entra must issue the email claim before access can be granted.',
+      });
+      return;
+    }
+    if (!hasAllowedDomain(email)) {
       res.status(403).json({ error: 'A @flyskyway.com Microsoft account is required' });
       return;
     }
