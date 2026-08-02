@@ -29,7 +29,14 @@
 // `users` is passed so we can look up crew details if needed.
 
 import React, { useMemo, useState, useEffect, Suspense, lazy } from 'react';
-import { Loader2, Calendar, FileText, Mail, AlertCircle, Plane, Clock, Cloud, AlertTriangle, Receipt, Wrench, Wind, Users } from 'lucide-react';
+import {
+  Loader2, Calendar, FileText, Mail, AlertCircle, Plane, Clock, Cloud,
+  AlertTriangle, Receipt, Wrench, Wind, Users, ArrowRight, CheckCircle2,
+  Activity, MapPin,
+} from 'lucide-react';
+import {
+  Button, Card, CardHeader, EmptyState, MetricTile, PageHeader, StatusChip, cx,
+} from './ui.jsx';
 // Live crew duty board (V2). Reads duty-periods-v2 collection,
 // evaluates legality per pilot, shows on-duty / resting / available /
 // illegal / warning state.
@@ -186,12 +193,12 @@ function fmtTime(iso) {
 // "today status" is derived from the most-advanced status across its
 // today's legs.
 function statusPill(state) {
-  if (state === 'airborne') return { label: 'AIRBORNE', cls: 'border-cyan-400/60 bg-cyan-500/10 text-cyan-300', pulse: true };
-  if (state === 'preflight') return { label: 'PREFLIGHT', cls: 'border-amber-500/40 bg-amber-500/10 text-amber-300', pulse: false };
-  if (state === 'scheduled') return { label: 'SCHEDULED', cls: 'border-slate-700 bg-slate-900/40 text-slate-300', pulse: false };
-  if (state === 'completed') return { label: 'COMPLETED', cls: 'border-emerald-500/30 bg-emerald-500/5 text-emerald-400/80', pulse: false };
-  if (state === 'aog') return { label: 'AOG', cls: 'border-red-500/60 bg-red-500/10 text-red-400', pulse: true };
-  return { label: 'IDLE', cls: 'border-slate-800 bg-slate-900/20 text-slate-500', pulse: false };
+  if (state === 'airborne') return { label: 'Airborne', tone: 'success', pulse: true };
+  if (state === 'preflight') return { label: 'Preflight', tone: 'warning', pulse: false };
+  if (state === 'scheduled') return { label: 'Scheduled', tone: 'info', pulse: false };
+  if (state === 'completed') return { label: 'Completed', tone: 'success', pulse: false };
+  if (state === 'aog') return { label: 'AOG', tone: 'danger', pulse: true };
+  return { label: 'Ground', tone: 'neutral', pulse: false };
 }
 
 // ====================================================================
@@ -467,55 +474,69 @@ export default function OpsCommandCenter({ currentUser, trips, users, onSelectTr
 
   return (
     <div className="flex-1 overflow-y-auto scroll-area bg-slate-950">
-      <div className="max-w-7xl mx-auto p-4 md:p-6 space-y-5">
+      <div className="mx-auto max-w-[1480px] space-y-5 p-4 md:p-6 lg:p-8">
+        <PageHeader
+          title={`${greeting}, ${userName}`}
+          subtitle={`Operations overview · ${dateStr}`}
+          actions={(
+            <>
+              <Button variant="outline" size="sm" icon={Calendar} onClick={() => onSwitchSection?.('schedule')}>
+                Open schedule
+              </Button>
+              <Button variant="primary" size="sm" icon={Plane} onClick={() => onSwitchSection?.('tracking')}>
+                Live tracking
+              </Button>
+            </>
+          )}
+        />
 
-        {/* === Header strip === */}
-        <div className="flex items-baseline gap-3 flex-wrap">
-          <h1 className="text-3xl md:text-4xl tracking-wide text-slate-100"
-            style={{ fontFamily: 'Bebas Neue, sans-serif', letterSpacing: '0.05em' }}>
-            {greeting}, {userName}
-          </h1>
-          <span className="text-[10px] tracking-widest text-slate-500"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            · OPERATIONS COMMAND
-          </span>
-          <span className="text-[10px] tracking-widest text-slate-500 ml-auto"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            {dateStr}
-          </span>
+        {/* The four numbers dispatch needs at the start of a shift. Secondary
+            counts remain available in the cards below instead of competing
+            with eight equally weighted tiles. */}
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <MetricTile
+            label="Flights today"
+            value={stats.flightsToday}
+            hint={`${stats.airborneNow} airborne · ${stats.next12h} next 12 hours`}
+            icon={Plane}
+          />
+          <MetricTile
+            label="Block hours"
+            value={stats.totalHoursToday.toFixed(1)}
+            hint={`${stats.airportsToday} airports today`}
+            icon={Clock}
+          />
+          <MetricTile
+            label="Aircraft active"
+            value={`${stats.activeFleetCount} of ${FLEET.length}`}
+            hint={`${stats.tomorrowCount} flights tomorrow`}
+            tone="success"
+            icon={Activity}
+          />
+          <MetricTile
+            label="Open squawks"
+            value={squawks.filter((s) => s && s.status !== 'closed').length}
+            hint={stats.aogCount > 0 ? `${stats.aogCount} aircraft grounded` : 'No aircraft grounded'}
+            tone={stats.aogCount > 0 ? 'danger' : squawks.length > 0 ? 'warning' : 'success'}
+            icon={Wrench}
+          />
         </div>
 
-        {/* === Top-line stats (operations summary) === */}
-        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-2">
-          <StatTile label="AIRBORNE" value={stats.airborneNow} tone={stats.airborneNow > 0 ? 'cyan' : 'muted'} pulse={stats.airborneNow > 0} />
-          <StatTile label="TODAY" value={stats.flightsToday} tone="bright" />
-          <StatTile label="NEXT 12H" value={stats.next12h} tone={stats.next12h > 0 ? 'amber' : 'muted'} />
-          <StatTile label="TOMORROW" value={stats.tomorrowCount} tone="muted" />
-          <StatTile label="THIS WEEK" value={stats.weekCount} tone="muted" />
-          <StatTile label="HRS TODAY" value={stats.totalHoursToday.toFixed(1)} tone="muted" suffix="h" />
-          <StatTile label="FLEET ACTIVE" value={`${stats.activeFleetCount}/${FLEET.length}`} tone="muted" />
-          <StatTile label="AOG" value={stats.aogCount} tone={stats.aogCount > 0 ? 'red' : 'muted'} />
-        </div>
-
-        {/* === Per-aircraft fleet table === */}
-        <section>
-          <div className="flex items-baseline justify-between mb-3">
-            <h2 className="text-xs tracking-[0.2em] text-slate-300"
-              style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}>
-              FLEET · TODAY
-            </h2>
-            <span className="text-[10px] text-slate-500"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              {FLEET.length} AIRCRAFT
-            </span>
-          </div>
-
-          {/* The header row is desktop-only: below `lg` each aircraft renders
-              as a stacked card. The previous fixed seven-column grid summed to
-              ~590px inside an overflow-hidden container, so on a phone the
-              right-hand columns were simply clipped away. */}
-          <div className="border border-edge bg-surface rounded-md overflow-hidden">
-            <div className={`${FLEET_GRID} hidden lg:grid items-center gap-3 px-3 py-2 border-b border-edge text-2xs font-semibold text-content-muted`}>
+        <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
+          <Card padded={false} className="overflow-hidden">
+            <div className="p-4 pb-3">
+              <CardHeader
+                title="Fleet status"
+                subtitle={`${FLEET.length} aircraft · today's scheduled activity`}
+                icon={Plane}
+                action={(
+                  <Button variant="ghost" size="sm" iconRight={ArrowRight} onClick={() => onSwitchSection?.('schedule')}>
+                    All flights
+                  </Button>
+                )}
+              />
+            </div>
+            <div className={`${FLEET_GRID} hidden lg:grid items-center gap-3 border-y border-edge bg-surface-sunken px-4 py-2 text-2xs font-semibold text-content-muted`}>
               <div>Tail</div>
               <div>Status</div>
               <div className="text-right">Legs</div>
@@ -524,110 +545,60 @@ export default function OpsCommandCenter({ currentUser, trips, users, onSelectTr
               <div>Next departure</div>
               <div></div>
             </div>
-
             {aircraftRows.map((row) => (
-              <AircraftRow
-                key={row.tail}
-                row={row}
-                now={now}
-                onSelectTrip={onSelectTrip}
-              />
+              <AircraftRow key={row.tail} row={row} now={now} onSelectTrip={onSelectTrip} />
             ))}
-          </div>
-        </section>
+          </Card>
 
-        {/* === Weather grid — METAR for every airport in today's schedule ===
-            Each card shows IATA, flight category pill, wind, vis/ceiling,
-            temp/dewpoint, "Updated Xm ago." Data refreshes every 5 minutes.
-            Falls back gracefully — if a station has no METAR (small fields,
-            international airports without ICAO reporting), the card still
-            renders with "no data". */}
-        {todaysAirports.length > 0 && (
-          <section>
-            <div className="flex items-baseline justify-between mb-3">
-              <h2 className="text-xs tracking-[0.2em] text-slate-300"
-                style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}>
-                WEATHER · TODAY
-              </h2>
-              <span className="text-[10px] text-slate-500"
-                style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                {todaysAirports.length} {todaysAirports.length === 1 ? 'AIRPORT' : 'AIRPORTS'} · METAR / TAF
-              </span>
-            </div>
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
-              {todaysAirports.map((code) => (
-                <WeatherCard key={code} code={code} entry={wxByAirport.get(code)} now={now} />
-              ))}
-            </div>
-          </section>
-        )}
-
-        {/* === Action items — surfaces operational issues needing attention ===
-            Open squawks, pending expense reviews, and current AOG list.
-            All counts are derived from live Firestore subscriptions so
-            these refresh in real time as ops triages issues. */}
-        <section>
-          <div className="flex items-baseline justify-between mb-3">
-            <h2 className="text-xs tracking-[0.2em] text-slate-300"
-              style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}>
-              ACTION ITEMS
-            </h2>
-          </div>
-          <ActionItemsPanel
+          <AttentionPanel
             squawks={squawks}
             expenses={expenses}
             aogTails={aogTails}
+            mel={mel}
             onSwitchSection={onSwitchSection}
           />
-        </section>
+        </div>
 
-        {/* === Crew duty / availability ===
-            Lists pilots currently on duty with elapsed time, FAR 117
-            14-hour limit warning, and PIC/SIC pair. Hidden when no one
-            is on duty (no false-positive empty state to scroll past). */}
-        {/* CREW · DUTY STATUS — V2 board. Pulls from duty-periods-v2
-            (new schema). Replaces the old activeDuty-driven CrewDutyPanel
-            which read from the legacy duty-state collection. The legacy
-            subscription/state remains in this file as dead code so we
-            can revert quickly if needed; safe to remove after stability. */}
-        <Suspense fallback={
-          <div className="border border-slate-800 bg-slate-900/30 p-3 text-[10px] tracking-widest text-slate-500"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            CREW · LOADING…
+        <Card padded={false} className="overflow-hidden">
+          <div className="p-4 pb-3">
+            <CardHeader
+              title="Live tracking"
+              subtitle="Current and upcoming fleet movement"
+              icon={MapPin}
+              action={(
+                <Button variant="ghost" size="sm" iconRight={ArrowRight} onClick={() => onSwitchSection?.('tracking')}>
+                  Full board
+                </Button>
+              )}
+            />
           </div>
-        }>
-          <CrewBoardV2Lazy currentUser={currentUser} users={users} trips={trips} />
-        </Suspense>
+          <div className="border-t border-edge">
+            <Suspense fallback={<div className="p-10 text-center text-sm text-content-muted"><Loader2 className="mr-2 inline h-4 w-4 animate-spin" />Loading live tracking…</div>}>
+              <FlightBoardLazy allTrips={trips} compact />
+            </Suspense>
+          </div>
+        </Card>
 
-        {/* === Embedded flight board (compact) ===
-            Same component the TRACKING screen uses, in compact mode.
-            Ops users see the live flight rows + map without leaving home. */}
-        <section>
-          <Suspense fallback={
-            <div className="border border-slate-800 bg-slate-900/30 p-6 text-center text-slate-500"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              <Loader2 className="w-4 h-4 animate-spin inline mr-2" />
-              LOADING FLIGHT BOARD
+        <div className="grid gap-5 lg:grid-cols-2">
+          {todaysAirports.length > 0 && (
+            <Card>
+              <CardHeader title="Airport weather" subtitle={`${todaysAirports.length} airports on today's schedule`} icon={Cloud} />
+              <div className="grid grid-cols-2 gap-2">
+                {todaysAirports.slice(0, 4).map((code) => (
+                  <WeatherCard key={code} code={code} entry={wxByAirport.get(code)} now={now} />
+                ))}
+              </div>
+            </Card>
+          )}
+          <Card padded={false} className="overflow-hidden">
+            <div className="p-4 pb-0">
+              <CardHeader title="Crew availability" subtitle="Live Part 135 duty and legality status" icon={Users} />
             </div>
-          }>
-            <FlightBoardLazy allTrips={trips} compact />
-          </Suspense>
-        </section>
-
-        {/* === Quick actions strip === */}
-        <section>
-          <h2 className="text-xs tracking-[0.2em] text-slate-500 mb-2"
-            style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}>
-            QUICK ACTIONS
-          </h2>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-            <QuickAction icon={Calendar} label="ALL TRIPS"  onClick={() => onSwitchSection?.('schedule')} />
-            <QuickAction icon={FileText} label="MANIFESTS"  onClick={() => onSwitchSection?.('manifests')} />
-            <QuickAction icon={Mail}     label="EXPENSES"   onClick={() => onSwitchSection?.('expenses')} />
-            <QuickAction icon={AlertCircle} label="REPORT"  onClick={() => onSwitchSection?.('reports')} />
-          </div>
-        </section>
-
+            <Suspense fallback={<div className="p-6 text-sm text-content-muted"><Loader2 className="mr-2 inline h-4 w-4 animate-spin" />Loading crew…</div>}>
+              <CrewBoardV2Lazy currentUser={currentUser} users={users} trips={trips} />
+            </Suspense>
+          </Card>
+        </div>
       </div>
     </div>
   );
@@ -689,15 +660,18 @@ function AircraftRow({ row, now, onSelectTrip }) {
   };
 
   const statusBadge = (
-    <span className={`inline-flex items-center gap-1.5 rounded border px-2 py-0.5 text-2xs font-semibold ${pill.cls}`}>
-      {pill.pulse && <span className="h-1 w-1 rounded-full bg-current animate-pulse" />}
+    <StatusChip tone={pill.tone}>
+      {pill.pulse && <span className="h-1.5 w-1.5 rounded-full bg-current animate-pulse" />}
       {pill.label}
-    </span>
+    </StatusChip>
   );
 
   return (
     <div
-      className={`border-b border-edge last:border-b-0 ${clickable ? 'cursor-pointer hover:bg-surface-raised' : ''}`}
+      className={cx(
+        'border-b border-edge transition-colors last:border-b-0',
+        clickable && 'cursor-pointer hover:bg-surface-raised',
+      )}
       onClick={handleClick}
       role={clickable ? 'button' : undefined}
       tabIndex={clickable ? 0 : undefined}
@@ -1026,6 +1000,118 @@ function TafPeriodRow({ period }) {
         <span className="text-slate-600 uppercase">{period.changeIndicator}</span>
       )}
     </div>
+  );
+}
+
+// ====================================================================
+// AttentionPanel — the compact operational inbox shown beside the fleet
+// table. It replaces three equally weighted dashboard tiles with a single
+// prioritized list: grounding events first, then MEL/squawk work, then
+// finance review.
+// ====================================================================
+function AttentionPanel({ squawks, expenses, aogTails, mel, onSwitchSection }) {
+  const items = useMemo(() => {
+    const rows = [];
+    const openSquawks = (Array.isArray(squawks) ? squawks : [])
+      .filter((s) => s && s.status !== 'closed');
+    const pendingExpenses = (Array.isArray(expenses) ? expenses : [])
+      .filter((e) => e && (e.status === 'pending' || e.status === 'needs_review'));
+    const activeMel = (Array.isArray(mel) ? mel : [])
+      .filter((m) => m && !['cleared', 'closed', 'resolved'].includes(String(m.status || '').toLowerCase()));
+
+    for (const tail of Array.from(aogTails || [])) {
+      const issue = openSquawks.find((s) => String(s.tail || '').toUpperCase() === tail && s.grounding);
+      rows.push({
+        key: `aog-${tail}`,
+        tone: 'danger',
+        icon: AlertTriangle,
+        title: `${tail} is grounded`,
+        detail: issue?.description || issue?.issue || 'Grounding maintenance item requires action',
+        section: 'maint',
+        priority: 0,
+      });
+    }
+    activeMel.slice(0, 3).forEach((item, index) => {
+      rows.push({
+        key: `mel-${item.id || index}`,
+        tone: 'warning',
+        icon: Clock,
+        title: `MEL ${item.tail || 'fleet item'} requires review`,
+        detail: item.description || item.item || `Category ${item.category || '—'} deferral`,
+        section: 'maint',
+        priority: 1,
+      });
+    });
+    openSquawks.filter((s) => !s.grounding).slice(0, 3).forEach((item, index) => {
+      rows.push({
+        key: `sq-${item.id || index}`,
+        tone: 'warning',
+        icon: Wrench,
+        title: `${item.tail || 'Aircraft'} open squawk`,
+        detail: item.description || item.issue || 'Awaiting maintenance triage',
+        section: 'maint',
+        priority: 2,
+      });
+    });
+    if (pendingExpenses.length > 0) {
+      const total = pendingExpenses.reduce((sum, item) => {
+        const amount = Number(item?.totalAmount || item?.amount || 0);
+        return sum + (Number.isFinite(amount) ? amount : 0);
+      }, 0);
+      rows.push({
+        key: 'expenses',
+        tone: 'info',
+        icon: Receipt,
+        title: `${pendingExpenses.length} expense${pendingExpenses.length === 1 ? '' : 's'} awaiting review`,
+        detail: `$${total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} submitted`,
+        section: 'expenses',
+        priority: 3,
+      });
+    }
+    return rows.sort((a, b) => a.priority - b.priority).slice(0, 6);
+  }, [squawks, expenses, aogTails, mel]);
+
+  return (
+    <Card className="min-h-[320px] xl:sticky xl:top-4">
+      <CardHeader
+        title="Requires attention"
+        subtitle={items.length > 0 ? `${items.length} operational item${items.length === 1 ? '' : 's'}` : 'No open action items'}
+        icon={AlertCircle}
+      />
+      {items.length === 0 ? (
+        <EmptyState
+          icon={CheckCircle2}
+          title="Everything is clear"
+          description="There are no grounding events, maintenance items, or expenses waiting for review."
+          className="min-h-[230px] py-10"
+        />
+      ) : (
+        <div className="divide-y divide-edge">
+          {items.map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              onClick={() => onSwitchSection?.(item.section)}
+              className="flex w-full items-start gap-3 py-3 text-left transition-colors first:pt-1 last:pb-0 hover:text-accent"
+            >
+              <span className={cx(
+                'mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded',
+                item.tone === 'danger' ? 'bg-danger-soft text-danger'
+                  : item.tone === 'warning' ? 'bg-warning-soft text-warning'
+                    : 'bg-info-soft text-info',
+              )}>
+                <item.icon className="h-4 w-4" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-semibold text-content">{item.title}</span>
+                <span className="mt-0.5 block truncate text-2xs text-content-muted">{item.detail}</span>
+              </span>
+              <ArrowRight className="mt-2 h-3.5 w-3.5 shrink-0 text-content-subtle" />
+            </button>
+          ))}
+        </div>
+      )}
+    </Card>
   );
 }
 

@@ -100,7 +100,7 @@ import {
   Coffee, ArrowRight, Clock, Shield, X, ScanLine, ChevronLeft,
   Mail, Navigation, Loader2, Wifi, WifiOff, Settings as SettingsIcon,
   Download, Trash2, Plus, FileText, Zap, Radio, AlertCircle, Upload,
-  CheckCheck, UserCheck, Sparkles, Hash, Cloud, Wrench, Hotel, BookOpen, Search,
+  Check, CheckCheck, UserCheck, Sparkles, Hash, Cloud, Wrench, Hotel, BookOpen, Search,
   Activity, Palette, ShieldCheck, Edit2, Home, CreditCard, Fuel, Building2,
   MoreHorizontal, LogOut, ChevronRight,
 } from 'lucide-react';
@@ -4237,49 +4237,19 @@ function PilotHomeScreen({ currentUser, trips, tripStates, config, users, onSele
 
   return (
     <div className="flex-1 overflow-y-auto scroll-area bg-slate-950">
-      <div className="max-w-4xl mx-auto p-4 md:p-6 space-y-5">
-        {/* Header strip */}
-        <div className="flex items-baseline gap-3 flex-wrap">
-          <h1 className="text-3xl md:text-4xl tracking-wide text-slate-100"
-            style={{ fontFamily: 'Bebas Neue, sans-serif', letterSpacing: '0.05em' }}>
-            {greeting}, {userName}
-          </h1>
-          {role && (
-            <span className="text-[10px] tracking-widest text-slate-500"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              · {role}
-            </span>
+      <div className="mx-auto max-w-5xl space-y-5 p-4 md:p-6 lg:p-8">
+        <PageHeader
+          title={`${greeting}, ${userName}`}
+          subtitle={`${role || 'Crew'} · ${new Date().toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' })}`}
+          actions={(
+            <Button variant="outline" size="sm" icon={Calendar} onClick={() => onSwitchSection?.('schedule')}>
+              All flights
+            </Button>
           )}
-        </div>
-
-        {/* Duty tracker (isolated, flag-gated, error-boundaried) */}
-        <DutyCard
-          currentUser={currentUser}
-          config={config}
-          myTrips={myTrips}
-          users={users}
         />
 
-        {/* Today's stats strip */}
-        <div className="grid grid-cols-3 gap-3">
-          <StatCard label="ACTIVE" value={buckets.active.length} tone={buckets.active.length > 0 ? 'cyan' : 'muted'} />
-          <StatCard label="NEXT 12H" value={buckets.imminent.length} tone={buckets.imminent.length > 0 ? 'amber' : 'muted'} />
-          <StatCard label="UPCOMING" value={buckets.upcoming.length} tone="muted" />
-        </div>
-
-        {/* Mini flight board — same component as TRACKING, in compact
-            mode. Shows today's actual flight rows + map view. */}
-        <Suspense fallback={
-          <div className="border border-slate-800 bg-slate-900/30 p-6 text-center text-slate-500"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            <Loader2 className="w-4 h-4 animate-spin inline mr-2" />
-            LOADING FLIGHT BOARD
-          </div>
-        }>
-          <FlightBoardLazy allTrips={trips} compact />
-        </Suspense>
-
-        {/* Focus card — the most relevant trip right now */}
+        {/* The next flight is the crew member's primary task, so it now
+            precedes duty telemetry and the embedded fleet board. */}
         {focusTrip ? (
           <PilotFocusCard
             trip={focusTrip}
@@ -4293,20 +4263,34 @@ function PilotHomeScreen({ currentUser, trips, tripStates, config, users, onSele
           <EmptyFocusCard />
         )}
 
+        {/* Duty tracker (isolated, flag-gated, error-boundaried). */}
+        <DutyCard currentUser={currentUser} config={config} myTrips={myTrips} users={users} />
+
+        <div className="grid grid-cols-3 gap-3">
+          <MetricTile
+            label="Active now"
+            value={buckets.active.length}
+            tone={buckets.active.length > 0 ? 'accent' : 'neutral'}
+            icon={Plane}
+          />
+          <MetricTile
+            label="Next 12 hours"
+            value={buckets.imminent.length}
+            tone={buckets.imminent.length > 0 ? 'warning' : 'neutral'}
+            icon={Clock}
+          />
+          <MetricTile label="Upcoming" value={buckets.upcoming.length} icon={Calendar} />
+        </div>
+
         {/* Upcoming list */}
         {(buckets.imminent.length > 0 || buckets.upcoming.length > 0) && (
-          <div>
-            <div className="flex items-baseline justify-between mb-2">
-              <h2 className="text-xs tracking-[0.2em] text-slate-300"
-                style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}>
-                MY UPCOMING
-              </h2>
-              <span className="text-[10px] text-slate-500"
-                style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                {buckets.imminent.length + buckets.upcoming.length} trip{(buckets.imminent.length + buckets.upcoming.length) === 1 ? '' : 's'}
-              </span>
-            </div>
-            <div className="space-y-2">
+          <Card>
+            <CardHeader
+              title="Upcoming flights"
+              subtitle={`${buckets.imminent.length + buckets.upcoming.length} assigned trip${(buckets.imminent.length + buckets.upcoming.length) === 1 ? '' : 's'}`}
+              icon={Calendar}
+            />
+            <div className="divide-y divide-edge">
               {/* Skip the focus trip itself in the list, since it's already shown above */}
               {[...buckets.imminent, ...buckets.upcoming]
                 .filter(t => t.uid !== focusTrip?.uid)
@@ -4320,17 +4304,14 @@ function PilotHomeScreen({ currentUser, trips, tripStates, config, users, onSele
                   />
                 ))}
             </div>
-          </div>
+          </Card>
         )}
 
         {/* Recent (just-completed) */}
         {buckets.recent.length > 0 && (
-          <div>
-            <h2 className="text-xs tracking-[0.2em] text-slate-500 mb-2"
-              style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}>
-              RECENTLY COMPLETED
-            </h2>
-            <div className="space-y-2">
+          <Card>
+            <CardHeader title="Recently completed" icon={CheckCircle2} />
+            <div className="divide-y divide-edge">
               {buckets.recent.slice(0, 3).map(t => (
                 <PilotUpcomingRow
                   key={t.uid}
@@ -4341,38 +4322,29 @@ function PilotHomeScreen({ currentUser, trips, tripStates, config, users, onSele
                 />
               ))}
             </div>
-          </div>
+          </Card>
         )}
 
-        {/* Quick actions */}
-        <div>
-          <h2 className="text-xs tracking-[0.2em] text-slate-500 mb-2"
-            style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}>
-            QUICK ACTIONS
-          </h2>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-            <QuickActionButton
-              icon={Calendar}
-              label="ALL TRIPS"
-              onClick={() => onSwitchSection?.('schedule')}
-            />
-            <QuickActionButton
-              icon={FileText}
-              label="MANIFESTS"
-              onClick={() => onSwitchSection?.('manifests')}
-            />
-            <QuickActionButton
-              icon={Mail}
-              label="EXPENSES"
-              onClick={() => onSwitchSection?.('expenses')}
-            />
-            <QuickActionButton
-              icon={AlertCircle}
-              label="REPORT"
-              onClick={() => onSwitchSection?.('reports')}
-            />
+        <Card>
+          <CardHeader title="Quick actions" />
+          <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+            <QuickActionButton icon={Calendar} label="All flights" onClick={() => onSwitchSection?.('schedule')} />
+            <QuickActionButton icon={FileText} label="Manifests" onClick={() => onSwitchSection?.('manifests')} />
+            <QuickActionButton icon={Mail} label="Expenses" onClick={() => onSwitchSection?.('expenses')} />
+            <QuickActionButton icon={AlertCircle} label="Report" onClick={() => onSwitchSection?.('reports')} />
           </div>
-        </div>
+        </Card>
+
+        {/* Fleet movement is useful context, but it no longer displaces the
+            pilot's next flight and duty state at the top of the screen. */}
+        <Card padded={false} className="hidden overflow-hidden md:block">
+          <div className="p-4 pb-2">
+            <CardHeader title="Live fleet movement" subtitle="Today's active flying" icon={Navigation} />
+          </div>
+          <Suspense fallback={<Spinner label="Loading live tracking…" />}>
+            <FlightBoardLazy allTrips={trips} compact />
+          </Suspense>
+        </Card>
       </div>
     </div>
   );
@@ -4400,83 +4372,38 @@ function StatCard({ label, value, tone = 'muted' }) {
 
 function PilotFocusCard({ trip, tripState, currentUser, isActive, isImminent, onSelectTrip }) {
   const startMs = trip.start ? new Date(trip.start).getTime() : null;
-  const now = Date.now();
-  const headerLabel = isActive ? 'IN PROGRESS' : isImminent ? 'NEXT UP' : 'UPCOMING';
-  const headerTone = isActive ? 'cyan' : isImminent ? 'amber' : 'slate';
-  const headerStyles = {
-    cyan:  'border-cyan-500/40 bg-cyan-500/10 text-cyan-300',
-    amber: 'border-amber-500/40 bg-amber-500/10 text-amber-300',
-    slate: 'border-slate-700 bg-slate-800/40 text-slate-300',
-  };
+  const headerLabel = isActive ? 'In progress' : isImminent ? 'Next flight' : 'Upcoming';
+  const headerTone = isActive ? 'success' : isImminent ? 'warning' : 'info';
   // Show-time = 60 min before scheduled departure for domestic, 90 min for international
   const isInternational = String(trip.info?.from || '').match(/^[CMK]/) ? false : true;
   const showOffsetMin = isInternational ? 90 : 60;
   const showTime = startMs ? new Date(startMs - showOffsetMin * 60000) : null;
 
   return (
-    <div className="border border-slate-800 bg-slate-900/40">
-      <div className={`px-3 py-2 border-b flex items-center justify-between ${headerStyles[headerTone]}`}>
-        <span className="text-[10px] tracking-widest"
-          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-          {headerLabel}
-        </span>
+    <Card className="relative overflow-hidden border-accent-border">
+      <div className="absolute inset-y-0 left-0 w-1 bg-accent" />
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <StatusChip tone={headerTone}>{headerLabel}</StatusChip>
+          <div className="mt-3 flex items-center gap-2 font-mono text-2xl font-semibold text-content sm:text-3xl">
+            <span>{trip.info.from || '—'}</span>
+            <ArrowRight className="h-5 w-5 text-accent" />
+            <span>{trip.info.to || '—'}</span>
+          </div>
+          <p className="mt-1 text-sm text-content-muted">
+            {trip.info.tail || 'Tail pending'}
+            {trip.info.customer ? ` · ${trip.info.customer}` : ''}
+          </p>
+        </div>
         {startMs && (
-          <span className="text-[10px]"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            {timeUntil(trip.start)}
-          </span>
+          <div className="shrink-0 text-right">
+            <div className="font-mono text-sm font-semibold text-accent">{timeUntil(trip.start)}</div>
+            <div className="mt-1 text-2xs text-content-subtle">until departure</div>
+          </div>
         )}
       </div>
 
-      <div className="p-4 space-y-3">
-        {/* Tail + route */}
-        <div className="flex items-baseline gap-4 flex-wrap">
-          <h2 className="text-3xl tracking-wide text-slate-100"
-            style={{ fontFamily: 'Bebas Neue, sans-serif', letterSpacing: '0.05em' }}>
-            {trip.info.tail}
-          </h2>
-          <div className="flex items-center gap-2 text-xl text-slate-300"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            <div className="flex items-center gap-1.5">
-              <span>{trip.info.from}</span>
-              {trip.info.from && <AirportWxBadge icao={trip.info.from} compact />}
-              {trip.info.from && (
-                <FAANotamBadge
-                  icao={trip.info.from}
-                  getIdToken={async () => {
-                    const { auth } = await import('./firebase.js');
-                    return auth.currentUser ? auth.currentUser.getIdToken() : null;
-                  }}
-                />
-              )}
-            </div>
-            <ArrowRight className="w-5 h-5 text-cyan-400" />
-            <div className="flex items-center gap-1.5">
-              <span>{trip.info.to}</span>
-              {trip.info.to && <AirportWxBadge icao={trip.info.to} compact />}
-              {trip.info.to && (
-                <FAANotamBadge
-                  icao={trip.info.to}
-                  getIdToken={async () => {
-                    const { auth } = await import('./firebase.js');
-                    return auth.currentUser ? auth.currentUser.getIdToken() : null;
-                  }}
-                />
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Customer */}
-        {trip.info.customer && (
-          <div className="text-sm text-slate-400" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-            {trip.info.customer}
-          </div>
-        )}
-
-        {/* Time + show-time + pax + crew */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-[11px]"
-          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+      <div className="mt-4 grid grid-cols-2 gap-3 rounded-md bg-surface-sunken p-3 md:grid-cols-4">
           <FocusField label="DEP" value={startMs ? (() => {
             const t = formatLocalTime(trip.start, trip.info.from);
             return `${t.time} ${t.tz}`;
@@ -4487,16 +4414,13 @@ function PilotFocusCard({ trip, tripState, currentUser, isActive, isImminent, on
           })() : '—'} accent={isImminent || isActive} />
           <FocusField label="PAX" value={`${trip.info.pax || 0}`} />
           <FocusField label="DATE" value={formatLocalDate(trip.start, trip.info.from) || '—'} />
-        </div>
+      </div>
 
-        {/* Crew assignment */}
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px]">
+      <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
           {trip.info.pic && (
             <span className="flex items-center gap-1.5">
-              <span className="text-[10px] tracking-widest text-slate-500"
-                style={{ fontFamily: 'JetBrains Mono, monospace' }}>PIC</span>
-              <span className={`${nameMatchesPilot(trip.info.pic, currentUser?.jetinsightName || currentUser?.name) ? 'text-cyan-300' : 'text-slate-300'}`}
-                style={{ fontFamily: 'DM Sans, sans-serif' }}>
+              <span className="text-2xs font-semibold text-content-subtle">PIC</span>
+              <span className={nameMatchesPilot(trip.info.pic, currentUser?.jetinsightName || currentUser?.name) ? 'text-accent' : 'text-content'}>
                 {trip.info.pic}
                 {nameMatchesPilot(trip.info.pic, currentUser?.jetinsightName || currentUser?.name) && ' (you)'}
               </span>
@@ -4504,60 +4428,46 @@ function PilotFocusCard({ trip, tripState, currentUser, isActive, isImminent, on
           )}
           {trip.info.sic && (
             <span className="flex items-center gap-1.5">
-              <span className="text-[10px] tracking-widest text-slate-500"
-                style={{ fontFamily: 'JetBrains Mono, monospace' }}>SIC</span>
-              <span className={`${nameMatchesPilot(trip.info.sic, currentUser?.jetinsightName || currentUser?.name) ? 'text-cyan-300' : 'text-slate-300'}`}
-                style={{ fontFamily: 'DM Sans, sans-serif' }}>
+              <span className="text-2xs font-semibold text-content-subtle">SIC</span>
+              <span className={nameMatchesPilot(trip.info.sic, currentUser?.jetinsightName || currentUser?.name) ? 'text-accent' : 'text-content'}>
                 {trip.info.sic}
                 {nameMatchesPilot(trip.info.sic, currentUser?.jetinsightName || currentUser?.name) && ' (you)'}
               </span>
             </span>
           )}
-        </div>
-
-        {/* Notes if any */}
-        {trip.info.notes && (
-          <div className="text-[11px] text-cyan-300/80 bg-cyan-500/5 border border-cyan-500/20 px-2 py-1.5"
-            style={{ fontFamily: 'DM Sans, sans-serif' }}>
-            {trip.info.notes}
-          </div>
-        )}
-
-        {/* Open trip button */}
-        <button
-          onClick={() => onSelectTrip(trip.uid)}
-          className="w-full mt-2 py-2.5 text-xs tracking-widest bg-cyan-500/10 border border-cyan-400 text-cyan-300 hover:bg-cyan-500/20 transition-colors"
-          style={{ fontFamily: 'JetBrains Mono, monospace' }}
-        >
-          OPEN TRIP →
-        </button>
       </div>
-    </div>
+
+      {trip.info.notes && (
+        <div className="mt-4 rounded border border-accent-border bg-accent-soft px-3 py-2 text-2xs text-content-muted">
+          {trip.info.notes}
+        </div>
+      )}
+
+      <Button variant="primary" block className="mt-4" iconRight={ArrowRight} onClick={() => onSelectTrip(trip.uid)}>
+        Open flight
+      </Button>
+    </Card>
   );
 }
 
 function FocusField({ label, value, accent }) {
   return (
     <div>
-      <div className="text-[9px] tracking-widest text-slate-500 mb-0.5">{label}</div>
-      <div className={accent ? 'text-cyan-300' : 'text-slate-200'}>{value}</div>
+      <div className="text-2xs font-medium text-content-subtle">{label}</div>
+      <div className={cx('mt-0.5 font-mono text-sm font-medium', accent ? 'text-accent' : 'text-content')}>{value}</div>
     </div>
   );
 }
 
 function EmptyFocusCard() {
   return (
-    <div className="border border-slate-800 bg-slate-900/40 p-6 text-center">
-      <Plane className="w-8 h-8 text-slate-700 mx-auto mb-3" />
-      <div className="text-sm text-slate-400 mb-1"
-        style={{ fontFamily: 'DM Sans, sans-serif' }}>
-        No active trips
-      </div>
-      <div className="text-[11px] text-slate-500"
-        style={{ fontFamily: 'DM Sans, sans-serif' }}>
-        You're not currently assigned to any active or imminent flights.
-      </div>
-    </div>
+    <Card padded={false}>
+      <EmptyState
+        icon={Plane}
+        title="No active flights"
+        description="You're not currently assigned to any active or imminent flights."
+      />
+    </Card>
   );
 }
 
@@ -4567,40 +4477,31 @@ function PilotUpcomingRow({ trip, currentUser, onClick, muted }) {
   return (
     <button
       onClick={onClick}
-      className={`w-full text-left p-3 border transition-colors ${muted ? 'border-slate-900 bg-slate-900/20 hover:bg-slate-900/40 opacity-60' : 'border-slate-800 bg-slate-900/40 hover:border-slate-700 hover:bg-slate-900/60'}`}
+      className={cx(
+        'w-full rounded px-1 py-3 text-left transition-colors hover:bg-surface-raised',
+        muted && 'opacity-60',
+      )}
     >
-      <div className="flex items-baseline justify-between gap-3 flex-wrap">
-        <div className="flex items-baseline gap-3 flex-wrap">
-          <span className="text-base text-slate-100"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+          <span className="font-mono text-sm font-semibold text-content">
             {trip.info.tail}
           </span>
-          <span className="text-sm text-slate-300"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          <span className="font-mono text-sm text-content">
             {trip.info.from} → {trip.info.to}
           </span>
-          <span className="text-[10px] tracking-wider px-1.5 py-0.5 border border-slate-700 text-slate-400"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            {isPic ? 'PIC' : 'SIC'}
-          </span>
+          <StatusChip tone="neutral" size="sm">{isPic ? 'PIC' : 'SIC'}</StatusChip>
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-3 text-2xs text-content-muted">
+            <span>{formatLocalDate(trip.start, trip.info.from) || '—'}</span>
+            {startMs && <span>{(() => { const t = formatLocalTime(trip.start, trip.info.from); return `${t.time} ${t.tz}`; })()}</span>}
+            {trip.info.customer && <span className="truncate">{trip.info.customer}</span>}
+          </div>
         </div>
-        <span className="text-[10px] text-slate-500"
-          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        <span className="shrink-0 font-mono text-2xs text-content-muted">
           {startMs ? timeUntil(trip.start) : '—'}
         </span>
-      </div>
-      <div className="mt-1 flex items-center gap-3 text-[10px] text-slate-500"
-        style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-        <span>{formatLocalDate(trip.start, trip.info.from) || '—'}</span>
-        {startMs && (
-          <span>
-            DEP {(() => {
-              const t = formatLocalTime(trip.start, trip.info.from);
-              return `${t.time} ${t.tz}`;
-            })()}
-          </span>
-        )}
-        {trip.info.customer && <span className="truncate">{trip.info.customer}</span>}
       </div>
     </button>
   );
@@ -4610,13 +4511,10 @@ function QuickActionButton({ icon: Icon, label, onClick }) {
   return (
     <button
       onClick={onClick}
-      className="p-3 border border-slate-800 bg-slate-900/40 hover:border-slate-700 hover:bg-slate-900/60 transition-colors flex flex-col items-center gap-2"
+      className="flex min-h-11 items-center gap-2 rounded border border-edge bg-surface-raised p-3 text-content-muted transition-colors hover:border-accent-border hover:text-accent md:flex-col"
     >
-      <Icon className="w-4 h-4 text-slate-400" />
-      <span className="text-[10px] tracking-widest text-slate-400"
-        style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-        {label}
-      </span>
+      <Icon className="h-4 w-4" />
+      <span className="text-2xs font-semibold">{label}</span>
     </button>
   );
 }
@@ -6017,8 +5915,168 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   const totalExpected = preloadedActive.length > 0 ? preloadedActive.length : effectivePax;
   const paxComplete = totalExpected === 0 || totalVerified >= totalExpected;
 
+  const handleCompleteToggle = async () => {
+    const next = !completed;
+    if (next && !window.confirm('Mark this trip as complete? It will move to Archive and add a leg to the daily Load Manifest.')) return;
+    if (!next && !window.confirm('Reopen this trip? It will return to the active schedule.')) return;
+    setCompleted(next);
+    await persist({
+      statuses, passengers, brokerEmail, autoNotify,
+      completed: next,
+      completedAt: next ? Date.now() : null,
+      archived: next,
+      archivedAt: next ? Date.now() : null,
+      hasCatering,
+      paxOverride,
+    });
+    if (onArchive) onArchive(trip.uid, next);
+    if (next && onBack) onBack();
+    if (next && trip.info?.isFlight) {
+      try {
+        const m = await import('./firebase-manifests.js');
+        await m.autoAddTripToManifest({
+          trip,
+          preloadedPax,
+          addedBy: currentUser?.name || 'auto',
+        });
+      } catch (err) {
+        console.error('[manifest] auto-add failed:', err);
+      }
+    }
+  };
+
   return (
     <div className="flex flex-col h-full bg-slate-950">
+      {/* Professional flight identity bar. The previous trip header exposed
+          every action, badge, FBO, note and status at equal weight. This keeps
+          the route and primary actions dominant; operational detail lives in
+          the persistent rail and grouped tabs below. */}
+      <div className="shrink-0 border-b border-edge bg-surface px-4 py-4 shadow-card md:px-6">
+        <div className="mx-auto max-w-[1440px]">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex min-w-0 items-start gap-3">
+              <IconButton icon={ChevronLeft} title="Back to flights" onClick={onBack} variant="ghost" />
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h1 className="font-mono text-2xl font-semibold tracking-tight text-content md:text-3xl">
+                    {trip.info.from || '—'} <span className="text-content-subtle">→</span> {trip.info.to || '—'}
+                  </h1>
+                  {completed && <StatusChip tone="success" icon={CheckCheck}>Complete</StatusChip>}
+                  <StatusChip tone={(CATEGORY_META[trip.info.category] || CATEGORY_META.REPO).tone}>
+                    {(CATEGORY_META[trip.info.category] || CATEGORY_META.REPO).label}
+                  </StatusChip>
+                </div>
+                <p className="mt-1 truncate text-sm text-content-muted">
+                  {trip.info.tail || 'Tail pending'}
+                  {trip.info.customer ? ` · ${trip.info.customer}` : ''}
+                  {trip.info.legType ? ` · ${trip.info.legType === 'REVENUE' ? 'Revenue' : trip.info.legType}` : ''}
+                </p>
+                <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-2xs text-content-muted">
+                  <span className="flex items-center gap-1.5">
+                    <Calendar className="h-3.5 w-3.5" />
+                    {formatLocalDate(trip.start, trip.info.from) || fmtDateZ(trip.start)}
+                  </span>
+                  <span className="flex items-center gap-1.5 font-mono">
+                    <Clock className="h-3.5 w-3.5" />
+                    {(() => {
+                      const dep = formatLocalTime(trip.start, trip.info.from);
+                      const arr = trip.end ? formatLocalTime(trip.end, trip.info.to) : null;
+                      return `${dep.time} ${dep.tz}${arr ? ` – ${arr.time} ${arr.tz}` : ''}`;
+                    })()}
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <Users className="h-3.5 w-3.5" /> {effectivePax} passengers
+                  </span>
+                  {trip.info.pic && <span><strong className="text-content-subtle">PIC</strong> {trip.info.pic}</span>}
+                  {trip.info.sic && <span><strong className="text-content-subtle">SIC</strong> {trip.info.sic}</span>}
+                </div>
+              </div>
+            </div>
+
+            <div className="hidden shrink-0 items-center gap-2 md:flex">
+              {trip.info.url && (
+                <Button variant="outline" size="sm" onClick={() => window.open(trip.info.url, '_blank', 'noopener,noreferrer')}>
+                  JetInsight
+                </Button>
+              )}
+              {(currentUser?.role === 'ops' || currentUser?.role === 'admin') && (
+                <Button variant="outline" size="sm" icon={Send} onClick={() => setShareDialogOpen(true)}>
+                  Share
+                </Button>
+              )}
+              {(currentUser?.role === 'ops' || currentUser?.role === 'admin') && trip.info?.tail && brokerEmail && (
+                <Button variant="secondary" size="sm" loading={updatingEta} onClick={handleUpdateEta}>
+                  Update ETA
+                </Button>
+              )}
+              <Button
+                variant={completed ? 'secondary' : 'success'}
+                size="sm"
+                icon={completed ? RefreshCw : CheckCheck}
+                onClick={handleCompleteToggle}
+              >
+                {completed ? 'Reopen' : 'Mark complete'}
+              </Button>
+            </div>
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-center gap-2 pl-0 md:pl-12">
+            {trip.info.isFlight && trip.info.tail && (isFirstFlightOfDay || isLastFlightOfDay) && (
+              <WearCheckBadge
+                tail={trip.info.tail}
+                allTrips={allTrips}
+                isFirstFlightOfDay={isFirstFlightOfDay}
+                isLastFlightOfDay={isLastFlightOfDay}
+                currentUser={currentUser}
+                tripId={trip.uid}
+                legId={trip.uid}
+                onOpenModal={({ inspectionType }) => {
+                  setWearModalType(inspectionType);
+                  setWearModalOpen(true);
+                }}
+              />
+            )}
+            {trip.info.isFlight && trip.info.tail && (
+              <>
+                <MXShareButton tail={trip.info.tail} onOpenModal={() => setMxShareOpen(true)} />
+                <TailStatusBadge tail={trip.info.tail} />
+              </>
+            )}
+            {fromFbo && <StatusChip tone="neutral">{trip.info.from}: {fromFbo}</StatusChip>}
+            {toFbo && <StatusChip tone="neutral">{trip.info.to}: {toFbo}</StatusChip>}
+          </div>
+
+          {/* Primary mobile actions stay immediately reachable without
+              forcing the hero to reproduce the desktop action cluster. */}
+          <div className="mt-3 grid grid-cols-2 gap-2 md:hidden">
+            {(currentUser?.role === 'ops' || currentUser?.role === 'admin') && (
+              <Button variant="outline" size="sm" icon={Send} onClick={() => setShareDialogOpen(true)}>Share</Button>
+            )}
+            <Button
+              variant={completed ? 'secondary' : 'success'}
+              size="sm"
+              icon={completed ? RefreshCw : CheckCheck}
+              onClick={handleCompleteToggle}
+            >
+              {completed ? 'Reopen' : 'Complete'}
+            </Button>
+          </div>
+
+          {etaResult && (
+            <div className={cx(
+              'mt-3 flex items-start justify-between gap-3 rounded border px-3 py-2 text-2xs',
+              etaResult.ok ? 'border-success-border bg-success-soft text-success' : 'border-warning-border bg-warning-soft text-warning',
+            )}>
+              <span>{etaResult.msg}</span>
+              <button type="button" onClick={() => setEtaResult(null)} aria-label="Dismiss"><X className="h-3.5 w-3.5" /></button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Legacy hero retained temporarily for behavior reference while the
+          new professional header above owns the visible UI. */}
+      <div className="hidden">
       {/* Trip header rendering — three modes:
           - chat tab: no header here (chat renders its own header inside)
           - lodging tab: COMPACT one-line header so lodging UI has room
@@ -6378,6 +6436,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
         </div>
       </>
       )}
+      </div>
 
       {/* Tabs — grouped the same way as the primary nav. `tab` still holds a
           leaf id so every `tab === '…'` content branch below is untouched;
@@ -6439,7 +6498,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
                       onClick={() => setTab(g.children[0].id)}
                       aria-current={active ? 'page' : undefined}
                       className={cx(
-                        'relative flex shrink-0 items-center gap-2 px-3 py-3 text-sm font-semibold transition-colors',
+                        'relative flex min-h-11 shrink-0 items-center gap-2 px-3 py-3 text-sm font-semibold transition-colors',
                         active ? 'text-accent' : 'text-content-muted hover:text-content',
                       )}
                     >
@@ -6497,46 +6556,183 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
             <Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading trip data...
           </div>
         ) : tab === 'status' ? (
-          <div className="p-6 space-y-3 max-w-2xl">
-            {trip.info.legType === 'REVENUE' && !paxComplete && (
-              <div className="p-3 border border-cyan-500/30 bg-cyan-500/5 text-xs text-cyan-200 flex items-start gap-2">
-                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                <span>
-                  <strong>{totalVerified}/{totalExpected}</strong> passengers verified.
-                  Complete passenger check-in before "PASSENGERS BOARDED".
-                </span>
-              </div>
-            )}
-            {geo.status === 'error' && (
-              <div className="p-3 border border-red-500/30 bg-red-500/5 text-xs text-red-300 flex items-start gap-2">
-                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                <span>GPS error: {geo.error}. Status events will be logged without coordinates.</span>
-              </div>
-            )}
-            {applicableSteps.map((step, idx) => {
-              // Steps can be tapped in ANY order — crew often handles things
-              // out-of-sequence in real ops (catering arrives while pax board,
-              // pax show up while crew is still doing pre-flight, etc).
-              // Only data-integrity constraint: PASSENGERS BOARDED requires
-              // all expected pax to be checked in (or marked no-show / skipped)
-              // because that status is a factual claim about pax accountability.
-              const blocked = step.id === 'pax_boarded' && !paxComplete;
-              const displayStep = getStepDisplay(step, trip);
-              return (
-                <StatusButton
-                  key={step.id}
-                  step={displayStep}
-                  status={statuses[step.id]}
-                  onTrigger={() => handleStatusTrigger(step)}
-                  onUntrigger={() => handleStatusUntrigger(step)}
-                  onResendNotify={resendStatusNotification}
-                  locked={blocked}
-                  isNext={nextStep?.id === step.id && !blocked}
-                  autoNotify={autoNotify}
-                  airportCode={trip.info.from}
+          <div className="mx-auto grid max-w-[1440px] items-start gap-5 p-4 md:p-6 lg:grid-cols-[minmax(0,1fr)_320px]">
+            <Card className="overflow-hidden">
+              <CardHeader
+                title="Flight progress"
+                subtitle={`${completedCount} of ${applicableSteps.length} operational milestones complete`}
+                icon={Activity}
+                action={<StatusChip tone={completedCount === applicableSteps.length ? 'success' : 'accent'}>{completedCount}/{applicableSteps.length}</StatusChip>}
+              />
+              <div className="mb-4 h-1.5 overflow-hidden rounded-full bg-surface-raised">
+                <div
+                  className={cx(
+                    'h-full rounded-full transition-all duration-500',
+                    completedCount === applicableSteps.length ? 'bg-success' : 'bg-accent',
+                  )}
+                  style={{ width: `${applicableSteps.length ? (completedCount / applicableSteps.length) * 100 : 0}%` }}
                 />
-              );
-            })}
+              </div>
+
+              {trip.info.legType === 'REVENUE' && !paxComplete && (
+                <div className="mb-4 flex items-start gap-2 rounded border border-warning-border bg-warning-soft p-3 text-2xs text-warning">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span><strong>{totalVerified}/{totalExpected}</strong> passengers verified. Finish check-in before marking passengers boarded.</span>
+                </div>
+              )}
+              {geo.status === 'error' && (
+                <div className="mb-4 flex items-start gap-2 rounded border border-danger-border bg-danger-soft p-3 text-2xs text-danger">
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span>GPS unavailable: {geo.error}. Events can still be logged without coordinates.</span>
+                </div>
+              )}
+
+              <div>
+                {applicableSteps.map((step, idx) => {
+                  const status = statuses[step.id];
+                  const done = Boolean(status);
+                  const blocked = step.id === 'pax_boarded' && !paxComplete;
+                  const active = nextStep?.id === step.id && !blocked;
+                  const displayStep = getStepDisplay(step, trip);
+                  const StepIcon = displayStep.icon;
+                  const at = status?.timestamp || status?.at || status?.ts;
+                  const time = at ? new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : null;
+                  return (
+                    <div key={step.id} className="relative flex gap-4">
+                      {idx < applicableSteps.length - 1 && (
+                        <span className={cx(
+                          'absolute left-[19px] top-10 h-[calc(100%-22px)] w-px',
+                          done ? 'bg-success-border' : 'bg-edge',
+                        )} />
+                      )}
+                      <button
+                        type="button"
+                        disabled={blocked}
+                        onClick={() => done ? handleStatusUntrigger(step) : handleStatusTrigger(step)}
+                        className={cx(
+                          'relative z-[1] mt-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-full border transition-colors',
+                          done && 'border-success-border bg-success text-content-inverse',
+                          active && 'border-accent bg-accent-soft text-accent shadow-[0_0_0_4px_var(--sw-accent-soft)]',
+                          !done && !active && 'border-edge bg-surface-raised text-content-subtle',
+                          blocked && 'cursor-not-allowed opacity-45',
+                        )}
+                        aria-label={`${done ? 'Clear' : 'Mark'} ${displayStep.label}`}
+                      >
+                        {done ? <Check className="h-4 w-4" /> : <StepIcon className="h-4 w-4" />}
+                      </button>
+                      <div className={cx(
+                        'mb-2 min-w-0 flex-1 rounded-md border px-3 py-3 transition-colors',
+                        active ? 'border-accent-border bg-accent-soft' : 'border-transparent hover:border-edge hover:bg-surface-raised',
+                      )}>
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className={cx('text-sm font-semibold', done ? 'text-content' : active ? 'text-accent' : 'text-content-muted')}>
+                              {displayStep.label}
+                            </div>
+                            <div className="mt-1 text-xs text-content-muted">
+                              {blocked ? 'Complete passenger check-in first' : displayStep.sub}
+                            </div>
+                          </div>
+                          <div className="shrink-0 text-right">
+                            {done ? (
+                              <>
+                                <div className="font-mono text-2xs font-medium text-success">{time || 'Logged'}</div>
+                                <div className="mt-0.5 text-[10px] text-content-subtle">{status.author || 'Crew'}</div>
+                              </>
+                            ) : active ? (
+                              <StatusChip tone="accent" size="sm">Current</StatusChip>
+                            ) : (
+                              <span className="text-xs text-content-muted">Pending</span>
+                            )}
+                          </div>
+                        </div>
+                        {done && status.notified === false && (
+                          <button
+                            type="button"
+                            onClick={(event) => { event.stopPropagation(); resendStatusNotification(step); }}
+                            className="mt-2 text-2xs font-semibold text-warning hover:underline"
+                          >
+                            Broker email failed · Retry
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+
+            <aside className="space-y-4 lg:sticky lg:top-4">
+              <Card>
+                <CardHeader title="Weather" icon={Cloud} />
+                <div className="space-y-3">
+                  {[trip.info.from, trip.info.to].filter(Boolean).map((airport, index) => (
+                    <div key={airport} className="flex items-center justify-between gap-3 rounded bg-surface-sunken p-3">
+                      <div>
+                        <div className="font-mono text-sm font-semibold text-content">{airport}</div>
+                        <div className="text-2xs text-content-subtle">{index === 0 ? 'Departure' : 'Arrival'}</div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <AirportWxBadge icao={airport} compact />
+                        <FAANotamBadge
+                          icao={airport}
+                          getIdToken={async () => {
+                            const { auth } = await import('./firebase.js');
+                            return auth.currentUser ? auth.currentUser.getIdToken() : null;
+                          }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <Button variant="ghost" size="sm" block className="mt-2" onClick={() => setTab('weather')}>
+                  Full weather briefing
+                </Button>
+              </Card>
+
+              <Card>
+                <CardHeader title="Crew" icon={Users} />
+                <div className="space-y-3">
+                  {[
+                    { role: 'PIC', name: trip.info.pic },
+                    { role: 'SIC', name: trip.info.sic },
+                  ].filter((member) => member.name).map((member) => (
+                    <div key={member.role} className="flex items-center gap-3">
+                      <span className="flex h-9 w-9 items-center justify-center rounded-full border border-accent-border bg-accent-soft text-sm font-semibold text-accent">
+                        {member.name.split(/\s+/).map((part) => part[0]).slice(0, 2).join('').toUpperCase()}
+                      </span>
+                      <div>
+                        <div className="text-sm font-semibold text-content">{member.name}</div>
+                        <div className="text-2xs text-content-subtle">{member.role}</div>
+                      </div>
+                    </div>
+                  ))}
+                  {!trip.info.pic && !trip.info.sic && (
+                    <p className="text-2xs text-content-muted">Crew has not been assigned.</p>
+                  )}
+                </div>
+              </Card>
+
+              <Card>
+                <CardHeader title="Aircraft" subtitle={trip.info.tail || 'Tail pending'} icon={Plane} />
+                <div className="flex flex-wrap items-center gap-2">
+                  {trip.info.tail && <TailStatusBadge tail={trip.info.tail} />}
+                  {trip.info.isFlight && trip.info.tail && (
+                    <MXShareButton tail={trip.info.tail} onOpenModal={() => setMxShareOpen(true)} />
+                  )}
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <div className="rounded bg-surface-sunken p-2.5">
+                    <div className="text-xs text-content-muted">Origin FBO</div>
+                    <div className="mt-1 truncate text-sm text-content">{fromFbo || 'Not set'}</div>
+                  </div>
+                  <div className="rounded bg-surface-sunken p-2.5">
+                    <div className="text-xs text-content-muted">Destination FBO</div>
+                    <div className="mt-1 truncate text-sm text-content">{toFbo || 'Not set'}</div>
+                  </div>
+                </div>
+              </Card>
+            </aside>
           </div>
         ) : tab === 'pax' ? (
           <div className="p-6 space-y-3 max-w-2xl">

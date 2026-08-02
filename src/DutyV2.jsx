@@ -49,6 +49,7 @@ import {
 import { evaluateCurrent, LIMITS } from './duty-legality.js';
 import { DutyExportButtons } from './DutyExport.jsx';
 import TzAwareDateTimeInput from './TzAwareInput.jsx';
+import { Button, Card, CardHeader, StatusChip, cx } from './ui.jsx';
 
 const MS_HR = 3600 * 1000;
 const MS_DAY = 24 * MS_HR;
@@ -473,28 +474,24 @@ function OffDutyCard({ busy, openForm, setOpenForm, periods, now, onStart, myTri
     : null;
 
   return (
-    <div className="border border-slate-700 bg-slate-900/40 p-4">
-      <div className="flex items-center gap-2 mb-3">
-        <span className="w-2 h-2 rounded-full bg-slate-500" />
-        <span className="text-[10px] tracking-widest text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
-          OFF DUTY
-        </span>
-        {restAvailableMs != null && (
-          <span className="text-[10px] text-slate-500 ml-auto" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            Rest since {fmtTime(lastClosed.dutyOffAt)} · {fmtElapsed(restAvailableMs)}
-          </span>
-        )}
-      </div>
+    <Card>
+      <CardHeader
+        title="Duty"
+        subtitle={restAvailableMs != null ? `Resting since ${fmtTime(lastClosed.dutyOffAt)} · ${fmtElapsed(restAvailableMs)} available` : 'Ready to begin a duty period'}
+        icon={Clock}
+        action={<StatusChip tone="neutral">Off duty</StatusChip>}
+      />
       {!starting && (
-        <button
+        <Button
           onClick={() => setOpenForm('start')}
           disabled={busy}
-          className="w-full py-4 bg-emerald-600 hover:bg-emerald-500 text-white text-base tracking-widest font-bold disabled:opacity-40 flex items-center justify-center gap-2"
-          style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          variant="success"
+          size="lg"
+          block
+          icon={Play}
         >
-          <Play className="w-5 h-5" />
-          DUTY ON
-        </button>
+          Start duty
+        </Button>
       )}
       {starting && (
         <StartDutyForm
@@ -506,7 +503,7 @@ function OffDutyCard({ busy, openForm, setOpenForm, periods, now, onStart, myTri
           currentUserUid={currentUserUid}
         />
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -550,73 +547,69 @@ function OnDutyCard({ period, now, busy, openForm, setOpenForm, legality, partne
   const partnerDeclined = partnerStatus === 'declined';
 
   return (
-    <div className={`border ${tone.border} ${tone.bg} p-4`}>
-      <div className="flex items-start justify-between gap-3 mb-3">
-        <div className="flex items-center gap-2 flex-wrap pt-1">
-          <span className={`w-2 h-2 rounded-full ${tone.pulse ? 'animate-pulse' : ''} bg-current`} />
-          <span className="text-[10px] tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
-            ON DUTY
-          </span>
-          {tone.label && (
-            <span className="text-[9px] tracking-widest text-red-500 px-1.5 py-0.5 border border-red-500/60"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              {tone.label}
-            </span>
-          )}
-          <span className="text-[10px] text-slate-500 ml-2">
-            {period.assignmentType === 'regular' ? '14h regular' : 'unscheduled'} · {period.crewType === 'two' ? '2 pilot' : 'single'}
-          </span>
+    <Card className={cx(tone.border, tone.bg)}>
+      <CardHeader
+        title="Duty"
+        subtitle={`${period.assignmentType === 'regular' ? '14-hour regular assignment' : 'Unscheduled assignment'} · ${period.crewType === 'two' ? 'Two-pilot crew' : 'Single pilot'}`}
+        icon={Clock}
+        action={<StatusChip tone={elapsedHrs >= 14 ? 'danger' : elapsedHrs >= 10 ? 'warning' : 'success'}>On duty</StatusChip>}
+      />
+
+      <div className="flex flex-col items-center gap-5 py-2 sm:flex-row sm:items-center">
+        <div
+          className="relative flex h-36 w-36 shrink-0 items-center justify-center rounded-full"
+          style={{
+            background: `conic-gradient(var(--sw-accent) ${elapsedPct * 3.6}deg, var(--sw-surface-raised) 0deg)`,
+          }}
+        >
+          <div className="absolute inset-[7px] rounded-full bg-surface" />
+          <div className="relative z-[1] text-center">
+            <div className={cx(
+              'font-mono text-2xl font-semibold tabular-nums',
+              elapsedHrs >= 14 ? 'text-danger animate-pulse' : 'text-content',
+            )}>
+              {fmtElapsed(elapsed)}
+            </div>
+            <div className="mt-1 text-2xs text-content-subtle">of 14:00 max</div>
+          </div>
         </div>
-        {/* Right-side counter: elapsed (yellow) on top, remaining (green)
-            below. Stacked vertically and right-aligned so the elapsed
-            time still anchors the visual right edge of the card. When
-            duty exceeds 14h, the remaining line disappears and the
-            elapsed line goes red+pulsing instead of yellow. */}
-        <div className="flex flex-col items-end shrink-0">
-          <span className={`text-2xl tabular-nums leading-none ${
-            elapsedHrs >= 14 ? 'text-red-500 animate-pulse' : 'text-amber-400'
-          }`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            {fmtElapsed(elapsed)}
-          </span>
+
+        <div className="w-full min-w-0 flex-1">
           {elapsedHrs < 14 ? (
-            <span className="text-[11px] tabular-nums text-emerald-400 mt-1"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              {fmtElapsed(remainingMs)} {remainingLabel}
-            </span>
+            <div className="mb-3">
+              <div className="text-sm font-semibold text-success">{fmtElapsed(remainingMs)} {remainingLabel.toLowerCase()}</div>
+              <div className="mt-0.5 text-2xs text-content-muted">Duty remains within the current assignment reference.</div>
+            </div>
           ) : (
-            <span className="text-[11px] tabular-nums text-red-500 mt-1 animate-pulse"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              {fmtElapsed(elapsed - DUTY_MAX_MS)} OVER
-            </span>
+            <div className="mb-3">
+              <div className="text-sm font-semibold text-danger animate-pulse">{fmtElapsed(elapsed - DUTY_MAX_MS)} over 14 hours</div>
+              <div className="mt-0.5 text-2xs text-content-muted">An approved override is required to continue.</div>
+            </div>
           )}
+
+          <div className="grid grid-cols-2 gap-2 text-2xs">
+            <div className="rounded bg-surface-sunken p-2.5">
+              <div className="text-content-subtle">Started</div>
+              <div className="mt-0.5 font-mono text-content">{fmtTime(period.dutyOnAt)}</div>
+            </div>
+            <div className="rounded bg-surface-sunken p-2.5">
+              <div className="text-content-subtle">Prior rest</div>
+              <div className="mt-0.5 font-mono text-content">{period.priorRestMs ? fmtElapsed(period.priorRestMs) : '—'}</div>
+            </div>
+            {period.tail && (
+              <div className="rounded bg-surface-sunken p-2.5">
+                <div className="text-content-subtle">Aircraft</div>
+                <div className="mt-0.5 font-mono text-content">{period.tail}</div>
+              </div>
+            )}
+            {period.role && (
+              <div className="rounded bg-surface-sunken p-2.5">
+                <div className="text-content-subtle">Role</div>
+                <div className="mt-0.5 text-content">{period.role}</div>
+              </div>
+            )}
+          </div>
         </div>
-      </div>
-
-      {/* Progress bar — yellow segment = elapsed, green segment = time
-          remaining toward the 14h cap. When elapsed exceeds 14h the bar
-          becomes a single red pulsing strip (and the OVER 14 tag in the
-          header is already showing). Bar height bumped from h-1.5 to
-          h-2 so the two segments are easier to read at a glance. */}
-      <div className="h-2 bg-slate-800 rounded-full overflow-hidden mb-3 flex">
-        {elapsedHrs >= 14 ? (
-          <div className="h-full w-full bg-red-500 animate-pulse" />
-        ) : (
-          <>
-            <div className="h-full bg-amber-500 transition-all duration-500"
-              style={{ width: `${elapsedPct}%` }} />
-            <div className="h-full bg-emerald-500 transition-all duration-500"
-              style={{ width: `${remainingPct}%` }} />
-          </>
-        )}
-      </div>
-
-      {/* Context info */}
-      <div className="text-[11px] text-slate-400 space-y-0.5 mb-3" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-        <div><span className="text-slate-600">Started:</span> <span className="text-slate-200">{fmtTime(period.dutyOnAt)}</span></div>
-        {period.location && <div><span className="text-slate-600">Loc:</span> <span className="text-slate-300">{period.location}</span></div>}
-        {period.tail && <div><span className="text-slate-600">Tail:</span> <span className="text-slate-300">{period.tail}</span></div>}
-        {period.tripId && <div><span className="text-slate-600">Trip:</span> <span className="text-slate-300">{period.tripId}</span></div>}
-        {period.role && <div><span className="text-slate-600">Role:</span> <span className="text-slate-300">{period.role}</span></div>}
       </div>
 
       {/* Partner status banner — only visible when this is a paired duty.
@@ -706,15 +699,17 @@ function OnDutyCard({ period, now, busy, openForm, setOpenForm, legality, partne
 
       {/* End duty */}
       {!ending && !editingOn && !requestingOverride && (
-        <button
+        <Button
           onClick={() => setOpenForm('end')}
           disabled={busy}
-          className="w-full mt-2 py-4 bg-red-600 hover:bg-red-500 text-white text-base tracking-widest font-bold disabled:opacity-40 flex items-center justify-center gap-2"
-          style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          variant="danger"
+          size="lg"
+          block
+          icon={Square}
+          className="mt-3"
         >
-          <Square className="w-5 h-5" />
-          DUTY OFF
-        </button>
+          End duty
+        </Button>
       )}
       {ending && (
         <EndDutyForm
@@ -724,7 +719,7 @@ function OnDutyCard({ period, now, busy, openForm, setOpenForm, legality, partne
           onConfirm={onEnd}
         />
       )}
-    </div>
+    </Card>
   );
 }
 
