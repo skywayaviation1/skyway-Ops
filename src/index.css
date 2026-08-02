@@ -59,8 +59,9 @@
   --sw-shadow-raised: 0 4px 14px rgba(0, 0, 0, 0.34);
   --sw-shadow-overlay: 0 18px 48px rgba(0, 0, 0, 0.52);
 
-  /* Chrome height, used to offset the mobile bottom nav. */
-  --sw-bottom-nav-h: 58px;
+  /* Chrome height, used to offset toasts above the mobile bottom nav.
+     Keep in sync with MobileNav tab padding (py-2.5 + icon + label). */
+  --sw-bottom-nav-h: 62px;
 }
 
 /* Light theme. Same variable names, so every token-based component follows
@@ -141,18 +142,42 @@ html, body, #root {
   font-family: 'DM Sans', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
   overscroll-behavior: none;
 }
 
 body {
+  /* Fill the visual viewport on iOS (Safari + homescreen standalone).
+     position:fixed + inset:0 beats 100vh, which still mis-measures under
+     the iOS URL bar and dynamic island in several WebKit versions. */
   position: fixed;
   inset: 0;
+  width: 100%;
+  height: 100%;
+  height: 100dvh;
   overflow: hidden;
+  /* Kill the gray tap flash on iOS. */
+  -webkit-tap-highlight-color: transparent;
 }
 
 #root {
+  height: 100%;
+  /* Auth / public portals (AOG, track links) scroll here. The authenticated
+     app shell uses overflow:hidden + inner flex scroll regions instead. */
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
+}
+html[data-standalone='1'] #root {
+  /* Homescreen launches always mount the app shell — lock outer scroll so
+     iOS rubber-banding doesn't flash the body color behind chrome. */
+  overflow: hidden;
+}
+
+/* Prefer dynamic viewport units for full-height shells when available. */
+@supports (height: 100dvh) {
+  .h-screen { height: 100dvh; }
+  .min-h-screen { min-height: 100dvh; }
 }
 
 /* ─── SCROLLBAR ──────────────────────────────────────────────────────────────
@@ -197,11 +222,46 @@ button:focus:not(:focus-visible),
 a:focus:not(:focus-visible) { outline: none; }
 
 /* ─── SAFE AREA ──────────────────────────────────────────────────────────────
-   Installed PWAs on iOS need the home-indicator inset respected by the
-   bottom nav and by any full-height scroll region sitting above it.
+   Installed PWAs on iOS (Add to Home Screen) need notch / Dynamic Island /
+   home-indicator insets respected. black-translucent status bar paints
+   under the system chrome, so the top shell must pad explicitly.
    ─────────────────────────────────────────────────────────────────────────── */
+.sw-safe-top { padding-top: env(safe-area-inset-top, 0px); }
 .sw-safe-bottom { padding-bottom: env(safe-area-inset-bottom, 0px); }
-.sw-bottom-nav-offset { padding-bottom: calc(var(--sw-bottom-nav-h) + env(safe-area-inset-bottom, 0px)); }
+.sw-safe-x {
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+}
+.sw-safe-inset {
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+}
+.sw-bottom-nav-offset {
+  padding-bottom: calc(var(--sw-bottom-nav-h) + env(safe-area-inset-bottom, 0px));
+}
+
+/* App chrome shell — fills the fixed body and owns its own scroll regions. */
+.sw-app-shell {
+  height: 100%;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+}
+
+/* Standalone homescreen polish: slightly taller bottom nav hit targets,
+   and keep the status-bar region painted with the shell color. */
+html[data-standalone='1'] {
+  /* Prevent rubber-band revealing white behind the fixed body. */
+  background: var(--sw-bg);
+}
+html[data-standalone='1'] .sw-mobile-tab {
+  min-height: 48px;
+}
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

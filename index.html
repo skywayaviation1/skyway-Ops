@@ -2,15 +2,53 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!-- viewport-fit=cover is required for env(safe-area-inset-*) on notched iPhones. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
+    <meta name="theme-color" content="#060C16" media="(prefers-color-scheme: dark)" />
     <meta name="theme-color" content="#060C16" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="format-detection" content="telephone=no" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
+    <!-- black-translucent lets the app paint edge-to-edge under the status bar;
+         TopNav / login pad with env(safe-area-inset-top). -->
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Skyway" />
-    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
-    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <meta name="application-name" content="Skyway" />
+    <meta name="description" content="Skyway Aviation Part 135 charter operations console" />
+
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
+    <!-- iOS homescreen icon — must be 180×180 without transparency for best results. -->
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/manifest.json" />
+
+    <!-- iOS launch images (Add to Home Screen). Media queries match device
+         CSS pixel sizes × device-pixel-ratio. Generated from brand splash. -->
+    <link rel="apple-touch-startup-image" href="/splashes/splash-1320x2868.png"
+      media="(device-width: 440px) and (device-height: 956px) and (-webkit-device-pixel-ratio: 3)" />
+    <link rel="apple-touch-startup-image" href="/splashes/splash-1290x2796.png"
+      media="(device-width: 430px) and (device-height: 932px) and (-webkit-device-pixel-ratio: 3)" />
+    <link rel="apple-touch-startup-image" href="/splashes/splash-1206x2622.png"
+      media="(device-width: 402px) and (device-height: 874px) and (-webkit-device-pixel-ratio: 3)" />
+    <link rel="apple-touch-startup-image" href="/splashes/splash-1179x2556.png"
+      media="(device-width: 393px) and (device-height: 852px) and (-webkit-device-pixel-ratio: 3)" />
+    <link rel="apple-touch-startup-image" href="/splashes/splash-1284x2778.png"
+      media="(device-width: 428px) and (device-height: 926px) and (-webkit-device-pixel-ratio: 3)" />
+    <link rel="apple-touch-startup-image" href="/splashes/splash-1170x2532.png"
+      media="(device-width: 390px) and (device-height: 844px) and (-webkit-device-pixel-ratio: 3)" />
+    <link rel="apple-touch-startup-image" href="/splashes/splash-1125x2436.png"
+      media="(device-width: 375px) and (device-height: 812px) and (-webkit-device-pixel-ratio: 3)" />
+    <link rel="apple-touch-startup-image" href="/splashes/splash-1242x2688.png"
+      media="(device-width: 414px) and (device-height: 896px) and (-webkit-device-pixel-ratio: 3)" />
+    <link rel="apple-touch-startup-image" href="/splashes/splash-828x1792.png"
+      media="(device-width: 414px) and (device-height: 896px) and (-webkit-device-pixel-ratio: 2)" />
+    <link rel="apple-touch-startup-image" href="/splashes/splash-1242x2208.png"
+      media="(device-width: 414px) and (device-height: 736px) and (-webkit-device-pixel-ratio: 3)" />
+    <link rel="apple-touch-startup-image" href="/splashes/splash-750x1334.png"
+      media="(device-width: 375px) and (device-height: 667px) and (-webkit-device-pixel-ratio: 2)" />
+
     <title>Skyway Aviation Ops</title>
     <!-- Fonts are loaded here only. Preconnecting saves a round trip versus
          discovering the Google Fonts origin from an @import inside CSS. -->
@@ -27,17 +65,25 @@
           var t = localStorage.getItem('skyway-theme');
           if (t === 'classy') document.documentElement.setAttribute('data-theme', 'classy');
         } catch(e) {}
+        // Mark standalone / homescreen launches early so CSS can adapt before React.
+        try {
+          var standalone = (window.navigator.standalone === true) ||
+            (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+          if (standalone) document.documentElement.setAttribute('data-standalone', '1');
+        } catch(e) {}
       })();
     </script>
   </head>
   <body>
     <div id="root">
-      <!-- Loading splash — shown before React mounts. Inline styles only. -->
+      <!-- Loading splash — shown before React mounts. Inline styles only.
+           Mirrors the iOS apple-touch-startup-image so the handoff feels continuous. -->
       <div style="
         position: fixed; inset: 0;
         background: #060C16;
         display: flex; align-items: center; justify-content: center;
         flex-direction: column; gap: 28px;
+        padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
       ">
         <img src="/skyway-logo.png" alt="Skyway Aviation"
           style="max-width: 240px; width: 55vw; height: auto; opacity: 0.95;" />

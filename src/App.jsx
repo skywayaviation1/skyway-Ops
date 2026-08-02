@@ -15386,10 +15386,8 @@ function LoginScreen({ initialMode = 'login' }) {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6">
+    <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6 sw-safe-inset overflow-y-auto">
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
-        body { font-family: 'DM Sans', sans-serif; }
         .grid-bg-login {
           background-image:
             linear-gradient(rgba(148, 163, 184, 0.04) 1px, transparent 1px),
@@ -21003,7 +21001,7 @@ function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, sync
   const groupUnread = (groupId) => (groupId === 'comms' ? commsUnread : 0);
 
   return (
-    <header className="border-b border-slate-800 bg-slate-950/80 backdrop-blur sticky top-0 z-30">
+    <header className="border-b border-slate-800 bg-slate-950/80 backdrop-blur sticky top-0 z-30 sw-safe-top">
       <div className="px-4 md:px-6 py-3 flex items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
           <div className="min-w-0">
@@ -21231,7 +21229,7 @@ function MobileNav({ currentSection, setCurrentSection, currentUser, onOpenSetti
                 onClick={() => go(g.children[0].id)}
                 aria-current={active ? 'page' : undefined}
                 className={cx(
-                  'relative flex flex-1 flex-col items-center justify-center gap-1 py-2 transition-colors',
+                  'sw-mobile-tab relative flex flex-1 flex-col items-center justify-center gap-1 py-2.5 transition-colors',
                   active ? 'text-accent' : 'text-content-subtle',
                 )}
               >
@@ -21250,7 +21248,7 @@ function MobileNav({ currentSection, setCurrentSection, currentUser, onOpenSetti
               aria-haspopup="dialog"
               aria-expanded={sheetOpen}
               className={cx(
-                'flex flex-1 flex-col items-center justify-center gap-1 py-2 transition-colors',
+                'sw-mobile-tab flex flex-1 flex-col items-center justify-center gap-1 py-2.5 transition-colors',
                 overflowActive ? 'text-accent' : 'text-content-subtle',
               )}
             >
@@ -26737,9 +26735,18 @@ function IosInstallBanner() {
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof navigator === 'undefined') return;
-    // Bail if previously dismissed
+    // Soft dismiss — re-prompt after 14 days so first-time users who
+    // accidentally dismissed still discover Add to Home Screen.
     try {
-      if (localStorage.getItem('skyway_pwa_banner_dismissed') === '1') return;
+      const until = Number(localStorage.getItem('skyway_pwa_banner_dismissed_until') || 0);
+      if (until && Date.now() < until) return;
+      // Migrate legacy permanent dismiss key into a soft window.
+      if (localStorage.getItem('skyway_pwa_banner_dismissed') === '1') {
+        const next = Date.now() + 14 * 24 * 60 * 60 * 1000;
+        localStorage.setItem('skyway_pwa_banner_dismissed_until', String(next));
+        localStorage.removeItem('skyway_pwa_banner_dismissed');
+        return;
+      }
     } catch (_) {}
     // Bail if already installed (standalone mode)
     const isStandalone = (
@@ -26764,37 +26771,50 @@ function IosInstallBanner() {
 
   function dismiss() {
     setShow(false);
-    try { localStorage.setItem('skyway_pwa_banner_dismissed', '1'); } catch (_) {}
+    try {
+      localStorage.setItem(
+        'skyway_pwa_banner_dismissed_until',
+        String(Date.now() + 14 * 24 * 60 * 60 * 1000),
+      );
+      localStorage.removeItem('skyway_pwa_banner_dismissed');
+    } catch (_) {}
   }
 
   if (!show) return null;
 
   return (
-    <div className="bg-cyan-500/20 border-b border-cyan-500/40 px-4 py-2.5 flex items-center gap-3">
+    <div className="border-b border-accent-border bg-accent-soft px-4 py-3 flex items-start gap-3">
+      <img
+        src="/apple-touch-icon.png"
+        alt=""
+        width={40}
+        height={40}
+        className="mt-0.5 h-10 w-10 shrink-0 rounded-[9px] border border-edge"
+      />
       <div className="flex-1 min-w-0">
-        <div className="text-[11px] tracking-widest text-cyan-200" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
-          INSTALL SKYWAY
+        <div className="text-[11px] font-semibold tracking-widest text-accent" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          ADD TO HOME SCREEN
         </div>
-        <div className="text-xs text-slate-200 mt-0.5" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-          Tap{' '}
-          <span className="inline-flex items-center align-middle">
-            {/* iOS Share icon — rough svg approximation */}
-            <svg viewBox="0 0 24 24" className="w-4 h-4 inline mx-1 text-cyan-300" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <div className="text-xs text-content mt-1 leading-relaxed">
+          For the full app experience (fullscreen, push alerts), tap{' '}
+          <span className="inline-flex items-center align-middle text-accent" aria-hidden="true">
+            <svg viewBox="0 0 24 24" className="w-4 h-4 inline mx-0.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7" />
               <polyline points="16 6 12 2 8 6" />
               <line x1="12" y1="2" x2="12" y2="15" />
             </svg>
           </span>
-          {' '}then "Add to Home Screen" to install.
+          {' '}Share, then <span className="font-semibold text-content">Add to Home Screen</span>.
         </div>
       </div>
       <button
+        type="button"
         onClick={dismiss}
-        className="text-xs text-slate-400 hover:text-slate-200 tracking-widest px-2 py-1"
+        className="shrink-0 rounded px-2 py-2 text-[10px] tracking-widest text-content-muted hover:text-content"
         style={{ fontFamily: 'JetBrains Mono, monospace' }}
         aria-label="Dismiss install banner"
       >
-        DISMISS
+        LATER
       </button>
     </div>
   );
@@ -26833,6 +26853,12 @@ export default function CharterOps() {
     if (typeof document === 'undefined') return;
     document.documentElement.setAttribute('data-theme', themeMode);
     try { localStorage.setItem('skyway-theme', themeMode); } catch (_) {}
+    // Keep iOS status-bar / theme-color in sync with the active palette so
+    // the homescreen chrome doesn't flash the wrong color on theme toggle.
+    const color = themeMode === 'classy' ? '#E8EFF8' : '#060C16';
+    document.querySelectorAll('meta[name="theme-color"]').forEach((m) => {
+      m.setAttribute('content', color);
+    });
   }, [themeMode]);
   const [syncStatus, setSyncStatus] = useState({ status: 'idle', message: '' });
   const [syncLog, setSyncLog] = useState([]);
@@ -27751,7 +27777,7 @@ export default function CharterOps() {
   // === Authenticated app ===
   return (
     <ToastProvider>
-    <div className="h-screen w-full bg-slate-950 text-slate-100 antialiased overflow-hidden">
+    <div className="sw-app-shell bg-slate-950 text-slate-100 antialiased">
       <style>{`
         .grid-bg {
           background-image:
@@ -27773,7 +27799,7 @@ export default function CharterOps() {
           }
         }}
       >
-      <div className="grid-bg h-full flex flex-col">
+      <div className="grid-bg h-full min-h-0 flex flex-col">
         {/* iOS install banner — dismissible, shown only on iOS Safari
             when the app isn't already installed. Surfaces the Share →
             Add to Home Screen flow because iOS Safari has no built-in

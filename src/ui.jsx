@@ -402,7 +402,7 @@ function ToastViewport({ toasts, onDismiss }) {
   if (toasts.length === 0) return null;
   return (
     <div
-      className="pointer-events-none fixed inset-x-0 bottom-0 z-[100] flex flex-col items-center gap-2 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+16px)] sm:items-end sm:px-6"
+      className="pointer-events-none fixed inset-x-0 bottom-0 z-[100] flex flex-col items-center gap-2 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+16px)] max-md:pb-[calc(var(--sw-bottom-nav-h)+env(safe-area-inset-bottom,0px)+12px)] sm:items-end sm:px-6"
       role="region"
       aria-label="Notifications"
     >
