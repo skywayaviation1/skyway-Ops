@@ -114,23 +114,19 @@ html[data-theme='classy'] {
    bg-slate-950 covers it. The fix: apply the gradient directly to
    .bg-slate-950 so the wrapper IS the gradient.
    ─────────────────────────────────────────────────────────────────────────── */
+/* Near-flat navy with one soft highlight at the top. The previous
+   three-layer gradient read as a wallpaper and fought every card edge. */
 .bg-slate-950 {
   background-color: var(--sw-bg) !important;
   background-image:
-    radial-gradient(ellipse 130% 55% at 72% -8%,  rgba(23, 49, 84, 0.85) 0%, transparent 62%),
-    radial-gradient(ellipse  65% 50% at -8% 98%,  rgba(15, 36, 65, 0.70) 0%, transparent 58%),
-    linear-gradient(168deg, #0F1F38 0%, #09131F 55%, #060C16 100%) !important;
+    radial-gradient(ellipse 120% 42% at 50% -10%, rgba(22, 46, 79, 0.45) 0%, transparent 70%) !important;
 }
 
 /* Semi-transparent shell variants — keep them visually consistent */
 .bg-slate-950\/80 {
-  background-color: rgba(6, 12, 22, 0.80) !important;
-  background-image:
-    radial-gradient(ellipse 130% 55% at 72% -8%,  rgba(23, 49, 84, 0.70) 0%, transparent 62%),
-    radial-gradient(ellipse  65% 50% at -8% 98%,  rgba(15, 36, 65, 0.55) 0%, transparent 58%),
-    linear-gradient(168deg, rgba(15,31,56,0.8) 0%, rgba(9,19,31,0.8) 55%, rgba(6,12,22,0.8) 100%) !important;
-  backdrop-filter: blur(12px) !important;
-  -webkit-backdrop-filter: blur(12px) !important;
+  background-color: rgba(6, 12, 22, 0.82) !important;
+  backdrop-filter: blur(16px) saturate(140%) !important;
+  -webkit-backdrop-filter: blur(16px) saturate(140%) !important;
 }
 
 /* html/body reset — transparent now that the wrapper carries the gradient */
@@ -178,6 +174,15 @@ html[data-standalone='1'] #root {
 @supports (height: 100dvh) {
   .h-screen { height: 100dvh; }
   .min-h-screen { min-height: 100dvh; }
+}
+
+/* Faint graph paper. Reserved for large empty panels (detail placeholders),
+   never the app shell — as a full-screen backdrop it fought every card edge. */
+.grid-bg {
+  background-image:
+    linear-gradient(rgba(148, 163, 184, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.04) 1px, transparent 1px);
+  background-size: 32px 32px;
 }
 
 /* ─── SCROLLBAR ──────────────────────────────────────────────────────────────

@@ -112,6 +112,7 @@ export default {
 
       // 8px base grid.
       spacing: {
+        13: '3.25rem',
         18: '4.5rem',
       },
 

@@ -16,7 +16,7 @@
 import React, {
   createContext, useCallback, useContext, useEffect, useMemo, useRef, useState,
 } from 'react';
-import { AlertTriangle, CheckCircle2, Info, Loader2, X, XCircle } from 'lucide-react';
+import { AlertTriangle, ArrowRight, CheckCircle2, Info, Loader2, X, XCircle } from 'lucide-react';
 
 export function cx(...parts) {
   return parts.filter(Boolean).join(' ');
@@ -105,6 +105,9 @@ const BUTTON_SIZES = {
   sm: 'h-8 px-3 text-2xs gap-1.5',
   md: 'h-9 px-4 text-sm gap-2',
   lg: 'h-11 px-5 text-base gap-2',
+  // Thumb-sized primary commitment (Start duty / End duty). Big enough to
+  // hit without looking, which is the point on a phone in a cockpit.
+  xl: 'h-13 px-6 text-base gap-2.5 rounded-lg',
 };
 
 export function Button({
@@ -174,16 +177,20 @@ export function IconButton({ icon: Icon, title, variant = 'ghost', size = 'md', 
  */
 export function StatusChip({ children, tone = 'neutral', icon: Icon, mono = false, size = 'md', className = '' }) {
   const t = TONES[resolveTone(tone)];
-  const sizing = size === 'sm' ? 'h-5 px-1.5 text-2xs gap-1' : 'h-6 px-2 text-2xs gap-1.5';
+  const sizing = {
+    sm: 'h-5 px-2 text-2xs gap-1',
+    md: 'h-6 px-2.5 text-2xs gap-1.5',
+    lg: 'h-8 px-3.5 text-sm gap-2',
+  }[size] || 'h-6 px-2.5 text-2xs gap-1.5';
   return (
     <span
       className={cx(
-        'inline-flex items-center rounded border font-semibold whitespace-nowrap',
+        'inline-flex items-center rounded-md border font-semibold whitespace-nowrap',
         mono && 'font-mono tracking-wide',
         sizing, t.soft, className,
       )}
     >
-      {Icon && <Icon className="w-3 h-3 shrink-0" />}
+      {Icon && <Icon className={cx('shrink-0', size === 'lg' ? 'w-4 h-4' : 'w-3 h-3')} />}
       {children}
     </span>
   );
@@ -204,7 +211,7 @@ export function Card({ children, className = '', padded = true, as: Tag = 'div',
   return (
     <Tag
       className={cx(
-        'rounded-md border border-edge bg-surface shadow-card',
+        'rounded-xl border border-edge bg-surface shadow-card',
         padded && 'p-4',
         className,
       )}
@@ -243,6 +250,75 @@ export function PageHeader({ title, subtitle, actions, className = '' }) {
   );
 }
 
+/**
+ * Native-app screen title. Centered with flanking actions on a phone — the
+ * layout an iOS user reads as "this is a screen, not a web page" — and
+ * left-aligned from md up where a centered title just looks lost.
+ */
+export function ScreenHeader({ title, subtitle, left, right, className = '' }) {
+  return (
+    <div className={cx('relative flex min-h-[52px] items-center gap-2 border-b border-edge px-3 py-2.5 md:px-6', className)}>
+      {/* Absolute on phones so the title is centered against the screen, not
+          against whatever happens to be in the two action slots. */}
+      <div
+        className="pointer-events-none absolute inset-y-0 left-14 right-14 flex flex-col items-center justify-center md:hidden"
+        aria-hidden="true"
+      >
+        <h1 className="max-w-full truncate text-base font-semibold leading-tight text-content">{title}</h1>
+        {subtitle && <p className="max-w-full truncate text-2xs text-content-muted">{subtitle}</p>}
+      </div>
+      <div className="flex min-w-0 shrink-0 items-center gap-1">{left}</div>
+      <div className="hidden min-w-0 flex-1 md:block">
+        <h1 className="truncate text-base font-semibold leading-tight text-content">{title}</h1>
+        {subtitle && <p className="truncate text-2xs text-content-muted">{subtitle}</p>}
+      </div>
+      {/* Screen-reader copy of the title; the visible phone version is aria-hidden
+          because it is duplicated by the md variant above. */}
+      <h1 className="sr-only md:hidden">{title}</h1>
+      <div className="ml-auto flex shrink-0 items-center justify-end gap-1">{right}</div>
+    </div>
+  );
+}
+
+/**
+ * `KTEB → KPBI`. Mono, because these are codes, with the arrow carrying the
+ * accent so the eye lands on the route before anything else on the card.
+ */
+const ROUTE_SIZES = {
+  sm: { text: 'text-sm', arrow: 'h-3.5 w-3.5', gap: 'gap-1.5' },
+  md: { text: 'text-lg', arrow: 'h-4 w-4', gap: 'gap-2' },
+  lg: { text: 'text-2xl', arrow: 'h-5 w-5', gap: 'gap-2.5' },
+  xl: { text: 'text-[30px] leading-none sm:text-4xl', arrow: 'h-6 w-6 sm:h-7 sm:w-7', gap: 'gap-3' },
+};
+
+export function RouteLine({ from, to, size = 'md', muted = false, className = '' }) {
+  const s = ROUTE_SIZES[size] || ROUTE_SIZES.md;
+  return (
+    <div
+      className={cx('flex items-center font-mono font-semibold tracking-tight', s.text, s.gap, className)}
+      aria-label={`${from || 'unknown'} to ${to || 'unknown'}`}
+    >
+      <span className={muted ? 'text-content-muted' : 'text-content'}>{from || '—'}</span>
+      <ArrowRight className={cx('shrink-0', s.arrow, muted ? 'text-content-subtle' : 'text-accent')} aria-hidden="true" />
+      <span className={muted ? 'text-content-muted' : 'text-content'}>{to || '—'}</span>
+    </div>
+  );
+}
+
+/** Icon + label on the left, value on the right. The detail-list workhorse. */
+export function InfoRow({ icon: Icon, label, value, tone = 'neutral', className = '' }) {
+  const t = TONES[resolveTone(tone)];
+  return (
+    <div className={cx('flex items-center gap-3 px-4 py-3', className)}>
+      {Icon && <Icon className="h-4 w-4 shrink-0 text-content-muted" />}
+      <span className="min-w-0 flex-1 truncate text-sm text-content-muted">{label}</span>
+      <span className={cx('shrink-0 font-mono text-sm font-medium', tone === 'neutral' ? 'text-content' : t.text)}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
 /** Small label above a group of rows. Replaces the 9px all-caps mono headers. */
 export function SectionLabel({ children, count, className = '' }) {
   return (
@@ -253,19 +329,22 @@ export function SectionLabel({ children, count, className = '' }) {
   );
 }
 
-/** Dashboard KPI tile. `value` stays display-font; the label is sentence case. */
+/**
+ * Dashboard KPI tile. Icon, then label, then the number — stacked, so a row
+ * of tiles scans down a single column of values rather than zig-zagging.
+ */
 export function MetricTile({ label, value, hint, tone = 'neutral', icon: Icon, className = '' }) {
   const t = TONES[resolveTone(tone)];
   return (
-    <div className={cx('rounded-md border border-edge bg-surface px-4 py-3 shadow-card', className)}>
-      <div className="flex items-center gap-1.5 text-2xs font-medium text-content-muted">
-        {Icon && <Icon className="w-3.5 h-3.5 shrink-0" />}
+    <div className={cx('rounded-xl border border-edge bg-surface p-4 shadow-card', className)}>
+      {Icon && <Icon className={cx('h-4 w-4', tone === 'neutral' ? 'text-content-muted' : t.text)} />}
+      <div className={cx('text-2xs font-medium text-content-muted', Icon && 'mt-2.5')}>
         <span className="truncate">{label}</span>
       </div>
-      <div className={cx('mt-1 font-display text-3xl leading-none', tone === 'neutral' ? 'text-content' : t.text)}>
+      <div className={cx('mt-1 font-mono text-2xl font-semibold leading-none tabular-nums', tone === 'neutral' ? 'text-content' : t.text)}>
         {value}
       </div>
-      {hint && <div className="mt-1 text-2xs text-content-subtle truncate">{hint}</div>}
+      {hint && <div className="mt-1.5 text-2xs text-content-subtle truncate">{hint}</div>}
     </div>
   );
 }

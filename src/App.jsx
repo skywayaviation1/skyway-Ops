@@ -108,7 +108,8 @@ import {
 // re-deriving borders, spacing and tone colors inline.
 import {
   cx, Button, IconButton, StatusChip, StatusDot, Card, CardHeader, PageHeader,
-  SectionLabel, MetricTile, EmptyState, Spinner, ToastProvider, useToast, notify,
+  ScreenHeader, RouteLine, InfoRow, SectionLabel, MetricTile, EmptyState, Spinner,
+  ToastProvider, useToast, notify,
 } from './ui.jsx';
 import { formatLocalTime, formatLocalDate } from './airports.js';
 import {
@@ -1938,12 +1939,15 @@ function Pill({ children, tone = 'neutral', className = '' }) {
    ============================================================ */
 function TripCard({ trip, selected, onClick, statusCount, hasUpdate, onArchive }) {
   const dep = trip.start;
-  // Compare local-day strings — same calendar day in user's local time = "TODAY"
-  const isToday = dep && dep.toDateString() === new Date().toDateString();
   const isPast = dep && dep < new Date();
   const meta = CATEGORY_META[trip.info.category] || CATEGORY_META.REPO;
   const totalSteps = trip.info.legType === 'REPO' ? 4 : 5;
   const progress = trip.info.isOps ? statusCount / totalSteps : 0;
+  const timing = classifyTripTiming(trip, Date.now());
+  const status = flightStatus(trip, null, {
+    isActive: timing === 'active',
+    isImminent: timing === 'imminent',
+  });
 
   // Swipe-left-to-archive gesture state
   const [dragX, setDragX] = useState(0);
@@ -2034,78 +2038,65 @@ function TripCard({ trip, selected, onClick, statusCount, hasUpdate, onArchive }
         onTouchEnd={handleTouchEnd}
         onTouchCancel={handleTouchEnd}
         style={{ transform: `translateX(${dragX}px)`, transition: dragX === 0 ? 'transform 0.2s ease-out' : 'none' }}
-        className={`group w-full text-left p-4 border-l-2 transition-colors relative bg-slate-950 ${
+        className={cx(
+          'relative block w-full overflow-hidden rounded-xl border bg-surface p-3.5 text-left shadow-card transition-colors',
           selected
-            ? 'border-cyan-400 bg-gradient-to-r from-cyan-500/10 to-transparent'
+            ? 'border-accent bg-accent-soft'
             : hasUpdate
-              ? 'border-cyan-400 bg-cyan-500/5 hover:bg-cyan-500/10'
-              : 'border-transparent hover:border-slate-600 hover:bg-slate-900/40'
-        } ${!trip.info.isFlight ? 'opacity-70' : ''}`}
-      >
-      <div className="flex items-start justify-between gap-2 mb-2">
-        <div className="flex items-center gap-2 flex-wrap">
-          <Pill tone={meta.tone}>{meta.label}</Pill>
-          {isToday && <Pill tone="amber">TODAY</Pill>}
-          {hasUpdate && !selected && (
-            <span
-              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full ${
-                hasUpdate === 'chat' ? 'bg-amber-400 text-slate-950' : 'bg-cyan-400 text-slate-950'
-              }`}
-            >
-              <span className="w-1.5 h-1.5 bg-slate-950 rounded-full animate-pulse" />
-              <span className="text-[10px] tracking-widest font-bold" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                {hasUpdate === 'chat' ? 'NEW CHAT' : 'NEW UPDATE'}
-              </span>
-            </span>
-          )}
-        </div>
-        <span className="text-[10px] text-slate-500 uppercase tracking-wider shrink-0" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-          {fmtRelative(dep)}
-        </span>
-      </div>
-
-      <div className="flex items-baseline gap-3 mb-1 flex-wrap">
-        <span className="text-base text-slate-100" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
-          {trip.info.tail}
-        </span>
-        <span className="text-[10px] text-slate-500 uppercase tracking-widest">
-          {(() => {
-            // Show departure-airport local time. Falls back to Zulu when the
-            // airport isn't in the timezone database (formatLocalTime handles this).
-            const t = formatLocalTime(dep, trip.info.from);
-            return `${t.time}${t.tz ? ' ' + t.tz : ''} · ${fmtDateZ(dep).slice(0, 6)}`;
-          })()}
-        </span>
-      </div>
-
-      <div className="flex items-center gap-2 text-slate-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-        <span className="text-sm">{trip.info.from}</span>
-        <ArrowRight className="w-3 h-3 text-slate-600" />
-        <span className="text-sm">{trip.info.to}</span>
-        {trip.info.pax > 0 && (
-          <span className="ml-auto text-[10px] text-slate-400 flex items-center gap-1">
-            <Users className="w-3 h-3" />{trip.info.pax}
-          </span>
+              ? 'border-accent-border hover:border-accent'
+              : 'border-edge hover:border-edge-strong',
+          !trip.info.isFlight && 'opacity-70',
         )}
-      </div>
-
-      {trip.info.customer && (
-        <div className="mt-1 text-[11px] text-slate-500 truncate" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-          {trip.info.customer}
+      >
+        {/* Route and state — the two things worth reading at a glance. */}
+        <div className="flex items-center justify-between gap-3">
+          <RouteLine from={trip.info.from} to={trip.info.to} size="lg" />
+          <StatusChip tone={status.tone} size="sm">{status.label}</StatusChip>
         </div>
-      )}
 
-      {trip.info.isOps && (
-        <div className="mt-2 h-0.5 bg-slate-800 relative overflow-hidden">
-          <div
-            className={`absolute left-0 top-0 h-full transition-all ${
-              progress === 1 ? 'bg-emerald-400' : isPast ? 'bg-red-400' : 'bg-cyan-400'
-            }`}
-            style={{ width: `${progress * 100}%` }}
-          />
+        <div className="mt-1.5 flex items-center justify-between gap-3">
+          <span className="min-w-0 truncate text-2xs text-content-muted">
+            <span className="font-mono">{trip.info.tail}</span>
+            {' · '}
+            <span className="font-mono">
+              {(() => {
+                // Departure-airport local time; formatLocalTime falls back to
+                // Zulu when the airport isn't in the timezone database.
+                const t = formatLocalTime(dep, trip.info.from);
+                return `${t.time}${t.tz ? ' ' + t.tz : ''}`;
+              })()}
+            </span>
+            {trip.info.pax > 0 && <> · {trip.info.pax} pax</>}
+          </span>
+          <span className="shrink-0 font-mono text-2xs text-content-subtle">{fmtRelative(dep)}</span>
         </div>
-      )}
-    </button>
+
+        {(trip.info.customer || meta.label !== 'REVENUE' || hasUpdate) && (
+          <div className="mt-2 flex items-center gap-2">
+            {meta.label !== 'REVENUE' && <StatusChip tone={meta.tone} size="sm">{meta.label}</StatusChip>}
+            {hasUpdate && !selected && (
+              <StatusChip tone={hasUpdate === 'chat' ? 'warning' : 'accent'} size="sm">
+                {hasUpdate === 'chat' ? 'New chat' : 'New update'}
+              </StatusChip>
+            )}
+            {trip.info.customer && (
+              <span className="min-w-0 truncate text-2xs text-content-subtle">{trip.info.customer}</span>
+            )}
+          </div>
+        )}
+
+        {trip.info.isOps && (
+          <div className="relative mt-3 h-1 overflow-hidden rounded-full bg-surface-raised">
+            <div
+              className={cx(
+                'absolute left-0 top-0 h-full rounded-full transition-all',
+                progress === 1 ? 'bg-success' : isPast ? 'bg-danger' : 'bg-accent',
+              )}
+              style={{ width: `${progress * 100}%` }}
+            />
+          </div>
+        )}
+      </button>
     </div>
   );
 }
@@ -4233,20 +4224,31 @@ function PilotHomeScreen({ currentUser, trips, tripStates, config, users, onSele
 
   const userName = currentUser?.callsign || currentUser?.name?.split(' ')[0] || 'Pilot';
   const greeting = timeBasedGreeting();
-  const role = USER_ROLES[currentUser?.role]?.label || '';
 
   return (
     <div className="flex-1 overflow-y-auto scroll-area bg-slate-950">
-      <div className="mx-auto max-w-5xl space-y-5 p-4 md:p-6 lg:p-8">
-        <PageHeader
-          title={`${greeting}, ${userName}`}
-          subtitle={`${role || 'Crew'} · ${new Date().toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' })}`}
-          actions={(
-            <Button variant="outline" size="sm" icon={Calendar} onClick={() => onSwitchSection?.('schedule')}>
-              All flights
-            </Button>
-          )}
-        />
+      <div className="mx-auto max-w-5xl space-y-4 p-4 pb-8 md:space-y-5 md:p-6 lg:p-8">
+        {/* Greeting reads like a home screen, not a report header: name
+            first, then a live wall clock the crew can glance at. */}
+        <div className="flex items-start justify-between gap-4 pt-1">
+          <div className="min-w-0">
+            <h1 className="text-2xl font-semibold leading-tight text-content">
+              {greeting}, {userName}
+            </h1>
+            <p className="mt-1 font-mono text-2xs text-content-muted">
+              <LocalClock />
+            </p>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            icon={Calendar}
+            className="hidden shrink-0 sm:inline-flex"
+            onClick={() => onSwitchSection?.('schedule')}
+          >
+            All flights
+          </Button>
+        </div>
 
         {/* The next flight is the crew member's primary task, so it now
             precedes duty telemetry and the embedded fleet board. */}
@@ -4268,13 +4270,13 @@ function PilotHomeScreen({ currentUser, trips, tripStates, config, users, onSele
 
         <div className="grid grid-cols-3 gap-3">
           <MetricTile
-            label="Active now"
+            label="Active"
             value={buckets.active.length}
             tone={buckets.active.length > 0 ? 'accent' : 'neutral'}
             icon={Plane}
           />
           <MetricTile
-            label="Next 12 hours"
+            label="Next 12h"
             value={buckets.imminent.length}
             tone={buckets.imminent.length > 0 ? 'warning' : 'neutral'}
             icon={Clock}
@@ -4350,111 +4352,110 @@ function PilotHomeScreen({ currentUser, trips, tripStates, config, users, onSele
   );
 }
 
-function StatCard({ label, value, tone = 'muted' }) {
-  const toneStyles = {
-    cyan:  'border-cyan-500/40 bg-cyan-500/5 text-cyan-300',
-    amber: 'border-amber-500/40 bg-amber-500/5 text-amber-300',
-    muted: 'border-slate-800 bg-slate-900/40 text-slate-300',
-  };
-  return (
-    <div className={`p-3 border ${toneStyles[tone]}`}>
-      <div className="text-[9px] tracking-widest text-slate-500 mb-1"
-        style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-        {label}
-      </div>
-      <div className="text-2xl md:text-3xl"
-        style={{ fontFamily: 'Bebas Neue, sans-serif', letterSpacing: '0.05em' }}>
-        {value}
-      </div>
-    </div>
-  );
+/** Wall clock for the home greeting: "Tuesday · 09:14 EST". */
+function LocalClock() {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 30000);
+    return () => clearInterval(id);
+  }, []);
+  const weekday = now.toLocaleDateString([], { weekday: 'long' });
+  const time = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+  const tz = now.toLocaleTimeString([], { timeZoneName: 'short' }).split(' ').pop();
+  return <>{weekday} · {time} {tz}</>;
 }
 
 function PilotFocusCard({ trip, tripState, currentUser, isActive, isImminent, onSelectTrip }) {
   const startMs = trip.start ? new Date(trip.start).getTime() : null;
-  const headerLabel = isActive ? 'In progress' : isImminent ? 'Next flight' : 'Upcoming';
-  const headerTone = isActive ? 'success' : isImminent ? 'warning' : 'info';
+  const headerLabel = isActive ? 'In progress' : isImminent ? 'Next flight' : 'Upcoming flight';
   // Show-time = 60 min before scheduled departure for domestic, 90 min for international
   const isInternational = String(trip.info?.from || '').match(/^[CMK]/) ? false : true;
   const showOffsetMin = isInternational ? 90 : 60;
   const showTime = startMs ? new Date(startMs - showOffsetMin * 60000) : null;
+  const status = flightStatus(trip, tripState, { isActive, isImminent });
+
+  const meIsPic = nameMatchesPilot(trip.info.pic || '', currentUser?.jetinsightName || currentUser?.name);
+  const meIsSic = nameMatchesPilot(trip.info.sic || '', currentUser?.jetinsightName || currentUser?.name);
 
   return (
-    <Card className="relative overflow-hidden border-accent-border">
-      <div className="absolute inset-y-0 left-0 w-1 bg-accent" />
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <StatusChip tone={headerTone}>{headerLabel}</StatusChip>
-          <div className="mt-3 flex items-center gap-2 font-mono text-2xl font-semibold text-content sm:text-3xl">
-            <span>{trip.info.from || '—'}</span>
-            <ArrowRight className="h-5 w-5 text-accent" />
-            <span>{trip.info.to || '—'}</span>
-          </div>
-          <p className="mt-1 text-sm text-content-muted">
-            {trip.info.tail || 'Tail pending'}
-            {trip.info.customer ? ` · ${trip.info.customer}` : ''}
-          </p>
+    <Card
+      as="button"
+      type="button"
+      padded={false}
+      onClick={() => onSelectTrip(trip.uid)}
+      className="relative w-full overflow-hidden border-accent-border text-left transition-colors hover:border-accent"
+    >
+      <span className="absolute inset-y-0 left-0 w-1 bg-accent" aria-hidden="true" />
+      <div className="p-4 pl-5">
+        <div className="text-2xs font-semibold text-content-muted">{headerLabel}</div>
+
+        <RouteLine from={trip.info.from} to={trip.info.to} size="xl" className="mt-2.5" />
+
+        <p className="mt-2 text-sm text-content-muted">
+          <span className="font-mono">{trip.info.tail || 'Tail pending'}</span>
+          {startMs && (
+            <> · {isActive ? 'departed' : 'departs'}{' '}
+              <span className="font-mono text-content">{timeUntil(trip.start)}</span>
+            </>
+          )}
+        </p>
+
+        <div className="mt-3 flex items-center justify-between gap-3">
+          <span className="truncate text-2xs text-content-subtle">
+            {trip.info.customer || (meIsPic ? 'You are PIC' : meIsSic ? 'You are SIC' : '\u00A0')}
+          </span>
+          <StatusChip tone={status.tone}>{status.label}</StatusChip>
         </div>
-        {startMs && (
-          <div className="shrink-0 text-right">
-            <div className="font-mono text-sm font-semibold text-accent">{timeUntil(trip.start)}</div>
-            <div className="mt-1 text-2xs text-content-subtle">until departure</div>
-          </div>
-        )}
       </div>
 
-      <div className="mt-4 grid grid-cols-2 gap-3 rounded-md bg-surface-sunken p-3 md:grid-cols-4">
-          <FocusField label="DEP" value={startMs ? (() => {
-            const t = formatLocalTime(trip.start, trip.info.from);
-            return `${t.time} ${t.tz}`;
-          })() : '—'} />
-          <FocusField label="SHOW" value={showTime ? (() => {
-            const t = formatLocalTime(showTime.toISOString(), trip.info.from);
-            return `${t.time} ${t.tz}`;
-          })() : '—'} accent={isImminent || isActive} />
-          <FocusField label="PAX" value={`${trip.info.pax || 0}`} />
-          <FocusField label="DATE" value={formatLocalDate(trip.start, trip.info.from) || '—'} />
-      </div>
-
-      <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
-          {trip.info.pic && (
-            <span className="flex items-center gap-1.5">
-              <span className="text-2xs font-semibold text-content-subtle">PIC</span>
-              <span className={nameMatchesPilot(trip.info.pic, currentUser?.jetinsightName || currentUser?.name) ? 'text-accent' : 'text-content'}>
-                {trip.info.pic}
-                {nameMatchesPilot(trip.info.pic, currentUser?.jetinsightName || currentUser?.name) && ' (you)'}
-              </span>
-            </span>
-          )}
-          {trip.info.sic && (
-            <span className="flex items-center gap-1.5">
-              <span className="text-2xs font-semibold text-content-subtle">SIC</span>
-              <span className={nameMatchesPilot(trip.info.sic, currentUser?.jetinsightName || currentUser?.name) ? 'text-accent' : 'text-content'}>
-                {trip.info.sic}
-                {nameMatchesPilot(trip.info.sic, currentUser?.jetinsightName || currentUser?.name) && ' (you)'}
-              </span>
-            </span>
-          )}
+      {/* Departure detail stays on the card but drops below the fold of the
+          hero block, so the route and countdown own the first glance. Two-up
+          on a phone — four columns truncated every time value at 393px. */}
+      <div className="grid grid-cols-2 gap-px border-t border-edge bg-edge sm:grid-cols-4">
+        <FocusField label="Dep" value={startMs ? (() => {
+          const t = formatLocalTime(trip.start, trip.info.from);
+          return `${t.time}${t.tz ? ' ' + t.tz : ''}`;
+        })() : '—'} />
+        <FocusField label="Show" value={showTime ? (() => {
+          const t = formatLocalTime(showTime.toISOString(), trip.info.from);
+          return `${t.time}${t.tz ? ' ' + t.tz : ''}`;
+        })() : '—'} accent={isImminent || isActive} />
+        <FocusField label="Pax" value={`${trip.info.pax || 0}`} />
+        <FocusField label="Date" value={formatLocalDate(trip.start, trip.info.from) || '—'} />
       </div>
 
       {trip.info.notes && (
-        <div className="mt-4 rounded border border-accent-border bg-accent-soft px-3 py-2 text-2xs text-content-muted">
+        <div className="border-t border-edge bg-accent-soft px-4 py-2.5 text-2xs leading-relaxed text-content-muted">
           {trip.info.notes}
         </div>
       )}
-
-      <Button variant="primary" block className="mt-4" iconRight={ArrowRight} onClick={() => onSelectTrip(trip.uid)}>
-        Open flight
-      </Button>
     </Card>
   );
 }
 
+/**
+ * One place that decides what a flight's pill says. Prefers a recorded
+ * operational state and falls back to schedule timing, so Home, the flight
+ * list and the detail hero can never disagree about the same trip.
+ */
+function flightStatus(trip, tripState, timing = {}) {
+  const raw = String(tripState?.status || tripState || '').toLowerCase();
+  if (raw.includes('cancel')) return { label: 'Cancelled', tone: 'danger' };
+  if (raw.includes('delay')) return { label: 'Delayed', tone: 'warning' };
+  if (raw.includes('airborne') || raw.includes('departed')) return { label: 'Airborne', tone: 'success' };
+  if (raw.includes('complete') || raw.includes('arrived')) return { label: 'Complete', tone: 'neutral' };
+  if (timing.isActive) return { label: 'Airborne', tone: 'success' };
+  if (timing.isImminent) return { label: 'On time', tone: 'success' };
+  return { label: 'Scheduled', tone: 'neutral' };
+}
+
 function FocusField({ label, value, accent }) {
   return (
-    <div>
-      <div className="text-2xs font-medium text-content-subtle">{label}</div>
-      <div className={cx('mt-0.5 font-mono text-sm font-medium', accent ? 'text-accent' : 'text-content')}>{value}</div>
+    <div className="min-w-0 bg-surface-sunken px-3.5 py-2.5">
+      <div className="truncate text-2xs text-content-subtle">{label}</div>
+      <div className={cx('mt-0.5 truncate font-mono text-2xs font-medium', accent ? 'text-accent' : 'text-content')}>
+        {value}
+      </div>
     </div>
   );
 }
@@ -4482,26 +4483,21 @@ function PilotUpcomingRow({ trip, currentUser, onClick, muted }) {
         muted && 'opacity-60',
       )}
     >
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-          <span className="font-mono text-sm font-semibold text-content">
-            {trip.info.tail}
-          </span>
-          <span className="font-mono text-sm text-content">
-            {trip.info.from} → {trip.info.to}
-          </span>
-          <StatusChip tone="neutral" size="sm">{isPic ? 'PIC' : 'SIC'}</StatusChip>
-          </div>
-          <div className="mt-1 flex flex-wrap items-center gap-3 text-2xs text-content-muted">
-            <span>{formatLocalDate(trip.start, trip.info.from) || '—'}</span>
-            {startMs && <span>{(() => { const t = formatLocalTime(trip.start, trip.info.from); return `${t.time} ${t.tz}`; })()}</span>}
-            {trip.info.customer && <span className="truncate">{trip.info.customer}</span>}
+          <RouteLine from={trip.info.from} to={trip.info.to} size="md" muted={muted} />
+          <div className="mt-1 truncate text-2xs text-content-muted">
+            <span className="font-mono">{trip.info.tail}</span>
+            {startMs && <> · <span className="font-mono">{(() => { const t = formatLocalTime(trip.start, trip.info.from); return `${t.time}${t.tz ? ' ' + t.tz : ''}`; })()}</span></>}
+            {trip.info.pax > 0 && <> · {trip.info.pax} pax</>}
           </div>
         </div>
-        <span className="shrink-0 font-mono text-2xs text-content-muted">
-          {startMs ? timeUntil(trip.start) : '—'}
-        </span>
+        <div className="shrink-0 text-right">
+          <StatusChip tone="neutral" size="sm">{isPic ? 'PIC' : 'SIC'}</StatusChip>
+          <div className="mt-1 font-mono text-2xs text-content-subtle">
+            {startMs ? timeUntil(trip.start) : '—'}
+          </div>
+        </div>
       </div>
     </button>
   );
@@ -21014,8 +21010,11 @@ function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, sync
             {/* App timezone switcher. Click the clock to choose a TZ
                 override. When set, all "today"-derived defaults (manifest
                 date, etc.) follow the chosen TZ. Cyan "OVR" badge appears
-                when active. */}
-            <AppTimezoneSwitch now={now} />
+                when active. Desktop only — on a phone the home greeting
+                already carries a clock and the screen has no room to spare. */}
+            <span className="hidden md:block">
+              <AppTimezoneSwitch now={now} />
+            </span>
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -21037,13 +21036,10 @@ function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, sync
               </span>
             </span>
           </button>
-          <IconButton
-            icon={UserCheck}
-            title="My profile"
-            onClick={onOpenProfile}
-            variant="outline"
-            className="md:hidden"
-          />
+          {/* Phones get one avatar instead of four icon buttons. Theme,
+              settings and sign-out all live in the More sheet, which is
+              where an iOS user looks for them anyway. */}
+          <Avatar user={currentUser} onClick={onOpenProfile} className="md:hidden" />
           {/* Theme toggle — dark ops mode vs. the light "classy" theme.
               Persisted in localStorage; the palette swap itself is driven by
               the token overrides under [data-theme="classy"]. */}
@@ -21053,15 +21049,16 @@ function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, sync
               title={`Switch theme (currently ${themeMode || 'dark'})`}
               onClick={onToggleTheme}
               variant="outline"
+              className="hidden md:inline-flex"
             />
           )}
-          <IconButton icon={SettingsIcon} title="Settings" onClick={onOpenSettings} variant="outline" />
+          <IconButton icon={SettingsIcon} title="Settings" onClick={onOpenSettings} variant="outline" className="hidden md:inline-flex" />
           <IconButton
             icon={LogOut}
             title="Sign out"
             onClick={onLogout}
             variant="outline"
-            className="hover:!border-danger-border hover:!text-danger"
+            className="hidden hover:!border-danger-border hover:!text-danger md:inline-flex"
           />
         </div>
       </div>
@@ -21149,6 +21146,63 @@ function SyncIndicator({ status }) {
   return null;
 }
 
+/** Round profile chip. Uses the stored photo when there is one, initials otherwise. */
+function Avatar({ user, onClick, size = 'md', className = '' }) {
+  const box = size === 'sm' ? 'h-8 w-8 text-2xs' : 'h-9 w-9 text-sm';
+  const name = user?.name || user?.displayName || '';
+  const initials = name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((p) => p.charAt(0).toUpperCase())
+    .join('') || '?';
+  const photo = user?.photoURL || user?.photoUrl || null;
+  const inner = photo
+    ? <img src={photo} alt="" className="h-full w-full rounded-full object-cover" />
+    : <span className="font-semibold leading-none text-accent">{initials}</span>;
+
+  if (!onClick) {
+    return (
+      <span className={cx('inline-flex shrink-0 items-center justify-center overflow-hidden rounded-full border border-edge bg-accent-soft', box, className)}>
+        {inner}
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title="My profile"
+      aria-label="My profile"
+      className={cx(
+        'inline-flex shrink-0 items-center justify-center overflow-hidden rounded-full border border-edge bg-accent-soft transition-colors hover:border-accent-border',
+        box, className,
+      )}
+    >
+      {inner}
+    </button>
+  );
+}
+
+/** Single-select filter chip for the tail rail above the flight list. */
+function TailChip({ label, active, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={cx(
+        'shrink-0 rounded-full border px-3 py-1.5 font-mono text-2xs font-semibold transition-colors',
+        active
+          ? 'border-accent-border bg-accent-soft text-accent'
+          : 'border-edge text-content-muted hover:border-edge-strong hover:text-content',
+      )}
+    >
+      {label}
+    </button>
+  );
+}
+
 function UnreadBadge({ count, className = '' }) {
   return (
     <span
@@ -21172,7 +21226,7 @@ function UnreadBadge({ count, className = '' }) {
    last slot becomes "More", which opens a sheet listing every
    remaining destination by group.
    ============================================================ */
-function MobileNav({ currentSection, setCurrentSection, currentUser, onOpenSettings }) {
+function MobileNav({ currentSection, setCurrentSection, currentUser, onOpenSettings, onToggleTheme, themeMode, onLogout }) {
   const groups = useNavGroups(currentUser);
   const activeGroupId = groupIdForSection(currentSection);
   const { totalUnread: commsUnread } = useStreamPresence();
@@ -21305,6 +21359,27 @@ function MobileNav({ currentSection, setCurrentSection, currentUser, onOpenSetti
                   <span className="flex-1">Settings</span>
                   <ChevronRight className="h-4 w-4 text-content-subtle" />
                 </button>
+                {onToggleTheme && (
+                  <button
+                    type="button"
+                    onClick={onToggleTheme}
+                    className="flex w-full items-center gap-3 rounded px-3 py-3 text-left text-sm text-content transition-colors hover:bg-surface-raised"
+                  >
+                    <Palette className="h-4 w-4 shrink-0 text-content-muted" />
+                    <span className="flex-1">Appearance</span>
+                    <span className="text-2xs text-content-subtle">{themeMode === 'classy' ? 'Light' : 'Dark'}</span>
+                  </button>
+                )}
+                {onLogout && (
+                  <button
+                    type="button"
+                    onClick={() => { setSheetOpen(false); onLogout(); }}
+                    className="flex w-full items-center gap-3 rounded px-3 py-3 text-left text-sm text-danger transition-colors hover:bg-danger-soft"
+                  >
+                    <LogOut className="h-4 w-4 shrink-0" />
+                    <span className="flex-1">Sign out</span>
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -26883,6 +26958,10 @@ export default function CharterOps() {
       else localStorage.removeItem('skyway-tail-filter');
     } catch { /* ignore quota errors */ }
   }, [tailFilter]);
+  // Free-text schedule search over tail, route, customer and broker. Hidden
+  // behind the magnifier in the Flights header so the list stays clean.
+  const [scheduleQuery, setScheduleQuery] = useState('');
+  const [scheduleSearchOpen, setScheduleSearchOpen] = useState(false);
   // Default landing screen: 'home' for crew (their personalized view),
   // 'schedule' for everyone else (ops/admin/sales workflow).
   // Use `profile` here (not `currentUser`) because currentUser is declared
@@ -27696,6 +27775,14 @@ export default function CharterOps() {
       const tf = tailFilter.toUpperCase();
       filtered = filtered.filter(t => (t.info.tail || '').toUpperCase() === tf);
     }
+    const q = scheduleQuery.trim().toLowerCase();
+    if (q) {
+      filtered = filtered.filter((t) => {
+        const i = t.info || {};
+        return [i.tail, i.from, i.to, i.customer, i.broker, i.pic, i.sic]
+          .some(v => String(v || '').toLowerCase().includes(q));
+      });
+    }
     for (const t of filtered) {
       if (!t.start) continue;
       // Hidden (>15 days archived) — skip entirely, never show
@@ -27713,7 +27800,7 @@ export default function CharterOps() {
     groups.past.reverse(); // newest past first
     groups.archived.sort((a, b) => (b.start?.getTime?.() || 0) - (a.start?.getTime?.() || 0)); // newest archived first
     return groups;
-  }, [allTrips, today, tomorrow, showAllCategories, tailFilter, isTripArchived, isTripHidden]);
+  }, [allTrips, today, tomorrow, showAllCategories, tailFilter, scheduleQuery, isTripArchived, isTripHidden]);
 
   const feedStats = useMemo(() => {
     if (allTrips.length === 0) return null;
@@ -27778,15 +27865,6 @@ export default function CharterOps() {
   return (
     <ToastProvider>
     <div className="sw-app-shell bg-slate-950 text-slate-100 antialiased">
-      <style>{`
-        .grid-bg {
-          background-image:
-            linear-gradient(rgba(148, 163, 184, 0.04) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(148, 163, 184, 0.04) 1px, transparent 1px);
-          background-size: 32px 32px;
-        }
-      `}</style>
-
       <StreamPresenceProvider
         currentUser={currentUser}
         getIdToken={async () => {
@@ -27799,7 +27877,7 @@ export default function CharterOps() {
           }
         }}
       >
-      <div className="grid-bg h-full min-h-0 flex flex-col">
+      <div className="h-full min-h-0 flex flex-col">
         {/* iOS install banner — dismissible, shown only on iOS Safari
             when the app isn't already installed. Surfaces the Share →
             Add to Home Screen flow because iOS Safari has no built-in
@@ -27880,66 +27958,62 @@ export default function CharterOps() {
         {section === 'schedule' && (
           <div className="flex-1 flex overflow-hidden">
             <aside className={`w-full md:w-80 lg:w-96 border-r border-slate-800 bg-slate-950/80 overflow-y-auto scroll-area ${selectedId ? 'hidden md:block' : 'block'}`}>
-              <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between gap-2">
-                <h2 className="text-xs tracking-[0.2em]" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}>SCHEDULE</h2>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <button
-                    onClick={() => setShowAllCategories(v => !v)}
-                    className={`text-[10px] tracking-widest px-2 py-1 border ${showAllCategories ? 'border-cyan-400 text-cyan-300' : 'border-slate-700 text-slate-500 hover:text-slate-300'}`}
-                    style={{ fontFamily: 'JetBrains Mono, monospace' }}
-                    title="Toggle ground events"
-                  >
-                    {showAllCategories ? 'ALL' : 'OPS'}
-                  </button>
-                  <button
-                    onClick={() => loadFromUrl(config.icalUrl)}
-                    disabled={syncStatus.status === 'syncing' || !config.icalUrl}
-                    className="text-[10px] text-slate-500 hover:text-cyan-400 tracking-widest disabled:opacity-50 flex items-center gap-1"
-                    style={{ fontFamily: 'JetBrains Mono, monospace' }}
-                    title="Refresh from feed"
-                  >
-                    {syncStatus.status === 'syncing' ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-                    SYNC
-                  </button>
+              <ScreenHeader
+                title="Flights"
+                right={(
+                  <>
+                    <IconButton
+                      icon={Search}
+                      title="Search flights"
+                      variant={scheduleSearchOpen || scheduleQuery ? 'outline' : 'ghost'}
+                      onClick={() => {
+                        setScheduleSearchOpen((v) => {
+                          if (v) setScheduleQuery('');
+                          return !v;
+                        });
+                      }}
+                    />
+                    <IconButton
+                      icon={showAllCategories ? Calendar : Plane}
+                      title={showAllCategories ? 'Showing all events — tap for flights only' : 'Showing flights only — tap to include ground events'}
+                      variant={showAllCategories ? 'outline' : 'ghost'}
+                      onClick={() => setShowAllCategories(v => !v)}
+                    />
+                    <IconButton
+                      icon={syncStatus.status === 'syncing' ? Loader2 : RefreshCw}
+                      title="Refresh from feed"
+                      variant="ghost"
+                      disabled={syncStatus.status === 'syncing' || !config.icalUrl}
+                      onClick={() => loadFromUrl(config.icalUrl)}
+                      className={syncStatus.status === 'syncing' ? '[&_svg]:animate-spin' : ''}
+                    />
+                  </>
+                )}
+              />
+
+              {scheduleSearchOpen && (
+                <div className="border-b border-edge px-3 py-2.5">
+                  <input
+                    autoFocus
+                    type="search"
+                    value={scheduleQuery}
+                    onChange={(e) => setScheduleQuery(e.target.value)}
+                    placeholder="Tail, route, customer, crew…"
+                    className="w-full rounded-lg border border-edge bg-surface px-3 py-2.5 text-sm text-content placeholder:text-content-subtle focus:border-accent-border focus:outline-none"
+                  />
                 </div>
-              </div>
+              )}
 
               {/* Tail filter — ops + admin only. Single-select chip row,
                   sticky to the top of the scroll area. ALL chip clears the filter. */}
               {['ops', 'admin'].includes(currentUser?.role) && (
-                <div className="sticky top-0 z-10 bg-slate-950/95 backdrop-blur border-b border-slate-800 px-3 py-2">
-                  <div className="flex items-center gap-1.5 overflow-x-auto scroll-area pb-1">
-                    <button
-                      onClick={() => setTailFilter('')}
-                      className={`shrink-0 text-[10px] tracking-widest px-2.5 py-1 border transition-colors ${
-                        tailFilter === ''
-                          ? 'border-cyan-400 bg-cyan-500/10 text-cyan-300'
-                          : 'border-slate-700 text-slate-400 hover:border-slate-500 hover:text-slate-200'
-                      }`}
-                      style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}
-                    >
-                      ALL
-                    </button>
+                <div className="sticky top-0 z-10 border-b border-edge bg-slate-950/80 px-3 py-2">
+                  <div className="sw-no-scrollbar flex items-center gap-1.5 overflow-x-auto">
+                    <TailChip label="All" active={tailFilter === ''} onClick={() => setTailFilter('')} />
                     {SKYWAY_TAILS.map(tail => (
-                      <button
-                        key={tail}
-                        onClick={() => setTailFilter(tail)}
-                        className={`shrink-0 text-[10px] tracking-widest px-2.5 py-1 border transition-colors ${
-                          tailFilter === tail
-                            ? 'border-cyan-400 bg-cyan-500/10 text-cyan-300'
-                            : 'border-slate-700 text-slate-400 hover:border-slate-500 hover:text-slate-200'
-                        }`}
-                        style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}
-                      >
-                        {tail}
-                      </button>
+                      <TailChip key={tail} label={tail} active={tailFilter === tail} onClick={() => setTailFilter(tail)} />
                     ))}
                   </div>
-                  {tailFilter && (
-                    <div className="text-[10px] text-slate-500 mt-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                      Showing only <span className="text-cyan-300">{tailFilter}</span> · Tap ALL to clear
-                    </div>
-                  )}
                 </div>
               )}
 
@@ -27960,72 +28034,67 @@ export default function CharterOps() {
                   </button>
                 </div>
               ) : (
-                <div>
+                <div className="px-3 py-3">
                   {feedStats && feedStats.futureCount === 0 && (
-                    <div className="mx-3 mt-3 p-3 border border-cyan-500/30 bg-cyan-500/5">
-                      <div className="flex items-start gap-2">
-                        <AlertCircle className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
-                        <div className="flex-1 min-w-0">
-                          <div className="text-xs tracking-widest text-cyan-300" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
-                            NO UPCOMING TRIPS
-                          </div>
-                          <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+                    <Card className="mb-3 border-accent-border bg-accent-soft">
+                      <div className="flex items-start gap-2.5">
+                        <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-semibold text-content">No upcoming trips</div>
+                          <p className="mt-1 text-2xs leading-relaxed text-content-muted">
                             Feed has {feedStats.totalCount} flight{feedStats.totalCount !== 1 ? 's' : ''} from{' '}
-                            <span className="text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{fmtDateZ(feedStats.firstDate).slice(0, 6)}</span>
+                            <span className="font-mono text-content">{fmtDateZ(feedStats.firstDate).slice(0, 6)}</span>
                             {' → '}
-                            <span className="text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{fmtDateZ(feedStats.lastDate).slice(0, 6)}</span>.
-                            Tap SYNC, paste fresh content, or add a trip manually from the Ops tab.
+                            <span className="font-mono text-content">{fmtDateZ(feedStats.lastDate).slice(0, 6)}</span>.
+                            Sync the feed, paste fresh content, or add a trip manually from the Ops tab.
                           </p>
                         </div>
                       </div>
-                    </div>
-                  )}
-                  {feedStats && feedStats.futureCount > 0 && (
-                    <div className="mx-3 mt-3 p-2 border border-slate-800 bg-slate-900/40 text-[11px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                      {feedStats.futureCount} UPCOMING · {feedStats.totalCount} TOTAL · {fmtDateZ(feedStats.firstDate).slice(0, 6)} → {fmtDateZ(feedStats.lastDate).slice(0, 6)}
-                    </div>
+                    </Card>
                   )}
 
-                  {groupedTrips.today.length > 0 && (
-                    <div>
-                      <div className="px-4 py-2 text-[10px] tracking-[0.2em] text-cyan-400 bg-cyan-500/5 border-y border-cyan-500/20" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                        TODAY · {groupedTrips.today.length}
+                  {(() => {
+                    const sections = [
+                      { key: 'today', label: 'Today', trips: groupedTrips.today },
+                      { key: 'tomorrow', label: 'Tomorrow', trips: groupedTrips.tomorrow },
+                      { key: 'later', label: 'Upcoming', trips: groupedTrips.later },
+                      { key: 'past', label: 'Past', trips: groupedTrips.past },
+                    ].filter(s => s.trips.length > 0);
+
+                    if (sections.length === 0) {
+                      return (
+                        <EmptyState
+                          icon={Search}
+                          title={scheduleQuery ? 'No matching flights' : 'Nothing scheduled'}
+                          description={scheduleQuery
+                            ? `Nothing matches “${scheduleQuery}”. Try a tail number, airport code, or customer.`
+                            : 'No trips fall in this window. Adjust the tail filter or sync the feed.'}
+                        />
+                      );
+                    }
+
+                    return sections.map(section => (
+                      <div key={section.key} className="mb-5 last:mb-0">
+                        <div className="mb-2 flex items-baseline justify-between px-0.5">
+                          <h2 className="text-sm font-semibold text-content">{section.label}</h2>
+                          <span className="font-mono text-2xs text-content-subtle">{section.trips.length}</span>
+                        </div>
+                        <div className="space-y-2">
+                          {section.trips.map(trip => (
+                            <TripCard
+                              key={trip.uid}
+                              trip={trip}
+                              selected={trip.uid === selectedId}
+                              statusCount={tripStatusCounts[trip.uid] || 0}
+                              hasUpdate={tripHasUpdates(trip.uid)}
+                              onArchive={archiveTripWithUndo}
+                              onClick={() => { setSelectedId(trip.uid); markTripSeen(trip.uid); }}
+                            />
+                          ))}
+                        </div>
                       </div>
-                      {groupedTrips.today.map(trip => (
-                        <TripCard key={trip.uid} trip={trip} selected={trip.uid === selectedId} statusCount={tripStatusCounts[trip.uid] || 0} hasUpdate={tripHasUpdates(trip.uid)} onArchive={archiveTripWithUndo} onClick={() => { setSelectedId(trip.uid); markTripSeen(trip.uid); }} />
-                      ))}
-                    </div>
-                  )}
-                  {groupedTrips.tomorrow.length > 0 && (
-                    <div>
-                      <div className="px-4 py-2 text-[10px] tracking-[0.2em] text-cyan-400 bg-cyan-500/5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                        TOMORROW · {groupedTrips.tomorrow.length}
-                      </div>
-                      {groupedTrips.tomorrow.map(trip => (
-                        <TripCard key={trip.uid} trip={trip} selected={trip.uid === selectedId} statusCount={tripStatusCounts[trip.uid] || 0} hasUpdate={tripHasUpdates(trip.uid)} onArchive={archiveTripWithUndo} onClick={() => { setSelectedId(trip.uid); markTripSeen(trip.uid); }} />
-                      ))}
-                    </div>
-                  )}
-                  {groupedTrips.later.length > 0 && (
-                    <div>
-                      <div className="px-4 py-2 text-[10px] tracking-[0.2em] text-slate-400 bg-slate-900/40" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                        UPCOMING · {groupedTrips.later.length}
-                      </div>
-                      {groupedTrips.later.map(trip => (
-                        <TripCard key={trip.uid} trip={trip} selected={trip.uid === selectedId} statusCount={tripStatusCounts[trip.uid] || 0} hasUpdate={tripHasUpdates(trip.uid)} onArchive={archiveTripWithUndo} onClick={() => { setSelectedId(trip.uid); markTripSeen(trip.uid); }} />
-                      ))}
-                    </div>
-                  )}
-                  {groupedTrips.past.length > 0 && (
-                    <div>
-                      <div className="px-4 py-2 text-[10px] tracking-[0.2em] text-slate-600 bg-slate-900/40" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                        PAST · {groupedTrips.past.length} · NEWEST FIRST
-                      </div>
-                      {groupedTrips.past.map(trip => (
-                        <TripCard key={trip.uid} trip={trip} selected={trip.uid === selectedId} statusCount={tripStatusCounts[trip.uid] || 0} hasUpdate={tripHasUpdates(trip.uid)} onArchive={archiveTripWithUndo} onClick={() => { setSelectedId(trip.uid); markTripSeen(trip.uid); }} />
-                      ))}
-                    </div>
-                  )}
+                    ));
+                  })()}
                   {/* Archived trips render in the dedicated Archive section
                       (Flights › Archive), not inline in the schedule list. */}
                 </div>
@@ -28106,7 +28175,7 @@ export default function CharterOps() {
                   </p>
                 </div>
               ) : (
-                <div>
+                <div className="space-y-2 px-3 py-3">
                   {groupedTrips.archived.map(trip => {
                     // Compute archive age for the badge
                     const archivedTs = tripArchived[trip.uid];
@@ -28124,7 +28193,7 @@ export default function CharterOps() {
                           onClick={() => { setSelectedId(trip.uid); markTripSeen(trip.uid); }}
                         />
                         {daysUntilHidden !== null && (
-                          <div className="px-4 -mt-1 pb-2 text-[10px] text-slate-600" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                          <div className="px-1 pt-1.5 text-2xs text-content-subtle">
                             {daysUntilHidden === 0
                               ? 'Hides today'
                               : daysUntilHidden === 1
@@ -28133,7 +28202,7 @@ export default function CharterOps() {
                             {' · '}
                             <button
                               onClick={(e) => { e.stopPropagation(); unarchiveTrip(trip.uid); }}
-                              className="text-cyan-500 hover:text-cyan-300 underline-offset-2 hover:underline"
+                              className="text-accent underline-offset-2 hover:underline"
                             >
                               Restore
                             </button>
@@ -28431,6 +28500,9 @@ export default function CharterOps() {
           setCurrentSection={(s) => { setSection(s); setSelectedId(null); }}
           currentUser={currentUser}
           onOpenSettings={() => setShowSettings(true)}
+          onToggleTheme={() => setThemeMode((m) => m === 'classy' ? 'dark' : 'classy')}
+          themeMode={themeMode}
+          onLogout={signOut}
         />
       </div>
 
