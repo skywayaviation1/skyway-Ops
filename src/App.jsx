@@ -53,10 +53,15 @@ const MuteToggleLazy = lazy(() => import('./MuteToggle.jsx'));
 // Code-split: FlightBoard loads only when ?board=1 URL is hit.
 const FlightBoardLazy = lazy(() => import('./FlightBoard.jsx'));
 
-// Code-split: OpsCommandCenter is the home screen for ops/admin/sales
-// users. Pilots and crew see PilotHomeScreen instead. Lazy because non-ops
-// roles never render it.
+// Code-split: OpsCommandCenter is the home screen for ops/sales users.
+// Pilots and crew see PilotHomeScreen instead. Lazy because those roles
+// never render it.
 const OpsCommandCenterLazy = lazy(() => import('./OpsCommandCenter.jsx'));
+
+// Code-split: the administrator operations control board. It opens several
+// live Firestore subscriptions and pulls in the map, so it must not load for
+// roles that never see it.
+const OpsDashboardLazy = lazy(() => import('./OpsDashboard.jsx'));
 
 // Code-split: Lodging tab loads only when a user opens it on a trip.
 // Trip detail is the most-touched screen — keeping this lazy means the
@@ -28576,13 +28581,29 @@ export default function CharterOps() {
         />
 
         {/* === HOME SECTION === */}
-        {/* Ops/admin/sales users see the fleet-wide command center.
-            Pilots, maintenance, and accounting see the personalized
-            PilotHomeScreen (their own trips, duty status, etc.).
-            The role gate happens here so the call site stays single-line
-            and either home component can evolve independently. */}
+        {/* Three homes, by what the role is accountable for:
+              admin       — the operations control board (fleet-wide, live)
+              ops / sales — the existing command centre
+              everyone else — the personalized PilotHomeScreen
+            Gating here keeps each home component independent of the others. */}
         {section === 'home' && (
-          ['ops', 'admin', 'sales'].includes(currentUser?.role) ? (
+          currentUser?.role === 'admin' ? (
+            <Suspense fallback={
+              <div className="flex-1 flex items-center justify-center bg-slate-950 text-content-subtle">
+                <Loader2 className="w-4 h-4 animate-spin inline mr-2" />
+                Loading operations control
+              </div>
+            }>
+              <OpsDashboardLazy
+                currentUser={currentUser}
+                trips={allTrips}
+                users={users}
+                config={config}
+                onSelectTrip={(uid) => { setSelectedId(uid); setSection('schedule'); }}
+                onSwitchSection={(id) => setSection(id)}
+              />
+            </Suspense>
+          ) : ['ops', 'sales'].includes(currentUser?.role) ? (
             <Suspense fallback={
               <div className="flex-1 flex items-center justify-center bg-slate-950 text-slate-500"
                 style={{ fontFamily: 'JetBrains Mono, monospace' }}>
