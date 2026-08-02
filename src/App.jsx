@@ -15732,14 +15732,28 @@ function LegacyLoginScreen({ initialMode = 'login' }) {
  * it about the web address the app is served from, which reads as if it were
  * about the company email domain. Naming the host removes the ambiguity.
  */
+/**
+ * Vercel branch and commit deployments get a fresh hostname on every build.
+ * They can be allowlisted in Firebase, but they cannot usefully be registered
+ * as an OAuth redirect URI, so telling an operator to wire one up wastes their
+ * time — the address is gone by the next deploy.
+ */
+function isEphemeralPreviewHost(host) {
+  if (!host.endsWith('.vercel.app')) return false;
+  return host.includes('-git-') || /-[a-z0-9]{8,}-/.test(host);
+}
+
 function describeAuthError(err) {
   const code = err?.code || '';
   const host = typeof window !== 'undefined' ? window.location.hostname : 'this address';
+  const ephemeral = isEphemeralPreviewHost(host);
 
   const CONFIG_ERRORS = {
     'auth/unauthorized-domain': {
       message: `Microsoft sign-in is not enabled for ${host}.`,
-      fix: `An administrator needs to add ${host} under Firebase Authentication → Settings → Authorized domains. This is the web address the app is served from — not the @flyskyway.com email domain.`,
+      fix: `An administrator needs to add ${host} under Firebase Authentication → Settings → Authorized domains. This is the web address the app is served from — not the @flyskyway.com email domain.${
+        ephemeral ? ' Note this is a preview deployment; its address changes on every build, so prefer testing on the stable production address.' : ''
+      }`,
     },
     'auth/operation-not-allowed': {
       message: 'Microsoft sign-in is not switched on for this project.',
@@ -15758,8 +15772,12 @@ function describeAuthError(err) {
       fix: 'In Entra ID, confirm the account has a mail address and that the app registration requests the "email" scope and includes the email optional claim. Skyway Ops authorizes accounts by their verified company address, so it cannot proceed without one.',
     },
     'auth/redirect-session-lost': {
-      message: 'Microsoft accepted the sign-in, but the session did not carry back to the app.',
-      fix: `This is the browser blocking the cross-origin sign-in helper, which Safari and installed iPhone apps do by default. An administrator can fix it by setting VITE_FIREBASE_AUTH_DOMAIN to ${host} and adding https://${host}/__/auth/handler to the Entra app's redirect URIs. See docs/microsoft-sso-setup.md.`,
+      message: 'The sign-in did not carry back to the app.',
+      fix: ephemeral
+        // Wiring up a throwaway hostname is worse than useless: it looks like
+        // a fix and then breaks on the next deploy.
+        ? `If you completed the Microsoft prompt, this is Safari blocking the cross-origin sign-in helper. ${host} is a preview deployment and gets a new address every build, so it cannot be registered as a redirect URI. Sign in on the stable production address instead, where VITE_FIREBASE_AUTH_DOMAIN and the Entra redirect URI can be set once. See docs/microsoft-sso-setup.md.`
+        : `If you completed the Microsoft prompt, this is Safari blocking the cross-origin sign-in helper, which installed iPhone apps do by default. An administrator can fix it by setting VITE_FIREBASE_AUTH_DOMAIN to ${host} and adding https://${host}/__/auth/handler to the Entra app's redirect URIs. See docs/microsoft-sso-setup.md.`,
     },
   };
   if (CONFIG_ERRORS[code]) return { code, ...CONFIG_ERRORS[code] };

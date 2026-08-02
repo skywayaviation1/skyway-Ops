@@ -77,6 +77,18 @@ The plumbing is already in the repository and is inert until switched on:
 - `src/firebase.js` reads `VITE_FIREBASE_AUTH_DOMAIN` and falls back to the
   default Firebase domain when it is unset.
 
+### Preview deployments cannot use this
+
+Vercel branch and commit deployments get a new hostname on every build
+(`skyway-ops-git-<branch>-<hash>-<scope>.vercel.app`). Firebase Authorized
+domains and Entra redirect URIs both require exact hostnames, so an ephemeral
+preview address cannot be wired up in any lasting way.
+
+Sign-in on a preview deployment will therefore fail with
+`auth/redirect-session-lost` in Safari. That is expected. Verify Microsoft
+sign-in on the stable production address — `skyway-ops.vercel.app` or a custom
+domain such as `ops.flyskyway.com` — where the configuration below is set once.
+
 To switch it on:
 
 1. Set `VITE_FIREBASE_AUTH_DOMAIN` in Vercel to the app's own hostname, for
