@@ -15779,6 +15779,10 @@ function describeAuthError(err) {
         ? `If you completed the Microsoft prompt, this is Safari blocking the cross-origin sign-in helper. ${host} is a preview deployment and gets a new address every build, so it cannot be registered as a redirect URI. Sign in on the stable production address instead, where VITE_FIREBASE_AUTH_DOMAIN and the Entra redirect URI can be set once. See docs/microsoft-sso-setup.md.`
         : `If you completed the Microsoft prompt, this is Safari blocking the cross-origin sign-in helper, which installed iPhone apps do by default. An administrator can fix it by setting VITE_FIREBASE_AUTH_DOMAIN to ${host} and adding https://${host}/__/auth/handler to the Entra app's redirect URIs. See docs/microsoft-sso-setup.md.`,
     },
+    'auth/dev-bypass-unavailable': {
+      message: 'The development authentication bypass could not start.',
+      fix: 'This bypass only works on Vercel Preview deployments. Confirm FIREBASE_SERVICE_ACCOUNT_JSON is available to the preview environment and redeploy. Production intentionally returns 404 for this endpoint.',
+    },
   };
   if (CONFIG_ERRORS[code]) return { code, ...CONFIG_ERRORS[code] };
 
@@ -27334,6 +27338,7 @@ export default function CharterOps() {
       role: liveProfile.role || 'crew',
       active: liveProfile.active !== false,
       approved: liveProfile.approved === true,
+      authProvider: liveProfile.authProvider || null,
       savedSignature: liveProfile.savedSignature || null,
       // Per-user tab order overrides. Each area can be an array of tab
       // IDs (custom order saved) or undefined/null (use org default).
@@ -27996,6 +28001,17 @@ export default function CharterOps() {
             Add to Home Screen flow because iOS Safari has no built-in
             install prompt (unlike Chrome/Android). */}
         <IosInstallBanner />
+        {profile?.authProvider === 'dev-bypass' && (
+          <div
+            role="status"
+            className="flex shrink-0 items-center justify-center gap-2 border-b border-warning-border bg-warning-soft px-3 py-2 text-center"
+          >
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-warning" />
+            <span className="font-mono text-[10px] font-semibold tracking-wide text-warning">
+              DEVELOPMENT MODE · MICROSOFT LOGIN BYPASSED · ADMIN ACCESS
+            </span>
+          </div>
+        )}
         {currentUser?._impersonating && (
           <div className="bg-amber-500 text-slate-950 px-4 py-2 flex items-center justify-between gap-3 flex-wrap">
             <div className="text-xs" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>

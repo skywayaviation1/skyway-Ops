@@ -9,6 +9,7 @@ import {
   OAuthProvider,
   getRedirectResult,
   signInWithRedirect,
+  signInWithCustomToken,
   signOut as fbSignOut,
   onAuthStateChanged,
   reload as reloadAuthUser,
@@ -23,6 +24,53 @@ import {
 } from 'firebase/firestore';
 
 const COMPANY_DOMAIN = 'flyskyway.com';
+
+function isPreviewHostname(host) {
+  return host.endsWith('.vercel.app')
+    && (host.includes('-git-') || /-[a-z0-9]{8,}-/.test(host));
+}
+
+// Preview deployments bypass automatically. A non-Vercel development
+// environment can opt in explicitly, but production cannot: the token-minting
+// endpoint hard-stops when VERCEL_ENV=production regardless of this value.
+const DEV_AUTH_BYPASS_ENABLED = (() => {
+  if (import.meta.env.VITE_DEV_AUTH_BYPASS === 'true') return true;
+  if (typeof window === 'undefined') return false;
+  return isPreviewHostname(window.location.hostname);
+})();
+
+let devSignInPromise = null;
+
+async function ensureDevelopmentSession() {
+  if (devSignInPromise) return devSignInPromise;
+  devSignInPromise = (async () => {
+    const response = await fetch('/api/dev-auth-bypass', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      cache: 'no-store',
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.token) {
+      const err = new Error(data.error || 'Development authentication bypass is unavailable');
+      err.code = 'auth/dev-bypass-unavailable';
+      throw err;
+    }
+    return signInWithCustomToken(auth, data.token);
+  })().finally(() => {
+    devSignInPromise = null;
+  });
+  return devSignInPromise;
+}
+
+async function isDevelopmentBypassUser(user) {
+  if (!DEV_AUTH_BYPASS_ENABLED || !user) return false;
+  try {
+    const result = await user.getIdTokenResult();
+    return result.claims?.devAuthBypass === true;
+  } catch {
+    return false;
+  }
+}
 
 function isCompanyEmail(email) {
   const normalized = String(email || '').trim().toLowerCase();
@@ -94,6 +142,21 @@ export function watchAuth(onChange) {
   onChange({ state: 'loading' });
   return onAuthStateChanged(auth, async (user) => {
     if (!user) {
+      if (DEV_AUTH_BYPASS_ENABLED) {
+        onChange({ state: 'loading' });
+        try {
+          await ensureDevelopmentSession();
+          // signInWithCustomToken triggers onAuthStateChanged again with the
+          // development identity; that callback continues through normally.
+        } catch (err) {
+          setDiag('dev-auth-bypass', err);
+          onChange({
+            state: 'signed-out',
+            authError: 'auth/dev-bypass-unavailable',
+          });
+        }
+        return;
+      }
       onChange({ state: 'signed-out' });
       return;
     }
@@ -102,9 +165,26 @@ export function watchAuth(onChange) {
     // Reject legacy password sessions and non-company identities before any
     // Firestore data is read. Each rejection carries a code so the login
     // screen can explain itself instead of silently reappearing.
+    const devBypass = await isDevelopmentBypassUser(user);
+    if (DEV_AUTH_BYPASS_ENABLED && !devBypass) {
+      // A Microsoft session may still be cached from an earlier attempt.
+      // Preview mode is intentionally deterministic: replace it with the
+      // development identity so approval/profile state cannot block testing.
+      onChange({ state: 'loading' });
+      try {
+        await ensureDevelopmentSession();
+      } catch (err) {
+        setDiag('dev-auth-bypass', err);
+        onChange({
+          state: 'signed-out',
+          authError: 'auth/dev-bypass-unavailable',
+        });
+      }
+      return;
+    }
     const emails = verifiedEmails(user);
     const companyEmail = companyEmailFor(user);
-    if (!isMicrosoftUser(user) || (emails.length > 0 && !companyEmail)) {
+    if (!devBypass && (!isMicrosoftUser(user) || (emails.length > 0 && !companyEmail))) {
       setDiag('identity-policy', new Error('Unauthorized identity'), {
         emails,
         providers: user.providerData?.map(p => p.providerId) || [],
@@ -113,7 +193,7 @@ export function watchAuth(onChange) {
       onChange({ state: 'signed-out', authError: 'auth/company-account-required' });
       return;
     }
-    if (!companyEmail) {
+    if (!devBypass && !companyEmail) {
       // Authenticated by Microsoft, but the token carried no address at all —
       // an Entra claims configuration problem, not a rejected user.
       setDiag('identity-no-email', new Error('No email claim on Microsoft token'), {
