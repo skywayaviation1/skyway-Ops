@@ -11,7 +11,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  Hotel, Plane, Plus, Loader2, X, Search, Star, AlertTriangle,
+  Hotel, Plane, Plus, X, Search, Star, AlertTriangle,
   ChevronLeft, DollarSign, ExternalLink, Trash2, Shield,
 } from 'lucide-react';
 import {
