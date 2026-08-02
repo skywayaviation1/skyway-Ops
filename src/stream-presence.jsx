@@ -28,7 +28,7 @@
 // chunk only loads when the provider actually mounts (i.e. after the
 // user signs in).
 
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { notify } from './ui.jsx';
 
 /* ─────────────────────────────────────────────────────────────────────
@@ -42,6 +42,33 @@ const PresenceContext = createContext({
                      // cid is `messaging:trip-{tripUid}` for trip channels.
   isConnected: false,
 });
+
+async function fetchStreamSession(getIdToken) {
+  const idToken = await getIdToken();
+  if (!idToken) throw new Error('No Firebase idToken');
+  const response = await fetch('/api/stream-token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ idToken }),
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.error || `Token mint failed (${response.status})`);
+  }
+  return response.json();
+}
+
+function tokenProvider(getIdToken, initialToken) {
+  let first = initialToken;
+  return async () => {
+    if (first) {
+      const value = first;
+      first = null;
+      return value;
+    }
+    return (await fetchStreamSession(getIdToken)).token;
+  };
+}
 
 export function useStreamPresence() {
   return useContext(PresenceContext);
@@ -67,6 +94,7 @@ export function useTripUnread(tripUid) {
 export function StreamPresenceProvider({ currentUser, getIdToken, children }) {
   const [channelUnread, setChannelUnread] = useState({});
   const [isConnected, setIsConnected] = useState(false);
+  const disconnectTimer = useRef(null);
 
   // Derived: total unread COUNTS DM and group channels only. Trip channels
   // are excluded from the COMMS top-nav badge because clicking COMMS won't
@@ -82,6 +110,10 @@ export function StreamPresenceProvider({ currentUser, getIdToken, children }) {
   }, [channelUnread]);
 
   useEffect(() => {
+    if (disconnectTimer.current && currentUser?.uid) {
+      clearTimeout(disconnectTimer.current.id);
+      disconnectTimer.current = null;
+    }
     // Tear down on sign-out / user switch.
     if (!currentUser?.uid) {
       setChannelUnread({});
@@ -103,19 +135,7 @@ export function StreamPresenceProvider({ currentUser, getIdToken, children }) {
 
         // 1. Mint Stream token via backend (also bulk-syncs all approved
         //    users to Stream so any of them can be channel members later).
-        const idToken = await getIdToken();
-        if (!idToken) throw new Error('No Firebase idToken');
-
-        const resp = await fetch('/api/stream-token', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ idToken }),
-        });
-        if (!resp.ok) {
-          const data = await resp.json().catch(() => ({}));
-          throw new Error(data.error || `Token mint failed (${resp.status})`);
-        }
-        const { token, apiKey, user } = await resp.json();
+        const { token, apiKey, user } = await fetchStreamSession(getIdToken);
         if (cancelled) return;
 
         // 2. Connect the Stream singleton. If a previous user is still
@@ -126,7 +146,10 @@ export function StreamPresenceProvider({ currentUser, getIdToken, children }) {
           await streamClient.disconnectUser();
         }
         if (!streamClient.userID) {
-          await streamClient.connectUser({ id: user.id, name: user.name }, token);
+          await streamClient.connectUser(
+            { id: user.id, name: user.name },
+            tokenProvider(getIdToken, token),
+          );
         }
         if (cancelled) return;
 
@@ -222,15 +245,21 @@ export function StreamPresenceProvider({ currentUser, getIdToken, children }) {
       for (const fn of cleanups) {
         try { fn(); } catch {}
       }
-      // We do NOT call disconnectUser() here. The Stream singleton is
-      // shared with CommsStream and TripChatStream — disconnecting would
-      // tear out a connection that other surfaces depend on. The cleanup
-      // path above already removes our event handlers, which is what
-      // this effect actually owns.
-      //
-      // Disconnect happens implicitly when the user signs out: the new
-      // currentUser?.uid is null, the effect's early return above wipes
-      // state, and the next sign-in's connectUser swaps the user cleanly.
+      // This provider owns the app-lifetime connection. Its dependencies are
+      // stable, so cleanup means sign-out, account switch, or app teardown —
+      // not a normal screen change. Disconnect promptly so a shared device
+      // cannot retain the previous user's messages after Firebase signs out.
+      // The short delay is cancelled by React StrictMode's immediate effect
+      // replay, avoiding a development-only disconnect/connect race.
+      if (streamClient?.userID) {
+        const uid = streamClient.userID;
+        const id = setTimeout(() => {
+          streamClient.disconnectUser().catch((err) => {
+            console.warn('[StreamPresence] disconnect failed:', err?.message || err);
+          });
+        }, 100);
+        disconnectTimer.current = { id, uid };
+      }
     };
   }, [currentUser?.uid, getIdToken]);
 

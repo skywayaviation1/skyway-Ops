@@ -16,6 +16,19 @@ const TripChatStreamLazy = lazy(() =>
   import('./CommsStream.jsx').then((m) => ({ default: m.TripChatStream }))
 );
 
+// Stable reference matters: Stream connection hooks depend on this function.
+// Passing a new inline callback every render caused token remints and listener
+// teardown whenever any unrelated app state changed.
+async function getFirebaseIdToken() {
+  try {
+    const { auth } = await import('./firebase.js');
+    return auth.currentUser ? auth.currentUser.getIdToken() : null;
+  } catch (err) {
+    console.warn('[auth] getIdToken failed:', err);
+    return null;
+  }
+}
+
 // Stream presence layer (unread tracking + FCM device registration).
 // This module is light — it dynamic-imports stream-chat inside the
 // provider's effect, so a static import here doesn't bloat the sign-in
@@ -7439,16 +7452,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
               trip={trip}
               currentUser={currentUser}
               users={users}
-              getIdToken={async () => {
-                try {
-                  const { auth } = await import('./firebase.js');
-                  if (!auth.currentUser) return null;
-                  return auth.currentUser.getIdToken();
-                } catch (err) {
-                  console.warn('[TripChatStream] getIdToken failed:', err);
-                  return null;
-                }
-              }}
+              getIdToken={getFirebaseIdToken}
             />
           </Suspense>
         ) : tab === 'notify' ? (
@@ -9561,10 +9565,7 @@ function TripSheetPanel({
 function ManifestsScreen({ currentUser, allTrips }) {
   const [manifests, setManifests] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [selectedId, setSelectedId] = useState(() => {
-    if (typeof window === 'undefined') return null;
-    return new URLSearchParams(window.location.search).get('trip') || null;
-  });
+  const [selectedId, setSelectedId] = useState(null);
   const [showNewModal, setShowNewModal] = useState(false);
 
   const isCrew = currentUser?.role === 'crew';
@@ -27547,7 +27548,10 @@ export default function CharterOps() {
   const [config, setConfig] = useState({ icalUrl: DEFAULT_ICAL_URL, opsEmail: '', crewName: '' });
   const [trips, setTrips] = useState([]);
   const [manualTrips, setManualTrips] = useState([]);
-  const [selectedId, setSelectedId] = useState(null);
+  const [selectedId, setSelectedId] = useState(() => {
+    if (typeof window === 'undefined') return null;
+    return new URLSearchParams(window.location.search).get('trip') || null;
+  });
   const [loading, setLoading] = useState(true);
   const [showSettings, setShowSettings] = useState(() => {
     // Auto-open Settings on return from QBO OAuth so the user sees the result
@@ -27618,6 +27622,7 @@ export default function CharterOps() {
   const [section, setSection] = useState(() => {
     if (typeof window === 'undefined') return 'home';
     const params = new URLSearchParams(window.location.search);
+    if (params.get('trip')) return 'schedule';
     return params.get('channel') || window.location.hash === '#comms' ? 'comms' : 'home';
   });
   // FlightAware live tracking kill switch — synced from Firestore so admin can
@@ -28516,15 +28521,7 @@ export default function CharterOps() {
     <div className="sw-app-shell bg-slate-950 text-slate-100 antialiased">
       <StreamPresenceProvider
         currentUser={currentUser}
-        getIdToken={async () => {
-          try {
-            const { auth } = await import('./firebase.js');
-            if (!auth.currentUser) return null;
-            return auth.currentUser.getIdToken();
-          } catch {
-            return null;
-          }
-        }}
+        getIdToken={getFirebaseIdToken}
       >
       <div className="h-full min-h-0 flex flex-col">
         {/* iOS install banner — dismissible, shown only on iOS Safari
@@ -29082,16 +29079,7 @@ export default function CharterOps() {
               initialChannelId={typeof window !== 'undefined'
                 ? new URLSearchParams(window.location.search).get('channel') || ''
                 : ''}
-              getIdToken={async () => {
-                try {
-                  const { auth } = await import('./firebase.js');
-                  if (!auth.currentUser) return null;
-                  return auth.currentUser.getIdToken();
-                } catch (err) {
-                  console.warn('[CommsStream] getIdToken failed:', err);
-                  return null;
-                }
-              }}
+              getIdToken={getFirebaseIdToken}
             />
           </Suspense>
         )}

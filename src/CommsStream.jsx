@@ -66,6 +66,37 @@ function groupChannelId() {
   return safeChannelId(`group-${ts}-${rand}`);
 }
 
+async function fetchStreamSession(getIdToken) {
+  const idToken = await getIdToken();
+  if (!idToken) throw new Error('No idToken from Firebase');
+  const response = await fetch('/api/stream-token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ idToken }),
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.error || `Token mint failed (${response.status})`);
+  }
+  return response.json();
+}
+
+// Stream calls a token provider again before an expiring JWT lapses. Return the
+// already-minted token on the initial connection, then obtain a fresh Firebase
+// ID token and Stream JWT for every refresh.
+function streamTokenProvider(getIdToken, initialToken) {
+  let first = initialToken;
+  return async () => {
+    if (first) {
+      const token = first;
+      first = null;
+      return token;
+    }
+    const session = await fetchStreamSession(getIdToken);
+    return session.token;
+  };
+}
+
 /* ─────────────────────────────────────────────────────────────────────
    Hook: connect to Stream (shared by both surfaces)
    ───────────────────────────────────────────────────────────────────── */
@@ -80,19 +111,7 @@ function useStreamClient(currentUser, getIdToken) {
     (async () => {
       try {
         if (!currentUser?.uid) return;
-        const idToken = await getIdToken();
-        if (!idToken) throw new Error('No idToken from Firebase');
-
-        const resp = await fetch('/api/stream-token', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ idToken }),
-        });
-        if (!resp.ok) {
-          const data = await resp.json().catch(() => ({}));
-          throw new Error(data.error || `Token mint failed (${resp.status})`);
-        }
-        const { token, apiKey, user } = await resp.json();
+        const { token, apiKey, user } = await fetchStreamSession(getIdToken);
         if (cancelled) return;
 
         const chatClient = StreamChat.getInstance(apiKey);
@@ -107,7 +126,7 @@ function useStreamClient(currentUser, getIdToken) {
         if (!chatClient.userID) {
           await chatClient.connectUser(
             { id: user.id, name: user.name },
-            token
+            streamTokenProvider(getIdToken, token),
           );
         }
         if (cancelled) {
@@ -186,6 +205,10 @@ function channelTitle(channel, currentUid) {
 function ChannelToolbar({ currentUser, onSearch, onInfo }) {
   const { channel, client } = useChatContext();
   const members = channelMembers(channel);
+  const muteTarget = useMemo(
+    () => ({ id: `stream-${channel?.id || ''}`, kind: 'stream' }),
+    [channel?.id],
+  );
   const other = members.find((user) => user.id !== client.userID);
   const isDirect = !channel?.data?.is_group && !channel?.data?.is_trip && members.length <= 2;
   const online = members.filter((user) => user.online).length;
@@ -213,7 +236,7 @@ function ChannelToolbar({ currentUser, onSearch, onInfo }) {
         </button>
         <MuteToggle
           currentUser={currentUser}
-          target={{ id: `stream-${channel?.id || ''}`, kind: 'stream' }}
+          target={muteTarget}
           className="comms-icon-button"
         />
         <button
@@ -339,7 +362,7 @@ function MessageSearchPanel({ client, currentUid, onOpenResult, onClose }) {
         ) : (
           results.map((result) => {
             const message = result.message || result;
-            const channel = result.channel;
+            const channel = message.channel || result.channel;
             return (
               <button
                 type="button"
@@ -913,21 +936,25 @@ function CommsLayoutInner({
           <ChevronLeft className="w-4 h-4" />
           BACK TO COMMS
         </button>
-        <Channel>
-          <Window>
-            <ChannelToolbar
-              currentUser={currentUser}
-              onSearch={() => setShowSearch(true)}
-              onInfo={() => setShowInfo((value) => !value)}
-            />
-            <MessageList />
-            <MessageInput focus />
-          </Window>
-          <Thread />
-        </Channel>
-        {showInfo && channel && (
-          <ChannelInfoPanel channel={channel} currentUid={client.userID} onClose={() => setShowInfo(false)} />
-        )}
+        <div className="flex min-h-0 flex-1">
+          <div className="comms-channel-stage">
+            <Channel>
+              <Window>
+                <ChannelToolbar
+                  currentUser={currentUser}
+                  onSearch={() => setShowSearch(true)}
+                  onInfo={() => setShowInfo((value) => !value)}
+                />
+                <MessageList />
+                <MessageInput focus />
+              </Window>
+              <Thread />
+            </Channel>
+          </div>
+          {showInfo && channel && (
+            <ChannelInfoPanel channel={channel} currentUid={client.userID} onClose={() => setShowInfo(false)} />
+          )}
+        </div>
       </main>
       {showSearch && (
         <MessageSearchPanel
