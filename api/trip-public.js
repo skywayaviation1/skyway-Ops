@@ -2,7 +2,7 @@
 //
 // PUBLIC token-gated trip tracking for brokers.
 //
-// GET ?token=...&action=get      → returns sanitized trip + live position(s)
+// GET ?token=...   → sanitized trip + live position + flown trail + weather
 //
 // Validation order:
 //   1. HMAC token verify (api/_trip-token.js)
@@ -14,9 +14,14 @@
 // Returns ONLY whitelisted fields. No crew contacts, no pricing, no pax
 // names, no internal notes.
 //
-// Live position is fetched via the existing FlightAware infrastructure.
-// Post-flight track logs are NOT included in this response (too heavy);
-// the front-end can request them with action=track&legNumber=N.
+// Live position, the flown track log, and airport weather are all fetched via
+// existing internal infrastructure and folded into this one response, so the
+// broker page needs exactly one request per poll and never talks to an
+// authenticated ops endpoint directly.
+//
+// The track log is included for a leg that has departed whether or not it is
+// still airborne — a broker opening the link after landing should still see the
+// path the aircraft actually flew, which is the whole point of the map.
 
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
@@ -222,37 +227,105 @@ async function fetchPosition(tail) {
   }
 }
 
-// On-demand actual-flight-path lookup for the airborne leg. Uses the
-// ident-based track-log endpoint which auto-picks the current/most-recent
-// flight for the tail — exactly what we want for the live leg. For
-// LANDED legs the same endpoint returns the most recent completed flight,
-// which is usually still the right leg if the broker opens the page
-// shortly after landing; for older completed legs the result may not
-// match. Future improvement: persist faFlightId per leg at upload time
-// and look up by flightId for historical accuracy.
+function internalHost() {
+  return process.env.VERCEL_PROJECT_PRODUCTION_URL ||
+         process.env.VERCEL_URL ||
+         'skyway-ops.vercel.app';
+}
+
+// Actual-flight-path lookup. Uses the ident-based track-log endpoint, which
+// auto-picks the current or most-recent flight for the tail — the right answer
+// both while airborne and shortly after landing. Because the share link itself
+// dies 24h after the last leg lands, "most recent flight for this tail" cannot
+// drift far from the leg the broker is looking at.
+//
+// Altitude is carried through per point so the map can colour the trail by
+// altitude the same way the ops screen does. Known limitation: on a multi-leg
+// trip this returns the latest leg's path, not one path per leg — fixing that
+// needs faFlightId persisted per leg at status-fire time.
 async function fetchActualPath(tail) {
   if (!tail) return null;
   const internalSecret = process.env.INTERNAL_API_SECRET;
   if (!internalSecret) return null;
-  const host = process.env.VERCEL_PROJECT_PRODUCTION_URL ||
-               process.env.VERCEL_URL ||
-               'skyway-ops.vercel.app';
   try {
     const r = await fetch(
-      `https://${host}/api/flightaware-track-log?ident=${encodeURIComponent(tail)}`,
+      `https://${internalHost()}/api/flightaware-track-log?ident=${encodeURIComponent(tail)}`,
       { method: 'GET', headers: { 'x-internal-secret': internalSecret } }
     );
     if (!r.ok) return null;
     const data = await r.json();
     const pts = Array.isArray(data.points) ? data.points : [];
-    // Reduce to just [lat, lon] tuples in chronological order. Drop any
-    // points missing coordinates (FA sometimes emits placeholder records).
     return pts
       .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon))
-      .map((p) => [p.lat, p.lon]);
+      .map((p) => ({
+        lat: p.lat,
+        lon: p.lon,
+        altitude_ft: Number.isFinite(p.altitude_ft) ? p.altitude_ft : null,
+        groundspeed_kt: Number.isFinite(p.groundspeed_kt) ? p.groundspeed_kt : null,
+        time: Number.isFinite(p.time) ? p.time : null,
+      }));
   } catch (e) {
     return null;
   }
+}
+
+// Current conditions for the trip's airports. METAR/TAF is public aviation
+// data, but the ops weather endpoint requires a Firebase token — so we call it
+// server-side with the internal secret and hand the broker a whitelisted
+// subset. Server-side response caching (10 min) means broker polling adds no
+// meaningful upstream load.
+const WEATHER_FIELDS = [
+  'observedTime', 'rawMetar', 'tempC', 'dewpointC', 'windDir', 'windKt',
+  'windGustKt', 'visibilitySm', 'ceilingFt', 'flightCategory', 'altimeterInHg',
+];
+const MAX_WEATHER_STATIONS = 6;
+
+async function fetchWeather(codes) {
+  const internalSecret = process.env.INTERNAL_API_SECRET;
+  if (!internalSecret) return {};
+  const unique = Array.from(new Set(
+    (codes || [])
+      .map((c) => String(c || '').toUpperCase().replace(/[^A-Z0-9]/g, ''))
+      .filter(Boolean)
+  )).slice(0, MAX_WEATHER_STATIONS);
+  if (unique.length === 0) return {};
+
+  const entries = await Promise.all(unique.map(async (code) => {
+    try {
+      const r = await fetch(
+        `https://${internalHost()}/api/airport-weather?icao=${encodeURIComponent(code)}`,
+        { method: 'GET', headers: { 'x-internal-secret': internalSecret } }
+      );
+      if (!r.ok) return null;
+      const data = await r.json();
+      const metarSource = data.metar || data.parsed;
+      if (!metarSource) return null;
+      const metar = {};
+      for (const f of WEATHER_FIELDS) {
+        metar[f] = metarSource[f] ?? null;
+      }
+      // One TAF period is enough for a broker to see what is forecast at
+      // arrival; the full period list is operational detail.
+      const tafPeriod = Array.isArray(data.taf?.periods) ? data.taf.periods[0] : null;
+      return [code, {
+        icao: data.icao || code,
+        metar,
+        forecast: tafPeriod ? {
+          timeFrom: tafPeriod.timeFrom ?? null,
+          timeTo: tafPeriod.timeTo ?? null,
+          windDir: tafPeriod.windDir ?? null,
+          windKt: tafPeriod.windKt ?? null,
+          visibilitySm: tafPeriod.visibilitySm ?? null,
+          ceilingFt: tafPeriod.ceilingFt ?? null,
+          flightCategory: tafPeriod.flightCategory ?? null,
+        } : null,
+      }];
+    } catch {
+      return null;
+    }
+  }));
+
+  return Object.fromEntries(entries.filter(Boolean));
 }
 
 // Derive legs from the trip-state doc. trip-state stores the upload result
@@ -416,7 +489,6 @@ export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ ok: false, reason: 'GET only' });
 
   const token = (req.query?.token || '').toString();
-  const action = (req.query?.action || 'get').toString();
 
   const r = await loadValidTrip(token);
   if (r.error) return res.status(r.error.code).json(r.error.body);
@@ -454,30 +526,34 @@ export default async function handler(req, res) {
     return res.status(410).json({ ok: false, reason: 'link expired after trip completion' });
   }
 
-  // Default: live position + actual flight path + sanitized trip.
-  const position = await fetchPosition(sanitized.tail);
-  // Fetch the actual flown breadcrumb only when there's an airborne leg
-  // (otherwise the call wastes a FlightAware AeroAPI billing unit for a
-  // straight line on a completed flight). The endpoint is cached for 60s
-  // server-side so repeated polls don't burn the quota.
-  let trail = null;
-  const hasAirborneLeg = sanitized.legs.some((l) => l.status?.wheels_up && !l.status?.landed);
-  if (hasAirborneLeg && sanitized.tail) {
-    trail = await fetchActualPath(sanitized.tail);
+  // Weather for every airport on the trip, and the flown path for any leg that
+  // has departed. Both are fetched in parallel with the position read.
+  const airportCodes = [];
+  for (const leg of sanitized.legs) {
+    if (leg.from) airportCodes.push(leg.from);
+    if (leg.to) airportCodes.push(leg.to);
   }
+
+  // A leg that has departed has a path worth drawing, airborne or not. Only a
+  // trip where nothing has left the ground skips the track-log call, so we
+  // never spend an AeroAPI unit drawing a line for a flight that hasn't flown.
+  const hasDepartedLeg = sanitized.legs.some((l) => l.status?.wheels_up);
+  const hasAirborneLeg = sanitized.legs.some((l) => l.status?.wheels_up && !l.status?.landed);
+
+  const [position, trail, weather] = await Promise.all([
+    fetchPosition(sanitized.tail),
+    hasDepartedLeg && sanitized.tail ? fetchActualPath(sanitized.tail) : Promise.resolve(null),
+    fetchWeather(airportCodes),
+  ]);
+
   return res.status(200).json({
     ok: true,
     trip: sanitized,
     position,
+    // Track-log points as { lat, lon, altitude_ft, groundspeed_kt, time } so
+    // the broker map can colour the trail by altitude.
     trail,
-    // DIAGNOSTIC: tells us what's actually in the trip-state doc.
-    // Remove once the issue is identified.
-    _diag: {
-      docFields: Object.keys(data || {}).sort(),
-      hasPublicTripData: !!data.publicTripData,
-      publicTripDataLegs: Array.isArray(data.publicTripData?.legs) ? data.publicTripData.legs.length : 0,
-      publicTripDataTail: data.publicTripData?.tail || null,
-      trailPoints: Array.isArray(trail) ? trail.length : 0,
-    },
+    trailLive: hasAirborneLeg,
+    weather,
   });
 }

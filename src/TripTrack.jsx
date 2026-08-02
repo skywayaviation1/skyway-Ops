@@ -9,8 +9,9 @@
 //   - Tail + aircraft type
 //   - All legs of the trip (repositioning legs labeled clearly)
 //   - For each leg: from → to, FBO names, scheduled times, actual times, PIC name
-//   - Live position on a map (Leaflet + OpenStreetMap tiles) when airborne
-//   - Post-flight track for completed legs (toggle to show)
+//   - Live position on a professional tracking map with selectable basemaps,
+//     weather radar, and the aircraft's full altitude-coloured flight trail
+//   - Departure / arrival weather (METAR + short TAF) for every airport
 //   - Status timeline per leg (departed / airborne / landed / etc.)
 //
 // What we DO NOT show (sanitization happens server-side too, this is belt+suspenders):
@@ -19,12 +20,16 @@
 //   - Internal notes
 //   - Pricing / fees / fuel costs
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Plane, MapPin, Clock, AlertCircle, RefreshCw, Loader2,
-  ArrowRight, CheckCircle2, Circle,
+  Plane, AlertCircle, RefreshCw, Loader2,
+  ArrowRight, CheckCircle2, Circle, Cloud, Wind, Eye, Thermometer,
 } from 'lucide-react';
 import { formatLocalTime, formatLocalDate } from './airports.js';
+// The same map component and visual language the ops Tracking screen uses, so
+// a broker and a dispatcher are looking at the identical picture of the flight.
+import TrackingMap from './TrackingMap.jsx';
+import { flightCategoryStyle, normalizeTrail, distanceNm } from './tracking-map.js';
 // FAA NOTAM badge — renders silently when no significant NOTAMs are active,
 // shows a colored badge with click-to-expand panel when there are. We pass
 // no getIdToken since the broker page is anonymous; the endpoint accepts
@@ -310,36 +315,8 @@ function StatusDot({ on, label, ts, iataCode }) {
   );
 }
 
-// Lightweight Leaflet loader (no API key needed). Pinned to a specific
-// version + integrity hashes — same approach used by FlightBoard.jsx.
-// We only load the script + CSS once per page; further calls reuse the
-// in-flight promise.
-let _leafletLoading = null;
-function loadLeaflet() {
-  if (typeof window === 'undefined') return Promise.reject(new Error('no window'));
-  if (window.L) return Promise.resolve(window.L);
-  if (_leafletLoading) return _leafletLoading;
-  _leafletLoading = new Promise((resolve, reject) => {
-    const link = document.createElement('link');
-    link.rel = 'stylesheet';
-    link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
-    link.integrity = 'sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=';
-    link.crossOrigin = '';
-    document.head.appendChild(link);
-    const script = document.createElement('script');
-    script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
-    script.integrity = 'sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=';
-    script.crossOrigin = '';
-    script.async = true;
-    script.onload = () => window.L ? resolve(window.L) : reject(new Error('Leaflet failed to load'));
-    script.onerror = () => reject(new Error('Failed to load Leaflet'));
-    document.head.appendChild(script);
-  });
-  return _leafletLoading;
-}
-
-// Phase colors matched to FlightBoard's RouteMap so the broker view feels
-// like the same product. Cyan = airborne, amber = preflight, slate = pending,
+// Phase colours matched to the ops flight board so the broker view reads as
+// the same product. Cyan = airborne, amber = preflight, slate = pending,
 // emerald = landed, dim slate = completed.
 const BROKER_PHASE_COLORS = {
   pending:    '#64748b',
@@ -349,16 +326,14 @@ const BROKER_PHASE_COLORS = {
   completed:  '#475569',
 };
 
-// Derive a phase per leg from its status timeline. Uses the same status
-// step IDs the ops app records (crew_onsite / aircraft_ready / taxi_dep /
-// wheels_up / landed), with FlightBoard's 12-hour staleness guard.
+// Derive a phase per leg from its status timeline, using the same status step
+// IDs the ops app records, with the same 12-hour staleness guard: a forgotten
+// LANDED tap shouldn't leave a leg looking airborne forever.
 function legPhase(leg) {
   const s = leg?.status || {};
   if (s.landed) return 'landed';
   if (s.wheels_up) {
     const upAt = s.wheels_up.at || 0;
-    // 12h staleness guard: forgotten LANDED tap shouldn't leave a leg
-    // permanently airborne. After 12h with no landed, treat as landed.
     if (upAt > 0 && (Date.now() - upAt) > 12 * 60 * 60 * 1000) return 'landed';
     return 'airborne';
   }
@@ -367,82 +342,42 @@ function legPhase(leg) {
   return 'pending';
 }
 
-function LiveMap({ position, legs, trail }) {
-  const containerRef = useRef(null);
-  const mapRef = useRef(null);
-  const layerRef = useRef(null);          // overlay group we can clear/redraw
-  const aircraftMarkerRef = useRef(null);
-  const [mapErr, setMapErr] = useState('');
-  const [ready, setReady] = useState(false);
-  // Bumped when async airport lookups resolve so routes that needed coords
-  // get redrawn.
+/**
+ * Broker-facing flight map. Resolves the trip's airports to coordinates, then
+ * hands a normalized scene to the shared TrackingMap, which owns basemaps,
+ * weather radar, the altitude-coloured trail and fullscreen.
+ *
+ * The map always opens showing the aircraft's full flown trail — that is the
+ * single thing a broker checking on a charter wants to see.
+ */
+function BrokerFlightMap({ position, legs, trail, trailLive, tail }) {
   const [coordsTick, setCoordsTick] = useState(0);
-
-  // ====================================================================
-  // Initial map setup — runs once.
-  // ====================================================================
-  useEffect(() => {
-    let cancelled = false;
-    loadLeaflet().then((L) => {
-      if (cancelled || !containerRef.current) return;
-      const map = L.map(containerRef.current, {
-        center: [38, -95],          // CONUS center; we fit-bounds below
-        zoom: 4,
-        zoomControl: true,
-        attributionControl: true,
-        worldCopyJump: false,
-      });
-      // Satellite base + dark labels overlay — same combination FlightBoard
-      // uses on the ops dashboard. The dimmed tilePane keeps the satellite
-      // from overwhelming the cyan overlays.
-      L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-        maxZoom: 12,
-        attribution: 'Tiles &copy; Esri',
-      }).addTo(map);
-      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', {
-        maxZoom: 12, subdomains: 'abcd', opacity: 0.8,
-        attribution: '&copy; CARTO',
-      }).addTo(map);
-      const tilePane = map.getPane('tilePane');
-      if (tilePane) tilePane.style.filter = 'brightness(0.65) contrast(1.1) saturate(0.85)';
-      // Overlay layer group — we clear and redraw routes/markers on data updates
-      // without disturbing the tile layers underneath.
-      const layer = L.layerGroup().addTo(map);
-      mapRef.current = map;
-      layerRef.current = layer;
-      if (!cancelled) setReady(true);
-    }).catch((e) => {
-      setMapErr(e.message || 'Map failed to load');
-    });
-    return () => {
-      cancelled = true;
-      if (mapRef.current) {
-        try { mapRef.current.remove(); } catch (_) {}
-        mapRef.current = null;
-        layerRef.current = null;
-      }
-      aircraftMarkerRef.current = null;
-    };
-  }, []);
-
-  // ====================================================================
-  // Resolve any missing airport codes via the same server endpoint
-  // FlightBoard uses (OurAirports). This lets broker pages show non-US
-  // / smaller airports that aren't in the bundled coords DB.
-  // ====================================================================
+  const [coordsFn, setCoordsFn] = useState(null);
   const askedRef = useRef(new Set());
+
+  // The bundled coords database is a large module; load it lazily so the
+  // broker page's first paint isn't waiting on it.
   useEffect(() => {
-    if (!Array.isArray(legs) || legs.length === 0) return;
     let cancelled = false;
     (async () => {
       const { lookupCoords } = await import('./airport-coords.js');
-      // Find codes referenced by this trip that aren't yet known.
+      if (!cancelled) setCoordsFn(() => lookupCoords);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Resolve any airport this trip references that isn't in the bundled DB —
+  // smaller regional and non-US fields that brokers still need to see.
+  useEffect(() => {
+    if (!coordsFn || !Array.isArray(legs) || legs.length === 0) return undefined;
+    let cancelled = false;
+    (async () => {
       const missing = [];
       legs.forEach((leg) => {
         [leg.from, leg.to].forEach((code) => {
           if (!code) return;
           const c = String(code).toUpperCase().trim();
-          if (!lookupCoords(c) && !askedRef.current.has(c)) missing.push(c);
+          if (!coordsFn(c) && !askedRef.current.has(c)) missing.push(c);
         });
       });
       if (missing.length === 0) return;
@@ -454,210 +389,271 @@ function LiveMap({ position, legs, trail }) {
           body: JSON.stringify({ codes: missing }),
         });
         if (!r.ok) {
-          // Un-mark so a future render can retry on network blip
           for (const c of missing) askedRef.current.delete(c);
           return;
         }
         const data = await r.json();
         if (cancelled) return;
         if (data.cacheReady === false) {
-          // OurAirports cache cold-starting; retry in a minute
+          // The OurAirports cache is cold-starting; retry shortly.
           setTimeout(() => {
             for (const c of missing) askedRef.current.delete(c);
             setCoordsTick((t) => t + 1);
-          }, 60_000);
+          }, 60000);
           return;
         }
         const { addDynamicCoords } = await import('./airport-coords.js');
         let added = 0;
         for (const [code, coords] of Object.entries(data.coords || {})) {
-          if (coords && Number.isFinite(coords.lat) && Number.isFinite(coords.lon || coords.lng)) {
-            addDynamicCoords(code, coords.lat, coords.lon ?? coords.lng);
-            added++;
+          const lat = coords?.lat;
+          const lng = coords?.lng ?? coords?.lon;
+          if (Number.isFinite(lat) && Number.isFinite(lng)) {
+            addDynamicCoords(code, lat, lng);
+            added += 1;
           }
         }
         if (added > 0 && !cancelled) setCoordsTick((t) => t + 1);
-      } catch (e) {
+      } catch {
         for (const c of missing) askedRef.current.delete(c);
       }
     })();
     return () => { cancelled = true; };
-  }, [legs]);
+  }, [coordsFn, legs]);
 
-  // ====================================================================
-  // Draw routes + airport markers + plane on every data change.
-  // ====================================================================
-  useEffect(() => {
-    if (!ready || !mapRef.current || !layerRef.current) return;
-    const L = window.L;
-    const layer = layerRef.current;
-    let cancelled = false;
-    (async () => {
-      const { lookupCoords } = await import('./airport-coords.js');
-      if (cancelled) return;
-      layer.clearLayers();
-      aircraftMarkerRef.current = null;
+  const normalizedTrail = useMemo(() => normalizeTrail(trail), [trail]);
 
-      // Build resolved leg list (only legs whose airports we have coords for)
-      const resolved = [];
-      const aptSet = new Map();
-      (legs || []).forEach((leg) => {
-        const f = lookupCoords(leg.from);
-        const o = lookupCoords(leg.to);
-        if (!f || !o) return;
-        resolved.push({ ...leg, fCoord: f, oCoord: o, phase: legPhase(leg) });
-        aptSet.set(String(leg.from).toUpperCase(), { coords: f, code: leg.from });
-        aptSet.set(String(leg.to).toUpperCase(), { coords: o, code: leg.to });
-      });
+  const scene = useMemo(() => {
+    if (!coordsFn) return { aircraft: [], airports: [], routes: [], trail: null, projected: null };
 
-      // Draw routes — colored by phase, mirroring FlightBoard's rules.
-      resolved.forEach((r) => {
-        if (r.phase === 'airborne') {
-          const havePos = position
-            && position.airborne === true
-            && Number.isFinite(position.latitude)
-            && Number.isFinite(position.longitude);
-          // Prefer the ACTUAL flown breadcrumb when FlightAware has the
-          // track log available. Falls back to a straight origin → current
-          // line when the track isn't yet populated (e.g. flight just
-          // departed and FA hasn't gathered enough points yet).
-          const haveTrail = Array.isArray(trail) && trail.length >= 2;
-          if (haveTrail) {
-            // Flown portion = actual breadcrumb. Solid cyan, slightly heavier
-            // weight to make it pop against the satellite imagery.
-            layer.addLayer(L.polyline(trail, {
-              color: '#22d3ee', weight: 4, opacity: 1,
-              lineCap: 'round', lineJoin: 'round',
-            }));
-            // Remaining portion = last trail point → destination, dashed.
-            // We use the last trail point (not `position.lat/lng`) so the
-            // breadcrumb and the ahead-line meet exactly at the same pixel.
-            const lastPt = trail[trail.length - 1];
-            layer.addLayer(L.polyline(
-              [lastPt, [r.oCoord.lat, r.oCoord.lng]],
-              { color: '#22d3ee', weight: 2.5, opacity: 0.5, dashArray: '6 6', lineCap: 'round', lineJoin: 'round' }
-            ));
-          } else if (havePos) {
-            // No trail yet — straight origin → current position line.
-            layer.addLayer(L.polyline(
-              [[r.fCoord.lat, r.fCoord.lng], [position.latitude, position.longitude]],
-              { color: '#22d3ee', weight: 4, opacity: 1, lineCap: 'round', lineJoin: 'round' }
-            ));
-            layer.addLayer(L.polyline(
-              [[position.latitude, position.longitude], [r.oCoord.lat, r.oCoord.lng]],
-              { color: '#22d3ee', weight: 2.5, opacity: 0.5, dashArray: '6 6', lineCap: 'round', lineJoin: 'round' }
-            ));
-          } else {
-            // Airborne but no FA position or trail yet — full route as dashed cyan.
-            layer.addLayer(L.polyline(
-              [[r.fCoord.lat, r.fCoord.lng], [r.oCoord.lat, r.oCoord.lng]],
-              { color: '#22d3ee', weight: 3, opacity: 0.8, dashArray: '6 6', lineCap: 'round', lineJoin: 'round' }
-            ));
-          }
-          return;
-        }
-        if (r.phase === 'landed' || r.phase === 'completed') {
-          layer.addLayer(L.polyline(
-            [[r.fCoord.lat, r.fCoord.lng], [r.oCoord.lat, r.oCoord.lng]],
-            { color: '#10b981', weight: 2, opacity: 0.45, lineCap: 'round', lineJoin: 'round' }
-          ));
-          return;
-        }
-        // Pending / preflight
-        layer.addLayer(L.polyline(
-          [[r.fCoord.lat, r.fCoord.lng], [r.oCoord.lat, r.oCoord.lng]],
-          {
-            color: BROKER_PHASE_COLORS[r.phase] || BROKER_PHASE_COLORS.pending,
-            weight: 2.5, opacity: 0.85,
-            dashArray: r.phase === 'pending' ? '6 6' : '10 6',
-            lineCap: 'round', lineJoin: 'round',
-          }
-        ));
-      });
+    const airports = new Map();
+    const routes = [];
+    let projected = null;
 
-      // Airport dots + labels
-      Array.from(aptSet.values()).forEach((a) => {
-        const icon = L.divIcon({
-          html: `<div style="width: 6px; height: 6px; background: #94a3b8; border: 1px solid #1e293b; border-radius: 50%;"></div><div style="position: absolute; left: 10px; top: -4px; color: #94a3b8; font-family: 'JetBrains Mono', monospace; font-size: 10px; white-space: nowrap; text-shadow: 0 0 4px #020617, 0 0 4px #020617;">${a.code}</div>`,
-          className: '',
-          iconSize: [60, 12],
-          iconAnchor: [3, 6],
+    (legs || []).forEach((leg) => {
+      const from = coordsFn(leg.from);
+      const to = coordsFn(leg.to);
+      if (!from || !to) return;
+      const phase = legPhase(leg);
+
+      if (!airports.has(String(leg.from).toUpperCase())) {
+        airports.set(String(leg.from).toUpperCase(), {
+          code: leg.from, lat: from.lat, lon: from.lng, tone: 'origin', small: true,
         });
-        layer.addLayer(L.marker([a.coords.lat, a.coords.lng], { icon, interactive: false }));
+      }
+      airports.set(String(leg.to).toUpperCase(), {
+        code: leg.to, lat: to.lat, lon: to.lng,
+        tone: phase === 'landed' ? 'neutral' : 'destination', small: true,
       });
 
-      // Live aircraft marker — cyan plane rotated to heading. Same SVG +
-      // label style as FlightBoard's RouteMap for visual continuity.
-      if (position && position.airborne === true
-          && Number.isFinite(position.latitude)
-          && Number.isFinite(position.longitude)) {
-        const heading = Number.isFinite(position.heading) ? position.heading : 0;
-        const altStr = Number.isFinite(position.altitude)
-          ? (position.altitude >= 18000 ? `FL${Math.round(position.altitude / 100)}` : `${Math.round(position.altitude)}ft`)
-          : '';
-        const spdStr = Number.isFinite(position.groundspeed) ? `${Math.round(position.groundspeed)}kt` : '';
-        const planeSvg = `
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" style="transform: rotate(${heading}deg); transform-origin: center; filter: drop-shadow(0 0 4px rgba(34,211,238,0.7));">
-            <path d="M12 2 L13.5 10 L22 12 L22 14 L13.5 14 L13 19 L15 21 L15 22 L12 21 L9 22 L9 21 L11 19 L10.5 14 L2 14 L2 12 L10.5 10 Z"
-                  fill="#22d3ee" stroke="#0e7490" stroke-width="0.5"/>
-          </svg>`;
-        const tailLabel = position.ident || '';
-        const labelHtml = `
-          <div style="position: absolute; left: 32px; top: -4px; background: rgba(2,6,23,0.9); border: 1px solid #22d3ee; padding: 2px 5px; white-space: nowrap;">
-            <div style="color: #a5f3fc; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700; line-height: 1;">${tailLabel}</div>
-            <div style="color: #67e8f9; font-family: 'JetBrains Mono', monospace; font-size: 9px; line-height: 1.4; margin-top: 1px;">${altStr} ${spdStr}</div>
-          </div>`;
-        const icon = L.divIcon({
-          html: planeSvg + labelHtml,
-          className: '',
-          iconSize: [28, 28],
-          iconAnchor: [14, 14],
-        });
-        aircraftMarkerRef.current = L.marker(
-          [position.latitude, position.longitude],
-          { icon, interactive: false, zIndexOffset: 1000 }
-        );
-        layer.addLayer(aircraftMarkerRef.current);
+      // For the airborne leg the flown trail carries the actual path, so the
+      // planned line would only duplicate it. We draw the remainder instead.
+      if (phase === 'airborne') {
+        const havePos = position?.airborne === true
+          && Number.isFinite(position.latitude) && Number.isFinite(position.longitude);
+        if (normalizedTrail.length >= 2) {
+          const last = normalizedTrail[normalizedTrail.length - 1];
+          projected = [[last.lat, last.lon], [to.lat, to.lng]];
+        } else if (havePos) {
+          routes.push({
+            points: [[from.lat, from.lng], [position.latitude, position.longitude]],
+            color: BROKER_PHASE_COLORS.airborne, weight: 3.5, opacity: 0.95,
+          });
+          projected = [[position.latitude, position.longitude], [to.lat, to.lng]];
+        } else {
+          routes.push({
+            points: [[from.lat, from.lng], [to.lat, to.lng]],
+            color: BROKER_PHASE_COLORS.airborne, weight: 3, opacity: 0.8, dashed: true,
+          });
+        }
+        return;
       }
 
-      // Fit map to airports + plane position + actual flown trail so
-      // the breadcrumb path stays fully visible even if it bows north or
-      // south of a direct line.
-      const points = Array.from(aptSet.values()).map((a) => [a.coords.lat, a.coords.lng]);
-      if (position && position.airborne === true
-          && Number.isFinite(position.latitude)
-          && Number.isFinite(position.longitude)) {
-        points.push([position.latitude, position.longitude]);
-      }
-      if (Array.isArray(trail) && trail.length >= 2) {
-        for (const pt of trail) points.push(pt);
-      }
-      if (points.length >= 2) {
-        try {
-          mapRef.current.fitBounds(points, { padding: [40, 40], maxZoom: 8 });
-        } catch (_) {}
-      } else if (points.length === 1) {
-        mapRef.current.setView(points[0], 6);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [ready, position, legs, trail, coordsTick]);
+      const landed = phase === 'landed' || phase === 'completed';
+      routes.push({
+        points: [[from.lat, from.lng], [to.lat, to.lng]],
+        color: BROKER_PHASE_COLORS[phase] || BROKER_PHASE_COLORS.pending,
+        weight: landed ? 2 : 2.5,
+        opacity: landed ? 0.5 : 0.85,
+        dashed: phase === 'pending' || phase === 'preflight',
+      });
+    });
 
-  if (mapErr) {
-    return (
-      <div className="border border-slate-700 bg-slate-900/40 p-8 text-center text-sm text-amber-300">
-        <AlertCircle className="w-5 h-5 mx-auto mb-2" />
-        Map unavailable. Position data still updates below.
-      </div>
-    );
-  }
+    const aircraft = [];
+    if (position?.airborne === true
+        && Number.isFinite(position.latitude) && Number.isFinite(position.longitude)) {
+      aircraft.push({
+        id: position.ident || tail || 'aircraft',
+        tail: position.ident || tail || '',
+        lat: position.latitude,
+        lon: position.longitude,
+        heading: position.heading ?? 0,
+        altitude: position.altitude ?? null,
+        groundspeed: position.groundspeed ?? null,
+        airborne: true,
+      });
+    }
+
+    return {
+      aircraft,
+      airports: Array.from(airports.values()),
+      routes,
+      trail: normalizedTrail.length >= 2 ? normalizedTrail : null,
+      projected,
+    };
+  }, [coordsFn, legs, position, normalizedTrail, tail, coordsTick]);
+
+  const flownNm = useMemo(() => {
+    if (normalizedTrail.length < 2) return null;
+    let total = 0;
+    for (let i = 0; i < normalizedTrail.length - 1; i += 1) {
+      const d = distanceNm(normalizedTrail[i], normalizedTrail[i + 1]);
+      if (Number.isFinite(d)) total += d;
+    }
+    return Math.round(total);
+  }, [normalizedTrail]);
+
+  // Re-fit when the trail first arrives or the flight changes state, not on
+  // every 2-minute position poll — that would fight the broker's own panning.
+  const fitKey = `${tail || ''}:${normalizedTrail.length >= 2 ? 'trail' : 'plan'}:${position?.airborne ? 'air' : 'gnd'}`;
 
   return (
-    <div className="border border-slate-700 overflow-hidden">
-      <div ref={containerRef} style={{ width: '100%', height: 360 }} />
+    <section className="overflow-hidden rounded-xl border border-slate-700">
+      <TrackingMap
+        scene={scene}
+        selectedId={scene.aircraft[0]?.id || null}
+        fitKey={fitKey}
+        basemapDefault="satellite"
+        className="w-full"
+        style={{ height: 'clamp(320px, 52vh, 560px)' }}
+        overlay={normalizedTrail.length >= 2 ? (
+          <div className="pointer-events-none rounded-lg border border-slate-700 bg-slate-950/85 px-2.5 py-2 backdrop-blur">
+            <div className="text-[9px] uppercase tracking-wider text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {trailLive ? 'Flight trail · live' : 'Flight trail · flown'}
+            </div>
+            <div className="mt-0.5 text-[11px] text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {normalizedTrail.length} points{flownNm ? ` · ${flownNm} nm` : ''}
+            </div>
+          </div>
+        ) : null}
+      />
+    </section>
+  );
+}
+
+/**
+ * Departure and arrival weather for the trip. Server-side the broker payload
+ * only carries whitelisted METAR fields plus one TAF period — enough to answer
+ * "is weather going to delay my charter" without exposing ops planning data.
+ */
+function WeatherPanel({ legs, weather }) {
+  const stations = useMemo(() => {
+    if (!weather || typeof weather !== 'object') return [];
+    const order = [];
+    const seen = new Set();
+    (legs || []).forEach((leg) => {
+      [[leg.from, 'Departure'], [leg.to, 'Arrival']].forEach(([code, role]) => {
+        if (!code) return;
+        const key = String(code).toUpperCase().replace(/[^A-Z0-9]/g, '');
+        if (seen.has(key)) return;
+        // The server keys weather by the identifier it queried, which may have
+        // been normalized to ICAO (3-letter US codes get a K prefix).
+        const entry = weather[key] || weather[`K${key}`];
+        if (!entry) return;
+        seen.add(key);
+        order.push({ code, role, entry });
+      });
+    });
+    return order;
+  }, [legs, weather]);
+
+  if (stations.length === 0) return null;
+
+  return (
+    <section>
+      <h2 className="mb-2 flex items-center gap-2 text-lg tracking-wider" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
+        <Cloud className="h-4 w-4 text-cyan-400" /> WEATHER
+      </h2>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {stations.map((s) => (
+          <BrokerWeatherCard key={s.code} code={s.code} role={s.role} data={s.entry} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function BrokerWeatherCard({ code, role, data }) {
+  const metar = data?.metar || null;
+  const forecast = data?.forecast || null;
+  const style = flightCategoryStyle(metar?.flightCategory);
+
+  const wind = Number.isFinite(metar?.windKt)
+    ? `${Number.isFinite(metar.windDir) ? String(metar.windDir).padStart(3, '0') : '---'}° at ${Math.round(metar.windKt)} kt${Number.isFinite(metar.windGustKt) ? ` (gusts ${Math.round(metar.windGustKt)})` : ''}`
+    : null;
+
+  return (
+    <div className="border border-slate-700 bg-slate-900/40 p-3">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-base text-slate-100" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{code}</div>
+          <div className="text-[10px] uppercase tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {role}
+          </div>
+        </div>
+        {metar?.flightCategory ? (
+          <span
+            className="inline-flex shrink-0 items-center gap-1.5 border border-slate-700 px-2 py-1 text-[10px] font-bold"
+            style={{ fontFamily: 'JetBrains Mono, monospace', color: style.dot }}
+          >
+            <span className="h-1.5 w-1.5 rounded-full" style={{ background: style.dot }} />
+            {style.label}
+          </span>
+        ) : (
+          <span className="shrink-0 text-[10px] text-slate-600" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            NO REPORT
+          </span>
+        )}
+      </div>
+
+      {metar && (
+        <div className="mt-3 space-y-1.5 text-[11px] text-slate-400">
+          {wind && (
+            <div className="flex items-center gap-2">
+              <Wind className="h-3.5 w-3.5 shrink-0 text-slate-500" />
+              <span className="text-slate-200">{wind}</span>
+            </div>
+          )}
+          {metar.visibilitySm != null && (
+            <div className="flex items-center gap-2">
+              <Eye className="h-3.5 w-3.5 shrink-0 text-slate-500" />
+              <span className="text-slate-200">{metar.visibilitySm} sm visibility</span>
+            </div>
+          )}
+          <div className="flex items-center gap-2">
+            <Cloud className="h-3.5 w-3.5 shrink-0 text-slate-500" />
+            <span className="text-slate-200">
+              {Number.isFinite(metar.ceilingFt) ? `${metar.ceilingFt.toLocaleString()} ft ceiling` : 'No ceiling reported'}
+            </span>
+          </div>
+          {Number.isFinite(metar.tempC) && (
+            <div className="flex items-center gap-2">
+              <Thermometer className="h-3.5 w-3.5 shrink-0 text-slate-500" />
+              <span className="text-slate-200">{Math.round(metar.tempC)}°C</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {forecast?.flightCategory && (
+        <div className="mt-3 border-t border-slate-800 pt-2 text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          FORECAST <span style={{ color: flightCategoryStyle(forecast.flightCategory).dot }}>{forecast.flightCategory}</span>
+          {Number.isFinite(forecast.windKt) ? ` · WIND ${String(forecast.windDir ?? 0).padStart(3, '0')}/${Math.round(forecast.windKt)}` : ''}
+        </div>
+      )}
     </div>
   );
 }
+
 
 // Per-passenger row — name, status indicator, optional check-in timestamp,
 // and a "NEW" badge for walk-ups (pax not on the original manifest).
@@ -818,62 +814,38 @@ function Leg({ leg, isActive, position }) {
   );
 }
 
-function PositionCard({ position }) {
-  if (!position) return null;
-  if (!position.airborne) {
-    return (
-      <div className="border border-slate-700 bg-slate-900/40 p-3 text-xs text-slate-400">
-        Aircraft is currently on the ground.
-      </div>
-    );
-  }
-  return (
-    <div className="border border-cyan-500/40 bg-cyan-500/5 p-3">
-      <div className="text-[10px] tracking-widest text-cyan-300 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-        AIRBORNE NOW
-      </div>
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
-        <div>
-          <div className="text-slate-500 text-[10px]">ALT</div>
-          <div className="text-slate-100">{position.altitude ? `${position.altitude.toLocaleString()} ft` : '—'}</div>
-        </div>
-        <div>
-          <div className="text-slate-500 text-[10px]">SPEED</div>
-          <div className="text-slate-100">{position.groundspeed ? `${position.groundspeed} kt` : '—'}</div>
-        </div>
-        <div>
-          <div className="text-slate-500 text-[10px]">DEST</div>
-          <div className="text-slate-100">{position.destination || '—'}</div>
-        </div>
-        <div>
-          <div className="text-slate-500 text-[10px]">ETA</div>
-          <div className="text-slate-100">{fmtAirportTime(position.estimatedOn, position.destination)}</div>
-        </div>
-      </div>
-    </div>
-  );
-}
+const EMPTY_STATE = {
+  loading: false, err: null, trip: null, position: null,
+  trail: null, trailLive: false, weather: {},
+};
 
 export default function TripTrackPage({ token }) {
-  const [state, setState] = useState({ loading: true, err: null, trip: null, position: null, trail: null });
+  const [state, setState] = useState({ ...EMPTY_STATE, loading: true });
   const [refreshing, setRefreshing] = useState(false);
 
   const load = async () => {
     if (!token) {
-      setState({ loading: false, err: 'No tracking token provided.', trip: null, position: null, trail: null });
+      setState({ ...EMPTY_STATE, err: 'No tracking token provided.' });
       return;
     }
     try {
-      const r = await fetch(`/api/trip-public?action=get&token=${encodeURIComponent(token)}`);
+      const r = await fetch(`/api/trip-public?token=${encodeURIComponent(token)}`);
       const data = await r.json();
       if (!r.ok || !data.ok) {
-        const reason = data?.reason || 'unable to load trip';
-        setState({ loading: false, err: reason, trip: null, position: null, trail: null });
+        setState({ ...EMPTY_STATE, err: data?.reason || 'unable to load trip' });
         return;
       }
-      setState({ loading: false, err: null, trip: data.trip, position: data.position, trail: data.trail || null });
+      setState({
+        loading: false,
+        err: null,
+        trip: data.trip,
+        position: data.position,
+        trail: data.trail || null,
+        trailLive: data.trailLive === true,
+        weather: data.weather || {},
+      });
     } catch (e) {
-      setState({ loading: false, err: 'Could not reach the tracking service.', trip: null, position: null, trail: null });
+      setState({ ...EMPTY_STATE, err: 'Could not reach the tracking service.' });
     }
   };
 
@@ -924,7 +896,7 @@ export default function TripTrackPage({ token }) {
     );
   }
 
-  const { trip, position, trail } = state;
+  const { trip, position, trail, trailLive, weather } = state;
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
@@ -978,8 +950,17 @@ export default function TripTrackPage({ token }) {
             the ground. */}
         <HeroCard trip={trip} position={position} />
 
-        {/* Map — Leaflet + OpenStreetMap via CARTO dark tiles, no API key. */}
-        <LiveMap position={position} legs={trip.legs} trail={trail} />
+        {/* Map opens on the aircraft's full flown trail. Basemap, weather radar
+            and fullscreen controls live inside the map frame. */}
+        <BrokerFlightMap
+          position={position}
+          legs={trip.legs}
+          trail={trail}
+          trailLive={trailLive}
+          tail={trip.tail}
+        />
+
+        <WeatherPanel legs={trip.legs} weather={weather} />
 
         {/* Legs */}
         <section>
