@@ -1,29 +1,49 @@
 // Firebase Authentication and user profile management.
-// Self-healing: if the Firestore profile is missing for a signed-in user,
-// auto-create one. This prevents "Account not found" dead-ends.
+// Authentication is Microsoft-only. Authorization requires an exact
+// @flyskyway.com identity plus an active, admin-approved Firestore profile.
+// Missing profiles are provisioned server-side with crew/pending defaults;
+// the browser never chooses its own role or approval state.
 
 import { auth, db } from './firebase.js';
 import {
-  createUserWithEmailAndPassword,
-  signInWithEmailAndPassword,
+  OAuthProvider,
+  getRedirectResult,
+  signInWithRedirect,
   signOut as fbSignOut,
-  sendEmailVerification,
-  sendPasswordResetEmail,
   onAuthStateChanged,
   reload as reloadAuthUser,
 } from 'firebase/auth';
 import {
   doc,
   getDoc,
-  setDoc,
   updateDoc,
   deleteDoc,
   collection,
-  getDocs,
-  query,
-  where,
   onSnapshot,
 } from 'firebase/firestore';
+
+const COMPANY_DOMAIN = 'flyskyway.com';
+
+function isCompanyEmail(email) {
+  const normalized = String(email || '').trim().toLowerCase();
+  return normalized.endsWith(`@${COMPANY_DOMAIN}`)
+    && normalized.slice(0, -(COMPANY_DOMAIN.length + 1)).length > 0;
+}
+
+function isMicrosoftUser(user) {
+  return user?.providerData?.some(p => p.providerId === 'microsoft.com') === true;
+}
+
+function microsoftProvider() {
+  const provider = new OAuthProvider('microsoft.com');
+  const tenant = String(import.meta.env.VITE_MICROSOFT_TENANT_ID || '').trim();
+  provider.setCustomParameters({
+    prompt: 'select_account',
+    domain_hint: COMPANY_DOMAIN,
+    ...(tenant ? { tenant } : {}),
+  });
+  return provider;
+}
 
 // Diagnostic state — exposed for the UI to show error details
 let lastDiagnostic = null;
@@ -50,6 +70,19 @@ export function watchAuth(onChange) {
       return;
     }
 
+    // This is an authorization boundary, not just login-screen decoration.
+    // Reject legacy password sessions and non-company Microsoft identities
+    // before any Firestore data is read.
+    if (!isMicrosoftUser(user) || !isCompanyEmail(user.email)) {
+      setDiag('identity-policy', new Error('Unauthorized identity'), {
+        email: user.email || null,
+        providers: user.providerData?.map(p => p.providerId) || [],
+      });
+      await fbSignOut(auth).catch(() => {});
+      onChange({ state: 'signed-out', authError: 'company-account-required' });
+      return;
+    }
+
     try {
       await reloadAuthUser(user);
     } catch (err) {
@@ -66,19 +99,39 @@ export function watchAuth(onChange) {
       setDiag('profile-read', err, { uid: user.uid });
     }
 
-    // Self-heal: if no profile but we successfully read (just nothing there),
-    // create one. The first user becomes admin.
+    // Profiles are provisioned by a token-verifying server endpoint. The
+    // browser never decides its own role or approval state.
     if (!profile && !readError) {
-      profile = await tryCreateProfile(user);
+      try {
+        profile = await bootstrapCompanyProfile(user);
+      } catch (err) {
+        readError = err;
+        setDiag('profile-bootstrap', err, { uid: user.uid });
+      }
     }
 
     if (!profile) {
       onChange({ state: 'no-profile', user, error: readError });
       return;
     }
-    // Email verification gate removed — admin approval is the only gate.
-    // Users sign up → wait for admin to approve in Users tab → can log in.
-    if (!profile.approved) {
+    if (
+      !isCompanyEmail(profile.email)
+      || String(profile.email).trim().toLowerCase() !== String(user.email).trim().toLowerCase()
+    ) {
+      setDiag('profile-identity-mismatch', new Error('Profile identity mismatch'), {
+        uid: user.uid,
+      });
+      await fbSignOut(auth).catch(() => {});
+      onChange({ state: 'signed-out', authError: 'company-account-required' });
+      return;
+    }
+    // Disabled profiles and unapproved profiles never enter the app.
+    if (profile.active === false) {
+      await fbSignOut(auth).catch(() => {});
+      onChange({ state: 'signed-out', authError: 'account-disabled' });
+      return;
+    }
+    if (profile.approved !== true) {
       onChange({ state: 'pending', user, profile });
       return;
     }
@@ -86,114 +139,39 @@ export function watchAuth(onChange) {
   });
 }
 
-// Try to create a profile for the current user. If we can't tell if there are
-// existing admins (read failed), default to admin to avoid lockout — better
-// to grant the first user too much access than to lock them out forever.
-async function tryCreateProfile(user) {
-  let isFirstUser = true;
-  try {
-    const adminsQuery = query(collection(db, 'users'), where('role', '==', 'admin'));
-    const adminSnap = await getDocs(adminsQuery);
-    isFirstUser = adminSnap.empty;
-  } catch (err) {
-    console.warn('Cannot check for admins, assuming first user', err);
-    isFirstUser = true;
+async function bootstrapCompanyProfile(user) {
+  const idToken = await user.getIdToken(true);
+  const response = await fetch('/api/auth-profile-bootstrap', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    cache: 'no-store',
+    body: JSON.stringify({ idToken }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.profile) {
+    throw new Error(data.error || 'Could not provision company profile');
   }
-
-  const profile = {
-    email: user.email || '',
-    name: (user.displayName || user.email || '').split('@')[0],
-    callsign: '',
-    jetinsightName: user.displayName || '',
-    role: isFirstUser ? 'admin' : 'crew',
-    approved: isFirstUser,
-    createdAt: Date.now(),
-    active: true,
-  };
-
-  try {
-    await setDoc(doc(db, 'users', user.uid), profile);
-    return { uid: user.uid, ...profile };
-  } catch (err) {
-    setDiag('profile-create', err, { uid: user.uid });
-    return null;
-  }
+  return data.profile;
 }
 
-// Manual repair function — exposed via "Repair Account" button on no-profile screen
-export async function repairProfile() {
-  if (!auth.currentUser) throw new Error('Not signed in');
-  const profile = await tryCreateProfile(auth.currentUser);
-  if (!profile) {
-    const diag = getLastDiagnostic();
-    throw new Error(diag?.error || 'Could not create profile. Check Firestore security rules.');
-  }
-  return profile;
+export async function signInWithMicrosoft() {
+  await signInWithRedirect(auth, microsoftProvider());
 }
 
-export async function signUp({ email, password, name, callsign, jetinsightName }) {
-  if (!email || !password) throw new Error('Email and password are required');
-  if (password.length < 8) throw new Error('Password must be at least 8 characters');
-
-  let isFirstUser = true;
-  try {
-    const adminsQuery = query(collection(db, 'users'), where('role', '==', 'admin'));
-    const adminSnap = await getDocs(adminsQuery);
-    isFirstUser = adminSnap.empty;
-  } catch (err) {
-    console.warn('Cannot check for admins, assuming first user', err);
-    isFirstUser = true;
+export async function completeMicrosoftRedirect() {
+  const result = await getRedirectResult(auth);
+  if (!result?.user) return null;
+  if (!isMicrosoftUser(result.user) || !isCompanyEmail(result.user.email)) {
+    await fbSignOut(auth).catch(() => {});
+    const err = new Error('Use your @flyskyway.com Microsoft account');
+    err.code = 'auth/company-account-required';
+    throw err;
   }
-
-  const credential = await createUserWithEmailAndPassword(auth, email.trim(), password);
-
-  const profile = {
-    email: email.trim(),
-    name: name?.trim() || email.trim().split('@')[0],
-    callsign: callsign?.trim() || '',
-    jetinsightName: jetinsightName?.trim() || name?.trim() || '',
-    role: isFirstUser ? 'admin' : 'crew',
-    approved: isFirstUser,
-    createdAt: Date.now(),
-    active: true,
-  };
-
-  try {
-    await setDoc(doc(db, 'users', credential.user.uid), profile);
-  } catch (err) {
-    setDiag('signup-profile-create', err, { uid: credential.user.uid });
-    // Don't throw — auth account exists, watchAuth will try to heal
-  }
-
-  // Email verification removed — admin approval is the only gate to access.
-  // Users will see the "pending approval" screen until ops/admin approves them.
-
-  return { uid: credential.user.uid, ...profile, isFirstUser };
-}
-
-export async function signIn(email, password) {
-  if (!email || !password) throw new Error('Email and password required');
-  await signInWithEmailAndPassword(auth, email.trim(), password);
+  return result.user;
 }
 
 export async function signOut() {
   await fbSignOut(auth);
-}
-
-export async function requestPasswordReset(email) {
-  if (!email) throw new Error('Email required');
-  await sendPasswordResetEmail(auth, email.trim());
-}
-
-export async function resendVerification() {
-  if (!auth.currentUser) throw new Error('Not signed in');
-  await sendEmailVerification(auth.currentUser);
-}
-
-export async function refreshVerification() {
-  if (!auth.currentUser) return false;
-  await reloadAuthUser(auth.currentUser);
-  return auth.currentUser.emailVerified;
 }
 
 export function subscribeToUsers(onUpdate) {

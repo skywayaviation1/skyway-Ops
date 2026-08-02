@@ -97,7 +97,7 @@ import { createPortal } from 'react-dom';
 import {
   Plane, Calendar, MessageSquare, Users, Bell, MapPin,
   CheckCircle2, Circle, AlertTriangle, Camera, Send, RefreshCw,
-  Coffee, ArrowRight, Clock, Shield, X, ScanLine, ChevronLeft,
+  Coffee, ArrowRight, Clock, Shield, X, ScanLine, ChevronLeft, ChevronDown, ChevronUp,
   Mail, Navigation, Loader2, Wifi, WifiOff, Settings as SettingsIcon,
   Download, Trash2, Plus, FileText, Zap, Radio, AlertCircle, Upload,
   Check, CheckCheck, UserCheck, Sparkles, Hash, Cloud, Wrench, Hotel, BookOpen, Search,
@@ -4932,7 +4932,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   //      the user switches tabs. Different tabs have wildly different
   //      content lengths and the persisted "collapsed" state from
   //      a long tab would misbehave on a short one.
-  const [heroCollapsed, setHeroCollapsed] = useState(false);
+  const [heroCollapsed, setHeroCollapsed] = useState(true);
   const tripScrollRef = useRef(null);
   // Bounce-back fix: two refs guarding against the post-collapse clamp loop.
   //
@@ -5034,9 +5034,11 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       }
     };
   }, [tab, scanning]);  // scanning is now a dep so the handler rebinds on enter/exit of check-in
-  // Tab-change reset for the hero — see comment block above.
+  // Each tab is a workspace, so return to compact trip context when moving
+  // between tabs. Users can expand the hero explicitly when they need the
+  // schedule, crew, FBO, or trip actions.
   useEffect(() => {
-    setHeroCollapsed(false);
+    setHeroCollapsed(true);
     // Also reset the scroll position so the user lands at the top of
     // the new tab's content. Without this, scrollTop carries over from
     // the previous tab and can land mid-content on a tab they haven't
@@ -5947,6 +5949,28 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
           every action, badge, FBO, note and status at equal weight. This keeps
           the route and primary actions dominant; operational detail lives in
           the persistent rail and grouped tabs below. */}
+      {heroCollapsed ? (
+        <div className="shrink-0 border-b border-edge bg-surface shadow-card">
+          <div className="mx-auto flex min-h-[58px] max-w-[1440px] items-center gap-2 px-2.5 md:px-4">
+            <IconButton icon={ChevronLeft} title="Back to flights" onClick={onBack} variant="ghost" />
+            <button
+              type="button"
+              onClick={() => setHeroCollapsed(false)}
+              className="flex min-w-0 flex-1 items-center gap-3 rounded-lg px-2 py-2 text-left transition-colors hover:bg-surface-raised"
+              aria-expanded="false"
+              aria-label={`Expand trip details for ${trip.info.from} to ${trip.info.to}`}
+            >
+              <RouteLine from={trip.info.from} to={trip.info.to} size="md" />
+              <span className="hidden truncate font-mono text-2xs text-content-muted sm:block">
+                {trip.info.tail || 'Tail pending'}
+                {trip.info.customer ? ` · ${trip.info.customer}` : ''}
+              </span>
+              {completed && <StatusChip tone="success" size="sm">Complete</StatusChip>}
+              <ChevronDown className="ml-auto h-4 w-4 shrink-0 text-content-subtle" />
+            </button>
+          </div>
+        </div>
+      ) : (
       <div className="shrink-0 border-b border-edge bg-surface px-4 py-4 shadow-card md:px-6">
         <div className="mx-auto max-w-[1440px]">
           <div className="flex items-start justify-between gap-4">
@@ -5990,6 +6014,12 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
             </div>
 
             <div className="hidden shrink-0 items-center gap-2 md:flex">
+              <IconButton
+                icon={ChevronUp}
+                title="Minimize trip details"
+                onClick={() => setHeroCollapsed(true)}
+                variant="ghost"
+              />
               {trip.info.url && (
                 <Button variant="outline" size="sm" onClick={() => window.open(trip.info.url, '_blank', 'noopener,noreferrer')}>
                   JetInsight
@@ -6044,7 +6074,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
 
           {/* Primary mobile actions stay immediately reachable without
               forcing the hero to reproduce the desktop action cluster. */}
-          <div className="mt-3 grid grid-cols-2 gap-2 md:hidden">
+          <div className="mt-3 grid grid-cols-[1fr_1fr_auto] gap-2 md:hidden">
             {(currentUser?.role === 'ops' || currentUser?.role === 'admin') && (
               <Button variant="outline" size="sm" icon={Send} onClick={() => setShareDialogOpen(true)}>Share</Button>
             )}
@@ -6056,6 +6086,12 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
             >
               {completed ? 'Reopen' : 'Complete'}
             </Button>
+            <IconButton
+              icon={ChevronUp}
+              title="Minimize trip details"
+              onClick={() => setHeroCollapsed(true)}
+              variant="outline"
+            />
           </div>
 
           {etaResult && (
@@ -6069,6 +6105,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
           )}
         </div>
       </div>
+      )}
 
       {/* Legacy hero retained temporarily for behavior reference while the
           new professional header above owns the visible UI. */}
@@ -6546,7 +6583,13 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       </div>
 
       {/* Tab content */}
-      <div ref={tripScrollRef} className="flex-1 overflow-y-auto">
+      <div
+        ref={tripScrollRef}
+        className={cx(
+          'min-h-0 flex-1',
+          tab === 'chat' ? 'flex flex-col overflow-hidden' : 'overflow-y-auto',
+        )}
+      >
         {loading ? (
           <div className="flex items-center justify-center py-16 text-slate-500">
             <Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading trip data...
@@ -15295,7 +15338,150 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
 /* ============================================================
    Login screen
    ============================================================ */
-function LoginScreen({ initialMode = 'login' }) {
+function MicrosoftMark({ className = '' }) {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className={className}>
+      <path fill="#f25022" d="M1 1h10v10H1z" />
+      <path fill="#7fba00" d="M13 1h10v10H13z" />
+      <path fill="#00a4ef" d="M1 13h10v10H1z" />
+      <path fill="#ffb900" d="M13 13h10v10H13z" />
+    </svg>
+  );
+}
+
+function LoginScreen() {
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const { completeMicrosoftRedirect } = await import('./firebase-auth.js');
+        await completeMicrosoftRedirect();
+      } catch (err) {
+        if (active) setError(prettyAuthError(err));
+      }
+    })();
+    return () => { active = false; };
+  }, []);
+
+  const handleMicrosoftLogin = async () => {
+    setSubmitting(true);
+    setError('');
+    try {
+      const { signInWithMicrosoft } = await import('./firebase-auth.js');
+      await signInWithMicrosoft();
+      // Redirect navigation takes over. Keep the button busy so it cannot
+      // launch two OAuth transactions.
+    } catch (err) {
+      setSubmitting(false);
+      setError(prettyAuthError(err));
+    }
+  };
+
+  return (
+    <main className="relative min-h-screen overflow-y-auto bg-slate-950 text-content sw-safe-inset">
+      <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
+        <div className="absolute left-1/2 top-[-20rem] h-[38rem] w-[38rem] -translate-x-1/2 rounded-full bg-cyan-500/[0.08] blur-3xl" />
+        <div className="absolute inset-0 grid-bg opacity-50" />
+      </div>
+
+      <div className="relative mx-auto grid min-h-screen w-full max-w-6xl items-center gap-10 px-5 py-10 md:grid-cols-[1.1fr_0.9fr] md:px-10 lg:gap-20">
+        <section className="hidden md:block">
+          <img
+            src="/skyway-logo.png"
+            srcSet="/skyway-logo.png 1x, /skyway-logo@2x.png 2x"
+            alt="Skyway Aviation"
+            className="h-20 w-auto"
+          />
+          <p className="mt-8 max-w-xl text-4xl font-semibold leading-tight text-content">
+            Your operation.<br />
+            <span className="text-accent">One secure workspace.</span>
+          </p>
+          <p className="mt-5 max-w-lg text-base leading-relaxed text-content-muted">
+            Flights, crew duty, passenger manifests, maintenance, expenses,
+            and company communications—available to approved Skyway personnel.
+          </p>
+          <div className="mt-8 grid max-w-lg grid-cols-3 gap-3">
+            {[
+              [Plane, 'Flight operations'],
+              [ShieldCheck, 'Company identity'],
+              [Users, 'Role-based access'],
+            ].map(([Icon, label]) => (
+              <div key={label} className="rounded-xl border border-edge bg-surface/70 p-4">
+                <Icon className="h-5 w-5 text-accent" />
+                <p className="mt-3 text-2xs font-semibold text-content-muted">{label}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="mx-auto w-full max-w-md">
+          <div className="mb-8 text-center md:hidden">
+            <img
+              src="/skyway-logo.png"
+              srcSet="/skyway-logo.png 1x, /skyway-logo@2x.png 2x"
+              alt="Skyway Aviation"
+              className="mx-auto h-16 w-auto"
+            />
+          </div>
+
+          <Card className="border-edge-strong bg-surface/95 p-6 shadow-overlay sm:p-8">
+            <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-accent-border bg-accent-soft">
+              <ShieldCheck className="h-6 w-6 text-accent" />
+            </div>
+            <h1 className="mt-5 text-2xl font-semibold text-content">Sign in to Skyway Ops</h1>
+            <p className="mt-2 text-sm leading-relaxed text-content-muted">
+              Use your company Microsoft account to continue.
+            </p>
+
+            {error && (
+              <div className="mt-5 flex items-start gap-2.5 rounded-lg border border-danger-border bg-danger-soft p-3 text-2xs leading-relaxed text-danger">
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                <span>{error}</span>
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={handleMicrosoftLogin}
+              disabled={submitting}
+              className="mt-6 flex h-13 w-full items-center justify-center gap-3 rounded-lg bg-white px-4 text-sm font-semibold text-slate-900 shadow-card transition hover:bg-slate-100 disabled:cursor-wait disabled:opacity-60"
+            >
+              {submitting
+                ? <Loader2 className="h-5 w-5 animate-spin" />
+                : <MicrosoftMark className="h-5 w-5" />}
+              {submitting ? 'Opening Microsoft…' : 'Continue with Microsoft'}
+            </button>
+
+            <div className="mt-5 flex items-center justify-center gap-2 text-2xs text-content-muted">
+              <Building2 className="h-3.5 w-3.5" />
+              <span>Authorized <strong className="font-semibold text-content">@flyskyway.com</strong> accounts only</span>
+            </div>
+
+            <div className="mt-6 border-t border-edge pt-5">
+              <div className="flex items-start gap-2.5 text-2xs leading-relaxed text-content-subtle">
+                <Shield className="mt-0.5 h-4 w-4 shrink-0 text-success" />
+                <p>
+                  Microsoft Entra ID verifies your company identity. New
+                  profiles receive no access until approved by a Skyway administrator.
+                </p>
+              </div>
+            </div>
+          </Card>
+
+          <p className="mt-5 text-center text-2xs text-content-subtle">
+            Skyway Aviation internal system · Access is logged and monitored
+          </p>
+        </section>
+      </div>
+    </main>
+  );
+}
+
+/* Retained temporarily for migration reference; no route renders it. */
+function LegacyLoginScreen({ initialMode = 'login' }) {
   const [mode, setMode] = useState(initialMode); // 'login' | 'signup' | 'reset'
   const [form, setForm] = useState({
     email: '', password: '', passwordConfirm: '',
@@ -15511,6 +15697,12 @@ function LoginScreen({ initialMode = 'login' }) {
 function prettyAuthError(err) {
   const code = err?.code || '';
   const map = {
+    'auth/company-account-required': 'Use your @flyskyway.com Microsoft account.',
+    'auth/unauthorized-domain': 'This company domain is not authorized.',
+    'auth/account-exists-with-different-credential': 'This email was previously registered another way. Ask an administrator to migrate the account to Microsoft.',
+    'auth/popup-blocked': 'Microsoft sign-in was blocked by the browser. Allow pop-ups and try again.',
+    'auth/cancelled-popup-request': 'The sign-in request was cancelled. Please try again.',
+    'auth/operation-not-allowed': 'Microsoft sign-in is not enabled yet. Contact the Skyway administrator.',
     'auth/email-already-in-use': 'An account with this email already exists. Try signing in instead.',
     'auth/invalid-email': 'That email address looks invalid.',
     'auth/weak-password': 'Password is too weak. Use at least 8 characters.',
@@ -15600,7 +15792,8 @@ function PendingApprovalScreen({ user, profile, onSignOut }) {
         <div className="border border-cyan-500/30 bg-cyan-500/5 p-5">
           <h2 className="text-xl tracking-wider mb-2" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>AWAITING APPROVAL</h2>
           <p className="text-sm text-slate-300 leading-relaxed mb-4">
-            Thanks <strong className="text-cyan-300">{profile.name}</strong>! Your email is verified. An admin needs to approve your account before you can access trips.
+            Microsoft verified <strong className="text-cyan-300">{user.email}</strong>.
+            A Skyway administrator must approve your profile before you can access company operations.
           </p>
           <p className="text-xs text-slate-500 leading-relaxed mb-4">
             This usually happens quickly during business hours. You can close this page; you'll be approved next time you sign in.
@@ -15616,9 +15809,6 @@ function PendingApprovalScreen({ user, profile, onSignOut }) {
 
 /* Screen shown when user is signed in but their Firestore profile is missing. */
 function NoProfileScreen({ user, onSignOut }) {
-  const [repairing, setRepairing] = useState(false);
-  const [error, setError] = useState('');
-  const [info, setInfo] = useState('');
   const [diagnostic, setDiagnostic] = useState(null);
 
   useEffect(() => {
@@ -15633,69 +15823,31 @@ function NoProfileScreen({ user, onSignOut }) {
     })();
   }, []);
 
-  const handleRepair = async () => {
-    setRepairing(true);
-    setError(''); setInfo('');
-    try {
-      const { repairProfile } = await import('./firebase-auth.js');
-      await repairProfile();
-      setInfo('Profile created. Refreshing...');
-      // The auth listener should pick up the new profile and move us forward.
-      // If it doesn't within 2s, force a reload.
-      setTimeout(() => window.location.reload(), 2000);
-    } catch (err) {
-      setError(err.message || 'Repair failed');
-    } finally {
-      setRepairing(false);
-    }
-  };
-
   return (
-    <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6 text-slate-100">
+    <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6 text-content sw-safe-inset">
       <div className="max-w-md w-full">
         <div className="text-center mb-8">
-          <img src="/skyway-logo.png" srcSet="/skyway-logo.png 1x, /skyway-logo@2x.png 2x" alt="Skyway Aviation" className="mx-auto mb-4 h-16 w-auto" />
+          <img src="/skyway-logo.png" srcSet="/skyway-logo.png 1x, /skyway-logo@2x.png 2x" alt="Skyway Aviation" className="mx-auto h-16 w-auto" />
         </div>
-        <div className="border border-cyan-500/30 bg-cyan-500/5 p-5">
-          <h2 className="text-xl tracking-wider mb-2" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>SET UP YOUR PROFILE</h2>
-          <p className="text-sm text-slate-300 leading-relaxed mb-4">
-            Signed in as <strong className="text-cyan-300">{user.email}</strong>, but your profile hasn't been created yet. Tap below to set it up.
+        <Card className="border-warning-border bg-warning-soft p-6">
+          <AlertTriangle className="h-6 w-6 text-warning" />
+          <h2 className="mt-4 text-xl font-semibold text-content">Profile setup unavailable</h2>
+          <p className="mt-2 text-sm leading-relaxed text-content-muted">
+            Microsoft verified <strong className="text-content">{user.email}</strong>,
+            but the secure profile service could not finish setup. No access has been granted.
           </p>
-
-          {error && (
-            <div className="mb-3 p-2 border border-red-500/40 bg-red-500/10 text-red-300 text-xs">
-              <div className="font-mono">{error}</div>
-              {diagnostic && (
-                <div className="mt-2 pt-2 border-t border-red-500/20 text-[10px] text-red-400">
-                  Diagnostic: {diagnostic.stage} · {diagnostic.code || 'no-code'}
-                </div>
-              )}
+          {diagnostic && (
+            <div className="mt-4 rounded border border-edge bg-surface-sunken p-2.5 font-mono text-2xs text-content-subtle">
+              Reference: {diagnostic.stage} · {diagnostic.code || 'setup-error'}
             </div>
           )}
-          {info && (
-            <div className="mb-3 p-2 border border-cyan-500/40 bg-cyan-500/10 text-cyan-200 text-xs">{info}</div>
-          )}
-
-          <div className="space-y-2">
-            <button
-              onClick={handleRepair}
-              disabled={repairing}
-              className="w-full py-2.5 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-sm tracking-widest disabled:opacity-50"
-              style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}
-            >
-              {repairing ? <Loader2 className="w-4 h-4 animate-spin mx-auto" /> : 'CREATE MY PROFILE'}
-            </button>
-            <button
-              onClick={() => window.location.reload()}
-              className="w-full py-2 border border-slate-700 hover:border-slate-500 text-xs tracking-widest text-slate-300"
-            >
-              REFRESH
-            </button>
-            <button onClick={onSignOut} className="w-full py-2 text-xs text-slate-500 hover:text-slate-300">
+          <div className="mt-5 grid grid-cols-2 gap-2">
+            <Button variant="outline" onClick={() => window.location.reload()}>Try again</Button>
+            <Button variant="ghost" onClick={onSignOut}>
               Sign out
-            </button>
+            </Button>
           </div>
-        </div>
+        </Card>
       </div>
     </div>
   );
@@ -20934,11 +21086,10 @@ const NAV_GROUPS = [
   { id: 'home',     label: 'Home',     icon: Home,          children: ['home'] },
   { id: 'flights',  label: 'Flights',  icon: Plane,         children: ['schedule', 'ops', 'tracking', 'manifests', 'lodging', 'archive'] },
   { id: 'comms',    label: 'Comms',    icon: MessageSquare, children: ['comms'] },
-  { id: 'crew',     label: 'Crew',     icon: Users,         children: ['duty', 'currency', 'wear', 'reports'] },
+  { id: 'crew',     label: 'Crew',     icon: Users,         children: ['duty', 'currency', 'wear', 'reports', 'expenses'] },
   { id: 'aircraft', label: 'Aircraft', icon: Wrench,        children: ['maint', 'aog'] },
-  // Labelled "Finance" for roles without user administration, since for them
-  // the group only contains Expenses and Wallet.
-  { id: 'admin',    label: 'Admin',    icon: Building2,     altLabel: 'Finance', children: ['expenses', 'wallet', 'users'] },
+  // Labelled "Finance" for roles without user administration.
+  { id: 'admin',    label: 'Admin',    icon: Building2,     altLabel: 'Finance', children: ['wallet', 'users'] },
 ];
 
 if (import.meta.env?.DEV) {
