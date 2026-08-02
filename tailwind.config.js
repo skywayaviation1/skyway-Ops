@@ -17,10 +17,45 @@ export default {
   theme: {
     extend: {
       colors: {
-        // Legacy: the app-wide shell color. Kept because thousands of
-        // existing class names reference it.
+        /* ── LEGACY PALETTE REDEFINITION ────────────────────────────────────
+           About 5,000 `slate-*` and 1,300 `cyan-*` utilities predate the token
+           system, so the interface read as blue no matter what the tokens said.
+           Redefining the two palettes here retunes every one of those call
+           sites at once — including opacity modifiers and hover variants,
+           which a stylesheet override could not reach cleanly.
+
+           Slate becomes a neutral graphite: the same lightness at each step, so
+           surfaces and hairlines keep their depth, with the blue cast removed.
+           The brand cyan in the logo then becomes the only saturated colour on
+           screen, which is what makes it read as deliberate. */
         slate: {
-          950: '#0D1829',
+          50:  '#F7F8F9',
+          100: '#EDEEF0',
+          200: '#DCDEE1',
+          300: '#C5C8CD',
+          400: '#92969E',
+          500: '#686D76',
+          600: '#4B5058',
+          700: '#363A41',
+          800: '#212429',
+          900: '#121417',
+          950: '#0A0B0D',
+        },
+
+        /* Cyan keeps the logo's hue family but drops the neon. #09B0DC is the
+           mark's exact blue; these sit a little deeper and less electric so
+           large fills and borders stay comfortable at length. */
+        cyan: {
+          50:  '#EFF8FC',
+          100: '#D5EDF6',
+          200: '#A9D8EA',
+          300: '#74C4DF',
+          400: '#3FA9CC',
+          500: '#1B90B8',
+          600: '#166F8F',
+          700: '#135A74',
+          800: '#134A5E',
+          900: '#133E4E',
         },
 
         // Backgrounds, lightest-on-top ordering.

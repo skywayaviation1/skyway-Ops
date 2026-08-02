@@ -15,15 +15,17 @@
 :root {
   color-scheme: dark;
 
-  /* Surfaces, darkest to lightest */
-  --sw-bg: #060C16;
-  --sw-surface-sunken: #0A1320;
-  --sw-surface: #0F1B2D;
-  --sw-surface-raised: #16243A;
+  /* Surfaces, darkest to lightest. Neutral graphite rather than the previous
+     blue-cast navy — the brand cyan should be the only saturated colour on
+     screen, and it cannot read as deliberate when the whole shell is blue. */
+  --sw-bg: #0A0B0D;
+  --sw-surface-sunken: #101215;
+  --sw-surface: #16181C;
+  --sw-surface-raised: #1E2126;
 
   /* Hairlines */
-  --sw-border: rgba(148, 163, 184, 0.14);
-  --sw-border-strong: rgba(148, 163, 184, 0.28);
+  --sw-border: rgba(198, 203, 210, 0.12);
+  --sw-border-strong: rgba(198, 203, 210, 0.24);
 
   /* Text. Three steps, all measured against --sw-bg:
        text   ~16:1   primary reading
@@ -31,33 +33,37 @@
        subtle ~6.0:1  least-important metadata
      `subtle` previously sat at 4.1:1 — under the 4.5:1 AA floor for normal
      text — while carrying most of the small print in the app. */
-  --sw-text: #E6EDF7;
-  --sw-text-muted: #A7B3C5;
-  --sw-text-subtle: #8894A9;
-  --sw-text-inverse: #04121C;
+  --sw-text: #F0F1F3;
+  --sw-text-muted: #B0B5BC;
+  --sw-text-subtle: #8C9199;
+  --sw-text-inverse: #08090B;
 
-  /* Brand accent — active nav, primary actions, aircraft in motion. */
-  --sw-accent: #22D3EE;
-  --sw-accent-soft: rgba(34, 211, 238, 0.10);
-  --sw-accent-border: rgba(34, 211, 238, 0.38);
-  --sw-accent-contrast: #04121C;
+  /* Brand accent — active nav, primary actions, aircraft in motion. Kept in
+     the logo's hue family (#09B0DC) but deeper, so it can carry a full-size
+     button without glaring. Change this one value to re-accent the product. */
+  --sw-accent: #3FA9CC;
+  --sw-accent-soft: rgba(63, 169, 204, 0.12);
+  --sw-accent-border: rgba(63, 169, 204, 0.40);
+  --sw-accent-contrast: #06171E;
 
-  /* Semantic status — never aliased to one another. */
-  --sw-success: #34D399;
-  --sw-success-soft: rgba(52, 211, 153, 0.10);
-  --sw-success-border: rgba(52, 211, 153, 0.38);
+  /* Semantic status — never aliased to one another. Pulled back from the
+     candy-bright originals so a screen full of chips reads as instrumentation
+     rather than decoration, while staying unambiguous at a glance. */
+  --sw-success: #4FB88C;
+  --sw-success-soft: rgba(79, 184, 140, 0.12);
+  --sw-success-border: rgba(79, 184, 140, 0.38);
 
-  --sw-warning: #FBBF24;
-  --sw-warning-soft: rgba(251, 191, 36, 0.10);
-  --sw-warning-border: rgba(251, 191, 36, 0.38);
+  --sw-warning: #D6A445;
+  --sw-warning-soft: rgba(214, 164, 69, 0.12);
+  --sw-warning-border: rgba(214, 164, 69, 0.38);
 
-  --sw-danger: #F87171;
-  --sw-danger-soft: rgba(248, 113, 113, 0.10);
-  --sw-danger-border: rgba(248, 113, 113, 0.38);
+  --sw-danger: #DE6B62;
+  --sw-danger-soft: rgba(222, 107, 98, 0.12);
+  --sw-danger-border: rgba(222, 107, 98, 0.38);
 
-  --sw-info: #60A5FA;
-  --sw-info-soft: rgba(96, 165, 250, 0.10);
-  --sw-info-border: rgba(96, 165, 250, 0.38);
+  --sw-info: #759CD6;
+  --sw-info-soft: rgba(117, 156, 214, 0.12);
+  --sw-info-border: rgba(117, 156, 214, 0.38);
 
   /* Elevation */
   --sw-shadow-card: 0 1px 2px rgba(0, 0, 0, 0.28);
@@ -74,23 +80,25 @@
 html[data-theme='classy'] {
   color-scheme: light;
 
-  --sw-bg: #E8EFF8;
-  --sw-surface-sunken: #DFE8F4;
+  /* Warm-neutral paper rather than the previous blue-tinted wash, matching the
+     graphite direction of the dark theme. */
+  --sw-bg: #EFF1F3;
+  --sw-surface-sunken: #E5E8EB;
   --sw-surface: #FFFFFF;
-  --sw-surface-raised: #F2F6FC;
+  --sw-surface-raised: #F6F7F9;
 
-  --sw-border: rgba(11, 24, 41, 0.10);
-  --sw-border-strong: rgba(11, 24, 41, 0.20);
+  --sw-border: rgba(18, 20, 23, 0.10);
+  --sw-border-strong: rgba(18, 20, 23, 0.20);
 
-  --sw-text: #0B1829;
-  --sw-text-muted: #45566C;
+  --sw-text: #121417;
+  --sw-text-muted: #4B5058;
   /* Was #6B7C93 → 3.3:1 on the light surface, which failed AA outright. */
-  --sw-text-subtle: #52627A;
+  --sw-text-subtle: #5A6068;
   --sw-text-inverse: #FFFFFF;
 
-  --sw-accent: #0E7490;
-  --sw-accent-soft: rgba(14, 116, 144, 0.08);
-  --sw-accent-border: rgba(14, 116, 144, 0.32);
+  --sw-accent: #12708C;
+  --sw-accent-soft: rgba(18, 112, 140, 0.09);
+  --sw-accent-border: rgba(18, 112, 140, 0.32);
   --sw-accent-contrast: #FFFFFF;
 
   --sw-success: #047857;
@@ -120,17 +128,18 @@ html[data-theme='classy'] {
    bg-slate-950 covers it. The fix: apply the gradient directly to
    .bg-slate-950 so the wrapper IS the gradient.
    ─────────────────────────────────────────────────────────────────────────── */
-/* Near-flat navy with one soft highlight at the top. The previous
-   three-layer gradient read as a wallpaper and fought every card edge. */
+/* Near-flat graphite with one soft highlight at the top. The previous
+   three-layer gradient read as a wallpaper and fought every card edge; the
+   highlight is now neutral so it does not reintroduce a blue cast. */
 .bg-slate-950 {
   background-color: var(--sw-bg) !important;
   background-image:
-    radial-gradient(ellipse 120% 42% at 50% -10%, rgba(22, 46, 79, 0.45) 0%, transparent 70%) !important;
+    radial-gradient(ellipse 120% 42% at 50% -10%, rgba(48, 52, 58, 0.42) 0%, transparent 70%) !important;
 }
 
 /* Semi-transparent shell variants — keep them visually consistent */
 .bg-slate-950\/80 {
-  background-color: rgba(6, 12, 22, 0.82) !important;
+  background-color: rgba(10, 11, 13, 0.82) !important;
   backdrop-filter: blur(16px) saturate(140%) !important;
   -webkit-backdrop-filter: blur(16px) saturate(140%) !important;
 }
@@ -152,21 +161,21 @@ html[data-theme='classy'] {
    unchanged.
    ─────────────────────────────────────────────────────────────────────────── */
 
-/* Dark theme: lift the dim end of the ramp over the AA line while keeping
-   four visually distinct steps. Measured contrast against #060C16 in comments. */
-.text-slate-400 { color: #A7B3C5; }  /* 7.6 → 9.6 */
-.text-slate-500 { color: #8B98AD; }  /* 4.1 → 6.2  (was below AA) */
-.text-slate-600 { color: #74839A; }  /* 2.6 → 4.6  (was below AA) */
+/* The palette in tailwind.config.js sets each step's lightness so that
+   backgrounds and hairlines keep their depth. Text needs the dim end lifted
+   further than a border would tolerate, so the text- utilities — and only
+   those — are re-pointed here. Neutral graphite, matching the palette. */
+.text-slate-400 { color: #B4B8BE; }  /* 9.9:1  (was 7.6) */
+.text-slate-500 { color: #979CA4; }  /* 7.1:1  (was 4.1 — below AA) */
+.text-slate-600 { color: #7C818A; }  /* 5.0:1  (was 2.6 — below AA) */
 /* Reserved for decorative glyphs and disabled states rather than prose, so
    this targets the 3:1 non-text minimum instead of 4.5:1. */
-.text-slate-700 { color: #5C6980; }  /* 1.9 → 3.3 */
+.text-slate-700 { color: #63686F; }  /* 3.5:1  (was 1.9) */
 
-/* Light theme inverts the requirement: the same utilities must get DARKER to
-   stay legible on a near-white surface. */
-html[data-theme='classy'] .text-slate-400 { color: #55637A; }
-html[data-theme='classy'] .text-slate-500 { color: #445269; }
-html[data-theme='classy'] .text-slate-600 { color: #37455A; }
-html[data-theme='classy'] .text-slate-700 { color: #2A3648; }
+/* The light theme inverts this requirement — the same utilities must get
+   DARKER on a near-white surface. Those rules live in theme-classy.css, which
+   sets the whole light palette with !important and would win over anything
+   declared here regardless of specificity. */
 
 /* Type floor. tailwind.config.js already states the rule — "Floor is 11px. The
    old 8-10px labels were the single biggest reason the UI read as a debug
