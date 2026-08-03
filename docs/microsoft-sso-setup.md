@@ -84,20 +84,41 @@ Vercel branch and commit deployments get a new hostname on every build
 domains and Entra redirect URIs both require exact hostnames, so an ephemeral
 preview address cannot be wired up in any lasting way.
 
-Sign-in on a preview deployment will therefore fail with
-`auth/redirect-session-lost` in Safari. That is expected. Verify Microsoft
-sign-in on the stable production address — `skyway-ops.vercel.app` or a custom
-domain such as `ops.flyskyway.com` — where the configuration below is set once.
+Preview deployments use the development-auth bypass rather than Microsoft,
+because their callback hostnames are ephemeral. Verify real Microsoft sign-in
+on the stable production address — `skyway-ops.vercel.app` or a custom domain
+such as `ops.flyskyway.com` — where the configuration below is set once.
 
 To switch it on:
 
 1. Set `VITE_FIREBASE_AUTH_DOMAIN` in Vercel to the app's own hostname, for
-   example `ops.flyskyway.com`.
-2. Add `https://ops.flyskyway.com/__/auth/handler` to the Entra application's
+   example `skyway-ops.vercel.app`. Set it separately on every production
+   Vercel project that serves the app; the hostname must match the project.
+2. Add `https://skyway-ops.vercel.app/__/auth/handler` to the Entra application's
    redirect URIs. Keep the old firebaseapp.com handler registered until the
    change is verified in production.
 3. Confirm that hostname is in Firebase Authorized domains (step 4).
 4. Redeploy.
+
+The current stable aliases are `skyway-ops.vercel.app` and
+`skyway-ops-wv8r.vercel.app`. Prefer one canonical production project and
+domain; if both remain user-facing, each needs its own Vercel variable,
+Firebase Authorized Domain entry, and Entra redirect URI.
+
+### Installed iPhone compatibility fallback
+
+Same-origin redirect remains the production configuration to use. As a safety
+net, the client detects an installed iOS PWA whose auth helper is still
+cross-origin and uses Firebase's user-gesture popup flow for that login. Normal
+browser sessions and correctly configured installed apps continue to use
+redirect. This fallback prevents WebKit storage partitioning from silently
+losing the session, but it is not a substitute for registering the stable
+same-origin callback above.
+
+Redirect completion runs once at application boot, before the auth observer.
+It is no longer dependent on the login screen mounting, so successful,
+pending-approval, and rejected returns all consume Firebase's one-shot result
+consistently.
 
 Reference: [Firebase — best practices for `signInWithRedirect`](https://firebase.google.com/docs/auth/web/redirect-best-practices).
 

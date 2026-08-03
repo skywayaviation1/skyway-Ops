@@ -8,6 +8,7 @@ import './theme-classy.css';
 
 // Code-split: Comms screen loads only when the user opens the COMMS tab.
 const CommsScreenLazy = lazy(() => import('./CommsStream.jsx'));
+const PwaInstallLazy = lazy(() => import('./PwaInstall.jsx'));
 
 // Code-split: TripChatStream is the same Stream-Chat-powered chat surface,
 // but scoped to a single trip. Rendered inside TripDetail's COMMS tab.
@@ -1810,21 +1811,37 @@ function useAuth() {
 
   useEffect(() => {
     let unsub = null;
+    let active = true;
     (async () => {
       try {
-        const { watchAuth } = await import('./firebase-auth.js');
+        const { watchAuth, completeMicrosoftRedirect } = await import('./firebase-auth.js');
+        let redirectError = null;
+        try {
+          // Always consume the redirect result at app boot. Successful auth can
+          // skip LoginScreen entirely, so completing only inside that screen
+          // left Firebase's one-shot redirect state unresolved.
+          await completeMicrosoftRedirect();
+        } catch (err) {
+          redirectError = err?.code || 'auth/redirect-session-lost';
+          console.error('Microsoft redirect completion failed:', err);
+        }
+        if (!active) return;
         unsub = watchAuth(({ state, user: u, profile: p, authError: reason }) => {
+          const bootRedirectError = state === 'signed-out' ? redirectError : null;
+          // A redirect failure belongs to the first signed-out state after
+          // boot. Do not keep replaying it after a later clean retry/sign-out.
+          if (bootRedirectError) redirectError = null;
           setAuthState(state);
           setUser(u || null);
           setProfile(p || null);
-          setAuthError(reason || null);
+          setAuthError(reason || bootRedirectError || null);
         });
       } catch (err) {
         console.error('Failed to load auth module:', err);
         setAuthState('signed-out');
       }
     })();
-    return () => { if (unsub) unsub(); };
+    return () => { active = false; if (unsub) unsub(); };
   }, []);
 
   const doSignOut = async () => {
@@ -15904,23 +15921,9 @@ function MicrosoftMark({ className = '' }) {
 function LoginScreen({ authError = null }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
-  // A rejection raised while completing the redirect wins, since it is the
-  // more specific of the two; otherwise fall back to whatever watchAuth
-  // refused the session for.
+  // Immediate launch errors (popup blocked, provider disabled) win; redirect
+  // completion errors are handled once at app boot and arrive as authError.
   const shownError = error || (authError ? describeAuthError({ code: authError }) : null);
-
-  useEffect(() => {
-    let active = true;
-    (async () => {
-      try {
-        const { completeMicrosoftRedirect } = await import('./firebase-auth.js');
-        await completeMicrosoftRedirect();
-      } catch (err) {
-        if (active) setError(describeAuthError(err));
-      }
-    })();
-    return () => { active = false; };
-  }, []);
 
   const handleMicrosoftLogin = async () => {
     setSubmitting(true);
@@ -15928,8 +15931,9 @@ function LoginScreen({ authError = null }) {
     try {
       const { signInWithMicrosoft } = await import('./firebase-auth.js');
       await signInWithMicrosoft();
-      // Redirect navigation takes over. Keep the button busy so it cannot
-      // launch two OAuth transactions.
+      // Redirect navigation takes over before this line matters. Popup is the
+      // installed-iOS cross-origin fallback and returns normally.
+      setSubmitting(false);
     } catch (err) {
       setSubmitting(false);
       setError(describeAuthError(err));
@@ -16016,6 +16020,12 @@ function LoginScreen({ authError = null }) {
                 : <MicrosoftMark className="h-5 w-5" />}
               {submitting ? 'Opening Microsoft…' : 'Continue with Microsoft'}
             </button>
+
+            <div className="mt-3 flex justify-center">
+              <Suspense fallback={null}>
+                <PwaInstallLazy compact />
+              </Suspense>
+            </div>
 
             <div className="mt-5 flex items-center justify-center gap-2 text-2xs text-content-muted">
               <Building2 className="h-3.5 w-3.5" />
@@ -27485,7 +27495,7 @@ function IosInstallBanner() {
     // Edge iOS (EdgiOS), and in-app browsers (FBAN/FBAV for Facebook,
     // Instagram, etc — they can't even add to home screen)
     const isSafari = /Safari/.test(ua) &&
-      !/CriOS|FxiOS|EdgiOS|FBAN|FBAV|Instagram/.test(ua);
+      !/CriOS|FxiOS|EdgiOS|OPiOS|FBAN|FBAV|Instagram/.test(ua);
     if (!isSafari) return;
     setShow(true);
   }, []);

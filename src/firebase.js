@@ -12,7 +12,7 @@ import { getAuth } from 'firebase/auth';
 // same-origin and fixes it — the /__/auth/ rewrite in vercel.json proxies the
 // helper transparently. Left unset, behaviour is unchanged.
 // See https://firebase.google.com/docs/auth/web/redirect-best-practices
-const AUTH_DOMAIN = String(import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || '').trim()
+export const AUTH_DOMAIN = String(import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || '').trim()
   || 'skyway-ops-app.firebaseapp.com';
 
 const firebaseConfig = {

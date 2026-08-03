@@ -4,11 +4,12 @@
 // Missing profiles are provisioned server-side with crew/pending defaults;
 // the browser never chooses its own role or approval state.
 
-import { auth, db } from './firebase.js';
+import { auth, db, AUTH_DOMAIN } from './firebase.js';
 import {
   OAuthProvider,
   getRedirectResult,
   signInWithRedirect,
+  signInWithPopup,
   signInWithCustomToken,
   signOut as fbSignOut,
   onAuthStateChanged,
@@ -22,6 +23,7 @@ import {
   collection,
   onSnapshot,
 } from 'firebase/firestore';
+import { microsoftAuthMethod } from './auth-environment.js';
 
 const COMPANY_DOMAIN = 'flyskyway.com';
 
@@ -296,7 +298,34 @@ function consumeRedirectFlag() {
   }
 }
 
+async function validateMicrosoftResult(user) {
+  if (!isMicrosoftUser(user)) {
+    await fbSignOut(auth).catch(() => {});
+    const err = new Error('Use your @flyskyway.com Microsoft account');
+    err.code = 'auth/company-account-required';
+    throw err;
+  }
+  if (verifiedEmails(user).length === 0) {
+    await fbSignOut(auth).catch(() => {});
+    const err = new Error('Microsoft returned no email address');
+    err.code = 'auth/missing-email';
+    throw err;
+  }
+  if (!companyEmailFor(user)) {
+    await fbSignOut(auth).catch(() => {});
+    const err = new Error('Use your @flyskyway.com Microsoft account');
+    err.code = 'auth/company-account-required';
+    throw err;
+  }
+  return user;
+}
+
 export async function signInWithMicrosoft() {
+  const method = microsoftAuthMethod({ authDomain: AUTH_DOMAIN });
+  if (method === 'popup') {
+    const result = await signInWithPopup(auth, microsoftProvider());
+    return validateMicrosoftResult(result.user);
+  }
   markRedirectStarted();
   try {
     await signInWithRedirect(auth, microsoftProvider());
@@ -306,32 +335,16 @@ export async function signInWithMicrosoft() {
   }
 }
 
-export async function completeMicrosoftRedirect() {
+let redirectCompletionPromise = null;
+
+async function completeMicrosoftRedirectOnce() {
   // Resolves once Firebase has finished restoring persisted auth state, so
   // auth.currentUser is trustworthy immediately afterwards.
   const result = await getRedirectResult(auth);
 
   if (result?.user) {
     consumeRedirectFlag();
-    if (!isMicrosoftUser(result.user)) {
-      await fbSignOut(auth).catch(() => {});
-      const err = new Error('Use your @flyskyway.com Microsoft account');
-      err.code = 'auth/company-account-required';
-      throw err;
-    }
-    if (verifiedEmails(result.user).length === 0) {
-      await fbSignOut(auth).catch(() => {});
-      const err = new Error('Microsoft returned no email address');
-      err.code = 'auth/missing-email';
-      throw err;
-    }
-    if (!companyEmailFor(result.user)) {
-      await fbSignOut(auth).catch(() => {});
-      const err = new Error('Use your @flyskyway.com Microsoft account');
-      err.code = 'auth/company-account-required';
-      throw err;
-    }
-    return result.user;
+    return validateMicrosoftResult(result.user);
   }
 
   const startedAt = consumeRedirectFlag();
@@ -341,6 +354,15 @@ export async function completeMicrosoftRedirect() {
     throw err;
   }
   return null;
+}
+
+/** Safe to call from app boot and StrictMode replays; Firebase consumes a
+ * redirect result once, so every caller shares the same completion promise. */
+export function completeMicrosoftRedirect() {
+  if (!redirectCompletionPromise) {
+    redirectCompletionPromise = completeMicrosoftRedirectOnce();
+  }
+  return redirectCompletionPromise;
 }
 
 export async function signOut() {
