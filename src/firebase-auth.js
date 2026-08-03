@@ -1,29 +1,125 @@
 // Firebase Authentication and user profile management.
-// Self-healing: if the Firestore profile is missing for a signed-in user,
-// auto-create one. This prevents "Account not found" dead-ends.
+// Authentication is Microsoft-only. Authorization requires an exact
+// @flyskyway.com identity plus an active, admin-approved Firestore profile.
+// Missing profiles are provisioned server-side with crew/pending defaults;
+// the browser never chooses its own role or approval state.
 
 import { auth, db } from './firebase.js';
 import {
-  createUserWithEmailAndPassword,
-  signInWithEmailAndPassword,
+  OAuthProvider,
+  getRedirectResult,
+  signInWithRedirect,
+  signInWithCustomToken,
   signOut as fbSignOut,
-  sendEmailVerification,
-  sendPasswordResetEmail,
   onAuthStateChanged,
   reload as reloadAuthUser,
 } from 'firebase/auth';
 import {
   doc,
   getDoc,
-  setDoc,
   updateDoc,
   deleteDoc,
   collection,
-  getDocs,
-  query,
-  where,
   onSnapshot,
 } from 'firebase/firestore';
+
+const COMPANY_DOMAIN = 'flyskyway.com';
+
+function isPreviewHostname(host) {
+  return host.endsWith('.vercel.app')
+    && (host.includes('-git-') || /-[a-z0-9]{8,}-/.test(host));
+}
+
+// Preview deployments bypass automatically. A non-Vercel development
+// environment can opt in explicitly, but production cannot: the token-minting
+// endpoint hard-stops when VERCEL_ENV=production regardless of this value.
+const DEV_AUTH_BYPASS_ENABLED = (() => {
+  if (import.meta.env.VITE_DEV_AUTH_BYPASS === 'true') return true;
+  if (typeof window === 'undefined') return false;
+  return isPreviewHostname(window.location.hostname);
+})();
+
+let devSignInPromise = null;
+
+async function ensureDevelopmentSession() {
+  if (devSignInPromise) return devSignInPromise;
+  devSignInPromise = (async () => {
+    const response = await fetch('/api/dev-auth-bypass', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      cache: 'no-store',
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.token) {
+      const err = new Error(data.error || 'Development authentication bypass is unavailable');
+      err.code = 'auth/dev-bypass-unavailable';
+      throw err;
+    }
+    return signInWithCustomToken(auth, data.token);
+  })().finally(() => {
+    devSignInPromise = null;
+  });
+  return devSignInPromise;
+}
+
+async function isDevelopmentBypassUser(user) {
+  if (!DEV_AUTH_BYPASS_ENABLED || !user) return false;
+  try {
+    const result = await user.getIdTokenResult();
+    return result.claims?.devAuthBypass === true;
+  } catch {
+    return false;
+  }
+}
+
+function isCompanyEmail(email) {
+  const normalized = String(email || '').trim().toLowerCase();
+  return normalized.endsWith(`@${COMPANY_DOMAIN}`)
+    && normalized.slice(0, -(COMPANY_DOMAIN.length + 1)).length > 0;
+}
+
+function isMicrosoftUser(user) {
+  return user?.providerData?.some(p => p.providerId === 'microsoft.com') === true;
+}
+
+function microsoftProvider() {
+  const provider = new OAuthProvider('microsoft.com');
+  const tenant = String(import.meta.env.VITE_MICROSOFT_TENANT_ID || '').trim();
+  provider.setCustomParameters({
+    prompt: 'select_account',
+    domain_hint: COMPANY_DOMAIN,
+    ...(tenant ? { tenant } : {}),
+  });
+  // Entra only issues an `email` claim when it is actually asked for. Without
+  // these scopes Firebase leaves user.email null for most work accounts, the
+  // company-domain check below can never pass, and sign-in bounces straight
+  // back to the login screen.
+  provider.addScope('openid');
+  provider.addScope('profile');
+  provider.addScope('email');
+  return provider;
+}
+
+/**
+ * Every email address Firebase resolved from verified provider claims. These
+ * come from the signed OAuth token, never from anything the user typed, so
+ * they are safe to authorize against. Microsoft puts the address on the
+ * provider entry rather than the top-level user record often enough that
+ * checking only `user.email` rejects legitimate company accounts.
+ */
+function verifiedEmails(user) {
+  const found = [];
+  if (user?.email) found.push(user.email);
+  for (const p of user?.providerData || []) {
+    if (p?.email) found.push(p.email);
+  }
+  return found.map((e) => String(e).trim().toLowerCase()).filter(Boolean);
+}
+
+/** The company address for this user, or null if none of them qualify. */
+function companyEmailFor(user) {
+  return verifiedEmails(user).find(isCompanyEmail) || null;
+}
 
 // Diagnostic state — exposed for the UI to show error details
 let lastDiagnostic = null;
@@ -46,7 +142,66 @@ export function watchAuth(onChange) {
   onChange({ state: 'loading' });
   return onAuthStateChanged(auth, async (user) => {
     if (!user) {
+      if (DEV_AUTH_BYPASS_ENABLED) {
+        onChange({ state: 'loading' });
+        try {
+          await ensureDevelopmentSession();
+          // signInWithCustomToken triggers onAuthStateChanged again with the
+          // development identity; that callback continues through normally.
+        } catch (err) {
+          setDiag('dev-auth-bypass', err);
+          onChange({
+            state: 'signed-out',
+            authError: 'auth/dev-bypass-unavailable',
+          });
+        }
+        return;
+      }
       onChange({ state: 'signed-out' });
+      return;
+    }
+
+    // This is an authorization boundary, not just login-screen decoration.
+    // Reject legacy password sessions and non-company identities before any
+    // Firestore data is read. Each rejection carries a code so the login
+    // screen can explain itself instead of silently reappearing.
+    const devBypass = await isDevelopmentBypassUser(user);
+    if (DEV_AUTH_BYPASS_ENABLED && !devBypass) {
+      // A Microsoft session may still be cached from an earlier attempt.
+      // Preview mode is intentionally deterministic: replace it with the
+      // development identity so approval/profile state cannot block testing.
+      onChange({ state: 'loading' });
+      try {
+        await ensureDevelopmentSession();
+      } catch (err) {
+        setDiag('dev-auth-bypass', err);
+        onChange({
+          state: 'signed-out',
+          authError: 'auth/dev-bypass-unavailable',
+        });
+      }
+      return;
+    }
+    const emails = verifiedEmails(user);
+    const companyEmail = companyEmailFor(user);
+    if (!devBypass && (!isMicrosoftUser(user) || (emails.length > 0 && !companyEmail))) {
+      setDiag('identity-policy', new Error('Unauthorized identity'), {
+        emails,
+        providers: user.providerData?.map(p => p.providerId) || [],
+      });
+      await fbSignOut(auth).catch(() => {});
+      onChange({ state: 'signed-out', authError: 'auth/company-account-required' });
+      return;
+    }
+    if (!devBypass && !companyEmail) {
+      // Authenticated by Microsoft, but the token carried no address at all —
+      // an Entra claims configuration problem, not a rejected user.
+      setDiag('identity-no-email', new Error('No email claim on Microsoft token'), {
+        uid: user.uid,
+        providers: user.providerData?.map(p => p.providerId) || [],
+      });
+      await fbSignOut(auth).catch(() => {});
+      onChange({ state: 'signed-out', authError: 'auth/missing-email' });
       return;
     }
 
@@ -66,19 +221,39 @@ export function watchAuth(onChange) {
       setDiag('profile-read', err, { uid: user.uid });
     }
 
-    // Self-heal: if no profile but we successfully read (just nothing there),
-    // create one. The first user becomes admin.
+    // Profiles are provisioned by a token-verifying server endpoint. The
+    // browser never decides its own role or approval state.
     if (!profile && !readError) {
-      profile = await tryCreateProfile(user);
+      try {
+        profile = await bootstrapCompanyProfile(user);
+      } catch (err) {
+        readError = err;
+        setDiag('profile-bootstrap', err, { uid: user.uid });
+      }
     }
 
     if (!profile) {
       onChange({ state: 'no-profile', user, error: readError });
       return;
     }
-    // Email verification gate removed — admin approval is the only gate.
-    // Users sign up → wait for admin to approve in Users tab → can log in.
-    if (!profile.approved) {
+    if (
+      !isCompanyEmail(profile.email)
+      || String(profile.email).trim().toLowerCase() !== companyEmail
+    ) {
+      setDiag('profile-identity-mismatch', new Error('Profile identity mismatch'), {
+        uid: user.uid,
+      });
+      await fbSignOut(auth).catch(() => {});
+      onChange({ state: 'signed-out', authError: 'auth/profile-identity-mismatch' });
+      return;
+    }
+    // Disabled profiles and unapproved profiles never enter the app.
+    if (profile.active === false) {
+      await fbSignOut(auth).catch(() => {});
+      onChange({ state: 'signed-out', authError: 'auth/account-disabled' });
+      return;
+    }
+    if (profile.approved !== true) {
       onChange({ state: 'pending', user, profile });
       return;
     }
@@ -86,114 +261,90 @@ export function watchAuth(onChange) {
   });
 }
 
-// Try to create a profile for the current user. If we can't tell if there are
-// existing admins (read failed), default to admin to avoid lockout — better
-// to grant the first user too much access than to lock them out forever.
-async function tryCreateProfile(user) {
-  let isFirstUser = true;
-  try {
-    const adminsQuery = query(collection(db, 'users'), where('role', '==', 'admin'));
-    const adminSnap = await getDocs(adminsQuery);
-    isFirstUser = adminSnap.empty;
-  } catch (err) {
-    console.warn('Cannot check for admins, assuming first user', err);
-    isFirstUser = true;
+async function bootstrapCompanyProfile(user) {
+  const idToken = await user.getIdToken(true);
+  const response = await fetch('/api/auth-profile-bootstrap', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    cache: 'no-store',
+    body: JSON.stringify({ idToken }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.profile) {
+    throw new Error(data.error || 'Could not provision company profile');
   }
+  return data.profile;
+}
 
-  const profile = {
-    email: user.email || '',
-    name: (user.displayName || user.email || '').split('@')[0],
-    callsign: '',
-    jetinsightName: user.displayName || '',
-    role: isFirstUser ? 'admin' : 'crew',
-    approved: isFirstUser,
-    createdAt: Date.now(),
-    active: true,
-  };
+// Marks that we handed the browser to Microsoft. If we come back with no
+// credential and this is still set, the round-trip itself lost the session —
+// the signature of a browser blocking the cross-origin sign-in helper's
+// storage — rather than the user cancelling or being rejected.
+const REDIRECT_FLAG = 'skyway_oauth_redirect_at';
+const REDIRECT_WINDOW_MS = 10 * 60 * 1000;
 
+function markRedirectStarted() {
+  try { sessionStorage.setItem(REDIRECT_FLAG, String(Date.now())); } catch { /* private mode */ }
+}
+function consumeRedirectFlag() {
   try {
-    await setDoc(doc(db, 'users', user.uid), profile);
-    return { uid: user.uid, ...profile };
-  } catch (err) {
-    setDiag('profile-create', err, { uid: user.uid });
-    return null;
+    const at = Number(sessionStorage.getItem(REDIRECT_FLAG) || 0);
+    sessionStorage.removeItem(REDIRECT_FLAG);
+    return at;
+  } catch {
+    return 0;
   }
 }
 
-// Manual repair function — exposed via "Repair Account" button on no-profile screen
-export async function repairProfile() {
-  if (!auth.currentUser) throw new Error('Not signed in');
-  const profile = await tryCreateProfile(auth.currentUser);
-  if (!profile) {
-    const diag = getLastDiagnostic();
-    throw new Error(diag?.error || 'Could not create profile. Check Firestore security rules.');
+export async function signInWithMicrosoft() {
+  markRedirectStarted();
+  try {
+    await signInWithRedirect(auth, microsoftProvider());
+  } catch (err) {
+    consumeRedirectFlag();
+    throw err;
   }
-  return profile;
 }
 
-export async function signUp({ email, password, name, callsign, jetinsightName }) {
-  if (!email || !password) throw new Error('Email and password are required');
-  if (password.length < 8) throw new Error('Password must be at least 8 characters');
+export async function completeMicrosoftRedirect() {
+  // Resolves once Firebase has finished restoring persisted auth state, so
+  // auth.currentUser is trustworthy immediately afterwards.
+  const result = await getRedirectResult(auth);
 
-  let isFirstUser = true;
-  try {
-    const adminsQuery = query(collection(db, 'users'), where('role', '==', 'admin'));
-    const adminSnap = await getDocs(adminsQuery);
-    isFirstUser = adminSnap.empty;
-  } catch (err) {
-    console.warn('Cannot check for admins, assuming first user', err);
-    isFirstUser = true;
+  if (result?.user) {
+    consumeRedirectFlag();
+    if (!isMicrosoftUser(result.user)) {
+      await fbSignOut(auth).catch(() => {});
+      const err = new Error('Use your @flyskyway.com Microsoft account');
+      err.code = 'auth/company-account-required';
+      throw err;
+    }
+    if (verifiedEmails(result.user).length === 0) {
+      await fbSignOut(auth).catch(() => {});
+      const err = new Error('Microsoft returned no email address');
+      err.code = 'auth/missing-email';
+      throw err;
+    }
+    if (!companyEmailFor(result.user)) {
+      await fbSignOut(auth).catch(() => {});
+      const err = new Error('Use your @flyskyway.com Microsoft account');
+      err.code = 'auth/company-account-required';
+      throw err;
+    }
+    return result.user;
   }
 
-  const credential = await createUserWithEmailAndPassword(auth, email.trim(), password);
-
-  const profile = {
-    email: email.trim(),
-    name: name?.trim() || email.trim().split('@')[0],
-    callsign: callsign?.trim() || '',
-    jetinsightName: jetinsightName?.trim() || name?.trim() || '',
-    role: isFirstUser ? 'admin' : 'crew',
-    approved: isFirstUser,
-    createdAt: Date.now(),
-    active: true,
-  };
-
-  try {
-    await setDoc(doc(db, 'users', credential.user.uid), profile);
-  } catch (err) {
-    setDiag('signup-profile-create', err, { uid: credential.user.uid });
-    // Don't throw — auth account exists, watchAuth will try to heal
+  const startedAt = consumeRedirectFlag();
+  if (startedAt && (Date.now() - startedAt) < REDIRECT_WINDOW_MS && !auth.currentUser) {
+    const err = new Error('Sign-in did not carry back to the app');
+    err.code = 'auth/redirect-session-lost';
+    throw err;
   }
-
-  // Email verification removed — admin approval is the only gate to access.
-  // Users will see the "pending approval" screen until ops/admin approves them.
-
-  return { uid: credential.user.uid, ...profile, isFirstUser };
-}
-
-export async function signIn(email, password) {
-  if (!email || !password) throw new Error('Email and password required');
-  await signInWithEmailAndPassword(auth, email.trim(), password);
+  return null;
 }
 
 export async function signOut() {
   await fbSignOut(auth);
-}
-
-export async function requestPasswordReset(email) {
-  if (!email) throw new Error('Email required');
-  await sendPasswordResetEmail(auth, email.trim());
-}
-
-export async function resendVerification() {
-  if (!auth.currentUser) throw new Error('Not signed in');
-  await sendEmailVerification(auth.currentUser);
-}
-
-export async function refreshVerification() {
-  if (!auth.currentUser) return false;
-  await reloadAuthUser(auth.currentUser);
-  return auth.currentUser.emailVerified;
 }
 
 export function subscribeToUsers(onUpdate) {

@@ -5,24 +5,21 @@
  * scope our overrides to .comms-stream so they don't leak into anywhere
  * else in the app that might (someday) use the default Stream styling.
  *
- * Token rationale:
- *   surface  #0a0e14 (warm charcoal — same as app bg)
- *   raised   #10151c (cards / channel rows)
- *   hairline #1f2630
- *   text     #e5edf5 (warm white)
- *   muted    #8a95a8
- *   accent   #1ec0e9 (Skyway brand cyan)
+ * These local names are now aliases onto the app-wide design tokens declared
+ * in index.css, rather than a hard-coded dark palette. Previously Comms stayed
+ * dark when the rest of the app switched to the light theme, so it read as a
+ * conspicuous dark island.
  */
 
 .comms-stream {
-  --skyway-bg: #0a0e14;
-  --skyway-surface: #10151c;
-  --skyway-raised: #161c25;
-  --skyway-hairline: #1f2630;
-  --skyway-text: #e5edf5;
-  --skyway-muted: #8a95a8;
-  --skyway-dim: #525c6e;
-  --skyway-cyan: #1ec0e9;
+  --skyway-bg: var(--sw-bg);
+  --skyway-surface: var(--sw-surface);
+  --skyway-raised: var(--sw-surface-raised);
+  --skyway-hairline: var(--sw-border);
+  --skyway-text: var(--sw-text);
+  --skyway-muted: var(--sw-text-muted);
+  --skyway-dim: var(--sw-text-subtle);
+  --skyway-cyan: var(--sw-accent);
 }
 
 /* Root Stream wrapper */
@@ -42,7 +39,7 @@
   --str-chat__border-radius-md: 2px;
   --str-chat__border-radius-sm: 2px;
   --str-chat__border-radius-xs: 0;
-  --str-chat__font-family: 'Inter', system-ui, sans-serif;
+  --str-chat__font-family: 'DM Sans', system-ui, sans-serif;
   --str-chat__caption-text-font-family: 'JetBrains Mono', ui-monospace, monospace;
 
   background: var(--skyway-bg);
@@ -119,7 +116,7 @@
 
 .comms-stream .str-chat__message,
 .comms-stream .str-chat__message-text {
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: 'DM Sans', system-ui, sans-serif;
 }
 
 .comms-stream .str-chat__message-bubble {

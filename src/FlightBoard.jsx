@@ -30,6 +30,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { lookupCoords } from './airport-coords.js';
+import { statusEventAt } from './trip-status.js';
 
 // ====================================================================
 // LEAFLET LOADER
@@ -114,7 +115,7 @@ export function tripPhase(trip, state) {
   if (s.wheels_up) {
     // Staleness guard: if wheels_up is older than the longest plausible
     // flight time, the trip really landed but the flag wasn't updated.
-    const upAt = s.wheels_up.at || 0;
+    const upAt = statusEventAt(s.wheels_up) || 0;
     const ageMs = Date.now() - upAt;
     const MAX_AIRBORNE_MS = 12 * 60 * 60 * 1000;  // 12h
     if (upAt > 0 && ageMs > MAX_AIRBORNE_MS) {
@@ -132,6 +133,9 @@ export function tripPhase(trip, state) {
 // ====================================================================
 // FLIGHT LIST ROW
 // ====================================================================
+
+/* Shared column template so the sticky header and the rows stay aligned. */
+const FLIGHT_ROW_GRID = 'md:grid-cols-[80px_120px_180px_110px_minmax(0,1fr)_60px]';
 
 function FlightRow({ trip, state, faPosition, phase }) {
   // Phase is now computed by parent (uses both Firestore status + live
@@ -218,7 +222,42 @@ function FlightRow({ trip, state, faPosition, phase }) {
 
   return (
     <div className={`border-b border-slate-800 ${phase === 'airborne' ? 'bg-cyan-500/5' : ''}`}>
-      <div className="grid grid-cols-[80px_120px_180px_110px_1fr_60px] gap-3 items-center px-3 py-2.5">
+      {/* Mobile: two stacked rows. The desktop template is ~630px wide, which
+          clipped Crew and Pax entirely on a phone. */}
+      <div className="md:hidden px-3 py-2.5">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className={`shrink-0 rounded border px-2 py-0.5 text-[11px] font-semibold ${pc.bg} ${pc.border} ${pc.txt}`}
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {pc.label}
+            </span>
+            <span className="truncate text-lg font-semibold text-slate-100" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+              {trip.info?.tail || '?'}
+            </span>
+          </div>
+          <span className="shrink-0 text-xl tabular-nums text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {timeStr}
+          </span>
+        </div>
+        <div className="mt-1 flex items-center justify-between gap-3">
+          <span className="truncate text-sm tabular-nums text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {trip.info?.from || '?'} → {trip.info?.to || '?'}
+            <span className="ml-2 text-slate-500">
+              {etaCellContent || (trip.info?.legType === 'REVENUE' ? 'REVENUE' : 'REPO')}
+            </span>
+          </span>
+          <span className="shrink-0 text-sm tabular-nums text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            {trip.info?.pax > 0 ? `${trip.info.pax} PAX` : '—'}
+          </span>
+        </div>
+        <div className="mt-0.5 truncate text-sm text-slate-300" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+          {trip.info?.pic
+            ? <>{trip.info.pic}{trip.info.sic && <span className="text-slate-500"> / {trip.info.sic}</span>}</>
+            : <span className="text-slate-600">— no crew —</span>}
+        </div>
+      </div>
+
+      <div className={`${FLIGHT_ROW_GRID} hidden md:grid gap-3 items-center px-3 py-2.5`}>
         {/* Status pill */}
         <div className={`text-center text-[11px] tracking-widest font-semibold px-2 py-1 border ${pc.bg} ${pc.border} ${pc.txt}`}
           style={{ fontFamily: 'JetBrains Mono, monospace' }}>
@@ -1135,8 +1174,8 @@ function FlightBoard({ allTrips, compact = false }) {
           ? 'border-b md:border-b-0 md:border-r border-slate-800 overflow-y-auto max-h-96'
           : 'border-r border-slate-800 overflow-y-auto'
         }>
-          {/* Column headers */}
-          <div className="grid grid-cols-[80px_120px_180px_110px_1fr_60px] gap-3 px-3 py-2 border-b border-slate-700 text-[10px] tracking-widest text-slate-500 sticky top-0 bg-slate-950 z-10"
+          {/* Column headers — desktop only; rows stack into cards below md. */}
+          <div className={`${FLIGHT_ROW_GRID} hidden md:grid gap-3 px-3 py-2 border-b border-slate-700 text-[11px] tracking-widest text-slate-500 sticky top-0 bg-slate-950 z-10`}
             style={{ fontFamily: 'JetBrains Mono, monospace' }}>
             <div className="text-center">STATUS</div>
             <div>TIME (ET)</div>

@@ -31,6 +31,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Play, Square, AlertTriangle, CheckCircle2, Edit3, Plus, X,
   ChevronDown, ChevronUp, Clock, Plane, MapPin, Shield, Users, UserCheck,
+  Hourglass, XCircle,
 } from 'lucide-react';
 import {
   subscribePeriodsForPilot,
@@ -48,6 +49,7 @@ import {
 import { evaluateCurrent, LIMITS } from './duty-legality.js';
 import { DutyExportButtons } from './DutyExport.jsx';
 import TzAwareDateTimeInput from './TzAwareInput.jsx';
+import { Button, Card, InfoRow, StatusChip, cx } from './ui.jsx';
 
 const MS_HR = 3600 * 1000;
 const MS_DAY = 24 * MS_HR;
@@ -319,11 +321,9 @@ export default function DutyV2({ currentUser, myTrips = [], users = [] }) {
 
   if (loading) {
     return (
-      <div className="border border-slate-800 bg-slate-900/30 p-4">
-        <div className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-          DUTY · LOADING…
-        </div>
-      </div>
+      <Card>
+        <div className="text-2xs text-content-muted">Loading duty…</div>
+      </Card>
     );
   }
 
@@ -331,16 +331,17 @@ export default function DutyV2({ currentUser, myTrips = [], users = [] }) {
     <div className="space-y-3">
       {/* Error banner */}
       {error && (
-        <div className="border border-red-500/40 bg-red-500/5 px-3 py-2 flex items-center justify-between">
-          <span className="text-xs text-red-300">{error}</span>
-          <button onClick={() => setError(null)} className="text-red-300 hover:text-red-100">
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-danger-border bg-danger-soft px-3 py-2.5">
+          <span className="text-2xs text-danger">{error}</span>
+          <button onClick={() => setError(null)} className="text-danger hover:opacity-70" aria-label="Dismiss">
             <X className="w-3.5 h-3.5" />
           </button>
         </div>
       )}
 
-      {/* Legality status panel — always visible */}
-      <LegalityPanel legality={legality} />
+      {/* Legality sits inside the on-duty view (under the clock, where the
+          pilot is already looking). Off duty and pending states show it here. */}
+      {!current && <LegalityPanel legality={legality} />}
 
       {/* Active state card — three branches:
           1. PENDING: someone (the PIC) auto-enrolled this pilot. They
@@ -406,11 +407,8 @@ export default function DutyV2({ currentUser, myTrips = [], users = [] }) {
           to last 365 days (Skyway retention). For custom date ranges
           or another pilot's records, use the EXPORT button on the
           ops crew board. */}
-      <div className="pt-2 border-t border-slate-800">
-        <div className="text-[10px] tracking-widest text-slate-500 mb-2"
-          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-          EXPORT YOUR DUTY RECORDS
-        </div>
+      <div className="border-t border-edge pt-3">
+        <div className="mb-2 text-2xs font-semibold text-content-muted">Export your duty records</div>
         <DutyExportButtons pilotUid={uid} pilotName={name} />
       </div>
     </div>
@@ -421,45 +419,97 @@ export default function DutyV2({ currentUser, myTrips = [], users = [] }) {
 // Sub-components
 // =====================================================================
 
-function LegalityPanel({ legality }) {
-  const toneFor = (status) => {
-    switch (status) {
-      case 'illegal': return { border: 'border-red-500/60', bg: 'bg-red-500/10', text: 'text-red-300', tag: 'text-red-500' };
-      case 'warning': return { border: 'border-amber-500/50', bg: 'bg-amber-500/10', text: 'text-amber-300', tag: 'text-amber-400' };
-      default:        return { border: 'border-emerald-500/30', bg: 'bg-emerald-500/5', text: 'text-emerald-200', tag: 'text-emerald-400' };
-    }
-  };
-  const tone = toneFor(legality.status);
+function legalityTone(status) {
+  if (status === 'illegal') return 'danger';
+  if (status === 'warning') return 'warning';
+  return 'success';
+}
+
+function legalityLabel(status) {
+  if (status === 'illegal') return 'Illegal';
+  if (status === 'warning') return 'Caution';
+  return 'Legal';
+}
+
+/**
+ * FAR 135 state. When everything is clear this is a single chip — the whole
+ * point is that "legal" needs one glance, not a panel. Findings only expand
+ * into a list when there is actually something to read.
+ */
+function LegalityPanel({ legality, align = 'left' }) {
+  const tone = legalityTone(legality.status);
   const visibleChecks = legality.checks.filter(c => c.severity !== 'info');
 
-  return (
-    <div className={`border ${tone.border} ${tone.bg} p-3`}>
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-2">
-          <Shield className={`w-4 h-4 ${tone.tag}`} />
-          <span className="text-[10px] tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
-            FAR 135 STATUS
-          </span>
-        </div>
-        <span className={`text-xs tracking-widest ${tone.tag}`}
-          style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
-          {legality.summary}
-        </span>
+  if (visibleChecks.length === 0) {
+    return (
+      <div className={cx('flex', align === 'center' ? 'justify-center' : 'justify-start')}>
+        <StatusChip tone={tone} icon={tone === 'success' ? CheckCircle2 : AlertTriangle} size="lg">
+          {legalityLabel(legality.status)}
+        </StatusChip>
       </div>
-      {visibleChecks.length > 0 && (
-        <div className="space-y-1 mt-2">
-          {visibleChecks.map((c, i) => (
-            <div key={i} className={`text-[11px] flex items-start gap-1.5 ${tone.text}`}>
-              {c.severity === 'block'
-                ? <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0 text-red-500" />
-                : <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0 text-amber-400" />}
-              <span>{c.message}</span>
-            </div>
-          ))}
+    );
+  }
+
+  return (
+    <Card className={cx(
+      'p-3',
+      tone === 'danger' ? 'border-danger-border bg-danger-soft' : 'border-warning-border bg-warning-soft',
+    )}>
+      <div className="flex items-center gap-2">
+        <Shield className={cx('h-4 w-4 shrink-0', tone === 'danger' ? 'text-danger' : 'text-warning')} />
+        <span className="text-sm font-semibold text-content">{legalityLabel(legality.status)}</span>
+        <span className="ml-auto text-2xs text-content-muted">{legality.summary}</span>
+      </div>
+      <div className="mt-2 space-y-1.5">
+        {visibleChecks.map((c, i) => (
+          <div key={i} className="flex items-start gap-2 text-2xs leading-relaxed text-content-muted">
+            <AlertTriangle className={cx(
+              'mt-0.5 h-3 w-3 shrink-0',
+              c.severity === 'block' ? 'text-danger' : 'text-warning',
+            )} />
+            <span>{c.message}</span>
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+/**
+ * Duty clock. A conic-gradient arc rather than an SVG ring: one element,
+ * no viewBox math, and it inherits the theme tokens directly.
+ */
+function DutyRing({ elapsedMs, maxMs, label }) {
+  const pct = Math.max(0, Math.min(100, (elapsedMs / maxMs) * 100));
+  const over = elapsedMs >= maxMs;
+  return (
+    <div
+      className="relative mx-auto flex aspect-square w-[min(168px,45vw)] shrink-0 items-center justify-center rounded-full"
+      style={{
+        background: `conic-gradient(${over ? 'var(--sw-danger)' : 'var(--sw-accent)'} ${pct * 3.6}deg, var(--sw-surface-raised) 0deg)`,
+      }}
+      role="img"
+      aria-label={`${label} of ${Math.round(maxMs / MS_HR)} hours maximum`}
+    >
+      <div className="absolute inset-[10px] rounded-full bg-surface" />
+      <div className="relative z-[1] text-center">
+        <div className={cx(
+          'font-mono text-4xl font-semibold tabular-nums tracking-tight',
+          over ? 'animate-pulse text-danger' : 'text-content',
+        )}>
+          {label}
         </div>
-      )}
+        <div className="mt-1.5 text-2xs text-content-muted">of {Math.round(maxMs / MS_HR)}:00 max</div>
+      </div>
     </div>
   );
+}
+
+/** `06:42` — the ring reads as a clock, so it gets clock formatting. */
+function fmtClock(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return '0:00';
+  const total = Math.floor(ms / 60000);
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
 }
 
 function OffDutyCard({ busy, openForm, setOpenForm, periods, now, onStart, myTrips, users, currentUserUid }) {
@@ -471,29 +521,37 @@ function OffDutyCard({ busy, openForm, setOpenForm, periods, now, onStart, myTri
     ? (now - lastClosed.dutyOffAt)
     : null;
 
+  // The rest line is the only thing a pilot needs before tapping Start, so
+  // it sits under the button as a caption rather than in a header subtitle.
+  const restCaption = restAvailableMs != null
+    ? `Last duty ended ${fmtElapsed(restAvailableMs)} ago${restAvailableMs >= 10 * MS_HR ? ' — legal' : ''}`
+    : 'No recorded duty in the last 30 days';
+
   return (
-    <div className="border border-slate-700 bg-slate-900/40 p-4">
-      <div className="flex items-center gap-2 mb-3">
-        <span className="w-2 h-2 rounded-full bg-slate-500" />
-        <span className="text-[10px] tracking-widest text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
-          OFF DUTY
-        </span>
-        {restAvailableMs != null && (
-          <span className="text-[10px] text-slate-500 ml-auto" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            Rest since {fmtTime(lastClosed.dutyOffAt)} · {fmtElapsed(restAvailableMs)}
-          </span>
-        )}
+    <Card>
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h3 className="text-sm font-semibold text-content">Duty</h3>
+        <StatusChip tone="neutral">Off duty</StatusChip>
       </div>
       {!starting && (
-        <button
-          onClick={() => setOpenForm('start')}
-          disabled={busy}
-          className="w-full py-4 bg-emerald-600 hover:bg-emerald-500 text-white text-base tracking-widest font-bold disabled:opacity-40 flex items-center justify-center gap-2"
-          style={{ fontFamily: 'JetBrains Mono, monospace' }}
-        >
-          <Play className="w-5 h-5" />
-          DUTY ON
-        </button>
+        <>
+          <Button
+            onClick={() => setOpenForm('start')}
+            disabled={busy}
+            variant="success"
+            size="xl"
+            block
+            icon={Play}
+          >
+            Start Duty
+          </Button>
+          <p className={cx(
+            'mt-2.5 text-center text-2xs',
+            restAvailableMs != null && restAvailableMs < 10 * MS_HR ? 'text-warning' : 'text-content-muted',
+          )}>
+            {restCaption}
+          </p>
+        </>
       )}
       {starting && (
         <StartDutyForm
@@ -505,22 +563,15 @@ function OffDutyCard({ busy, openForm, setOpenForm, periods, now, onStart, myTri
           currentUserUid={currentUserUid}
         />
       )}
-    </div>
+    </Card>
   );
 }
 
 function OnDutyCard({ period, now, busy, openForm, setOpenForm, legality, partnerPeriod, onEnd, onEdit, onRequestOverride }) {
   const elapsed = now - (period.dutyOnAt || now);
   const elapsedHrs = elapsed / MS_HR;
-  // Color tone based on hours
-  const tone = (() => {
-    if (elapsedHrs >= 14) return { text: 'text-red-500', border: 'border-red-500/60', bg: 'bg-red-500/10', pulse: true, label: 'OVER 14' };
-    if (elapsedHrs >= 12) return { text: 'text-red-400', border: 'border-red-500/50', bg: 'bg-red-500/10', pulse: true };
-    if (elapsedHrs >= 10) return { text: 'text-amber-400', border: 'border-amber-500/40', bg: 'bg-amber-500/5' };
-    return { text: 'text-emerald-400', border: 'border-emerald-500/30', bg: 'bg-emerald-500/5' };
-  })();
 
-  // Duty-budget math — used for the dual-color bar + countdown.
+  // Duty-budget math — used for the ring + countdown.
   //
   // DUTY_MAX_MS represents the 14h cap from 135.267(c). For regular
   // assignments this is the legal limit; for unscheduled (135.267(b))
@@ -528,9 +579,7 @@ function OnDutyCard({ period, now, busy, openForm, setOpenForm, legality, partne
   // We always render the bar so the pilot has a visual sense of how
   // long they've been on, regardless of assignment type.
   const DUTY_MAX_MS = 14 * MS_HR;
-  const elapsedPct = Math.max(0, Math.min(100, (elapsed / DUTY_MAX_MS) * 100));
   const remainingMs = Math.max(0, DUTY_MAX_MS - elapsed);
-  const remainingPct = Math.max(0, 100 - elapsedPct);
   const isRegular = period.assignmentType === 'regular';
   // The countdown label changes by assignment type so the pilot
   // doesn't read "X left" as a regulatory commitment for unscheduled.
@@ -549,108 +598,69 @@ function OnDutyCard({ period, now, busy, openForm, setOpenForm, legality, partne
   const partnerDeclined = partnerStatus === 'declined';
 
   return (
-    <div className={`border ${tone.border} ${tone.bg} p-4`}>
-      <div className="flex items-start justify-between gap-3 mb-3">
-        <div className="flex items-center gap-2 flex-wrap pt-1">
-          <span className={`w-2 h-2 rounded-full ${tone.pulse ? 'animate-pulse' : ''} bg-current`} />
-          <span className="text-[10px] tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
-            ON DUTY
-          </span>
-          {tone.label && (
-            <span className="text-[9px] tracking-widest text-red-500 px-1.5 py-0.5 border border-red-500/60"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              {tone.label}
-            </span>
-          )}
-          <span className="text-[10px] text-slate-500 ml-2">
-            {period.assignmentType === 'regular' ? '14h regular' : 'unscheduled'} · {period.crewType === 'two' ? '2 pilot' : 'single'}
-          </span>
-        </div>
-        {/* Right-side counter: elapsed (yellow) on top, remaining (green)
-            below. Stacked vertically and right-aligned so the elapsed
-            time still anchors the visual right edge of the card. When
-            duty exceeds 14h, the remaining line disappears and the
-            elapsed line goes red+pulsing instead of yellow. */}
-        <div className="flex flex-col items-end shrink-0">
-          <span className={`text-2xl tabular-nums leading-none ${
-            elapsedHrs >= 14 ? 'text-red-500 animate-pulse' : 'text-amber-400'
-          }`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            {fmtElapsed(elapsed)}
-          </span>
-          {elapsedHrs < 14 ? (
-            <span className="text-[11px] tabular-nums text-emerald-400 mt-1"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              {fmtElapsed(remainingMs)} {remainingLabel}
-            </span>
-          ) : (
-            <span className="text-[11px] tabular-nums text-red-500 mt-1 animate-pulse"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              {fmtElapsed(elapsed - DUTY_MAX_MS)} OVER
-            </span>
-          )}
-        </div>
-      </div>
+    <div className="space-y-3.5">
+      {/* The clock is the screen. Everything else is supporting detail. */}
+      <DutyRing elapsedMs={elapsed} maxMs={DUTY_MAX_MS} label={fmtClock(elapsed)} />
 
-      {/* Progress bar — yellow segment = elapsed, green segment = time
-          remaining toward the 14h cap. When elapsed exceeds 14h the bar
-          becomes a single red pulsing strip (and the OVER 14 tag in the
-          header is already showing). Bar height bumped from h-1.5 to
-          h-2 so the two segments are easier to read at a glance. */}
-      <div className="h-2 bg-slate-800 rounded-full overflow-hidden mb-3 flex">
-        {elapsedHrs >= 14 ? (
-          <div className="h-full w-full bg-red-500 animate-pulse" />
-        ) : (
-          <>
-            <div className="h-full bg-amber-500 transition-all duration-500"
-              style={{ width: `${elapsedPct}%` }} />
-            <div className="h-full bg-emerald-500 transition-all duration-500"
-              style={{ width: `${remainingPct}%` }} />
-          </>
-        )}
-      </div>
+      <LegalityPanel legality={legality} align="center" />
 
-      {/* Context info */}
-      <div className="text-[11px] text-slate-400 space-y-0.5 mb-3" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-        <div><span className="text-slate-600">Started:</span> <span className="text-slate-200">{fmtTime(period.dutyOnAt)}</span></div>
-        {period.location && <div><span className="text-slate-600">Loc:</span> <span className="text-slate-300">{period.location}</span></div>}
-        {period.tail && <div><span className="text-slate-600">Tail:</span> <span className="text-slate-300">{period.tail}</span></div>}
-        {period.tripId && <div><span className="text-slate-600">Trip:</span> <span className="text-slate-300">{period.tripId}</span></div>}
-        {period.role && <div><span className="text-slate-600">Role:</span> <span className="text-slate-300">{period.role}</span></div>}
-      </div>
+      <p className="text-center text-2xs text-content-muted">
+        {elapsedHrs < 14
+          ? <><span className="font-mono text-content">{fmtElapsed(remainingMs)}</span> {remainingLabel.toLowerCase()} · {period.assignmentType === 'regular' ? '14-hour regular assignment' : 'Unscheduled assignment'}</>
+          : <span className="text-danger">{fmtElapsed(elapsed - DUTY_MAX_MS)} over 14 hours — an approved override is required to continue.</span>}
+      </p>
+
+      {/* Three rows, because these are the three numbers a pilot is actually
+          checking. Tail, base and seat are identity, not state — they go in
+          the caption underneath. */}
+      <Card padded={false} className="divide-y divide-edge overflow-hidden">
+        <InfoRow icon={Clock} label="Started" value={fmtTime(period.dutyOnAt)} />
+        <InfoRow icon={Hourglass} label="Rest before" value={period.priorRestMs ? fmtElapsed(period.priorRestMs) : '—'} />
+        <InfoRow
+          icon={Plane}
+          label="Flight time today"
+          value={period.flightTimeMs ? (period.flightTimeMs / MS_HR).toFixed(1) : '0.0'}
+        />
+      </Card>
+
+      {(period.tail || period.location || period.role) && (
+        <p className="text-center font-mono text-2xs text-content-muted">
+          {[period.tail, period.location, period.role].filter(Boolean).join(' · ')}
+        </p>
+      )}
 
       {/* Partner status banner — only visible when this is a paired duty.
           Three states: confirmed (subtle info), pending (amber warning),
           declined (red, partner backed out — PIC is now effectively solo). */}
       {partnerPeriod && (
-        <div className={`text-[11px] mb-3 px-2.5 py-2 border ${
+        <div className={`text-2xs px-3 py-2.5 rounded-lg border flex items-start gap-2 ${
           partnerNeedsConfirm
-            ? 'border-amber-500/40 bg-amber-500/5 text-amber-300'
+            ? 'border-warning-border bg-warning-soft text-warning'
             : partnerDeclined
-              ? 'border-red-500/40 bg-red-500/5 text-red-300'
-              : 'border-cyan-500/30 bg-cyan-500/5 text-cyan-300'
-        }`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              ? 'border-danger-border bg-danger-soft text-danger'
+              : 'border-success-border bg-success-soft text-success'
+        }`}>
           {partnerNeedsConfirm && (
-            <>⏳ <strong>{partnerPeriod.pilotName}</strong> has not confirmed pending duty yet.</>
+            <>
+              <Hourglass className="w-3.5 h-3.5 shrink-0 mt-px" />
+              <span><strong>{partnerPeriod.pilotName}</strong> has not confirmed pending duty yet.</span>
+            </>
           )}
           {partnerDeclined && (
-            <>✗ <strong>{partnerPeriod.pilotName}</strong> declined the pair. You are flying single-pilot.</>
+            <>
+              <XCircle className="w-3.5 h-3.5 shrink-0 mt-px" />
+              <span><strong>{partnerPeriod.pilotName}</strong> declined the pair. You are flying single-pilot.</span>
+            </>
           )}
           {!partnerNeedsConfirm && !partnerDeclined && (
-            <>✓ Paired with <strong>{partnerPeriod.pilotName}</strong> ({partnerPeriod.role || 'SIC'})</>
+            <>
+              <CheckCircle2 className="w-3.5 h-3.5 shrink-0 mt-px" />
+              <span>Paired with <strong>{partnerPeriod.pilotName}</strong> ({partnerPeriod.role || 'SIC'})</span>
+            </>
           )}
         </div>
       )}
 
-      {/* Edit duty-on time inline */}
-      {!editingOn && !ending && !requestingOverride && (
-        <button
-          onClick={() => setOpenForm(`edit:${period.id}:dutyOnAt`)}
-          className="text-[10px] text-slate-500 hover:text-cyan-400 flex items-center gap-1 mb-2"
-          style={{ fontFamily: 'JetBrains Mono, monospace' }}
-        >
-          <Edit3 className="w-3 h-3" /> ADJUST DUTY-ON TIME
-        </button>
-      )}
       {editingOn && (
         <InlineTimeEditor
           label="ADJUST DUTY-ON TIME"
@@ -663,28 +673,21 @@ function OnDutyCard({ period, now, busy, openForm, setOpenForm, legality, partne
 
       {/* Override request when illegal */}
       {legality.status === 'illegal' && period.overrideStatus !== 'approved' && !requestingOverride && !ending && !editingOn && (
-        <div className="border border-red-500/40 bg-red-500/10 p-2 mb-2">
-          <div className="text-[10px] tracking-widest text-red-300 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
-            ILLEGAL — DO/CP OVERRIDE REQUIRED
-          </div>
-          <div className="text-[11px] text-red-200 mb-2">
+        <Card className="border-danger-border bg-danger-soft p-3">
+          <div className="text-sm font-semibold text-danger">Override required</div>
+          <p className="mt-1 text-2xs leading-relaxed text-content-muted">
             Continuing duty in this state requires written approval from your Chief Pilot or Director of Operations.
-          </div>
+          </p>
           {period.overrideStatus === 'requested' ? (
-            <div className="text-[10px] text-amber-300">
-              Override requested by {period.overrideRequestedBy} at {fmtTime(period.overrideRequestedAt)} —
-              awaiting CP/DO approval.
-            </div>
+            <p className="mt-2 text-2xs text-warning">
+              Requested by {period.overrideRequestedBy} at {fmtTime(period.overrideRequestedAt)} — awaiting CP/DO approval.
+            </p>
           ) : (
-            <button
-              onClick={() => setOpenForm('override')}
-              className="text-[10px] tracking-widest text-cyan-300 hover:text-cyan-100"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}
-            >
-              REQUEST OVERRIDE →
-            </button>
+            <Button variant="danger-outline" size="sm" className="mt-2.5" onClick={() => setOpenForm('override')}>
+              Request override
+            </Button>
           )}
-        </div>
+        </Card>
       )}
       {requestingOverride && (
         <OverrideRequestForm
@@ -696,15 +699,25 @@ function OnDutyCard({ period, now, busy, openForm, setOpenForm, legality, partne
 
       {/* End duty */}
       {!ending && !editingOn && !requestingOverride && (
-        <button
-          onClick={() => setOpenForm('end')}
-          disabled={busy}
-          className="w-full mt-2 py-4 bg-red-600 hover:bg-red-500 text-white text-base tracking-widest font-bold disabled:opacity-40 flex items-center justify-center gap-2"
-          style={{ fontFamily: 'JetBrains Mono, monospace' }}
-        >
-          <Square className="w-5 h-5" />
-          DUTY OFF
-        </button>
+        <>
+          <Button
+            onClick={() => setOpenForm('end')}
+            disabled={busy}
+            variant="danger"
+            size="xl"
+            block
+            icon={Square}
+          >
+            End Duty
+          </Button>
+          <button
+            type="button"
+            onClick={() => setOpenForm(`edit:${period.id}:dutyOnAt`)}
+            className="mx-auto flex items-center gap-1.5 text-2xs text-content-subtle transition-colors hover:text-accent"
+          >
+            <Edit3 className="h-3 w-3" /> Adjust duty-on time
+          </button>
+        </>
       )}
       {ending && (
         <EndDutyForm
@@ -1066,8 +1079,9 @@ function StartDutyForm({ busy, onCancel, onConfirm, myTrips = [], users = [], cu
             className="w-full bg-slate-950/80 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
           />
           {matchedTrip && (
-            <div className="text-[10px] text-cyan-400 mt-1">
-              ✓ {matchedTrip.info?.from || ''}→{matchedTrip.info?.to || ''}
+            <div className="text-2xs text-success mt-1 flex items-center gap-1">
+              <CheckCircle2 className="w-3 h-3 shrink-0" />
+              {matchedTrip.info?.from || ''}→{matchedTrip.info?.to || ''}
               {matchedTrip.info?.tail && ` · ${matchedTrip.info.tail}`}
             </div>
           )}
@@ -1426,18 +1440,18 @@ function OutsideFlyingSection({ outside, busy, openForm, setOpenForm, onAdd }) {
   const recent = outside.filter(o => o.startAt > Date.now() - 30 * MS_DAY);
 
   return (
-    <div className="border border-slate-800 bg-slate-900/20">
+    <div className="overflow-hidden rounded-xl border border-edge bg-surface">
       <button
         onClick={() => setExpanded(v => !v)}
-        className="w-full flex items-center justify-between px-3 py-2 hover:bg-slate-800/30"
+        className="flex w-full items-center justify-between px-4 py-3 transition-colors hover:bg-surface-raised"
       >
-        <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-          OUTSIDE COMMERCIAL FLYING (last 30d) · {recent.length}
+        <span className="text-2xs font-semibold text-content-muted">
+          Outside commercial flying · {recent.length}
         </span>
-        {expanded ? <ChevronUp className="w-3.5 h-3.5 text-slate-500" /> : <ChevronDown className="w-3.5 h-3.5 text-slate-500" />}
+        {expanded ? <ChevronUp className="w-4 h-4 text-content-subtle" /> : <ChevronDown className="w-4 h-4 text-content-subtle" />}
       </button>
       {expanded && (
-        <div className="border-t border-slate-800 p-2">
+        <div className="border-t border-edge p-3">
           {recent.length > 0 && (
             <div className="space-y-1 mb-2">
               {recent.slice(0, 10).map(o => (
@@ -1533,18 +1547,18 @@ function DutyHistoryStrip({ periods, busy, openForm, setOpenForm, onEdit }) {
   const [expanded, setExpanded] = useState(false);
   if (closed.length === 0) return null;
   return (
-    <div className="border border-slate-800 bg-slate-900/20">
+    <div className="overflow-hidden rounded-xl border border-edge bg-surface">
       <button
         onClick={() => setExpanded(v => !v)}
-        className="w-full flex items-center justify-between px-3 py-2 hover:bg-slate-800/30"
+        className="flex w-full items-center justify-between px-4 py-3 transition-colors hover:bg-surface-raised"
       >
-        <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-          RECENT DUTY · {closed.length}
+        <span className="text-2xs font-semibold text-content-muted">
+          Recent duty · {closed.length}
         </span>
-        {expanded ? <ChevronUp className="w-3.5 h-3.5 text-slate-500" /> : <ChevronDown className="w-3.5 h-3.5 text-slate-500" />}
+        {expanded ? <ChevronUp className="w-4 h-4 text-content-subtle" /> : <ChevronDown className="w-4 h-4 text-content-subtle" />}
       </button>
       {expanded && (
-        <div className="divide-y divide-slate-800">
+        <div className="divide-y divide-edge border-t border-edge">
           {closed.map(p => (
             <HistoryRow key={p.id} period={p} busy={busy} openForm={openForm} setOpenForm={setOpenForm} onEdit={onEdit} />
           ))}

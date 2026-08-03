@@ -19,6 +19,10 @@
     {
       "path": "/api/currency-alerts",
       "schedule": "0 14 * * *"
+    },
+    {
+      "path": "/api/cleanup-pax-ids",
+      "schedule": "30 7 * * *"
     }
   ],
   "functions": {
@@ -37,6 +41,10 @@
     }
   },
   "rewrites": [
+    {
+      "source": "/__/auth/:path*",
+      "destination": "https://skyway-ops-app.firebaseapp.com/__/auth/:path*"
+    },
     {
       "source": "/((?!api/|assets/).*)",
       "destination": "/index.html",

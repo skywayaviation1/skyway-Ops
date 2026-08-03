@@ -12,6 +12,7 @@
 // Mirrors AogEventsTab / AogDetail / NewAogModal / AogTechChatPanel behavior.
 
 import React, { useState, useEffect, useRef } from 'react';
+import { notify } from './ui.jsx';
 import {
   AlertTriangle, FileText, Loader2, ArrowLeft, Plus, Trash2, Link2,
   Send, X, Check, Clock, Wrench, ExternalLink, Upload,
@@ -281,7 +282,7 @@ function ServiceDetail({ sr, currentUser, onBack }) {
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(d.detail || d.error || `HTTP ${r.status}`);
-    } catch (e) { alert('Failed: ' + e.message); }
+    } catch (e) { notify.error('Failed: ' + e.message); }
     finally { setLogbookEnabling(false); }
   }
 
@@ -290,7 +291,7 @@ function ServiceDetail({ sr, currentUser, onBack }) {
     try {
       const m = await import('./firebase-service.js');
       await m.completeServiceRequest(sr.id, reporter);
-    } catch (e) { alert('Failed to complete: ' + e.message); }
+    } catch (e) { notify.error('Failed to complete: ' + e.message); }
   }
 
   async function handleRefFilePicked(e) {
@@ -313,7 +314,7 @@ function ServiceDetail({ sr, currentUser, onBack }) {
     try {
       const m = await import('./firebase-service.js');
       await m.removeReferenceDoc(sr.id, refDoc.id, reporter);
-    } catch (err) { alert('Failed to remove: ' + err.message); }
+    } catch (err) { notify.error('Failed to remove: ' + err.message); }
   }
 
   async function handleShareLog() {
@@ -704,7 +705,7 @@ function ServiceTechChatPanel({ sr, currentUser, reporter, canEdit }) {
       await m.updateServiceRequest(sr.id, { lastSkywayReplyAt: Date.now() });
       setMsg('');
     } catch (e) {
-      alert('Send failed: ' + e.message);
+      notify.error('Send failed: ' + e.message);
     } finally {
       setBusy(false);
     }
@@ -1338,7 +1339,7 @@ function VendorPartsTab({ sr, token, onPosted }) {
       const d = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
       onPosted();
-    } catch (e) { alert('Failed: ' + e.message); }
+    } catch (e) { notify.error('Failed: ' + e.message); }
     finally { setBusyIdx(-1); }
   }
 
@@ -1388,7 +1389,7 @@ function VendorChatTab({ sr, token, onPosted }) {
       const d = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
       setText(''); onPosted();
-    } catch (e) { alert('Failed: ' + e.message); }
+    } catch (e) { notify.error('Failed: ' + e.message); }
     finally { setBusy(false); }
   }
 

@@ -32,6 +32,7 @@ import 'stream-chat-react/dist/css/v2/index.css';
 import './commsStream.css';
 
 import { Loader2, Plus, X, MessageCircle, Users as UsersIcon, Check, ChevronLeft } from 'lucide-react';
+import { notify } from './ui.jsx';
 
 /* ─────────────────────────────────────────────────────────────────────
    Channel id helpers
@@ -187,7 +188,7 @@ function NewDmModal({ users, currentUser, client, onClose }) {
       onClose();
     } catch (err) {
       console.error('[CommsStream] DM start failed:', err);
-      alert('Could not start DM: ' + err.message);
+      notify.error('Could not start DM: ' + err.message);
     }
   };
 
@@ -265,7 +266,7 @@ function NewGroupModal({ users, currentUser, client, onClose }) {
 
   const create = async () => {
     if (selected.size === 0) {
-      alert('Pick at least one member.');
+      notify.error('Pick at least one member.');
       return;
     }
     if (creating) return;
@@ -287,7 +288,7 @@ function NewGroupModal({ users, currentUser, client, onClose }) {
       onClose();
     } catch (err) {
       console.error('[CommsStream] group create failed:', err);
-      alert('Could not create group: ' + err.message);
+      notify.error('Could not create group: ' + err.message);
     } finally {
       setCreating(false);
     }

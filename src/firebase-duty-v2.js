@@ -149,6 +149,40 @@ export function subscribeRecentForAllPilots(days, onUpdate) {
 }
 
 /**
+ * Subscribe to the complete duty-report window for admins. Unlike
+ * subscribeRecentForAllPilots this does not slice at 500 records: a compliance
+ * report must say when data is large, not silently omit older rows.
+ */
+export function subscribeDutyReportForAllPilots(days, onUpdate) {
+  const cutoff = Date.now() - (days * 24 * 3600 * 1000);
+  const q = query(collection(db, COLL), where('dutyOnAt', '>=', cutoff));
+  return onSnapshot(q, (snap) => {
+    const list = [];
+    snap.forEach(d => list.push({ id: d.id, ...d.data() }));
+    list.sort((a, b) => (b.dutyOnAt || 0) - (a.dutyOnAt || 0));
+    onUpdate(list);
+  }, (err) => {
+    console.error('[duty-v2] subscribeDutyReportForAllPilots error:', err);
+    onUpdate([]);
+  });
+}
+
+/** All outside-commercial-flying entries in the admin report window. */
+export function subscribeOutsideReportForAllPilots(days, onUpdate) {
+  const cutoff = Date.now() - (days * 24 * 3600 * 1000);
+  const q = query(collection(db, OUTSIDE_COLL), where('startAt', '>=', cutoff));
+  return onSnapshot(q, (snap) => {
+    const list = [];
+    snap.forEach(d => list.push({ id: d.id, ...d.data() }));
+    list.sort((a, b) => (b.startAt || 0) - (a.startAt || 0));
+    onUpdate(list);
+  }, (err) => {
+    console.error('[duty-v2] subscribeOutsideReportForAllPilots error:', err);
+    onUpdate([]);
+  });
+}
+
+/**
  * Subscribe to outside commercial flying entries for one pilot.
  */
 export function subscribeOutsideFlyingForPilot(pilotUid, onUpdate) {

@@ -1,84 +1,330 @@
-@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600;9..40,700&family=JetBrains+Mono:wght@400;500;600&display=swap');
-
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* =============================================================================
+   DESIGN TOKENS
+   =============================================================================
+   Single source of truth for color. tailwind.config.js maps semantic utility
+   names (bg-surface, text-content-muted, border-edge, text-warning …) onto
+   these variables, so the same class renders correctly in both themes.
+
+   Fonts are loaded from index.html with a preconnect — do NOT re-import them
+   here or in a component <style> block.
+   ============================================================================= */
+:root {
+  color-scheme: dark;
+
+  /* Surfaces, darkest to lightest */
+  --sw-bg: #060C16;
+  --sw-surface-sunken: #0A1320;
+  --sw-surface: #0F1B2D;
+  --sw-surface-raised: #16243A;
+
+  /* Hairlines */
+  --sw-border: rgba(148, 163, 184, 0.14);
+  --sw-border-strong: rgba(148, 163, 184, 0.28);
+
+  /* Text. Three steps, all measured against --sw-bg:
+       text   ~16:1   primary reading
+       muted  ~9.6:1  secondary reading
+       subtle ~6.0:1  least-important metadata
+     `subtle` previously sat at 4.1:1 — under the 4.5:1 AA floor for normal
+     text — while carrying most of the small print in the app. */
+  --sw-text: #E6EDF7;
+  --sw-text-muted: #A7B3C5;
+  --sw-text-subtle: #8894A9;
+  --sw-text-inverse: #04121C;
+
+  /* Brand accent — active nav, primary actions, aircraft in motion. */
+  --sw-accent: #22D3EE;
+  --sw-accent-soft: rgba(34, 211, 238, 0.10);
+  --sw-accent-border: rgba(34, 211, 238, 0.38);
+  --sw-accent-contrast: #04121C;
+
+  /* Semantic status — never aliased to one another. */
+  --sw-success: #34D399;
+  --sw-success-soft: rgba(52, 211, 153, 0.10);
+  --sw-success-border: rgba(52, 211, 153, 0.38);
+
+  --sw-warning: #FBBF24;
+  --sw-warning-soft: rgba(251, 191, 36, 0.10);
+  --sw-warning-border: rgba(251, 191, 36, 0.38);
+
+  --sw-danger: #F87171;
+  --sw-danger-soft: rgba(248, 113, 113, 0.10);
+  --sw-danger-border: rgba(248, 113, 113, 0.38);
+
+  --sw-info: #60A5FA;
+  --sw-info-soft: rgba(96, 165, 250, 0.10);
+  --sw-info-border: rgba(96, 165, 250, 0.38);
+
+  /* Elevation */
+  --sw-shadow-card: 0 1px 2px rgba(0, 0, 0, 0.28);
+  --sw-shadow-raised: 0 4px 14px rgba(0, 0, 0, 0.34);
+  --sw-shadow-overlay: 0 18px 48px rgba(0, 0, 0, 0.52);
+
+  /* Chrome height, used to offset toasts above the mobile bottom nav.
+     Keep in sync with MobileNav tab padding (py-2.5 + icon + label). */
+  --sw-bottom-nav-h: 62px;
+}
+
+/* Light theme. Same variable names, so every token-based component follows
+   automatically — no per-utility !important overrides needed. */
+html[data-theme='classy'] {
+  color-scheme: light;
+
+  --sw-bg: #E8EFF8;
+  --sw-surface-sunken: #DFE8F4;
+  --sw-surface: #FFFFFF;
+  --sw-surface-raised: #F2F6FC;
+
+  --sw-border: rgba(11, 24, 41, 0.10);
+  --sw-border-strong: rgba(11, 24, 41, 0.20);
+
+  --sw-text: #0B1829;
+  --sw-text-muted: #45566C;
+  /* Was #6B7C93 → 3.3:1 on the light surface, which failed AA outright. */
+  --sw-text-subtle: #52627A;
+  --sw-text-inverse: #FFFFFF;
+
+  --sw-accent: #0E7490;
+  --sw-accent-soft: rgba(14, 116, 144, 0.08);
+  --sw-accent-border: rgba(14, 116, 144, 0.32);
+  --sw-accent-contrast: #FFFFFF;
+
+  --sw-success: #047857;
+  --sw-success-soft: rgba(4, 120, 87, 0.08);
+  --sw-success-border: rgba(4, 120, 87, 0.30);
+
+  --sw-warning: #B45309;
+  --sw-warning-soft: rgba(180, 83, 9, 0.08);
+  --sw-warning-border: rgba(180, 83, 9, 0.30);
+
+  --sw-danger: #B91C1C;
+  --sw-danger-soft: rgba(185, 28, 28, 0.08);
+  --sw-danger-border: rgba(185, 28, 28, 0.30);
+
+  --sw-info: #1D4ED8;
+  --sw-info-soft: rgba(29, 78, 216, 0.08);
+  --sw-info-border: rgba(29, 78, 216, 0.30);
+
+  --sw-shadow-card: 0 1px 3px rgba(11, 24, 41, 0.07), 0 1px 2px rgba(11, 24, 41, 0.05);
+  --sw-shadow-raised: 0 4px 14px rgba(11, 24, 41, 0.10);
+  --sw-shadow-overlay: 0 18px 48px rgba(11, 24, 41, 0.18);
+}
 
 /* ─── DARK THEME BASE ────────────────────────────────────────────────────────
    The main app wrapper is <div class="h-screen w-full bg-slate-950 …">.
    Putting the gradient on html/body does nothing — that div's solid
    bg-slate-950 covers it. The fix: apply the gradient directly to
    .bg-slate-950 so the wrapper IS the gradient.
-
-   Two-layer depth system:
-     bg-slate-950 → gradient shell  (the main wrapper + any full-screen divs)
-     bg-slate-900 → cards / panels  (slightly lighter, floating above it)
-
-   Gradient anatomy:
-     • Upper-right bloom  — cockpit ambient glow, deep blue
-     • Lower-left bloom   — secondary fill, keeps edges from going flat
-     • Linear base        — diagonal falloff from navy to near-black
    ─────────────────────────────────────────────────────────────────────────── */
+/* Near-flat navy with one soft highlight at the top. The previous
+   three-layer gradient read as a wallpaper and fought every card edge. */
 .bg-slate-950 {
-  background-color: #060C16 !important;
+  background-color: var(--sw-bg) !important;
   background-image:
-    radial-gradient(ellipse 130% 55% at 72% -8%,  rgba(23, 49, 84, 0.85) 0%, transparent 62%),
-    radial-gradient(ellipse  65% 50% at -8% 98%,  rgba(15, 36, 65, 0.70) 0%, transparent 58%),
-    linear-gradient(168deg, #0F1F38 0%, #09131F 55%, #060C16 100%) !important;
+    radial-gradient(ellipse 120% 42% at 50% -10%, rgba(22, 46, 79, 0.45) 0%, transparent 70%) !important;
 }
 
 /* Semi-transparent shell variants — keep them visually consistent */
 .bg-slate-950\/80 {
-  background-color: rgba(6, 12, 22, 0.80) !important;
-  background-image:
-    radial-gradient(ellipse 130% 55% at 72% -8%,  rgba(23, 49, 84, 0.70) 0%, transparent 62%),
-    radial-gradient(ellipse  65% 50% at -8% 98%,  rgba(15, 36, 65, 0.55) 0%, transparent 58%),
-    linear-gradient(168deg, rgba(15,31,56,0.8) 0%, rgba(9,19,31,0.8) 55%, rgba(6,12,22,0.8) 100%) !important;
-  backdrop-filter: blur(12px) !important;
-  -webkit-backdrop-filter: blur(12px) !important;
+  background-color: rgba(6, 12, 22, 0.82) !important;
+  backdrop-filter: blur(16px) saturate(140%) !important;
+  -webkit-backdrop-filter: blur(16px) saturate(140%) !important;
 }
+
+/* ─── LEGIBILITY FLOOR ───────────────────────────────────────────────────────
+   Most screens predate the token system and still use raw `text-slate-*`
+   colours, sub-11px sizes and wide tracking. There are roughly 1,300
+   low-contrast text uses, 1,100 sub-11px uses and 1,000 wide-tracked labels —
+   far too many to convert by hand, and a mechanical rewrite of that many call
+   sites would be unreviewable.
+
+   These rules re-point the legacy utilities at readable values instead. They
+   sit after `@tailwind utilities`, so they win on source order at equal
+   specificity — and deliberately avoid `!important` so `hover:text-*` variants
+   (specificity 0,2,0) still override them.
+
+   Only the `text-` colour utilities are touched. `bg-slate-*` and
+   `border-slate-*` keep their original values, so surfaces and hairlines are
+   unchanged.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* Dark theme: lift the dim end of the ramp over the AA line while keeping
+   four visually distinct steps. Measured contrast against #060C16 in comments. */
+.text-slate-400 { color: #A7B3C5; }  /* 7.6 → 9.6 */
+.text-slate-500 { color: #8B98AD; }  /* 4.1 → 6.2  (was below AA) */
+.text-slate-600 { color: #74839A; }  /* 2.6 → 4.6  (was below AA) */
+/* Reserved for decorative glyphs and disabled states rather than prose, so
+   this targets the 3:1 non-text minimum instead of 4.5:1. */
+.text-slate-700 { color: #5C6980; }  /* 1.9 → 3.3 */
+
+/* Light theme inverts the requirement: the same utilities must get DARKER to
+   stay legible on a near-white surface. */
+html[data-theme='classy'] .text-slate-400 { color: #55637A; }
+html[data-theme='classy'] .text-slate-500 { color: #445269; }
+html[data-theme='classy'] .text-slate-600 { color: #37455A; }
+html[data-theme='classy'] .text-slate-700 { color: #2A3648; }
+
+/* Type floor. tailwind.config.js already states the rule — "Floor is 11px. The
+   old 8-10px labels were the single biggest reason the UI read as a debug
+   overlay rather than a product." — but ~1,100 arbitrary-value call sites still
+   sit below it. This enforces the documented floor globally. */
+.text-\[9px\]  { font-size: 11px; line-height: 1.5; }
+.text-\[10px\] { font-size: 11px; line-height: 1.5; }
+.text-\[11px\] { font-size: 11px; line-height: 1.5; }
+
+/* 0.1em of tracking on 11px all-caps mono is what makes dense operational
+   metadata hard to scan. Enough spacing to keep the label feel, little enough
+   that words still read as words. Deliberate hero tracking (0.2em/0.3em) is
+   left alone. */
+.tracking-widest { letter-spacing: 0.055em; }
 
 /* html/body reset — transparent now that the wrapper carries the gradient */
 html, body, #root {
   height: 100%;
   margin: 0;
-  background: #060C16;
-  color: #e2e8f0;
+  background: var(--sw-bg);
+  color: var(--sw-text);
   font-family: 'DM Sans', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
   overscroll-behavior: none;
 }
 
 body {
+  /* Fill the visual viewport on iOS (Safari + homescreen standalone).
+     position:fixed + inset:0 beats 100vh, which still mis-measures under
+     the iOS URL bar and dynamic island in several WebKit versions. */
   position: fixed;
   inset: 0;
+  width: 100%;
+  height: 100%;
+  height: 100dvh;
   overflow: hidden;
+  /* Kill the gray tap flash on iOS. */
+  -webkit-tap-highlight-color: transparent;
 }
 
 #root {
+  height: 100%;
+  /* Auth / public portals (AOG, track links) scroll here. The authenticated
+     app shell uses overflow:hidden + inner flex scroll regions instead. */
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
 }
+html[data-standalone='1'] #root {
+  /* Homescreen launches always mount the app shell — lock outer scroll so
+     iOS rubber-banding doesn't flash the body color behind chrome. */
+  overflow: hidden;
+}
 
-/* ─── SCROLLBAR ──────────────────────────────────────────────────────────────*/
-::-webkit-scrollbar            { width: 3px; height: 3px; }
+/* Prefer dynamic viewport units for full-height shells when available. */
+@supports (height: 100dvh) {
+  .h-screen { height: 100dvh; }
+  .min-h-screen { min-height: 100dvh; }
+}
+
+/* Faint graph paper. Reserved for large empty panels (detail placeholders),
+   never the app shell — as a full-screen backdrop it fought every card edge. */
+.grid-bg {
+  background-image:
+    linear-gradient(rgba(148, 163, 184, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.04) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+/* ─── SCROLLBAR ──────────────────────────────────────────────────────────────
+   6px rather than 3px: the old width was effectively invisible, which hid the
+   fact that wide tab bars and tables scroll horizontally at all.
+   ─────────────────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar            { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track      { background: transparent; }
-::-webkit-scrollbar-thumb      { background: rgba(148,163,184,0.18); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover{ background: rgba(148,163,184,0.32); }
+::-webkit-scrollbar-thumb      { background: rgba(148,163,184,0.22); border-radius: 6px; }
+::-webkit-scrollbar-thumb:hover{ background: rgba(148,163,184,0.38); }
 
 .scroll-area {
   scrollbar-width: thin;
-  scrollbar-color: rgba(148,163,184,0.18) transparent;
+  scrollbar-color: rgba(148,163,184,0.22) transparent;
+}
+
+/* Horizontal scrollers that should not advertise a bar (nav rails). The
+   fade mask on .sw-scroll-fade signals overflow instead. */
+.sw-no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+.sw-no-scrollbar::-webkit-scrollbar { display: none; }
+
+/* Fades the right edge of a horizontal scroller so users can see there is
+   more content — replaces relying on an invisible scrollbar. */
+.sw-scroll-fade {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent 100%);
+  mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent 100%);
+}
+.sw-scroll-fade.is-end {
+  -webkit-mask-image: none;
+  mask-image: none;
 }
 
 /* ─── MICRO-INTERACTIONS ─────────────────────────────────────────────────────*/
 button, a, [role="button"] {
-  transition: color 0.1s ease, background-color 0.1s ease,
-              border-color 0.12s ease, opacity 0.1s ease;
+  transition: color 0.12s ease, background-color 0.12s ease,
+              border-color 0.12s ease, opacity 0.12s ease;
 }
 
 /* ─── FOCUS RINGS ─────────────────────────────────────────────────────────── */
-:focus-visible { outline: 2px solid rgba(34,211,238,0.5); outline-offset: 2px; }
+:focus-visible { outline: 2px solid var(--sw-accent); outline-offset: 2px; }
 button:focus:not(:focus-visible),
 a:focus:not(:focus-visible) { outline: none; }
+
+/* ─── SAFE AREA ──────────────────────────────────────────────────────────────
+   Installed PWAs on iOS (Add to Home Screen) need notch / Dynamic Island /
+   home-indicator insets respected. black-translucent status bar paints
+   under the system chrome, so the top shell must pad explicitly.
+   ─────────────────────────────────────────────────────────────────────────── */
+.sw-safe-top { padding-top: env(safe-area-inset-top, 0px); }
+.sw-safe-bottom { padding-bottom: env(safe-area-inset-bottom, 0px); }
+.sw-safe-x {
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+}
+.sw-safe-inset {
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+}
+.sw-bottom-nav-offset {
+  padding-bottom: calc(var(--sw-bottom-nav-h) + env(safe-area-inset-bottom, 0px));
+}
+
+/* App chrome shell — fills the fixed body and owns its own scroll regions. */
+.sw-app-shell {
+  height: 100%;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+}
+
+/* Standalone homescreen polish: slightly taller bottom nav hit targets,
+   and keep the status-bar region painted with the shell color. */
+html[data-standalone='1'] {
+  /* Prevent rubber-band revealing white behind the fixed body. */
+  background: var(--sw-bg);
+}
+html[data-standalone='1'] .sw-mobile-tab {
+  min-height: 48px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

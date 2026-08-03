@@ -27,6 +27,7 @@
 // field extraction. Employment docs skip parsing.
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { notify } from './ui.jsx';
 import {
   FileText, Loader2, Trash2, Download, Upload, AlertTriangle,
   ChevronDown, ChevronRight, ShieldCheck, Plane, Contact, Stethoscope,
@@ -1434,7 +1435,7 @@ function DocTypeSection({ docType, docs, currentUser, allDocs, onError }) {
       if (d.filePath) await storage.deletePilotDoc(d.filePath);
       await m.deletePilotDocRecord(d.id);
     } catch (e) {
-      window.alert('Could not delete — try again.');
+      notify.error('Could not delete — try again.');
     }
   };
 
@@ -1726,7 +1727,7 @@ function EmploymentDocsSection({ currentUser, docs, onError }) {
       if (d.filePath) await storage.deletePilotDoc(d.filePath);
       await m.deletePilotDocRecord(d.id);
     } catch (e) {
-      window.alert('Could not delete — try again.');
+      notify.error('Could not delete — try again.');
     }
   };
 

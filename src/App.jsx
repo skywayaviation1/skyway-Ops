@@ -85,6 +85,7 @@ const CrewBoardV2Lazy = lazy(() => import('./CrewBoardV2.jsx'));
 // import is retained above only because settings still mounts it
 // (small status panel inside Settings). The Duty tab itself uses this.
 const DutyAdminCalendarLazy = lazy(() => import('./DutyAdminCalendar.jsx'));
+const AdminDutyReportLazy = lazy(() => import('./AdminDutyReport.jsx'));
 // AOG Coverage tab — ops+admin only. Tracks additional AOG coverage
 // offered to brokers on eligible CJ3 + LR60 trips through the JetSure /
 // Charter Flight Support policy. Lazy because non-ops roles never see
@@ -97,12 +98,28 @@ import { createPortal } from 'react-dom';
 import {
   Plane, Calendar, MessageSquare, Users, Bell, MapPin,
   CheckCircle2, Circle, AlertTriangle, Camera, Send, RefreshCw,
-  Coffee, ArrowRight, Clock, Shield, X, ScanLine, ChevronLeft,
+  Coffee, ArrowRight, Clock, Shield, X, ScanLine, ChevronLeft, ChevronDown, ChevronUp,
   Mail, Navigation, Loader2, Wifi, WifiOff, Settings as SettingsIcon,
   Download, Trash2, Plus, FileText, Zap, Radio, AlertCircle, Upload,
-  CheckCheck, UserCheck, Sparkles, Hash, Cloud, Wrench, Hotel, BookOpen, Search,
-  Activity, Palette, ShieldCheck, Edit2,
+  Check, CheckCheck, UserCheck, Sparkles, Hash, Cloud, Wrench, Hotel, BookOpen, Search,
+  Activity, Palette, ShieldCheck, Edit2, Home, CreditCard, Fuel, Building2,
+  MoreHorizontal, LogOut, ChevronRight,
 } from 'lucide-react';
+// Shared design-system primitives. New UI should compose these rather than
+// re-deriving borders, spacing and tone colors inline.
+import {
+  cx, Button, IconButton, StatusChip, StatusDot, Card, CardHeader, PageHeader,
+  ScreenHeader, RouteLine, InfoRow, SectionLabel, MetricTile, EmptyState, Spinner,
+  ToastProvider, useToast, notify,
+} from './ui.jsx';
+// Shared tracking-map toolkit. Every map surface (ops Tracking, TV flight
+// board, public broker page) draws aircraft, trails and weather through these
+// helpers so the three screens cannot drift apart visually.
+import {
+  loadLeaflet as loadSharedLeaflet, formatAltitude, formatSpeed,
+  flightCategoryStyle, distanceNm, normalizeTrail,
+} from './tracking-map.js';
+import TrackingMap from './TrackingMap.jsx';
 import { formatLocalTime, formatLocalDate } from './airports.js';
 import {
   logoUrl, fuelCardDomain, cachedAirlineDomain, cachedHotelDomain,
@@ -1768,16 +1785,21 @@ function useAuth() {
   const [authState, setAuthState] = useState('loading');
   const [profile, setProfile] = useState(null);
   const [user, setUser] = useState(null);
+  // Why the last sign-in attempt was refused, when it was refused by our own
+  // policy rather than by Firebase. Without this the login screen reappears
+  // with no explanation.
+  const [authError, setAuthError] = useState(null);
 
   useEffect(() => {
     let unsub = null;
     (async () => {
       try {
         const { watchAuth } = await import('./firebase-auth.js');
-        unsub = watchAuth(({ state, user: u, profile: p }) => {
+        unsub = watchAuth(({ state, user: u, profile: p, authError: reason }) => {
           setAuthState(state);
           setUser(u || null);
           setProfile(p || null);
+          setAuthError(reason || null);
         });
       } catch (err) {
         console.error('Failed to load auth module:', err);
@@ -1796,7 +1818,7 @@ function useAuth() {
     }
   };
 
-  return { authState, profile, user, signOut: doSignOut };
+  return { authState, profile, user, authError, signOut: doSignOut };
 }
 
 /* useFirestoreUsers: subscribes to all user profiles in Firestore.
@@ -1844,7 +1866,7 @@ function useFirestoreUsers(currentProfile) {
       await updateUserProfile(uid, patch);
     } catch (err) {
       console.error('Update failed:', err);
-      alert('Failed to update user: ' + err.message);
+      notify.error('Failed to update user: ' + err.message);
     }
   };
 
@@ -1871,7 +1893,7 @@ function useFirestoreUsers(currentProfile) {
         if (fallback) {
           const { deleteUserProfile } = await import('./firebase-auth.js');
           await deleteUserProfile(uid);
-          alert(
+          notify.error(
             `Profile deleted from Firestore, but the Firebase Auth account ` +
             `still exists (server delete is not configured).\n\n` +
             `To free up the email for re-registration:\n` +
@@ -1889,11 +1911,11 @@ function useFirestoreUsers(currentProfile) {
         const issues = [];
         if (!data.authDeleted) issues.push(`Auth: ${data.authError || 'unknown'}`);
         if (!data.firestoreDeleted) issues.push(`Firestore: ${data.firestoreError || 'unknown'}`);
-        alert(`User partially deleted. Issues: ${issues.join('; ')}`);
+        notify.warning('User partially deleted', { description: issues.join('; ') });
       }
     } catch (err) {
       console.error('Remove failed:', err);
-      alert('Failed to remove user: ' + err.message);
+      notify.error('Failed to remove user: ' + err.message);
     }
   };
 
@@ -1903,7 +1925,7 @@ function useFirestoreUsers(currentProfile) {
       await approveUser(uid);
     } catch (err) {
       console.error('Approve failed:', err);
-      alert('Failed to approve user: ' + err.message);
+      notify.error('Failed to approve user: ' + err.message);
     }
   };
 
@@ -1913,35 +1935,16 @@ function useFirestoreUsers(currentProfile) {
 /* ============================================================
    UI primitives
    ============================================================ */
+/**
+ * Legacy tone names (amber/green/red/violet…) are mapped onto the semantic
+ * palette in ui.jsx. Previously `amber` and `cyan` both rendered cyan, so a
+ * warning was indistinguishable from an informational accent.
+ */
 function Pill({ children, tone = 'neutral', className = '' }) {
-  const tones = {
-    neutral: 'bg-slate-800/60 text-slate-300 border-slate-700',
-    amber: 'bg-cyan-500/10 text-cyan-300 border-cyan-500/40',
-    cyan: 'bg-cyan-500/10 text-cyan-300 border-cyan-500/40',
-    green: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/40',
-    red: 'bg-red-500/10 text-red-300 border-red-500/40',
-    violet: 'bg-violet-500/10 text-violet-300 border-violet-500/40',
-  };
   return (
-    <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] uppercase tracking-[0.15em] border ${tones[tone]} ${className}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+    <StatusChip tone={tone} mono className={cx('uppercase tracking-wider', className)}>
       {children}
-    </span>
-  );
-}
-
-function StatusDot({ tone = 'neutral', pulse = false }) {
-  const colors = {
-    neutral: 'bg-slate-500',
-    amber: 'bg-cyan-400',
-    cyan: 'bg-cyan-400',
-    green: 'bg-emerald-400',
-    red: 'bg-red-400',
-  };
-  return (
-    <span className="relative inline-flex h-2 w-2">
-      {pulse && <span className={`absolute inset-0 rounded-full ${colors[tone]} opacity-50 animate-ping`}></span>}
-      <span className={`relative rounded-full h-2 w-2 ${colors[tone]}`}></span>
-    </span>
+    </StatusChip>
   );
 }
 
@@ -1950,17 +1953,23 @@ function StatusDot({ tone = 'neutral', pulse = false }) {
    ============================================================ */
 function TripCard({ trip, selected, onClick, statusCount, hasUpdate, onArchive }) {
   const dep = trip.start;
-  // Compare local-day strings — same calendar day in user's local time = "TODAY"
-  const isToday = dep && dep.toDateString() === new Date().toDateString();
   const isPast = dep && dep < new Date();
   const meta = CATEGORY_META[trip.info.category] || CATEGORY_META.REPO;
   const totalSteps = trip.info.legType === 'REPO' ? 4 : 5;
   const progress = trip.info.isOps ? statusCount / totalSteps : 0;
+  const timing = classifyTripTiming(trip, Date.now());
+  const status = flightStatus(trip, null, {
+    isActive: timing === 'active',
+    isImminent: timing === 'imminent',
+  });
 
   // Swipe-left-to-archive gesture state
   const [dragX, setDragX] = useState(0);
   const touchStartRef = useRef(null);
   const draggingRef = useRef(false);
+
+  // Route label for the archive confirmation toast.
+  const archiveLabel = `${trip.info?.from || '?'} → ${trip.info?.to || '?'}`;
 
   const handleTouchStart = (e) => {
     if (!onArchive) return;
@@ -1990,7 +1999,7 @@ function TripCard({ trip, selected, onClick, statusCount, hasUpdate, onArchive }
     const wasDragging = draggingRef.current;
     if (wasDragging && dragX < -80) {
       // Past threshold — archive
-      onArchive(trip.uid);
+      onArchive(trip.uid, archiveLabel);
     }
     setDragX(0);
     draggingRef.current = false;
@@ -2008,14 +2017,33 @@ function TripCard({ trip, selected, onClick, statusCount, hasUpdate, onArchive }
   };
 
   return (
-    <div className="relative overflow-hidden">
-      {/* Red ARCHIVE background revealed by swipe */}
+    <div className="group/card relative overflow-hidden">
+      {/* Archive affordance revealed by the swipe gesture. */}
       {dragX < 0 && (
-        <div className="absolute inset-y-0 right-0 flex items-center justify-end px-4 bg-red-500/20" style={{ width: Math.abs(dragX) }}>
-          <span className="text-[10px] tracking-widest text-red-300" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
-            ARCHIVE
+        <div
+          className={cx(
+            'absolute inset-y-0 right-0 flex items-center justify-end px-4',
+            dragX < -80 ? 'bg-danger-soft' : 'bg-surface-raised',
+          )}
+          style={{ width: Math.abs(dragX) }}
+        >
+          <span className={cx('text-2xs font-semibold', dragX < -80 ? 'text-danger' : 'text-content-muted')}>
+            Archive
           </span>
         </div>
+      )}
+      {/* Pointer equivalent of the swipe. Without this the gesture was the
+          only way to archive, and it is invisible on desktop. */}
+      {onArchive && dragX === 0 && (
+        <button
+          type="button"
+          title="Archive this trip"
+          aria-label="Archive this trip"
+          onClick={(e) => { e.stopPropagation(); onArchive(trip.uid, archiveLabel); }}
+          className="absolute right-2 top-2 z-10 hidden rounded p-1.5 text-content-subtle opacity-0 transition-opacity hover:bg-surface-raised hover:text-danger focus-visible:opacity-100 group-hover/card:opacity-100 md:block"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
       )}
       <button
         onClick={handleClick}
@@ -2024,78 +2052,65 @@ function TripCard({ trip, selected, onClick, statusCount, hasUpdate, onArchive }
         onTouchEnd={handleTouchEnd}
         onTouchCancel={handleTouchEnd}
         style={{ transform: `translateX(${dragX}px)`, transition: dragX === 0 ? 'transform 0.2s ease-out' : 'none' }}
-        className={`group w-full text-left p-4 border-l-2 transition-colors relative bg-slate-950 ${
+        className={cx(
+          'relative block w-full overflow-hidden rounded-xl border bg-surface p-3.5 text-left shadow-card transition-colors',
           selected
-            ? 'border-cyan-400 bg-gradient-to-r from-cyan-500/10 to-transparent'
+            ? 'border-accent bg-accent-soft'
             : hasUpdate
-              ? 'border-cyan-400 bg-cyan-500/5 hover:bg-cyan-500/10'
-              : 'border-transparent hover:border-slate-600 hover:bg-slate-900/40'
-        } ${!trip.info.isFlight ? 'opacity-70' : ''}`}
-      >
-      <div className="flex items-start justify-between gap-2 mb-2">
-        <div className="flex items-center gap-2 flex-wrap">
-          <Pill tone={meta.tone}>{meta.label}</Pill>
-          {isToday && <Pill tone="amber">TODAY</Pill>}
-          {hasUpdate && !selected && (
-            <span
-              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full ${
-                hasUpdate === 'chat' ? 'bg-amber-400 text-slate-950' : 'bg-cyan-400 text-slate-950'
-              }`}
-            >
-              <span className="w-1.5 h-1.5 bg-slate-950 rounded-full animate-pulse" />
-              <span className="text-[10px] tracking-widest font-bold" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                {hasUpdate === 'chat' ? 'NEW CHAT' : 'NEW UPDATE'}
-              </span>
-            </span>
-          )}
-        </div>
-        <span className="text-[10px] text-slate-500 uppercase tracking-wider shrink-0" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-          {fmtRelative(dep)}
-        </span>
-      </div>
-
-      <div className="flex items-baseline gap-3 mb-1 flex-wrap">
-        <span className="text-base text-slate-100" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
-          {trip.info.tail}
-        </span>
-        <span className="text-[10px] text-slate-500 uppercase tracking-widest">
-          {(() => {
-            // Show departure-airport local time. Falls back to Zulu when the
-            // airport isn't in the timezone database (formatLocalTime handles this).
-            const t = formatLocalTime(dep, trip.info.from);
-            return `${t.time}${t.tz ? ' ' + t.tz : ''} · ${fmtDateZ(dep).slice(0, 6)}`;
-          })()}
-        </span>
-      </div>
-
-      <div className="flex items-center gap-2 text-slate-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-        <span className="text-sm">{trip.info.from}</span>
-        <ArrowRight className="w-3 h-3 text-slate-600" />
-        <span className="text-sm">{trip.info.to}</span>
-        {trip.info.pax > 0 && (
-          <span className="ml-auto text-[10px] text-slate-400 flex items-center gap-1">
-            <Users className="w-3 h-3" />{trip.info.pax}
-          </span>
+              ? 'border-accent-border hover:border-accent'
+              : 'border-edge hover:border-edge-strong',
+          !trip.info.isFlight && 'opacity-70',
         )}
-      </div>
-
-      {trip.info.customer && (
-        <div className="mt-1 text-[11px] text-slate-500 truncate" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-          {trip.info.customer}
+      >
+        {/* Route and state — the two things worth reading at a glance. */}
+        <div className="flex items-center justify-between gap-3">
+          <RouteLine from={trip.info.from} to={trip.info.to} size="lg" />
+          <StatusChip tone={status.tone} size="sm">{status.label}</StatusChip>
         </div>
-      )}
 
-      {trip.info.isOps && (
-        <div className="mt-2 h-0.5 bg-slate-800 relative overflow-hidden">
-          <div
-            className={`absolute left-0 top-0 h-full transition-all ${
-              progress === 1 ? 'bg-emerald-400' : isPast ? 'bg-red-400' : 'bg-cyan-400'
-            }`}
-            style={{ width: `${progress * 100}%` }}
-          />
+        <div className="mt-1.5 flex items-center justify-between gap-3">
+          <span className="min-w-0 truncate text-2xs text-content-muted">
+            <span className="font-mono">{trip.info.tail}</span>
+            {' · '}
+            <span className="font-mono">
+              {(() => {
+                // Departure-airport local time; formatLocalTime falls back to
+                // Zulu when the airport isn't in the timezone database.
+                const t = formatLocalTime(dep, trip.info.from);
+                return `${t.time}${t.tz ? ' ' + t.tz : ''}`;
+              })()}
+            </span>
+            {trip.info.pax > 0 && <> · {trip.info.pax} pax</>}
+          </span>
+          <span className="shrink-0 font-mono text-2xs text-content-subtle">{fmtRelative(dep)}</span>
         </div>
-      )}
-    </button>
+
+        {(trip.info.customer || meta.label !== 'REVENUE' || hasUpdate) && (
+          <div className="mt-2 flex items-center gap-2">
+            {meta.label !== 'REVENUE' && <StatusChip tone={meta.tone} size="sm">{meta.label}</StatusChip>}
+            {hasUpdate && !selected && (
+              <StatusChip tone={hasUpdate === 'chat' ? 'warning' : 'accent'} size="sm">
+                {hasUpdate === 'chat' ? 'New chat' : 'New update'}
+              </StatusChip>
+            )}
+            {trip.info.customer && (
+              <span className="min-w-0 truncate text-2xs text-content-subtle">{trip.info.customer}</span>
+            )}
+          </div>
+        )}
+
+        {trip.info.isOps && (
+          <div className="relative mt-3 h-1 overflow-hidden rounded-full bg-surface-raised">
+            <div
+              className={cx(
+                'absolute left-0 top-0 h-full rounded-full transition-all',
+                progress === 1 ? 'bg-success' : isPast ? 'bg-danger' : 'bg-accent',
+              )}
+              style={{ width: `${progress * 100}%` }}
+            />
+          </div>
+        )}
+      </button>
     </div>
   );
 }
@@ -2596,8 +2611,8 @@ const BubbleChatLazyTrip = lazy(() => import('./BubbleChat.jsx'));
 
 // Document types crew can capture during check-in.
 const DOCUMENT_TYPES = [
-  { value: 'ID',       label: 'ID',       icon: '\u{1F4C4}' },
-  { value: 'PASSPORT', label: 'Passport', icon: '\u{1F4D8}' },
+  { value: 'ID',       label: 'Driver license / ID', icon: CreditCard },
+  { value: 'PASSPORT', label: 'Passport',            icon: BookOpen },
 ];
 
 /**
@@ -2624,12 +2639,31 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
   // Camera state
   const [phase, setPhase] = useState('intro'); // intro | capturing | review
   const [photo, setPhoto] = useState(null);    // dataURL once captured
+  const [photoSource, setPhotoSource] = useState(null); // camera | library
+  const [imageMeta, setImageMeta] = useState(null);     // { width, height }
   const [error, setError] = useState(null);
   const [torchSupported, setTorchSupported] = useState(false);
   const [torchOn, setTorchOn] = useState(false);
 
   // Verification checkbox
   const [idVerified, setIdVerified] = useState(false);
+  const [mismatchAcknowledged, setMismatchAcknowledged] = useState(false);
+  const [documentExceptionAcknowledged, setDocumentExceptionAcknowledged] = useState(false);
+
+  // Automated extraction is advisory. Crew still sees the image and makes
+  // the legal identity decision; AI never checks someone in on its own.
+  const [scanStatus, setScanStatus] = useState('idle'); // idle | analyzing | complete | failed
+  const [scanError, setScanError] = useState(null);
+  const [parsedId, setParsedId] = useState(null);
+  const [reviewFields, setReviewFields] = useState({
+    firstName: '',
+    middleName: '',
+    lastName: '',
+    dob: '',
+    expiration: '',
+    issuingAuthority: '',
+    documentNumber: '',
+  });
 
   // Camera refs
   const videoRef = useRef(null);
@@ -2787,11 +2821,24 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
     }
   };
 
-  // Fallback path when camera permissions are bricked: pick a photo
-  // from the device library. We resize via a canvas before storing so
-  // a 12MP iPhone photo doesn't blow up the dataURL. End state matches
-  // capturePhoto() so the rest of the verification flow is identical.
+  // Camera-roll path. It is a first-class capture option, not just an error
+  // fallback: crew frequently receive a clear ID photo from a passenger before
+  // arrival. Images are resized in memory before OCR/upload.
   const fileInputRef = useRef(null);
+  const applyPhoto = useCallback((result, source) => {
+    stopCamera();
+    setPhoto(result.dataUrl);
+    setPhotoSource(source);
+    setImageMeta({ width: result.width, height: result.height });
+    setIdVerified(false);
+    setMismatchAcknowledged(false);
+    setDocumentExceptionAcknowledged(false);
+    setParsedId(null);
+    setScanError(null);
+    setScanStatus('idle');
+    setPhase('review');
+  }, [stopCamera]);
+
   const onFileSelected = async (e) => {
     const file = e.target.files?.[0];
     // Always clear the input so re-picking the same file fires onChange
@@ -2799,10 +2846,14 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
     if (!file) return;
     setError(null);
     try {
-      const dataUrl = await readImageAsResizedDataUrl(file, 1280);
-      stopCamera();
-      setPhoto(dataUrl);
-      setPhase('review');
+      if (file.type && !String(file.type).startsWith('image/')) {
+        throw new Error('Choose an image file (JPEG, PNG, HEIC, or WebP).');
+      }
+      if (file.size > 15 * 1024 * 1024) {
+        throw new Error('That image is larger than 15 MB. Choose a smaller photo.');
+      }
+      const result = await readImageAsResizedDataUrl(file, 1600);
+      applyPhoto(result, 'library');
     } catch (err) {
       setError({
         title: 'Couldn\'t read that photo',
@@ -2829,7 +2880,11 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
           cnv.height = Math.round(img.height * scale);
           const ctx = cnv.getContext('2d');
           ctx.drawImage(img, 0, 0, cnv.width, cnv.height);
-          resolve(cnv.toDataURL('image/jpeg', 0.75));
+          resolve({
+            dataUrl: cnv.toDataURL('image/jpeg', 0.82),
+            width: cnv.width,
+            height: cnv.height,
+          });
         };
         img.onerror = () => reject(new Error('Image decode failed'));
         img.src = fr.result;
@@ -2873,28 +2928,119 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
     if (!videoRef.current || !canvasRef.current) return;
     const v = videoRef.current;
     const c = canvasRef.current;
-    const maxW = 1280;
+    const maxW = 1600;
     const scale = Math.min(1, maxW / v.videoWidth);
     c.width = Math.round(v.videoWidth * scale);
     c.height = Math.round(v.videoHeight * scale);
     const ctx = c.getContext('2d');
     ctx.drawImage(v, 0, 0, c.width, c.height);
-    const dataUrl = c.toDataURL('image/jpeg', 0.75);
-    setPhoto(dataUrl);
-    stopCamera();
-    setPhase('review');
+    applyPhoto({
+      dataUrl: c.toDataURL('image/jpeg', 0.82),
+      width: c.width,
+      height: c.height,
+    }, 'camera');
   };
 
-  const retake = () => {
+  const retake = (source = 'camera') => {
     setPhoto(null);
-    startCamera();
+    setPhotoSource(null);
+    setImageMeta(null);
+    setParsedId(null);
+    setScanStatus('idle');
+    setIdVerified(false);
+    setMismatchAcknowledged(false);
+    setDocumentExceptionAcknowledged(false);
+    if (source === 'library') {
+      setPhase('intro');
+      setTimeout(() => fileInputRef.current?.click(), 0);
+    } else {
+      startCamera();
+    }
   };
+
+  const analyzePhoto = useCallback(async () => {
+    if (!photo || scanStatus === 'analyzing') return;
+    setScanStatus('analyzing');
+    setScanError(null);
+    try {
+      const { auth } = await import('./firebase.js');
+      const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : null;
+      if (!idToken) throw new Error('Your session expired. Sign in and try again.');
+      const comma = photo.indexOf(',');
+      const imageBase64 = comma >= 0 ? photo.slice(comma + 1) : photo;
+      const response = await fetch('/api/parse-id', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken, imageBase64, mediaType: 'image/jpeg' }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.parsed) {
+        throw new Error(data?.error || 'Document scan failed');
+      }
+      const parsed = data.parsed;
+      setParsedId(parsed);
+      setReviewFields({
+        firstName: parsed.firstName || '',
+        middleName: parsed.middleName || '',
+        lastName: parsed.lastName || '',
+        dob: parsed.dob || '',
+        expiration: parsed.expiration || '',
+        issuingAuthority: parsed.issuingAuthority || '',
+        documentNumber: parsed.documentNumber || '',
+      });
+      if (/passport/i.test(parsed.documentType || '')) setDocumentType('PASSPORT');
+      else if (parsed.documentType && parsed.documentType !== 'unknown') setDocumentType('ID');
+      // A walk-up name starts with the extracted identity but remains editable.
+      if (isWalkup) {
+        if (!firstName.trim() && parsed.firstName) setFirstName(parsed.firstName);
+        if (!lastName.trim() && parsed.lastName) setLastName(parsed.lastName);
+      }
+      setScanStatus('complete');
+    } catch (err) {
+      setScanError(err?.message || 'Could not read this document.');
+      setScanStatus('failed');
+    }
+  }, [photo, scanStatus, isWalkup, firstName, lastName]);
+
+  // Scan immediately after camera capture or library selection. The result is
+  // advisory and the image remains visible throughout review.
+  useEffect(() => {
+    if (phase === 'review' && photo && scanStatus === 'idle') analyzePhoto();
+  }, [phase, photo, scanStatus, analyzePhoto]);
+
+  const nameMatch = useMemo(() => {
+    if (!parsedId || isWalkup || !expectedPax) return null;
+    return compareNames(reviewFields, expectedPax);
+  }, [parsedId, reviewFields, expectedPax, isWalkup]);
+
+  const expiryDate = reviewFields.expiration ? new Date(`${reviewFields.expiration}T12:00:00`) : null;
+  const documentExpired = expiryDate && !Number.isNaN(expiryDate.getTime())
+    ? expiryDate.getTime() < Date.now()
+    : false;
+  const nameMismatch = nameMatch?.level === 'mismatch';
+  const expectedDobNormalized = normalizeIdentityDate(expectedPax?.dob);
+  const scannedDobNormalized = normalizeIdentityDate(reviewFields.dob);
+  const dobMismatch = Boolean(
+    !isWalkup
+    && expectedDobNormalized
+    && scannedDobNormalized
+    && expectedDobNormalized !== scannedDobNormalized
+  );
+  const identityMismatch = nameMismatch || dobMismatch;
+  const lowResolution = imageMeta
+    ? Math.min(imageMeta.width || 0, imageMeta.height || 0) < 600
+    : false;
 
   const walkupNamesValid = isWalkup
-    ? firstName.trim().length > 0 && lastName.trim().length > 0
+    ? (parsedId ? reviewFields.firstName : firstName).trim().length > 0
+      && (parsedId ? reviewFields.lastName : lastName).trim().length > 0
     : true;
 
-  const canSubmit = walkupNamesValid && photo && idVerified;
+  const canSubmit = walkupNamesValid
+    && photo
+    && idVerified
+    && (!identityMismatch || mismatchAcknowledged)
+    && (!documentExpired || documentExceptionAcknowledged);
 
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState(null);
@@ -2928,6 +3074,8 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
           tripUid: String(tripContext.tripUid || ''),
           verifiedBy: String(tripContext.verifiedBy || ''),
           documentType,
+          imageSource: String(photoSource || 'unknown'),
+          aiParsed: parsedId ? 'true' : 'false',
         },
       });
       const photoUrl = await getDownloadURL(snap.ref);
@@ -2935,13 +3083,24 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
       const paxData = isWalkup
         ? {
             id: paxId,
-            firstName: firstName.trim(),
-            lastName: lastName.trim(),
+            firstName: (parsedId ? reviewFields.firstName : firstName).trim(),
+            lastName: (parsedId ? reviewFields.lastName : lastName).trim(),
             documentType,
             photoUrl,           // ← URL instead of inline dataURL
             photoPath: path,    // for future delete-on-trip-removal
+            imageSource: photoSource,
             idVerified: true,
-            method: 'PHOTO_VERIFY_WALKUP',
+            method: parsedId ? 'DOCUMENT_SCAN_WALKUP' : 'PHOTO_VERIFY_WALKUP',
+            dob: reviewFields.dob || '',
+            expiration: reviewFields.expiration || '',
+            issuingAuthority: reviewFields.issuingAuthority || '',
+            documentLast4: reviewFields.documentNumber
+              ? reviewFields.documentNumber.slice(-4)
+              : '',
+            scanConfidence: parsedId?.confidence || null,
+            nameMatchLevel: null,
+            documentExpired: Boolean(documentExpired),
+            documentExceptionAcknowledged: Boolean(documentExpired && documentExceptionAcknowledged),
           }
         : {
             ...expectedPax,
@@ -2949,8 +3108,25 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
             documentType,
             photoUrl,
             photoPath: path,
+            imageSource: photoSource,
             idVerified: true,
-            method: 'PHOTO_VERIFY',
+            method: parsedId ? 'DOCUMENT_SCAN' : 'PHOTO_VERIFY',
+            // Keep only the operational fields needed at check-in. The full
+            // document number and MRZ are deliberately not persisted.
+            dob: reviewFields.dob || expectedPax?.dob || '',
+            expiration: reviewFields.expiration || '',
+            issuingAuthority: reviewFields.issuingAuthority || '',
+            documentLast4: reviewFields.documentNumber
+              ? reviewFields.documentNumber.slice(-4)
+              : '',
+            scanConfidence: parsedId?.confidence || null,
+            nameMatchLevel: nameMatch?.level || 'no-data',
+            documentExpired: Boolean(documentExpired),
+            mismatchAcknowledged: Boolean(identityMismatch && mismatchAcknowledged),
+            dobMatch: scannedDobNormalized && expectedDobNormalized
+              ? scannedDobNormalized === expectedDobNormalized
+              : null,
+            documentExceptionAcknowledged: Boolean(documentExpired && documentExceptionAcknowledged),
           };
       onComplete(paxData);
     } catch (err) {
@@ -2995,19 +3171,14 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
                 </button>
               )}
               {error.canUpload && (
-                <label
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
                   className="px-3 py-1.5 text-xs bg-slate-700 border border-slate-600 text-slate-200 hover:bg-slate-600 tracking-wider transition cursor-pointer"
                   style={{ fontFamily: 'JetBrains Mono, monospace' }}
                 >
                   UPLOAD PHOTO
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={onFileSelected}
-                  />
-                </label>
+                </button>
               )}
             </div>
           )}
@@ -3026,6 +3197,38 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
           {uploadError}
         </div>
       )}
+
+      {/* Single camera-roll input shared by the normal flow and every error
+          recovery action. No `capture` attribute: on iPhone that is what
+          allows Camera Roll / Files instead of forcing the camera. */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
+        className="hidden"
+        onChange={onFileSelected}
+      />
+
+      <div className="grid grid-cols-3 gap-1" aria-label="Check-in progress">
+        {[
+          { label: 'Capture', active: phase === 'intro' || phase === 'capturing', done: Boolean(photo) },
+          { label: 'Review', active: phase === 'review' && !idVerified, done: Boolean(photo && idVerified) },
+          { label: 'Verify', active: Boolean(photo && idVerified), done: false },
+        ].map((step, index) => (
+          <div key={step.label}>
+            <div className={cx(
+              'h-1 rounded-full',
+              step.done ? 'bg-success' : step.active ? 'bg-accent' : 'bg-surface-raised',
+            )} />
+            <p className={cx(
+              'mt-1 text-center text-[10px] font-semibold',
+              step.active || step.done ? 'text-content' : 'text-content-subtle',
+            )}>
+              {index + 1}. {step.label}
+            </p>
+          </div>
+        ))}
+      </div>
 
       {/* Trip-sheet details (preloaded only) */}
       {!isWalkup && expectedPax && (
@@ -3072,7 +3275,8 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
               }`}
               style={{ fontFamily: 'DM Sans, sans-serif' }}
             >
-              <span className="mr-2">{d.icon}</span>{d.label}
+              <d.icon className="mr-2 inline h-4 w-4 align-text-bottom" />
+              {d.label}
             </button>
           ))}
         </div>
@@ -3080,13 +3284,39 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
 
       {/* Camera area */}
       {phase === 'intro' && !photo && (
-        <button
-          onClick={startCamera}
-          className="w-full py-3 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-medium tracking-widest flex items-center justify-center gap-2"
-          style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}
-        >
-          <Camera className="w-4 h-4" /> TAKE PHOTO OF {documentType === 'PASSPORT' ? 'PASSPORT' : 'ID'}
-        </button>
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-2">
+            <Button variant="primary" size="lg" icon={Camera} block onClick={startCamera}>
+              Use camera
+            </Button>
+            <Button
+              variant="outline"
+              size="lg"
+              icon={Upload}
+              block
+              onClick={() => fileInputRef.current?.click()}
+            >
+              Camera roll
+            </Button>
+          </div>
+          <div className="rounded-lg border border-edge bg-surface-sunken p-3">
+            <div className="flex items-start gap-2">
+              <ScanLine className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
+              <div>
+                <p className="text-2xs font-semibold text-content">
+                  {documentType === 'PASSPORT'
+                    ? 'Photograph the biographic page'
+                    : 'Photograph the front of the document'}
+                </p>
+                <p className="mt-0.5 text-2xs leading-relaxed text-content-muted">
+                  Fill the frame, avoid glare, and keep all four corners visible.
+                  Skyway will read the document and compare it with the trip sheet;
+                  crew makes the final decision.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {phase === 'capturing' && (
@@ -3101,6 +3331,13 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
               muted
             />
             <canvas ref={canvasRef} className="hidden" />
+            {/* Capture guide: the saved image is still the complete frame; this
+                overlay only helps crew keep all document edges visible. */}
+            <div className="pointer-events-none absolute inset-[8%] rounded-lg border-2 border-white/70 shadow-[0_0_0_999px_rgba(0,0,0,0.28)]">
+              <span className="absolute -bottom-7 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-black/60 px-2 py-1 text-[10px] text-white">
+                Align all four corners
+              </span>
+            </div>
             {torchSupported && (
               <button
                 onClick={toggleTorch}
@@ -3135,33 +3372,211 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
       )}
 
       {phase === 'review' && photo && (
-        <div className="space-y-2">
-          <div className="border border-emerald-500/30 bg-slate-950 overflow-hidden">
+        <div className="space-y-3">
+          <div className="relative overflow-hidden rounded-lg border border-edge bg-slate-950">
             <img src={photo} alt={`${documentType} captured`} className="w-full h-auto" />
+            <span className="absolute left-2 top-2 rounded bg-black/70 px-2 py-1 font-mono text-[10px] text-white">
+              {photoSource === 'library' ? 'CAMERA ROLL' : 'CAMERA'}
+              {imageMeta ? ` · ${imageMeta.width}×${imageMeta.height}` : ''}
+            </span>
           </div>
-          <button
-            onClick={retake}
-            className="w-full py-1.5 border border-slate-700 text-slate-400 hover:bg-slate-800 text-xs tracking-widest"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}
-          >
-            RETAKE PHOTO
-          </button>
+          {lowResolution && (
+            <div className="flex items-start gap-2 rounded-lg border border-warning-border bg-warning-soft p-2.5 text-2xs text-warning">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>This image is low resolution. Names and dates may be harder to read; use a sharper photo if available.</span>
+            </div>
+          )}
+          <div className="grid grid-cols-2 gap-2">
+            <Button variant="outline" size="sm" icon={Camera} block onClick={() => retake('camera')}>
+              Retake
+            </Button>
+            <Button variant="outline" size="sm" icon={Upload} block onClick={() => retake('library')}>
+              Choose another
+            </Button>
+          </div>
+
+          {scanStatus === 'analyzing' && (
+            <div className="flex items-center gap-3 rounded-lg border border-accent-border bg-accent-soft p-3">
+              <Loader2 className="h-4 w-4 shrink-0 animate-spin text-accent" />
+              <div>
+                <p className="text-sm font-semibold text-content">Reading document…</p>
+                <p className="text-2xs text-content-muted">Extracting the name, date of birth, and expiration for crew review.</p>
+              </div>
+            </div>
+          )}
+
+          {scanStatus === 'failed' && (
+            <div className="rounded-lg border border-warning-border bg-warning-soft p-3">
+              <div className="flex items-start gap-2 text-warning">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                <div>
+                  <p className="text-sm font-semibold">Automatic reading unavailable</p>
+                  <p className="mt-0.5 text-2xs leading-relaxed">{scanError}</p>
+                </div>
+              </div>
+              <Button variant="outline" size="sm" icon={RefreshCw} className="mt-2.5" onClick={analyzePhoto}>
+                Try reading again
+              </Button>
+              <p className="mt-2 text-2xs text-content-muted">
+                You can still inspect the image manually and check in the passenger.
+              </p>
+            </div>
+          )}
+
+          {scanStatus === 'complete' && parsedId && (
+            <div className="overflow-hidden rounded-xl border border-edge bg-surface">
+              <div className="flex items-start justify-between gap-3 border-b border-edge p-3">
+                <div className="flex items-start gap-2">
+                  <ScanLine className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
+                  <div>
+                    <p className="text-sm font-semibold text-content">Review scanned details</p>
+                    <p className="text-2xs text-content-muted">Correct anything the scanner misread before continuing.</p>
+                  </div>
+                </div>
+                <StatusChip
+                  tone={parsedId.confidence === 'high' ? 'success' : parsedId.confidence === 'medium' ? 'warning' : 'danger'}
+                  size="sm"
+                >
+                  {parsedId.confidence || 'Unknown'} confidence
+                </StatusChip>
+              </div>
+
+              <div className="grid gap-3 p-3 sm:grid-cols-2">
+                <ScannerField
+                  label="First name"
+                  value={reviewFields.firstName}
+                  onChange={(v) => setReviewFields(f => ({ ...f, firstName: v }))}
+                />
+                <ScannerField
+                  label="Last name"
+                  value={reviewFields.lastName}
+                  onChange={(v) => setReviewFields(f => ({ ...f, lastName: v }))}
+                />
+                <ScannerField
+                  label="Date of birth"
+                  type="date"
+                  value={reviewFields.dob}
+                  onChange={(v) => setReviewFields(f => ({ ...f, dob: v }))}
+                />
+                <ScannerField
+                  label="Expiration"
+                  type="date"
+                  value={reviewFields.expiration}
+                  onChange={(v) => setReviewFields(f => ({ ...f, expiration: v }))}
+                  invalid={documentExpired}
+                />
+                <ScannerField
+                  label="Document number"
+                  value={reviewFields.documentNumber}
+                  onChange={(v) => setReviewFields(f => ({ ...f, documentNumber: v }))}
+                  hint="Only the last 4 characters are stored"
+                />
+                <ScannerField
+                  label="Issued by"
+                  value={reviewFields.issuingAuthority}
+                  onChange={(v) => setReviewFields(f => ({ ...f, issuingAuthority: v }))}
+                />
+              </div>
+
+              {parsedId.notes && (
+                <p className="border-t border-edge px-3 py-2 text-2xs leading-relaxed text-content-muted">
+                  Scanner note: {parsedId.notes}
+                </p>
+              )}
+            </div>
+          )}
+
+          {nameMatch && (
+            <NameMatchReview
+              result={nameMatch}
+              expected={expectedPax}
+              extracted={reviewFields}
+            />
+          )}
+
+          {identityMismatch && (
+            <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-danger-border bg-danger-soft p-3">
+              <input
+                type="checkbox"
+                checked={mismatchAcknowledged}
+                onChange={(e) => setMismatchAcknowledged(e.target.checked)}
+                className="mt-0.5 h-4 w-4 accent-red-500"
+              />
+              <span className="text-2xs leading-relaxed text-danger">
+                I reviewed the passenger and document in person and am overriding the scanner's identity mismatch. This decision will be recorded.
+              </span>
+            </label>
+          )}
+
+          {documentExpired && (
+            <div className="rounded-lg border border-danger-border bg-danger-soft p-3 text-danger">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                <div>
+                  <p className="text-sm font-semibold">Document expired</p>
+                  <p className="text-2xs">Expiration: {reviewFields.expiration}. Confirm another acceptable document before check-in.</p>
+                </div>
+              </div>
+              <label className="mt-3 flex cursor-pointer items-start gap-2.5 border-t border-danger-border pt-3">
+                <input
+                  type="checkbox"
+                  checked={documentExceptionAcknowledged}
+                  onChange={(e) => setDocumentExceptionAcknowledged(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 accent-red-500"
+                />
+                <span className="text-2xs leading-relaxed">
+                  I inspected another current acceptable document and am recording this exception.
+                </span>
+              </label>
+            </div>
+          )}
         </div>
       )}
 
       {/* Verification checkbox */}
       {photo && (
-        <label className="flex items-start gap-2 p-2.5 border border-slate-700 bg-slate-900/40 cursor-pointer hover:bg-slate-900/70">
+        <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-edge bg-surface p-3.5 hover:border-accent-border">
           <input
             type="checkbox"
             checked={idVerified}
             onChange={(e) => setIdVerified(e.target.checked)}
-            className="mt-0.5 accent-cyan-400"
+            className="mt-0.5 h-4 w-4 accent-cyan-400"
           />
-          <span className="text-sm text-slate-200" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-            <strong>ID Verified.</strong> I have visually inspected the {documentType === 'PASSPORT' ? 'passport' : 'ID'} and confirm it matches the passenger.
+          <span>
+            <span className="flex items-center gap-1.5 text-sm font-semibold text-content">
+              <ShieldCheck className="h-4 w-4 text-accent" /> Crew verification
+            </span>
+            <span className="mt-1 block text-2xs leading-relaxed text-content-muted">
+              I inspected the original {documentType === 'PASSPORT' ? 'passport' : 'identification'},
+              compared the person to the photo and name, and reviewed all scanner warnings.
+              The scanner is advisory; this attestation is the check-in decision.
+            </span>
           </span>
         </label>
+      )}
+
+      {photo && (
+        <div className="flex items-start gap-2 px-1 text-[10px] leading-relaxed text-content-subtle">
+          <Shield className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>
+            The image is stored in restricted passenger-ID storage for operational verification
+            and scheduled for automatic deletion after 5 days. Full document numbers are not saved to the passenger record.
+          </span>
+        </div>
+      )}
+
+      {photo && !canSubmit && (
+        <p className="rounded-lg border border-edge bg-surface-sunken px-3 py-2 text-2xs text-content-muted">
+          Next: {!walkupNamesValid
+            ? 'enter the passenger’s first and last name.'
+            : identityMismatch && !mismatchAcknowledged
+              ? 'review and acknowledge the identity mismatch.'
+              : documentExpired && !documentExceptionAcknowledged
+                ? 'confirm another current document.'
+                : !idVerified
+                  ? 'complete the crew verification attestation.'
+                  : 'finish reviewing this document.'}
+        </p>
       )}
 
       {/* Action buttons */}
@@ -3190,6 +3605,90 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
           )}
         </button>
       </div>
+    </div>
+  );
+}
+
+function ScannerField({ label, value, onChange, type = 'text', hint, invalid = false }) {
+  return (
+    <label className="block">
+      <span className="text-[10px] font-semibold uppercase tracking-wider text-content-subtle">{label}</span>
+      <input
+        type={type}
+        value={value || ''}
+        onChange={(e) => onChange(e.target.value)}
+        className={cx(
+          'mt-1 h-10 w-full rounded-lg border bg-surface-sunken px-3 font-mono text-xs text-content outline-none transition-colors',
+          invalid
+            ? 'border-danger-border focus:border-danger'
+            : 'border-edge focus:border-accent-border',
+        )}
+      />
+      {hint && <span className="mt-1 block text-[10px] text-content-subtle">{hint}</span>}
+    </label>
+  );
+}
+
+function normalizeIdentityDate(value) {
+  if (!value) return null;
+  const iso = String(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  const slash = String(value).match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/);
+  if (!slash) return null;
+  let year = Number(slash[3]);
+  if (year < 100) year += year > 30 ? 1900 : 2000;
+  return `${year}-${String(slash[1]).padStart(2, '0')}-${String(slash[2]).padStart(2, '0')}`;
+}
+
+function NameMatchReview({ result, expected, extracted }) {
+  const tone = result.level === 'exact' || result.level === 'close'
+    ? 'success'
+    : result.level === 'partial'
+      ? 'warning'
+      : result.level === 'mismatch'
+        ? 'danger'
+        : 'neutral';
+  const label = {
+    exact: 'Name matches',
+    close: 'Likely match',
+    partial: 'Review name',
+    mismatch: 'Name mismatch',
+    'no-data': 'Manual review',
+  }[result.level] || 'Manual review';
+  const expectedDob = normalizeIdentityDate(expected?.dob);
+  const extractedDob = normalizeIdentityDate(extracted?.dob);
+  const dobMismatch = expectedDob && extractedDob && expectedDob !== extractedDob;
+
+  return (
+    <div className={cx(
+      'rounded-xl border p-3',
+      tone === 'success' ? 'border-success-border bg-success-soft'
+        : tone === 'warning' ? 'border-warning-border bg-warning-soft'
+          : tone === 'danger' ? 'border-danger-border bg-danger-soft'
+            : 'border-edge bg-surface-sunken',
+    )}>
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm font-semibold text-content">Trip-sheet comparison</p>
+        <StatusChip tone={tone} size="sm">{label}</StatusChip>
+      </div>
+      <div className="mt-2 grid grid-cols-2 gap-3 text-2xs">
+        <div>
+          <p className="text-content-subtle">Expected</p>
+          <p className="mt-0.5 text-content">{expected?.firstName} {expected?.lastName}</p>
+          {expected?.dob && <p className="font-mono text-content-muted">DOB {expected.dob}</p>}
+        </div>
+        <div>
+          <p className="text-content-subtle">Document</p>
+          <p className="mt-0.5 text-content">{extracted?.firstName || '—'} {extracted?.lastName || ''}</p>
+          {extracted?.dob && <p className={cx('font-mono', dobMismatch ? 'text-danger' : 'text-content-muted')}>DOB {extracted.dob}</p>}
+        </div>
+      </div>
+      {(result.warnings?.length > 0 || dobMismatch) && (
+        <div className="mt-2 border-t border-current/10 pt-2 text-2xs leading-relaxed text-content-muted">
+          {result.warnings?.map((w) => <p key={w}>{w}</p>)}
+          {dobMismatch && <p className="font-semibold text-danger">Date of birth does not match the trip sheet.</p>}
+        </div>
+      )}
     </div>
   );
 }
@@ -3236,7 +3735,7 @@ function DelayPanel({ trip, opsEmail, brokerEmail, currentUser, statuses, setSta
 
   const send = async () => {
     if (!reason.trim()) {
-      alert('Reason for delay is required.');
+      notify.error('Reason for delay is required.');
       return;
     }
     setSending(true);
@@ -4223,53 +4722,34 @@ function PilotHomeScreen({ currentUser, trips, tripStates, config, users, onSele
 
   const userName = currentUser?.callsign || currentUser?.name?.split(' ')[0] || 'Pilot';
   const greeting = timeBasedGreeting();
-  const role = USER_ROLES[currentUser?.role]?.label || '';
 
   return (
     <div className="flex-1 overflow-y-auto scroll-area bg-slate-950">
-      <div className="max-w-4xl mx-auto p-4 md:p-6 space-y-5">
-        {/* Header strip */}
-        <div className="flex items-baseline gap-3 flex-wrap">
-          <h1 className="text-3xl md:text-4xl tracking-wide text-slate-100"
-            style={{ fontFamily: 'Bebas Neue, sans-serif', letterSpacing: '0.05em' }}>
-            {greeting}, {userName}
-          </h1>
-          {role && (
-            <span className="text-[10px] tracking-widest text-slate-500"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              · {role}
-            </span>
-          )}
-        </div>
-
-        {/* Duty tracker (isolated, flag-gated, error-boundaried) */}
-        <DutyCard
-          currentUser={currentUser}
-          config={config}
-          myTrips={myTrips}
-          users={users}
-        />
-
-        {/* Today's stats strip */}
-        <div className="grid grid-cols-3 gap-3">
-          <StatCard label="ACTIVE" value={buckets.active.length} tone={buckets.active.length > 0 ? 'cyan' : 'muted'} />
-          <StatCard label="NEXT 12H" value={buckets.imminent.length} tone={buckets.imminent.length > 0 ? 'amber' : 'muted'} />
-          <StatCard label="UPCOMING" value={buckets.upcoming.length} tone="muted" />
-        </div>
-
-        {/* Mini flight board — same component as TRACKING, in compact
-            mode. Shows today's actual flight rows + map view. */}
-        <Suspense fallback={
-          <div className="border border-slate-800 bg-slate-900/30 p-6 text-center text-slate-500"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            <Loader2 className="w-4 h-4 animate-spin inline mr-2" />
-            LOADING FLIGHT BOARD
+      <div className="mx-auto max-w-5xl space-y-4 p-4 pb-8 md:space-y-5 md:p-6 lg:p-8">
+        {/* Greeting reads like a home screen, not a report header: name
+            first, then a live wall clock the crew can glance at. */}
+        <div className="flex items-start justify-between gap-4 pt-1">
+          <div className="min-w-0">
+            <h1 className="text-2xl font-semibold leading-tight text-content">
+              {greeting}, {userName}
+            </h1>
+            <p className="mt-1 font-mono text-2xs text-content-muted">
+              <LocalClock />
+            </p>
           </div>
-        }>
-          <FlightBoardLazy allTrips={trips} compact />
-        </Suspense>
+          <Button
+            variant="outline"
+            size="sm"
+            icon={Calendar}
+            className="hidden shrink-0 sm:inline-flex"
+            onClick={() => onSwitchSection?.('schedule')}
+          >
+            All flights
+          </Button>
+        </div>
 
-        {/* Focus card — the most relevant trip right now */}
+        {/* The next flight is the crew member's primary task, so it now
+            precedes duty telemetry and the embedded fleet board. */}
         {focusTrip ? (
           <PilotFocusCard
             trip={focusTrip}
@@ -4283,20 +4763,34 @@ function PilotHomeScreen({ currentUser, trips, tripStates, config, users, onSele
           <EmptyFocusCard />
         )}
 
+        {/* Duty tracker (isolated, flag-gated, error-boundaried). */}
+        <DutyCard currentUser={currentUser} config={config} myTrips={myTrips} users={users} />
+
+        <div className="grid grid-cols-3 gap-3">
+          <MetricTile
+            label="Active"
+            value={buckets.active.length}
+            tone={buckets.active.length > 0 ? 'accent' : 'neutral'}
+            icon={Plane}
+          />
+          <MetricTile
+            label="Next 12h"
+            value={buckets.imminent.length}
+            tone={buckets.imminent.length > 0 ? 'warning' : 'neutral'}
+            icon={Clock}
+          />
+          <MetricTile label="Upcoming" value={buckets.upcoming.length} icon={Calendar} />
+        </div>
+
         {/* Upcoming list */}
         {(buckets.imminent.length > 0 || buckets.upcoming.length > 0) && (
-          <div>
-            <div className="flex items-baseline justify-between mb-2">
-              <h2 className="text-xs tracking-[0.2em] text-slate-300"
-                style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}>
-                MY UPCOMING
-              </h2>
-              <span className="text-[10px] text-slate-500"
-                style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                {buckets.imminent.length + buckets.upcoming.length} trip{(buckets.imminent.length + buckets.upcoming.length) === 1 ? '' : 's'}
-              </span>
-            </div>
-            <div className="space-y-2">
+          <Card>
+            <CardHeader
+              title="Upcoming flights"
+              subtitle={`${buckets.imminent.length + buckets.upcoming.length} assigned trip${(buckets.imminent.length + buckets.upcoming.length) === 1 ? '' : 's'}`}
+              icon={Calendar}
+            />
+            <div className="divide-y divide-edge">
               {/* Skip the focus trip itself in the list, since it's already shown above */}
               {[...buckets.imminent, ...buckets.upcoming]
                 .filter(t => t.uid !== focusTrip?.uid)
@@ -4310,17 +4804,14 @@ function PilotHomeScreen({ currentUser, trips, tripStates, config, users, onSele
                   />
                 ))}
             </div>
-          </div>
+          </Card>
         )}
 
         {/* Recent (just-completed) */}
         {buckets.recent.length > 0 && (
-          <div>
-            <h2 className="text-xs tracking-[0.2em] text-slate-500 mb-2"
-              style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}>
-              RECENTLY COMPLETED
-            </h2>
-            <div className="space-y-2">
+          <Card>
+            <CardHeader title="Recently completed" icon={CheckCircle2} />
+            <div className="divide-y divide-edge">
               {buckets.recent.slice(0, 3).map(t => (
                 <PilotUpcomingRow
                   key={t.uid}
@@ -4331,223 +4822,151 @@ function PilotHomeScreen({ currentUser, trips, tripStates, config, users, onSele
                 />
               ))}
             </div>
-          </div>
+          </Card>
         )}
 
-        {/* Quick actions */}
-        <div>
-          <h2 className="text-xs tracking-[0.2em] text-slate-500 mb-2"
-            style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}>
-            QUICK ACTIONS
-          </h2>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-            <QuickActionButton
-              icon={Calendar}
-              label="ALL TRIPS"
-              onClick={() => onSwitchSection?.('schedule')}
-            />
-            <QuickActionButton
-              icon={FileText}
-              label="MANIFESTS"
-              onClick={() => onSwitchSection?.('manifests')}
-            />
-            <QuickActionButton
-              icon={Mail}
-              label="EXPENSES"
-              onClick={() => onSwitchSection?.('expenses')}
-            />
-            <QuickActionButton
-              icon={AlertCircle}
-              label="REPORT"
-              onClick={() => onSwitchSection?.('reports')}
-            />
+        <Card>
+          <CardHeader title="Quick actions" />
+          <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+            <QuickActionButton icon={Calendar} label="All flights" onClick={() => onSwitchSection?.('schedule')} />
+            <QuickActionButton icon={FileText} label="Manifests" onClick={() => onSwitchSection?.('manifests')} />
+            <QuickActionButton icon={Mail} label="Expenses" onClick={() => onSwitchSection?.('expenses')} />
+            <QuickActionButton icon={AlertCircle} label="Report" onClick={() => onSwitchSection?.('reports')} />
           </div>
-        </div>
+        </Card>
+
+        {/* Fleet movement is useful context, but it no longer displaces the
+            pilot's next flight and duty state at the top of the screen. */}
+        <Card padded={false} className="hidden overflow-hidden md:block">
+          <div className="p-4 pb-2">
+            <CardHeader title="Live fleet movement" subtitle="Today's active flying" icon={Navigation} />
+          </div>
+          <Suspense fallback={<Spinner label="Loading live tracking…" />}>
+            <FlightBoardLazy allTrips={trips} compact />
+          </Suspense>
+        </Card>
       </div>
     </div>
   );
 }
 
-function StatCard({ label, value, tone = 'muted' }) {
-  const toneStyles = {
-    cyan:  'border-cyan-500/40 bg-cyan-500/5 text-cyan-300',
-    amber: 'border-amber-500/40 bg-amber-500/5 text-amber-300',
-    muted: 'border-slate-800 bg-slate-900/40 text-slate-300',
-  };
+/** Wall clock for the home greeting: "Tuesday · 09:14 EST". */
+function LocalClock() {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 30000);
+    return () => clearInterval(id);
+  }, []);
+  const weekday = now.toLocaleDateString([], { weekday: 'long' });
+  const time = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+  const tz = now.toLocaleTimeString([], { timeZoneName: 'short' }).split(' ').pop();
+  return <>{weekday} · {time} {tz}</>;
+}
+
+function PilotFocusCard({ trip, tripState, currentUser, isActive, isImminent, onSelectTrip }) {
+  const startMs = trip.start ? new Date(trip.start).getTime() : null;
+  const headerLabel = isActive ? 'In progress' : isImminent ? 'Next flight' : 'Upcoming flight';
+  // Show-time = 60 min before scheduled departure for domestic, 90 min for international
+  const isInternational = String(trip.info?.from || '').match(/^[CMK]/) ? false : true;
+  const showOffsetMin = isInternational ? 90 : 60;
+  const showTime = startMs ? new Date(startMs - showOffsetMin * 60000) : null;
+  const status = flightStatus(trip, tripState, { isActive, isImminent });
+
+  const meIsPic = nameMatchesPilot(trip.info.pic || '', currentUser?.jetinsightName || currentUser?.name);
+  const meIsSic = nameMatchesPilot(trip.info.sic || '', currentUser?.jetinsightName || currentUser?.name);
+
   return (
-    <div className={`p-3 border ${toneStyles[tone]}`}>
-      <div className="text-[9px] tracking-widest text-slate-500 mb-1"
-        style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-        {label}
+    <Card
+      as="button"
+      type="button"
+      padded={false}
+      onClick={() => onSelectTrip(trip.uid)}
+      className="relative w-full overflow-hidden border-accent-border text-left transition-colors hover:border-accent"
+    >
+      <span className="absolute inset-y-0 left-0 w-1 bg-accent" aria-hidden="true" />
+      <div className="p-4 pl-5">
+        <div className="text-2xs font-semibold text-content-muted">{headerLabel}</div>
+
+        <RouteLine from={trip.info.from} to={trip.info.to} size="xl" className="mt-2.5" />
+
+        <p className="mt-2 text-sm text-content-muted">
+          <span className="font-mono">{trip.info.tail || 'Tail pending'}</span>
+          {startMs && (
+            <> · {isActive ? 'departed' : 'departs'}{' '}
+              <span className="font-mono text-content">{timeUntil(trip.start)}</span>
+            </>
+          )}
+        </p>
+
+        <div className="mt-3 flex items-center justify-between gap-3">
+          <span className="truncate text-2xs text-content-subtle">
+            {trip.info.customer || (meIsPic ? 'You are PIC' : meIsSic ? 'You are SIC' : '\u00A0')}
+          </span>
+          <StatusChip tone={status.tone}>{status.label}</StatusChip>
+        </div>
       </div>
-      <div className="text-2xl md:text-3xl"
-        style={{ fontFamily: 'Bebas Neue, sans-serif', letterSpacing: '0.05em' }}>
+
+      {/* Departure detail stays on the card but drops below the fold of the
+          hero block, so the route and countdown own the first glance. Two-up
+          on a phone — four columns truncated every time value at 393px. */}
+      <div className="grid grid-cols-2 gap-px border-t border-edge bg-edge sm:grid-cols-4">
+        <FocusField label="Dep" value={startMs ? (() => {
+          const t = formatLocalTime(trip.start, trip.info.from);
+          return `${t.time}${t.tz ? ' ' + t.tz : ''}`;
+        })() : '—'} />
+        <FocusField label="Show" value={showTime ? (() => {
+          const t = formatLocalTime(showTime.toISOString(), trip.info.from);
+          return `${t.time}${t.tz ? ' ' + t.tz : ''}`;
+        })() : '—'} accent={isImminent || isActive} />
+        <FocusField label="Pax" value={`${trip.info.pax || 0}`} />
+        <FocusField label="Date" value={formatLocalDate(trip.start, trip.info.from) || '—'} />
+      </div>
+
+      {trip.info.notes && (
+        <div className="border-t border-edge bg-accent-soft px-4 py-2.5 text-2xs leading-relaxed text-content-muted">
+          {trip.info.notes}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+/**
+ * One place that decides what a flight's pill says. Prefers a recorded
+ * operational state and falls back to schedule timing, so Home, the flight
+ * list and the detail hero can never disagree about the same trip.
+ */
+function flightStatus(trip, tripState, timing = {}) {
+  const raw = String(tripState?.status || tripState || '').toLowerCase();
+  if (raw.includes('cancel')) return { label: 'Cancelled', tone: 'danger' };
+  if (raw.includes('delay')) return { label: 'Delayed', tone: 'warning' };
+  if (raw.includes('airborne') || raw.includes('departed')) return { label: 'Airborne', tone: 'success' };
+  if (raw.includes('complete') || raw.includes('arrived')) return { label: 'Complete', tone: 'neutral' };
+  if (timing.isActive) return { label: 'Airborne', tone: 'success' };
+  if (timing.isImminent) return { label: 'On time', tone: 'success' };
+  return { label: 'Scheduled', tone: 'neutral' };
+}
+
+function FocusField({ label, value, accent }) {
+  return (
+    <div className="min-w-0 bg-surface-sunken px-3.5 py-2.5">
+      <div className="truncate text-2xs text-content-subtle">{label}</div>
+      <div className={cx('mt-0.5 truncate font-mono text-2xs font-medium', accent ? 'text-accent' : 'text-content')}>
         {value}
       </div>
     </div>
   );
 }
 
-function PilotFocusCard({ trip, tripState, currentUser, isActive, isImminent, onSelectTrip }) {
-  const startMs = trip.start ? new Date(trip.start).getTime() : null;
-  const now = Date.now();
-  const headerLabel = isActive ? 'IN PROGRESS' : isImminent ? 'NEXT UP' : 'UPCOMING';
-  const headerTone = isActive ? 'cyan' : isImminent ? 'amber' : 'slate';
-  const headerStyles = {
-    cyan:  'border-cyan-500/40 bg-cyan-500/10 text-cyan-300',
-    amber: 'border-amber-500/40 bg-amber-500/10 text-amber-300',
-    slate: 'border-slate-700 bg-slate-800/40 text-slate-300',
-  };
-  // Show-time = 60 min before scheduled departure for domestic, 90 min for international
-  const isInternational = String(trip.info?.from || '').match(/^[CMK]/) ? false : true;
-  const showOffsetMin = isInternational ? 90 : 60;
-  const showTime = startMs ? new Date(startMs - showOffsetMin * 60000) : null;
-
-  return (
-    <div className="border border-slate-800 bg-slate-900/40">
-      <div className={`px-3 py-2 border-b flex items-center justify-between ${headerStyles[headerTone]}`}>
-        <span className="text-[10px] tracking-widest"
-          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-          {headerLabel}
-        </span>
-        {startMs && (
-          <span className="text-[10px]"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            {timeUntil(trip.start)}
-          </span>
-        )}
-      </div>
-
-      <div className="p-4 space-y-3">
-        {/* Tail + route */}
-        <div className="flex items-baseline gap-4 flex-wrap">
-          <h2 className="text-3xl tracking-wide text-slate-100"
-            style={{ fontFamily: 'Bebas Neue, sans-serif', letterSpacing: '0.05em' }}>
-            {trip.info.tail}
-          </h2>
-          <div className="flex items-center gap-2 text-xl text-slate-300"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            <div className="flex items-center gap-1.5">
-              <span>{trip.info.from}</span>
-              {trip.info.from && <AirportWxBadge icao={trip.info.from} compact />}
-              {trip.info.from && (
-                <FAANotamBadge
-                  icao={trip.info.from}
-                  getIdToken={async () => {
-                    const { auth } = await import('./firebase.js');
-                    return auth.currentUser ? auth.currentUser.getIdToken() : null;
-                  }}
-                />
-              )}
-            </div>
-            <ArrowRight className="w-5 h-5 text-cyan-400" />
-            <div className="flex items-center gap-1.5">
-              <span>{trip.info.to}</span>
-              {trip.info.to && <AirportWxBadge icao={trip.info.to} compact />}
-              {trip.info.to && (
-                <FAANotamBadge
-                  icao={trip.info.to}
-                  getIdToken={async () => {
-                    const { auth } = await import('./firebase.js');
-                    return auth.currentUser ? auth.currentUser.getIdToken() : null;
-                  }}
-                />
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Customer */}
-        {trip.info.customer && (
-          <div className="text-sm text-slate-400" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-            {trip.info.customer}
-          </div>
-        )}
-
-        {/* Time + show-time + pax + crew */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-[11px]"
-          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-          <FocusField label="DEP" value={startMs ? (() => {
-            const t = formatLocalTime(trip.start, trip.info.from);
-            return `${t.time} ${t.tz}`;
-          })() : '—'} />
-          <FocusField label="SHOW" value={showTime ? (() => {
-            const t = formatLocalTime(showTime.toISOString(), trip.info.from);
-            return `${t.time} ${t.tz}`;
-          })() : '—'} accent={isImminent || isActive} />
-          <FocusField label="PAX" value={`${trip.info.pax || 0}`} />
-          <FocusField label="DATE" value={formatLocalDate(trip.start, trip.info.from) || '—'} />
-        </div>
-
-        {/* Crew assignment */}
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px]">
-          {trip.info.pic && (
-            <span className="flex items-center gap-1.5">
-              <span className="text-[10px] tracking-widest text-slate-500"
-                style={{ fontFamily: 'JetBrains Mono, monospace' }}>PIC</span>
-              <span className={`${nameMatchesPilot(trip.info.pic, currentUser?.jetinsightName || currentUser?.name) ? 'text-cyan-300' : 'text-slate-300'}`}
-                style={{ fontFamily: 'DM Sans, sans-serif' }}>
-                {trip.info.pic}
-                {nameMatchesPilot(trip.info.pic, currentUser?.jetinsightName || currentUser?.name) && ' (you)'}
-              </span>
-            </span>
-          )}
-          {trip.info.sic && (
-            <span className="flex items-center gap-1.5">
-              <span className="text-[10px] tracking-widest text-slate-500"
-                style={{ fontFamily: 'JetBrains Mono, monospace' }}>SIC</span>
-              <span className={`${nameMatchesPilot(trip.info.sic, currentUser?.jetinsightName || currentUser?.name) ? 'text-cyan-300' : 'text-slate-300'}`}
-                style={{ fontFamily: 'DM Sans, sans-serif' }}>
-                {trip.info.sic}
-                {nameMatchesPilot(trip.info.sic, currentUser?.jetinsightName || currentUser?.name) && ' (you)'}
-              </span>
-            </span>
-          )}
-        </div>
-
-        {/* Notes if any */}
-        {trip.info.notes && (
-          <div className="text-[11px] text-cyan-300/80 bg-cyan-500/5 border border-cyan-500/20 px-2 py-1.5"
-            style={{ fontFamily: 'DM Sans, sans-serif' }}>
-            {trip.info.notes}
-          </div>
-        )}
-
-        {/* Open trip button */}
-        <button
-          onClick={() => onSelectTrip(trip.uid)}
-          className="w-full mt-2 py-2.5 text-xs tracking-widest bg-cyan-500/10 border border-cyan-400 text-cyan-300 hover:bg-cyan-500/20 transition-colors"
-          style={{ fontFamily: 'JetBrains Mono, monospace' }}
-        >
-          OPEN TRIP →
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function FocusField({ label, value, accent }) {
-  return (
-    <div>
-      <div className="text-[9px] tracking-widest text-slate-500 mb-0.5">{label}</div>
-      <div className={accent ? 'text-cyan-300' : 'text-slate-200'}>{value}</div>
-    </div>
-  );
-}
-
 function EmptyFocusCard() {
   return (
-    <div className="border border-slate-800 bg-slate-900/40 p-6 text-center">
-      <Plane className="w-8 h-8 text-slate-700 mx-auto mb-3" />
-      <div className="text-sm text-slate-400 mb-1"
-        style={{ fontFamily: 'DM Sans, sans-serif' }}>
-        No active trips
-      </div>
-      <div className="text-[11px] text-slate-500"
-        style={{ fontFamily: 'DM Sans, sans-serif' }}>
-        You're not currently assigned to any active or imminent flights.
-      </div>
-    </div>
+    <Card padded={false}>
+      <EmptyState
+        icon={Plane}
+        title="No active flights"
+        description="You're not currently assigned to any active or imminent flights."
+      />
+    </Card>
   );
 }
 
@@ -4557,40 +4976,26 @@ function PilotUpcomingRow({ trip, currentUser, onClick, muted }) {
   return (
     <button
       onClick={onClick}
-      className={`w-full text-left p-3 border transition-colors ${muted ? 'border-slate-900 bg-slate-900/20 hover:bg-slate-900/40 opacity-60' : 'border-slate-800 bg-slate-900/40 hover:border-slate-700 hover:bg-slate-900/60'}`}
+      className={cx(
+        'w-full rounded px-1 py-3 text-left transition-colors hover:bg-surface-raised',
+        muted && 'opacity-60',
+      )}
     >
-      <div className="flex items-baseline justify-between gap-3 flex-wrap">
-        <div className="flex items-baseline gap-3 flex-wrap">
-          <span className="text-base text-slate-100"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            {trip.info.tail}
-          </span>
-          <span className="text-sm text-slate-300"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            {trip.info.from} → {trip.info.to}
-          </span>
-          <span className="text-[10px] tracking-wider px-1.5 py-0.5 border border-slate-700 text-slate-400"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            {isPic ? 'PIC' : 'SIC'}
-          </span>
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <RouteLine from={trip.info.from} to={trip.info.to} size="md" muted={muted} />
+          <div className="mt-1 truncate text-2xs text-content-muted">
+            <span className="font-mono">{trip.info.tail}</span>
+            {startMs && <> · <span className="font-mono">{(() => { const t = formatLocalTime(trip.start, trip.info.from); return `${t.time}${t.tz ? ' ' + t.tz : ''}`; })()}</span></>}
+            {trip.info.pax > 0 && <> · {trip.info.pax} pax</>}
+          </div>
         </div>
-        <span className="text-[10px] text-slate-500"
-          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-          {startMs ? timeUntil(trip.start) : '—'}
-        </span>
-      </div>
-      <div className="mt-1 flex items-center gap-3 text-[10px] text-slate-500"
-        style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-        <span>{formatLocalDate(trip.start, trip.info.from) || '—'}</span>
-        {startMs && (
-          <span>
-            DEP {(() => {
-              const t = formatLocalTime(trip.start, trip.info.from);
-              return `${t.time} ${t.tz}`;
-            })()}
-          </span>
-        )}
-        {trip.info.customer && <span className="truncate">{trip.info.customer}</span>}
+        <div className="shrink-0 text-right">
+          <StatusChip tone="neutral" size="sm">{isPic ? 'PIC' : 'SIC'}</StatusChip>
+          <div className="mt-1 font-mono text-2xs text-content-subtle">
+            {startMs ? timeUntil(trip.start) : '—'}
+          </div>
+        </div>
       </div>
     </button>
   );
@@ -4600,13 +5005,10 @@ function QuickActionButton({ icon: Icon, label, onClick }) {
   return (
     <button
       onClick={onClick}
-      className="p-3 border border-slate-800 bg-slate-900/40 hover:border-slate-700 hover:bg-slate-900/60 transition-colors flex flex-col items-center gap-2"
+      className="flex min-h-11 items-center gap-2 rounded border border-edge bg-surface-raised p-3 text-content-muted transition-colors hover:border-accent-border hover:text-accent md:flex-col"
     >
-      <Icon className="w-4 h-4 text-slate-400" />
-      <span className="text-[10px] tracking-widest text-slate-400"
-        style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-        {label}
-      </span>
+      <Icon className="h-4 w-4" />
+      <span className="text-2xs font-semibold">{label}</span>
     </button>
   );
 }
@@ -5028,7 +5430,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   //      the user switches tabs. Different tabs have wildly different
   //      content lengths and the persisted "collapsed" state from
   //      a long tab would misbehave on a short one.
-  const [heroCollapsed, setHeroCollapsed] = useState(false);
+  const [heroCollapsed, setHeroCollapsed] = useState(true);
   const tripScrollRef = useRef(null);
   // Bounce-back fix: two refs guarding against the post-collapse clamp loop.
   //
@@ -5130,9 +5532,11 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       }
     };
   }, [tab, scanning]);  // scanning is now a dep so the handler rebinds on enter/exit of check-in
-  // Tab-change reset for the hero — see comment block above.
+  // Each tab is a workspace, so return to compact trip context when moving
+  // between tabs. Users can expand the hero explicitly when they need the
+  // schedule, crew, FBO, or trip actions.
   useEffect(() => {
-    setHeroCollapsed(false);
+    setHeroCollapsed(true);
     // Also reset the scroll position so the user lands at the top of
     // the new tab's content. Without this, scrollTop carries over from
     // the previous tab and can land mid-content on a tab they haven't
@@ -5291,8 +5695,15 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
             state:         prevMatch.state         || '',
             realIdCompliant: prevMatch.realIdCompliant ?? false,
             expired: false,
-            photo:   prevMatch.photo || null,
+            photoUrl: prevMatch.photoUrl || null,
+            photoPath: prevMatch.photoPath || null,
+            imageSource: prevMatch.imageSource || null,
+            documentType: prevMatch.documentType || null,
+            documentLast4: prevMatch.documentLast4 || '',
+            scanConfidence: prevMatch.scanConfidence || null,
+            idVerified: prevMatch.idVerified === true,
             scannedAt: now,
+            verifiedAt: now,
             method: 'CARRIED_OVER',
             paxType: prevMatch.paxType || 'ADULT',
             noShow: false,
@@ -5435,7 +5846,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       await saveTripState(trip.uid, merged);
     } catch (err) {
       console.error('Failed to save trip state:', err);
-      alert('Failed to save — check your connection');
+      notify.error('Failed to save — check your connection');
     }
   }, [trip.uid, trip.info?.tail, trip.info?.from, trip.info?.to, trip.start, trip.info?.legType, tripSheetUrl, tripSheetPath, tripSheetFilename, tripSheetUploadedAt, tripSheetUploadedBy, preloadedPax, tripSheetNotes, fromFbo, toFbo]);
 
@@ -5551,12 +5962,12 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       .map(e => e.trim())
       .filter(e => e.length > 0);
     if (recipients.length === 0) {
-      alert('No recipients configured. Add a broker email on the NOTIFY tab first.');
+      notify.error('No recipients configured. Add a broker email on the NOTIFY tab first.');
       return;
     }
     const emailContent = buildStatusEmail(step, trip, brokerEmails[0] || '');
     if (!emailContent) {
-      alert(`No email template available for "${step.label}" on this leg type.`);
+      notify.error(`No email template available for "${step.label}" on this leg type.`);
       return;
     }
     try {
@@ -5570,7 +5981,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       const respData = await r.json().catch(() => ({}));
       if (!r.ok) {
         console.error('[resend] failed:', r.status, respData);
-        alert(`Resend failed: ${respData.error || r.status}. Try again or check NOTIFY tab.`);
+        notify.error(`Resend failed: ${respData.error || r.status}. Try again or check NOTIFY tab.`);
         return;
       }
       // Success — flip notified=true on the same status object
@@ -5582,7 +5993,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       await persist({ statuses: updatedStatuses, passengers, brokerEmail, autoNotify, completed, hasCatering, paxOverride });
     } catch (err) {
       console.error('[resend] network error:', err);
-      alert(`Resend failed: ${err.message || 'network error'}. Check your connection and try again.`);
+      notify.error(`Resend failed: ${err.message || 'network error'}. Check your connection and try again.`);
     }
   };
 
@@ -5729,9 +6140,20 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
         scannedAt: Date.now(),
       };
       const nextPassengers = [...passengers, newPax];
+      const checkInStatus = newPax.nameMatchLevel === 'mismatch'
+        ? 'mismatch'
+        : newPax.method === 'PHOTO_VERIFY'
+          ? 'manual_override'
+          : 'matched';
       const nextPreloaded = preloadedPax.map(p =>
         p.id === target.id
-          ? { ...p, scannedPaxId: newPax.id, checkInStatus: 'matched' }
+          ? {
+              ...p,
+              scannedPaxId: newPax.id,
+              checkInStatus,
+              nameMatchLevel: newPax.nameMatchLevel || null,
+              scanConfidence: newPax.scanConfidence || null,
+            }
           : p
       );
       setPassengers(nextPassengers);
@@ -5757,9 +6179,20 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   };
 
   const removePassenger = async (id) => {
+    const removed = passengers.find(p => p.id === id);
     const next = passengers.filter(p => p.id !== id);
     setPassengers(next);
     await persist({ statuses, passengers: next, brokerEmail, autoNotify, completed, hasCatering, paxOverride });
+    // Best-effort deletion of the retained ID image. The bucket lifecycle is
+    // the backstop, but removing a passenger should remove their photo now.
+    if (removed?.photoPath) {
+      try {
+        const { getStorage, ref, deleteObject } = await import('firebase/storage');
+        await deleteObject(ref(getStorage(), removed.photoPath));
+      } catch (err) {
+        console.warn('[pax] could not delete ID photo:', err?.message || err);
+      }
+    }
   };
 
   // Toggle a passenger's no-show flag. Keeps the record (chain of custody)
@@ -5899,7 +6332,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       await attachTripSheetToLeg({ tripUid: trip.uid, clear: true });
     } catch (err) {
       console.error('Failed to clear trip sheet:', err);
-      alert('Failed to clear — check your connection');
+      notify.error('Failed to clear — check your connection');
     }
   };
 
@@ -6007,8 +6440,203 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   const totalExpected = preloadedActive.length > 0 ? preloadedActive.length : effectivePax;
   const paxComplete = totalExpected === 0 || totalVerified >= totalExpected;
 
+  const handleCompleteToggle = async () => {
+    const next = !completed;
+    if (next && !window.confirm('Mark this trip as complete? It will move to Archive and add a leg to the daily Load Manifest.')) return;
+    if (!next && !window.confirm('Reopen this trip? It will return to the active schedule.')) return;
+    setCompleted(next);
+    await persist({
+      statuses, passengers, brokerEmail, autoNotify,
+      completed: next,
+      completedAt: next ? Date.now() : null,
+      archived: next,
+      archivedAt: next ? Date.now() : null,
+      hasCatering,
+      paxOverride,
+    });
+    if (onArchive) onArchive(trip.uid, next);
+    if (next && onBack) onBack();
+    if (next && trip.info?.isFlight) {
+      try {
+        const m = await import('./firebase-manifests.js');
+        await m.autoAddTripToManifest({
+          trip,
+          preloadedPax,
+          addedBy: currentUser?.name || 'auto',
+        });
+      } catch (err) {
+        console.error('[manifest] auto-add failed:', err);
+      }
+    }
+  };
+
   return (
     <div className="flex flex-col h-full bg-slate-950">
+      {/* Professional flight identity bar. The previous trip header exposed
+          every action, badge, FBO, note and status at equal weight. This keeps
+          the route and primary actions dominant; operational detail lives in
+          the persistent rail and grouped tabs below. */}
+      {heroCollapsed ? (
+        <div className="shrink-0 border-b border-edge bg-surface shadow-card">
+          <div className="mx-auto flex min-h-[58px] max-w-[1440px] items-center gap-2 px-2.5 md:px-4">
+            <IconButton icon={ChevronLeft} title="Back to flights" onClick={onBack} variant="ghost" />
+            <button
+              type="button"
+              onClick={() => setHeroCollapsed(false)}
+              className="flex min-w-0 flex-1 items-center gap-3 rounded-lg px-2 py-2 text-left transition-colors hover:bg-surface-raised"
+              aria-expanded="false"
+              aria-label={`Expand trip details for ${trip.info.from} to ${trip.info.to}`}
+            >
+              <RouteLine from={trip.info.from} to={trip.info.to} size="md" />
+              <span className="hidden truncate font-mono text-2xs text-content-muted sm:block">
+                {trip.info.tail || 'Tail pending'}
+                {trip.info.customer ? ` · ${trip.info.customer}` : ''}
+              </span>
+              {completed && <StatusChip tone="success" size="sm">Complete</StatusChip>}
+              <ChevronDown className="ml-auto h-4 w-4 shrink-0 text-content-subtle" />
+            </button>
+          </div>
+        </div>
+      ) : (
+      <div className="shrink-0 border-b border-edge bg-surface px-4 py-4 shadow-card md:px-6">
+        <div className="mx-auto max-w-[1440px]">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex min-w-0 items-start gap-3">
+              <IconButton icon={ChevronLeft} title="Back to flights" onClick={onBack} variant="ghost" />
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h1 className="font-mono text-2xl font-semibold tracking-tight text-content md:text-3xl">
+                    {trip.info.from || '—'} <span className="text-content-subtle">→</span> {trip.info.to || '—'}
+                  </h1>
+                  {completed && <StatusChip tone="success" icon={CheckCheck}>Complete</StatusChip>}
+                  <StatusChip tone={(CATEGORY_META[trip.info.category] || CATEGORY_META.REPO).tone}>
+                    {(CATEGORY_META[trip.info.category] || CATEGORY_META.REPO).label}
+                  </StatusChip>
+                </div>
+                <p className="mt-1 truncate text-sm text-content-muted">
+                  {trip.info.tail || 'Tail pending'}
+                  {trip.info.customer ? ` · ${trip.info.customer}` : ''}
+                  {trip.info.legType ? ` · ${trip.info.legType === 'REVENUE' ? 'Revenue' : trip.info.legType}` : ''}
+                </p>
+                <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-2xs text-content-muted">
+                  <span className="flex items-center gap-1.5">
+                    <Calendar className="h-3.5 w-3.5" />
+                    {formatLocalDate(trip.start, trip.info.from) || fmtDateZ(trip.start)}
+                  </span>
+                  <span className="flex items-center gap-1.5 font-mono">
+                    <Clock className="h-3.5 w-3.5" />
+                    {(() => {
+                      const dep = formatLocalTime(trip.start, trip.info.from);
+                      const arr = trip.end ? formatLocalTime(trip.end, trip.info.to) : null;
+                      return `${dep.time} ${dep.tz}${arr ? ` – ${arr.time} ${arr.tz}` : ''}`;
+                    })()}
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <Users className="h-3.5 w-3.5" /> {effectivePax} passengers
+                  </span>
+                  {trip.info.pic && <span><strong className="text-content-subtle">PIC</strong> {trip.info.pic}</span>}
+                  {trip.info.sic && <span><strong className="text-content-subtle">SIC</strong> {trip.info.sic}</span>}
+                </div>
+              </div>
+            </div>
+
+            <div className="hidden shrink-0 items-center gap-2 md:flex">
+              <IconButton
+                icon={ChevronUp}
+                title="Minimize trip details"
+                onClick={() => setHeroCollapsed(true)}
+                variant="ghost"
+              />
+              {trip.info.url && (
+                <Button variant="outline" size="sm" onClick={() => window.open(trip.info.url, '_blank', 'noopener,noreferrer')}>
+                  JetInsight
+                </Button>
+              )}
+              {(currentUser?.role === 'ops' || currentUser?.role === 'admin') && (
+                <Button variant="outline" size="sm" icon={Send} onClick={() => setShareDialogOpen(true)}>
+                  Share
+                </Button>
+              )}
+              {(currentUser?.role === 'ops' || currentUser?.role === 'admin') && trip.info?.tail && brokerEmail && (
+                <Button variant="secondary" size="sm" loading={updatingEta} onClick={handleUpdateEta}>
+                  Update ETA
+                </Button>
+              )}
+              <Button
+                variant={completed ? 'secondary' : 'success'}
+                size="sm"
+                icon={completed ? RefreshCw : CheckCheck}
+                onClick={handleCompleteToggle}
+              >
+                {completed ? 'Reopen' : 'Mark complete'}
+              </Button>
+            </div>
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-center gap-2 pl-0 md:pl-12">
+            {trip.info.isFlight && trip.info.tail && (isFirstFlightOfDay || isLastFlightOfDay) && (
+              <WearCheckBadge
+                tail={trip.info.tail}
+                allTrips={allTrips}
+                isFirstFlightOfDay={isFirstFlightOfDay}
+                isLastFlightOfDay={isLastFlightOfDay}
+                currentUser={currentUser}
+                tripId={trip.uid}
+                legId={trip.uid}
+                onOpenModal={({ inspectionType }) => {
+                  setWearModalType(inspectionType);
+                  setWearModalOpen(true);
+                }}
+              />
+            )}
+            {trip.info.isFlight && trip.info.tail && (
+              <>
+                <MXShareButton tail={trip.info.tail} onOpenModal={() => setMxShareOpen(true)} />
+                <TailStatusBadge tail={trip.info.tail} />
+              </>
+            )}
+            {fromFbo && <StatusChip tone="neutral">{trip.info.from}: {fromFbo}</StatusChip>}
+            {toFbo && <StatusChip tone="neutral">{trip.info.to}: {toFbo}</StatusChip>}
+          </div>
+
+          {/* Primary mobile actions stay immediately reachable without
+              forcing the hero to reproduce the desktop action cluster. */}
+          <div className="mt-3 grid grid-cols-[1fr_1fr_auto] gap-2 md:hidden">
+            {(currentUser?.role === 'ops' || currentUser?.role === 'admin') && (
+              <Button variant="outline" size="sm" icon={Send} onClick={() => setShareDialogOpen(true)}>Share</Button>
+            )}
+            <Button
+              variant={completed ? 'secondary' : 'success'}
+              size="sm"
+              icon={completed ? RefreshCw : CheckCheck}
+              onClick={handleCompleteToggle}
+            >
+              {completed ? 'Reopen' : 'Complete'}
+            </Button>
+            <IconButton
+              icon={ChevronUp}
+              title="Minimize trip details"
+              onClick={() => setHeroCollapsed(true)}
+              variant="outline"
+            />
+          </div>
+
+          {etaResult && (
+            <div className={cx(
+              'mt-3 flex items-start justify-between gap-3 rounded border px-3 py-2 text-2xs',
+              etaResult.ok ? 'border-success-border bg-success-soft text-success' : 'border-warning-border bg-warning-soft text-warning',
+            )}>
+              <span>{etaResult.msg}</span>
+              <button type="button" onClick={() => setEtaResult(null)} aria-label="Dismiss"><X className="h-3.5 w-3.5" /></button>
+            </div>
+          )}
+        </div>
+      </div>
+      )}
+
+      {/* Legacy hero retained temporarily for behavior reference while the
+          new professional header above owns the visible UI. */}
+      <div className="hidden">
       {/* Trip header rendering — three modes:
           - chat tab: no header here (chat renders its own header inside)
           - lodging tab: COMPACT one-line header so lodging UI has room
@@ -6368,120 +6996,309 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
         </div>
       </>
       )}
+      </div>
 
-      {/* Tabs */}
-      <div className="border-b border-slate-800 bg-slate-950 sticky top-0 z-10">
+      {/* Tabs — grouped the same way as the primary nav. `tab` still holds a
+          leaf id so every `tab === '…'` content branch below is untouched;
+          only the chrome above it changed. Ten peer tabs meant Status (opened
+          on every flight) sat beside Delay (opened rarely). */}
+      <div className="border-b border-edge bg-surface-shell sticky top-0 z-10">
         {(() => {
-          const hasNotes = tripSheetNotes && (tripSheetNotes.crew || tripSheetNotes.pax || tripSheetNotes.customer || tripSheetNotes.specialItems);
           const canManageSheet = ['ops', 'admin'].includes(currentUser?.role);
           // SHEET tab: visible if trip sheet exists OR user can upload one
           const showSheetTab = trip.info.isOps && (tripSheetUrl || canManageSheet);
+          const canSeeFlightPlanning = ['admin', 'ops', 'crew'].includes(currentUser?.role);
           const tripTabs = [
-            { id: 'status', label: 'STATUS', icon: Zap, badge: `${completedCount}/${applicableSteps.length}`, hidden: !trip.info.isOps },
-            { id: 'pax', label: 'PAX', icon: Users, badge: trip.info.pax === 0 ? null : `${totalVerified}/${totalExpected}`, hidden: trip.info.pax === 0 || !trip.info.isOps },
-            { id: 'sheet', label: 'SHEET', icon: FileText, badge: tripSheetUrl ? '✓' : null, hidden: !showSheetTab },
-            { id: 'notes', label: 'NOTES', icon: AlertCircle },
-            { id: 'weather', label: 'WEATHER', icon: Cloud, hidden: !['admin', 'ops', 'crew'].includes(currentUser?.role) },
-            { id: 'plan', label: 'PLAN', icon: Navigation, hidden: !['admin', 'ops', 'crew'].includes(currentUser?.role) },
+            { id: 'status', label: 'Status', icon: Zap, badge: `${completedCount}/${applicableSteps.length}`, hidden: !trip.info.isOps },
+            { id: 'pax', label: 'Passengers', icon: Users, badge: trip.info.pax === 0 ? null : `${totalVerified}/${totalExpected}`, hidden: trip.info.pax === 0 || !trip.info.isOps },
+            { id: 'sheet', label: 'Trip sheet', icon: FileText, hidden: !showSheetTab },
+            { id: 'notes', label: 'Notes', icon: BookOpen },
+            { id: 'weather', label: 'Weather', icon: Cloud, hidden: !canSeeFlightPlanning },
+            { id: 'plan', label: 'Flight plan', icon: Navigation, hidden: !canSeeFlightPlanning },
             // LODGING: crew hotels for this trip. Visible to ops/admin
             // always; visible to crew because crew want to see their own
             // hotel info for the trip. Hidden on non-ops (HOLD/MX/etc)
             // since they don't have crew lodging in the operational sense.
-            { id: 'lodging', label: 'LODGING', icon: Hotel, hidden: !trip.info.isOps },
-            { id: 'chat', label: 'COMMS', icon: MessageSquare,
-              badge: tripChatUnread > 0 ? (tripChatUnread > 9 ? '9+' : String(tripChatUnread)) : null,
-              badgeTone: tripChatUnread > 0 ? 'unread' : undefined,
-            },
-            { id: 'notify', label: 'NOTIFY', icon: Bell, hidden: !trip.info.isOps },
-            { id: 'delay', label: 'DELAY', icon: AlertCircle, hidden: !trip.info.isOps },
+            { id: 'lodging', label: 'Lodging', icon: Hotel, hidden: !trip.info.isOps },
+            { id: 'chat', label: 'Comms', icon: MessageSquare, unread: tripChatUnread },
+            { id: 'notify', label: 'Notify', icon: Bell, hidden: !trip.info.isOps },
+            { id: 'delay', label: 'Delay', icon: AlertTriangle, hidden: !trip.info.isOps },
           ].filter(t => !t.hidden);
+
+          const byId = new Map(tripTabs.map(t => [t.id, t]));
+          const pick = (ids) => ids.map(id => byId.get(id)).filter(Boolean);
+          const tripGroups = [
+            { id: 'status', label: 'Status', icon: Zap, children: pick(['status']) },
+            { id: 'pax', label: 'Passengers', icon: Users, children: pick(['pax']) },
+            {
+              id: 'operations',
+              label: 'Operations',
+              icon: Navigation,
+              children: pick(['sheet', 'weather', 'plan', 'lodging', 'notes', 'notify', 'delay']),
+            },
+            { id: 'chat', label: 'Comms', icon: MessageSquare, children: pick(['chat']) },
+          ].filter(g => g.children.length > 0);
+
+          const activeGroup = tripGroups.find(g => g.children.some(c => c.id === tab)) || tripGroups[0];
+          const subTabs = activeGroup?.children || [];
+          // Surface unread on the group tab when the user is looking elsewhere.
+          const groupUnread = (g) => g.children.reduce((n, c) => n + (c.unread || 0), 0);
+
           return (
-            <DraggableTabBar
-              tabs={tripTabs}
-              order={tripDetailOrder}
-              activeId={tab}
-              onSelect={(id) => setTab(id)}
-              onReorder={(newOrder) => onReorderTripDetail?.(newOrder)}
-              renderTab={(t, active /*, dragging */) => (
-                <button
-                  type="button"
-                  className={`flex items-center gap-2 px-3 py-3 text-xs tracking-widest transition-colors relative shrink-0 ${
-                    active ? 'text-cyan-400' : 'text-slate-500 hover:text-slate-300'
-                  }`}
-                  style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}
-                >
-                  <t.icon className="w-3.5 h-3.5" />
-                  {t.label}
-                  {t.badge && (
-                    <span
-                      className={
-                        t.badgeTone === 'unread'
-                          // Unread badge — pops in solid cyan regardless of
-                          // tab active state, so the user sees new messages
-                          // even when looking at another tab.
-                          ? 'text-[10px] px-1.5 py-0.5 bg-cyan-400 text-slate-950'
-                          : `text-[10px] px-1.5 py-0.5 ${active ? 'bg-cyan-500/20 text-cyan-300' : 'bg-slate-800 text-slate-400'}`
-                      }
-                      style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: t.badgeTone === 'unread' ? 700 : 400 }}
+            <>
+              <div className="sw-no-scrollbar flex items-center gap-1 overflow-x-auto px-2">
+                {tripGroups.map((g) => {
+                  const active = g.id === activeGroup?.id;
+                  const unread = groupUnread(g);
+                  const badge = g.children.length === 1 ? g.children[0].badge : null;
+                  return (
+                    <button
+                      key={g.id}
+                      type="button"
+                      onClick={() => setTab(g.children[0].id)}
+                      aria-current={active ? 'page' : undefined}
+                      className={cx(
+                        'relative flex min-h-11 shrink-0 items-center gap-2 px-3 py-3 text-sm font-semibold transition-colors',
+                        active ? 'text-accent' : 'text-content-muted hover:text-content',
+                      )}
                     >
-                      {t.badge}
-                    </span>
+                      <g.icon className="h-4 w-4" />
+                      {g.label}
+                      {badge && (
+                        <span className={cx(
+                          'rounded px-1.5 py-0.5 font-mono text-[10px]',
+                          active ? 'bg-accent-soft text-accent' : 'bg-surface-raised text-content-muted',
+                        )}>
+                          {badge}
+                        </span>
+                      )}
+                      {unread > 0 && !active && <UnreadBadge count={unread} />}
+                      {active && <span className="absolute inset-x-2 bottom-0 h-0.5 rounded-t bg-accent" />}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {subTabs.length > 1 && (
+                <DraggableTabBar
+                  tabs={subTabs}
+                  order={tripDetailOrder}
+                  activeId={tab}
+                  onSelect={(id) => setTab(id)}
+                  onReorder={(newOrder) => onReorderTripDetail?.(newOrder)}
+                  containerClassName="sw-no-scrollbar gap-1 border-t border-edge bg-surface-sunken px-2 py-1.5"
+                  renderTab={(t, active) => (
+                    <button
+                      type="button"
+                      className={cx(
+                        'flex shrink-0 items-center gap-1.5 rounded px-2.5 py-1.5 text-2xs font-semibold transition-colors',
+                        active
+                          ? 'bg-accent-soft text-accent'
+                          : 'text-content-muted hover:bg-surface-raised hover:text-content',
+                      )}
+                    >
+                      <t.icon className="h-3.5 w-3.5" />
+                      {t.label}
+                      {t.badge && <span className="font-mono text-[10px] opacity-70">{t.badge}</span>}
+                    </button>
                   )}
-                  {active && <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-cyan-400" />}
-                </button>
+                />
               )}
-            />
+            </>
           );
         })()}
       </div>
 
       {/* Tab content */}
-      <div ref={tripScrollRef} className="flex-1 overflow-y-auto">
+      <div
+        ref={tripScrollRef}
+        className={cx(
+          'min-h-0 flex-1',
+          tab === 'chat' ? 'flex flex-col overflow-hidden' : 'overflow-y-auto',
+        )}
+      >
         {loading ? (
           <div className="flex items-center justify-center py-16 text-slate-500">
             <Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading trip data...
           </div>
         ) : tab === 'status' ? (
-          <div className="p-6 space-y-3 max-w-2xl">
-            {trip.info.legType === 'REVENUE' && !paxComplete && (
-              <div className="p-3 border border-cyan-500/30 bg-cyan-500/5 text-xs text-cyan-200 flex items-start gap-2">
-                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                <span>
-                  <strong>{totalVerified}/{totalExpected}</strong> passengers verified.
-                  Complete passenger check-in before "PASSENGERS BOARDED".
-                </span>
-              </div>
-            )}
-            {geo.status === 'error' && (
-              <div className="p-3 border border-red-500/30 bg-red-500/5 text-xs text-red-300 flex items-start gap-2">
-                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                <span>GPS error: {geo.error}. Status events will be logged without coordinates.</span>
-              </div>
-            )}
-            {applicableSteps.map((step, idx) => {
-              // Steps can be tapped in ANY order — crew often handles things
-              // out-of-sequence in real ops (catering arrives while pax board,
-              // pax show up while crew is still doing pre-flight, etc).
-              // Only data-integrity constraint: PASSENGERS BOARDED requires
-              // all expected pax to be checked in (or marked no-show / skipped)
-              // because that status is a factual claim about pax accountability.
-              const blocked = step.id === 'pax_boarded' && !paxComplete;
-              const displayStep = getStepDisplay(step, trip);
-              return (
-                <StatusButton
-                  key={step.id}
-                  step={displayStep}
-                  status={statuses[step.id]}
-                  onTrigger={() => handleStatusTrigger(step)}
-                  onUntrigger={() => handleStatusUntrigger(step)}
-                  onResendNotify={resendStatusNotification}
-                  locked={blocked}
-                  isNext={nextStep?.id === step.id && !blocked}
-                  autoNotify={autoNotify}
-                  airportCode={trip.info.from}
+          <div className="mx-auto grid max-w-[1440px] items-start gap-5 p-4 md:p-6 lg:grid-cols-[minmax(0,1fr)_320px]">
+            <Card className="overflow-hidden">
+              <CardHeader
+                title="Flight progress"
+                subtitle={`${completedCount} of ${applicableSteps.length} operational milestones complete`}
+                icon={Activity}
+                action={<StatusChip tone={completedCount === applicableSteps.length ? 'success' : 'accent'}>{completedCount}/{applicableSteps.length}</StatusChip>}
+              />
+              <div className="mb-4 h-1.5 overflow-hidden rounded-full bg-surface-raised">
+                <div
+                  className={cx(
+                    'h-full rounded-full transition-all duration-500',
+                    completedCount === applicableSteps.length ? 'bg-success' : 'bg-accent',
+                  )}
+                  style={{ width: `${applicableSteps.length ? (completedCount / applicableSteps.length) * 100 : 0}%` }}
                 />
-              );
-            })}
+              </div>
+
+              {trip.info.legType === 'REVENUE' && !paxComplete && (
+                <div className="mb-4 flex items-start gap-2 rounded border border-warning-border bg-warning-soft p-3 text-2xs text-warning">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span><strong>{totalVerified}/{totalExpected}</strong> passengers verified. Finish check-in before marking passengers boarded.</span>
+                </div>
+              )}
+              {geo.status === 'error' && (
+                <div className="mb-4 flex items-start gap-2 rounded border border-danger-border bg-danger-soft p-3 text-2xs text-danger">
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span>GPS unavailable: {geo.error}. Events can still be logged without coordinates.</span>
+                </div>
+              )}
+
+              <div>
+                {applicableSteps.map((step, idx) => {
+                  const status = statuses[step.id];
+                  const done = Boolean(status);
+                  const blocked = step.id === 'pax_boarded' && !paxComplete;
+                  const active = nextStep?.id === step.id && !blocked;
+                  const displayStep = getStepDisplay(step, trip);
+                  const StepIcon = displayStep.icon;
+                  const at = status?.timestamp || status?.at || status?.ts;
+                  const time = at ? new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : null;
+                  return (
+                    <div key={step.id} className="relative flex gap-4">
+                      {idx < applicableSteps.length - 1 && (
+                        <span className={cx(
+                          'absolute left-[19px] top-10 h-[calc(100%-22px)] w-px',
+                          done ? 'bg-success-border' : 'bg-edge',
+                        )} />
+                      )}
+                      <button
+                        type="button"
+                        disabled={blocked}
+                        onClick={() => done ? handleStatusUntrigger(step) : handleStatusTrigger(step)}
+                        className={cx(
+                          'relative z-[1] mt-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-full border transition-colors',
+                          done && 'border-success-border bg-success text-content-inverse',
+                          active && 'border-accent bg-accent-soft text-accent shadow-[0_0_0_4px_var(--sw-accent-soft)]',
+                          !done && !active && 'border-edge bg-surface-raised text-content-subtle',
+                          blocked && 'cursor-not-allowed opacity-45',
+                        )}
+                        aria-label={`${done ? 'Clear' : 'Mark'} ${displayStep.label}`}
+                      >
+                        {done ? <Check className="h-4 w-4" /> : <StepIcon className="h-4 w-4" />}
+                      </button>
+                      <div className={cx(
+                        'mb-2 min-w-0 flex-1 rounded-md border px-3 py-3 transition-colors',
+                        active ? 'border-accent-border bg-accent-soft' : 'border-transparent hover:border-edge hover:bg-surface-raised',
+                      )}>
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className={cx('text-sm font-semibold', done ? 'text-content' : active ? 'text-accent' : 'text-content-muted')}>
+                              {displayStep.label}
+                            </div>
+                            <div className="mt-1 text-xs text-content-muted">
+                              {blocked ? 'Complete passenger check-in first' : displayStep.sub}
+                            </div>
+                          </div>
+                          <div className="shrink-0 text-right">
+                            {done ? (
+                              <>
+                                <div className="font-mono text-2xs font-medium text-success">{time || 'Logged'}</div>
+                                <div className="mt-0.5 text-[10px] text-content-subtle">{status.author || 'Crew'}</div>
+                              </>
+                            ) : active ? (
+                              <StatusChip tone="accent" size="sm">Current</StatusChip>
+                            ) : (
+                              <span className="text-xs text-content-muted">Pending</span>
+                            )}
+                          </div>
+                        </div>
+                        {done && status.notified === false && (
+                          <button
+                            type="button"
+                            onClick={(event) => { event.stopPropagation(); resendStatusNotification(step); }}
+                            className="mt-2 text-2xs font-semibold text-warning hover:underline"
+                          >
+                            Broker email failed · Retry
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+
+            <aside className="space-y-4 lg:sticky lg:top-4">
+              <Card>
+                <CardHeader title="Weather" icon={Cloud} />
+                <div className="space-y-3">
+                  {[trip.info.from, trip.info.to].filter(Boolean).map((airport, index) => (
+                    <div key={airport} className="flex items-center justify-between gap-3 rounded bg-surface-sunken p-3">
+                      <div>
+                        <div className="font-mono text-sm font-semibold text-content">{airport}</div>
+                        <div className="text-2xs text-content-subtle">{index === 0 ? 'Departure' : 'Arrival'}</div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <AirportWxBadge icao={airport} compact />
+                        <FAANotamBadge
+                          icao={airport}
+                          getIdToken={async () => {
+                            const { auth } = await import('./firebase.js');
+                            return auth.currentUser ? auth.currentUser.getIdToken() : null;
+                          }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <Button variant="ghost" size="sm" block className="mt-2" onClick={() => setTab('weather')}>
+                  Full weather briefing
+                </Button>
+              </Card>
+
+              <Card>
+                <CardHeader title="Crew" icon={Users} />
+                <div className="space-y-3">
+                  {[
+                    { role: 'PIC', name: trip.info.pic },
+                    { role: 'SIC', name: trip.info.sic },
+                  ].filter((member) => member.name).map((member) => (
+                    <div key={member.role} className="flex items-center gap-3">
+                      <span className="flex h-9 w-9 items-center justify-center rounded-full border border-accent-border bg-accent-soft text-sm font-semibold text-accent">
+                        {member.name.split(/\s+/).map((part) => part[0]).slice(0, 2).join('').toUpperCase()}
+                      </span>
+                      <div>
+                        <div className="text-sm font-semibold text-content">{member.name}</div>
+                        <div className="text-2xs text-content-subtle">{member.role}</div>
+                      </div>
+                    </div>
+                  ))}
+                  {!trip.info.pic && !trip.info.sic && (
+                    <p className="text-2xs text-content-muted">Crew has not been assigned.</p>
+                  )}
+                </div>
+              </Card>
+
+              <Card>
+                <CardHeader title="Aircraft" subtitle={trip.info.tail || 'Tail pending'} icon={Plane} />
+                <div className="flex flex-wrap items-center gap-2">
+                  {trip.info.tail && <TailStatusBadge tail={trip.info.tail} />}
+                  {trip.info.isFlight && trip.info.tail && (
+                    <MXShareButton tail={trip.info.tail} onOpenModal={() => setMxShareOpen(true)} />
+                  )}
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <div className="rounded bg-surface-sunken p-2.5">
+                    <div className="text-xs text-content-muted">Origin FBO</div>
+                    <div className="mt-1 truncate text-sm text-content">{fromFbo || 'Not set'}</div>
+                  </div>
+                  <div className="rounded bg-surface-sunken p-2.5">
+                    <div className="text-xs text-content-muted">Destination FBO</div>
+                    <div className="mt-1 truncate text-sm text-content">{toFbo || 'Not set'}</div>
+                  </div>
+                </div>
+              </Card>
+            </aside>
           </div>
         ) : tab === 'pax' ? (
           <div className="p-6 space-y-3 max-w-2xl">
@@ -7533,12 +8350,15 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
         if (!name) continue;
         const scan = p.id ? scannedByRef.get(p.id) : null;
         // Status mapping for the broker:
-        //   matched / manual_override / child_verified → 'checked_in'
-        //   skipped                                    → 'skipped'
-        //   anything else                              → 'pending'
+        //   Any crew-accepted identity state → 'checked_in'. Mismatch is
+        //   included because it can only be produced after an explicit crew
+        //   override; carried-over is a verified previous-leg identity.
+        //   skipped → 'skipped'; anything else → 'pending'.
         const cs = p.checkInStatus || '';
         let status = 'pending';
-        if (cs === 'matched' || cs === 'manual_override' || cs === 'child_verified') status = 'checked_in';
+        if (['matched', 'mismatch', 'manual_override', 'child_verified', 'carried_over'].includes(cs)) {
+          status = 'checked_in';
+        }
         else if (cs === 'skipped') status = 'skipped';
         // Pax marked no-show at boarding time get a distinct status so the
         // broker can see they weren't on the actual flight.
@@ -7546,7 +8366,7 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
         paxRecords.push({
           name,
           status,
-          checkedInAt: scan?.verifiedAt || null,
+          checkedInAt: scan?.verifiedAt || scan?.scannedAt || p?.carriedAt || null,
           walkUp: false,
         });
       }
@@ -10004,7 +10824,7 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
   const addLeg = () => {
     if (readOnly) return;
     if ((draft.legs || []).length >= 7) {
-      alert('Maximum 7 legs per manifest. Start a new manifest if needed.');
+      notify.error('Maximum 7 legs per manifest. Start a new manifest if needed.');
       return;
     }
     setDraft(d => ({
@@ -10070,15 +10890,15 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
 
   const completeSign = async (role, typedName, signatureDataUrl) => {
     if (!canSign) {
-      alert('Only crew (PIC/SIC) can sign. Admin can edit but cannot sign.');
+      notify.error('Only crew (PIC/SIC) can sign. Admin can edit but cannot sign.');
       return;
     }
     if (!typedName || !typedName.trim()) {
-      alert('Type your name before confirming.');
+      notify.error('Type your name before confirming.');
       return;
     }
     if (!signatureDataUrl) {
-      alert('Draw your signature before confirming.');
+      notify.error('Draw your signature before confirming.');
       return;
     }
     const sig = {
@@ -10096,7 +10916,7 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
       await m.saveManifest(next);
     } catch (err) {
       console.error('[manifest] sign save failed:', err);
-      alert('Signature recorded locally but failed to save. Try again.');
+      notify.error('Signature recorded locally but failed to save. Try again.');
     }
   };
 
@@ -10119,7 +10939,7 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
 
   const previewPdf = async () => {
     if (!(draft.legs || []).length) {
-      alert('Manifest has no legs. Add at least one leg before previewing.');
+      notify.error('Manifest has no legs. Add at least one leg before previewing.');
       return;
     }
     setGeneratingPreview(true);
@@ -10154,11 +10974,11 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
 
   const submitManifest = async () => {
     if (!draft.picSig || !draft.sicSig) {
-      alert('Both PIC and SIC must sign before submitting.');
+      notify.error('Both PIC and SIC must sign before submitting.');
       return;
     }
     if (!(draft.legs || []).length) {
-      alert('Manifest has no legs. Add at least one leg before submitting.');
+      notify.error('Manifest has no legs. Add at least one leg before submitting.');
       return;
     }
     if (!window.confirm(
@@ -10239,7 +11059,7 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
                 onBack();
               } catch (err) {
                 console.error('[manifest] delete failed:', err);
-                alert('Delete failed: ' + err.message);
+                notify.error('Delete failed: ' + err.message);
               }
             }}
             className="text-[10px] px-2 py-1 border border-red-500/40 text-red-300 hover:bg-red-500/10 tracking-widest"
@@ -10377,7 +11197,7 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
                   const manifestModule = await import('./firebase-manifests.js');
                   const tripUids = (draft.legs || []).filter(l => l.tripUid).map(l => l.tripUid);
                   if (tripUids.length === 0) {
-                    alert('No legs are linked to scheduled trips — nothing to refresh.');
+                    notify.info('No legs are linked to scheduled trips — nothing to refresh.');
                     return;
                   }
                   const paxByTripUid = {};
@@ -11459,6 +12279,9 @@ function PassengerRow({ passenger, onRemove, onToggleNoShow }) {
   const isPhotoVerified = passenger.idVerified === true;
   const isManualCapture = passenger.paxType === 'MANUAL_CAPTURE';
   const isNoShow = passenger.noShow === true;
+  const hasIdentityOverride = passenger.mismatchAcknowledged === true;
+  const hasExpiredOverride = passenger.documentExpired === true
+    && passenger.documentExceptionAcknowledged === true;
   const displayName = (passenger.firstName || passenger.lastName)
     ? `${passenger.firstName} ${passenger.lastName}`.trim()
     : (isManualCapture ? 'PHOTO ONLY' : 'UNKNOWN');
@@ -11490,6 +12313,12 @@ function PassengerRow({ passenger, onRemove, onToggleNoShow }) {
             <Pill tone="neutral">NO SHOW</Pill>
           ) : isChild ? (
             <Pill tone="amber"><Users className="w-2.5 h-2.5" /> CHILD</Pill>
+          ) : hasExpiredOverride ? (
+            <Pill tone="amber"><AlertTriangle className="w-2.5 h-2.5" /> EXPIRED · OVERRIDE</Pill>
+          ) : passenger.documentExpired || expired ? (
+            <Pill tone="red">EXPIRED</Pill>
+          ) : hasIdentityOverride ? (
+            <Pill tone="amber"><AlertTriangle className="w-2.5 h-2.5" /> MATCH OVERRIDE</Pill>
           ) : isPassport && isPhotoVerified ? (
             <Pill tone="green"><Shield className="w-2.5 h-2.5" /> PASSPORT VERIFIED</Pill>
           ) : isPassport ? (
@@ -11500,8 +12329,6 @@ function PassengerRow({ passenger, onRemove, onToggleNoShow }) {
             <Pill tone="amber"><Camera className="w-2.5 h-2.5" /> PHOTO</Pill>
           ) : compliant ? (
             <Pill tone="green"><Shield className="w-2.5 h-2.5" /> REAL ID</Pill>
-          ) : expired ? (
-            <Pill tone="red">EXPIRED</Pill>
           ) : (
             <Pill tone="amber">UNVERIFIED</Pill>
           )}
@@ -11509,8 +12336,10 @@ function PassengerRow({ passenger, onRemove, onToggleNoShow }) {
         <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1 text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
           {passenger.dob && <span>DOB {passenger.dob}</span>}
           {passenger.expiration && <span>EXP {passenger.expiration}</span>}
-          {passenger.licenseNumber && <span>{passenger.state} {passenger.licenseNumber}</span>}
-          <span>· {passenger.method}</span>
+          {passenger.documentLast4 && <span>DOC ••••{passenger.documentLast4}</span>}
+          {passenger.scanConfidence && <span>SCAN {String(passenger.scanConfidence).toUpperCase()}</span>}
+          {passenger.imageSource && <span>{passenger.imageSource === 'library' ? 'CAMERA ROLL' : 'CAMERA'}</span>}
+          <span>· {String(passenger.method || '').replaceAll('_', ' ')}</span>
         </div>
       </div>
       <div className="flex items-center gap-1 shrink-0">
@@ -11741,11 +12570,11 @@ function NewReport({ currentUser, onCancel, onSubmitted }) {
 
   const submit = async () => {
     // Required-field validation
-    if (!form.tail) { alert('Aircraft Registration is required.'); return; }
-    if (!form.pic) { alert('PIC is required.'); return; }
-    if (!form.textOfEvent.trim()) { alert('Description of event is required.'); return; }
-    if (!form.affectedSystem.trim()) { alert('Affected System is required.'); return; }
-    if (!form.certificateNumber.trim()) { alert('Certificate # is required.'); return; }
+    if (!form.tail) { notify.error('Aircraft Registration is required.'); return; }
+    if (!form.pic) { notify.error('PIC is required.'); return; }
+    if (!form.textOfEvent.trim()) { notify.error('Description of event is required.'); return; }
+    if (!form.affectedSystem.trim()) { notify.error('Affected System is required.'); return; }
+    if (!form.certificateNumber.trim()) { notify.error('Certificate # is required.'); return; }
 
     if (!window.confirm(
       'Submit this Malfunction/Incident Report?\n\n' +
@@ -12024,7 +12853,7 @@ function ReportDetail({ report, currentUser, onBack, isAdmin }) {
       });
       const data = await r.json().catch(() => ({}));
       if (!r.ok || !data.pdfBase64) {
-        alert('PDF generation failed: ' + (data.error || r.status));
+        notify.error('PDF generation failed: ' + (data.error || r.status));
         return;
       }
       setPreviewPdfUrl(`data:application/pdf;base64,${data.pdfBase64}`);
@@ -12044,7 +12873,7 @@ function ReportDetail({ report, currentUser, onBack, isAdmin }) {
       await m.deleteReport(report.id);
       onBack();
     } catch (err) {
-      alert('Delete failed: ' + err.message);
+      notify.error('Delete failed: ' + err.message);
     }
   };
 
@@ -12234,16 +13063,21 @@ function RDisplay({ label, value }) {
 //   2. TRAVEL — per-user hotel + commercial flight bookings. Each user sees
 //      their own. Ops + admin can view and edit any user's travel.
 
+/**
+ * `Icon` is a Lucide component rather than an emoji: emoji render with
+ * per-platform color and metrics, so a card list looked different on iOS,
+ * Android and desktop and clashed with the line icons used everywhere else.
+ */
 const CARD_TYPES = [
-  { value: 'credit', label: 'Credit Card', defaultColor: '#1E40AF', icon: '💳' },
-  { value: 'multi-service', label: 'Multi Service Aviation', defaultColor: '#0891B2', icon: '⛽' },
-  { value: 'avfuel', label: 'AVfuel', defaultColor: '#15803D', icon: '⛽' },
-  { value: 'colt', label: 'Colt International', defaultColor: '#9333EA', icon: '⛽' },
-  { value: 'phillips66', label: 'Phillips 66', defaultColor: '#DC2626', icon: '⛽' },
-  { value: 'epic', label: 'Epic Card', defaultColor: '#EA580C', icon: '⛽' },
-  { value: 'shell', label: 'Shell', defaultColor: '#FCD34D', icon: '⛽' },
-  { value: 'fbo', label: 'FBO Card', defaultColor: '#475569', icon: '🏢' },
-  { value: 'other', label: 'Other', defaultColor: '#64748B', icon: '💳' },
+  { value: 'credit', label: 'Credit Card', defaultColor: '#1E40AF', Icon: CreditCard },
+  { value: 'multi-service', label: 'Multi Service Aviation', defaultColor: '#0891B2', Icon: Fuel },
+  { value: 'avfuel', label: 'AVfuel', defaultColor: '#15803D', Icon: Fuel },
+  { value: 'colt', label: 'Colt International', defaultColor: '#9333EA', Icon: Fuel },
+  { value: 'phillips66', label: 'Phillips 66', defaultColor: '#DC2626', Icon: Fuel },
+  { value: 'epic', label: 'Epic Card', defaultColor: '#EA580C', Icon: Fuel },
+  { value: 'shell', label: 'Shell', defaultColor: '#FCD34D', Icon: Fuel },
+  { value: 'fbo', label: 'FBO Card', defaultColor: '#475569', Icon: Building2 },
+  { value: 'other', label: 'Other', defaultColor: '#64748B', Icon: CreditCard },
 ];
 
 /**
@@ -12519,7 +13353,7 @@ function FleetCard({ card, canEdit, onEdit }) {
         </div>
         <ProviderLogo
           domain={logoDomain}
-          fallback={<span className="text-2xl">{typeMeta.icon}</span>}
+          fallback={<typeMeta.Icon className="h-6 w-6 text-slate-700" />}
           size={40}
           theme="dark"
           alt={logoLabel}
@@ -12602,8 +13436,8 @@ function CardEditModal({ card, currentUser, onClose }) {
   const setField = (key) => (val) => setForm(f => ({ ...f, [key]: val }));
 
   const save = async () => {
-    if (!form.nickname.trim()) { alert('Nickname is required.'); return; }
-    if (!form.cardNumber.trim()) { alert('Card number is required.'); return; }
+    if (!form.nickname.trim()) { notify.error('Nickname is required.'); return; }
+    if (!form.cardNumber.trim()) { notify.error('Card number is required.'); return; }
     setSaving(true);
     setError(null);
     try {
@@ -12676,7 +13510,7 @@ function CardEditModal({ card, currentUser, onClose }) {
               style={{ fontFamily: 'JetBrains Mono, monospace' }}
             >
               {CARD_TYPES.map(t => (
-                <option key={t.value} value={t.value}>{t.icon} {t.label}</option>
+                <option key={t.value} value={t.value}>{t.label}</option>
               ))}
             </select>
           </div>
@@ -12923,7 +13757,7 @@ function FlightCard({ booking, canEdit }) {
           <div className="flex items-start gap-3 min-w-0 flex-1">
             <ProviderLogo
               domain={cachedAirlineDomain(booking.airline || booking.airlineCode)}
-              fallback={<span className="text-3xl">✈</span>}
+              fallback={<Plane className="h-7 w-7 text-slate-700" />}
               size={48}
               theme="dark"
               alt={booking.airline || 'Airline'}
@@ -13052,7 +13886,7 @@ function HotelCard({ booking, canEdit }) {
           <div className="flex items-start gap-3 min-w-0 flex-1">
             <ProviderLogo
               domain={cachedHotelDomain(booking.hotelBrand || booking.hotelName)}
-              fallback={<span className="text-3xl">🏨</span>}
+              fallback={<Hotel className="h-7 w-7 text-slate-700" />}
               size={48}
               theme="dark"
               alt={booking.hotelBrand || booking.hotelName || 'Hotel'}
@@ -13156,7 +13990,7 @@ function BookingDetailModal({ booking, canEdit, onClose }) {
       await m.deleteBooking(booking.id);
       onClose();
     } catch (err) {
-      alert('Delete failed: ' + err.message);
+      notify.error('Delete failed: ' + err.message);
       setDeleting(false);
     }
   };
@@ -13169,8 +14003,9 @@ function BookingDetailModal({ booking, canEdit, onClose }) {
         <div className={`p-4 border-b border-slate-800 ${isFlight ? 'bg-emerald-500/10' : 'bg-amber-500/10'}`}>
           <div className="flex items-center justify-between gap-2">
             <div>
-              <div className="text-[10px] tracking-widest text-slate-300" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
-                {isFlight ? `✈ ${booking.airline || 'FLIGHT'}` : `🏨 ${booking.hotelBrand || 'HOTEL'}`}
+              <div className="flex items-center gap-1.5 text-2xs font-semibold text-content-muted">
+                {isFlight ? <Plane className="h-3.5 w-3.5" /> : <Hotel className="h-3.5 w-3.5" />}
+                {isFlight ? (booking.airline || 'Flight') : (booking.hotelBrand || 'Hotel')}
               </div>
               <h2 className="text-2xl tracking-wider mt-1" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
                 {isFlight
@@ -13471,26 +14306,28 @@ function AddBookingModal({ targetUser, currentUser, onClose }) {
                 </label>
                 <div className="mt-1 flex gap-2">
                   <button
+                    type="button"
                     onClick={() => setBookingType('flight')}
-                    className={`flex-1 py-3 border text-sm tracking-widest ${
+                    className={cx(
+                      'flex flex-1 items-center justify-center gap-2 rounded border py-3 text-sm font-semibold transition-colors',
                       bookingType === 'flight'
-                        ? 'border-emerald-500 bg-emerald-500/10 text-emerald-300'
-                        : 'border-slate-700 text-slate-400'
-                    }`}
-                    style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                        ? 'border-accent-border bg-accent-soft text-accent'
+                        : 'border-edge text-content-muted hover:text-content',
+                    )}
                   >
-                    ✈ FLIGHT
+                    <Plane className="h-4 w-4" /> Flight
                   </button>
                   <button
+                    type="button"
                     onClick={() => setBookingType('hotel')}
-                    className={`flex-1 py-3 border text-sm tracking-widest ${
+                    className={cx(
+                      'flex flex-1 items-center justify-center gap-2 rounded border py-3 text-sm font-semibold transition-colors',
                       bookingType === 'hotel'
-                        ? 'border-amber-500 bg-amber-500/10 text-amber-300'
-                        : 'border-slate-700 text-slate-400'
-                    }`}
-                    style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                        ? 'border-accent-border bg-accent-soft text-accent'
+                        : 'border-edge text-content-muted hover:text-content',
+                    )}
                   >
-                    🏨 HOTEL
+                    <Hotel className="h-4 w-4" /> Hotel
                   </button>
                 </div>
               </div>
@@ -15040,7 +15877,167 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
 /* ============================================================
    Login screen
    ============================================================ */
-function LoginScreen({ initialMode = 'login' }) {
+function MicrosoftMark({ className = '' }) {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className={className}>
+      <path fill="#f25022" d="M1 1h10v10H1z" />
+      <path fill="#7fba00" d="M13 1h10v10H13z" />
+      <path fill="#00a4ef" d="M1 13h10v10H1z" />
+      <path fill="#ffb900" d="M13 13h10v10H13z" />
+    </svg>
+  );
+}
+
+function LoginScreen({ authError = null }) {
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null);
+  // A rejection raised while completing the redirect wins, since it is the
+  // more specific of the two; otherwise fall back to whatever watchAuth
+  // refused the session for.
+  const shownError = error || (authError ? describeAuthError({ code: authError }) : null);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const { completeMicrosoftRedirect } = await import('./firebase-auth.js');
+        await completeMicrosoftRedirect();
+      } catch (err) {
+        if (active) setError(describeAuthError(err));
+      }
+    })();
+    return () => { active = false; };
+  }, []);
+
+  const handleMicrosoftLogin = async () => {
+    setSubmitting(true);
+    setError(null);
+    try {
+      const { signInWithMicrosoft } = await import('./firebase-auth.js');
+      await signInWithMicrosoft();
+      // Redirect navigation takes over. Keep the button busy so it cannot
+      // launch two OAuth transactions.
+    } catch (err) {
+      setSubmitting(false);
+      setError(describeAuthError(err));
+    }
+  };
+
+  return (
+    <main className="relative min-h-screen overflow-y-auto bg-slate-950 text-content sw-safe-inset">
+      <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
+        <div className="absolute left-1/2 top-[-20rem] h-[38rem] w-[38rem] -translate-x-1/2 rounded-full bg-cyan-500/[0.08] blur-3xl" />
+        <div className="absolute inset-0 grid-bg opacity-50" />
+      </div>
+
+      <div className="relative mx-auto grid min-h-screen w-full max-w-6xl items-center gap-10 px-5 py-10 md:grid-cols-[1.1fr_0.9fr] md:px-10 lg:gap-20">
+        <section className="hidden md:block">
+          <img
+            src="/skyway-logo.png"
+            srcSet="/skyway-logo.png 1x, /skyway-logo@2x.png 2x"
+            alt="Skyway Aviation"
+            className="h-20 w-auto"
+          />
+          <p className="mt-8 max-w-xl text-4xl font-semibold leading-tight text-content">
+            Your operation.<br />
+            <span className="text-accent">One secure workspace.</span>
+          </p>
+          <p className="mt-5 max-w-lg text-base leading-relaxed text-content-muted">
+            Flights, crew duty, passenger manifests, maintenance, expenses,
+            and company communications—available to approved Skyway personnel.
+          </p>
+          <div className="mt-8 grid max-w-lg grid-cols-3 gap-3">
+            {[
+              [Plane, 'Flight operations'],
+              [ShieldCheck, 'Company identity'],
+              [Users, 'Role-based access'],
+            ].map(([Icon, label]) => (
+              <div key={label} className="rounded-xl border border-edge bg-surface/70 p-4">
+                <Icon className="h-5 w-5 text-accent" />
+                <p className="mt-3 text-2xs font-semibold text-content-muted">{label}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="mx-auto w-full max-w-md">
+          <div className="mb-8 text-center md:hidden">
+            <img
+              src="/skyway-logo.png"
+              srcSet="/skyway-logo.png 1x, /skyway-logo@2x.png 2x"
+              alt="Skyway Aviation"
+              className="mx-auto h-16 w-auto"
+            />
+          </div>
+
+          <Card className="border-edge-strong bg-surface/95 p-6 shadow-overlay sm:p-8">
+            <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-accent-border bg-accent-soft">
+              <ShieldCheck className="h-6 w-6 text-accent" />
+            </div>
+            <h1 className="mt-5 text-2xl font-semibold text-content">Sign in to Skyway Ops</h1>
+            <p className="mt-2 text-sm leading-relaxed text-content-muted">
+              Use your company Microsoft account to continue.
+            </p>
+
+            {shownError && (
+              <div className="mt-5 rounded-lg border border-danger-border bg-danger-soft p-3">
+                <div className="flex items-start gap-2.5 text-2xs leading-relaxed text-danger">
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span>{shownError.message}</span>
+                </div>
+                {/* Configuration faults are shown with the exact console
+                    setting to change, so an administrator is not left guessing
+                    which "domain" Firebase is complaining about. */}
+                {shownError.fix && (
+                  <p className="mt-2 border-t border-danger-border pt-2 text-2xs leading-relaxed text-content-muted">
+                    {shownError.fix}
+                  </p>
+                )}
+                {shownError.code && (
+                  <p className="mt-1.5 font-mono text-[10px] text-content-subtle">{shownError.code}</p>
+                )}
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={handleMicrosoftLogin}
+              disabled={submitting}
+              className="mt-6 flex h-13 w-full items-center justify-center gap-3 rounded-lg bg-white px-4 text-sm font-semibold text-slate-900 shadow-card transition hover:bg-slate-100 disabled:cursor-wait disabled:opacity-60"
+            >
+              {submitting
+                ? <Loader2 className="h-5 w-5 animate-spin" />
+                : <MicrosoftMark className="h-5 w-5" />}
+              {submitting ? 'Opening Microsoft…' : 'Continue with Microsoft'}
+            </button>
+
+            <div className="mt-5 flex items-center justify-center gap-2 text-2xs text-content-muted">
+              <Building2 className="h-3.5 w-3.5" />
+              <span>Authorized <strong className="font-semibold text-content">@flyskyway.com</strong> accounts only</span>
+            </div>
+
+            <div className="mt-6 border-t border-edge pt-5">
+              <div className="flex items-start gap-2.5 text-2xs leading-relaxed text-content-subtle">
+                <Shield className="mt-0.5 h-4 w-4 shrink-0 text-success" />
+                <p>
+                  Microsoft Entra ID verifies your company identity. New
+                  profiles receive no access until approved by a Skyway administrator.
+                </p>
+              </div>
+            </div>
+          </Card>
+
+          <p className="mt-5 text-center text-2xs text-content-subtle">
+            Skyway Aviation internal system · Access is logged and monitored
+          </p>
+        </section>
+      </div>
+    </main>
+  );
+}
+
+/* Retained temporarily for migration reference; no route renders it. */
+function LegacyLoginScreen({ initialMode = 'login' }) {
   const [mode, setMode] = useState(initialMode); // 'login' | 'signup' | 'reset'
   const [form, setForm] = useState({
     email: '', password: '', passwordConfirm: '',
@@ -15127,10 +16124,8 @@ function LoginScreen({ initialMode = 'login' }) {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6">
+    <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6 sw-safe-inset overflow-y-auto">
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
-        body { font-family: 'DM Sans', sans-serif; }
         .grid-bg-login {
           background-image:
             linear-gradient(rgba(148, 163, 184, 0.04) 1px, transparent 1px),
@@ -15254,21 +16249,96 @@ function LoginScreen({ initialMode = 'login' }) {
   );
 }
 
-/* Translates Firebase error codes into human-readable messages. */
-function prettyAuthError(err) {
+/**
+ * Turns a Firebase error into a message for the person looking at the screen
+ * and, where the cause is a project misconfiguration rather than user error, a
+ * `fix` line naming the exact console setting to change.
+ *
+ * The distinction matters most for `auth/unauthorized-domain`: Firebase raises
+ * it about the web address the app is served from, which reads as if it were
+ * about the company email domain. Naming the host removes the ambiguity.
+ */
+/**
+ * Vercel branch and commit deployments get a fresh hostname on every build.
+ * They can be allowlisted in Firebase, but they cannot usefully be registered
+ * as an OAuth redirect URI, so telling an operator to wire one up wastes their
+ * time — the address is gone by the next deploy.
+ */
+function isEphemeralPreviewHost(host) {
+  if (!host.endsWith('.vercel.app')) return false;
+  return host.includes('-git-') || /-[a-z0-9]{8,}-/.test(host);
+}
+
+function describeAuthError(err) {
   const code = err?.code || '';
-  const map = {
+  const host = typeof window !== 'undefined' ? window.location.hostname : 'this address';
+  const ephemeral = isEphemeralPreviewHost(host);
+
+  const CONFIG_ERRORS = {
+    'auth/unauthorized-domain': {
+      message: `Microsoft sign-in is not enabled for ${host}.`,
+      fix: `An administrator needs to add ${host} under Firebase Authentication → Settings → Authorized domains. This is the web address the app is served from — not the @flyskyway.com email domain.${
+        ephemeral ? ' Note this is a preview deployment; its address changes on every build, so prefer testing on the stable production address.' : ''
+      }`,
+    },
+    'auth/operation-not-allowed': {
+      message: 'Microsoft sign-in is not switched on for this project.',
+      fix: 'Enable the Microsoft provider under Firebase Authentication → Sign-in method.',
+    },
+    'auth/invalid-oauth-client-id': {
+      message: 'The Microsoft application details are not accepted by Firebase.',
+      fix: 'Re-check the Entra application (client) ID and secret in Firebase Authentication → Sign-in method → Microsoft.',
+    },
+    'auth/invalid-oauth-provider': {
+      message: 'Microsoft is not configured as a sign-in provider.',
+      fix: 'Enable the Microsoft provider under Firebase Authentication → Sign-in method.',
+    },
+    'auth/missing-email': {
+      message: 'Microsoft signed you in but returned no email address.',
+      fix: 'In Entra ID, confirm the account has a mail address and that the app registration requests the "email" scope and includes the email optional claim. Skyway Ops authorizes accounts by their verified company address, so it cannot proceed without one.',
+    },
+    'auth/redirect-session-lost': {
+      message: 'The sign-in did not carry back to the app.',
+      fix: ephemeral
+        // Wiring up a throwaway hostname is worse than useless: it looks like
+        // a fix and then breaks on the next deploy.
+        ? `If you completed the Microsoft prompt, this is Safari blocking the cross-origin sign-in helper. ${host} is a preview deployment and gets a new address every build, so it cannot be registered as a redirect URI. Sign in on the stable production address instead, where VITE_FIREBASE_AUTH_DOMAIN and the Entra redirect URI can be set once. See docs/microsoft-sso-setup.md.`
+        : `If you completed the Microsoft prompt, this is Safari blocking the cross-origin sign-in helper, which installed iPhone apps do by default. An administrator can fix it by setting VITE_FIREBASE_AUTH_DOMAIN to ${host} and adding https://${host}/__/auth/handler to the Entra app's redirect URIs. See docs/microsoft-sso-setup.md.`,
+    },
+    'auth/dev-bypass-unavailable': {
+      message: 'The development authentication bypass could not start.',
+      fix: 'This bypass only works on Vercel Preview deployments. Confirm FIREBASE_SERVICE_ACCOUNT_JSON is available to the preview environment and redeploy. Production intentionally returns 404 for this endpoint.',
+    },
+  };
+  if (CONFIG_ERRORS[code]) return { code, ...CONFIG_ERRORS[code] };
+
+  const SIMPLE = {
+    'auth/company-account-required': 'Use your @flyskyway.com Microsoft account.',
+    'auth/profile-identity-mismatch': 'This Microsoft account does not match the Skyway profile on file. Contact an administrator to relink it.',
+    'auth/account-disabled': 'This account has been deactivated. Contact a Skyway administrator.',
+    'auth/account-exists-with-different-credential': 'This email was previously registered another way. Ask an administrator to migrate the account to Microsoft.',
+    'auth/popup-blocked': 'Microsoft sign-in was blocked by the browser. Allow pop-ups and try again.',
+    'auth/cancelled-popup-request': 'The sign-in request was cancelled. Please try again.',
+    'auth/redirect-cancelled-by-user': 'Sign-in was cancelled before it finished.',
+    'auth/timeout': 'Microsoft sign-in timed out. Please try again.',
     'auth/email-already-in-use': 'An account with this email already exists. Try signing in instead.',
     'auth/invalid-email': 'That email address looks invalid.',
-    'auth/weak-password': 'Password is too weak. Use at least 8 characters.',
     'auth/user-not-found': 'No account with that email.',
-    'auth/wrong-password': 'Incorrect password.',
-    'auth/invalid-credential': 'Email or password is incorrect.',
+    'auth/invalid-credential': 'Microsoft rejected those sign-in details.',
     'auth/too-many-requests': 'Too many failed attempts. Try again in a few minutes.',
     'auth/network-request-failed': 'Network error. Check your connection.',
     'auth/user-disabled': 'This account has been disabled.',
   };
-  return map[code] || err?.message || 'Something went wrong. Please try again.';
+  return {
+    code,
+    message: SIMPLE[code] || err?.message || 'Something went wrong. Please try again.',
+    fix: null,
+  };
+}
+
+/* Message-only wrapper for the screens that just need a single line. */
+function prettyAuthError(err) {
+  return describeAuthError(err).message;
 }
 
 /* Screen shown when user is signed in but email is not yet verified. */
@@ -15347,7 +16417,8 @@ function PendingApprovalScreen({ user, profile, onSignOut }) {
         <div className="border border-cyan-500/30 bg-cyan-500/5 p-5">
           <h2 className="text-xl tracking-wider mb-2" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>AWAITING APPROVAL</h2>
           <p className="text-sm text-slate-300 leading-relaxed mb-4">
-            Thanks <strong className="text-cyan-300">{profile.name}</strong>! Your email is verified. An admin needs to approve your account before you can access trips.
+            Microsoft verified <strong className="text-cyan-300">{user.email}</strong>.
+            A Skyway administrator must approve your profile before you can access company operations.
           </p>
           <p className="text-xs text-slate-500 leading-relaxed mb-4">
             This usually happens quickly during business hours. You can close this page; you'll be approved next time you sign in.
@@ -15363,9 +16434,6 @@ function PendingApprovalScreen({ user, profile, onSignOut }) {
 
 /* Screen shown when user is signed in but their Firestore profile is missing. */
 function NoProfileScreen({ user, onSignOut }) {
-  const [repairing, setRepairing] = useState(false);
-  const [error, setError] = useState('');
-  const [info, setInfo] = useState('');
   const [diagnostic, setDiagnostic] = useState(null);
 
   useEffect(() => {
@@ -15380,69 +16448,31 @@ function NoProfileScreen({ user, onSignOut }) {
     })();
   }, []);
 
-  const handleRepair = async () => {
-    setRepairing(true);
-    setError(''); setInfo('');
-    try {
-      const { repairProfile } = await import('./firebase-auth.js');
-      await repairProfile();
-      setInfo('Profile created. Refreshing...');
-      // The auth listener should pick up the new profile and move us forward.
-      // If it doesn't within 2s, force a reload.
-      setTimeout(() => window.location.reload(), 2000);
-    } catch (err) {
-      setError(err.message || 'Repair failed');
-    } finally {
-      setRepairing(false);
-    }
-  };
-
   return (
-    <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6 text-slate-100">
+    <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6 text-content sw-safe-inset">
       <div className="max-w-md w-full">
         <div className="text-center mb-8">
-          <img src="/skyway-logo.png" srcSet="/skyway-logo.png 1x, /skyway-logo@2x.png 2x" alt="Skyway Aviation" className="mx-auto mb-4 h-16 w-auto" />
+          <img src="/skyway-logo.png" srcSet="/skyway-logo.png 1x, /skyway-logo@2x.png 2x" alt="Skyway Aviation" className="mx-auto h-16 w-auto" />
         </div>
-        <div className="border border-cyan-500/30 bg-cyan-500/5 p-5">
-          <h2 className="text-xl tracking-wider mb-2" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>SET UP YOUR PROFILE</h2>
-          <p className="text-sm text-slate-300 leading-relaxed mb-4">
-            Signed in as <strong className="text-cyan-300">{user.email}</strong>, but your profile hasn't been created yet. Tap below to set it up.
+        <Card className="border-warning-border bg-warning-soft p-6">
+          <AlertTriangle className="h-6 w-6 text-warning" />
+          <h2 className="mt-4 text-xl font-semibold text-content">Profile setup unavailable</h2>
+          <p className="mt-2 text-sm leading-relaxed text-content-muted">
+            Microsoft verified <strong className="text-content">{user.email}</strong>,
+            but the secure profile service could not finish setup. No access has been granted.
           </p>
-
-          {error && (
-            <div className="mb-3 p-2 border border-red-500/40 bg-red-500/10 text-red-300 text-xs">
-              <div className="font-mono">{error}</div>
-              {diagnostic && (
-                <div className="mt-2 pt-2 border-t border-red-500/20 text-[10px] text-red-400">
-                  Diagnostic: {diagnostic.stage} · {diagnostic.code || 'no-code'}
-                </div>
-              )}
+          {diagnostic && (
+            <div className="mt-4 rounded border border-edge bg-surface-sunken p-2.5 font-mono text-2xs text-content-subtle">
+              Reference: {diagnostic.stage} · {diagnostic.code || 'setup-error'}
             </div>
           )}
-          {info && (
-            <div className="mb-3 p-2 border border-cyan-500/40 bg-cyan-500/10 text-cyan-200 text-xs">{info}</div>
-          )}
-
-          <div className="space-y-2">
-            <button
-              onClick={handleRepair}
-              disabled={repairing}
-              className="w-full py-2.5 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-sm tracking-widest disabled:opacity-50"
-              style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}
-            >
-              {repairing ? <Loader2 className="w-4 h-4 animate-spin mx-auto" /> : 'CREATE MY PROFILE'}
-            </button>
-            <button
-              onClick={() => window.location.reload()}
-              className="w-full py-2 border border-slate-700 hover:border-slate-500 text-xs tracking-widest text-slate-300"
-            >
-              REFRESH
-            </button>
-            <button onClick={onSignOut} className="w-full py-2 text-xs text-slate-500 hover:text-slate-300">
+          <div className="mt-5 grid grid-cols-2 gap-2">
+            <Button variant="outline" onClick={() => window.location.reload()}>Try again</Button>
+            <Button variant="ghost" onClick={onSignOut}>
               Sign out
-            </button>
+            </Button>
           </div>
-        </div>
+        </Card>
       </div>
     </div>
   );
@@ -15755,7 +16785,7 @@ function MelLibraryTab({ currentUser, fleetTails, onAssignToDeferral }) {
     try {
       const m = await import('./firebase-mel.js');
       await m.activateRevision(revId, { byUid: currentUser?.uid || currentUser?.id, byName: currentUser?.displayName || currentUser?.name || 'Unknown' });
-    } catch (e) { window.alert('Activate failed: ' + e.message); } finally { setBusy(null); }
+    } catch (e) { notify.error('Activate failed: ' + e.message); } finally { setBusy(null); }
   };
   const delDraft = async (revId) => {
     if (!window.confirm('Delete this DRAFT revision?')) return;
@@ -15763,7 +16793,7 @@ function MelLibraryTab({ currentUser, fleetTails, onAssignToDeferral }) {
     try {
       const m = await import('./firebase-mel.js');
       await m.deleteDraftRevision(revId);
-    } catch (e) { window.alert(e.message); } finally { setBusy(null); }
+    } catch (e) { notify.error(e.message); } finally { setBusy(null); }
   };
 
   const assign = async (it) => {
@@ -17033,7 +18063,7 @@ function AogDetail({ aog, currentUser, onBack, mode = 'aog' }) {
         }).catch(e => console.warn('close email failed:', e));
       }
     } catch (err) {
-      alert('Failed: ' + err.message);
+      notify.error('Failed: ' + err.message);
     }
   }
 
@@ -17063,7 +18093,7 @@ function AogDetail({ aog, currentUser, onBack, mode = 'aog' }) {
       const mod = await loadMaintModule(M.mode);
       await mod.removeReferenceDoc(aog.id, refDoc.id, reporter);
     } catch (err) {
-      alert('Failed to remove: ' + err.message);
+      notify.error('Failed to remove: ' + err.message);
     }
   }
 
@@ -19399,7 +20429,7 @@ function MxProjectDetail({ project, currentUser, users, onBack }) {
       await mxMod.setProjectStatus(project.id, 'complete', actor, 'Marked complete by lead');
       setShowLogbookFromComplete(true);
     } catch (err) {
-      alert('Failed to complete: ' + err.message);
+      notify.error('Failed to complete: ' + err.message);
     }
   }
 
@@ -19588,14 +20618,14 @@ function TasksSection({ project, currentUser, users, canEdit, canManage, actor, 
         await mxMod.uncompleteTask(project.id, task.id, actor);
       } else {
         if (task.status === 'blocked_parts') {
-          alert('This task is blocked on parts. Resolve the part request first.');
+          notify.error('This task is blocked on parts. Resolve the part request first.');
           return;
         }
         await mxMod.completeTask(project.id, task.id, actor);
       }
       await mxMod.maybeApplyAutoStatus(project.id, actor);
     } catch (err) {
-      alert('Update failed: ' + err.message);
+      notify.error('Update failed: ' + err.message);
     }
   }
 
@@ -19607,7 +20637,7 @@ function TasksSection({ project, currentUser, users, canEdit, canManage, actor, 
       await mxMod.deleteTask(project.id, task.id, actor);
       await mxMod.maybeApplyAutoStatus(project.id, actor);
     } catch (err) {
-      alert('Delete failed: ' + err.message);
+      notify.error('Delete failed: ' + err.message);
     }
   }
 
@@ -19696,7 +20726,7 @@ function PartsSection({ project, currentUser, canApproveParts, canEdit, actor, o
       const mxMod = await import('./firebase-mx.js');
       await mxMod.approvePart(project.id, part.id, actor);
     } catch (err) {
-      alert('Approve failed: ' + err.message);
+      notify.error('Approve failed: ' + err.message);
     }
   }
   async function handleDeny(part) {
@@ -19706,7 +20736,7 @@ function PartsSection({ project, currentUser, canApproveParts, canEdit, actor, o
       await mxMod.denyPart(project.id, part.id, actor, reason);
       await mxMod.maybeApplyAutoStatus(project.id, actor);
     } catch (err) {
-      alert('Deny failed: ' + err.message);
+      notify.error('Deny failed: ' + err.message);
     }
   }
   async function handleMarkOrdered(part) {
@@ -19716,7 +20746,7 @@ function PartsSection({ project, currentUser, canApproveParts, canEdit, actor, o
       const mxMod = await import('./firebase-mx.js');
       await mxMod.updatePartStatus(project.id, part.id, 'ordered', { trackingNumber, shipMethod }, actor);
     } catch (err) {
-      alert('Failed: ' + err.message);
+      notify.error('Failed: ' + err.message);
     }
   }
   async function handleMarkDelivered(part) {
@@ -19726,7 +20756,7 @@ function PartsSection({ project, currentUser, canApproveParts, canEdit, actor, o
       await mxMod.updatePartStatus(project.id, part.id, 'delivered', {}, actor);
       await mxMod.maybeApplyAutoStatus(project.id, actor);
     } catch (err) {
-      alert('Failed: ' + err.message);
+      notify.error('Failed: ' + err.message);
     }
   }
 
@@ -19878,7 +20908,7 @@ function InspectionSection({ project, currentUser, canEdit, canManage, actor, on
       await mxMod.toggleChecklistItem(project.id, item.id, actor);
       await mxMod.maybeApplyAutoStatus(project.id, actor);
     } catch (err) {
-      alert('Toggle failed: ' + err.message);
+      notify.error('Toggle failed: ' + err.message);
     }
   }
 
@@ -19889,7 +20919,7 @@ function InspectionSection({ project, currentUser, canEdit, canManage, actor, on
       const mxMod = await import('./firebase-mx.js');
       await mxMod.deleteChecklistItem(project.id, item.id);
     } catch (err) {
-      alert('Delete failed: ' + err.message);
+      notify.error('Delete failed: ' + err.message);
     }
   }
 
@@ -20635,47 +21665,115 @@ function DraggableTabBar({
   );
 }
 
+/* ============================================================
+   NAVIGATION MODEL
+   ------------------------------------------------------------
+   The flat list below is still the routing surface — `section`
+   state holds a leaf id and every `{section === '…'}` render
+   block keeps working untouched.
+
+   What changed is the presentation: leaves are bucketed into six
+   top-level groups. Previously an admin saw seventeen equal-weight
+   tabs in one scrolling rail, which made a daily destination
+   (Schedule) indistinguishable from a monthly one (Users).
+
+   Adding a screen means adding a leaf here and listing its id in
+   a group's `children`. A leaf missing from every group would be
+   unreachable, so NAV_GROUPS is asserted against NAV_SECTIONS in
+   development below.
+   ============================================================ */
+const NAV_SECTIONS = [
+  { id: 'home',      label: 'Home',        icon: Home,          roles: ['crew', 'sales', 'ops', 'maint', 'accounting', 'admin'] },
+
+  { id: 'schedule',  label: 'Schedule',    icon: Calendar,      roles: ['crew', 'ops', 'admin'] },
+  { id: 'ops',       label: 'Dispatch',    icon: Zap,           roles: ['ops', 'admin'] },
+  { id: 'tracking',  label: 'Tracking',    icon: Navigation,    roles: ['ops', 'admin'] },
+  { id: 'manifests', label: 'Manifests',   icon: FileText,      roles: ['crew', 'ops', 'admin'] },
+  { id: 'lodging',   label: 'Lodging',     icon: Hotel,         roles: ['crew', 'ops', 'admin'] },
+  { id: 'archive',   label: 'Archive',     icon: Hash,          roles: ['crew', 'ops', 'admin'] },
+
+  { id: 'comms',     label: 'Comms',       icon: MessageSquare, roles: ['crew', 'sales', 'ops', 'maint', 'accounting', 'admin'] },
+
+  { id: 'duty',      label: 'Duty',        icon: Clock,         roles: ['admin'] },
+  { id: 'currency',  label: 'Currency',    icon: ShieldCheck,   roles: ['crew', 'ops', 'admin'] },
+  { id: 'wear',      label: 'Wear',        icon: Activity,      roles: ['crew', 'maint', 'ops', 'admin'] },
+  { id: 'reports',   label: 'Reports',     icon: AlertCircle,   roles: ['crew', 'ops', 'admin'] },
+
+  { id: 'maint',     label: 'Maintenance', icon: Wrench,        roles: ['maint', 'ops', 'admin'] },
+  { id: 'aog',       label: 'AOG',         icon: AlertTriangle, roles: ['ops', 'admin'] },
+
+  { id: 'expenses',  label: 'Expenses',    icon: Mail,          roles: ['crew', 'sales', 'ops', 'accounting', 'admin'] },
+  { id: 'wallet',    label: 'Wallet',      icon: CreditCard,    roles: ['crew', 'sales', 'ops', 'accounting', 'admin'] },
+  { id: 'users',     label: 'Users',       icon: Users,         roles: ['ops', 'admin'] },
+];
+
+const NAV_GROUPS = [
+  { id: 'home',     label: 'Home',     icon: Home,          children: ['home'] },
+  { id: 'flights',  label: 'Flights',  icon: Plane,         children: ['schedule', 'ops', 'tracking', 'manifests', 'lodging', 'archive'] },
+  { id: 'comms',    label: 'Comms',    icon: MessageSquare, children: ['comms'] },
+  { id: 'crew',     label: 'Crew',     icon: Users,         children: ['duty', 'currency', 'wear', 'reports', 'expenses'] },
+  { id: 'aircraft', label: 'Aircraft', icon: Wrench,        children: ['maint', 'aog'] },
+  // Labelled "Finance" for roles without user administration.
+  { id: 'admin',    label: 'Admin',    icon: Building2,     altLabel: 'Finance', children: ['wallet', 'users'] },
+];
+
+if (import.meta.env?.DEV) {
+  const grouped = new Set(NAV_GROUPS.flatMap(g => g.children));
+  const orphans = NAV_SECTIONS.filter(s => !grouped.has(s.id)).map(s => s.id);
+  if (orphans.length) {
+    console.error('[nav] sections are unreachable — add them to a NAV_GROUPS entry:', orphans);
+  }
+}
+
+const SECTION_TO_GROUP = NAV_GROUPS.reduce((acc, g) => {
+  g.children.forEach((id) => { acc[id] = g.id; });
+  return acc;
+}, {});
+
+function groupIdForSection(sectionId) {
+  return SECTION_TO_GROUP[sectionId] || 'home';
+}
+
+/** Leaf sections this user may open, in canonical order. */
+function useAllowedSections(currentUser) {
+  // The Duty oversight screen also opens while an admin is impersonating a
+  // crew member; impersonation is admin-only, so the flag is a safe signal.
+  const isAdminContext = currentUser?.role === 'admin' || currentUser?._impersonating === true;
+  return useMemo(() => NAV_SECTIONS.filter(s =>
+    s.roles.includes(currentUser?.role) || (s.id === 'duty' && isAdminContext)
+  ), [currentUser?.role, isAdminContext]);
+}
+
+/** Groups with their role-filtered children; groups with nothing left drop out. */
+function useNavGroups(currentUser) {
+  const allowed = useAllowedSections(currentUser);
+  return useMemo(() => {
+    const byId = new Map(allowed.map(s => [s.id, s]));
+    return NAV_GROUPS
+      .map((g) => {
+        const children = g.children.map(id => byId.get(id)).filter(Boolean);
+        const label = (g.altLabel && !children.some(c => c.id === 'users')) ? g.altLabel : g.label;
+        return { ...g, label, children };
+      })
+      .filter(g => g.children.length > 0);
+  }, [allowed]);
+}
+
 function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, syncStatus, now, tripCount, onOpenSettings, onOpenProfile, themeMode, onToggleTheme, topNavOrder, onReorderTopNav }) {
-  const sections = [
-    { id: 'home',     label: 'HOME',      icon: Sparkles, roles: ['crew', 'sales', 'ops', 'admin'] },
-    { id: 'schedule', label: 'SCHEDULE',  icon: Calendar, roles: ['crew', 'ops', 'admin'] },
-    { id: 'comms',    label: 'COMMS',     icon: MessageSquare, roles: ['crew', 'sales', 'ops', 'maint', 'accounting', 'admin'] },
-    { id: 'tracking', label: 'TRACKING',  icon: Plane,    roles: ['ops', 'admin'] },
-    { id: 'archive',  label: 'ARCHIVE',   icon: Hash,     roles: ['crew', 'ops', 'admin'] },
-    { id: 'expenses', label: 'EXPENSES',  icon: Mail,     roles: ['crew', 'sales', 'ops', 'accounting', 'admin'] },
-    { id: 'manifests',label: 'MANIFESTS', icon: FileText, roles: ['crew', 'ops', 'admin'] },
-    { id: 'reports',  label: 'REPORT',    icon: AlertCircle, roles: ['crew', 'ops', 'admin'] },
-    { id: 'wallet',   label: 'WALLET',    icon: Mail, roles: ['crew', 'sales', 'ops', 'accounting', 'admin'] },
-    { id: 'lodging',  label: 'LODGING',   icon: Hotel, roles: ['crew', 'ops', 'admin'] },
-    // MAINT LOG and MEL were promoted into MAINT sub-tabs to clean up
-    // the top nav (16 → 14). Their content lives at MAINT > AML LOG and
-    // MAINT > MEL respectively. Role gating moves into MaintScreen.
-    { id: 'ops',      label: 'OPS',       icon: Zap,      roles: ['ops', 'admin'] },
-    { id: 'maint',    label: 'MAINT',     icon: AlertTriangle, roles: ['maint', 'ops', 'admin'] },
-    { id: 'aog',      label: 'AOG',       icon: Shield,   roles: ['ops', 'admin'] },
-    { id: 'wear',     label: 'WEAR',      icon: Activity, roles: ['crew', 'maint', 'ops', 'admin'] },
-    { id: 'users',    label: 'USERS',     icon: Users,    roles: ['ops', 'admin'] },
-    // Pilot currency & training compliance — crew sees their own status,
-    // ops/admin see all crew and can edit dates. Surfacing 61.57, Part
-    // 135 checkrides, recurrent training, and medical on one screen.
-    { id: 'currency', label: 'CURRENCY',  icon: ShieldCheck, roles: ['crew', 'ops', 'admin'] },
-    { id: 'duty',     label: 'DUTY',      icon: Clock,    roles: ['admin'] },
-  ];
-  // DUTY tab also shows when an admin is impersonating a crew member
-  // (impersonation is admin-only, so _impersonating is a safe signal).
-  const isAdminContext = currentUser.role === 'admin' || currentUser._impersonating === true;
-  const allowed = sections.filter(s =>
-    s.roles.includes(currentUser.role) || (s.id === 'duty' && isAdminContext)
-  );
+  const groups = useNavGroups(currentUser);
+  const activeGroupId = groupIdForSection(currentSection);
+  const activeGroup = groups.find(g => g.id === activeGroupId) || groups[0];
+  const subTabs = activeGroup?.children || [];
 
   // Unread count for the COMMS tab badge. Sums DMs and group chats only;
   // trip channels surface as per-trip badges inside trip detail. The
   // hook returns 0 until StreamPresenceProvider has connected, so the
   // badge is invisible during sign-in or before the first message.
   const { totalUnread: commsUnread } = useStreamPresence();
+  const groupUnread = (groupId) => (groupId === 'comms' ? commsUnread : 0);
 
   return (
-    <header className="border-b border-slate-800 bg-slate-950/80 backdrop-blur sticky top-0 z-30">
+    <header className="border-b border-slate-800 bg-slate-950/80 backdrop-blur sticky top-0 z-30 sw-safe-top">
       <div className="px-4 md:px-6 py-3 flex items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
           <div className="min-w-0">
@@ -20688,93 +21786,382 @@ function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, sync
             {/* App timezone switcher. Click the clock to choose a TZ
                 override. When set, all "today"-derived defaults (manifest
                 date, etc.) follow the chosen TZ. Cyan "OVR" badge appears
-                when active. */}
-            <AppTimezoneSwitch now={now} />
+                when active. Desktop only — on a phone the home greeting
+                already carries a clock and the screen has no room to spare. */}
+            <span className="hidden md:block">
+              <AppTimezoneSwitch now={now} />
+            </span>
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          {syncStatus.status === 'ok' && (
-            <Pill tone="green"><Wifi className="w-2.5 h-2.5" /> SYNC</Pill>
-          )}
-          {syncStatus.status === 'syncing' && (
-            <Pill tone="amber"><Loader2 className="w-2.5 h-2.5 animate-spin" /> SYNC</Pill>
-          )}
-          {syncStatus.status === 'error' && (
-            <Pill tone="red"><WifiOff className="w-2.5 h-2.5" /> SYNC</Pill>
-          )}
+          <SyncIndicator status={syncStatus.status} />
           <button
             onClick={onOpenProfile}
-            className="hidden md:flex items-center gap-2 px-2.5 py-1.5 border border-slate-800 hover:border-cyan-500/40"
+            className="hidden md:flex items-center gap-2 rounded border border-edge px-2 py-1.5 transition-colors hover:border-accent-border"
             title="Edit my profile (signature, name, callsign)"
           >
-            <div className="w-7 h-7 bg-cyan-500/10 border border-cyan-500/40 flex items-center justify-center text-cyan-300 text-sm" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
+            <span className="flex h-7 w-7 items-center justify-center rounded bg-accent-soft font-display text-base leading-none text-accent">
               {currentUser.name.charAt(0).toUpperCase()}
-            </div>
-            <div className="text-xs text-left">
-              <div className="text-slate-200 leading-tight" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
+            </span>
+            <span className="text-left">
+              <span className="block text-2xs font-semibold leading-tight text-content">
                 {currentUser.callsign || currentUser.name.split(' ').slice(-1)[0]}
-              </div>
-              <div className="text-[9px] text-slate-500 leading-tight" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                {USER_ROLES[currentUser.role]?.label || currentUser.role.toUpperCase()}
-              </div>
-            </div>
+              </span>
+              <span className="block text-2xs leading-tight text-content-subtle">
+                {USER_ROLES[currentUser.role]?.label || currentUser.role}
+              </span>
+            </span>
           </button>
-          <button onClick={onOpenProfile} className="md:hidden p-2 border border-slate-800 hover:border-cyan-500/40 text-cyan-300" title="My profile">
-            <UserCheck className="w-4 h-4" />
-          </button>
-          {/* Theme toggle — switches between dark (cyan/slate, the default
-              tactical look) and classy (warm charcoal + champagne gold,
-              boutique brand feel). State persists in localStorage. The
-              actual color swap lives in theme-classy.css scoped to
-              [data-theme="classy"] on <html>. */}
+          {/* Phones get one avatar instead of four icon buttons. Theme,
+              settings and sign-out all live in the More sheet, which is
+              where an iOS user looks for them anyway. */}
+          <Avatar user={currentUser} onClick={onOpenProfile} className="md:hidden" />
+          {/* Theme toggle — dark ops mode vs. the light "classy" theme.
+              Persisted in localStorage; the palette swap itself is driven by
+              the token overrides under [data-theme="classy"]. */}
           {onToggleTheme && (
-            <button
+            <IconButton
+              icon={Palette}
+              title={`Switch theme (currently ${themeMode || 'dark'})`}
               onClick={onToggleTheme}
-              className="p-2 border border-slate-800 hover:border-slate-600 text-slate-400 hover:text-slate-200"
-              title={`Switch theme · current: ${(themeMode || 'dark').toUpperCase()}`}
-            >
-              <Palette className="w-4 h-4" />
-            </button>
+              variant="outline"
+              className="hidden md:inline-flex"
+            />
           )}
-          <button onClick={onOpenSettings} className="p-2 border border-slate-800 hover:border-slate-600 text-slate-400 hover:text-slate-200" title="Settings">
-            <SettingsIcon className="w-4 h-4" />
-          </button>
-          <button onClick={onLogout} className="text-[10px] text-slate-500 hover:text-red-400 tracking-widest px-2 py-2 border border-slate-800 hover:border-red-500/40" style={{ fontFamily: 'JetBrains Mono, monospace' }} title="Logout">
-            EXIT
-          </button>
+          <IconButton icon={SettingsIcon} title="Settings" onClick={onOpenSettings} variant="outline" className="hidden md:inline-flex" />
+          <IconButton
+            icon={LogOut}
+            title="Sign out"
+            onClick={onLogout}
+            variant="outline"
+            className="hidden hover:!border-danger-border hover:!text-danger md:inline-flex"
+          />
         </div>
       </div>
-      <DraggableTabBar
-        tabs={allowed}
-        order={topNavOrder}
-        activeId={currentSection}
-        onSelect={(id) => setCurrentSection(id)}
-        onReorder={(newOrder) => onReorderTopNav?.(newOrder)}
-        containerClassName="border-t border-slate-800"
-        renderTab={(s, active /*, dragging */) => (
+
+      {/* Primary rail — six curated groups. Hidden on small screens, where
+          the fixed bottom bar takes over as the primary destination switch. */}
+      <nav aria-label="Primary" className="hidden md:block border-t border-edge">
+        <div className="flex items-center gap-1 px-3">
+          {groups.map((g) => {
+            const active = g.id === activeGroupId;
+            const unread = groupUnread(g.id);
+            return (
+              <button
+                key={g.id}
+                type="button"
+                onClick={() => setCurrentSection(g.children[0].id)}
+                aria-current={active ? 'page' : undefined}
+                className={cx(
+                  'relative flex shrink-0 items-center gap-2 px-3 py-3 text-sm font-semibold transition-colors',
+                  active ? 'text-accent' : 'text-content-muted hover:text-content',
+                )}
+              >
+                <g.icon className="h-4 w-4" />
+                {g.label}
+                {unread > 0 && <UnreadBadge count={unread} />}
+                {active && <span className="absolute inset-x-2 bottom-0 h-0.5 rounded-t bg-accent" />}
+              </button>
+            );
+          })}
+        </div>
+      </nav>
+
+      {/* Secondary rail — only rendered when the active group actually has
+          somewhere else to go, so single-screen groups stay uncluttered.
+          Long-press reordering lives here (ids match the saved preference
+          arrays, which are keyed by section id). */}
+      {subTabs.length > 1 && (
+        <div className="hidden md:flex items-center gap-2 border-t border-edge bg-surface-sunken px-3">
+          <DraggableTabBar
+            tabs={subTabs}
+            order={topNavOrder}
+            activeId={currentSection}
+            onSelect={(id) => setCurrentSection(id)}
+            onReorder={(newOrder) => onReorderTopNav?.(newOrder)}
+            containerClassName="sw-no-scrollbar flex-1"
+            renderTab={(s, active) => (
+              <button
+                type="button"
+                className={cx(
+                  'flex shrink-0 items-center gap-1.5 rounded px-3 py-2 text-2xs font-semibold transition-colors',
+                  active
+                    ? 'bg-accent-soft text-accent'
+                    : 'text-content-muted hover:bg-surface-raised hover:text-content',
+                )}
+              >
+                <s.icon className="h-3.5 w-3.5" />
+                {s.label}
+              </button>
+            )}
+          />
+          <span className="hidden shrink-0 text-2xs text-content-subtle lg:block">
+            Hold a tab to reorder
+          </span>
+        </div>
+      )}
+    </header>
+  );
+}
+
+/** Feed sync state. One component so the three states can't drift apart. */
+function SyncIndicator({ status }) {
+  if (status === 'ok') {
+    return <StatusChip tone="success" icon={Wifi} className="hidden sm:inline-flex">Synced</StatusChip>;
+  }
+  if (status === 'syncing') {
+    return (
+      <StatusChip tone="info" className="hidden sm:inline-flex">
+        <Loader2 className="h-3 w-3 animate-spin" /> Syncing
+      </StatusChip>
+    );
+  }
+  if (status === 'error') {
+    return <StatusChip tone="danger" icon={WifiOff}>Sync failed</StatusChip>;
+  }
+  return null;
+}
+
+/** Round profile chip. Uses the stored photo when there is one, initials otherwise. */
+function Avatar({ user, onClick, size = 'md', className = '' }) {
+  const box = size === 'sm' ? 'h-8 w-8 text-2xs' : 'h-9 w-9 text-sm';
+  const name = user?.name || user?.displayName || '';
+  const initials = name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((p) => p.charAt(0).toUpperCase())
+    .join('') || '?';
+  const photo = user?.photoURL || user?.photoUrl || null;
+  const inner = photo
+    ? <img src={photo} alt="" className="h-full w-full rounded-full object-cover" />
+    : <span className="font-semibold leading-none text-accent">{initials}</span>;
+
+  if (!onClick) {
+    return (
+      <span className={cx('inline-flex shrink-0 items-center justify-center overflow-hidden rounded-full border border-edge bg-accent-soft', box, className)}>
+        {inner}
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title="My profile"
+      aria-label="My profile"
+      className={cx(
+        'inline-flex shrink-0 items-center justify-center overflow-hidden rounded-full border border-edge bg-accent-soft transition-colors hover:border-accent-border',
+        box, className,
+      )}
+    >
+      {inner}
+    </button>
+  );
+}
+
+/** Single-select filter chip for the tail rail above the flight list. */
+function TailChip({ label, active, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={cx(
+        'shrink-0 rounded-full border px-3 py-1.5 font-mono text-2xs font-semibold transition-colors',
+        active
+          ? 'border-accent-border bg-accent-soft text-accent'
+          : 'border-edge text-content-muted hover:border-edge-strong hover:text-content',
+      )}
+    >
+      {label}
+    </button>
+  );
+}
+
+function UnreadBadge({ count, className = '' }) {
+  return (
+    <span
+      className={cx(
+        'inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1',
+        'bg-accent font-mono text-[10px] font-bold leading-none text-accent-contrast',
+        className,
+      )}
+      title={`${count} unread message${count === 1 ? '' : 's'}`}
+    >
+      {count > 99 ? '99+' : count}
+    </span>
+  );
+}
+
+/* ============================================================
+   MobileNav — fixed bottom bar, the primary switch on phones.
+   ------------------------------------------------------------
+   Replaces horizontally scrolling through up to seventeen tabs.
+   At most five slots: if the role has more than five groups, the
+   last slot becomes "More", which opens a sheet listing every
+   remaining destination by group.
+   ============================================================ */
+function MobileNav({ currentSection, setCurrentSection, currentUser, onOpenSettings, onToggleTheme, themeMode, onLogout }) {
+  const groups = useNavGroups(currentUser);
+  const activeGroupId = groupIdForSection(currentSection);
+  const { totalUnread: commsUnread } = useStreamPresence();
+  const [sheetOpen, setSheetOpen] = useState(false);
+
+  const needsMore = groups.length > 5;
+  const primary = needsMore ? groups.slice(0, 4) : groups;
+  const overflow = needsMore ? groups.slice(4) : [];
+  const overflowActive = overflow.some(g => g.id === activeGroupId);
+  const activeGroup = groups.find(g => g.id === activeGroupId);
+  const subTabs = activeGroup?.children || [];
+
+  const go = (sectionId) => { setCurrentSection(sectionId); setSheetOpen(false); };
+
+  return (
+    <>
+      {/* Secondary rail for the active group, pinned above the bar. */}
+      {subTabs.length > 1 && (
+        <div className="md:hidden shrink-0 border-t border-edge bg-surface-sunken">
+          <div className="sw-no-scrollbar flex gap-1 overflow-x-auto px-2 py-1.5">
+            {subTabs.map((s) => {
+              const active = s.id === currentSection;
+              return (
+                <button
+                  key={s.id}
+                  type="button"
+                  onClick={() => setCurrentSection(s.id)}
+                  className={cx(
+                    'flex shrink-0 items-center gap-1.5 rounded px-3 py-1.5 text-2xs font-semibold transition-colors',
+                    active ? 'bg-accent-soft text-accent' : 'text-content-muted',
+                  )}
+                >
+                  <s.icon className="h-3.5 w-3.5" />
+                  {s.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      <nav
+        aria-label="Primary"
+        className="md:hidden shrink-0 border-t border-edge bg-surface sw-safe-bottom"
+      >
+        <div className="flex items-stretch">
+          {primary.map((g) => {
+            const active = g.id === activeGroupId;
+            const unread = g.id === 'comms' ? commsUnread : 0;
+            return (
+              <button
+                key={g.id}
+                type="button"
+                onClick={() => go(g.children[0].id)}
+                aria-current={active ? 'page' : undefined}
+                className={cx(
+                  'sw-mobile-tab relative flex flex-1 flex-col items-center justify-center gap-1 py-2.5 transition-colors',
+                  active ? 'text-accent' : 'text-content-subtle',
+                )}
+              >
+                <span className="relative">
+                  <g.icon className="h-5 w-5" />
+                  {unread > 0 && <UnreadBadge count={unread} className="absolute -right-2.5 -top-1.5" />}
+                </span>
+                <span className="text-[10px] font-semibold leading-none">{g.label}</span>
+              </button>
+            );
+          })}
+          {needsMore && (
+            <button
+              type="button"
+              onClick={() => setSheetOpen(true)}
+              aria-haspopup="dialog"
+              aria-expanded={sheetOpen}
+              className={cx(
+                'sw-mobile-tab flex flex-1 flex-col items-center justify-center gap-1 py-2.5 transition-colors',
+                overflowActive ? 'text-accent' : 'text-content-subtle',
+              )}
+            >
+              <MoreHorizontal className="h-5 w-5" />
+              <span className="text-[10px] font-semibold leading-none">More</span>
+            </button>
+          )}
+        </div>
+      </nav>
+
+      {sheetOpen && (
+        <div className="fixed inset-0 z-50 md:hidden" role="dialog" aria-modal="true" aria-label="More destinations">
           <button
             type="button"
-            className={`flex items-center gap-2 px-5 py-2.5 text-xs tracking-widest transition-colors relative shrink-0 ${
-              active ? 'text-cyan-400' : 'text-slate-500 hover:text-slate-300'
-            }`}
-            style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}
-          >
-            <s.icon className="w-3.5 h-3.5" />
-            {s.label}
-            {s.id === 'comms' && commsUnread > 0 && (
-              <span
-                className="inline-flex items-center justify-center min-w-[16px] h-4 px-1 text-[9px] bg-cyan-400 text-slate-950 leading-none"
-                style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}
-                title={`${commsUnread} unread message${commsUnread === 1 ? '' : 's'}`}
-              >
-                {commsUnread > 99 ? '99+' : commsUnread}
-              </span>
-            )}
-            {active && <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-cyan-400" />}
-          </button>
-        )}
-      />
-    </header>
+            aria-label="Close menu"
+            className="absolute inset-0 animate-fade-in bg-black/60 backdrop-blur-sm"
+            onClick={() => setSheetOpen(false)}
+          />
+          <div className="absolute inset-x-0 bottom-0 max-h-[75vh] overflow-y-auto rounded-t-xl border-t border-edge bg-surface pb-[calc(env(safe-area-inset-bottom,0px)+12px)] shadow-overlay">
+            <div className="sticky top-0 flex items-center justify-between border-b border-edge bg-surface px-4 py-3">
+              <h2 className="text-sm font-semibold text-content">More</h2>
+              <IconButton icon={X} title="Close" onClick={() => setSheetOpen(false)} />
+            </div>
+            <div className="p-2">
+              {overflow.map((g) => (
+                <div key={g.id} className="mb-1">
+                  <SectionLabel className="px-3 py-2">{g.label}</SectionLabel>
+                  {g.children.map((s) => (
+                    <button
+                      key={s.id}
+                      type="button"
+                      onClick={() => go(s.id)}
+                      className={cx(
+                        'flex w-full items-center gap-3 rounded px-3 py-3 text-left text-sm transition-colors',
+                        s.id === currentSection
+                          ? 'bg-accent-soft font-semibold text-accent'
+                          : 'text-content hover:bg-surface-raised',
+                      )}
+                    >
+                      <s.icon className="h-4 w-4 shrink-0 text-content-muted" />
+                      <span className="flex-1">{s.label}</span>
+                      <ChevronRight className="h-4 w-4 text-content-subtle" />
+                    </button>
+                  ))}
+                </div>
+              ))}
+              <div className="mt-2 border-t border-edge pt-2">
+                <button
+                  type="button"
+                  onClick={() => { setSheetOpen(false); onOpenSettings?.(); }}
+                  className="flex w-full items-center gap-3 rounded px-3 py-3 text-left text-sm text-content transition-colors hover:bg-surface-raised"
+                >
+                  <SettingsIcon className="h-4 w-4 shrink-0 text-content-muted" />
+                  <span className="flex-1">Settings</span>
+                  <ChevronRight className="h-4 w-4 text-content-subtle" />
+                </button>
+                {onToggleTheme && (
+                  <button
+                    type="button"
+                    onClick={onToggleTheme}
+                    className="flex w-full items-center gap-3 rounded px-3 py-3 text-left text-sm text-content transition-colors hover:bg-surface-raised"
+                  >
+                    <Palette className="h-4 w-4 shrink-0 text-content-muted" />
+                    <span className="flex-1">Appearance</span>
+                    <span className="text-2xs text-content-subtle">{themeMode === 'classy' ? 'Light' : 'Dark'}</span>
+                  </button>
+                )}
+                {onLogout && (
+                  <button
+                    type="button"
+                    onClick={() => { setSheetOpen(false); onLogout(); }}
+                    className="flex w-full items-center gap-3 rounded px-3 py-3 text-left text-sm text-danger transition-colors hover:bg-danger-soft"
+                  >
+                    <LogOut className="h-4 w-4 shrink-0" />
+                    <span className="flex-1">Sign out</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -20895,10 +22282,13 @@ function OpsDashboard({ trips, currentUser, onSelectTrip, onAddManualTrip, onRem
   return (
     <div className="p-4 md:p-6 max-w-7xl mx-auto">
       <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
+        {/* Subordinate heading: this panel renders directly beneath the ops
+            readiness console, so it reads as the second section of one page
+            rather than a competing dashboard. */}
         <div>
-          <h2 className="text-3xl tracking-wider" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>OPS DASHBOARD</h2>
-          <p className="text-xs text-slate-500 mt-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            {currentUser.callsign || currentUser.name} · {USER_ROLES[currentUser.role]?.label}
+          <h2 className="text-base font-semibold text-content">Schedule tools</h2>
+          <p className="mt-0.5 text-2xs text-content-muted">
+            Sync the feed, paste an iCal export, or add a trip by hand.
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
@@ -21179,50 +22569,8 @@ function loadMapboxGL() {
   return _mapboxLoadPromise;
 }
 
-/**
- * Lazy-load Leaflet from CDN. Returns the L global once available.
- * Free, open-source mapping library. No API key required.
- */
-let _leafletLoadPromise = null;
-function loadLeaflet() {
-  if (_leafletLoadPromise) return _leafletLoadPromise;
-  if (typeof window === 'undefined') return Promise.reject(new Error('Not in browser'));
-  if (window.L) return Promise.resolve(window.L);
-
-  _leafletLoadPromise = new Promise((resolve, reject) => {
-    // CSS first
-    const link = document.createElement('link');
-    link.rel = 'stylesheet';
-    link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
-    link.integrity = 'sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=';
-    link.crossOrigin = '';
-    document.head.appendChild(link);
-
-    // Then JS
-    const script = document.createElement('script');
-    script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
-    script.integrity = 'sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=';
-    script.crossOrigin = '';
-    script.async = true;
-    script.onload = () => {
-      if (window.L) {
-        resolve(window.L);
-      } else {
-        reject(new Error('Leaflet failed to load'));
-      }
-    };
-    script.onerror = () => reject(new Error('Failed to load Leaflet'));
-    document.head.appendChild(script);
-  });
-  return _leafletLoadPromise;
-}
-
-/** Convert FlightAware altitude (hundreds of feet) to "FL340" style string. */
-function formatAltitude(ft) {
-  if (!ft || ft < 18000) return ft ? `${ft.toLocaleString()} ft` : '—';
-  const fl = Math.round(ft / 100);
-  return `FL${fl}`;
-}
+/** Leaflet loader now lives in tracking-map.js so every map shares one copy. */
+const loadLeaflet = loadSharedLeaflet;
 
 function formatHeading(deg) {
   if (deg == null) return '—';
@@ -21328,15 +22676,18 @@ function airportCoords(code) {
    ============================================================ */
 
 function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
-  const fleetTails = Array.isArray(config?.fleetTails) && config.fleetTails.length > 0
-    ? config.fleetTails
-    : ['N20UF', 'N168ZZ', 'N286N', 'N444AM', 'N651TW', 'N551FP', 'N85AH', 'N525CR'];
+  const fleetTails = useMemo(() => (
+    Array.isArray(config?.fleetTails) && config.fleetTails.length > 0
+      ? config.fleetTails
+      : ['N20UF', 'N168ZZ', 'N286N', 'N444AM', 'N651TW', 'N551FP', 'N85AH', 'N525CR']
+  ), [config?.fleetTails]);
 
   const [selectedTail, setSelectedTail] = useState(fleetTails[0]);
-  const [tailStates, setTailStates] = useState({});   // { N286N: { airborne, alt, speed, origin, destination, ... } }
+  const [tailStates, setTailStates] = useState({});
   const [loadingFleet, setLoadingFleet] = useState(true);
+  const [lastPolledAt, setLastPolledAt] = useState(null);
 
-  // Poll each tail's FlightAware position state every 30s for the list
+  // Poll every tail's FlightAware position. One request for the whole fleet.
   useEffect(() => {
     let cancelled = false;
     let timer = null;
@@ -21346,31 +22697,28 @@ function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
         const { auth } = await import('./firebase.js');
         const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : null;
         if (!idToken) return;
-
-        // Single POST with all idents (matches flightaware-positions.js contract)
         const r = await fetch('/api/flightaware-positions', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ idToken, idents: fleetTails }),
         });
         if (!r.ok) {
-          console.warn('[tracking-v2] positions endpoint returned', r.status);
+          console.warn('[tracking] positions endpoint returned', r.status);
           if (!cancelled) setLoadingFleet(false);
           return;
         }
         const data = await r.json();
         const positions = Array.isArray(data?.positions) ? data.positions : [];
-
-        if (!cancelled) {
-          const next = {};
-          for (const p of positions) {
-            if (p && p.ident) next[String(p.ident).toUpperCase()] = p;
-          }
-          setTailStates(next);
-          setLoadingFleet(false);
+        if (cancelled) return;
+        const next = {};
+        for (const p of positions) {
+          if (p && p.ident) next[String(p.ident).toUpperCase()] = p;
         }
+        setTailStates(next);
+        setLastPolledAt(Date.now());
+        setLoadingFleet(false);
       } catch (e) {
-        console.warn('[tracking-v2] poll failed:', e?.message);
+        console.warn('[tracking] poll failed:', e?.message);
         if (!cancelled) setLoadingFleet(false);
       }
     }
@@ -21378,17 +22726,109 @@ function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
     pollAll();
     timer = setInterval(pollAll, 30000);
     return () => { cancelled = true; if (timer) clearInterval(timer); };
-  }, [fleetTails.join(',')]);
+  }, [fleetTails]);
 
-  // Mobile tab state: 'list' | 'map' | 'detail'
-  const [mobileTab, setMobileTab] = useState('list');
-  // Reliable mobile detection (works regardless of Tailwind config / viewport meta)
-  const [isMobile, setIsMobile] = useState(() => {
-    if (typeof window === 'undefined') return false;
-    return window.innerWidth < 768;
-  });
+  const selectedState = tailStates[selectedTail];
+  const selectedAirborne = selectedState?.airborne === true;
+
+  // Full-resolution flown path for the selected aircraft. The fleet poll only
+  // carries a ~50-point downsample; the track log has every reported sample
+  // WITH altitude, which is what the altitude-coloured trail needs.
+  const { points: trackPoints, loading: trackLoading } = useFullFlightTrack(selectedTail, selectedAirborne);
+
+  // Weather for the selected flight's endpoints.
+  const wxCodes = useMemo(() => {
+    const codes = [];
+    if (selectedState?.origin) codes.push(selectedState.origin);
+    if (selectedState?.destination) codes.push(selectedState.destination);
+    if (!selectedAirborne && selectedState?.groundedAt) codes.push(selectedState.groundedAt);
+    return Array.from(new Set(codes.filter(Boolean)));
+  }, [selectedState?.origin, selectedState?.destination, selectedState?.groundedAt, selectedAirborne]);
+  const weather = useAirportWeatherSet(wxCodes);
+
+  // Build the map scene. Everything Leaflet-shaped lives in TrackingMap; this
+  // is purely a projection of fleet state into that contract.
+  const scene = useMemo(() => {
+    const aircraft = [];
+    const airports = [];
+    const routes = [];
+    let projected = null;
+
+    fleetTails.forEach((tail) => {
+      const s = tailStates[tail];
+      if (!s) return;
+      if (s.airborne === true && Number.isFinite(s.latitude) && Number.isFinite(s.longitude)) {
+        aircraft.push({
+          id: tail,
+          tail,
+          lat: s.latitude,
+          lon: s.longitude,
+          heading: s.heading ?? 0,
+          altitude: s.altitude ?? null,
+          groundspeed: s.groundspeed ?? null,
+          airborne: true,
+          showLabel: tail === selectedTail || fleetTails.length <= 6,
+        });
+      } else if (s.airborne === false) {
+        const g = resolvePos(s.groundedAt, s.groundedLat, s.groundedLon);
+        if (g) {
+          aircraft.push({
+            id: tail,
+            tail,
+            lat: g.lat,
+            lon: g.lon,
+            airborne: false,
+            groundedAt: s.groundedAt || null,
+          });
+        }
+      }
+    });
+
+    if (selectedState) {
+      const originPos = resolvePos(selectedState.origin, selectedState.originLat, selectedState.originLon);
+      const destPos = resolvePos(selectedState.destination, selectedState.destinationLat, selectedState.destinationLon);
+      if (originPos) airports.push({ code: selectedState.origin, lat: originPos.lat, lon: originPos.lon, tone: 'origin' });
+      if (destPos) airports.push({ code: selectedState.destination, lat: destPos.lat, lon: destPos.lon, tone: 'destination' });
+
+      if (selectedAirborne && Number.isFinite(selectedState.latitude)) {
+        // Great-circle-ish remainder from the aircraft to the destination.
+        if (destPos) projected = [[selectedState.latitude, selectedState.longitude], [destPos.lat, destPos.lon]];
+        // Until the track log has two samples, show where the flight came from
+        // so the leg still reads as a route rather than a lone marker.
+        if (originPos && trackPoints.length < 2) {
+          routes.push({
+            points: [[originPos.lat, originPos.lon], [selectedState.latitude, selectedState.longitude]],
+            color: '#22d3ee', weight: 3, opacity: 0.8,
+          });
+        }
+      } else if (selectedState.airborne === false) {
+        const g = resolvePos(selectedState.groundedAt, selectedState.groundedLat, selectedState.groundedLon);
+        const lo = resolvePos(selectedState.lastOrigin, selectedState.lastOriginLat, selectedState.lastOriginLon);
+        if (g) airports.push({ code: selectedState.groundedAt, lat: g.lat, lon: g.lon, tone: 'destination' });
+        if (lo) airports.push({ code: selectedState.lastOrigin, lat: lo.lat, lon: lo.lon, tone: 'origin', small: true });
+        if (g && lo && trackPoints.length < 2) {
+          routes.push({
+            points: [[lo.lat, lo.lon], [g.lat, g.lon]],
+            color: '#10b981', weight: 2.5, opacity: 0.6,
+          });
+        }
+      }
+    }
+
+    return { aircraft, airports, routes, trail: trackPoints.length >= 2 ? trackPoints : null, projected };
+  }, [fleetTails, tailStates, selectedTail, selectedState, selectedAirborne, trackPoints]);
+
+  // Re-fit on selection change and when a trail first arrives, but not on every
+  // 30-second position tick — that would fight the user's own pan and zoom.
+  const fitKey = `${selectedTail}:${trackPoints.length >= 2 ? 'trail' : 'no-trail'}:${selectedAirborne ? 'air' : 'gnd'}`;
+  // Frame only the selected aircraft. Parked fleet members stay visible as
+  // context but must not drag the viewport across the country.
+  const focusIds = useMemo(() => [selectedTail], [selectedTail]);
+
+  const [mobileView, setMobileView] = useState('map');
+  const [isMobile, setIsMobile] = useState(() => (typeof window === 'undefined' ? false : window.innerWidth < 768));
   useEffect(() => {
-    function check() { setIsMobile(window.innerWidth < 768); }
+    const check = () => setIsMobile(window.innerWidth < 768);
     window.addEventListener('resize', check);
     window.addEventListener('orientationchange', check);
     check();
@@ -21397,39 +22837,59 @@ function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
       window.removeEventListener('orientationchange', check);
     };
   }, []);
-  // Selecting a tail on mobile auto-advances to the map tab
+
+  // Selecting an aircraft always lands on the map so the full trail is visible.
   const handleSelectTail = useCallback((tail) => {
     setSelectedTail(tail);
-    if (window.innerWidth < 768) {
-      setMobileTab(prev => prev === 'list' ? 'map' : prev === 'map' ? 'detail' : 'detail');
-    }
+    if (typeof window !== 'undefined' && window.innerWidth < 768) setMobileView('map');
   }, []);
 
-  // When map tab becomes visible on mobile, tell Leaflet to recalculate size.
-  // Without this, tiles render at the wrong dimensions because the map was
-  // initialized in a hidden container.
-  const mapInvalidateNonceRef = useRef(0);
   useEffect(() => {
-    if (mobileTab === 'map') {
-      mapInvalidateNonceRef.current += 1;
-      // Trigger a custom event the map listens for
+    if (mobileView === 'map' && typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('skyway-map-invalidate'));
     }
-  }, [mobileTab]);
+  }, [mobileView]);
 
-  const listPanel = (
+  const airborneCount = fleetTails.filter((t) => tailStates[t]?.airborne === true).length;
+
+  const mapPanel = (
+    <TrackingMap
+      scene={scene}
+      selectedId={selectedTail}
+      onSelectAircraft={handleSelectTail}
+      fitKey={fitKey}
+      focusIds={focusIds}
+      basemapDefault="dark"
+      className="h-full w-full"
+      overlay={selectedState ? (
+        <TrackingMapOverlay
+          tail={selectedTail}
+          state={selectedState}
+          trackPoints={trackPoints}
+          trackLoading={trackLoading}
+          weather={weather}
+        />
+      ) : null}
+    />
+  );
+
+  const fleetPanel = (
     <div className="h-full overflow-y-auto scroll-area bg-slate-950">
-      <div className="px-4 py-3 border-b border-slate-800 sticky top-0 bg-slate-950 z-10">
-        <div className="text-[10px] tracking-widest text-slate-500"
-          style={{ fontFamily: 'JetBrains Mono, monospace' }}>FLEET · {fleetTails.length}</div>
-        <h3 className="text-sm text-slate-200 mt-1">Tracking</h3>
+      <div className="sticky top-0 z-10 border-b border-edge bg-slate-950/90 px-4 py-3 backdrop-blur">
+        <div className="flex items-baseline justify-between gap-2">
+          <h3 className="text-sm font-semibold text-content">Fleet</h3>
+          <span className="font-mono text-2xs text-content-subtle">{airborneCount}/{fleetTails.length} airborne</span>
+        </div>
+        <p className="mt-0.5 font-mono text-[10px] text-content-subtle">
+          {lastPolledAt ? `Updated ${new Date(lastPolledAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Awaiting first poll'}
+        </p>
       </div>
       {loadingFleet ? (
-        <div className="p-6 text-center text-slate-500 text-xs">
-          <Loader2 className="w-4 h-4 animate-spin mx-auto mb-1" /> Loading positions…
+        <div className="p-6 text-center text-2xs text-content-muted">
+          <Loader2 className="mx-auto mb-1 h-4 w-4 animate-spin" /> Loading positions…
         </div>
       ) : (
-        fleetTails.map(tail => (
+        fleetTails.map((tail) => (
           <FleetListItem
             key={tail}
             tail={tail}
@@ -21444,527 +22904,324 @@ function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
     </div>
   );
 
-  const mapPanel = (
-    <FleetLiveMap
-      fleetTails={fleetTails}
-      tailStates={tailStates}
-      selectedTail={selectedTail}
-      onSelectTail={handleSelectTail}
-    />
-  );
-
   const detailPanel = (
     <div className="h-full overflow-y-auto scroll-area bg-slate-950">
       {selectedTail ? (
-        <TrackingDetailPanel
-          key={selectedTail}
-          tail={selectedTail}
-          initialState={tailStates[selectedTail]}
-          trips={trips}
-          tripStates={tripStates}
-        />
+        <>
+          <TrackingWeatherStrip
+            codes={wxCodes}
+            weather={weather}
+            state={selectedState}
+          />
+          <TrackingDetailPanel
+            key={selectedTail}
+            tail={selectedTail}
+            initialState={tailStates[selectedTail]}
+            trips={trips}
+            tripStates={tripStates}
+          />
+        </>
       ) : (
-        <div className="flex items-center justify-center h-full text-slate-500 text-xs">
-          Select an aircraft from the list
+        <div className="flex h-full items-center justify-center text-2xs text-content-muted">
+          Select an aircraft to see its flight detail
         </div>
       )}
     </div>
   );
 
-  // === MOBILE LAYOUT (under 768px) — tab switcher ===
+  // === MOBILE: map opens first, full trail already on screen ===
   if (isMobile) {
     return (
-      <div className="flex-1 overflow-hidden flex flex-col">
-        {/* Tab bar */}
-        <div className="shrink-0 flex border-b border-slate-800 bg-slate-950">
-          <button
-            onClick={() => setMobileTab('list')}
-            className={`flex-1 py-2.5 text-[11px] tracking-widest border-b-2 transition-colors ${
-              mobileTab === 'list'
-                ? 'text-cyan-400 border-cyan-400'
-                : 'text-slate-500 border-transparent'
-            }`}
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}
-          >
-            FLEET · {fleetTails.length}
-          </button>
-          <button
-            onClick={() => setMobileTab('map')}
-            className={`flex-1 py-2.5 text-[11px] tracking-widest border-b-2 transition-colors ${
-              mobileTab === 'map'
-                ? 'text-cyan-400 border-cyan-400'
-                : 'text-slate-500 border-transparent'
-            }`}
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}
-          >
-            MAP
-          </button>
-          <button
-            onClick={() => setMobileTab('detail')}
-            disabled={!selectedTail}
-            className={`flex-1 py-2.5 text-[11px] tracking-widest border-b-2 transition-colors ${
-              mobileTab === 'detail'
-                ? 'text-cyan-400 border-cyan-400'
-                : !selectedTail
-                  ? 'text-slate-700 border-transparent'
-                  : 'text-slate-500 border-transparent'
-            }`}
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}
-          >
-            {selectedTail ? selectedTail : 'DETAIL'}
-          </button>
+      <div className="flex flex-1 flex-col overflow-hidden">
+        <div className="flex shrink-0 border-b border-edge bg-slate-950">
+          {[
+            { id: 'map', label: 'Map' },
+            { id: 'fleet', label: `Fleet ${airborneCount}/${fleetTails.length}` },
+            { id: 'detail', label: selectedTail || 'Detail' },
+          ].map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setMobileView(t.id)}
+              className={cx(
+                'flex-1 border-b-2 py-2.5 text-2xs font-semibold transition-colors',
+                mobileView === t.id ? 'border-accent text-accent' : 'border-transparent text-content-muted',
+              )}
+            >
+              {t.label}
+            </button>
+          ))}
         </div>
-
-        {/* Active tab content. Use display:none so the map stays mounted across tab switches. */}
-        <div className="flex-1 overflow-hidden relative">
-          <div style={{ display: mobileTab === 'list' ? 'block' : 'none' }} className="absolute inset-0">
-            {listPanel}
-          </div>
-          <div style={{ display: mobileTab === 'map' ? 'block' : 'none' }} className="absolute inset-0">
-            {mapPanel}
-          </div>
-          <div style={{ display: mobileTab === 'detail' ? 'block' : 'none' }} className="absolute inset-0">
-            {detailPanel}
-          </div>
+        <div className="relative flex-1 overflow-hidden">
+          {/* Kept mounted so Leaflet never re-initializes on tab switch. */}
+          <div className="absolute inset-0" style={{ display: mobileView === 'map' ? 'block' : 'none' }}>{mapPanel}</div>
+          <div className="absolute inset-0" style={{ display: mobileView === 'fleet' ? 'block' : 'none' }}>{fleetPanel}</div>
+          <div className="absolute inset-0" style={{ display: mobileView === 'detail' ? 'block' : 'none' }}>{detailPanel}</div>
         </div>
       </div>
     );
   }
 
-  // === DESKTOP LAYOUT (768px and up) ===
+  // === DESKTOP: map dominates, fleet rail left, detail drawer under it ===
   return (
-    <div className="flex-1 overflow-hidden flex">
-      <div className="w-80 shrink-0 border-r border-slate-800">
-        {listPanel}
+    <div className="flex flex-1 overflow-hidden">
+      <div className="w-72 shrink-0 border-r border-edge lg:w-80">{fleetPanel}</div>
+      <div className="flex flex-1 flex-col overflow-hidden">
+        <div className="min-h-0 flex-1">{mapPanel}</div>
+        <div className="h-[38%] min-h-[220px] shrink-0 overflow-hidden border-t border-edge">{detailPanel}</div>
       </div>
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="shrink-0" style={{ height: '60%', minHeight: '320px' }}>
-          {mapPanel}
-        </div>
-        <div className="flex-1 overflow-hidden border-t border-slate-800">
-          {detailPanel}
-        </div>
+    </div>
+  );
+}
+
+/**
+ * Full-resolution flown path for one tail, straight from the FlightAware track
+ * log. Refreshes while airborne; a landed flight's path no longer changes, so
+ * it is fetched once and left alone.
+ */
+function useFullFlightTrack(tail, airborne) {
+  const [points, setPoints] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!tail) { setPoints([]); return undefined; }
+    let cancelled = false;
+    let timer = null;
+
+    async function load() {
+      try {
+        setLoading(true);
+        const { auth } = await import('./firebase.js');
+        const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : null;
+        if (!idToken) return;
+        const r = await fetch(`/api/flightaware-track-log?ident=${encodeURIComponent(tail)}`, {
+          headers: { Authorization: `Bearer ${idToken}` },
+        });
+        if (!r.ok) { if (!cancelled) setPoints([]); return; }
+        const data = await r.json();
+        if (cancelled) return;
+        setPoints(normalizeTrail(Array.isArray(data?.points) ? data.points : []));
+      } catch {
+        if (!cancelled) setPoints([]);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    load();
+    if (airborne) timer = setInterval(load, 60000);
+    return () => { cancelled = true; if (timer) clearInterval(timer); };
+  }, [tail, airborne]);
+
+  return { points, loading };
+}
+
+/** METAR/TAF plus winds aloft for a set of airport identifiers. */
+function useAirportWeatherSet(codes) {
+  const [weather, setWeather] = useState({});
+  const key = codes.join(',');
+
+  useEffect(() => {
+    if (!key) { setWeather({}); return undefined; }
+    let cancelled = false;
+    (async () => {
+      const list = key.split(',').filter(Boolean);
+      const entries = await Promise.all(list.map(async (code) => {
+        const [wx, winds] = await Promise.all([
+          fetchAirportWx(code).catch(() => null),
+          fetchWindsAloft(code).catch(() => null),
+        ]);
+        return [String(code).toUpperCase(), { wx, winds }];
+      }));
+      if (cancelled) return;
+      setWeather(Object.fromEntries(entries));
+    })();
+    return () => { cancelled = true; };
+  }, [key]);
+
+  return weather;
+}
+
+/** Live readout pinned inside the map frame. */
+function TrackingMapOverlay({ tail, state, trackPoints, trackLoading, weather }) {
+  const airborne = state?.airborne === true;
+  const origin = state?.origin || state?.lastOrigin || null;
+  const dest = airborne ? state?.destination : state?.groundedAt;
+  const destWx = dest ? weather[String(dest).toUpperCase()]?.wx : null;
+  const destCat = destWx?.metar?.flightCategory || destWx?.parsed?.flightCategory || null;
+  const catStyle = flightCategoryStyle(destCat);
+
+  const flownNm = useMemo(() => {
+    if (!Array.isArray(trackPoints) || trackPoints.length < 2) return null;
+    let total = 0;
+    for (let i = 0; i < trackPoints.length - 1; i += 1) {
+      const d = distanceNm(trackPoints[i], trackPoints[i + 1]);
+      if (Number.isFinite(d)) total += d;
+    }
+    return Math.round(total);
+  }, [trackPoints]);
+
+  let eta = null;
+  if (state?.estimatedOn) {
+    try {
+      eta = new Date(state.estimatedOn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZoneName: 'short' });
+    } catch { eta = null; }
+  }
+
+  return (
+    <div className="pointer-events-auto rounded-xl border border-edge bg-surface/92 p-3 shadow-overlay backdrop-blur">
+      <div className="flex items-center gap-2">
+        <span className="font-mono text-sm font-semibold text-content">{tail}</span>
+        <StatusChip tone={airborne ? 'success' : 'neutral'} size="sm">
+          {airborne ? 'Airborne' : 'On ground'}
+        </StatusChip>
       </div>
+
+      {(origin || dest) && (
+        <div className="mt-2">
+          <RouteLine from={origin} to={dest} size="sm" />
+        </div>
+      )}
+
+      {airborne && (
+        <div className="mt-2.5 grid grid-cols-3 gap-x-3 gap-y-1.5">
+          <OverlayStat label="Alt" value={formatAltitude(state.altitude) || '—'} />
+          <OverlayStat label="Speed" value={formatSpeed(state.groundspeed) || '—'} />
+          <OverlayStat label="Hdg" value={Number.isFinite(state.heading) ? `${Math.round(state.heading)}°` : '—'} />
+        </div>
+      )}
+
+      <div className="mt-2.5 space-y-1 border-t border-edge pt-2 font-mono text-[10px] text-content-muted">
+        {eta && <div>ETA <span className="text-content">{eta}</span></div>}
+        {Number.isFinite(state?.progressPercent) && (
+          <div>Progress <span className="text-content">{Math.round(state.progressPercent)}%</span></div>
+        )}
+        <div>
+          Trail{' '}
+          <span className="text-content">
+            {trackLoading && trackPoints.length === 0
+              ? 'loading…'
+              : trackPoints.length >= 2
+                ? `${trackPoints.length} pts${flownNm ? ` · ${flownNm} nm` : ''}`
+                : 'not yet reported'}
+          </span>
+        </div>
+        {destCat && (
+          <div className="flex items-center gap-1.5">
+            <span className="h-1.5 w-1.5 rounded-full" style={{ background: catStyle.dot }} />
+            <span>{dest} <span className="text-content">{catStyle.label}</span></span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function OverlayStat({ label, value }) {
+  return (
+    <div>
+      <div className="text-[9px] uppercase tracking-wider text-content-subtle">{label}</div>
+      <div className="font-mono text-xs font-semibold text-content">{value}</div>
+    </div>
+  );
+}
+
+/** Departure/arrival weather for the selected flight, above the detail panel. */
+function TrackingWeatherStrip({ codes, weather, state }) {
+  if (!Array.isArray(codes) || codes.length === 0) return null;
+  const airborne = state?.airborne === true;
+
+  return (
+    <div className="border-b border-edge bg-surface-sunken px-4 py-3">
+      <div className="mb-2 flex items-center gap-1.5">
+        <Cloud className="h-3.5 w-3.5 text-content-muted" />
+        <h4 className="text-2xs font-semibold text-content">Weather</h4>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {codes.map((code, i) => {
+          const key = String(code).toUpperCase();
+          const entry = weather[key];
+          const label = airborne ? (i === 0 ? 'Departure' : 'Arrival') : (i === 0 ? 'Last departure' : 'Parked at');
+          return <WeatherStationCard key={key} code={key} role={label} wx={entry?.wx} winds={entry?.winds} />;
+        })}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * One airport's current conditions. Shared shape with the broker page so a
+ * green station reads the same in both places.
+ */
+function WeatherStationCard({ code, role, wx, winds }) {
+  const metar = wx?.metar || wx?.parsed || null;
+  const cat = metar?.flightCategory || null;
+  const style = flightCategoryStyle(cat);
+  const cruiseWind = Array.isArray(winds?.levels)
+    ? winds.levels.find((l) => l.altitude >= 30000) || winds.levels[winds.levels.length - 1]
+    : null;
+
+  return (
+    <div className="rounded-lg border border-edge bg-surface p-3">
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <div className="font-mono text-sm font-semibold text-content">{code}</div>
+          <div className="text-[10px] uppercase tracking-wider text-content-subtle">{role}</div>
+        </div>
+        {cat ? (
+          <span className={cx('inline-flex items-center gap-1.5 rounded-md border border-edge px-2 py-1 font-mono text-[10px] font-bold', style.text)}>
+            <span className="h-1.5 w-1.5 rounded-full" style={{ background: style.dot }} />
+            {style.label}
+          </span>
+        ) : (
+          <span className="font-mono text-[10px] text-content-subtle">No report</span>
+        )}
+      </div>
+
+      {metar && (
+        <div className="mt-2.5 grid grid-cols-2 gap-x-3 gap-y-1 font-mono text-[10px] text-content-muted">
+          <div>Wind <span className="text-content">
+            {Number.isFinite(metar.windKt)
+              ? `${Number.isFinite(metar.windDir) ? String(metar.windDir).padStart(3, '0') : '---'}/${Math.round(metar.windKt)}${Number.isFinite(metar.windGustKt) ? `G${Math.round(metar.windGustKt)}` : ''}`
+              : '—'}
+          </span></div>
+          <div>Vis <span className="text-content">{metar.visibilitySm != null ? `${metar.visibilitySm} sm` : '—'}</span></div>
+          <div>Ceil <span className="text-content">{Number.isFinite(metar.ceilingFt) ? `${metar.ceilingFt.toLocaleString()} ft` : 'Unlim'}</span></div>
+          <div>Temp <span className="text-content">{Number.isFinite(metar.tempC) ? `${Math.round(metar.tempC)}°C` : '—'}</span></div>
+          {cruiseWind && (
+            <div className="col-span-2">
+              Winds {Math.round(cruiseWind.altitude / 1000)}k{' '}
+              <span className="text-content">
+                {Number.isFinite(cruiseWind.windDir) ? String(cruiseWind.windDir).padStart(3, '0') : '---'}/{Number.isFinite(cruiseWind.windKt) ? Math.round(cruiseWind.windKt) : '--'}
+                {Number.isFinite(cruiseWind.tempC) ? ` ${Math.round(cruiseWind.tempC)}°C` : ''}
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {metar?.rawMetar && (
+        <p className="mt-2 break-words border-t border-edge pt-2 font-mono text-[9px] leading-relaxed text-content-subtle">
+          {metar.rawMetar}
+        </p>
+      )}
     </div>
   );
 }
 
 /* ============================================================
-   FLEET LIVE MAP — shows all aircraft on one Mapbox map
-   ============================================================ */
-// Resolves a position from an airport CODE first (via the same
-// 24,000+-airport lookupCoords database FlightBoard already uses
-// successfully), falling back to whatever lat/lon FlightAware's
-// position endpoint supplied only if the code lookup misses.
-//
-// THE BUG THIS FIXES: FA's /flights/{ident} list endpoint (used by
-// flightaware-positions.js) often omits lat/lon for smaller regional
-// and private airports — exactly the kind of FBO destinations a Part
-// 135 charter operator flies into. When those fields were null, BOTH
-// the route line AND the grounded-aircraft dot silently failed to
-// render (the airborneTails/groundedTails filters require non-null
-// coords). The airport CODE itself is reliably present even when its
-// coordinates aren't, so resolving through lookupCoords (which has
-// hand-curated + bulk OurAirports + runtime-cached tiers) fixes both
-// symptoms at once.
+   Airport position resolution for the tracking map
+   ============================================================
+   Resolves from the airport CODE first, because FlightAware's flight-list
+   endpoint frequently omits lat/lon for the small regional fields a Part 135
+   operator actually flies into. The code is always present even when its
+   coordinates are not, and lookupCoords has curated + bulk + runtime tiers.
+   Falls back to whatever coordinates the API did supply. */
 function resolvePos(code, apiLat, apiLon) {
   const hit = lookupCoords(code);
   if (hit) return { lat: hit.lat, lon: hit.lng };
   if (apiLat != null && apiLon != null) return { lat: apiLat, lon: apiLon };
   return null;
-}
-
-function FleetLiveMap({ fleetTails, tailStates, selectedTail, onSelectTail }) {
-  const containerRef = useRef(null);
-  const mapRef = useRef(null);
-  // Layer group holding all aircraft markers, track lines, and airport pins.
-  // Always cleared and rebuilt — no marker reuse, no shared state, no race conditions.
-  const layersRef = useRef(null);
-  const [mapReady, setMapReady] = useState(false);
-  const [mapError, setMapError] = useState(null);
-
-  // ====== Init map once ======
-  useEffect(() => {
-    let cancelled = false;
-
-    (async () => {
-      try {
-        const L = await loadLeaflet();
-        if (cancelled || !containerRef.current) return;
-
-        const map = L.map(containerRef.current, {
-          center: [38, -95],
-          zoom: 4,
-          zoomControl: true,
-          attributionControl: false,
-          worldCopyJump: false,
-          minZoom: 2,
-          maxZoom: 16,
-        });
-
-        // CartoDB Dark Matter tiles - free, looks similar to Mapbox dark style.
-        // No API key required.
-        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {
-          maxZoom: 16,
-          subdomains: 'abcd',
-        }).addTo(map);
-
-        // Place labels in a separate layer above tracks so airports/cities show through
-        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', {
-          maxZoom: 16,
-          subdomains: 'abcd',
-          pane: 'shadowPane',
-        }).addTo(map);
-
-        // Group to hold all our overlay layers
-        const grp = L.layerGroup().addTo(map);
-
-        // Subtle attribution
-        L.control.attribution({ position: 'bottomright', prefix: false })
-          .addAttribution('© <a href="https://carto.com">CARTO</a> · © <a href="https://www.openstreetmap.org/copyright">OSM</a>')
-          .addTo(map);
-
-        mapRef.current = map;
-        layersRef.current = grp;
-        if (!cancelled) setMapReady(true);
-      } catch (e) {
-        console.error('[fleet-map] init failed:', e);
-        if (!cancelled) setMapError(e.message || 'Map failed to load');
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      if (mapRef.current) {
-        try { mapRef.current.remove(); } catch (_) {}
-        mapRef.current = null;
-        layersRef.current = null;
-      }
-    };
-  }, []);
-
-  // ====== Handle container resize (window resize, mobile tab switch, etc) ======
-  // When the map's container changes size, Leaflet needs an explicit
-  // invalidateSize() call to redraw tiles at the correct dimensions.
-  useEffect(() => {
-    if (!mapReady || !containerRef.current || !mapRef.current) return;
-    const map = mapRef.current;
-
-    // Watch for container size changes
-    const ro = new ResizeObserver(() => {
-      try { map.invalidateSize(false); } catch (_) {}
-    });
-    ro.observe(containerRef.current);
-
-    // Also listen for the custom invalidate event (mobile tab switch)
-    const onInvalidate = () => {
-      setTimeout(() => { try { map.invalidateSize(false); } catch (_) {} }, 50);
-    };
-    window.addEventListener('skyway-map-invalidate', onInvalidate);
-
-    return () => {
-      ro.disconnect();
-      window.removeEventListener('skyway-map-invalidate', onInvalidate);
-    };
-  }, [mapReady]);
-
-  // ====== Render all map overlays ======
-  // SINGLE effect that clears the layer group and rebuilds everything from
-  // current state. No marker references kept across renders — no stale
-  // state bugs possible.
-  //
-  // Design (Jun 2026):
-  //   ALWAYS VISIBLE — dots for all parked aircraft, plane icons for all airborne
-  //   SELECTED TAIL ONLY — flown breadcrumb track, projected dashed route,
-  //     origin/destination airport markers. Unselected tails show their icon
-  //     only, no clutter. User clicks a tail → sees its full story.
-  //   BREADCRUMBS — uses the actual GPS track (state.track, a [[lon,lat]…]
-  //     GeoJSON array from the bulk position poll) instead of a straight line
-  //     from origin. Falls back to a straight line from origin only when no
-  //     track is available yet (e.g. immediately after takeoff).
-  useEffect(() => {
-    if (!mapReady || !mapRef.current || !layersRef.current) return;
-    const L = window.L;
-    const grp = layersRef.current;
-
-    // Clear everything
-    grp.clearLayers();
-
-    const airborneTails = fleetTails.filter(t => tailStates[t]?.airborne === true);
-    const groundedTails = fleetTails.filter(t => {
-      const s = tailStates[t];
-      if (s?.airborne !== false) return false;
-      return resolvePos(s?.groundedAt, s?.groundedLat, s?.groundedLon) != null;
-    });
-
-    // ── SELECTED TAIL: route + breadcrumbs + airport markers ───────────────
-    // Drawn BELOW aircraft icons so the markers overlay the lines.
-    if (selectedTail) {
-      const sel = tailStates[selectedTail];
-      if (sel?.airborne === true && sel.latitude != null && sel.longitude != null) {
-        const originPos = resolvePos(sel.origin, sel.originLat, sel.originLon);
-        const destPos   = resolvePos(sel.destination, sel.destinationLat, sel.destinationLon);
-
-        // Flown breadcrumb track ─────────────────────────────────────────────
-        // state.track is [[lon,lat],...] GeoJSON order from the positions API.
-        // Flip to [lat,lon] for Leaflet. If no track yet (brand-new flight),
-        // fall back to a straight line from origin to current position.
-        const rawTrack = Array.isArray(sel.track) ? sel.track : [];
-        const trackPts = rawTrack
-          .filter(pt => Array.isArray(pt) && pt[0] != null && pt[1] != null)
-          .map(([lon, lat]) => [lat, lon]); // GeoJSON [lng,lat] → Leaflet [lat,lng]
-
-        if (trackPts.length >= 2) {
-          L.polyline(trackPts, {
-            color: '#22d3ee', weight: 3, opacity: 0.95,
-            lineCap: 'round', lineJoin: 'round',
-          }).addTo(grp);
-          // Tiny dot at the START of the track so "where it took off" is clear
-          if (trackPts.length > 0) {
-            L.circleMarker(trackPts[0], {
-              radius: 4, color: '#22d3ee', fillColor: '#22d3ee',
-              fillOpacity: 0.6, weight: 1, interactive: false,
-            }).addTo(grp);
-          }
-        } else if (originPos) {
-          // No GPS history yet — draw a simple straight line from origin
-          L.polyline([[originPos.lat, originPos.lon], [sel.latitude, sel.longitude]], {
-            color: '#22d3ee', weight: 3, opacity: 0.8,
-            lineCap: 'round', lineJoin: 'round',
-          }).addTo(grp);
-        }
-
-        // Projected dashed remainder ─────────────────────────────────────────
-        if (destPos) {
-          L.polyline([[sel.latitude, sel.longitude], [destPos.lat, destPos.lon]], {
-            color: '#22d3ee', weight: 2, opacity: 0.45,
-            dashArray: '7 7', lineCap: 'round', lineJoin: 'round',
-          }).addTo(grp);
-        }
-
-        // Origin airport dot (green) ─────────────────────────────────────────
-        if (originPos) {
-          const oCode = sel.origin || '';
-          const oHtml = `
-            <div style="position: relative;">
-              <div style="width: 12px; height: 12px; border-radius: 50%; background: #22c55e; border: 2px solid #0b0f17; box-shadow: 0 0 0 2px rgba(34,197,94,0.4);"></div>
-              <div style="position: absolute; left: 16px; top: -2px; color: #86efac; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; white-space: nowrap; background: rgba(11,15,23,0.88); padding: 2px 6px; border-radius: 2px;">${oCode}</div>
-            </div>`;
-          const oIcon = L.divIcon({ html: oHtml, className: '', iconSize: [12,12], iconAnchor: [6,6] });
-          L.marker([originPos.lat, originPos.lon], { icon: oIcon, zIndexOffset: 400, interactive: false }).addTo(grp);
-        }
-
-        // Destination airport dot (amber) ─────────────────────────────────────
-        if (destPos) {
-          const dCode = sel.destination || '';
-          const dHtml = `
-            <div style="position: relative;">
-              <div style="width: 12px; height: 12px; border-radius: 50%; background: #f59e0b; border: 2px solid #0b0f17; box-shadow: 0 0 0 2px rgba(245,158,11,0.4);"></div>
-              <div style="position: absolute; left: 16px; top: -2px; color: #fcd34d; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; white-space: nowrap; background: rgba(11,15,23,0.88); padding: 2px 6px; border-radius: 2px;">${dCode}</div>
-            </div>`;
-          const dIcon = L.divIcon({ html: dHtml, className: '', iconSize: [12,12], iconAnchor: [6,6] });
-          L.marker([destPos.lat, destPos.lon], { icon: dIcon, zIndexOffset: 400, interactive: false }).addTo(grp);
-        }
-      } else if (sel?.airborne === false) {
-        // SELECTED GROUNDED: faint completed-route line (if we have the departure airport)
-        const gPos  = resolvePos(sel.groundedAt, sel.groundedLat, sel.groundedLon);
-        const loPos = resolvePos(sel.lastOrigin, sel.lastOriginLat, sel.lastOriginLon);
-        if (gPos && loPos) {
-          L.polyline([[loPos.lat, loPos.lon], [gPos.lat, gPos.lon]], {
-            color: '#10b981', weight: 2.5, opacity: 0.7,
-            lineCap: 'round', lineJoin: 'round',
-          }).addTo(grp);
-          // Origin dot
-          const loCode = sel.lastOrigin || '';
-          const loHtml = `<div style="position: relative;"><div style="width: 10px; height: 10px; border-radius: 50%; background: #10b981; border: 2px solid #0b0f17; opacity: 0.7;"></div><div style="position: absolute; left: 14px; top: -3px; color: #6ee7b7; font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 600; white-space: nowrap; background: rgba(11,15,23,0.85); padding: 2px 5px; border-radius: 2px; opacity: 0.85;">${loCode}</div></div>`;
-          const loIcon = L.divIcon({ html: loHtml, className: '', iconSize: [10,10], iconAnchor: [5,5] });
-          L.marker([loPos.lat, loPos.lon], { icon: loIcon, zIndexOffset: 200, interactive: false }).addTo(grp);
-        }
-      }
-    }
-
-    // ── GROUNDED aircraft dots (all tails) ─────────────────────────────────
-    groundedTails.forEach(tail => {
-      const state = tailStates[tail];
-      const pos = resolvePos(state.groundedAt, state.groundedLat, state.groundedLon);
-      if (!pos) return;
-      const lat = pos.lat;
-      const lon = pos.lon;
-      const isSelected = tail === selectedTail;
-      const dotSize = isSelected ? 14 : 10;
-      const ringStyle = isSelected
-        ? `border: 2px solid #94a3b8; box-shadow: 0 0 0 2px rgba(148,163,184,0.35);`
-        : `border: 1.5px solid #475569;`;
-      const labelColor   = isSelected ? '#cbd5e1' : '#64748b';
-      const labelWeight  = isSelected ? 700 : 500;
-      const groundedCode = state.groundedAt || '';
-
-      const html = `
-        <div style="position: relative; cursor: pointer;">
-          <div style="width: ${dotSize}px; height: ${dotSize}px; border-radius: 50%; background: #1e293b; ${ringStyle}"></div>
-          <div style="position: absolute; left: ${dotSize + 6}px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; gap: 4px; pointer-events: none;">
-            <span style="font-family: 'JetBrains Mono', monospace; font-size: 9px; font-weight: ${labelWeight}; color: ${labelColor}; background: rgba(11,15,23,0.78); padding: 2px 5px; border-radius: 2px; white-space: nowrap;">${tail}</span>
-            ${groundedCode ? `<span style="font-family: 'JetBrains Mono', monospace; font-size: 8px; font-weight: 500; color: #64748b; background: rgba(11,15,23,0.6); padding: 2px 5px; border-radius: 2px; white-space: nowrap; border: 0.5px solid rgba(100,116,139,0.3);">@ ${groundedCode}</span>` : ''}
-          </div>
-        </div>`;
-
-      const icon = L.divIcon({ html, className: 'fleet-grounded-marker', iconSize: [dotSize,dotSize], iconAnchor: [dotSize/2, dotSize/2] });
-      const marker = L.marker([lat, lon], { icon, zIndexOffset: isSelected ? 800 : 50 }).addTo(grp);
-      marker.on('click', () => onSelectTail(tail));
-    });
-
-    // ── AIRBORNE aircraft icons (all tails, NO route lines for unselected) ─
-    airborneTails.forEach(tail => {
-      const state = tailStates[tail];
-      const lat = state?.latitude;
-      const lon = state?.longitude;
-      const heading = state?.heading ?? 0;
-      if (lat == null || lon == null) return;
-      const isSelected = tail === selectedTail;
-
-      const ringSize = isSelected ? 40 : 32;
-      const planeSize = isSelected ? 22 : 18;
-      const ringStyle = isSelected
-        ? `background: #0b0f17; border: 2px solid #22d3ee; box-shadow: 0 0 0 3px rgba(34,211,238,0.35), 0 0 16px rgba(34,211,238,0.5);`
-        : `background: #0b0f17; border: 2px solid #22d3ee;`;
-
-      let etaLabel = '';
-      if (state?.estimatedOn) {
-        try {
-          etaLabel = new Date(state.estimatedOn).toLocaleString('en-US', {
-            hour: '2-digit', minute: '2-digit', timeZoneName: 'short',
-          });
-        } catch (_) { etaLabel = ''; }
-      }
-
-      const html = `
-        <div style="position: relative; cursor: pointer; width: ${ringSize}px; height: ${ringSize}px;">
-          <div style="position: absolute; inset: 0; border-radius: 50%; ${ringStyle}"></div>
-          <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%) rotate(${heading}deg); width: ${planeSize}px; height: ${planeSize}px; color: #22d3ee; display: flex; align-items: center; justify-content: center;">
-            <svg viewBox="0 0 24 24" width="${planeSize}" height="${planeSize}" fill="currentColor">
-              <path d="M12,1 L13,8 L12.5,21 L12,23 L11.5,21 L11,8 Z M12,9 L23,16 L12,14 L1,16 Z M12,18 L17,22 L12,20.5 L7,22 Z"/>
-            </svg>
-          </div>
-          <div style="position: absolute; left: ${ringSize + 4}px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; align-items: flex-start; gap: 3px; pointer-events: none;">
-            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: ${isSelected ? 700 : 600}; color: #22d3ee; background: rgba(11,15,23,0.92); padding: 3px 7px; border-radius: 2px; white-space: nowrap; border: 0.5px solid rgba(34,211,238,${isSelected ? '0.5' : '0.3'});">${tail}</span>
-            ${etaLabel ? `<span style="font-family: 'JetBrains Mono', monospace; font-size: 9px; font-weight: 600; color: #fbbf24; background: rgba(11,15,23,0.92); padding: 2px 7px; border-radius: 8px; white-space: nowrap; border: 0.5px solid rgba(251,191,36,0.35);">ETA ${etaLabel}</span>` : ''}
-          </div>
-        </div>`;
-
-      const icon = L.divIcon({ html, className: 'fleet-aircraft-marker', iconSize: [ringSize,ringSize], iconAnchor: [ringSize/2, ringSize/2] });
-      const marker = L.marker([lat, lon], { icon, zIndexOffset: isSelected ? 1000 : 100 }).addTo(grp);
-      marker.on('click', () => onSelectTail(tail));
-    });
-  }, [fleetTails, tailStates, selectedTail, mapReady, onSelectTail]);
-
-  // ====== Fit to SELECTED TAIL's full route when selection changes =========
-  // Zooms to show the complete flight (origin → current position → destination)
-  // whenever a different tail is clicked, so you always see the full context
-  // of that flight — not just a sliver of the map around the plane's icon.
-  // RECENTER re-fits to the whole fleet.
-  const hasAutoFitRef = useRef(false);
-
-  const fitToFleet = useCallback(() => {
-    if (!mapRef.current) return;
-    const L = window.L;
-    const map = mapRef.current;
-    const points = [];
-    fleetTails.forEach(tail => {
-      const s = tailStates[tail];
-      if (!s) return;
-      if (s.airborne === true && s.latitude != null && s.longitude != null) {
-        points.push([s.latitude, s.longitude]);
-        const o = resolvePos(s.origin, s.originLat, s.originLon);
-        const d = resolvePos(s.destination, s.destinationLat, s.destinationLon);
-        if (o) points.push([o.lat, o.lon]);
-        if (d) points.push([d.lat, d.lon]);
-      } else if (s.airborne === false) {
-        const g = resolvePos(s.groundedAt, s.groundedLat, s.groundedLon);
-        if (g) points.push([g.lat, g.lon]);
-      }
-    });
-    if (points.length >= 2) {
-      map.fitBounds(L.latLngBounds(points), { padding: [50, 50], maxZoom: 9, animate: true, duration: 0.7 });
-    } else if (points.length === 1) {
-      map.setView(points[0], 8, { animate: true });
-    }
-  }, [fleetTails, tailStates]);
-
-  // Auto-fit to the whole fleet once on first data load
-  useEffect(() => {
-    if (!mapReady) return;
-    const tailsWithData = fleetTails.filter(t => tailStates[t]);
-    if (!hasAutoFitRef.current && tailsWithData.length > 0) {
-      hasAutoFitRef.current = true;
-      fitToFleet();
-    }
-  }, [mapReady, fleetTails, tailStates, fitToFleet]);
-
-  // Fit to the SELECTED TAIL's route (origin → current → destination) whenever
-  // the selection changes. This gives you the breadcrumb + projected path in
-  // context, rather than a zoomed-out view of the whole country.
-  useEffect(() => {
-    if (!mapReady || !mapRef.current || !selectedTail) return;
-    const L = window.L;
-    const map = mapRef.current;
-    const s = tailStates[selectedTail];
-    if (!s) return;
-
-    const points = [];
-    if (s.airborne === true && s.latitude != null && s.longitude != null) {
-      points.push([s.latitude, s.longitude]);
-      const o = resolvePos(s.origin, s.originLat, s.originLon);
-      const d = resolvePos(s.destination, s.destinationLat, s.destinationLon);
-      if (o) points.push([o.lat, o.lon]);
-      if (d) points.push([d.lat, d.lon]);
-      // Sample some breadcrumb points for a tighter fit
-      const rawTrack = Array.isArray(s.track) ? s.track : [];
-      if (rawTrack.length > 0) {
-        const sample = [rawTrack[0], rawTrack[rawTrack.length - 1]];
-        sample.forEach(([lon, lat]) => { if (lat != null && lon != null) points.push([lat, lon]); });
-      }
-    } else if (s.airborne === false) {
-      const g  = resolvePos(s.groundedAt,  s.groundedLat,  s.groundedLon);
-      const lo = resolvePos(s.lastOrigin,   s.lastOriginLat, s.lastOriginLon);
-      if (g)  points.push([g.lat,  g.lon]);
-      if (lo) points.push([lo.lat, lo.lon]);
-    }
-
-    if (points.length >= 2) {
-      map.fitBounds(L.latLngBounds(points), { padding: [70, 70], maxZoom: 10, animate: true, duration: 0.7 });
-    } else if (points.length === 1) {
-      map.setView(points[0], 10, { animate: true });
-    }
-  }, [selectedTail, mapReady, tailStates]);
-
-  if (mapError) {
-    return (
-      <div className="h-full flex items-center justify-center text-slate-500 text-xs bg-slate-950">
-        Map error: {mapError}
-      </div>
-    );
-  }
-
-  return (
-    <div className="relative w-full h-full bg-slate-950">
-      <div ref={containerRef} style={{ width: '100%', height: '100%', background: '#0b0f17' }} />
-      {!mapReady && (
-        <div className="absolute inset-0 flex items-center justify-center text-slate-600 text-xs pointer-events-none">
-          <Loader2 className="w-4 h-4 animate-spin mr-2" /> Loading map…
-        </div>
-      )}
-      {mapReady && (
-        <button
-          onClick={fitToFleet}
-          className="absolute top-2 right-2 z-[1000] px-2.5 py-1.5 text-[10px] tracking-widest text-slate-300 bg-slate-900/85 border border-slate-700 hover:border-cyan-500/50 hover:text-cyan-300 rounded-sm backdrop-blur-sm"
-          style={{ fontFamily: "'JetBrains Mono', monospace" }}
-          title="Re-fit the map to show the whole fleet"
-        >
-          RECENTER
-        </button>
-      )}
-    </div>
-  );
 }
 
 
@@ -23729,7 +24986,7 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
   const requestReviewExpense = async (expense, question) => {
     if (!canApprove) return;
     if (!question || !question.trim()) {
-      alert('Review question is required.');
+      notify.error('Review question is required.');
       return;
     }
     const reviewerName = currentUserDisplayName || currentUser?.name || 'Accounting';
@@ -23759,7 +25016,7 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
     // Send email to submitter
     const recipient = expense.authorEmail;
     if (!recipient || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipient)) {
-      alert('Status updated, but no valid email on file for submitter — could not notify them. They can still see the request in the app.');
+      notify.warning('Status updated', { description: 'No valid email on file for the submitter, so they were not notified. They can still see the request in the app.' });
       return;
     }
     try {
@@ -23789,12 +25046,12 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
       if (!r.ok) {
         const data = await r.json().catch(() => ({}));
         console.error('[expenses] review email failed:', r.status, data.error || '');
-        alert(`Status updated, but the email failed to send (${data.error || r.status}). The submitter can still see the request in the app.`);
+        notify.warning('Status updated', { description: `The email failed to send (${data.error || r.status}). The submitter can still see the request in the app.` });
       } else {
       }
     } catch (err) {
       console.error('[expenses] review email error:', err);
-      alert('Status updated, but the email could not be sent. The submitter can still see the request in the app.');
+      notify.warning('Status updated', { description: 'The email could not be sent. The submitter can still see the request in the app.' });
     }
   };
   const updateExpense = async (expense, changes) => {
@@ -23819,7 +25076,7 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
       toExport = toExport.filter(e => !e.exportedAt);
     }
     if (toExport.length === 0) {
-      alert(mode === 'new'
+      notify.error(mode === 'new'
         ? 'No new approved expenses to export. Switch to "FULL EXPORT" to re-download previously exported items.'
         : 'No approved expenses to export.');
       return;
@@ -26196,9 +27453,18 @@ function IosInstallBanner() {
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof navigator === 'undefined') return;
-    // Bail if previously dismissed
+    // Soft dismiss — re-prompt after 14 days so first-time users who
+    // accidentally dismissed still discover Add to Home Screen.
     try {
-      if (localStorage.getItem('skyway_pwa_banner_dismissed') === '1') return;
+      const until = Number(localStorage.getItem('skyway_pwa_banner_dismissed_until') || 0);
+      if (until && Date.now() < until) return;
+      // Migrate legacy permanent dismiss key into a soft window.
+      if (localStorage.getItem('skyway_pwa_banner_dismissed') === '1') {
+        const next = Date.now() + 14 * 24 * 60 * 60 * 1000;
+        localStorage.setItem('skyway_pwa_banner_dismissed_until', String(next));
+        localStorage.removeItem('skyway_pwa_banner_dismissed');
+        return;
+      }
     } catch (_) {}
     // Bail if already installed (standalone mode)
     const isStandalone = (
@@ -26223,37 +27489,50 @@ function IosInstallBanner() {
 
   function dismiss() {
     setShow(false);
-    try { localStorage.setItem('skyway_pwa_banner_dismissed', '1'); } catch (_) {}
+    try {
+      localStorage.setItem(
+        'skyway_pwa_banner_dismissed_until',
+        String(Date.now() + 14 * 24 * 60 * 60 * 1000),
+      );
+      localStorage.removeItem('skyway_pwa_banner_dismissed');
+    } catch (_) {}
   }
 
   if (!show) return null;
 
   return (
-    <div className="bg-cyan-500/20 border-b border-cyan-500/40 px-4 py-2.5 flex items-center gap-3">
+    <div className="border-b border-accent-border bg-accent-soft px-4 py-3 flex items-start gap-3">
+      <img
+        src="/apple-touch-icon.png"
+        alt=""
+        width={40}
+        height={40}
+        className="mt-0.5 h-10 w-10 shrink-0 rounded-[9px] border border-edge"
+      />
       <div className="flex-1 min-w-0">
-        <div className="text-[11px] tracking-widest text-cyan-200" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
-          INSTALL SKYWAY
+        <div className="text-[11px] font-semibold tracking-widest text-accent" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          ADD TO HOME SCREEN
         </div>
-        <div className="text-xs text-slate-200 mt-0.5" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-          Tap{' '}
-          <span className="inline-flex items-center align-middle">
-            {/* iOS Share icon — rough svg approximation */}
-            <svg viewBox="0 0 24 24" className="w-4 h-4 inline mx-1 text-cyan-300" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <div className="text-xs text-content mt-1 leading-relaxed">
+          For the full app experience (fullscreen, push alerts), tap{' '}
+          <span className="inline-flex items-center align-middle text-accent" aria-hidden="true">
+            <svg viewBox="0 0 24 24" className="w-4 h-4 inline mx-0.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7" />
               <polyline points="16 6 12 2 8 6" />
               <line x1="12" y1="2" x2="12" y2="15" />
             </svg>
           </span>
-          {' '}then "Add to Home Screen" to install.
+          {' '}Share, then <span className="font-semibold text-content">Add to Home Screen</span>.
         </div>
       </div>
       <button
+        type="button"
         onClick={dismiss}
-        className="text-xs text-slate-400 hover:text-slate-200 tracking-widest px-2 py-1"
+        className="shrink-0 rounded px-2 py-2 text-[10px] tracking-widest text-content-muted hover:text-content"
         style={{ fontFamily: 'JetBrains Mono, monospace' }}
         aria-label="Dismiss install banner"
       >
-        DISMISS
+        LATER
       </button>
     </div>
   );
@@ -26261,7 +27540,7 @@ function IosInstallBanner() {
 
 export default function CharterOps() {
   // Auth & users
-  const { authState, profile, user, signOut } = useAuth();
+  const { authState, profile, user, authError, signOut } = useAuth();
   const { users, loading: usersLoading, updateUser, removeUser, approveUser } = useFirestoreUsers(profile);
 
   // App state
@@ -26280,6 +27559,7 @@ export default function CharterOps() {
   });
   const [showProfile, setShowProfile] = useState(false);
   const [showAdminDutyTools, setShowAdminDutyTools] = useState(false);
+  const [adminDutyView, setAdminDutyView] = useState('report'); // report | calendar
   // UI theme — 'dark' (default cyan/slate) or 'classy' (warm + gold).
   // Persisted in localStorage so the choice survives reloads. The actual
   // visual switch happens via the data-theme attribute on the html
@@ -26292,6 +27572,12 @@ export default function CharterOps() {
     if (typeof document === 'undefined') return;
     document.documentElement.setAttribute('data-theme', themeMode);
     try { localStorage.setItem('skyway-theme', themeMode); } catch (_) {}
+    // Keep iOS status-bar / theme-color in sync with the active palette so
+    // the homescreen chrome doesn't flash the wrong color on theme toggle.
+    const color = themeMode === 'classy' ? '#E8EFF8' : '#060C16';
+    document.querySelectorAll('meta[name="theme-color"]').forEach((m) => {
+      m.setAttribute('content', color);
+    });
   }, [themeMode]);
   const [syncStatus, setSyncStatus] = useState({ status: 'idle', message: '' });
   const [syncLog, setSyncLog] = useState([]);
@@ -26301,7 +27587,6 @@ export default function CharterOps() {
   const [tripStateAt, setTripStateAt] = useState({});      // { [tripUid]: timestamp } — latest state change
   const [tripLastSeen, setTripLastSeen] = useState({});  // { [tripUid]: timestamp }
   const [tripArchived, setTripArchived] = useState({});  // { [tripUid]: true } — manually archived
-  const [showArchived, setShowArchived] = useState(false);
   const [now, setNow] = useState(new Date());
   const [showAllCategories, setShowAllCategories] = useState(false);
   // Tail filter — single-select. Empty string means "ALL". Persists in
@@ -26317,6 +27602,10 @@ export default function CharterOps() {
       else localStorage.removeItem('skyway-tail-filter');
     } catch { /* ignore quota errors */ }
   }, [tailFilter]);
+  // Free-text schedule search over tail, route, customer and broker. Hidden
+  // behind the magnifier in the Flights header so the list stays clean.
+  const [scheduleQuery, setScheduleQuery] = useState('');
+  const [scheduleSearchOpen, setScheduleSearchOpen] = useState(false);
   // Default landing screen: 'home' for crew (their personalized view),
   // 'schedule' for everyone else (ops/admin/sales workflow).
   // Use `profile` here (not `currentUser`) because currentUser is declared
@@ -26461,6 +27750,7 @@ export default function CharterOps() {
       setTripArchived(prev => ({ ...prev, [tripUid]: Date.now() }));
     } catch (err) {
       console.error('Failed to archive trip:', err);
+      notify.error('Could not archive the trip', { description: err.message });
     }
   }, []);
 
@@ -26485,8 +27775,25 @@ export default function CharterOps() {
       });
     } catch (err) {
       console.error('Failed to unarchive trip:', err);
+      notify.error('Could not restore the trip', { description: err.message });
     }
   }, []);
+
+  /**
+   * Archiving is reachable by a left-swipe on a trip card, which is easy to
+   * trigger by accident while scrolling a dense list. Confirm it happened and
+   * offer a one-tap undo rather than silently removing the trip.
+   *
+   * The caller supplies the route label — looking it up from `allTrips` here
+   * would reference it before its declaration further down the component.
+   */
+  const archiveTripWithUndo = useCallback(async (tripUid, label) => {
+    await archiveTrip(tripUid);
+    notify.info(`${label || 'Trip'} archived`, {
+      action: { label: 'Undo', onClick: () => unarchiveTrip(tripUid) },
+      duration: 8000,
+    });
+  }, [archiveTrip, unarchiveTrip]);
 
   // Map Firebase profile to legacy currentUser shape so the rest of the app keeps working
   // Admin impersonation: when set to another user's uid, currentUser appears as that user
@@ -26558,6 +27865,7 @@ export default function CharterOps() {
       role: liveProfile.role || 'crew',
       active: liveProfile.active !== false,
       approved: liveProfile.approved === true,
+      authProvider: liveProfile.authProvider || null,
       savedSignature: liveProfile.savedSignature || null,
       // Per-user tab order overrides. Each area can be an array of tab
       // IDs (custom order saved) or undefined/null (use org default).
@@ -27077,7 +28385,7 @@ export default function CharterOps() {
       log('success', `Manual trip created: ${trip.info.tail} ${trip.info.from}→${trip.info.to}`);
     } catch (err) {
       console.error('Failed to save manual trip:', err);
-      alert('Failed to save trip — check your connection');
+      notify.error('Failed to save trip — check your connection');
     }
   };
 
@@ -27087,7 +28395,7 @@ export default function CharterOps() {
       await deleteManualTrip(uid);
     } catch (err) {
       console.error('Failed to delete manual trip:', err);
-      alert('Failed to delete trip — check your connection');
+      notify.error('Failed to delete trip — check your connection');
     }
   };
 
@@ -27112,6 +28420,14 @@ export default function CharterOps() {
       const tf = tailFilter.toUpperCase();
       filtered = filtered.filter(t => (t.info.tail || '').toUpperCase() === tf);
     }
+    const q = scheduleQuery.trim().toLowerCase();
+    if (q) {
+      filtered = filtered.filter((t) => {
+        const i = t.info || {};
+        return [i.tail, i.from, i.to, i.customer, i.broker, i.pic, i.sic]
+          .some(v => String(v || '').toLowerCase().includes(q));
+      });
+    }
     for (const t of filtered) {
       if (!t.start) continue;
       // Hidden (>15 days archived) — skip entirely, never show
@@ -27129,7 +28445,7 @@ export default function CharterOps() {
     groups.past.reverse(); // newest past first
     groups.archived.sort((a, b) => (b.start?.getTime?.() || 0) - (a.start?.getTime?.() || 0)); // newest archived first
     return groups;
-  }, [allTrips, today, tomorrow, showAllCategories, tailFilter, isTripArchived, isTripHidden]);
+  }, [allTrips, today, tomorrow, showAllCategories, tailFilter, scheduleQuery, isTripArchived, isTripHidden]);
 
   const feedStats = useMemo(() => {
     if (allTrips.length === 0) return null;
@@ -27151,7 +28467,7 @@ export default function CharterOps() {
   }
 
   if (authState === 'signed-out') {
-    return <LoginScreen />;
+    return <LoginScreen authError={authError} />;
   }
 
   if (authState === 'unverified') {
@@ -27192,22 +28508,8 @@ export default function CharterOps() {
 
   // === Authenticated app ===
   return (
-    <div className="h-screen w-full bg-slate-950 text-slate-100 antialiased overflow-hidden">
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
-        body { font-family: 'DM Sans', sans-serif; }
-        * { font-feature-settings: "ss01", "cv11"; }
-        .grid-bg {
-          background-image:
-            linear-gradient(rgba(148, 163, 184, 0.04) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(148, 163, 184, 0.04) 1px, transparent 1px);
-          background-size: 32px 32px;
-        }
-        .scroll-area::-webkit-scrollbar { width: 6px; }
-        .scroll-area::-webkit-scrollbar-track { background: transparent; }
-        .scroll-area::-webkit-scrollbar-thumb { background: #334155; }
-      `}</style>
-
+    <ToastProvider>
+    <div className="sw-app-shell bg-slate-950 text-slate-100 antialiased">
       <StreamPresenceProvider
         currentUser={currentUser}
         getIdToken={async () => {
@@ -27220,12 +28522,23 @@ export default function CharterOps() {
           }
         }}
       >
-      <div className="grid-bg h-full flex flex-col">
+      <div className="h-full min-h-0 flex flex-col">
         {/* iOS install banner — dismissible, shown only on iOS Safari
             when the app isn't already installed. Surfaces the Share →
             Add to Home Screen flow because iOS Safari has no built-in
             install prompt (unlike Chrome/Android). */}
         <IosInstallBanner />
+        {profile?.authProvider === 'dev-bypass' && (
+          <div
+            role="status"
+            className="flex shrink-0 items-center justify-center gap-2 border-b border-warning-border bg-warning-soft px-3 py-2 text-center"
+          >
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-warning" />
+            <span className="font-mono text-[10px] font-semibold tracking-wide text-warning">
+              DEVELOPMENT MODE · MICROSOFT LOGIN BYPASSED · ADMIN ACCESS
+            </span>
+          </div>
+        )}
         {currentUser?._impersonating && (
           <div className="bg-amber-500 text-slate-950 px-4 py-2 flex items-center justify-between gap-3 flex-wrap">
             <div className="text-xs" style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
@@ -27301,66 +28614,62 @@ export default function CharterOps() {
         {section === 'schedule' && (
           <div className="flex-1 flex overflow-hidden">
             <aside className={`w-full md:w-80 lg:w-96 border-r border-slate-800 bg-slate-950/80 overflow-y-auto scroll-area ${selectedId ? 'hidden md:block' : 'block'}`}>
-              <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between gap-2">
-                <h2 className="text-xs tracking-[0.2em]" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}>SCHEDULE</h2>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <button
-                    onClick={() => setShowAllCategories(v => !v)}
-                    className={`text-[10px] tracking-widest px-2 py-1 border ${showAllCategories ? 'border-cyan-400 text-cyan-300' : 'border-slate-700 text-slate-500 hover:text-slate-300'}`}
-                    style={{ fontFamily: 'JetBrains Mono, monospace' }}
-                    title="Toggle ground events"
-                  >
-                    {showAllCategories ? 'ALL' : 'OPS'}
-                  </button>
-                  <button
-                    onClick={() => loadFromUrl(config.icalUrl)}
-                    disabled={syncStatus.status === 'syncing' || !config.icalUrl}
-                    className="text-[10px] text-slate-500 hover:text-cyan-400 tracking-widest disabled:opacity-50 flex items-center gap-1"
-                    style={{ fontFamily: 'JetBrains Mono, monospace' }}
-                    title="Refresh from feed"
-                  >
-                    {syncStatus.status === 'syncing' ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-                    SYNC
-                  </button>
+              <ScreenHeader
+                title="Flights"
+                right={(
+                  <>
+                    <IconButton
+                      icon={Search}
+                      title="Search flights"
+                      variant={scheduleSearchOpen || scheduleQuery ? 'outline' : 'ghost'}
+                      onClick={() => {
+                        setScheduleSearchOpen((v) => {
+                          if (v) setScheduleQuery('');
+                          return !v;
+                        });
+                      }}
+                    />
+                    <IconButton
+                      icon={showAllCategories ? Calendar : Plane}
+                      title={showAllCategories ? 'Showing all events — tap for flights only' : 'Showing flights only — tap to include ground events'}
+                      variant={showAllCategories ? 'outline' : 'ghost'}
+                      onClick={() => setShowAllCategories(v => !v)}
+                    />
+                    <IconButton
+                      icon={syncStatus.status === 'syncing' ? Loader2 : RefreshCw}
+                      title="Refresh from feed"
+                      variant="ghost"
+                      disabled={syncStatus.status === 'syncing' || !config.icalUrl}
+                      onClick={() => loadFromUrl(config.icalUrl)}
+                      className={syncStatus.status === 'syncing' ? '[&_svg]:animate-spin' : ''}
+                    />
+                  </>
+                )}
+              />
+
+              {scheduleSearchOpen && (
+                <div className="border-b border-edge px-3 py-2.5">
+                  <input
+                    autoFocus
+                    type="search"
+                    value={scheduleQuery}
+                    onChange={(e) => setScheduleQuery(e.target.value)}
+                    placeholder="Tail, route, customer, crew…"
+                    className="w-full rounded-lg border border-edge bg-surface px-3 py-2.5 text-sm text-content placeholder:text-content-subtle focus:border-accent-border focus:outline-none"
+                  />
                 </div>
-              </div>
+              )}
 
               {/* Tail filter — ops + admin only. Single-select chip row,
                   sticky to the top of the scroll area. ALL chip clears the filter. */}
               {['ops', 'admin'].includes(currentUser?.role) && (
-                <div className="sticky top-0 z-10 bg-slate-950/95 backdrop-blur border-b border-slate-800 px-3 py-2">
-                  <div className="flex items-center gap-1.5 overflow-x-auto scroll-area pb-1">
-                    <button
-                      onClick={() => setTailFilter('')}
-                      className={`shrink-0 text-[10px] tracking-widest px-2.5 py-1 border transition-colors ${
-                        tailFilter === ''
-                          ? 'border-cyan-400 bg-cyan-500/10 text-cyan-300'
-                          : 'border-slate-700 text-slate-400 hover:border-slate-500 hover:text-slate-200'
-                      }`}
-                      style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}
-                    >
-                      ALL
-                    </button>
+                <div className="sticky top-0 z-10 border-b border-edge bg-slate-950/80 px-3 py-2">
+                  <div className="sw-no-scrollbar flex items-center gap-1.5 overflow-x-auto">
+                    <TailChip label="All" active={tailFilter === ''} onClick={() => setTailFilter('')} />
                     {SKYWAY_TAILS.map(tail => (
-                      <button
-                        key={tail}
-                        onClick={() => setTailFilter(tail)}
-                        className={`shrink-0 text-[10px] tracking-widest px-2.5 py-1 border transition-colors ${
-                          tailFilter === tail
-                            ? 'border-cyan-400 bg-cyan-500/10 text-cyan-300'
-                            : 'border-slate-700 text-slate-400 hover:border-slate-500 hover:text-slate-200'
-                        }`}
-                        style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}
-                      >
-                        {tail}
-                      </button>
+                      <TailChip key={tail} label={tail} active={tailFilter === tail} onClick={() => setTailFilter(tail)} />
                     ))}
                   </div>
-                  {tailFilter && (
-                    <div className="text-[10px] text-slate-500 mt-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                      Showing only <span className="text-cyan-300">{tailFilter}</span> · Tap ALL to clear
-                    </div>
-                  )}
                 </div>
               )}
 
@@ -27381,82 +28690,69 @@ export default function CharterOps() {
                   </button>
                 </div>
               ) : (
-                <div>
+                <div className="px-3 py-3">
                   {feedStats && feedStats.futureCount === 0 && (
-                    <div className="mx-3 mt-3 p-3 border border-cyan-500/30 bg-cyan-500/5">
-                      <div className="flex items-start gap-2">
-                        <AlertCircle className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
-                        <div className="flex-1 min-w-0">
-                          <div className="text-xs tracking-widest text-cyan-300" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>
-                            NO UPCOMING TRIPS
-                          </div>
-                          <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+                    <Card className="mb-3 border-accent-border bg-accent-soft">
+                      <div className="flex items-start gap-2.5">
+                        <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-semibold text-content">No upcoming trips</div>
+                          <p className="mt-1 text-2xs leading-relaxed text-content-muted">
                             Feed has {feedStats.totalCount} flight{feedStats.totalCount !== 1 ? 's' : ''} from{' '}
-                            <span className="text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{fmtDateZ(feedStats.firstDate).slice(0, 6)}</span>
+                            <span className="font-mono text-content">{fmtDateZ(feedStats.firstDate).slice(0, 6)}</span>
                             {' → '}
-                            <span className="text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{fmtDateZ(feedStats.lastDate).slice(0, 6)}</span>.
-                            Tap SYNC, paste fresh content, or add a trip manually from the Ops tab.
+                            <span className="font-mono text-content">{fmtDateZ(feedStats.lastDate).slice(0, 6)}</span>.
+                            Sync the feed, paste fresh content, or add a trip manually from the Ops tab.
                           </p>
                         </div>
                       </div>
-                    </div>
-                  )}
-                  {feedStats && feedStats.futureCount > 0 && (
-                    <div className="mx-3 mt-3 p-2 border border-slate-800 bg-slate-900/40 text-[11px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                      {feedStats.futureCount} UPCOMING · {feedStats.totalCount} TOTAL · {fmtDateZ(feedStats.firstDate).slice(0, 6)} → {fmtDateZ(feedStats.lastDate).slice(0, 6)}
-                    </div>
+                    </Card>
                   )}
 
-                  {groupedTrips.today.length > 0 && (
-                    <div>
-                      <div className="px-4 py-2 text-[10px] tracking-[0.2em] text-cyan-400 bg-cyan-500/5 border-y border-cyan-500/20" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                        TODAY · {groupedTrips.today.length}
+                  {(() => {
+                    const sections = [
+                      { key: 'today', label: 'Today', trips: groupedTrips.today },
+                      { key: 'tomorrow', label: 'Tomorrow', trips: groupedTrips.tomorrow },
+                      { key: 'later', label: 'Upcoming', trips: groupedTrips.later },
+                      { key: 'past', label: 'Past', trips: groupedTrips.past },
+                    ].filter(s => s.trips.length > 0);
+
+                    if (sections.length === 0) {
+                      return (
+                        <EmptyState
+                          icon={Search}
+                          title={scheduleQuery ? 'No matching flights' : 'Nothing scheduled'}
+                          description={scheduleQuery
+                            ? `Nothing matches “${scheduleQuery}”. Try a tail number, airport code, or customer.`
+                            : 'No trips fall in this window. Adjust the tail filter or sync the feed.'}
+                        />
+                      );
+                    }
+
+                    return sections.map(section => (
+                      <div key={section.key} className="mb-5 last:mb-0">
+                        <div className="mb-2 flex items-baseline justify-between px-0.5">
+                          <h2 className="text-sm font-semibold text-content">{section.label}</h2>
+                          <span className="font-mono text-2xs text-content-subtle">{section.trips.length}</span>
+                        </div>
+                        <div className="space-y-2">
+                          {section.trips.map(trip => (
+                            <TripCard
+                              key={trip.uid}
+                              trip={trip}
+                              selected={trip.uid === selectedId}
+                              statusCount={tripStatusCounts[trip.uid] || 0}
+                              hasUpdate={tripHasUpdates(trip.uid)}
+                              onArchive={archiveTripWithUndo}
+                              onClick={() => { setSelectedId(trip.uid); markTripSeen(trip.uid); }}
+                            />
+                          ))}
+                        </div>
                       </div>
-                      {groupedTrips.today.map(trip => (
-                        <TripCard key={trip.uid} trip={trip} selected={trip.uid === selectedId} statusCount={tripStatusCounts[trip.uid] || 0} hasUpdate={tripHasUpdates(trip.uid)} onArchive={archiveTrip} onClick={() => { setSelectedId(trip.uid); markTripSeen(trip.uid); }} />
-                      ))}
-                    </div>
-                  )}
-                  {groupedTrips.tomorrow.length > 0 && (
-                    <div>
-                      <div className="px-4 py-2 text-[10px] tracking-[0.2em] text-cyan-400 bg-cyan-500/5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                        TOMORROW · {groupedTrips.tomorrow.length}
-                      </div>
-                      {groupedTrips.tomorrow.map(trip => (
-                        <TripCard key={trip.uid} trip={trip} selected={trip.uid === selectedId} statusCount={tripStatusCounts[trip.uid] || 0} hasUpdate={tripHasUpdates(trip.uid)} onArchive={archiveTrip} onClick={() => { setSelectedId(trip.uid); markTripSeen(trip.uid); }} />
-                      ))}
-                    </div>
-                  )}
-                  {groupedTrips.later.length > 0 && (
-                    <div>
-                      <div className="px-4 py-2 text-[10px] tracking-[0.2em] text-slate-400 bg-slate-900/40" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                        UPCOMING · {groupedTrips.later.length}
-                      </div>
-                      {groupedTrips.later.map(trip => (
-                        <TripCard key={trip.uid} trip={trip} selected={trip.uid === selectedId} statusCount={tripStatusCounts[trip.uid] || 0} hasUpdate={tripHasUpdates(trip.uid)} onArchive={archiveTrip} onClick={() => { setSelectedId(trip.uid); markTripSeen(trip.uid); }} />
-                      ))}
-                    </div>
-                  )}
-                  {groupedTrips.past.length > 0 && (
-                    <div>
-                      <div className="px-4 py-2 text-[10px] tracking-[0.2em] text-slate-600 bg-slate-900/40" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                        PAST · {groupedTrips.past.length} · NEWEST FIRST
-                      </div>
-                      {groupedTrips.past.map(trip => (
-                        <TripCard key={trip.uid} trip={trip} selected={trip.uid === selectedId} statusCount={tripStatusCounts[trip.uid] || 0} hasUpdate={tripHasUpdates(trip.uid)} onArchive={archiveTrip} onClick={() => { setSelectedId(trip.uid); markTripSeen(trip.uid); }} />
-                      ))}
-                    </div>
-                  )}
-                  {showArchived && false && groupedTrips.archived.length > 0 && (
-                    <div>
-                      <div className="px-4 py-2 text-[10px] tracking-[0.2em] text-slate-600 bg-slate-900/40" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                        ARCHIVED · {groupedTrips.archived.length}
-                      </div>
-                      {groupedTrips.archived.map(trip => (
-                        <TripCard key={trip.uid} trip={trip} selected={trip.uid === selectedId} statusCount={tripStatusCounts[trip.uid] || 0} hasUpdate={tripHasUpdates(trip.uid)} onClick={() => { setSelectedId(trip.uid); markTripSeen(trip.uid); }} />
-                      ))}
-                    </div>
-                  )}
+                    ));
+                  })()}
+                  {/* Archived trips render in the dedicated Archive section
+                      (Flights › Archive), not inline in the schedule list. */}
                 </div>
               )}
             </aside>
@@ -27535,7 +28831,7 @@ export default function CharterOps() {
                   </p>
                 </div>
               ) : (
-                <div>
+                <div className="space-y-2 px-3 py-3">
                   {groupedTrips.archived.map(trip => {
                     // Compute archive age for the badge
                     const archivedTs = tripArchived[trip.uid];
@@ -27553,7 +28849,7 @@ export default function CharterOps() {
                           onClick={() => { setSelectedId(trip.uid); markTripSeen(trip.uid); }}
                         />
                         {daysUntilHidden !== null && (
-                          <div className="px-4 -mt-1 pb-2 text-[10px] text-slate-600" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                          <div className="px-1 pt-1.5 text-2xs text-content-subtle">
                             {daysUntilHidden === 0
                               ? 'Hides today'
                               : daysUntilHidden === 1
@@ -27562,7 +28858,7 @@ export default function CharterOps() {
                             {' · '}
                             <button
                               onClick={(e) => { e.stopPropagation(); unarchiveTrip(trip.uid); }}
-                              className="text-cyan-500 hover:text-cyan-300 underline-offset-2 hover:underline"
+                              className="text-accent underline-offset-2 hover:underline"
                             >
                               Restore
                             </button>
@@ -27766,10 +29062,9 @@ export default function CharterOps() {
         )}
 
         {/* === COMMS SECTION ===
-            Stream Chat-powered. Replaces the old CommsScreen.jsx (which
-            stays on disk as archive — see deploy README). The screen
-            needs allTrips so it can auto-create trip channels, and a
-            way to fetch the Firebase idToken to mint a Stream token. */}
+            Stream Chat-powered. The screen needs allTrips so it can
+            auto-create trip channels, and a way to fetch the Firebase
+            idToken to mint a Stream token. */}
         {section === 'comms' && (
           <Suspense fallback={
             <div className="flex-1 flex items-center justify-center text-slate-500">
@@ -27811,40 +29106,56 @@ export default function CharterOps() {
 
         {/* === DUTY SECTION (admin duty/rest oversight) === */}
         {section === 'duty' && (currentUser.role === 'admin' || currentUser._impersonating === true) && config?.dutyTrackerEnabled && (
-          <div className="flex-1 overflow-y-auto scroll-area bg-slate-950 p-4">
-            {/* Admin tools — manual day editor, copy-from-pilot, JetInsight
-                paste importer. Lives above the read-only calendar because
-                it's the action surface; the calendar is the report. */}
-            <div className="mb-4 flex items-center justify-between gap-3 flex-wrap">
-              <div className="text-[11px] tracking-widest text-slate-500"
-                style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                DUTY · ADMIN OVERSIGHT
+          <div className="flex-1 overflow-y-auto scroll-area bg-slate-950 p-4 md:p-6">
+            <div className="mx-auto mb-5 flex max-w-[1500px] flex-wrap items-center justify-between gap-3">
+              <div className="inline-flex rounded-lg border border-edge bg-surface p-1">
+                <button
+                  type="button"
+                  onClick={() => setAdminDutyView('report')}
+                  className={cx(
+                    'rounded-md px-4 py-2 text-sm font-semibold transition-colors',
+                    adminDutyView === 'report'
+                      ? 'bg-accent-soft text-accent'
+                      : 'text-content-muted hover:text-content',
+                  )}
+                >
+                  Report
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAdminDutyView('calendar')}
+                  className={cx(
+                    'rounded-md px-4 py-2 text-sm font-semibold transition-colors',
+                    adminDutyView === 'calendar'
+                      ? 'bg-accent-soft text-accent'
+                      : 'text-content-muted hover:text-content',
+                  )}
+                >
+                  Calendar
+                </button>
               </div>
-              <button
-                type="button"
+              <Button
+                variant="outline"
+                size="sm"
+                icon={Edit2}
                 onClick={() => setShowAdminDutyTools(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] tracking-widest border border-cyan-500/40 hover:border-cyan-400 text-cyan-300 hover:text-cyan-200"
-                style={{ fontFamily: 'JetBrains Mono, monospace' }}
                 title="Add, edit, copy, or import duty days for any pilot"
               >
-                <Edit2 className="w-3 h-3" />
-                ADMIN DUTY TOOLS
-              </button>
+                Admin duty tools
+              </Button>
             </div>
-            {/* Admin duty calendar — month grid → click a day → expanded
-                day detail with 24-hour timeline, duty bubbles, rest gaps,
-                time-remaining indicators, edit modals, and crew linking.
-                Reads all 365 days of duty-periods-v2 records. The
-                pilot-facing DutyV2 console on home stays untouched —
-                pilots still duty-on and duty-off themselves there. */}
+
             <Suspense fallback={
-              <div className="border border-slate-800 bg-slate-900/30 p-6 text-center text-slate-500"
-                style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                <Loader2 className="w-4 h-4 animate-spin inline mr-2" />
-                LOADING DUTY CALENDAR
-              </div>
+              <Spinner label={`Loading duty ${adminDutyView}…`} />
             }>
-              <DutyAdminCalendarLazy currentUser={currentUser} users={users} />
+              {adminDutyView === 'report' ? (
+                <AdminDutyReportLazy
+                  currentUser={currentUser}
+                  users={users}
+                />
+              ) : (
+                <DutyAdminCalendarLazy currentUser={currentUser} users={users} />
+              )}
             </Suspense>
           </div>
         )}
@@ -27855,6 +29166,16 @@ export default function CharterOps() {
             </div>
           </div>
         )}
+
+        <MobileNav
+          currentSection={section}
+          setCurrentSection={(s) => { setSection(s); setSelectedId(null); }}
+          currentUser={currentUser}
+          onOpenSettings={() => setShowSettings(true)}
+          onToggleTheme={() => setThemeMode((m) => m === 'classy' ? 'dark' : 'classy')}
+          themeMode={themeMode}
+          onLogout={signOut}
+        />
       </div>
 
       {showSettings && (
@@ -27896,19 +29217,10 @@ export default function CharterOps() {
       )}
       </StreamPresenceProvider>
     </div>
+    </ToastProvider>
   );
 }
 
-function Stat({ label, value, tone = 'amber' }) {
-  const colors = {
-    amber: 'text-cyan-400 border-cyan-500/30',
-    cyan: 'text-cyan-400 border-cyan-500/30',
-    violet: 'text-violet-400 border-violet-500/30',
-  };
-  return (
-    <div className={`p-3 border ${colors[tone]}`}>
-      <div className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{label}</div>
-      <div className={`text-2xl ${colors[tone].split(' ')[0]}`} style={{ fontFamily: 'Bebas Neue, sans-serif' }}>{value}</div>
-    </div>
-  );
+function Stat({ label, value, tone = 'neutral' }) {
+  return <MetricTile label={label} value={value} tone={tone} />;
 }

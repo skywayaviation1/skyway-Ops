@@ -14,6 +14,7 @@ import {
   computeAvgHoursFromTrips, computeAvgLandingsFromTrips,
   sortByProjection, formatRemaining, CATEGORY_STYLES,
 } from './mx-utils.js';
+import { notify } from './ui.jsx';
 
 const FLEET_TAILS = [
   'N168ZZ', 'N20UF', 'N286N', 'N444AM', 'N525CR',
@@ -63,7 +64,7 @@ export default function MxProjections({ currentUser, allTrips = [] }) {
     const avgHours = computeAvgHoursFromTrips(allTrips, selectedTail, 90);
     const avgLandings = computeAvgLandingsFromTrips(allTrips, selectedTail, 90);
     if (avgHours == null && avgLandings == null) {
-      alert(`No trip data found for ${selectedTail} in the last 90 days. Enter values manually.`);
+      notify.error(`No trip data found for ${selectedTail} in the last 90 days. Enter values manually.`);
       return;
     }
     const current = settings[selectedTail] || {};
