@@ -17,7 +17,9 @@
 // users who want to hide content can use OS-level notification privacy.
 //
 // VERSION: bump this on any non-trivial change so the SW updates correctly.
-const SW_VERSION = '2026-08-02-2';
+const SW_VERSION = '2026-08-03-3';
+const OFFLINE_CACHE = `skyway-offline-${SW_VERSION}`;
+const OFFLINE_ASSETS = ['/offline.html', '/apple-touch-icon.png', '/manifest.json'];
 
 // Firebase compat builds — required for the FCM service worker. Version
 // must roughly match the firebase npm package we import on the client side
@@ -103,7 +105,58 @@ self.addEventListener('notificationclick', (event) => {
   );
 });
 
-// Lifecycle: take over immediately on first install so the very first push
-// after deploy doesn't get dropped while waiting for an old SW to die.
-self.addEventListener('install', (event) => { event.waitUntil(self.skipWaiting()); });
-self.addEventListener('activate', (event) => { event.waitUntil(self.clients.claim()); });
+// A navigation fetch handler makes this a complete installable service worker
+// (not just a push worker) without caching hashed JS chunks. Navigations stay
+// network-first, so a deploy can never strand an iPhone on stale application
+// code; only a small static offline page is cached.
+self.addEventListener('fetch', (event) => {
+  const request = event.request;
+  if (request.method !== 'GET') return;
+  if (request.mode === 'navigate') {
+    event.respondWith(
+      fetch(request).catch(async () => (
+        (await caches.match('/offline.html'))
+        || new Response('Skyway is offline. Reconnect and try again.', {
+          status: 503,
+          headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+        })
+      )),
+    );
+    return;
+  }
+  // The offline document references its icon. Serve only this tiny allowlist
+  // cache-first; every application asset remains network-owned.
+  const url = new URL(request.url);
+  if (url.origin === self.location.origin && OFFLINE_ASSETS.includes(url.pathname)) {
+    event.respondWith(caches.match(request).then((cached) => cached || fetch(request)));
+  }
+});
+
+// Lifecycle: cache only the offline fallback, remove old fallback versions,
+// and take over immediately so the first post-install push is not dropped.
+self.addEventListener('install', (event) => {
+  event.waitUntil(
+    (async () => {
+      try {
+        const cache = await caches.open(OFFLINE_CACHE);
+        // One missing optional asset must never prevent the FCM worker itself
+        // from installing. Promise.allSettled makes precache best-effort.
+        await Promise.allSettled(OFFLINE_ASSETS.map((asset) => cache.add(asset)));
+      } catch (err) {
+        console.warn('[sw] offline precache skipped:', err);
+      }
+      await self.skipWaiting();
+    })(),
+  );
+});
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    caches.keys()
+      .then((keys) => Promise.all(
+        keys
+          .filter((key) => key.startsWith('skyway-offline-') && key !== OFFLINE_CACHE)
+          .map((key) => caches.delete(key)),
+      ))
+      .then(() => self.clients.claim()),
+  );
+});

@@ -5,6 +5,21 @@ import { ServiceTechPage } from './ServiceRequests.jsx';
 import TripTrackPage from './TripTrack.jsx';
 import './index.css';
 
+// Chromium's install event is one-shot and can fire while Firebase is still
+// resolving auth, before the lazy install button exists. Capture it at module
+// startup and notify whichever UI is mounted later.
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeinstallprompt', (event) => {
+    event.preventDefault();
+    window.__SKYWAY_INSTALL_PROMPT__ = event;
+    window.dispatchEvent(new CustomEvent('skyway:install-prompt'));
+  });
+  window.addEventListener('appinstalled', () => {
+    window.__SKYWAY_INSTALL_PROMPT__ = null;
+    window.dispatchEvent(new CustomEvent('skyway:app-installed'));
+  });
+}
+
 /* ============================================================
    STALE CHUNK RECOVERY
    ------------------------------------------------------------
@@ -98,10 +113,9 @@ const isTripTrackRoute =
    criteria. Without an active SW, Chrome/Android won't show the
    "Install app" affordance.
 
-   The SW handles push notifications when present, but its mere
-   existence is what unlocks installability. We do NOT add app
-   caching here — Vercel handles cache headers, and adding a
-   cache strategy is a tarpit (stale code after deploys etc.).
+   The SW handles push notifications and navigation fetches. It caches
+   only a static offline explanation — never index.html or hashed app
+   chunks — so installed iPhones remain update-safe after deploys.
 
    Failures are swallowed: SW registration shouldn't block app
    startup. The app works fine without it; users just don't get
