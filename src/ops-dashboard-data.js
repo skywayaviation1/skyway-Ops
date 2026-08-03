@@ -107,6 +107,11 @@ export function buildFleetRows({
   deriveAircraftStatus,
   now = Date.now(),
 }) {
+  // Tails on the schedule that are not part of the managed fleet — charter
+  // partners and vendor lift appear in the same calendar feed. They still get
+  // a row, because a controller has to see everything moving today, but they
+  // are flagged so fleet availability is not computed against them.
+  const managed = new Set(fleetTails.map(normalizeTail).filter(Boolean));
   const dayStart = startOfDay(now);
   const dayEnd = dayStart + 24 * MS_HOUR;
 
@@ -125,7 +130,12 @@ export function buildFleetRows({
     if (tail && !activeAog.has(tail)) activeAog.set(tail, event);
   }
 
-  return fleetTails.map((rawTail) => {
+  const allTails = [...managed];
+  for (const tail of legsByTail.keys()) {
+    if (!managed.has(tail)) allTails.push(tail);
+  }
+
+  return allTails.map((rawTail) => {
     const tail = normalizeTail(rawTail);
     const all = (legsByTail.get(tail) || []).slice().sort(
       (a, b) => (toMillis(a.start) || 0) - (toMillis(b.start) || 0),
@@ -179,6 +189,7 @@ export function buildFleetRows({
 
     return {
       tail,
+      offFleet: !managed.has(tail),
       type: AIRCRAFT_TYPE[tail] || '',
       state,
       airworthiness,
@@ -194,7 +205,12 @@ export function buildFleetRows({
       completedToday,
       statusSteps: tripState ? Object.keys(tripState.statuses || {}).length : 0,
     };
-  }).sort((a, b) => a.state.rank - b.state.rank || a.tail.localeCompare(b.tail));
+  }).sort((a, b) => (
+    // Managed aircraft first, then by how much attention the state needs.
+    Number(a.offFleet) - Number(b.offFleet)
+    || a.state.rank - b.state.rank
+    || a.tail.localeCompare(b.tail)
+  ));
 }
 
 /** Where the aircraft physically is, preferring live telemetry over schedule. */
@@ -396,7 +412,13 @@ export function formatCountdown(ms) {
   return `${Math.floor(hours / 24)}d`;
 }
 
-/** Fleet-level counters for the posture strip. */
+/**
+ * Fleet-level counters for the posture strip.
+ *
+ * Availability is measured against the managed fleet only. Counting partner
+ * and vendor tails that happen to share the calendar would inflate the
+ * denominator and make the ratio meaningless as a dispatch metric.
+ */
 export function summarizeFleet(fleetRows, trips, now = Date.now()) {
   const dayStart = startOfDay(now);
   const dayEnd = dayStart + 24 * MS_HOUR;
@@ -404,15 +426,17 @@ export function summarizeFleet(fleetRows, trips, now = Date.now()) {
     const start = toMillis(trip.start);
     return start != null && start >= dayStart && start < dayEnd && isFlightLeg(trip);
   });
+  const fleet = fleetRows.filter((r) => !r.offFleet);
 
   return {
-    total: fleetRows.length,
+    total: fleet.length,
+    offFleet: fleetRows.length - fleet.length,
     airborne: fleetRows.filter((r) => r.state.id === 'AIRBORNE').length,
-    aog: fleetRows.filter((r) => r.state.id === 'AOG').length,
-    restricted: fleetRows.filter(
+    aog: fleet.filter((r) => r.state.id === 'AOG').length,
+    restricted: fleet.filter(
       (r) => r.state.id !== 'AOG' && r.airworthiness.status === 'RESTRICTED',
     ).length,
-    available: fleetRows.filter((r) => r.state.id !== 'AOG').length,
+    available: fleet.filter((r) => r.state.id !== 'AOG').length,
     legsToday: todayLegs.length,
     hoursToday: Math.round(todayLegs.reduce((sum, leg) => sum + legHours(leg), 0) * 10) / 10,
     completedToday: todayLegs.filter((leg) => (toMillis(leg.end) || 0) < now).length,

@@ -161,6 +161,27 @@ test('illegal crew are raised above crew approaching a limit', () => {
   assert.equal(items[0].severity, 'critical');
 });
 
+test('tails only on the schedule are shown but excluded from fleet availability', () => {
+  const trips = [leg('t1', 'NPARTNER', 'TEB', 'MIA', 1, 2)];
+  const rows = buildFleetRows({
+    fleetTails: ['N1', 'N2'],
+    trips,
+    positions: {},
+    deriveAircraftStatus: airworthy,
+    now: NOW,
+  });
+
+  assert.equal(rows.length, 3, 'the partner tail still gets a row');
+  const partner = rows.find((r) => r.tail === 'NPARTNER');
+  assert.ok(partner.offFleet, 'and is flagged off-fleet');
+  assert.equal(rows.at(-1).tail, 'NPARTNER', 'sorted after the managed fleet');
+
+  const summary = summarizeFleet(rows, trips, NOW);
+  assert.equal(summary.total, 2, 'availability is measured against the managed fleet only');
+  assert.equal(summary.available, 2);
+  assert.equal(summary.offFleet, 1);
+});
+
 test('fleet summary separates grounded aircraft from available ones', () => {
   const fleetRows = buildFleetRows({
     fleetTails: ['N1', 'N2', 'N3'],

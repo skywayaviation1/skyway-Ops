@@ -232,7 +232,9 @@ function FleetRow({ row, onSelectTrip }) {
         />
         <div className="min-w-0">
           <p className="font-mono text-sm font-semibold leading-none text-content">{row.tail}</p>
-          {row.type && <p className="mt-1 truncate text-2xs text-content-subtle">{row.type}</p>}
+          <p className="mt-1 truncate text-2xs text-content-subtle">
+            {row.offFleet ? 'Off-fleet' : (row.type || 'Managed')}
+          </p>
         </div>
       </div>
 
@@ -512,15 +514,15 @@ export default function OpsDashboard({
 
   const data = useOpsData();
 
+  // The managed fleet. Tails that appear only on the schedule are added by
+  // buildFleetRows and flagged off-fleet, so they stay visible without
+  // distorting availability.
   const fleetTails = useMemo(() => {
     const configured = Array.isArray(config?.fleetTails) && config.fleetTails.length > 0
       ? config.fleetTails
       : FALLBACK_FLEET;
-    // Include any tail that appears on the schedule but is missing from the
-    // configured fleet, so a newly added aircraft is never invisible here.
-    const scheduled = trips.map((t) => normalizeTail(t?.info?.tail)).filter(Boolean);
-    return Array.from(new Set([...configured.map(normalizeTail), ...scheduled]));
-  }, [config?.fleetTails, trips]);
+    return Array.from(new Set(configured.map(normalizeTail).filter(Boolean)));
+  }, [config?.fleetTails]);
 
   const deriveForTail = useMemo(() => {
     if (!data.deriveStatus) return null;
@@ -666,7 +668,9 @@ export default function OpsDashboard({
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1.65fr)_minmax(0,1fr)]">
           <SectionCard
             title="Fleet board"
-            subtitle="Live position, airworthiness and next movement"
+            subtitle={summary.offFleet > 0
+              ? `${summary.total} managed · ${summary.offFleet} off-fleet on today's schedule`
+              : 'Live position, airworthiness and next movement'}
             icon={Gauge}
             count={fleetRows.length}
           >
