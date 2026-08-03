@@ -15524,9 +15524,7 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
   const [textMode, setTextMode] = useState(false);
   const isAdminUser = currentUser?.role === 'admin';
   const [dutyEnabled, setDutyEnabled] = useState(!!config.dutyTrackerEnabled);
-  const [dutyEmails, setDutyEmails] = useState(
-    Array.isArray(config.dutyAlertEmails) ? config.dutyAlertEmails.join(', ') : ''
-  );
+  const dutyEmails = 'Jim@flyskyway.com, Jake@flyskyway.com, zack.taylor@flyskyway.com';
   const [dutyBusy, setDutyBusy] = useState(false);
   const [dutyMsg, setDutyMsg] = useState('');
 
@@ -15736,17 +15734,16 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
               </label>
               <label className="block">
                 <span className="text-[10px] tracking-widest text-slate-500 uppercase" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                  OVER-14H ALERT EMAILS (comma-separated)
+                  OVER-14H ALERT RECIPIENTS
                 </span>
                 <input
                   value={dutyEmails}
-                  onChange={e => setDutyEmails(e.target.value)}
-                  placeholder="ops@flyskyway.com, jake@flyskyway.com"
-                  className="mt-1 w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
+                  readOnly
+                  className="mt-1 w-full bg-slate-900/30 border border-slate-800 px-3 py-2 text-sm text-slate-400"
                   style={{ fontFamily: 'JetBrains Mono, monospace' }}
                 />
                 <span className="text-[11px] text-slate-500 mt-1 block">
-                  Notified when a crew exceeds the 14-hour duty limit.
+                  Fixed leadership escalation. Saving over 14 hours requires explicit verification.
                 </span>
               </label>
               <button
@@ -29168,6 +29165,7 @@ export default function CharterOps() {
                 <AdminDutyReportLazy
                   currentUser={currentUser}
                   users={users}
+                  trips={allTrips}
                 />
               ) : (
                 <DutyAdminCalendarLazy currentUser={currentUser} users={users} />

@@ -1,6 +1,7 @@
 // src/OpsCommandCenter.jsx
 //
-// The home-screen view for OPS, ADMIN, and SALES roles. Replaces the
+// The home-screen view for OPS and SALES roles. Administrators use the
+// separate OpsDashboard; crew use PilotHomeScreen. Replaces the
 // pilot-personalized PilotHomeScreen for these users because they don't
 // fly trips themselves — they need a FLEET-WIDE overview, not "my next
 // trip."
@@ -31,17 +32,12 @@
 import React, { useMemo, useState, useEffect, Suspense, lazy } from 'react';
 import {
   Loader2, Calendar, FileText, Mail, AlertCircle, Plane, Clock, Cloud,
-  AlertTriangle, Receipt, Wrench, Wind, Users, ArrowRight, CheckCircle2,
+  AlertTriangle, Receipt, Wrench, Wind, ArrowRight, CheckCircle2,
   Activity, MapPin,
 } from 'lucide-react';
 import {
   Button, Card, CardHeader, EmptyState, MetricTile, PageHeader, StatusChip, cx,
 } from './ui.jsx';
-// Live crew duty board (V2). Reads duty-periods-v2 collection,
-// evaluates legality per pilot, shows on-duty / resting / available /
-// illegal / warning state.
-const CrewBoardV2Lazy = lazy(() => import('./CrewBoardV2.jsx'));
-
 const FlightBoardLazy = lazy(() => import('./FlightBoard.jsx'));
 
 // The fleet — single source of truth for "which aircraft do we operate."
@@ -205,7 +201,7 @@ function statusPill(state) {
 // Component
 // ====================================================================
 
-export default function OpsCommandCenter({ currentUser, trips, users, onSelectTrip, onSwitchSection }) {
+export default function OpsCommandCenter({ currentUser, trips, onSelectTrip, onSwitchSection }) {
   // ---- 1. Time + refresh ----
   // Re-render every 60s so the "now"-relative stats refresh without a
   // full page reload. Not 1s — that would cause excessive re-renders for
@@ -225,8 +221,9 @@ export default function OpsCommandCenter({ currentUser, trips, users, onSelectTr
   const [expenses, setExpenses] = useState([]);
   const [fleet, setFleet] = useState([]); // maintenance fleet records (for AOG state)
   const [mel, setMel] = useState([]);
-  // Duty state removed — CrewBoardV2 subscribes to duty-periods-v2 directly
-  // and renders the crew status section itself. No need for parent state.
+  // Duty and compliance data are intentionally absent. Crew may see only
+  // their own record; the fleet-wide duty board belongs exclusively to the
+  // administrator home/report surfaces.
 
   useEffect(() => {
     let cancelled = false;
@@ -248,13 +245,6 @@ export default function OpsCommandCenter({ currentUser, trips, users, onSelectTr
           unsubs.push(m.subscribeToAllExpenses((list) => setExpenses(list)));
         }
       } catch (e) { console.warn('[OpsCommandCenter] expense subscribe failed:', e?.message); }
-    })();
-    (async () => {
-      try {
-        // (Duty subscription removed during V2 migration. CrewBoardV2
-        // mounts in this dashboard and subscribes to duty-periods-v2
-        // directly. Nothing to do here.)
-      } catch (_) {}
     })();
     return () => {
       cancelled = true;
@@ -579,7 +569,7 @@ export default function OpsCommandCenter({ currentUser, trips, users, onSelectTr
           </div>
         </Card>
 
-        <div className="grid gap-5 lg:grid-cols-2">
+        <div>
           {todaysAirports.length > 0 && (
             <Card>
               <CardHeader title="Airport weather" subtitle={`${todaysAirports.length} airports on today's schedule`} icon={Cloud} />
@@ -590,14 +580,6 @@ export default function OpsCommandCenter({ currentUser, trips, users, onSelectTr
               </div>
             </Card>
           )}
-          <Card padded={false} className="overflow-hidden">
-            <div className="p-4 pb-0">
-              <CardHeader title="Crew availability" subtitle="Live Part 135 duty and legality status" icon={Users} />
-            </div>
-            <Suspense fallback={<div className="p-6 text-sm text-content-muted"><Loader2 className="mr-2 inline h-4 w-4 animate-spin" />Loading crew…</div>}>
-              <CrewBoardV2Lazy currentUser={currentUser} users={users} trips={trips} />
-            </Suspense>
-          </Card>
         </div>
       </div>
     </div>

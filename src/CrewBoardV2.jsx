@@ -4,7 +4,7 @@
 // OPS CREW BOARD — Live duty status across all pilots
 // =====================================================================
 //
-// Single section for the ops/admin dashboard. Shows every pilot grouped by
+// Single section for the administrator dashboard. Shows every pilot grouped by
 // their current state:
 //   - ON DUTY (with elapsed time, color-coded for limit)
 //   - RESTING (within 10h of last duty-off)
@@ -54,27 +54,31 @@ export default function CrewBoardV2({ currentUser, users = [], trips = [] } = {}
   // we just toggle visibility here.
   const [exportOpen, setExportOpen] = useState(false);
   // Timeline editor modal state — opens via the TIMELINE button next to
-  // EXPORT. Admin/ops only (UI gates the button behind canManage too).
+  // EXPORT. Admin only (UI gates the button behind canManage too).
   const [timelineOpen, setTimelineOpen] = useState(false);
   // Which pilot row has the management panel expanded. Single-expand:
   // opening another row collapses the previous. Null = all collapsed.
   const [managePilotUid, setManagePilotUid] = useState(null);
 
-  // Admin and ops users get management controls. During admin
+  // Only administrators can read fleet-wide duty/compliance. During admin
   // impersonation (currentUser._impersonating === true) the original
-  // admin retains management ability. Crew users see only the
-  // read-only board.
+  // admin retains access. Crew and ops must never subscribe to other pilots.
   const role = (currentUser?.role || '').toLowerCase();
-  const canManage = role === 'admin' || role === 'ops' || currentUser?._impersonating === true;
+  const canManage = role === 'admin' || currentUser?._impersonating === true;
 
   useEffect(() => {
+    if (!canManage) {
+      setPeriods([]);
+      setLoading(false);
+      return undefined;
+    }
     const unsub = subscribeRecentForAllPilots(30, (list) => {
       setPeriods(list);
       setLoading(false);
     });
     const t = setInterval(() => setNow(Date.now()), 60000);
     return () => { unsub(); clearInterval(t); };
-  }, []);
+  }, [canManage]);
 
   // Group periods by pilot
   const byPilot = useMemo(() => {
@@ -173,7 +177,7 @@ export default function CrewBoardV2({ currentUser, users = [], trips = [] } = {}
             {stats.warning > 0 && <span className="text-amber-400"> · {stats.warning} warning</span>}
           </span>
           {/* Timeline editor — visual calendar of duty periods with
-              tap-to-edit and overlap detection. Admin/ops only. The
+              tap-to-edit and overlap detection. Admin only. The
               modal handles pilot picking, date range, and all writes. */}
           {canManage && (
             <button
@@ -186,7 +190,7 @@ export default function CrewBoardV2({ currentUser, users = [], trips = [] } = {}
               TIMELINE
             </button>
           )}
-          {/* Export button — opens a modal where ops/admin picks a pilot
+          {/* Export button — opens a modal where admin picks a pilot
               and date range, then downloads CSV or opens print preview
               for PDF. The crew board already has the pilot list in
               `rows` so we pass it through. */}
@@ -319,7 +323,7 @@ export default function CrewBoardV2({ currentUser, users = [], trips = [] } = {}
         pilots={rows.map(r => ({ uid: r.uid, name: r.name }))}
       />
 
-      {/* Timeline editor — admin/ops fix bad records and backfill missing
+      {/* Timeline editor — admins fix bad records and backfill missing
           periods. Lazy-loaded so non-admins don't pay the bundle cost. */}
       {timelineOpen && (
         <Suspense fallback={
@@ -373,7 +377,7 @@ function CrewRow({ row, now, canManage, currentUser, crewUsers, expanded, onTogg
     : null;
   // Solo on-duty: time remaining in the 14h regular-duty budget.
   // (For unscheduled assignments per 135.267(b), this is informational
-  // — there's no hard 14h cap. We still show it so the pilot/ops can
+  // — there's no hard 14h cap. We still show it so the pilot/admin can
   // see duration; the column header itself is just ELAPSED.)
   const dutyRemainingMs = active ? Math.max(0, 14 * MS_HR - elapsed) : null;
 
@@ -385,7 +389,7 @@ function CrewRow({ row, now, canManage, currentUser, crewUsers, expanded, onTogg
     : null;
 
   // Grid template — adds a fixed-width MANAGE column on the right for
-  // admin/ops viewers. Crew users get the original 5-column layout.
+  // admin viewers. Crew users get the original 5-column layout.
   const gridCols = canManage
     ? '1fr 100px 110px 1fr 120px 60px'
     : '1fr 100px 110px 1fr 120px';
@@ -403,7 +407,7 @@ function CrewRow({ row, now, canManage, currentUser, crewUsers, expanded, onTogg
           {state}
         </div>
         {/* ELAPSED column — stacked display for both active duty and
-            rest, so the pilot/ops can see both "where we are" and
+            rest, so the pilot/admin can see both "where we are" and
             "how much further until the next state change." */}
         <div style={{ fontFamily: 'JetBrains Mono, monospace' }}>
           {active ? (
@@ -464,7 +468,7 @@ function CrewRow({ row, now, canManage, currentUser, crewUsers, expanded, onTogg
         </div>
         {/* Admin manage toggle — only renders when canManage. The button
             is intentionally small/quiet so it doesn't compete with the
-            status info; ops/admins expecting it know where to look. */}
+            status info; admins expecting it know where to look. */}
         {canManage && (
           <div className="text-right">
             <button
@@ -522,7 +526,7 @@ function CrewRow({ row, now, canManage, currentUser, crewUsers, expanded, onTogg
 // Legality is worst-of-both: illegal > warning > legal.
 //
 // Admin column renders TWO stacked MGR buttons (MGR PIC, MGR SIC) so
-// ops can drill into either pilot's record. Clicking one expands the
+// admins can drill into either pilot's record. Clicking one expands the
 // existing CrewManagePanel below the row.
 
 function CrewPairRow({ pic, sic, sicPending, now, canManage, currentUser, crewUsers, expandedUid, onToggle, allPeriods }) {

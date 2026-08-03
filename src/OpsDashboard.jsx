@@ -57,7 +57,7 @@ function fmtLegTime(value) {
    collection is unavailable is worse than one that renders the rest, so every
    subscription fails closed to an empty list. */
 
-function useOpsData() {
+function useOpsData(enabled) {
   const [squawks, setSquawks] = useState([]);
   const [mel, setMel] = useState([]);
   const [positions, setPositions] = useState({});
@@ -71,6 +71,7 @@ function useOpsData() {
   const [expirationFn, setExpirationFn] = useState(null);
 
   useEffect(() => {
+    if (!enabled) return undefined;
     let cancelled = false;
     const unsubs = [];
 
@@ -131,7 +132,7 @@ function useOpsData() {
         try { unsub(); } catch { /* already torn down */ }
       }
     };
-  }, []);
+  }, [enabled]);
 
   return {
     squawks, mel, positions, tripStates, aogEvents,
@@ -512,7 +513,7 @@ export default function OpsDashboard({
     return () => clearInterval(id);
   }, []);
 
-  const data = useOpsData();
+  const data = useOpsData(currentUser?.role === 'admin' || currentUser?._impersonating === true);
 
   // The managed fleet. Tails that appear only on the schedule are added by
   // buildFleetRows and flagged off-fleet, so they stay visible without
