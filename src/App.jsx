@@ -48,6 +48,7 @@ const PushSettingsLazy = lazy(() => import('./PushSettings.jsx'));
 // Code-split: Ops Console loads only when ops/admin opens that section.
 const OpsConsoleLazy = lazy(() => import('./OpsConsole.jsx'));
 const OpsShiftLogLazy = lazy(() => import('./OpsShiftLog.jsx'));
+const ExpenseAccountingLazy = lazy(() => import('./ExpenseAccounting.jsx'));
 
 // Code-split: MuteToggle loads only when a chat surface renders.
 const MuteToggleLazy = lazy(() => import('./MuteToggle.jsx'));
@@ -24921,7 +24922,7 @@ function TrackingScreen({ currentUser, allTrips, trackingEnabled }) {
   );
 }
 
-function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName }) {
+function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName, users = [] }) {
   const [expenses, setExpenses] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('mine'); // 'mine' | 'all' | 'pending' | 'approved' | 'unexported'
@@ -25479,7 +25480,7 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
           </div>
         </div>
       )}
-      <aside className={`${selected ? 'hidden md:block' : 'block'} w-full md:w-96 md:border-r md:border-slate-800 overflow-y-auto scroll-area`}>
+      <aside className={`${selected && view !== 'quickbooks' ? 'hidden md:block' : 'block'} w-full ${view === 'quickbooks' ? '' : 'md:w-96 md:border-r md:border-slate-800'} overflow-y-auto scroll-area`}>
         {/* View toggle — switches between the standard list view and the
             new reports view. Reports is available to everyone (your own
             data, or all data for accounting/ops/admin). */}
@@ -25498,9 +25499,26 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
           >
             REPORTS
           </button>
+          {canExport && (
+            <button
+              onClick={() => setView('quickbooks')}
+              className={`flex-1 border-l border-slate-800 px-4 py-2 text-[10px] tracking-widest ${view === 'quickbooks' ? 'bg-slate-900 text-cyan-300 border-b-2 border-b-cyan-400' : 'text-slate-500 hover:text-slate-300'}`}
+              style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}
+            >
+              QUICKBOOKS
+            </button>
+          )}
         </div>
 
-        {view === 'reports' ? (
+        {view === 'quickbooks' && canExport ? (
+          <Suspense fallback={<div className="flex items-center justify-center py-16 text-content-muted"><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading accounting tools…</div>}>
+            <ExpenseAccountingLazy
+              expenses={expenses}
+              users={users}
+              currentUser={currentUser}
+            />
+          </Suspense>
+        ) : view === 'reports' ? (
           <ExpenseReports
             expenses={expenses}
             canSeeAll={canSeeAll}
@@ -25675,7 +25693,7 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName })
         )}
       </aside>
 
-      <main className={`flex-1 overflow-y-auto scroll-area ${selected ? 'block' : 'hidden md:block'}`}>
+      <main className={`flex-1 overflow-y-auto scroll-area ${view === 'quickbooks' ? 'hidden' : selected ? 'block' : 'hidden md:block'}`}>
         {selected ? (
           <ExpenseDetail
             expense={selected}
@@ -26255,6 +26273,11 @@ function ExpenseRow({ expense, selected, onClick }) {
           {expense.vendor || (isParsing ? 'Parsing...' : '(no vendor)')}
         </span>
         <div className="flex items-center gap-1 shrink-0">
+          {expense.reconciledAt && (
+            <span className="text-[9px] tracking-widest text-emerald-300" style={{ fontFamily: 'JetBrains Mono, monospace' }} title={`Reconciled to card statement${expense.reconciledCardLast4 ? ` ••${expense.reconciledCardLast4}` : ''}`}>
+              ⇄REC
+            </span>
+          )}
           {isExported && (
             <span className="text-[9px] tracking-widest text-violet-300" style={{ fontFamily: 'JetBrains Mono, monospace' }} title={`Exported ${new Date(expense.exportedAt).toLocaleString()}`}>
               ↓EXP
@@ -29293,6 +29316,7 @@ export default function CharterOps() {
             currentUser={currentUser}
             currentUserUid={currentUser?.uid || currentUser?.id}
             currentUserDisplayName={userDisplayName}
+            users={users}
           />
         )}
 
