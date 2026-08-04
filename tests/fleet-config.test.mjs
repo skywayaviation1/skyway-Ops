@@ -4,6 +4,8 @@ import {
   DEFAULT_MANAGED_TAILS,
   normalizeFleetTails,
   normalizeTail,
+  normalizeAircraftByTail,
+  resolveAircraftMeta,
   resolveManagedTails,
   scheduledOnlyTails,
 } from '../src/fleet-config.js';
@@ -36,4 +38,35 @@ test('schedule-only aircraft are separated without removing their trips', () => 
   ];
   assert.deepEqual(scheduledOnlyTails(trips, ['N20UF']), ['NPARTNER']);
   assert.equal(trips.length, 3);
+});
+
+test('aircraft metadata is admin supplied and never guessed from a tail', () => {
+  assert.deepEqual(resolveAircraftMeta('N20UF', {}), {
+    displayName: '',
+    icaoType: '',
+    serialNumber: '',
+    homeBase: '',
+  });
+  const config = {
+    aircraftByTail: {
+      n20uf: { displayName: 'Verified Model', icaoType: 'c25b', homeBase: 'kteb' },
+    },
+  };
+  // Stored keys are normalized by the admin endpoint before clients consume it.
+  const normalized = normalizeAircraftByTail(config.aircraftByTail, ['N20UF']);
+  assert.deepEqual(normalized.N20UF, {
+    displayName: 'Verified Model',
+    icaoType: 'C25B',
+    serialNumber: '',
+    homeBase: 'KTEB',
+  });
+  assert.equal(resolveAircraftMeta('N20UF', { aircraftByTail: normalized }).displayName, 'Verified Model');
+});
+
+test('metadata for schedule-only tails is excluded from fleet configuration', () => {
+  const normalized = normalizeAircraftByTail({
+    N20UF: { displayName: 'Managed' },
+    NPARTNER: { displayName: 'Vendor' },
+  }, ['N20UF']);
+  assert.deepEqual(Object.keys(normalized), ['N20UF']);
 });

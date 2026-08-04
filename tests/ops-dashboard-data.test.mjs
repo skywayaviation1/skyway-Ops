@@ -31,6 +31,23 @@ test('maintenance and training blocks are not counted as flight legs', () => {
   assert.equal(isFlightLeg(leg('d', 'N1', 'KTEB', 'TEB', 1, 2)), false, 'ICAO/IATA of one airport');
 });
 
+test('fleet rows use configured aircraft metadata and never a guessed type', () => {
+  const [configured] = buildFleetRows({
+    fleetTails: ['N20UF'],
+    aircraftByTail: { N20UF: { displayName: 'Verified Aircraft Model' } },
+    trips: [],
+    now: NOW,
+  });
+  assert.equal(configured.type, 'Verified Aircraft Model');
+
+  const [unset] = buildFleetRows({
+    fleetTails: ['N444AM'],
+    trips: [],
+    now: NOW,
+  });
+  assert.equal(unset.type, '');
+});
+
 test('a live airborne position outranks the schedule', () => {
   const [row] = buildFleetRows({
     fleetTails: ['N286N'],

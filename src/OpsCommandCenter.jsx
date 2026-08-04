@@ -38,26 +38,8 @@ import {
 import {
   Button, Card, CardHeader, EmptyState, MetricTile, PageHeader, StatusChip, cx,
 } from './ui.jsx';
+import { resolveAircraftMeta, resolveManagedTails } from './fleet-config.js';
 const FlightBoardLazy = lazy(() => import('./FlightBoard.jsx'));
-
-// The fleet — single source of truth for "which aircraft do we operate."
-// Hardcoded because it doesn't change daily, and a dynamic derivation
-// from `trips` would miss aircraft that aren't flying today.
-// If a tail joins or leaves the fleet, update this list.
-const FLEET = ['N20UF', 'N168ZZ', 'N286N', 'N444AM', 'N651TW', 'N551FP', 'N85AH', 'N525CR'];
-
-// Aircraft type lookup — purely cosmetic, shown next to the tail. Kept
-// here so we don't need a Firestore call for static metadata.
-const AIRCRAFT_TYPE = {
-  N20UF:  'Citation V',
-  N168ZZ: 'Learjet 60',
-  N286N:  'Citation Excel',
-  N444AM: 'King Air 350',
-  N651TW: 'Falcon 50',
-  N551FP: 'CJ3',
-  N85AH:  'Hawker 800',
-  N525CR: 'CJ2+',
-};
 
 // ====================================================================
 // Weather fetcher — duplicated from App.jsx for module isolation.
@@ -201,7 +183,8 @@ function statusPill(state) {
 // Component
 // ====================================================================
 
-export default function OpsCommandCenter({ currentUser, trips, onSelectTrip, onSwitchSection }) {
+export default function OpsCommandCenter({ currentUser, trips, config, onSelectTrip, onSwitchSection }) {
+  const fleet = useMemo(() => resolveManagedTails(config), [config]);
   // ---- 1. Time + refresh ----
   // Re-render every 60s so the "now"-relative stats refresh without a
   // full page reload. Not 1s — that would cause excessive re-renders for
@@ -311,7 +294,7 @@ export default function OpsCommandCenter({ currentUser, trips, onSelectTrip, onS
       if (!byTail[tail]) byTail[tail] = [];
       byTail[tail].push(t);
     }
-    return FLEET.map((tail) => {
+    return fleet.map((tail) => {
       const todayLegs = (byTail[tail] || []).sort((a, b) => new Date(a.start) - new Date(b.start));
       const legCount = todayLegs.length;
       const hours = todayLegs.reduce((sum, t) => sum + tripDurationHours(t), 0);
@@ -363,7 +346,7 @@ export default function OpsCommandCenter({ currentUser, trips, onSelectTrip, onS
       }
       return {
         tail,
-        type: AIRCRAFT_TYPE[tail] || '',
+        type: resolveAircraftMeta(tail, config).displayName,
         legCount,
         hours: Math.round(hours * 10) / 10,
         state,
@@ -371,7 +354,7 @@ export default function OpsCommandCenter({ currentUser, trips, onSelectTrip, onS
         nextDep,
       };
     });
-  }, [buckets.today, flights, now, aogTails]);
+  }, [buckets.today, flights, now, aogTails, fleet, config]);
 
   // ---- 5. Today's airports (unique) ----
   // Build a deduplicated set of airports across today's legs. The weather
@@ -498,7 +481,7 @@ export default function OpsCommandCenter({ currentUser, trips, onSelectTrip, onS
           />
           <MetricTile
             label="Aircraft active"
-            value={`${stats.activeFleetCount} of ${FLEET.length}`}
+            value={`${stats.activeFleetCount} of ${fleet.length}`}
             hint={`${stats.tomorrowCount} flights tomorrow`}
             tone="success"
             icon={Activity}
@@ -517,7 +500,7 @@ export default function OpsCommandCenter({ currentUser, trips, onSelectTrip, onS
             <div className="p-4 pb-3">
               <CardHeader
                 title="Fleet status"
-                subtitle={`${FLEET.length} aircraft · today's scheduled activity`}
+                subtitle={`${fleet.length} aircraft · today's scheduled activity`}
                 icon={Plane}
                 action={(
                   <Button variant="ghost" size="sm" iconRight={ArrowRight} onClick={() => onSwitchSection?.('schedule')}>

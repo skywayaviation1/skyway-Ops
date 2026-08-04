@@ -16,6 +16,7 @@ import { Button, Card, CardHeader, PageHeader, StatusChip, cx } from './ui.jsx';
 import {
   normalizeFleetTails,
   normalizeTail,
+  normalizeAircraftByTail,
   resolveManagedTails,
   scheduledOnlyTails,
 } from './fleet-config.js';
@@ -62,6 +63,54 @@ function ToggleRow({ icon: Icon, title, description, checked, onChange }) {
   );
 }
 
+function FleetAircraftEditor({ tail, value, onChange, onRemove }) {
+  const field = (name, placeholder, extra = '') => (
+    <input
+      value={value?.[name] || ''}
+      onChange={(event) => onChange(name, event.target.value)}
+      placeholder={placeholder}
+      aria-label={`${tail} ${name}`}
+      className={cx(
+        'min-w-0 rounded-lg border border-edge bg-surface px-3 py-2 text-xs text-content outline-none focus:border-accent',
+        extra,
+      )}
+    />
+  );
+  return (
+    <div className="border-b border-edge p-3 last:border-b-0">
+      <div className="flex items-center gap-3">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-surface-raised">
+          <Plane className="h-4 w-4 text-content-muted" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="font-mono text-sm font-semibold tracking-wide text-content">{tail}</p>
+          <p className="text-2xs text-content-muted">
+            {value?.displayName || 'Aircraft type not set'}
+          </p>
+        </div>
+        <StatusChip tone={value?.displayName ? 'success' : 'warning'} size="sm">
+          {value?.displayName ? 'Configured' : 'Needs type'}
+        </StatusChip>
+        <button
+          type="button"
+          onClick={onRemove}
+          title={`Remove ${tail} from fleet`}
+          aria-label={`Remove ${tail} from managed fleet`}
+          className="rounded-lg p-2 text-content-subtle transition-colors hover:bg-danger-soft hover:text-danger"
+        >
+          <Trash2 className="h-4 w-4" />
+        </button>
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(12rem,1fr)_7rem_8rem_8rem]">
+        {field('displayName', 'Verified aircraft type / model')}
+        {field('icaoType', 'ICAO type', 'font-mono uppercase')}
+        {field('homeBase', 'Home base', 'font-mono uppercase')}
+        {field('serialNumber', 'Serial number', 'font-mono')}
+      </div>
+    </div>
+  );
+}
+
 export default function AdminSettings({
   currentUser,
   config,
@@ -71,6 +120,9 @@ export default function AdminSettings({
 }) {
   const savedFleet = useMemo(() => resolveManagedTails(config), [config]);
   const [fleetTails, setFleetTails] = useState(savedFleet);
+  const [aircraftByTail, setAircraftByTail] = useState(() => (
+    normalizeAircraftByTail(config?.aircraftByTail, savedFleet)
+  ));
   const [newTail, setNewTail] = useState('');
   const [tracking, setTracking] = useState(trackingEnabled !== false);
   const [dutyEnabled, setDutyEnabled] = useState(config?.dutyTrackerEnabled === true);
@@ -81,6 +133,9 @@ export default function AdminSettings({
   const [message, setMessage] = useState(null);
 
   useEffect(() => setFleetTails(savedFleet), [savedFleet]);
+  useEffect(() => {
+    setAircraftByTail(normalizeAircraftByTail(config?.aircraftByTail, savedFleet));
+  }, [config?.aircraftByTail, savedFleet]);
   useEffect(() => setTracking(trackingEnabled !== false), [trackingEnabled]);
   useEffect(() => setDutyEnabled(config?.dutyTrackerEnabled === true), [config?.dutyTrackerEnabled]);
   useEffect(() => {
@@ -98,6 +153,10 @@ export default function AdminSettings({
     const tail = normalizeTail(value);
     if (!tail) return;
     setFleetTails((current) => normalizeFleetTails([...current, tail]));
+    setAircraftByTail((current) => ({
+      ...current,
+      [tail]: current[tail] || { displayName: '', icaoType: '', homeBase: '', serialNumber: '' },
+    }));
     setNewTail('');
     setMessage(null);
   };
@@ -110,6 +169,11 @@ export default function AdminSettings({
       : `Remove ${tail} from the managed fleet? Maintenance history will be kept.`;
     if (!window.confirm(prompt)) return;
     setFleetTails((current) => current.filter((item) => item !== tail));
+    setAircraftByTail((current) => {
+      const next = { ...current };
+      delete next[tail];
+      return next;
+    });
     setMessage(null);
   };
 
@@ -131,6 +195,7 @@ export default function AdminSettings({
         body: JSON.stringify({
           idToken,
           fleetTails,
+          aircraftByTail,
           trackingEnabled: tracking,
           dutyTrackerEnabled: dutyEnabled,
           dutyAlertEmails: emails,
@@ -139,6 +204,7 @@ export default function AdminSettings({
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || 'Settings could not be saved');
       setFleetTails(data.fleetTails || []);
+      setAircraftByTail(data.aircraftByTail || {});
       setMessage({
         tone: 'success',
         text: data.removed?.length
@@ -223,22 +289,15 @@ export default function AdminSettings({
                     No managed aircraft. Add a tail above or promote one from the schedule.
                   </div>
                 ) : fleetTails.map((tail) => (
-                  <TailRow
+                  <FleetAircraftEditor
                     key={tail}
                     tail={tail}
-                    detail="Included in managed fleet views"
-                    tone="success"
-                    action={(
-                      <button
-                        type="button"
-                        onClick={() => removeTail(tail)}
-                        title={`Remove ${tail} from fleet`}
-                        aria-label={`Remove ${tail} from managed fleet`}
-                        className="rounded-lg p-2 text-content-subtle transition-colors hover:bg-danger-soft hover:text-danger"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    )}
+                    value={aircraftByTail[tail]}
+                    onChange={(field, value) => setAircraftByTail((current) => ({
+                      ...current,
+                      [tail]: { ...(current[tail] || {}), [field]: value },
+                    }))}
+                    onRemove={() => removeTail(tail)}
                   />
                 ))}
               </div>

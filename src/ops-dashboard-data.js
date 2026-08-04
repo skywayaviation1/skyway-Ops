@@ -8,18 +8,6 @@
 
 import { computeOutstanding } from './ops-readiness.js';
 
-/** Aircraft type is static metadata; a Firestore read for it would be waste. */
-export const AIRCRAFT_TYPE = {
-  N20UF: 'Citation V',
-  N168ZZ: 'Learjet 60',
-  N286N: 'Citation Excel',
-  N444AM: 'King Air 350',
-  N651TW: 'Falcon 50',
-  N551FP: 'CJ3',
-  N85AH: 'Hawker 800',
-  N525CR: 'CJ2+',
-};
-
 export const MS_HOUR = 3600_000;
 
 export function normalizeTail(value) {
@@ -106,6 +94,7 @@ export function buildFleetRows({
   positions = {},
   tripStates = null,
   aogEvents = [],
+  aircraftByTail = {},
   deriveAircraftStatus,
   now = Date.now(),
 }) {
@@ -192,7 +181,9 @@ export function buildFleetRows({
     return {
       tail,
       offFleet: !managed.has(tail),
-      type: AIRCRAFT_TYPE[tail] || '',
+      // Never guess aircraft type from a tail. Administrators maintain the
+      // verified fleet metadata in Admin Settings.
+      type: String(aircraftByTail?.[tail]?.displayName || '').trim(),
       state,
       airworthiness,
       aogEvent,
@@ -332,6 +323,7 @@ export function buildExceptions({
       meta: `Departs in ${formatCountdown(start - now)}`,
       section: 'schedule',
       tripUid: trip.uid,
+      dispatchView: 'control',
     });
   }
 
@@ -364,6 +356,7 @@ export function buildExceptions({
         meta: `Departs in ${formatCountdown(start - now)}`,
         section: 'schedule',
         tripUid: trip.uid,
+        dispatchView: 'control',
       });
     }
   }

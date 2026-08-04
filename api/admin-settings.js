@@ -4,7 +4,11 @@
 
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
-import { DEFAULT_MANAGED_TAILS, normalizeFleetTails } from '../src/fleet-config.js';
+import {
+  DEFAULT_MANAGED_TAILS,
+  normalizeAircraftByTail,
+  normalizeFleetTails,
+} from '../src/fleet-config.js';
 
 function getAdmin() {
   if (admin.apps.length) return admin.app();
@@ -28,7 +32,14 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { idToken, fleetTails, trackingEnabled, dutyTrackerEnabled, dutyAlertEmails } = req.body || {};
+    const {
+      idToken,
+      fleetTails,
+      aircraftByTail,
+      trackingEnabled,
+      dutyTrackerEnabled,
+      dutyAlertEmails,
+    } = req.body || {};
     if (!idToken || !Array.isArray(fleetTails)) {
       res.status(400).json({ error: 'idToken and fleetTails are required' });
       return;
@@ -57,6 +68,7 @@ export default async function handler(req, res) {
       res.status(400).json({ error: 'Fleet contains an invalid tail number' });
       return;
     }
+    const aircraft = normalizeAircraftByTail(aircraftByTail, managed);
     const emails = Array.isArray(dutyAlertEmails)
       ? [...new Set(dutyAlertEmails.map((email) => String(email || '').trim().toLowerCase()).filter(validEmail))]
       : [];
@@ -73,6 +85,7 @@ export default async function handler(req, res) {
     const now = Date.now();
     batch.set(fleetRef, {
       managedTails: managed,
+      aircraftByTail: aircraft,
       configured: true,
       updatedAt: now,
       updatedByUid: caller.uid,
@@ -90,10 +103,16 @@ export default async function handler(req, res) {
     // enough to hide a removed aircraft from fleet screens without erasing its
     // logs, squawks, MEL history, or scheduled legs.
     for (const tail of managed) {
+      const meta = aircraft[tail] || {};
       batch.set(db.collection('maint-aircraft').doc(tail), {
         tail,
         active: true,
         fleetRole: 'managed',
+        model: meta.displayName || '',
+        displayName: meta.displayName || '',
+        icaoType: meta.icaoType || '',
+        serialNumber: meta.serialNumber || '',
+        homeBase: meta.homeBase || '',
         fleetUpdatedAt: now,
       }, { merge: true });
     }
@@ -114,6 +133,7 @@ export default async function handler(req, res) {
     res.status(200).json({
       ok: true,
       fleetTails: managed,
+      aircraftByTail: aircraft,
       removed,
       trackingEnabled: trackingEnabled !== false,
       dutyTrackerEnabled: dutyTrackerEnabled === true,

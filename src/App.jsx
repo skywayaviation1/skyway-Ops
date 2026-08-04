@@ -22411,7 +22411,7 @@ function ManualTripModal({ onCancel, onSubmit }) {
 /* ============================================================
    Ops Dashboard
    ============================================================ */
-function OpsDashboard({ trips, currentUser, onSelectTrip, onAddManualTrip, onRemoveManualTrip, syncStatus, syncLog, onRunSync, feedStats, hasIcalUrl, onOpenPaste }) {
+function ScheduleFeedPanel({ trips, currentUser, onSelectTrip, onAddManualTrip, onRemoveManualTrip, syncStatus, syncLog, onRunSync, feedStats, hasIcalUrl, onOpenPaste }) {
   const [showManual, setShowManual] = useState(false);
 
   const stats = useMemo(() => {
@@ -27723,7 +27723,7 @@ export default function CharterOps() {
   const [showProfile, setShowProfile] = useState(false);
   const [showAdminDutyTools, setShowAdminDutyTools] = useState(false);
   const [adminDutyView, setAdminDutyView] = useState('report'); // report | calendar
-  const [dispatchView, setDispatchView] = useState('command'); // command | control | schedule | handoff
+  const [dispatchView, setDispatchView] = useState('control'); // control | schedule | handoff
   // UI theme — 'dark' (default cyan/slate) or 'classy' (warm + gold).
   // Persisted in localStorage so the choice survives reloads. The actual
   // visual switch happens via the data-theme attribute on the html
@@ -27847,6 +27847,9 @@ export default function CharterOps() {
             ...(previous || {}),
             fleetConfigured: data.configured === true,
             fleetTails: Array.isArray(data.managedTails) ? data.managedTails : [],
+            aircraftByTail: data.aircraftByTail && typeof data.aircraftByTail === 'object'
+              ? data.aircraftByTail
+              : {},
             fleetUpdatedAt: data.updatedAt || null,
             fleetUpdatedByName: data.updatedByName || null,
           }));
@@ -28102,9 +28105,7 @@ export default function CharterOps() {
     }
     return realUser;
   }, [profile, impersonateUid, users]);
-  const activeDispatchView = currentUser?.role === 'admin'
-    ? dispatchView
-    : dispatchView === 'command' ? 'control' : dispatchView;
+  const activeDispatchView = dispatchView;
 
   // Tick clock
   useEffect(() => {
@@ -28197,6 +28198,7 @@ export default function CharterOps() {
               ...effectiveCfg,
               fleetConfigured: true,
               fleetTails: previous.fleetTails || [],
+              aircraftByTail: previous.aircraftByTail || {},
               fleetUpdatedAt: previous.fleetUpdatedAt || null,
               fleetUpdatedByName: previous.fleetUpdatedByName || null,
             }
@@ -28810,7 +28812,16 @@ export default function CharterOps() {
                 users={users}
                 config={config}
                 onSelectTrip={(uid) => { setSelectedId(uid); setSection('schedule'); }}
-                onSwitchSection={(id) => setSection(id)}
+                onSwitchSection={(id) => {
+                  if (id === 'ops') setDispatchView('control');
+                  setSelectedId(null);
+                  setSection(id);
+                }}
+                onOpenDispatch={(view) => {
+                  setDispatchView(view || 'control');
+                  setSelectedId(null);
+                  setSection('ops');
+                }}
               />
             </Suspense>
           ) : ['ops', 'sales'].includes(currentUser?.role) ? (
@@ -28825,6 +28836,7 @@ export default function CharterOps() {
                 currentUser={currentUser}
                 trips={allTrips}
                 users={users}
+                config={config}
                 onSelectTrip={(uid) => { setSelectedId(uid); setSection('schedule'); }}
                 onSwitchSection={(id) => setSection(id)}
               />
@@ -29207,11 +29219,10 @@ export default function CharterOps() {
             <div className="shrink-0 border-b border-edge bg-surface px-3 py-2 md:px-6">
               <div className="mx-auto flex max-w-screen-2xl items-center gap-2 overflow-x-auto sw-no-scrollbar">
                 {[
-                  { id: 'command', label: 'Command center', icon: Navigation, adminOnly: true },
                   { id: 'control', label: 'Flight control', icon: Zap },
                   { id: 'schedule', label: 'Schedule & feeds', icon: Calendar },
                   { id: 'handoff', label: 'Shift handoff', icon: FileText },
-                ].filter((item) => !item.adminOnly || currentUser.role === 'admin').map((item) => (
+                ].map((item) => (
                   <button
                     key={item.id}
                     type="button"
@@ -29234,22 +29245,6 @@ export default function CharterOps() {
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto scroll-area">
-              {activeDispatchView === 'command' && currentUser.role === 'admin' && (
-                <Suspense fallback={<div className="flex items-center justify-center py-16 text-content-muted"><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading command center…</div>}>
-                  <OpsDashboardLazy
-                    currentUser={currentUser}
-                    trips={allTrips}
-                    users={users}
-                    config={config}
-                    onSelectTrip={(uid) => { setSelectedId(uid); setSection('schedule'); }}
-                    onSwitchSection={(id) => {
-                      if (id === 'ops') setDispatchView('control');
-                      else setSection(id);
-                    }}
-                  />
-                </Suspense>
-              )}
-
               {activeDispatchView === 'control' && (
                 <Suspense fallback={<div className="flex items-center justify-center py-16 text-content-muted"><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading flight control…</div>}>
                   <OpsConsoleLazy
@@ -29262,7 +29257,7 @@ export default function CharterOps() {
               )}
 
               {activeDispatchView === 'schedule' && (
-                <OpsDashboard
+                <ScheduleFeedPanel
                   trips={allTrips}
                   currentUser={currentUser}
                   onSelectTrip={(uid) => { setSelectedId(uid); setSection('schedule'); }}

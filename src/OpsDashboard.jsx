@@ -22,7 +22,8 @@
 import React, { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import {
   Activity, AlertTriangle, ArrowRight, CalendarDays, ChevronRight, Clock,
-  Gauge, Hotel, MessageSquare, Navigation, Plane, Settings, ShieldAlert, Users, Wrench,
+  ClipboardList, Gauge, Hotel, MessageSquare, Navigation, Plane,
+  Settings, ShieldAlert, Users, Wrench,
 } from 'lucide-react';
 import { Card, EmptyState, Spinner, StatusChip, cx } from './ui.jsx';
 import {
@@ -30,6 +31,7 @@ import {
   isFlightLeg, normalizeTail, summarizeFleet, toMillis, MS_HOUR,
 } from './ops-dashboard-data.js';
 import { resolveManagedTails } from './fleet-config.js';
+import { buildActiveOpsTrips, computeOutstanding } from './ops-readiness.js';
 
 const TrackingMapLazy = lazy(() => import('./TrackingMap.jsx'));
 
@@ -206,6 +208,33 @@ function PostureTile({ icon: Icon, label, value, hint, tone = 'neutral' }) {
   );
 }
 
+function ModuleCard({ icon: Icon, title, value, detail, tone = 'neutral', onClick }) {
+  const toneClass = {
+    danger: 'text-danger',
+    warning: 'text-warning',
+    success: 'text-success',
+    accent: 'text-accent',
+    neutral: 'text-content',
+  }[tone] || 'text-content';
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="group flex min-h-[8.5rem] flex-col rounded-xl border border-edge bg-surface p-4 text-left transition-colors hover:border-edge-strong hover:bg-surface-raised"
+    >
+      <span className="flex items-center justify-between gap-2">
+        <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-surface-raised group-hover:bg-surface">
+          <Icon className="h-4 w-4 text-content-muted" />
+        </span>
+        <ArrowRight className="h-4 w-4 text-content-subtle transition-transform group-hover:translate-x-0.5" />
+      </span>
+      <span className="mt-3 text-sm font-semibold text-content">{title}</span>
+      <span className={cx('mt-1 font-mono text-xl font-semibold tabular-nums', toneClass)}>{value}</span>
+      <span className="mt-1 text-2xs leading-relaxed text-content-muted">{detail}</span>
+    </button>
+  );
+}
+
 function FleetRow({ row, onSelectTrip }) {
   const { location } = row;
   const airborne = location.kind === 'airborne';
@@ -233,7 +262,7 @@ function FleetRow({ row, onSelectTrip }) {
         <div className="min-w-0">
           <p className="font-mono text-sm font-semibold leading-none text-content">{row.tail}</p>
           <p className="mt-1 truncate text-2xs text-content-subtle">
-            {row.offFleet ? 'Off-fleet' : (row.type || 'Managed')}
+            {row.offFleet ? 'Schedule-only' : (row.type || 'Type not set')}
           </p>
         </div>
       </div>
@@ -319,7 +348,7 @@ function FleetRow({ row, onSelectTrip }) {
   );
 }
 
-function ExceptionQueue({ items, onSwitchSection, onSelectTrip }) {
+function ExceptionQueue({ items, onSwitchSection, onSelectTrip, onOpenDispatch }) {
   if (items.length === 0) {
     return (
       <EmptyState
@@ -336,7 +365,11 @@ function ExceptionQueue({ items, onSwitchSection, onSelectTrip }) {
         <button
           key={item.id}
           type="button"
-          onClick={() => (item.tripUid ? onSelectTrip?.(item.tripUid) : onSwitchSection?.(item.section))}
+          onClick={() => {
+            if (item.dispatchView) onOpenDispatch?.(item.dispatchView);
+            else if (item.tripUid) onSelectTrip?.(item.tripUid);
+            else onSwitchSection?.(item.section);
+          }}
           className="flex w-full items-start gap-3 px-3 py-3 text-left hover:bg-surface-raised"
         >
           <span
@@ -505,6 +538,7 @@ export default function OpsDashboard({
   config = null,
   onSelectTrip,
   onSwitchSection,
+  onOpenDispatch,
 }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -530,9 +564,10 @@ export default function OpsDashboard({
     positions: data.positions,
     tripStates: data.tripStates,
     aogEvents: data.aogEvents,
+    aircraftByTail: config?.aircraftByTail || {},
     deriveAircraftStatus: deriveForTail,
     now,
-  }), [fleetTails, trips, data.positions, data.tripStates, data.aogEvents, deriveForTail, now]);
+  }), [fleetTails, trips, data.positions, data.tripStates, data.aogEvents, config?.aircraftByTail, deriveForTail, now]);
   const managedRows = useMemo(() => fleetRows.filter((row) => !row.offFleet), [fleetRows]);
 
   const crewRows = useMemo(
@@ -553,6 +588,18 @@ export default function OpsDashboard({
     now,
     expirationStatus: data.expirationFn,
   }), [fleetRows, crewRows, data.squawks, data.pilotDocs, data.expenses, data.tripStates, data.expirationFn, trips, now]);
+  const activeOpsTrips = useMemo(
+    () => buildActiveOpsTrips(trips, data.tripStates, now),
+    [trips, data.tripStates, now],
+  );
+  const flaggedTrips = useMemo(() => activeOpsTrips.filter((trip) => (
+    computeOutstanding(trip, data.tripStates?.get?.(trip.uid), now)
+      .some((item) => item.severity === 'critical' || item.severity === 'warn')
+  )).length, [activeOpsTrips, data.tripStates, now]);
+  const illegalCrew = crewRows.filter((row) => row.legality?.status === 'illegal').length;
+  const crewWarnings = crewRows.filter((row) => row.legality?.status === 'warning').length;
+  const maintenanceItems = data.squawks.filter((item) => item?.status !== 'closed').length
+    + data.mel.filter((item) => item?.status !== 'cleared' && item?.status !== 'closed').length;
 
   const timeline = useMemo(() => buildTimeline(fleetRows, now), [fleetRows, now]);
 
@@ -697,6 +744,7 @@ export default function OpsDashboard({
               items={exceptions}
               onSwitchSection={onSwitchSection}
               onSelectTrip={onSelectTrip}
+              onOpenDispatch={onOpenDispatch}
             />
           </SectionCard>
         </div>
@@ -737,29 +785,94 @@ export default function OpsDashboard({
           </SectionCard>
         </div>
 
-        {/* Maintenance shortcut strip */}
-        <div className="grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-8">
-          {[
-            ['Flight control', 'ops', Activity],
-            ['Tracking', 'tracking', Navigation],
-            ['Maintenance', 'maint', Wrench],
-            ['AOG', 'aog', ShieldAlert],
-            ['Duty', 'duty', Users],
-            ['Schedule', 'schedule', CalendarDays],
-            ['Lodging', 'lodging', Hotel],
-            ['Comms', 'comms', MessageSquare],
-            ['Settings', 'settings', Settings],
-          ].map(([label, section, Icon]) => (
-            <button
-              key={section}
-              type="button"
-              onClick={() => onSwitchSection?.(section)}
-              className="flex items-center justify-center gap-2 rounded-xl border border-edge bg-surface px-3 py-3 text-2xs font-semibold text-content-muted hover:border-edge-strong hover:text-content"
-            >
-              <Icon className="h-4 w-4" />
-              {label}
-            </button>
-          ))}
+        {/* Feature modules — live workload, not a passive shortcut strip. */}
+        <div>
+          <div className="mb-3 flex items-end justify-between gap-3">
+            <div>
+              <h2 className="text-base font-semibold text-content">Run the operation</h2>
+              <p className="mt-0.5 text-2xs text-content-muted">
+                Each module opens directly into the workflow and shows its live workload.
+              </p>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
+            <ModuleCard
+              icon={Activity}
+              title="Flight control"
+              value={`${flaggedTrips}/${activeOpsTrips.length}`}
+              detail={`${flaggedTrips} flagged · rolling 48-hour board`}
+              tone={flaggedTrips ? 'warning' : 'success'}
+              onClick={() => onOpenDispatch?.('control')}
+            />
+            <ModuleCard
+              icon={CalendarDays}
+              title="Schedule & feeds"
+              value={summary.remainingToday}
+              detail={`${summary.legsToday} legs today · ${summary.completedToday} completed`}
+              tone={summary.remainingToday ? 'accent' : 'success'}
+              onClick={() => onOpenDispatch?.('schedule')}
+            />
+            <ModuleCard
+              icon={ClipboardList}
+              title="Shift handoff"
+              value="LOG"
+              detail="Risks, decisions and pinned turnover notes"
+              onClick={() => onOpenDispatch?.('handoff')}
+            />
+            <ModuleCard
+              icon={Navigation}
+              title="Live tracking"
+              value={summary.airborne}
+              detail={`${mapScene.aircraft.length} aircraft reporting position`}
+              tone={summary.airborne ? 'accent' : 'neutral'}
+              onClick={() => onSwitchSection?.('tracking')}
+            />
+            <ModuleCard
+              icon={ShieldAlert}
+              title="AOG recovery"
+              value={summary.aog}
+              detail={summary.aog ? 'Recovery action required' : 'No aircraft grounded'}
+              tone={summary.aog ? 'danger' : 'success'}
+              onClick={() => onSwitchSection?.('aog')}
+            />
+            <ModuleCard
+              icon={Wrench}
+              title="Maintenance"
+              value={maintenanceItems}
+              detail="Open squawks and MEL deferrals"
+              tone={maintenanceItems ? 'warning' : 'success'}
+              onClick={() => onSwitchSection?.('maint')}
+            />
+            <ModuleCard
+              icon={Users}
+              title="Crew legality"
+              value={illegalCrew + crewWarnings}
+              detail={`${illegalCrew} illegal · ${crewWarnings} approaching limits`}
+              tone={illegalCrew ? 'danger' : crewWarnings ? 'warning' : 'success'}
+              onClick={() => onSwitchSection?.('duty')}
+            />
+            <ModuleCard
+              icon={Hotel}
+              title="Lodging"
+              value="OPEN"
+              detail="Cross-trip crew hotel and transport coordination"
+              onClick={() => onSwitchSection?.('lodging')}
+            />
+            <ModuleCard
+              icon={MessageSquare}
+              title="Operations comms"
+              value="LIVE"
+              detail="Trip channels, direct messages and push"
+              onClick={() => onSwitchSection?.('comms')}
+            />
+            <ModuleCard
+              icon={Settings}
+              title="Organization settings"
+              value={summary.total}
+              detail="Managed aircraft · services · alert policy"
+              onClick={() => onSwitchSection?.('settings')}
+            />
+          </div>
         </div>
       </div>
     </div>
