@@ -184,7 +184,7 @@ function statusPill(state) {
 // ====================================================================
 
 export default function OpsCommandCenter({ currentUser, trips, config, onSelectTrip, onSwitchSection }) {
-  const fleet = useMemo(() => resolveManagedTails(config), [config]);
+  const managedFleet = useMemo(() => resolveManagedTails(config), [config]);
   // ---- 1. Time + refresh ----
   // Re-render every 60s so the "now"-relative stats refresh without a
   // full page reload. Not 1s — that would cause excessive re-renders for
@@ -294,7 +294,7 @@ export default function OpsCommandCenter({ currentUser, trips, config, onSelectT
       if (!byTail[tail]) byTail[tail] = [];
       byTail[tail].push(t);
     }
-    return fleet.map((tail) => {
+    return managedFleet.map((tail) => {
       const todayLegs = (byTail[tail] || []).sort((a, b) => new Date(a.start) - new Date(b.start));
       const legCount = todayLegs.length;
       const hours = todayLegs.reduce((sum, t) => sum + tripDurationHours(t), 0);
@@ -354,7 +354,7 @@ export default function OpsCommandCenter({ currentUser, trips, config, onSelectT
         nextDep,
       };
     });
-  }, [buckets.today, flights, now, aogTails, fleet, config]);
+  }, [buckets.today, flights, now, aogTails, managedFleet, config]);
 
   // ---- 5. Today's airports (unique) ----
   // Build a deduplicated set of airports across today's legs. The weather
@@ -481,7 +481,7 @@ export default function OpsCommandCenter({ currentUser, trips, config, onSelectT
           />
           <MetricTile
             label="Aircraft active"
-            value={`${stats.activeFleetCount} of ${fleet.length}`}
+            value={`${stats.activeFleetCount} of ${managedFleet.length}`}
             hint={`${stats.tomorrowCount} flights tomorrow`}
             tone="success"
             icon={Activity}
@@ -500,7 +500,7 @@ export default function OpsCommandCenter({ currentUser, trips, config, onSelectT
             <div className="p-4 pb-3">
               <CardHeader
                 title="Fleet status"
-                subtitle={`${fleet.length} aircraft · today's scheduled activity`}
+                subtitle={`${managedFleet.length} aircraft · today's scheduled activity`}
                 icon={Plane}
                 action={(
                   <Button variant="ghost" size="sm" iconRight={ArrowRight} onClick={() => onSwitchSection?.('schedule')}>
