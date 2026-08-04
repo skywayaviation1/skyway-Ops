@@ -1804,9 +1804,8 @@ function useAuth() {
   const [authState, setAuthState] = useState('loading');
   const [profile, setProfile] = useState(null);
   const [user, setUser] = useState(null);
-  // Why the last sign-in attempt was refused, when it was refused by our own
-  // policy rather than by Firebase. Without this the login screen reappears
-  // with no explanation.
+  // Why the last sign-in attempt was refused: { code, message }. Without this
+  // the login screen reappears with no explanation.
   const [authError, setAuthError] = useState(null);
 
   useEffect(() => {
@@ -1822,7 +1821,13 @@ function useAuth() {
           // left Firebase's one-shot redirect state unresolved.
           await completeMicrosoftRedirect();
         } catch (err) {
-          redirectError = err?.code || 'auth/redirect-session-lost';
+          // Keep the message, not just the code. Entra reports the actual
+          // misconfiguration as an AADSTS code inside the text Firebase wraps,
+          // and reducing this to "auth/invalid-credential" throws that away.
+          redirectError = {
+            code: err?.code || 'auth/redirect-session-lost',
+            message: err?.message || '',
+          };
           console.error('Microsoft redirect completion failed:', err);
         }
         if (!active) return;
@@ -1834,7 +1839,9 @@ function useAuth() {
           setAuthState(state);
           setUser(u || null);
           setProfile(p || null);
-          setAuthError(reason || bootRedirectError || null);
+          setAuthError(
+            reason ? { code: reason, message: '' } : bootRedirectError || null,
+          );
         });
       } catch (err) {
         console.error('Failed to load auth module:', err);
@@ -15947,12 +15954,14 @@ function LoginScreen({ authError = null }) {
 
   // Immediate launch errors (popup blocked, provider disabled) win; redirect
   // completion errors are handled once at app boot and arrive as authError.
-  // A directory refusal outranks both: AADSTS names the exact misconfiguration,
-  // where the Firebase code it arrives under is only "invalid credential".
-  const directoryError = describeDirectoryError(diagnostic?.error);
-  const shownError = directoryError
-    || error
-    || (authError ? describeAuthError({ code: authError }, authContext) : null);
+  // Both now carry the directory's own text, so they explain themselves.
+  // The recorded diagnostic is module-global and outlives the attempt that
+  // produced it, so it may only fill in when nothing live is on screen —
+  // otherwise a stale failure keeps overriding the current one.
+  const diagnosticAge = diagnostic ? Date.now() - diagnostic.timestamp : Infinity;
+  const shownError = error
+    || (authError ? describeAuthError(authError, authContext) : null)
+    || (diagnosticAge < 5 * 60 * 1000 ? describeDirectoryError(diagnostic?.error) : null);
 
   const handleMicrosoftLogin = async () => {
     setSubmitting(true);
@@ -16355,7 +16364,15 @@ const AADSTS_ERRORS = {
   },
   7000215: {
     message: 'Microsoft rejected the application secret.',
-    fix: 'The Entra client secret is wrong or expired. Generate a new secret in Entra and paste it into the Firebase Microsoft provider.',
+    fix: 'The Entra client secret is wrong or expired. Generate a new secret in Entra and paste it into the Firebase Microsoft provider. Copy the secret Value, not the Secret ID.',
+  },
+  7000222: {
+    message: 'The Microsoft application secret has expired.',
+    fix: 'Entra client secrets expire. Create a new one under the app registration\'s Certificates & secrets, then paste its Value into Firebase Authentication → Sign-in method → Microsoft.',
+  },
+  9002327: {
+    message: 'The redirect address is registered as a single-page application.',
+    fix: 'Firebase redeems the sign-in from a server using a client secret, which Entra refuses for single-page application redirect URIs. In the Entra app registration, move the /__/auth/handler URL from the "Single-page application" platform to the "Web" platform.',
   },
   90002: {
     message: 'The Microsoft directory in the request does not exist.',
@@ -16389,6 +16406,10 @@ function describeDirectoryError(text) {
 function describeAuthError(err, authContext = null) {
   const code = err?.code || '';
   const host = typeof window !== 'undefined' ? window.location.hostname : 'this address';
+  // AADSTS names the exact misconfiguration; the Firebase code it arrives
+  // under is usually just "invalid credential", so the directory wins.
+  const directory = describeDirectoryError(err?.message);
+  if (directory) return directory;
   const ephemeral = isEphemeralPreviewHost(host);
   const authHelperHost = authContext?.authDomain || 'the Firebase sign-in helper';
   const sameOriginAuth = authContext?.sameOrigin === true;
@@ -16430,6 +16451,13 @@ function describeAuthError(err, authContext = null) {
           ? `Same-origin sign-in is already configured for ${host}, so this is not the Safari storage problem. Most often the prompt was cancelled or dismissed — try once more. If it repeats: confirm ${host} is listed under Firebase Authentication → Settings → Authorized domains, that https://${host}/__/auth/handler is a redirect URI on the Entra app, and that the account is a member of the configured tenant. The technical detail below identifies the failing stage.`
           : `If you completed the Microsoft prompt, this is Safari blocking the cross-origin sign-in helper, which installed iPhone apps do by default. Sign-in currently runs through ${authHelperHost}. An administrator can fix it by setting VITE_FIREBASE_AUTH_DOMAIN to ${host} and adding https://${host}/__/auth/handler to the Entra app's redirect URIs. See docs/microsoft-sso-setup.md.`,
     },
+    // Reached only after Microsoft has already accepted the person, so this is
+    // never a bad password. Firebase failed to redeem the authorization code
+    // against Entra, and both causes are settings an administrator controls.
+    'auth/invalid-credential': {
+      message: 'Microsoft signed you in, but Firebase could not complete the exchange.',
+      fix: `This happens after the Microsoft prompt succeeds, so the account is fine — the failure is between Firebase and Entra. Check the app registration: the client secret in Firebase Authentication → Sign-in method → Microsoft must be the secret Value (not the Secret ID) and must not have expired, and https://${host}/__/auth/handler must be registered under the Entra app's "Web" platform. A redirect URI listed under "Single-page application" cannot be redeemed with a client secret and fails exactly here.`,
+    },
     'auth/dev-bypass-unavailable': {
       message: 'The development authentication bypass could not start.',
       fix: 'This bypass only works on Vercel Preview deployments. Confirm FIREBASE_SERVICE_ACCOUNT_JSON is available to the preview environment and redeploy. Production intentionally returns 404 for this endpoint.',
@@ -16449,7 +16477,6 @@ function describeAuthError(err, authContext = null) {
     'auth/email-already-in-use': 'An account with this email already exists. Try signing in instead.',
     'auth/invalid-email': 'That email address looks invalid.',
     'auth/user-not-found': 'No account with that email.',
-    'auth/invalid-credential': 'Microsoft rejected those sign-in details.',
     'auth/too-many-requests': 'Too many failed attempts. Try again in a few minutes.',
     'auth/network-request-failed': 'Network error. Check your connection.',
     'auth/user-disabled': 'This account has been disabled.',
