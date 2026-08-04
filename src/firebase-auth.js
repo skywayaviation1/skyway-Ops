@@ -23,7 +23,12 @@ import {
   collection,
   onSnapshot,
 } from 'firebase/firestore';
-import { isSameOriginAuthDomain, isStandaloneApp, microsoftAuthMethod } from './auth-environment.js';
+import {
+  isSameOriginAuthDomain,
+  isStandaloneApp,
+  microsoftAuthMethod,
+  resolveMicrosoftTenant,
+} from './auth-environment.js';
 
 const COMPANY_DOMAIN = 'flyskyway.com';
 
@@ -41,11 +46,15 @@ export function configuredAuthDomain() {
 }
 
 /**
- * A single-tenant Entra application cannot authenticate through Microsoft's
- * multi-tenant /common endpoint; it answers AADSTS50194. Firebase only targets
- * a specific directory when a tenant parameter is supplied, so whether this is
- * configured decides whether sign-in can succeed at all.
+ * The directory sign-in targets. A single-tenant Entra application refuses
+ * Microsoft's multi-tenant /common endpoint with AADSTS50194, so this must
+ * never fall back to "common" for Skyway.
  */
+export function microsoftTenant() {
+  return resolveMicrosoftTenant(import.meta.env.VITE_MICROSOFT_TENANT_ID, COMPANY_DOMAIN);
+}
+
+/** Whether an explicit tenant GUID was deployed, as opposed to the domain default. */
 export function microsoftTenantConfigured() {
   return String(import.meta.env.VITE_MICROSOFT_TENANT_ID || '').trim().length > 0;
 }
@@ -109,11 +118,13 @@ function isMicrosoftUser(user) {
 
 function microsoftProvider() {
   const provider = new OAuthProvider('microsoft.com');
-  const tenant = String(import.meta.env.VITE_MICROSOFT_TENANT_ID || '').trim();
+  // Always send a tenant. Omitting it makes Firebase use /common, which the
+  // single-tenant Skyway app registration rejects before a user ever sees a
+  // prompt. The company domain identifies the directory when no GUID is set.
   provider.setCustomParameters({
     prompt: 'select_account',
     domain_hint: COMPANY_DOMAIN,
-    ...(tenant ? { tenant } : {}),
+    tenant: microsoftTenant(),
   });
   // Entra only issues an `email` claim when it is actually asked for. Without
   // these scopes Firebase leaves user.email null for most work accounts, the
@@ -373,7 +384,8 @@ async function completeMicrosoftRedirectOnce() {
     setDiag('redirect-result', err, {
       authDomain: AUTH_DOMAIN,
       sameOriginHelper: isSameOriginAuthDomain(AUTH_DOMAIN),
-      tenantConfigured: microsoftTenantConfigured(),
+      tenant: microsoftTenant(),
+      tenantExplicit: microsoftTenantConfigured(),
     });
     consumeRedirectFlag();
     throw err;

@@ -6,6 +6,7 @@ import {
   isSameOriginAuthDomain,
   isStandaloneApp,
   microsoftAuthMethod,
+  resolveMicrosoftTenant,
 } from '../src/auth-environment.js';
 
 const ios = {
@@ -49,6 +50,21 @@ test('installed iOS uses popup only when auth helper is cross-origin', () => {
   assert.equal(microsoftAuthMethod({
     authDomain: 'skyway-ops.vercel.app', win, nav: ios, location,
   }), 'redirect');
+});
+
+test('a directory is always targeted, never Microsoft /common', () => {
+  // /common is what a single-tenant Entra app rejects with AADSTS50194, so the
+  // company domain must be used when no tenant GUID is deployed.
+  assert.equal(resolveMicrosoftTenant('', 'flyskyway.com'), 'flyskyway.com');
+  assert.equal(resolveMicrosoftTenant(undefined, 'flyskyway.com'), 'flyskyway.com');
+  assert.equal(resolveMicrosoftTenant('   ', 'flyskyway.com'), 'flyskyway.com');
+  assert.notEqual(resolveMicrosoftTenant('', 'flyskyway.com'), 'common');
+});
+
+test('an explicit tenant GUID overrides the domain default', () => {
+  const guid = '8eaef023-2b34-4da1-9baa-8bc8c9d6a490';
+  assert.equal(resolveMicrosoftTenant(guid, 'flyskyway.com'), guid);
+  assert.equal(resolveMicrosoftTenant(` ${guid} `, 'flyskyway.com'), guid);
 });
 
 test('normal browser sessions continue to use redirect', () => {

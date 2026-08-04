@@ -15935,7 +15935,7 @@ function LoginScreen({ authError = null }) {
         setAuthContext({
           authDomain: module.configuredAuthDomain(),
           sameOrigin: module.authDomainIsSameOrigin(),
-          tenantConfigured: module.microsoftTenantConfigured?.() ?? null,
+          tenant: module.microsoftTenant?.() || null,
         });
         // The failing stage is already recorded; surfacing it means the real
         // cause does not require a browser console to read.
@@ -16048,8 +16048,7 @@ function LoginScreen({ authError = null }) {
                       <p className="mt-1 font-mono text-[10px] leading-relaxed text-content-subtle">
                         sign-in helper: {authContext.authDomain}
                         {authContext.sameOrigin ? ' (same-origin)' : ' (cross-origin)'}
-                        {authContext.tenantConfigured === false ? ' · tenant: not set' : ''}
-                        {authContext.tenantConfigured === true ? ' · tenant: set' : ''}
+                        {authContext.tenant ? ` · directory: ${authContext.tenant}` : ''}
                       </p>
                     )}
                   </details>
@@ -16344,7 +16343,7 @@ function isEphemeralPreviewHost(host) {
 const AADSTS_ERRORS = {
   50194: {
     message: 'The Microsoft application is single-tenant, but sign-in used the shared endpoint.',
-    fix: 'Set VITE_MICROSOFT_TENANT_ID in Vercel to the Skyway Entra Directory (tenant) ID and redeploy. That makes Firebase authenticate against your directory instead of Microsoft\'s multi-tenant /common endpoint, which a single-tenant app registration refuses. The alternative — switching the Entra app to multi-tenant — would let other organisations attempt sign-in and is not appropriate here.',
+    fix: 'Sign-in now targets the Skyway directory by default, so this indicates an older build is still deployed — redeploy this version. If it persists, set VITE_MICROSOFT_TENANT_ID to the Entra Directory (tenant) ID and redeploy; VITE_ values are compiled at build time, so setting one without a new build has no effect. Do not switch the Entra app to multi-tenant: that would let other organisations reach sign-in.',
   },
   50011: {
     message: 'The redirect address is not registered on the Microsoft application.',

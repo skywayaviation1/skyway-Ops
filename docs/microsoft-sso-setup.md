@@ -27,12 +27,14 @@ exactly in `@flyskyway.com`. New identities receive a `crew` profile with
    - `localhost` for local development
    Add the bare hostname with no scheme and no port.
    **Skipping this is what produces `auth/unauthorized-domain`.**
-5. **Tenant (required for a single-tenant app).** Set
-   `VITE_MICROSOFT_TENANT_ID` in Vercel to the Entra Directory (tenant) ID.
-   This is not optional hardening. A single-tenant app registration refuses
-   Microsoft's multi-tenant `/common` endpoint with **AADSTS50194**, and
-   Firebase only targets a specific directory when this parameter is supplied.
-   `VITE_*` values are compiled at build time, so redeploy after setting it.
+5. **Tenant.** Sign-in always targets a directory and never Microsoft's
+   multi-tenant `/common` endpoint, because the single-tenant Skyway app
+   registration refuses `/common` with **AADSTS50194**. By default the company
+   domain `flyskyway.com` identifies the directory, so no variable is required.
+   Set `VITE_MICROSOFT_TENANT_ID` to the Entra Directory (tenant) ID only if the
+   directory should be addressed by GUID — for example when the sign-in domain
+   differs from the mail domain. `VITE_*` values are compiled at build time, so
+   a new deployment is required for any change to take effect.
 6. **Service account.** Confirm `FIREBASE_SERVICE_ACCOUNT_JSON` is available to
    `/api/auth-profile-bootstrap`.
 7. **Disable password auth** once existing users can sign in with their
