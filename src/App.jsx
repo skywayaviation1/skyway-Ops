@@ -153,6 +153,11 @@ import { compareNames } from './name-matching.js';
 import { lookupCoords } from './airport-coords.js';
 import { resolveManagedTails } from './fleet-config.js';
 import { DUTY_TRACKER_ENABLED } from './duty-feature.js';
+import {
+  analyzeFrameReadiness,
+  autoCapturePrompt,
+  frameDifference,
+} from './id-auto-capture.js';
 
 /* ============================================================
    iCal parser — handles line folding & VEVENT extraction
@@ -2690,6 +2695,7 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
   const [error, setError] = useState(null);
   const [torchSupported, setTorchSupported] = useState(false);
   const [torchOn, setTorchOn] = useState(false);
+  const [autoCaptureMessage, setAutoCaptureMessage] = useState('Starting camera…');
 
   // Verification checkbox
   const [idVerified, setIdVerified] = useState(false);
@@ -2714,7 +2720,12 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
   // Camera refs
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
+  const autoCanvasRef = useRef(null);
   const streamRef = useRef(null);
+  const autoCaptureTriggeredRef = useRef(false);
+  const autoStableFramesRef = useRef(0);
+  const previousAutoFrameRef = useRef(null);
+  const barcodeDetectorRef = useRef(null);
 
   const stopCamera = useCallback(() => {
     if (streamRef.current) {
@@ -2815,6 +2826,10 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
   // flip to the capturing phase. Shared between the primary getUserMedia
   // attempt and the relaxed-constraints retry below.
   const attachCameraStream = (stream) => {
+    autoCaptureTriggeredRef.current = false;
+    autoStableFramesRef.current = 0;
+    previousAutoFrameRef.current = null;
+    setAutoCaptureMessage('Starting camera…');
     streamRef.current = stream;
     const track = stream.getVideoTracks()[0];
     const capabilities = track?.getCapabilities ? track.getCapabilities() : {};
@@ -2970,9 +2985,11 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
     } catch (e) { /* ignore */ }
   };
 
-  const capturePhoto = () => {
+  const capturePhoto = useCallback(() => {
     if (!videoRef.current || !canvasRef.current) return;
     const v = videoRef.current;
+    if (!v.videoWidth || !v.videoHeight) return;
+    autoCaptureTriggeredRef.current = true;
     const c = canvasRef.current;
     const maxW = 1600;
     const scale = Math.min(1, maxW / v.videoWidth);
@@ -2985,7 +3002,102 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
       width: c.width,
       height: c.height,
     }, 'camera');
-  };
+  }, [applyPhoto]);
+
+  // Auto-shutter: prefer a real PDF417 detection when the browser exposes
+  // BarcodeDetector (mainly Android). iOS/Safari falls back to an inexpensive
+  // visual check over the guide region and requires three sharp, stable frames.
+  // Both paths call the exact same capturePhoto function as the manual button,
+  // so OCR, review, upload and retention behavior cannot diverge.
+  useEffect(() => {
+    if (phase !== 'capturing') return undefined;
+    let cancelled = false;
+    let checking = false;
+
+    (async () => {
+      try {
+        if (!globalThis.BarcodeDetector?.getSupportedFormats) return;
+        const formats = await globalThis.BarcodeDetector.getSupportedFormats();
+        if (!cancelled && formats.includes('pdf417')) {
+          barcodeDetectorRef.current = new globalThis.BarcodeDetector({ formats: ['pdf417'] });
+        }
+      } catch {
+        barcodeDetectorRef.current = null;
+      }
+    })();
+
+    const sample = async () => {
+      if (cancelled || checking || autoCaptureTriggeredRef.current) return;
+      const video = videoRef.current;
+      const canvas = autoCanvasRef.current;
+      if (!video || !canvas || video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
+        setAutoCaptureMessage('Starting camera…');
+        return;
+      }
+      checking = true;
+      try {
+        if (barcodeDetectorRef.current) {
+          try {
+            const codes = await barcodeDetectorRef.current.detect(video);
+            if (codes?.length && !cancelled && !autoCaptureTriggeredRef.current) {
+              autoCaptureTriggeredRef.current = true;
+              setAutoCaptureMessage('ID read — capturing…');
+              capturePhoto();
+              return;
+            }
+          } catch {
+            // Detection support varies by camera source; visual readiness below
+            // remains available when BarcodeDetector rejects a video element.
+          }
+        }
+
+        const width = 240;
+        const height = 150;
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (!ctx) return;
+        const sx = Math.round(video.videoWidth * 0.08);
+        const sy = Math.round(video.videoHeight * 0.08);
+        const sw = Math.round(video.videoWidth * 0.84);
+        const sh = Math.round(video.videoHeight * 0.84);
+        ctx.drawImage(video, sx, sy, sw, sh, 0, 0, width, height);
+        const analysis = analyzeFrameReadiness(ctx.getImageData(0, 0, width, height));
+        const difference = frameDifference(previousAutoFrameRef.current, analysis.pixels);
+        previousAutoFrameRef.current = analysis.pixels;
+
+        if (analysis.readable) {
+          autoStableFramesRef.current = Number.isFinite(difference) && difference <= 8
+            ? autoStableFramesRef.current + 1
+            : 1;
+        } else {
+          autoStableFramesRef.current = 0;
+        }
+        setAutoCaptureMessage(autoCapturePrompt(analysis.reason, autoStableFramesRef.current));
+
+        if (autoStableFramesRef.current >= 3 && !autoCaptureTriggeredRef.current) {
+          autoCaptureTriggeredRef.current = true;
+          setAutoCaptureMessage('ID read — capturing…');
+          capturePhoto();
+        }
+      } catch (err) {
+        console.warn('[IDCheckInPanel] auto-capture sample skipped:', err);
+      } finally {
+        checking = false;
+      }
+    };
+
+    // 450 ms keeps camera analysis cool on iPhone while still feeling instant.
+    const timer = window.setInterval(sample, 450);
+    sample();
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      barcodeDetectorRef.current = null;
+      previousAutoFrameRef.current = null;
+      autoStableFramesRef.current = 0;
+    };
+  }, [phase, capturePhoto]);
 
   const retake = (source = 'camera') => {
     setPhoto(null);
@@ -3377,13 +3489,17 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
               muted
             />
             <canvas ref={canvasRef} className="hidden" />
+            <canvas ref={autoCanvasRef} className="hidden" />
             {/* Capture guide: the saved image is still the complete frame; this
                 overlay only helps crew keep all document edges visible. */}
             <div className="pointer-events-none absolute inset-[8%] rounded-lg border-2 border-white/70 shadow-[0_0_0_999px_rgba(0,0,0,0.28)]">
               <span className="absolute -bottom-7 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-black/60 px-2 py-1 text-[10px] text-white">
-                Align all four corners
+                {autoCaptureMessage}
               </span>
             </div>
+            <span className="pointer-events-none absolute left-2 top-2 rounded bg-black/70 px-2 py-1 text-[9px] font-semibold tracking-wider text-white">
+              AUTO CAPTURE ON
+            </span>
             {torchSupported && (
               <button
                 onClick={toggleTorch}
@@ -3411,9 +3527,12 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
               className="py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs font-medium tracking-widest flex items-center justify-center gap-2"
               style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}
             >
-              <Camera className="w-4 h-4" /> CAPTURE
+              <Camera className="w-4 h-4" /> CAPTURE NOW
             </button>
           </div>
+          <p className="text-center text-2xs text-content-subtle">
+            The camera captures automatically when the ID is sharp and steady. Use Capture Now as a backup.
+          </p>
         </div>
       )}
 
