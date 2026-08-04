@@ -15921,9 +15921,32 @@ function MicrosoftMark({ className = '' }) {
 function LoginScreen({ authError = null }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
+  // How sign-in is actually wired, so guidance never tells an administrator to
+  // apply a fix they have already applied.
+  const [authContext, setAuthContext] = useState(null);
+  const [diagnostic, setDiagnostic] = useState(null);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const module = await import('./firebase-auth.js');
+        if (!active) return;
+        setAuthContext({
+          authDomain: module.configuredAuthDomain(),
+          sameOrigin: module.authDomainIsSameOrigin(),
+        });
+        // The failing stage is already recorded; surfacing it means the real
+        // cause does not require a browser console to read.
+        setDiagnostic(module.getLastDiagnostic?.() || null);
+      } catch { /* guidance degrades to the generic message */ }
+    })();
+    return () => { active = false; };
+  }, [authError]);
+
   // Immediate launch errors (popup blocked, provider disabled) win; redirect
   // completion errors are handled once at app boot and arrive as authError.
-  const shownError = error || (authError ? describeAuthError({ code: authError }) : null);
+  const shownError = error || (authError ? describeAuthError({ code: authError }, authContext) : null);
 
   const handleMicrosoftLogin = async () => {
     setSubmitting(true);
@@ -15936,7 +15959,7 @@ function LoginScreen({ authError = null }) {
       setSubmitting(false);
     } catch (err) {
       setSubmitting(false);
-      setError(describeAuthError(err));
+      setError(describeAuthError(err, authContext));
     }
   };
 
@@ -16002,6 +16025,26 @@ function LoginScreen({ authError = null }) {
                 )}
                 {shownError.code && (
                   <p className="mt-1.5 font-mono text-[10px] text-content-subtle">{shownError.code}</p>
+                )}
+                {/* The recorded stage is the difference between "storage was
+                    blocked" and "the token carried no company address". */}
+                {diagnostic && (
+                  <details className="mt-2 border-t border-danger-border pt-2">
+                    <summary className="cursor-pointer text-[10px] font-semibold text-content-subtle">
+                      Technical detail for an administrator
+                    </summary>
+                    <p className="mt-1.5 font-mono text-[10px] leading-relaxed text-content-muted">
+                      stage: {diagnostic.stage}
+                      {diagnostic.code ? ` · ${diagnostic.code}` : ''}
+                      {diagnostic.error ? ` · ${diagnostic.error}` : ''}
+                    </p>
+                    {authContext && (
+                      <p className="mt-1 font-mono text-[10px] leading-relaxed text-content-subtle">
+                        sign-in helper: {authContext.authDomain}
+                        {authContext.sameOrigin ? ' (same-origin)' : ' (cross-origin)'}
+                      </p>
+                    )}
+                  </details>
                 )}
               </div>
             )}
@@ -16285,10 +16328,12 @@ function isEphemeralPreviewHost(host) {
   return host.includes('-git-') || /-[a-z0-9]{8,}-/.test(host);
 }
 
-function describeAuthError(err) {
+function describeAuthError(err, authContext = null) {
   const code = err?.code || '';
   const host = typeof window !== 'undefined' ? window.location.hostname : 'this address';
   const ephemeral = isEphemeralPreviewHost(host);
+  const authHelperHost = authContext?.authDomain || 'the Firebase sign-in helper';
+  const sameOriginAuth = authContext?.sameOrigin === true;
 
   const CONFIG_ERRORS = {
     'auth/unauthorized-domain': {
@@ -16313,13 +16358,19 @@ function describeAuthError(err) {
       message: 'Microsoft signed you in but returned no email address.',
       fix: 'In Entra ID, confirm the account has a mail address and that the app registration requests the "email" scope and includes the email optional claim. Skyway Ops authorizes accounts by their verified company address, so it cannot proceed without one.',
     },
+    // Three genuinely different situations produce "no session came back", and
+    // giving the cross-origin fix to someone who has already applied it sends
+    // them to redo settings that are correct. Branch on what is actually
+    // configured rather than assuming the storage-partitioning case.
     'auth/redirect-session-lost': {
       message: 'The sign-in did not carry back to the app.',
       fix: ephemeral
         // Wiring up a throwaway hostname is worse than useless: it looks like
         // a fix and then breaks on the next deploy.
         ? `If you completed the Microsoft prompt, this is Safari blocking the cross-origin sign-in helper. ${host} is a preview deployment and gets a new address every build, so it cannot be registered as a redirect URI. Sign in on the stable production address instead, where VITE_FIREBASE_AUTH_DOMAIN and the Entra redirect URI can be set once. See docs/microsoft-sso-setup.md.`
-        : `If you completed the Microsoft prompt, this is Safari blocking the cross-origin sign-in helper, which installed iPhone apps do by default. An administrator can fix it by setting VITE_FIREBASE_AUTH_DOMAIN to ${host} and adding https://${host}/__/auth/handler to the Entra app's redirect URIs. See docs/microsoft-sso-setup.md.`,
+        : sameOriginAuth
+          ? `Same-origin sign-in is already configured for ${host}, so this is not the Safari storage problem. Most often the prompt was cancelled or dismissed — try once more. If it repeats: confirm ${host} is listed under Firebase Authentication → Settings → Authorized domains, that https://${host}/__/auth/handler is a redirect URI on the Entra app, and that the account is a member of the configured tenant. The technical detail below identifies the failing stage.`
+          : `If you completed the Microsoft prompt, this is Safari blocking the cross-origin sign-in helper, which installed iPhone apps do by default. Sign-in currently runs through ${authHelperHost}. An administrator can fix it by setting VITE_FIREBASE_AUTH_DOMAIN to ${host} and adding https://${host}/__/auth/handler to the Entra app's redirect URIs. See docs/microsoft-sso-setup.md.`,
     },
     'auth/dev-bypass-unavailable': {
       message: 'The development authentication bypass could not start.',

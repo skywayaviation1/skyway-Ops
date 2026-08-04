@@ -23,9 +23,22 @@ import {
   collection,
   onSnapshot,
 } from 'firebase/firestore';
-import { microsoftAuthMethod } from './auth-environment.js';
+import { isSameOriginAuthDomain, isStandaloneApp, microsoftAuthMethod } from './auth-environment.js';
 
 const COMPANY_DOMAIN = 'flyskyway.com';
+
+/**
+ * Whether Firebase's sign-in helper is served from the app's own origin.
+ * Diagnostics depend on this: a returning sign-in that carries no session means
+ * something entirely different when the helper is already same-origin.
+ */
+export function authDomainIsSameOrigin() {
+  return isSameOriginAuthDomain(AUTH_DOMAIN);
+}
+
+export function configuredAuthDomain() {
+  return AUTH_DOMAIN;
+}
 
 function isPreviewHostname(host) {
   return host.endsWith('.vercel.app')
@@ -351,6 +364,15 @@ async function completeMicrosoftRedirectOnce() {
   if (startedAt && (Date.now() - startedAt) < REDIRECT_WINDOW_MS && !auth.currentUser) {
     const err = new Error('Sign-in did not carry back to the app');
     err.code = 'auth/redirect-session-lost';
+    // Record what distinguishes a blocked cross-origin helper from a cancelled
+    // prompt. Without this the same message is shown for both, which sends an
+    // administrator to change settings that may already be correct.
+    setDiag('redirect-no-session', err, {
+      authDomain: AUTH_DOMAIN,
+      sameOriginHelper: isSameOriginAuthDomain(AUTH_DOMAIN),
+      secondsAway: Math.round((Date.now() - startedAt) / 1000),
+      installedApp: isStandaloneApp(),
+    });
     throw err;
   }
   return null;
