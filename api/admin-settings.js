@@ -9,6 +9,7 @@ import {
   normalizeAircraftByTail,
   normalizeFleetTails,
 } from '../src/fleet-config.js';
+import { DUTY_TRACKER_ENABLED } from '../src/duty-feature.js';
 
 function getAdmin() {
   if (admin.apps.length) return admin.app();
@@ -37,7 +38,6 @@ export default async function handler(req, res) {
       fleetTails,
       aircraftByTail,
       trackingEnabled,
-      dutyTrackerEnabled,
       dutyAlertEmails,
     } = req.body || {};
     if (!idToken || !Array.isArray(fleetTails)) {
@@ -93,7 +93,7 @@ export default async function handler(req, res) {
     }, { merge: true });
     batch.set(db.collection('flightaware').doc('config'), {
       trackingEnabled: trackingEnabled !== false,
-      dutyTrackerEnabled: dutyTrackerEnabled === true,
+      dutyTrackerEnabled: DUTY_TRACKER_ENABLED,
       dutyAlertEmails: emails,
       settingsUpdatedAt: now,
       settingsUpdatedByUid: caller.uid,
@@ -136,7 +136,7 @@ export default async function handler(req, res) {
       aircraftByTail: aircraft,
       removed,
       trackingEnabled: trackingEnabled !== false,
-      dutyTrackerEnabled: dutyTrackerEnabled === true,
+      dutyTrackerEnabled: DUTY_TRACKER_ENABLED,
       dutyAlertEmails: emails,
       updatedAt: now,
     });

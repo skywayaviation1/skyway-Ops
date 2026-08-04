@@ -152,6 +152,7 @@ import {
 import { compareNames } from './name-matching.js';
 import { lookupCoords } from './airport-coords.js';
 import { resolveManagedTails } from './fleet-config.js';
+import { DUTY_TRACKER_ENABLED } from './duty-feature.js';
 
 /* ============================================================
    iCal parser — handles line folding & VEVENT extraction
@@ -4606,7 +4607,7 @@ function timeUntil(iso) {
    DUTY TRACKER — Part 135 §135.267 duty/rest
    ------------------------------------------------------------
    ISOLATION CONTRACT:
-   - Gated behind config.dutyTrackerEnabled (default OFF).
+   - Always enabled as a core safety/compliance feature.
    - Wrapped in DutyErrorBoundary: any render/runtime fault shows
      a small fallback box, NEVER crashes the app. This is the
      specific failure mode (TDZ blue-screen) we are engineering
@@ -4694,10 +4695,9 @@ function parseDutyTimeInput(hhmm) {
   }
 }
 
-// Public entry point: gated + error-boundaried. This is the ONLY thing
-// PilotHomeScreen renders. If the flag is off, renders nothing.
+// Public entry point: always-on + error-boundaried. This is the ONLY thing
+// PilotHomeScreen renders.
 function DutyCard({ currentUser, config, myTrips, users }) {
-  if (!config?.dutyTrackerEnabled) return null;
   // Duty applies to CREW only. During impersonation currentUser.role is the
   // impersonated person's role, so an admin viewing-as a crew member still
   // sees the card (to inspect/edit that pilot's duty); a real admin/ops user
@@ -15550,7 +15550,7 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
   const [crewName, setCrewName] = useState(config.crewName || '');
   const [textMode, setTextMode] = useState(false);
   const isAdminUser = currentUser?.role === 'admin';
-  const [dutyEnabled, setDutyEnabled] = useState(!!config.dutyTrackerEnabled);
+  const dutyEnabled = DUTY_TRACKER_ENABLED;
   const dutyEmails = 'Jim@flyskyway.com, Jake@flyskyway.com, zack.taylor@flyskyway.com';
   const [dutyBusy, setDutyBusy] = useState(false);
   const [dutyMsg, setDutyMsg] = useState('');
@@ -15659,10 +15659,10 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
         .filter(e => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
       await setDoc(
         doc(db, 'flightaware', 'config'),
-        { dutyTrackerEnabled: dutyEnabled, dutyAlertEmails: emails },
+        { dutyTrackerEnabled: DUTY_TRACKER_ENABLED, dutyAlertEmails: emails },
         { merge: true }
       );
-      setDutyMsg(`Saved. ${dutyEnabled ? 'Duty tracker ON' : 'Duty tracker OFF'} · ${emails.length} alert recipient(s).`);
+      setDutyMsg(`Saved. Duty tracker always enabled · ${emails.length} alert recipient(s).`);
     } catch (e) {
       setDutyMsg('Failed: ' + e.message);
     } finally {
@@ -15744,19 +15744,18 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
               </div>
               <label className="flex items-center justify-between gap-3 mb-3">
                 <div className="min-w-0">
-                  <span className="text-sm text-slate-200">Enable duty/rest tracker</span>
+                  <span className="text-sm text-slate-200">Duty/rest tracker</span>
                   <span className="text-[11px] text-slate-500 block mt-0.5">
-                    Shows the Part 135.267 duty card on every pilot's home screen.
-                    Off by default.
+                    Core Part 135.267 safety and compliance tracking. Always enabled.
                   </span>
                 </div>
                 <button
                   type="button"
-                  onClick={() => setDutyEnabled(v => !v)}
-                  className={`shrink-0 px-3 py-2 text-xs tracking-widest font-medium border ${dutyEnabled ? 'bg-green-600/20 border-green-500/40 text-green-300' : 'bg-slate-900 border-slate-700 text-slate-300'}`}
+                  disabled
+                  className="shrink-0 border border-green-500/40 bg-green-600/20 px-3 py-2 text-xs font-medium tracking-widest text-green-300"
                   style={{ fontFamily: 'JetBrains Mono, monospace' }}
                 >
-                  {dutyEnabled ? 'ENABLED' : 'DISABLED'}
+                  ALWAYS ON
                 </button>
               </label>
               <label className="block">
@@ -27704,7 +27703,12 @@ export default function CharterOps() {
   const { users, loading: usersLoading, updateUser, removeUser, approveUser } = useFirestoreUsers(profile);
 
   // App state
-  const [config, setConfig] = useState({ icalUrl: DEFAULT_ICAL_URL, opsEmail: '', crewName: '' });
+  const [config, setConfig] = useState({
+    icalUrl: DEFAULT_ICAL_URL,
+    opsEmail: '',
+    crewName: '',
+    dutyTrackerEnabled: DUTY_TRACKER_ENABLED,
+  });
   const [trips, setTrips] = useState([]);
   const [manualTrips, setManualTrips] = useState([]);
   const [selectedId, setSelectedId] = useState(() => {
@@ -27805,10 +27809,10 @@ export default function CharterOps() {
             const data = snap.data();
             // Default to true if field missing; only false explicitly disables
             setTrackingEnabled(data.trackingEnabled !== false);
-            // Duty tracker flag + alert emails are shared (admin sets once,
-            // every pilot's app sees it live). Default OFF.
+            // Duty tracking is a core safety feature and cannot be disabled.
+            // Keep reading alert recipients from shared config.
             setConfig(prev => {
-              const dutyEnabled = data.dutyTrackerEnabled === true;
+              const dutyEnabled = DUTY_TRACKER_ENABLED;
               const dutyEmails = Array.isArray(data.dutyAlertEmails) ? data.dutyAlertEmails : [];
               if (prev &&
                   prev.dutyTrackerEnabled === dutyEnabled &&
@@ -28190,7 +28194,10 @@ export default function CharterOps() {
   useEffect(() => {
     (async () => {
       const cfg = await storage.get('settings:config', false, null);
-      const effectiveCfg = cfg || { icalUrl: DEFAULT_ICAL_URL, opsEmail: '', crewName: '' };
+      const effectiveCfg = {
+        ...(cfg || { icalUrl: DEFAULT_ICAL_URL, opsEmail: '', crewName: '' }),
+        dutyTrackerEnabled: DUTY_TRACKER_ENABLED,
+      };
       if (!effectiveCfg.icalUrl) effectiveCfg.icalUrl = DEFAULT_ICAL_URL;
       setConfig((previous) => (
         previous?.fleetConfigured === true
@@ -29405,7 +29412,7 @@ export default function CharterOps() {
         )}
 
         {/* === DUTY SECTION (admin duty/rest oversight) === */}
-        {section === 'duty' && (currentUser.role === 'admin' || currentUser._impersonating === true) && config?.dutyTrackerEnabled && (
+        {section === 'duty' && (currentUser.role === 'admin' || currentUser._impersonating === true) && (
           <div className="flex-1 overflow-y-auto scroll-area bg-slate-950 p-4 md:p-6">
             <div className="mx-auto mb-5 flex max-w-[1500px] flex-wrap items-center justify-between gap-3">
               <div className="inline-flex rounded-lg border border-edge bg-surface p-1">
@@ -29460,14 +29467,6 @@ export default function CharterOps() {
             </Suspense>
           </div>
         )}
-        {section === 'duty' && (currentUser.role === 'admin' || currentUser._impersonating === true) && !config?.dutyTrackerEnabled && (
-          <div className="flex-1 overflow-y-auto scroll-area bg-slate-950 p-6">
-            <div className="max-w-2xl mx-auto bg-slate-900 border border-slate-800 p-4 text-sm text-slate-400">
-              The duty tracker is currently disabled. Enable it in Settings → DUTY TRACKER (ADMIN) to use this dashboard.
-            </div>
-          </div>
-        )}
-
         <MobileNav
           currentSection={section}
           setCurrentSection={(s) => { setSection(s); setSelectedId(null); }}

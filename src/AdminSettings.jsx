@@ -20,6 +20,7 @@ import {
   resolveManagedTails,
   scheduledOnlyTails,
 } from './fleet-config.js';
+import { DUTY_TRACKER_ENABLED } from './duty-feature.js';
 
 const DEFAULT_ALERT_EMAILS = [
   'jim@flyskyway.com',
@@ -43,7 +44,7 @@ function TailRow({ tail, detail, tone = 'neutral', action }) {
   );
 }
 
-function ToggleRow({ icon: Icon, title, description, checked, onChange }) {
+function ToggleRow({ icon: Icon, title, description, checked, onChange, disabled = false }) {
   return (
     <label className="flex cursor-pointer items-center gap-3 border-b border-edge px-3 py-4 last:border-b-0">
       <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-surface-raised">
@@ -56,7 +57,8 @@ function ToggleRow({ icon: Icon, title, description, checked, onChange }) {
       <input
         type="checkbox"
         checked={checked}
-        onChange={(event) => onChange(event.target.checked)}
+        onChange={(event) => onChange?.(event.target.checked)}
+        disabled={disabled}
         className="h-5 w-5 rounded border-edge bg-surface accent-cyan-500"
       />
     </label>
@@ -125,7 +127,6 @@ export default function AdminSettings({
   ));
   const [newTail, setNewTail] = useState('');
   const [tracking, setTracking] = useState(trackingEnabled !== false);
-  const [dutyEnabled, setDutyEnabled] = useState(config?.dutyTrackerEnabled === true);
   const [dutyEmails, setDutyEmails] = useState(
     (config?.dutyAlertEmails?.length ? config.dutyAlertEmails : DEFAULT_ALERT_EMAILS).join(', '),
   );
@@ -137,7 +138,6 @@ export default function AdminSettings({
     setAircraftByTail(normalizeAircraftByTail(config?.aircraftByTail, savedFleet));
   }, [config?.aircraftByTail, savedFleet]);
   useEffect(() => setTracking(trackingEnabled !== false), [trackingEnabled]);
-  useEffect(() => setDutyEnabled(config?.dutyTrackerEnabled === true), [config?.dutyTrackerEnabled]);
   useEffect(() => {
     if (Array.isArray(config?.dutyAlertEmails) && config.dutyAlertEmails.length) {
       setDutyEmails(config.dutyAlertEmails.join(', '));
@@ -197,7 +197,7 @@ export default function AdminSettings({
           fleetTails,
           aircraftByTail,
           trackingEnabled: tracking,
-          dutyTrackerEnabled: dutyEnabled,
+          dutyTrackerEnabled: DUTY_TRACKER_ENABLED,
           dutyAlertEmails: emails,
         }),
       });
@@ -348,9 +348,9 @@ export default function AdminSettings({
                 <ToggleRow
                   icon={ShieldCheck}
                   title="Duty and rest tracking"
-                  description="Enable paired duty controls and the administrator compliance view."
-                  checked={dutyEnabled}
-                  onChange={setDutyEnabled}
+                  description="Core safety and compliance feature. Always enabled for pilots and administrators."
+                  checked={DUTY_TRACKER_ENABLED}
+                  disabled
                 />
               </div>
             </Card>
