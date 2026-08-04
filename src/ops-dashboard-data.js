@@ -6,6 +6,8 @@
 // the parts that decide what a controller sees first — can be reasoned about
 // and tested without mounting React or Firestore.
 
+import { computeOutstanding } from './ops-readiness.js';
+
 /** Aircraft type is static metadata; a Firestore read for it would be waste. */
 export const AIRCRAFT_TYPE = {
   N20UF: 'Citation V',
@@ -253,6 +255,7 @@ export function buildExceptions({
   pilotDocs = [],
   expenses = [],
   trips = [],
+  tripStates = null,
   now = Date.now(),
   expirationStatus,
 }) {
@@ -330,6 +333,39 @@ export function buildExceptions({
       section: 'schedule',
       tripUid: trip.uid,
     });
+  }
+
+  // Readiness gaps share the exact rules used by the detailed flight-control
+  // board. Keep only the next four hours in this executive queue; Dispatch
+  // carries the complete rolling 48-hour board.
+  const readinessCodes = new Set([
+    'ops-hold',
+    'no-sheet',
+    'no-dispatch',
+    'no-broker',
+    'no-pax',
+    'no-sic',
+    'no-origin-fbo',
+    'no-destination-fbo',
+  ]);
+  for (const trip of trips) {
+    const start = toMillis(trip?.start);
+    if (start == null || start < now || start > soonCutoff || !isFlightLeg(trip)) continue;
+    const state = tripStates?.get?.(trip.uid) || null;
+    for (const gap of computeOutstanding(trip, state, now)) {
+      if (!readinessCodes.has(gap.code)) continue;
+      items.push({
+        id: `readiness-${trip.uid}-${gap.code}`,
+        severity: gap.severity === 'critical' ? 'critical'
+          : gap.severity === 'warn' ? 'warning' : 'info',
+        group: 'Dispatch',
+        title: `${trip.info?.tail || 'Trip'} · ${gap.label}`,
+        detail: `${normalizeAirport(trip.info?.from)} → ${normalizeAirport(trip.info?.to)}`,
+        meta: `Departs in ${formatCountdown(start - now)}`,
+        section: 'schedule',
+        tripUid: trip.uid,
+      });
+    }
   }
 
   const groundingSquawks = squawks.filter(

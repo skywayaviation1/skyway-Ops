@@ -47,6 +47,7 @@ const PushSettingsLazy = lazy(() => import('./PushSettings.jsx'));
 
 // Code-split: Ops Console loads only when ops/admin opens that section.
 const OpsConsoleLazy = lazy(() => import('./OpsConsole.jsx'));
+const OpsShiftLogLazy = lazy(() => import('./OpsShiftLog.jsx'));
 
 // Code-split: MuteToggle loads only when a chat surface renders.
 const MuteToggleLazy = lazy(() => import('./MuteToggle.jsx'));
@@ -27722,6 +27723,7 @@ export default function CharterOps() {
   const [showProfile, setShowProfile] = useState(false);
   const [showAdminDutyTools, setShowAdminDutyTools] = useState(false);
   const [adminDutyView, setAdminDutyView] = useState('report'); // report | calendar
+  const [dispatchView, setDispatchView] = useState('command'); // command | control | schedule | handoff
   // UI theme — 'dark' (default cyan/slate) or 'classy' (warm + gold).
   // Persisted in localStorage so the choice survives reloads. The actual
   // visual switch happens via the data-theme attribute on the html
@@ -28100,6 +28102,9 @@ export default function CharterOps() {
     }
     return realUser;
   }, [profile, impersonateUid, users]);
+  const activeDispatchView = currentUser?.role === 'admin'
+    ? dispatchView
+    : dispatchView === 'command' ? 'control' : dispatchView;
 
   // Tick clock
   useEffect(() => {
@@ -29193,29 +29198,91 @@ export default function CharterOps() {
         {/* MAINT LOG and MEL section renders removed — they now render
             as sub-tabs inside MAINT (see MaintScreen above). */}
 
-        {/* === OPS DASHBOARD SECTION === */}
-        {section === 'ops' && (
-          <div className="flex-1 overflow-y-auto scroll-area">
-            <Suspense fallback={<div className="flex items-center justify-center py-16 text-slate-500"><Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading ops console...</div>}>
-              <OpsConsoleLazy
-                currentUser={currentUser}
-                allTrips={allTrips}
-                onOpenTrip={(uid) => { setSelectedId(uid); setSection('schedule'); }}
-              />
-            </Suspense>
-            <OpsDashboard
-              trips={allTrips}
-              currentUser={currentUser}
-              onSelectTrip={(uid) => { setSelectedId(uid); setSection('schedule'); }}
-              onAddManualTrip={addManualTrip}
-              onRemoveManualTrip={removeManualTrip}
-              syncStatus={syncStatus}
-              syncLog={syncLog}
-              onRunSync={() => loadFromUrl(config.icalUrl)}
-              feedStats={feedStats}
-              hasIcalUrl={!!config.icalUrl}
-              onOpenPaste={() => setShowSettings(true)}
-            />
+        {/* === OPERATIONS CONTROL CENTER ===
+            Admins get the complete OCC command view; ops users get the same
+            flight-control, schedule and handoff workflows without admin-only
+            fleet-wide duty/qualification subscriptions. */}
+        {section === 'ops' && ['ops', 'admin'].includes(currentUser?.role) && (
+          <div className="flex min-h-0 flex-1 flex-col bg-surface-sunken">
+            <div className="shrink-0 border-b border-edge bg-surface px-3 py-2 md:px-6">
+              <div className="mx-auto flex max-w-screen-2xl items-center gap-2 overflow-x-auto sw-no-scrollbar">
+                {[
+                  { id: 'command', label: 'Command center', icon: Navigation, adminOnly: true },
+                  { id: 'control', label: 'Flight control', icon: Zap },
+                  { id: 'schedule', label: 'Schedule & feeds', icon: Calendar },
+                  { id: 'handoff', label: 'Shift handoff', icon: FileText },
+                ].filter((item) => !item.adminOnly || currentUser.role === 'admin').map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setDispatchView(item.id)}
+                    className={cx(
+                      'inline-flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold transition-colors',
+                      activeDispatchView === item.id
+                        ? 'bg-accent-soft text-accent'
+                        : 'text-content-muted hover:bg-surface-raised hover:text-content',
+                    )}
+                  >
+                    <item.icon className="h-4 w-4" />
+                    {item.label}
+                  </button>
+                ))}
+                <span className="ml-auto hidden text-2xs text-content-subtle lg:block">
+                  OCC coordination · live data · audited actions
+                </span>
+              </div>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto scroll-area">
+              {activeDispatchView === 'command' && currentUser.role === 'admin' && (
+                <Suspense fallback={<div className="flex items-center justify-center py-16 text-content-muted"><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading command center…</div>}>
+                  <OpsDashboardLazy
+                    currentUser={currentUser}
+                    trips={allTrips}
+                    users={users}
+                    config={config}
+                    onSelectTrip={(uid) => { setSelectedId(uid); setSection('schedule'); }}
+                    onSwitchSection={(id) => {
+                      if (id === 'ops') setDispatchView('control');
+                      else setSection(id);
+                    }}
+                  />
+                </Suspense>
+              )}
+
+              {activeDispatchView === 'control' && (
+                <Suspense fallback={<div className="flex items-center justify-center py-16 text-content-muted"><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading flight control…</div>}>
+                  <OpsConsoleLazy
+                    currentUser={currentUser}
+                    users={users}
+                    allTrips={allTrips}
+                    onOpenTrip={(uid) => { setSelectedId(uid); setSection('schedule'); }}
+                  />
+                </Suspense>
+              )}
+
+              {activeDispatchView === 'schedule' && (
+                <OpsDashboard
+                  trips={allTrips}
+                  currentUser={currentUser}
+                  onSelectTrip={(uid) => { setSelectedId(uid); setSection('schedule'); }}
+                  onAddManualTrip={addManualTrip}
+                  onRemoveManualTrip={removeManualTrip}
+                  syncStatus={syncStatus}
+                  syncLog={syncLog}
+                  onRunSync={() => loadFromUrl(config.icalUrl)}
+                  feedStats={feedStats}
+                  hasIcalUrl={!!config.icalUrl}
+                  onOpenPaste={() => setShowSettings(true)}
+                />
+              )}
+
+              {activeDispatchView === 'handoff' && (
+                <Suspense fallback={<div className="flex items-center justify-center py-16 text-content-muted"><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading shift handoff…</div>}>
+                  <OpsShiftLogLazy currentUser={currentUser} />
+                </Suspense>
+              )}
+            </div>
           </div>
         )}
 

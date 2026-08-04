@@ -22,7 +22,7 @@
 import React, { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import {
   Activity, AlertTriangle, ArrowRight, CalendarDays, ChevronRight, Clock,
-  Gauge, Plane, ShieldAlert, Users, Wrench,
+  Gauge, Hotel, MessageSquare, Navigation, Plane, Settings, ShieldAlert, Users, Wrench,
 } from 'lucide-react';
 import { Card, EmptyState, Spinner, StatusChip, cx } from './ui.jsx';
 import {
@@ -549,9 +549,10 @@ export default function OpsDashboard({
     pilotDocs: data.pilotDocs,
     expenses: data.expenses,
     trips,
+    tripStates: data.tripStates,
     now,
     expirationStatus: data.expirationFn,
-  }), [fleetRows, crewRows, data.squawks, data.pilotDocs, data.expenses, data.expirationFn, trips, now]);
+  }), [fleetRows, crewRows, data.squawks, data.pilotDocs, data.expenses, data.tripStates, data.expirationFn, trips, now]);
 
   const timeline = useMemo(() => buildTimeline(fleetRows, now), [fleetRows, now]);
 
@@ -737,12 +738,17 @@ export default function OpsDashboard({
         </div>
 
         {/* Maintenance shortcut strip */}
-        <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+        <div className="grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-8">
           {[
-            ['Dispatch', 'ops', Activity],
+            ['Flight control', 'ops', Activity],
+            ['Tracking', 'tracking', Navigation],
             ['Maintenance', 'maint', Wrench],
+            ['AOG', 'aog', ShieldAlert],
             ['Duty', 'duty', Users],
             ['Schedule', 'schedule', CalendarDays],
+            ['Lodging', 'lodging', Hotel],
+            ['Comms', 'comms', MessageSquare],
+            ['Settings', 'settings', Settings],
           ].map(([label, section, Icon]) => (
             <button
               key={section}
