@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Building2,
@@ -8,6 +8,10 @@ import {
   FileSpreadsheet,
   Link2,
   Loader2,
+  PlugZap,
+  RefreshCw,
+  Send,
+  Unplug,
   Upload,
   User,
 } from 'lucide-react';
@@ -15,6 +19,7 @@ import { Button, Card, CardHeader, StatusChip, cx } from './ui.jsx';
 import {
   availableMonths,
   buildQuickBooksRows,
+  DEFAULT_QBO_ACCOUNTS,
   exportFilename,
   exportTotal,
   filterForMonth,
@@ -28,6 +33,7 @@ import {
   reconcile,
   reconciliationPatch,
 } from './card-reconciliation.js';
+import { qboSyncEligibility } from './qbo-expense.js';
 
 function money(n) {
   return `$${Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -43,11 +49,31 @@ function download(csv, filename) {
   URL.revokeObjectURL(url);
 }
 
+async function qboApi(path, body = {}) {
+  const { auth } = await import('./firebase.js');
+  const idToken = await auth.currentUser?.getIdToken();
+  if (!idToken) throw new Error('Your accounting session expired');
+  const response = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    cache: 'no-store',
+    body: JSON.stringify({ idToken, ...body }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
+  return data;
+}
+
 export default function ExpenseAccounting({ expenses = [], users = [], currentUser }) {
   const months = useMemo(() => availableMonths(expenses), [expenses]);
   const [monthKey, setMonthKey] = useState(() => months[0] || '');
   const [scopeUid, setScopeUid] = useState('company');
   const actor = currentUser?.name || currentUser?.email || 'accounting';
+  const canManageQbo = ['accounting', 'admin'].includes(currentUser?.role);
+
+  useEffect(() => {
+    if (!monthKey && months.length) setMonthKey(months[0]);
+  }, [monthKey, months]);
 
   const monthExpenses = useMemo(() => filterForMonth(expenses, monthKey || null), [expenses, monthKey]);
   const scopedExpenses = useMemo(() => (
@@ -73,6 +99,132 @@ export default function ExpenseAccounting({ expenses = [], users = [], currentUs
     const rows = buildQuickBooksRows(monthExpenses, { users });
     if (rows.length === 0) return;
     download(rowsToCsv(rows), exportFilename({ scopeLabel: 'company-itemized', monthKey: monthKey || null }));
+  };
+
+  /* ── Direct QuickBooks connection + sync ── */
+  const [qbo, setQbo] = useState({ loading: true, connected: false });
+  const [qboBusy, setQboBusy] = useState(false);
+  const [qboMessage, setQboMessage] = useState(null);
+  const [accounts, setAccounts] = useState({ expenseAccounts: [], paymentAccounts: [] });
+  const [accountMaps, setAccountMaps] = useState({
+    expenseAccountMap: {},
+    paymentAccountMap: {},
+  });
+
+  const loadQboStatus = async () => {
+    setQbo((current) => ({ ...current, loading: true }));
+    try {
+      const status = await qboApi('/api/quickbooks-status');
+      setQbo({ ...status, loading: false });
+      setAccountMaps({
+        expenseAccountMap: status.expenseAccountMap || {},
+        paymentAccountMap: status.paymentAccountMap || {},
+      });
+      if (status.connected && canManageQbo) {
+        try {
+          const chart = await qboApi('/api/quickbooks-accounts', { action: 'list' });
+          setAccounts({
+            expenseAccounts: chart.expenseAccounts || [],
+            paymentAccounts: chart.paymentAccounts || [],
+          });
+        } catch (error) {
+          setQboMessage({ tone: 'danger', text: error.message });
+        }
+      }
+    } catch (error) {
+      setQbo({ loading: false, connected: false, error: error.message });
+    }
+  };
+
+  useEffect(() => { loadQboStatus(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const connectQbo = async () => {
+    setQboBusy(true);
+    setQboMessage(null);
+    try {
+      const { buildOAuthStartUrl } = await import('./firebase-quickbooks.js');
+      window.location.href = await buildOAuthStartUrl();
+    } catch (error) {
+      setQboMessage({ tone: 'danger', text: error.message || 'Could not start QuickBooks connection' });
+      setQboBusy(false);
+    }
+  };
+
+  const disconnectQbo = async () => {
+    if (!window.confirm('Disconnect QuickBooks Online? Direct sync will stop until it is connected again.')) return;
+    setQboBusy(true);
+    setQboMessage(null);
+    try {
+      const { disconnectQuickBooks } = await import('./firebase-quickbooks.js');
+      await disconnectQuickBooks();
+      setQbo({ loading: false, connected: false });
+      setAccounts({ expenseAccounts: [], paymentAccounts: [] });
+      setQboMessage({ tone: 'success', text: 'QuickBooks disconnected.' });
+    } catch (error) {
+      setQboMessage({ tone: 'danger', text: error.message || 'Could not disconnect QuickBooks' });
+    } finally {
+      setQboBusy(false);
+    }
+  };
+
+  const mappedRef = (list, id) => {
+    const account = list.find((item) => item.id === id);
+    return account ? { id: account.id, name: account.name } : null;
+  };
+
+  const saveAccountMappings = async () => {
+    setQboBusy(true);
+    setQboMessage(null);
+    try {
+      const result = await qboApi('/api/quickbooks-accounts', {
+        action: 'save',
+        ...accountMaps,
+      });
+      setAccountMaps({
+        expenseAccountMap: result.expenseAccountMap || {},
+        paymentAccountMap: result.paymentAccountMap || {},
+      });
+      setQboMessage({ tone: 'success', text: 'QuickBooks account mappings saved.' });
+    } catch (error) {
+      setQboMessage({ tone: 'danger', text: error.message || 'Could not save account mappings' });
+    } finally {
+      setQboBusy(false);
+    }
+  };
+
+  const syncCandidates = useMemo(
+    () => scopedExpenses.filter((expense) => qboSyncEligibility(expense).eligible),
+    [scopedExpenses],
+  );
+  const blockedSync = useMemo(
+    () => scopedExpenses.filter((expense) => (
+      expense.status === 'approved' && !expense.qbTransactionId && !qboSyncEligibility(expense).eligible
+    )),
+    [scopedExpenses],
+  );
+
+  const syncToQbo = async () => {
+    if (!syncCandidates.length) return;
+    if (!window.confirm(`Sync ${syncCandidates.length} charge${syncCandidates.length === 1 ? '' : 's'} directly to ${qbo.companyName || 'QuickBooks'}?`)) return;
+    setQboBusy(true);
+    setQboMessage(null);
+    try {
+      const result = await qboApi('/api/quickbooks-sync-expenses', {
+        expenseIds: syncCandidates.map((expense) => expense.id),
+      });
+      const failures = result.results?.filter((item) => !item.ok) || [];
+      setQboMessage({
+        tone: failures.length ? 'danger' : 'success',
+        text: failures.length
+          ? `${result.succeeded} synced; ${failures.length} failed. ${failures[0]?.error || ''}`
+          : `${result.succeeded} charge${result.succeeded === 1 ? '' : 's'} synced directly to QuickBooks.`,
+      });
+      await loadQboStatus();
+    } catch (error) {
+      setQboMessage({ tone: 'danger', text: error.message || 'QuickBooks sync failed' });
+    } finally {
+      setQboBusy(false);
+    }
   };
 
   /* ── Card reconciliation ── */
@@ -125,6 +277,152 @@ export default function ExpenseAccounting({ expenses = [], users = [], currentUs
 
   return (
     <div className="space-y-4 p-3 md:p-4">
+      {/* Direct QuickBooks connection — visible where accounting actually works,
+          rather than hidden in the general app settings modal. */}
+      <Card padded={false}>
+        <div className="flex flex-wrap items-center gap-3 p-4">
+          <span className={cx(
+            'flex h-10 w-10 items-center justify-center rounded-lg',
+            qbo.connected ? 'bg-success-soft text-success' : 'bg-surface-raised text-content-muted',
+          )}>
+            {qbo.loading ? <Loader2 className="h-5 w-5 animate-spin" /> : <PlugZap className="h-5 w-5" />}
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-sm font-semibold text-content">QuickBooks Online</h2>
+              <StatusChip tone={qbo.connected ? 'success' : 'neutral'} size="sm">
+                {qbo.loading ? 'Checking' : qbo.connected ? 'Connected' : 'Not connected'}
+              </StatusChip>
+              {qbo.connected && qbo.environment === 'sandbox' && (
+                <StatusChip tone="warning" size="sm">Sandbox</StatusChip>
+              )}
+            </div>
+            <p className="mt-1 text-2xs text-content-muted">
+              {qbo.connected
+                ? `${qbo.companyName || 'QuickBooks company'} · connected by ${qbo.connectedByName || 'accounting'}`
+                : 'Connect the company once, then accounting can sync approved charges directly.'}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" variant="secondary" icon={RefreshCw} onClick={loadQboStatus} disabled={qboBusy}>
+              Refresh
+            </Button>
+            {canManageQbo && !qbo.connected && !qbo.loading && (
+              <Button size="sm" variant="primary" icon={PlugZap} onClick={connectQbo} loading={qboBusy}>
+                Connect QuickBooks
+              </Button>
+            )}
+            {canManageQbo && qbo.connected && (
+              <Button size="sm" variant="outline" icon={Unplug} onClick={disconnectQbo} disabled={qboBusy}>
+                Disconnect
+              </Button>
+            )}
+          </div>
+        </div>
+
+        {qboMessage && (
+          <div className={cx(
+            'mx-4 mb-4 flex items-start gap-2 rounded-lg border p-2.5 text-2xs',
+            qboMessage.tone === 'success'
+              ? 'border-success-border bg-success-soft text-success'
+              : 'border-danger-border bg-danger-soft text-danger',
+          )}>
+            {qboMessage.tone === 'success'
+              ? <Check className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              : <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
+            {qboMessage.text}
+          </div>
+        )}
+
+        {qbo.connected && canManageQbo && (
+          <div className="border-t border-edge p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-content">Direct sync for this view</p>
+                <p className="mt-0.5 text-2xs text-content-muted">
+                  {syncCandidates.length} ready to sync · {blockedSync.length} blocked
+                  {blockedSync.length ? ' (company cards must be reconciled and every charge needs a payment tag)' : ''}
+                </p>
+              </div>
+              <Button
+                variant="primary"
+                icon={Send}
+                loading={qboBusy}
+                disabled={!syncCandidates.length}
+                onClick={syncToQbo}
+              >
+                Sync {syncCandidates.length || ''} to QuickBooks
+              </Button>
+            </div>
+
+            <details className="mt-4 rounded-lg border border-edge">
+              <summary className="cursor-pointer px-3 py-2 text-xs font-semibold text-content">
+                Account mappings
+              </summary>
+              <div className="grid gap-4 border-t border-edge p-3 lg:grid-cols-2">
+                <div className="space-y-2">
+                  <p className="text-2xs font-semibold uppercase tracking-wider text-content-subtle">Expense categories</p>
+                  {Object.keys(DEFAULT_QBO_ACCOUNTS).map((category) => (
+                    <label key={category} className="grid grid-cols-[8rem_1fr] items-center gap-2">
+                      <span className="truncate text-2xs text-content-muted">{category}</span>
+                      <select
+                        value={accountMaps.expenseAccountMap?.[category]?.id || ''}
+                        onChange={(event) => setAccountMaps((current) => ({
+                          ...current,
+                          expenseAccountMap: {
+                            ...current.expenseAccountMap,
+                            [category]: mappedRef(accounts.expenseAccounts, event.target.value),
+                          },
+                        }))}
+                        className="min-w-0 rounded border border-edge bg-surface px-2 py-1.5 text-xs text-content"
+                      >
+                        <option value="">Auto: {DEFAULT_QBO_ACCOUNTS[category]}</option>
+                        {accounts.expenseAccounts.map((account) => (
+                          <option key={account.id} value={account.id}>{account.name}</option>
+                        ))}
+                      </select>
+                    </label>
+                  ))}
+                </div>
+                <div className="space-y-2">
+                  <p className="text-2xs font-semibold uppercase tracking-wider text-content-subtle">Company payment accounts</p>
+                  {[
+                    ['capital_one', 'Capital One'],
+                    ['amex', 'Amex'],
+                  ].map(([key, label]) => (
+                    <label key={key} className="grid grid-cols-[8rem_1fr] items-center gap-2">
+                      <span className="text-2xs text-content-muted">{label}</span>
+                      <select
+                        value={accountMaps.paymentAccountMap?.[key]?.id || ''}
+                        onChange={(event) => setAccountMaps((current) => ({
+                          ...current,
+                          paymentAccountMap: {
+                            ...current.paymentAccountMap,
+                            [key]: mappedRef(accounts.paymentAccounts, event.target.value),
+                          },
+                        }))}
+                        className="min-w-0 rounded border border-edge bg-surface px-2 py-1.5 text-xs text-content"
+                      >
+                        <option value="">Auto: {label}</option>
+                        {accounts.paymentAccounts.map((account) => (
+                          <option key={account.id} value={account.id}>{account.name}</option>
+                        ))}
+                      </select>
+                    </label>
+                  ))}
+                  <Button block size="sm" variant="secondary" onClick={saveAccountMappings} loading={qboBusy}>
+                    Save account mappings
+                  </Button>
+                  <p className="text-2xs leading-relaxed text-content-subtle">
+                    Company cards sync as Purchases to the selected credit-card account. Personal charges sync as Bills payable to the crew member.
+                  </p>
+                </div>
+              </div>
+            </details>
+          </div>
+        )}
+      </Card>
+
       {/* Period + scope controls */}
       <Card padded={false}>
         <div className="flex flex-wrap items-end gap-3 p-4">

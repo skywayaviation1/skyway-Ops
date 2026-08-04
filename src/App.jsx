@@ -24941,7 +24941,10 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName, u
   const [uploadSuccess, setUploadSuccess] = useState(null); // { vendor, amount, id } | null
   // Top-level view inside the expense screen. 'list' is the original
   // single-pane list + detail. 'reports' is the new analytics tab.
-  const [view, setView] = useState('list'); // 'list' | 'reports'
+  const [view, setView] = useState(() => {
+    if (typeof window === 'undefined') return 'list';
+    return new URLSearchParams(window.location.search).has('qbo') ? 'quickbooks' : 'list';
+  }); // 'list' | 'reports' | 'quickbooks'
   // Local-only copy of the freshly-uploaded expense. Firestore snapshots
   // take 100-500ms to round-trip on the new doc — without this, mobile
   // users see a brief flash back to the list view after parse completes
@@ -27862,7 +27865,10 @@ export default function CharterOps() {
     // Auto-open Settings on return from QBO OAuth so the user sees the result
     if (typeof window !== 'undefined') {
       const p = new URLSearchParams(window.location.search);
-      if (p.get('qbo') === 'connected' || p.get('qbo') === 'error') return true;
+      if (
+        p.get('section') !== 'expenses'
+        && (p.get('qbo') === 'connected' || p.get('qbo') === 'error')
+      ) return true;
     }
     return false;
   });
@@ -27929,6 +27935,7 @@ export default function CharterOps() {
     if (typeof window === 'undefined') return 'home';
     const params = new URLSearchParams(window.location.search);
     if (params.get('trip')) return 'schedule';
+    if (params.get('section') === 'expenses' || params.has('qbo')) return 'expenses';
     return params.get('channel') || window.location.hash === '#comms' ? 'comms' : 'home';
   });
   // FlightAware live tracking kill switch — synced from Firestore so admin can

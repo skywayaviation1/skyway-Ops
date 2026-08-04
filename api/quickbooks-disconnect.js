@@ -7,20 +7,7 @@
 //
 // After this, the only way to reconnect is the full OAuth flow again.
 
-import admin from 'firebase-admin';
-
-let adminApp = null;
-function getAdmin() {
-  if (adminApp) return adminApp;
-  if (!process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
-    throw new Error('FIREBASE_SERVICE_ACCOUNT_JSON not configured');
-  }
-  const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
-  adminApp = admin.apps.length
-    ? admin.app()
-    : admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
-  return adminApp;
-}
+import { authorizeQboCaller, getDb } from './_quickbooks.js';
 
 const REVOKE_URL = 'https://developer.api.intuit.com/v2/oauth2/tokens/revoke';
 
@@ -31,30 +18,21 @@ export default async function handler(req, res) {
   }
 
   try {
-    getAdmin();
-
     const { idToken } = req.body || {};
     if (!idToken) {
       res.status(400).json({ error: 'idToken required' });
       return;
     }
 
-    let decoded;
     try {
-      decoded = await admin.auth().verifyIdToken(idToken);
+      await authorizeQboCaller(idToken, ['accounting', 'admin']);
     } catch (err) {
-      res.status(401).json({ error: 'Invalid token: ' + err.message });
-      return;
-    }
-
-    const profileSnap = await admin.firestore().collection('users').doc(decoded.uid).get();
-    if (!profileSnap.exists || profileSnap.data().role !== 'admin') {
-      res.status(403).json({ error: 'Admin role required' });
+      res.status(err.status || 403).json({ error: err.message });
       return;
     }
 
     // Read the current connection
-    const connRef = admin.firestore().collection('quickbooks').doc('connection');
+    const connRef = getDb().collection('quickbooks').doc('connection');
     const connSnap = await connRef.get();
     if (!connSnap.exists) {
       res.status(200).json({ ok: true, message: 'Already disconnected' });
