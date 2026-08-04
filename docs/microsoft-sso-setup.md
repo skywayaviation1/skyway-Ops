@@ -27,8 +27,12 @@ exactly in `@flyskyway.com`. New identities receive a `crew` profile with
    - `localhost` for local development
    Add the bare hostname with no scheme and no port.
    **Skipping this is what produces `auth/unauthorized-domain`.**
-5. **Tenant lock.** Set `VITE_MICROSOFT_TENANT_ID` in Vercel to the Entra
-   Directory (tenant) ID.
+5. **Tenant (required for a single-tenant app).** Set
+   `VITE_MICROSOFT_TENANT_ID` in Vercel to the Entra Directory (tenant) ID.
+   This is not optional hardening. A single-tenant app registration refuses
+   Microsoft's multi-tenant `/common` endpoint with **AADSTS50194**, and
+   Firebase only targets a specific directory when this parameter is supplied.
+   `VITE_*` values are compiled at build time, so redeploy after setting it.
 6. **Service account.** Confirm `FIREBASE_SERVICE_ACCOUNT_JSON` is available to
    `/api/auth-profile-bootstrap`.
 7. **Disable password auth** once existing users can sign in with their
@@ -178,3 +182,23 @@ When all three pass, the remaining causes are, in order of likelihood:
 The login screen's **Technical detail for an administrator** shows the recorded
 stage, the auth domain in use, whether the helper is same-origin, and how long
 the browser was away, which separates a cancelled prompt from a blocked helper.
+
+## Directory refusals (AADSTS codes)
+
+Microsoft reports directory-level refusals as `AADSTS` codes. Firebase wraps
+them in `auth/invalid-credential`, which on its own says nothing actionable, so
+the login screen now extracts and explains the code.
+
+| Code | Meaning | Fix |
+| --- | --- | --- |
+| `AADSTS50194` | The app registration is single-tenant but sign-in used `/common`. | Set `VITE_MICROSOFT_TENANT_ID` and redeploy (step 5). |
+| `AADSTS50011` | Redirect URI not registered. | Add `https://<authDomain>/__/auth/handler` in Entra. |
+| `AADSTS700016` | Application ID not recognised. | Check the client ID in the Firebase Microsoft provider. |
+| `AADSTS7000215` | Client secret wrong or expired. | Issue a new Entra secret and update Firebase. |
+| `AADSTS90002` | Directory does not exist. | `VITE_MICROSOFT_TENANT_ID` is not a real tenant ID. |
+| `AADSTS50020` | Account is outside the directory. | Sign in with the `@flyskyway.com` work account. |
+| `AADSTS65001` | Admin consent not granted. | Grant consent for `openid`, `profile`, `email`. |
+
+Do not switch the Entra application to multi-tenant to clear `AADSTS50194`.
+That would let accounts from other directories reach the sign-in flow, and the
+company-domain check would then be the only thing refusing them.

@@ -15935,6 +15935,7 @@ function LoginScreen({ authError = null }) {
         setAuthContext({
           authDomain: module.configuredAuthDomain(),
           sameOrigin: module.authDomainIsSameOrigin(),
+          tenantConfigured: module.microsoftTenantConfigured?.() ?? null,
         });
         // The failing stage is already recorded; surfacing it means the real
         // cause does not require a browser console to read.
@@ -15946,7 +15947,12 @@ function LoginScreen({ authError = null }) {
 
   // Immediate launch errors (popup blocked, provider disabled) win; redirect
   // completion errors are handled once at app boot and arrive as authError.
-  const shownError = error || (authError ? describeAuthError({ code: authError }, authContext) : null);
+  // A directory refusal outranks both: AADSTS names the exact misconfiguration,
+  // where the Firebase code it arrives under is only "invalid credential".
+  const directoryError = describeDirectoryError(diagnostic?.error);
+  const shownError = directoryError
+    || error
+    || (authError ? describeAuthError({ code: authError }, authContext) : null);
 
   const handleMicrosoftLogin = async () => {
     setSubmitting(true);
@@ -16042,6 +16048,8 @@ function LoginScreen({ authError = null }) {
                       <p className="mt-1 font-mono text-[10px] leading-relaxed text-content-subtle">
                         sign-in helper: {authContext.authDomain}
                         {authContext.sameOrigin ? ' (same-origin)' : ' (cross-origin)'}
+                        {authContext.tenantConfigured === false ? ' · tenant: not set' : ''}
+                        {authContext.tenantConfigured === true ? ' · tenant: set' : ''}
                       </p>
                     )}
                   </details>
@@ -16326,6 +16334,57 @@ function LegacyLoginScreen({ initialMode = 'login' }) {
 function isEphemeralPreviewHost(host) {
   if (!host.endsWith('.vercel.app')) return false;
   return host.includes('-git-') || /-[a-z0-9]{8,}-/.test(host);
+}
+
+/**
+ * Microsoft reports directory-level refusals as AADSTS codes inside the message
+ * Firebase wraps. Those codes name the exact misconfiguration, so surfacing them
+ * is the difference between an actionable instruction and a generic failure.
+ */
+const AADSTS_ERRORS = {
+  50194: {
+    message: 'The Microsoft application is single-tenant, but sign-in used the shared endpoint.',
+    fix: 'Set VITE_MICROSOFT_TENANT_ID in Vercel to the Skyway Entra Directory (tenant) ID and redeploy. That makes Firebase authenticate against your directory instead of Microsoft\'s multi-tenant /common endpoint, which a single-tenant app registration refuses. The alternative — switching the Entra app to multi-tenant — would let other organisations attempt sign-in and is not appropriate here.',
+  },
+  50011: {
+    message: 'The redirect address is not registered on the Microsoft application.',
+    fix: 'Add the exact handler URL shown by Firebase to the Entra application\'s Web redirect URIs. It must match character for character, including the /__/auth/handler path.',
+  },
+  700016: {
+    message: 'Microsoft does not recognise the application ID.',
+    fix: 'Confirm the Entra application (client) ID in Firebase Authentication → Sign-in method → Microsoft matches the app registration in the intended directory.',
+  },
+  7000215: {
+    message: 'Microsoft rejected the application secret.',
+    fix: 'The Entra client secret is wrong or expired. Generate a new secret in Entra and paste it into the Firebase Microsoft provider.',
+  },
+  90002: {
+    message: 'The Microsoft directory in the request does not exist.',
+    fix: 'VITE_MICROSOFT_TENANT_ID does not match a real directory. Use the Directory (tenant) ID from Entra ID → Overview.',
+  },
+  50020: {
+    message: 'This account does not belong to the Skyway Microsoft directory.',
+    fix: 'Sign in with the @flyskyway.com work account. Personal Microsoft accounts and guests from other directories are refused by the tenant restriction.',
+  },
+  65001: {
+    message: 'Consent has not been granted for the Skyway sign-in application.',
+    fix: 'An Entra administrator needs to grant admin consent for the application\'s requested permissions (openid, profile, email).',
+  },
+};
+
+function describeDirectoryError(text) {
+  const match = /AADSTS(\d+)/.exec(String(text || ''));
+  if (!match) return null;
+  const code = Number(match[1]);
+  const known = AADSTS_ERRORS[code];
+  if (!known) {
+    return {
+      code: `AADSTS${code}`,
+      message: 'Microsoft refused the sign-in request.',
+      fix: 'The directory reported AADSTS' + code + '. Look that code up in Microsoft Entra sign-in logs for the exact cause; the technical detail below carries the full response.',
+    };
+  }
+  return { code: `AADSTS${code}`, ...known };
 }
 
 function describeAuthError(err, authContext = null) {

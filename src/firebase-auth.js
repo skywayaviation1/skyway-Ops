@@ -40,6 +40,16 @@ export function configuredAuthDomain() {
   return AUTH_DOMAIN;
 }
 
+/**
+ * A single-tenant Entra application cannot authenticate through Microsoft's
+ * multi-tenant /common endpoint; it answers AADSTS50194. Firebase only targets
+ * a specific directory when a tenant parameter is supplied, so whether this is
+ * configured decides whether sign-in can succeed at all.
+ */
+export function microsoftTenantConfigured() {
+  return String(import.meta.env.VITE_MICROSOFT_TENANT_ID || '').trim().length > 0;
+}
+
 function isPreviewHostname(host) {
   return host.endsWith('.vercel.app')
     && (host.includes('-git-') || /-[a-z0-9]{8,}-/.test(host));
@@ -353,7 +363,21 @@ let redirectCompletionPromise = null;
 async function completeMicrosoftRedirectOnce() {
   // Resolves once Firebase has finished restoring persisted auth state, so
   // auth.currentUser is trustworthy immediately afterwards.
-  const result = await getRedirectResult(auth);
+  let result;
+  try {
+    result = await getRedirectResult(auth);
+  } catch (err) {
+    // Directory rejections arrive here wrapped by Firebase, with Entra's own
+    // AADSTS text as the message. Record it so the cause is recoverable from
+    // the UI instead of only a browser console.
+    setDiag('redirect-result', err, {
+      authDomain: AUTH_DOMAIN,
+      sameOriginHelper: isSameOriginAuthDomain(AUTH_DOMAIN),
+      tenantConfigured: microsoftTenantConfigured(),
+    });
+    consumeRedirectFlag();
+    throw err;
+  }
 
   if (result?.user) {
     consumeRedirectFlag();
