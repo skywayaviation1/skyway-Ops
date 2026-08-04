@@ -10,6 +10,7 @@ import {
   getRedirectResult,
   signInWithRedirect,
   signInWithPopup,
+  signInWithCredential,
   signInWithCustomToken,
   signOut as fbSignOut,
   onAuthStateChanged,
@@ -354,11 +355,76 @@ async function validateMicrosoftResult(user) {
   return user;
 }
 
+/**
+ * Legacy password (and other) accounts share an email with the Microsoft
+ * identity trying to sign in. Firebase refuses to create a second Auth user
+ * for that email; instead we link Microsoft onto the existing UID so every
+ * Firestore document keyed by it keeps working, drop the old providers, and
+ * retry the pending credential.
+ */
+async function mergeExistingAccountWithMicrosoft(err) {
+  if (err?.code !== 'auth/account-exists-with-different-credential') return null;
+
+  const credential = OAuthProvider.credentialFromError(err);
+  const accessToken = credential?.accessToken;
+  if (!accessToken) {
+    setDiag('account-merge-no-credential', err);
+    return null;
+  }
+
+  const email = err.customData?.email || null;
+  let response;
+  try {
+    response = await fetch('/api/auth-link-microsoft', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      cache: 'no-store',
+      body: JSON.stringify({ accessToken, idToken: credential.idToken || null, email }),
+    });
+  } catch (networkErr) {
+    setDiag('account-merge-network', networkErr, { email });
+    throw err;
+  }
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    setDiag('account-merge-rejected', new Error(data.error || 'merge failed'), {
+      email,
+      status: response.status,
+      code: data.code || null,
+    });
+    // Surface a clearer code when the server identified the failure; otherwise
+    // rethrow the original so the login screen's existing mapping still applies.
+    if (data.code === 'microsoft-oid-conflict') {
+      const conflict = new Error(data.error || 'Microsoft account conflict');
+      conflict.code = 'auth/microsoft-oid-conflict';
+      throw conflict;
+    }
+    throw err;
+  }
+
+  console.info('[auth] merged Microsoft onto existing account', {
+    email,
+    uid: data.uid,
+    action: data.action,
+    unlinked: data.unlinked || [],
+  });
+
+  const result = await signInWithCredential(auth, credential);
+  return validateMicrosoftResult(result.user);
+}
+
 export async function signInWithMicrosoft() {
   const method = microsoftAuthMethod({ authDomain: AUTH_DOMAIN });
   if (method === 'popup') {
-    const result = await signInWithPopup(auth, microsoftProvider());
-    return validateMicrosoftResult(result.user);
+    try {
+      const result = await signInWithPopup(auth, microsoftProvider());
+      return validateMicrosoftResult(result.user);
+    } catch (err) {
+      const merged = await mergeExistingAccountWithMicrosoft(err);
+      if (merged) return merged;
+      throw err;
+    }
   }
   markRedirectStarted();
   try {
@@ -378,6 +444,22 @@ async function completeMicrosoftRedirectOnce() {
   try {
     result = await getRedirectResult(auth);
   } catch (err) {
+    // A legacy password account with the same email is recoverable: link
+    // Microsoft onto that UID and continue. Directory refusals are not.
+    try {
+      const merged = await mergeExistingAccountWithMicrosoft(err);
+      if (merged) {
+        consumeRedirectFlag();
+        return merged;
+      }
+    } catch (mergeErr) {
+      setDiag('redirect-merge', mergeErr, {
+        original: err?.code || null,
+      });
+      consumeRedirectFlag();
+      throw mergeErr;
+    }
+
     // Directory rejections arrive here wrapped by Firebase, with Entra's own
     // AADSTS text as the message. Record it so the cause is recoverable from
     // the UI instead of only a browser console.

@@ -150,8 +150,9 @@ That is the fastest way to separate these two.
 | `auth/invalid-oauth-client-id` | Entra client ID or secret wrong or expired. | Re-enter both in the Firebase Microsoft provider. |
 | `auth/missing-email` | Entra issued a token with no `email` claim, and access is granted by verified company address. | Confirm the account has a mail address and the registration returns the email claim (step 3). |
 | `auth/redirect-session-lost` — sign-in succeeds at Microsoft, then returns to the login page | If the helper is cross-origin, the browser blocked its storage. If it is already same-origin, the prompt was most likely cancelled or dismissed. | Apply same-origin sign-in (step 6), or retry. Run `npm run verify:sso` to tell the two apart. |
+| `auth/account-exists-with-different-credential` | A legacy password (or other) Auth user already owns this email. | Automatic: sign-in links Microsoft onto that existing UID, drops the old providers, and continues. No administrator action needed unless the merge itself fails. |
+| `auth/microsoft-oid-conflict` | This email is already linked to a different Microsoft directory subject. | Inspect the Firebase Authentication user; two Microsoft identities cannot share one Skyway profile. |
 | `auth/profile-identity-mismatch` | The Microsoft address does not match `users/{uid}.email`. | Relink or correct the profile in Firestore rather than creating a second one. |
-| `auth/account-exists-with-different-credential` | The email already exists as a password account. | Link or migrate the user in Firebase Authentication. |
 | `permission-denied` from Firestore on the login screen | Expected. Data subscriptions start before sign-in completes and are refused until there is a session. | Nothing, unless it persists after a successful sign-in — then it is a Firestore rules problem, not an auth one. |
 
 The login screen prints the failing code, the specific console setting to
@@ -177,8 +178,25 @@ code rather than showing the generic wrapper.
 | `AADSTS50020` | Account is outside the directory. | Sign in with the `@flyskyway.com` work account. |
 | `AADSTS65001` | Admin consent not granted. | Grant consent for `openid`, `profile`, `email`. |
 
-## Existing users
+## Existing users / merging accounts that share an email
 
 Microsoft must return the same address already stored in `users/{uid}.email`.
-On `auth/account-exists-with-different-credential`, link or migrate that user
-in Firebase Authentication rather than creating a duplicate profile.
+Legacy accounts created with email/password (or another provider) keep that
+address on a Firebase Auth user whose UID keys every operational document.
+
+When Microsoft sign-in hits `auth/account-exists-with-different-credential`,
+the app merges automatically:
+
+1. The pending Microsoft access token is sent to `/api/auth-link-microsoft`.
+2. The server confirms the token with Microsoft Graph, finds the existing Auth
+   user by email, links `microsoft.com` onto that UID, and unlinks password
+   (and any other non-Microsoft providers).
+3. The client retries the pending credential against the same UID.
+
+Role, approval, duty history, and chat membership are unchanged because the
+UID never changes. A safety net in `/api/auth-profile-bootstrap` also reclaims
+a Firestore profile by email if an Auth UID somehow changed.
+
+There is nothing to bulk-merge ahead of time: Microsoft's directory subject
+(`oid`) is only known when that person signs in. The first successful
+Microsoft login for each legacy email performs the merge.

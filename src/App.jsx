@@ -16437,6 +16437,14 @@ function describeAuthError(err, authContext = null) {
       message: 'Microsoft signed you in but returned no email address.',
       fix: 'In Entra ID, confirm the account has a mail address and that the app registration requests the "email" scope and includes the email optional claim. Skyway Ops authorizes accounts by their verified company address, so it cannot proceed without one.',
     },
+    'auth/account-exists-with-different-credential': {
+      message: 'This email already has a Skyway account from before Microsoft sign-in.',
+      fix: 'Sign-in normally merges that account automatically — keep the same @flyskyway.com address and try again. If this message keeps appearing, ask an administrator to confirm the account exists in Firebase Authentication under that email.',
+    },
+    'auth/microsoft-oid-conflict': {
+      message: 'This email is already linked to a different Microsoft account.',
+      fix: 'An administrator needs to inspect the Firebase Authentication user for this address. Two Microsoft directory subjects cannot share one Skyway profile.',
+    },
     // Three genuinely different situations produce "no session came back", and
     // giving the cross-origin fix to someone who has already applied it sends
     // them to redo settings that are correct. Branch on what is actually
@@ -16469,7 +16477,6 @@ function describeAuthError(err, authContext = null) {
     'auth/company-account-required': 'Use your @flyskyway.com Microsoft account.',
     'auth/profile-identity-mismatch': 'This Microsoft account does not match the Skyway profile on file. Contact an administrator to relink it.',
     'auth/account-disabled': 'This account has been deactivated. Contact a Skyway administrator.',
-    'auth/account-exists-with-different-credential': 'This email was previously registered another way. Ask an administrator to migrate the account to Microsoft.',
     'auth/popup-blocked': 'Microsoft sign-in was blocked by the browser. Allow pop-ups and try again.',
     'auth/cancelled-popup-request': 'The sign-in request was cancelled. Please try again.',
     'auth/redirect-cancelled-by-user': 'Sign-in was cancelled before it finished.',
