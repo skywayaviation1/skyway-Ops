@@ -128,3 +128,53 @@ Microsoft must return the same email address already stored in
 `users/{uid}.email`. If Firebase reports
 `auth/account-exists-with-different-credential`, link or migrate that user in
 Firebase Authentication rather than creating a duplicate operational profile.
+
+## Diagnosing `auth/redirect-session-lost` when same-origin is already configured
+
+If `VITE_FIREBASE_AUTH_DOMAIN` already matches the serving hostname, this error
+is **not** the Safari storage problem. Confirm the configuration is live, then
+look elsewhere.
+
+Verify the deployment actually shipped the setting. `VITE_*` variables are
+compiled in at build time, so the value must appear in the served bundle and the
+project must have been redeployed after the variable was set:
+
+```bash
+HOST=www.skyway.app
+ASSET=$(curl -s "https://$HOST" | grep -o 'assets/index-[A-Za-z0-9_-]*\.js' | tail -1)
+curl -s "https://$HOST/$ASSET" | grep -o '"[^"]*"\.trim()||"[^"]*"'
+# expect the configured hostname before .trim()
+```
+
+Verify the same-origin proxy serves Firebase's real helper, including its
+relative scripts. If any of these return HTML instead of JavaScript, the handler
+page cannot execute and sign-in returns with no session:
+
+```bash
+for p in /__/auth/handler /__/auth/handler.js /__/auth/experiments.js; do
+  curl -s -o /dev/null -w "$p %{http_code} %{content_type}\n" "https://$HOST$p"
+done
+# expect 200 text/html for handler and 200 text/javascript for the scripts
+```
+
+Confirm the apex domain redirects to the canonical host rather than serving the
+app itself. Firebase persistence is per-origin, so `skyway.app` and
+`www.skyway.app` serving independently would strand the session on whichever
+origin the helper used:
+
+```bash
+curl -s -o /dev/null -D- https://skyway.app/ | grep -i '^location'
+# expect a 308 to the canonical host
+```
+
+When all three pass, the remaining causes are, in order of likelihood:
+
+1. the Microsoft prompt was cancelled or dismissed — retry once;
+2. the hostname is missing from Firebase Authentication → Authorized domains;
+3. `https://<host>/__/auth/handler` is missing from the Entra app's redirect URIs;
+4. the account is outside the tenant in `VITE_MICROSOFT_TENANT_ID`;
+5. the account has no `email` claim, which surfaces as `auth/missing-email`.
+
+The login screen's **Technical detail for an administrator** shows the recorded
+stage, the auth domain in use, whether the helper is same-origin, and how long
+the browser was away, which separates a cancelled prompt from a blocked helper.
