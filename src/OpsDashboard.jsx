@@ -29,10 +29,9 @@ import {
   buildExceptions, buildFleetRows, buildTimeline, formatCountdown,
   isFlightLeg, normalizeTail, summarizeFleet, toMillis, MS_HOUR,
 } from './ops-dashboard-data.js';
+import { resolveManagedTails } from './fleet-config.js';
 
 const TrackingMapLazy = lazy(() => import('./TrackingMap.jsx'));
-
-const FALLBACK_FLEET = ['N20UF', 'N168ZZ', 'N286N', 'N444AM', 'N651TW', 'N551FP', 'N85AH', 'N525CR'];
 
 const SEVERITY_TONE = { critical: 'danger', warning: 'warning', info: 'info' };
 
@@ -518,12 +517,7 @@ export default function OpsDashboard({
   // The managed fleet. Tails that appear only on the schedule are added by
   // buildFleetRows and flagged off-fleet, so they stay visible without
   // distorting availability.
-  const fleetTails = useMemo(() => {
-    const configured = Array.isArray(config?.fleetTails) && config.fleetTails.length > 0
-      ? config.fleetTails
-      : FALLBACK_FLEET;
-    return Array.from(new Set(configured.map(normalizeTail).filter(Boolean)));
-  }, [config?.fleetTails]);
+  const fleetTails = useMemo(() => resolveManagedTails(config), [config]);
 
   const deriveForTail = useMemo(() => {
     if (!data.deriveStatus) return null;
@@ -539,6 +533,7 @@ export default function OpsDashboard({
     deriveAircraftStatus: deriveForTail,
     now,
   }), [fleetTails, trips, data.positions, data.tripStates, data.aogEvents, deriveForTail, now]);
+  const managedRows = useMemo(() => fleetRows.filter((row) => !row.offFleet), [fleetRows]);
 
   const crewRows = useMemo(
     () => buildCrewRows(data.dutyPeriods, data.legalityFn, now),
@@ -670,10 +665,10 @@ export default function OpsDashboard({
           <SectionCard
             title="Fleet board"
             subtitle={summary.offFleet > 0
-              ? `${summary.total} managed · ${summary.offFleet} off-fleet on today's schedule`
+              ? `${summary.total} managed · ${summary.offFleet} schedule-only aircraft excluded`
               : 'Live position, airworthiness and next movement'}
             icon={Gauge}
-            count={fleetRows.length}
+            count={managedRows.length}
           >
             <div className="hidden grid-cols-[8.5rem_7rem_1fr_1fr_5.5rem] gap-3 border-b border-edge bg-surface-sunken px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-content-subtle md:grid">
               <span>Aircraft</span>
@@ -682,10 +677,10 @@ export default function OpsDashboard({
               <span>Current / next leg</span>
               <span className="text-right">ETA</span>
             </div>
-            {fleetRows.length === 0 ? (
+            {managedRows.length === 0 ? (
               <EmptyState icon={Plane} title="No aircraft configured" description="Add tails to the fleet to populate the board." />
             ) : (
-              fleetRows.map((row) => (
+              managedRows.map((row) => (
                 <FleetRow key={row.tail} row={row} onSelectTrip={onSelectTrip} />
               ))
             )}

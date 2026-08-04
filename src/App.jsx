@@ -63,6 +63,7 @@ const OpsCommandCenterLazy = lazy(() => import('./OpsCommandCenter.jsx'));
 // live Firestore subscriptions and pulls in the map, so it must not load for
 // roles that never see it.
 const OpsDashboardLazy = lazy(() => import('./OpsDashboard.jsx'));
+const AdminSettingsLazy = lazy(() => import('./AdminSettings.jsx'));
 
 // Code-split: Lodging tab loads only when a user opens it on a trip.
 // Trip detail is the most-touched screen — keeping this lazy means the
@@ -149,6 +150,7 @@ import {
 } from './travel-actions.js';
 import { compareNames } from './name-matching.js';
 import { lookupCoords } from './airport-coords.js';
+import { resolveManagedTails } from './fleet-config.js';
 
 /* ============================================================
    iCal parser — handles line folding & VEVENT extraction
@@ -16715,7 +16717,7 @@ function FleetStatusTab({ currentUser, fleetTails }) {
     setSeeding(true);
     try {
       const m = await import('./firebase-maint.js');
-      for (const t of (fleetTails && fleetTails.length ? fleetTails : m.FLEET_TAILS)) {
+      for (const t of (Array.isArray(fleetTails) ? fleetTails : m.FLEET_TAILS)) {
         // eslint-disable-next-line no-await-in-loop
         await m.upsertAircraft(t);
       }
@@ -16735,7 +16737,7 @@ function FleetStatusTab({ currentUser, fleetTails }) {
       if (cancelled) return;
       const tails = fleet.length
         ? fleet.map(a => a.tail)
-        : (fleetTails && fleetTails.length ? fleetTails : m.FLEET_TAILS);
+        : (Array.isArray(fleetTails) ? fleetTails : m.FLEET_TAILS);
       const map = {};
       for (const t of tails) map[t] = m.deriveAircraftStatus(t, squawks, mel);
       setStatusByTail(map);
@@ -16745,7 +16747,7 @@ function FleetStatusTab({ currentUser, fleetTails }) {
 
   const tails = fleet.length
     ? fleet.map(a => a.tail)
-    : (fleetTails && fleetTails.length ? fleetTails : []);
+    : (Array.isArray(fleetTails) ? fleetTails : []);
 
   const fmtTimes = (a) => {
     const af = a && a.times && a.times.airframe;
@@ -21864,6 +21866,7 @@ const NAV_SECTIONS = [
   { id: 'expenses',  label: 'Expenses',    icon: Mail,          roles: ['crew', 'sales', 'ops', 'accounting', 'admin'] },
   { id: 'wallet',    label: 'Wallet',      icon: CreditCard,    roles: ['crew', 'sales', 'ops', 'accounting', 'admin'] },
   { id: 'users',     label: 'Users',       icon: Users,         roles: ['ops', 'admin'] },
+  { id: 'settings',  label: 'Settings',    icon: SettingsIcon,  roles: ['admin'] },
 ];
 
 const NAV_GROUPS = [
@@ -21873,7 +21876,7 @@ const NAV_GROUPS = [
   { id: 'crew',     label: 'Crew',     icon: Users,         children: ['duty', 'currency', 'wear', 'reports', 'expenses'] },
   { id: 'aircraft', label: 'Aircraft', icon: Wrench,        children: ['maint', 'aog'] },
   // Labelled "Finance" for roles without user administration.
-  { id: 'admin',    label: 'Admin',    icon: Building2,     altLabel: 'Finance', children: ['wallet', 'users'] },
+  { id: 'admin',    label: 'Admin',    icon: Building2,     altLabel: 'Finance', children: ['wallet', 'users', 'settings'] },
 ];
 
 if (import.meta.env?.DEV) {
@@ -22834,16 +22837,16 @@ function airportCoords(code) {
    ============================================================ */
 
 function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
-  const fleetTails = useMemo(() => (
-    Array.isArray(config?.fleetTails) && config.fleetTails.length > 0
-      ? config.fleetTails
-      : ['N20UF', 'N168ZZ', 'N286N', 'N444AM', 'N651TW', 'N551FP', 'N85AH', 'N525CR']
-  ), [config?.fleetTails]);
+  const fleetTails = useMemo(() => resolveManagedTails(config), [config]);
 
   const [selectedTail, setSelectedTail] = useState(fleetTails[0]);
   const [tailStates, setTailStates] = useState({});
   const [loadingFleet, setLoadingFleet] = useState(true);
   const [lastPolledAt, setLastPolledAt] = useState(null);
+
+  useEffect(() => {
+    if (!fleetTails.includes(selectedTail)) setSelectedTail(fleetTails[0] || null);
+  }, [fleetTails, selectedTail]);
 
   // Poll every tail's FlightAware position. One request for the whole fleet.
   useEffect(() => {
@@ -27783,6 +27786,7 @@ export default function CharterOps() {
   // FlightAware live tracking kill switch — synced from Firestore so admin can
   // disable it cluster-wide if costs spike. Default: enabled.
   const [trackingEnabled, setTrackingEnabled] = useState(true);
+  const managedFleetTails = useMemo(() => resolveManagedTails(config), [config]);
 
   // Subscribe to FlightAware tracking config — admin kill switch
   useEffect(() => {
@@ -27815,6 +27819,40 @@ export default function CharterOps() {
         });
       } catch (err) {
         console.warn('[tracking] config subscribe failed:', err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (unsub) unsub();
+    };
+  }, []);
+
+  // Shared managed-fleet source of truth. Schedule feeds legitimately contain
+  // vendor and partner aircraft; this document says which tails are actually
+  // Skyway fleet without deleting any trip that references another tail.
+  useEffect(() => {
+    let unsub = null;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { db } = await import('./firebase.js');
+        const { doc, onSnapshot } = await import('firebase/firestore');
+        if (cancelled) return;
+        unsub = onSnapshot(doc(db, 'app-config', 'fleet'), (snap) => {
+          if (cancelled || !snap.exists()) return;
+          const data = snap.data() || {};
+          setConfig((previous) => ({
+            ...(previous || {}),
+            fleetConfigured: data.configured === true,
+            fleetTails: Array.isArray(data.managedTails) ? data.managedTails : [],
+            fleetUpdatedAt: data.updatedAt || null,
+            fleetUpdatedByName: data.updatedByName || null,
+          }));
+        }, (err) => {
+          console.warn('[fleet] config subscribe failed:', err);
+        });
+      } catch (err) {
+        console.warn('[fleet] config load failed:', err);
       }
     })();
     return () => {
@@ -28148,7 +28186,17 @@ export default function CharterOps() {
       const cfg = await storage.get('settings:config', false, null);
       const effectiveCfg = cfg || { icalUrl: DEFAULT_ICAL_URL, opsEmail: '', crewName: '' };
       if (!effectiveCfg.icalUrl) effectiveCfg.icalUrl = DEFAULT_ICAL_URL;
-      setConfig(effectiveCfg);
+      setConfig((previous) => (
+        previous?.fleetConfigured === true
+          ? {
+              ...effectiveCfg,
+              fleetConfigured: true,
+              fleetTails: previous.fleetTails || [],
+              fleetUpdatedAt: previous.fleetUpdatedAt || null,
+              fleetUpdatedByName: previous.fleetUpdatedByName || null,
+            }
+          : effectiveCfg
+      ));
 
       const cached = await storage.get('cached:ical', false, null);
       if (cached?.text) {
@@ -28718,7 +28766,14 @@ export default function CharterOps() {
           syncStatus={syncStatus}
           now={now}
           tripCount={allTrips.length}
-          onOpenSettings={() => setShowSettings(true)}
+          onOpenSettings={() => {
+            if (currentUser?.role === 'admin') {
+              setSection('settings');
+              setSelectedId(null);
+            } else {
+              setShowSettings(true);
+            }
+          }}
           onOpenProfile={() => setShowProfile(true)}
           themeMode={themeMode}
           onToggleTheme={() => setThemeMode((m) => m === 'classy' ? 'dark' : 'classy')}
@@ -28838,7 +28893,7 @@ export default function CharterOps() {
                 <div className="sticky top-0 z-10 border-b border-edge bg-slate-950/80 px-3 py-2">
                   <div className="sw-no-scrollbar flex items-center gap-1.5 overflow-x-auto">
                     <TailChip label="All" active={tailFilter === ''} onClick={() => setTailFilter('')} />
-                    {SKYWAY_TAILS.map(tail => (
+                    {managedFleetTails.map(tail => (
                       <TailChip key={tail} label={tail} active={tailFilter === tail} onClick={() => setTailFilter(tail)} />
                     ))}
                   </div>
@@ -29170,7 +29225,7 @@ export default function CharterOps() {
             currentUser={currentUser}
             users={users}
             allTrips={allTrips}
-            fleetTails={Array.isArray(config?.fleetTails) ? config.fleetTails : ['N20UF', 'N168ZZ', 'N286N', 'N444AM', 'N651TW', 'N551FP', 'N85AH', 'N525CR']}
+            fleetTails={managedFleetTails}
           />
         )}
 
@@ -29270,6 +29325,23 @@ export default function CharterOps() {
           </div>
         )}
 
+        {/* === ADMIN SETTINGS === */}
+        {section === 'settings' && currentUser.role === 'admin' && (
+          <Suspense fallback={
+            <div className="flex flex-1 items-center justify-center text-content-muted">
+              <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading organization settings…
+            </div>
+          }>
+            <AdminSettingsLazy
+              currentUser={currentUser}
+              config={config}
+              allTrips={allTrips}
+              trackingEnabled={trackingEnabled}
+              onOpenAdvanced={() => setShowSettings(true)}
+            />
+          </Suspense>
+        )}
+
         {/* === DUTY SECTION (admin duty/rest oversight) === */}
         {section === 'duty' && (currentUser.role === 'admin' || currentUser._impersonating === true) && config?.dutyTrackerEnabled && (
           <div className="flex-1 overflow-y-auto scroll-area bg-slate-950 p-4 md:p-6">
@@ -29338,7 +29410,14 @@ export default function CharterOps() {
           currentSection={section}
           setCurrentSection={(s) => { setSection(s); setSelectedId(null); }}
           currentUser={currentUser}
-          onOpenSettings={() => setShowSettings(true)}
+          onOpenSettings={() => {
+            if (currentUser?.role === 'admin') {
+              setSection('settings');
+              setSelectedId(null);
+            } else {
+              setShowSettings(true);
+            }
+          }}
           onToggleTheme={() => setThemeMode((m) => m === 'classy' ? 'dark' : 'classy')}
           themeMode={themeMode}
           onLogout={signOut}

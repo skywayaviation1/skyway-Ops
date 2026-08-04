@@ -111,7 +111,11 @@ export function subscribeFleet(onUpdate) {
     qy,
     (snap) => {
       const list = [];
-      snap.forEach((d) => list.push({ ...d.data(), id: d.id }));
+      snap.forEach((d) => {
+        const data = d.data() || {};
+        if (data.active === false || data.fleetRole === 'scheduled-only' || data.fleetRole === 'retired') return;
+        list.push({ ...data, id: d.id });
+      });
       list.sort((a, b) => String(a.tail).localeCompare(String(b.tail)));
       onUpdate(list);
     },
