@@ -33,8 +33,8 @@ function buildAppRedirect(success, message) {
     qbo: success ? 'connected' : 'error',
     msg: message || '',
   });
-  params.set('section', 'expenses');
-  return `${appUrl}/?${params.toString()}#expenses`;
+  params.set('section', 'accounting');
+  return `${appUrl}/?${params.toString()}#accounting`;
 }
 
 export default async function handler(req, res) {

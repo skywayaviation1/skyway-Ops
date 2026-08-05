@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   buildBillPayload,
-  buildPurchasePayload,
   qboDate,
   qboDocNumber,
   qboSyncEligibility,
@@ -25,17 +24,12 @@ function expense(overrides = {}) {
 }
 
 const expenseAccount = { Id: '10', Name: 'FBO & Handling' };
-const paymentAccount = { Id: '20', Name: 'Amex' };
 const vendor = { Id: '30', DisplayName: 'Signature Flight' };
 
-test('company-card expenses require statement reconciliation', () => {
+test('company-card expenses must match a posted QBO charge', () => {
   assert.deepEqual(
     qboSyncEligibility(expense({ reconciledAt: null })),
-    { eligible: false, reason: 'Company-card expense must be reconciled first' },
-  );
-  assert.deepEqual(
-    qboSyncEligibility(expense()),
-    { eligible: true, entityType: 'Purchase' },
+    { eligible: false, reason: 'Match this receipt to its posted QuickBooks credit-card charge' },
   );
 });
 
@@ -50,18 +44,6 @@ test('draft, zero and already-synced expenses are not eligible', () => {
   assert.equal(qboSyncEligibility(expense({ status: 'draft' })).eligible, false);
   assert.equal(qboSyncEligibility(expense({ totalAmount: 0 })).eligible, false);
   assert.equal(qboSyncEligibility(expense({ qbTransactionId: '123' })).reason, 'Already synced');
-});
-
-test('purchase payload posts to card and expense accounts', () => {
-  const item = expense();
-  const payload = buildPurchasePayload({ expense: item, expenseAccount, paymentAccount, vendor });
-  assert.equal(payload.PaymentType, 'CreditCard');
-  assert.deepEqual(payload.AccountRef, { value: '20', name: 'Amex' });
-  assert.deepEqual(payload.EntityRef, { value: '30', name: 'Signature Flight', type: 'Vendor' });
-  assert.equal(payload.Line[0].Amount, 421.5);
-  assert.equal(payload.Line[0].AccountBasedExpenseLineDetail.AccountRef.value, '10');
-  assert.equal(payload.TxnDate, '2026-08-04');
-  assert.match(payload.PrivateNote, /skyway-ops:exp-/);
 });
 
 test('bill payload is payable to the crew vendor', () => {

@@ -40,25 +40,6 @@ function expenseLine(expense, expenseAccount) {
   };
 }
 
-export function buildPurchasePayload({ expense, expenseAccount, paymentAccount, vendor }) {
-  const payload = {
-    PaymentType: 'CreditCard',
-    AccountRef: {
-      value: String(paymentAccount.Id),
-      name: paymentAccount.Name,
-    },
-    TxnDate: qboDate(expense),
-    DocNumber: qboDocNumber(expense),
-    PrivateNote: qboPrivateNote(expense),
-    TotalAmt: round2(expense.totalAmount),
-    Line: [expenseLine(expense, expenseAccount)],
-  };
-  if (vendor?.Id) {
-    payload.EntityRef = { value: String(vendor.Id), name: vendor.DisplayName, type: 'Vendor' };
-  }
-  return payload;
-}
-
 export function buildBillPayload({ expense, expenseAccount, vendor }) {
   return {
     VendorRef: {
@@ -82,11 +63,11 @@ export function qboSyncEligibility(expense) {
     return { eligible: false, reason: 'Expense amount must be greater than zero' };
   }
   if (!expense.paidWith) return { eligible: false, reason: 'Payment account is not tagged' };
-  if (expense.paidWith !== 'personal' && !expense.reconciledAt) {
-    return { eligible: false, reason: 'Company-card expense must be reconciled first' };
+  if (expense.paidWith !== 'personal') {
+    return {
+      eligible: false,
+      reason: 'Match this receipt to its posted QuickBooks credit-card charge',
+    };
   }
-  return {
-    eligible: true,
-    entityType: expense.paidWith === 'personal' ? 'Bill' : 'Purchase',
-  };
+  return { eligible: true, entityType: 'Bill' };
 }

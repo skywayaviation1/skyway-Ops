@@ -29,13 +29,31 @@ test('accounting and admin can connect and disconnect QuickBooks', async () => {
   assert.match(disconnect, /\['accounting', 'admin'\]/);
 });
 
-test('direct sync is server-side, idempotent and writes QBO identity back', async () => {
+test('personal Bill sync is server-side and idempotent', async () => {
   const sync = await source('api/quickbooks-sync-expenses.js');
   assert.match(sync, /findExisting\(eligibility\.entityType, expense\)/);
+  assert.match(sync, /Company-card expenses must link to a posted QBO card charge/);
+  assert.doesNotMatch(sync, /createEntity\('purchase'/);
   assert.match(sync, /qbTransactionId:/);
   assert.match(sync, /qbEntityType:/);
   assert.match(sync, /qbCompanyId:/);
   assert.match(sync, /qbSyncHistory:/);
+});
+
+test('company-card receipts link to verified existing QBO Purchases', async () => {
+  const link = await source('api/quickbooks-link-expenses.js');
+  assert.match(link, /qboRequest\(`\/purchase\/\$\{purchaseId\}/);
+  assert.match(link, /where\('qbTransactionId', '==', purchaseId\)/);
+  assert.match(link, /qboLinkPatch/);
+  assert.doesNotMatch(link, /createEntity\('purchase'/);
+});
+
+test('accounting dashboard loads QBO reports, cards and posted purchases', async () => {
+  const accounting = await source('api/quickbooks-accounting-data.js');
+  assert.match(accounting, /reports\/ProfitAndLoss/);
+  assert.match(accounting, /reports\/BalanceSheet/);
+  assert.match(accounting, /select \* from Purchase/);
+  assert.match(accounting, /account\.type === 'Credit Card'/);
 });
 
 test('token refresh persists rotated access and refresh tokens', async () => {

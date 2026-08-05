@@ -13,11 +13,9 @@ import {
 } from './_quickbooks.js';
 import {
   accountForCategory,
-  paymentAccountLabel,
 } from '../src/expense-export.js';
 import {
   buildBillPayload,
-  buildPurchasePayload,
   qboDocNumber,
   qboSyncEligibility,
 } from '../src/qbo-expense.js';
@@ -28,17 +26,12 @@ function refFromMap(map, key) {
   return { Id: String(value.id), Name: value.name };
 }
 
-async function resolveAccount(connection, expense, kind) {
-  const isPayment = kind === 'payment';
-  const configured = isPayment
-    ? refFromMap(connection.paymentAccountMap, expense.paidWith)
-    : refFromMap(connection.expenseAccountMap, expense.category);
+async function resolveAccount(connection, expense) {
+  const configured = refFromMap(connection.expenseAccountMap, expense.category);
   if (configured) return configured;
 
-  const name = isPayment
-    ? paymentAccountLabel(expense)
-    : accountForCategory(expense.category);
-  if (!name) throw new Error(`${isPayment ? 'Payment' : 'Expense'} account is not mapped`);
+  const name = accountForCategory(expense.category);
+  if (!name) throw new Error('Expense account is not mapped');
   const account = await queryOne('Account', `Name = '${qboString(name)}' and Active = true`);
   if (!account) {
     throw new Error(`QuickBooks account "${name}" was not found. Map it in Expenses → QuickBooks.`);
@@ -87,23 +80,14 @@ async function syncOne(connection, expense) {
     };
   }
 
-  const personal = eligibility.entityType === 'Bill';
-  const [expenseAccount, vendor] = await Promise.all([
-    resolveAccount(connection, expense, 'expense'),
-    resolveVendor(expense, personal),
-  ]);
-  let entity;
-  if (personal) {
-    entity = await createEntity('bill', buildBillPayload({ expense, expenseAccount, vendor }));
-  } else {
-    const paymentAccount = await resolveAccount(connection, expense, 'payment');
-    entity = await createEntity('purchase', buildPurchasePayload({
-      expense,
-      expenseAccount,
-      paymentAccount,
-      vendor,
-    }));
+  if (eligibility.entityType !== 'Bill') {
+    throw new Error('Company-card expenses must link to a posted QBO card charge');
   }
+  const [expenseAccount, vendor] = await Promise.all([
+    resolveAccount(connection, expense),
+    resolveVendor(expense, true),
+  ]);
+  const entity = await createEntity('bill', buildBillPayload({ expense, expenseAccount, vendor }));
   if (!entity?.Id) throw new Error(`QuickBooks did not return a ${eligibility.entityType} ID`);
   return {
     status: 'synced',

@@ -14,7 +14,7 @@ export default async function handler(req, res) {
     return;
   }
   try {
-    await authorizeQboCaller(req.body?.idToken, ['accounting', 'admin', 'ops']);
+    await authorizeQboCaller(req.body?.idToken, ['accounting', 'admin']);
     res.status(200).json(publicConnection(await readConnection()));
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message || 'Could not read QuickBooks status' });

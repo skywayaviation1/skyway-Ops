@@ -48,7 +48,7 @@ const PushSettingsLazy = lazy(() => import('./PushSettings.jsx'));
 // Code-split: Ops Console loads only when ops/admin opens that section.
 const OpsConsoleLazy = lazy(() => import('./OpsConsole.jsx'));
 const OpsShiftLogLazy = lazy(() => import('./OpsShiftLog.jsx'));
-const ExpenseAccountingLazy = lazy(() => import('./ExpenseAccounting.jsx'));
+const AccountingLazy = lazy(() => import('./Accounting.jsx'));
 
 // Code-split: MuteToggle loads only when a chat surface renders.
 const MuteToggleLazy = lazy(() => import('./MuteToggle.jsx'));
@@ -487,7 +487,7 @@ const USER_ROLES = {
   sales:      { label: 'SALES',      tone: 'green',  description: 'Sales team — trip creation, broker contact' },
   ops:        { label: 'OPS',        tone: 'amber',  description: 'Dispatch, scheduling, ground ops' },
   maint:      { label: 'MAINT',      tone: 'red',    description: 'Maintenance — AOG events and aircraft status' },
-  accounting: { label: 'ACCOUNTING', tone: 'violet', description: 'Read-only access to all expenses + CSV export' },
+  accounting: { label: 'ACCOUNTING', tone: 'violet', description: 'QuickBooks reporting, card matching, expenses, and exports' },
   admin:      { label: 'ADMIN',      tone: 'violet', description: 'Full access — manage users & system' },
 };
 
@@ -15375,7 +15375,7 @@ function QuickBooksConnectionPanel({ currentUser }) {
   const [error, setError] = useState(null);
   const [info, setInfo] = useState(null);
 
-  const isAdmin = currentUser?.role === 'admin';
+  const canManageQbo = ['accounting', 'admin'].includes(currentUser?.role);
 
   // Subscribe to connection state. Non-admin still sees the panel but it's
   // read-only and the Connect/Disconnect buttons are hidden.
@@ -15507,7 +15507,7 @@ function QuickBooksConnectionPanel({ currentUser }) {
               })()}
             </div>
           </div>
-          {isAdmin && (
+          {canManageQbo && (
             <button
               onClick={handleDisconnect}
               disabled={busy}
@@ -15518,7 +15518,7 @@ function QuickBooksConnectionPanel({ currentUser }) {
             </button>
           )}
           <p className="text-[10px] text-slate-500" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-            Approved expenses can be pushed to QuickBooks from the EXPENSES tab. The push attempts to match each receipt against an existing bank-feed transaction in QBO; reimbursements are pushed as Bills payable to the submitter.
+            Use the Accounting page to match company-card receipts to posted QBO card Purchases. Personal reimbursements create Bills payable to the submitter.
           </p>
         </div>
       ) : (
@@ -15526,7 +15526,7 @@ function QuickBooksConnectionPanel({ currentUser }) {
           <p className="text-xs text-slate-400" style={{ fontFamily: 'DM Sans, sans-serif' }}>
             Connect a QuickBooks Online company to push approved expenses directly. The connection is shared by all users — only one company at a time.
           </p>
-          {isAdmin ? (
+          {canManageQbo ? (
             <button
               onClick={handleConnect}
               disabled={busy}
@@ -15537,7 +15537,7 @@ function QuickBooksConnectionPanel({ currentUser }) {
             </button>
           ) : (
             <div className="p-2 border border-slate-700 bg-slate-900/40 text-[11px] text-slate-500">
-              Only admins can connect or disconnect QuickBooks. Ask an admin to set this up.
+              Accounting or an administrator can connect QuickBooks from the Accounting page.
             </div>
           )}
         </div>
@@ -21984,6 +21984,7 @@ const NAV_SECTIONS = [
   { id: 'aog',       label: 'AOG',         icon: AlertTriangle, roles: ['ops', 'admin'] },
 
   { id: 'expenses',  label: 'Expenses',    icon: Mail,          roles: ['crew', 'sales', 'ops', 'accounting', 'admin'] },
+  { id: 'accounting', label: 'Accounting',  icon: Building2,     roles: ['accounting', 'admin'] },
   { id: 'wallet',    label: 'Wallet',      icon: CreditCard,    roles: ['crew', 'sales', 'ops', 'accounting', 'admin'] },
   { id: 'users',     label: 'Users',       icon: Users,         roles: ['ops', 'admin'] },
   { id: 'settings',  label: 'Settings',    icon: SettingsIcon,  roles: ['admin'] },
@@ -21996,7 +21997,7 @@ const NAV_GROUPS = [
   { id: 'crew',     label: 'Crew',     icon: Users,         children: ['duty', 'currency', 'wear', 'reports', 'expenses'] },
   { id: 'aircraft', label: 'Aircraft', icon: Wrench,        children: ['maint', 'aog'] },
   // Labelled "Finance" for roles without user administration.
-  { id: 'admin',    label: 'Admin',    icon: Building2,     altLabel: 'Finance', children: ['wallet', 'users', 'settings'] },
+  { id: 'admin',    label: 'Admin',    icon: Building2,     altLabel: 'Finance', children: ['accounting', 'wallet', 'users', 'settings'] },
 ];
 
 if (import.meta.env?.DEV) {
@@ -24941,10 +24942,7 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName, u
   const [uploadSuccess, setUploadSuccess] = useState(null); // { vendor, amount, id } | null
   // Top-level view inside the expense screen. 'list' is the original
   // single-pane list + detail. 'reports' is the new analytics tab.
-  const [view, setView] = useState(() => {
-    if (typeof window === 'undefined') return 'list';
-    return new URLSearchParams(window.location.search).has('qbo') ? 'quickbooks' : 'list';
-  }); // 'list' | 'reports' | 'quickbooks'
+  const [view, setView] = useState('list'); // 'list' | 'reports'
   // Local-only copy of the freshly-uploaded expense. Firestore snapshots
   // take 100-500ms to round-trip on the new doc — without this, mobile
   // users see a brief flash back to the list view after parse completes
@@ -25483,7 +25481,7 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName, u
           </div>
         </div>
       )}
-      <aside className={`${selected && view !== 'quickbooks' ? 'hidden md:block' : 'block'} w-full ${view === 'quickbooks' ? '' : 'md:w-96 md:border-r md:border-slate-800'} overflow-y-auto scroll-area`}>
+      <aside className={`${selected ? 'hidden md:block' : 'block'} w-full md:w-96 md:border-r md:border-slate-800 overflow-y-auto scroll-area`}>
         {/* View toggle — switches between the standard list view and the
             new reports view. Reports is available to everyone (your own
             data, or all data for accounting/ops/admin). */}
@@ -25502,26 +25500,9 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName, u
           >
             REPORTS
           </button>
-          {canExport && (
-            <button
-              onClick={() => setView('quickbooks')}
-              className={`flex-1 border-l border-slate-800 px-4 py-2 text-[10px] tracking-widest ${view === 'quickbooks' ? 'bg-slate-900 text-cyan-300 border-b-2 border-b-cyan-400' : 'text-slate-500 hover:text-slate-300'}`}
-              style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}
-            >
-              QUICKBOOKS
-            </button>
-          )}
         </div>
 
-        {view === 'quickbooks' && canExport ? (
-          <Suspense fallback={<div className="flex items-center justify-center py-16 text-content-muted"><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading accounting tools…</div>}>
-            <ExpenseAccountingLazy
-              expenses={expenses}
-              users={users}
-              currentUser={currentUser}
-            />
-          </Suspense>
-        ) : view === 'reports' ? (
+        {view === 'reports' ? (
           <ExpenseReports
             expenses={expenses}
             canSeeAll={canSeeAll}
@@ -25696,7 +25677,7 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName, u
         )}
       </aside>
 
-      <main className={`flex-1 overflow-y-auto scroll-area ${view === 'quickbooks' ? 'hidden' : selected ? 'block' : 'hidden md:block'}`}>
+      <main className={`flex-1 overflow-y-auto scroll-area ${selected ? 'block' : 'hidden md:block'}`}>
         {selected ? (
           <ExpenseDetail
             expense={selected}
@@ -27866,7 +27847,7 @@ export default function CharterOps() {
     if (typeof window !== 'undefined') {
       const p = new URLSearchParams(window.location.search);
       if (
-        p.get('section') !== 'expenses'
+        p.get('section') !== 'accounting'
         && (p.get('qbo') === 'connected' || p.get('qbo') === 'error')
       ) return true;
     }
@@ -27935,7 +27916,7 @@ export default function CharterOps() {
     if (typeof window === 'undefined') return 'home';
     const params = new URLSearchParams(window.location.search);
     if (params.get('trip')) return 'schedule';
-    if (params.get('section') === 'expenses' || params.has('qbo')) return 'expenses';
+    if (params.get('section') === 'accounting' || params.has('qbo')) return 'accounting';
     return params.get('channel') || window.location.hash === '#comms' ? 'comms' : 'home';
   });
   // FlightAware live tracking kill switch — synced from Firestore so admin can
@@ -29325,6 +29306,17 @@ export default function CharterOps() {
             currentUserDisplayName={userDisplayName}
             users={users}
           />
+        )}
+
+        {/* === ACCOUNTING / QUICKBOOKS === */}
+        {section === 'accounting' && ['accounting', 'admin'].includes(currentUser?.role) && (
+          <Suspense fallback={
+            <div className="flex flex-1 items-center justify-center text-content-muted">
+              <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading accounting…
+            </div>
+          }>
+            <AccountingLazy currentUser={currentUser} users={users} />
+          </Suspense>
         )}
 
         {/* === MANIFESTS SECTION === */}

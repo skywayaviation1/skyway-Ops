@@ -138,7 +138,7 @@ export function buildQuickBooksRows(expenses, {
         'Payment Account': paymentAccountLabel(expense, cardLabels),
         'Card Last4': expense.reconciledCardLast4 || '',
         Billable: expense.paidWith === 'personal' ? 'Reimbursable' : 'Company paid',
-        Reconciled: expense.reconciledAt ? 'Yes' : 'No',
+        Reconciled: expense.qboReconciledAt || expense.qbTransactionId || expense.reconciledAt ? 'Yes' : 'No',
         'Reference No': expense.id || '',
         'Receipt URL': expense.receiptUrl || '',
       };
@@ -172,7 +172,7 @@ export function summarizeByUser(expenses, users = []) {
     };
     entry.count += 1;
     entry.total = round2(entry.total + money(expense.totalAmount));
-    if (expense.reconciledAt) entry.reconciled += 1;
+    if (expense.qboReconciledAt || expense.qbTransactionId || expense.reconciledAt) entry.reconciled += 1;
     totals.set(uid, entry);
   }
   return [...totals.values()].sort((a, b) => b.total - a.total);
