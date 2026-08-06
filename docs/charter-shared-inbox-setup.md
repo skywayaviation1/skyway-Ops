@@ -55,6 +55,11 @@ remove unscoped Entra Mail grants after the scoped RBAC assignment is working.
 Set them for Production and redeploy. The Graph client uses the client-
 credentials flow with `https://graph.microsoft.com/.default`.
 
+Administrators can confirm configuration status under **Organization
+settings → Mailboxes** (and Advanced tools). There is no per-user OAuth for
+the shared inbox — once the env vars are live, **Comms → Shared inbox**
+opens for admin and sales.
+
 ## Trip filing
 
 Filing an email writes a small audit record to:

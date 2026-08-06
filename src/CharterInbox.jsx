@@ -391,11 +391,19 @@ export default function CharterInbox({
     let cancelled = false;
     (async () => {
       try {
-        const [mailStatus] = await Promise.all([
-          mailboxApi(apiPath, 'status'),
-          loadFolders(),
-        ]);
-        if (!cancelled) setStatus(mailStatus);
+        const mailStatus = await mailboxApi(apiPath, 'status');
+        if (cancelled) return;
+        setStatus(mailStatus);
+        if (mailStatus?.configured === false) {
+          setError(
+            mailStatus.setupHint
+              || (personal
+                ? 'Personal work-mail integration is not configured on the server yet.'
+                : 'Shared mailbox Graph credentials are not configured. An administrator must set MICROSOFT_MAIL_* on the deployment (see Organization settings → Mailboxes).'),
+          );
+          return;
+        }
+        await loadFolders();
       } catch (err) {
         if (!cancelled) setError(err.message || 'Shared mailbox is not configured');
       }
@@ -403,7 +411,10 @@ export default function CharterInbox({
     return () => { cancelled = true; };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => { loadMessages({ query: '' }); }, [folderId]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (status?.configured === false) return;
+    loadMessages({ query: '' });
+  }, [folderId, status?.configured]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const openMessage = async (message) => {
     setSelectedId(message.id);

@@ -80,3 +80,12 @@ test('admin and sales profiles can persist an email signature', async () => {
   assert.match(auth, /'emailSignature'/);
   assert.match(app, /EMAIL SIGNATURE/);
 });
+
+test('shared mailbox status soft-fails when Graph credentials are missing', async () => {
+  const helper = await readFile(path.join(root, 'api/_charter-mail.js'), 'utf8');
+  const route = await readFile(path.join(root, 'api/charter-mail.js'), 'utf8');
+  assert.match(helper, /export function isSharedMailConfigured/);
+  assert.match(route, /isSharedMailConfigured\(\)/);
+  assert.match(route, /configured: false/);
+  assert.match(route, /setupHint/);
+});

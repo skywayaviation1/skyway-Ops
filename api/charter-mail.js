@@ -6,6 +6,7 @@ import {
   escapeHtml,
   graphRecipients,
   graphRequest,
+  isSharedMailConfigured,
   mailDb,
   mailboxPath,
   mailboxUpn,
@@ -294,12 +295,22 @@ export default async function handler(req, res) {
     const action = req.body?.action || 'status';
     let result;
     if (action === 'status') {
-      const user = await graphRequest(`${mailboxPath()}?$select=displayName,mail,userPrincipalName`);
-      result = {
-        connected: true,
-        mailbox: user.mail || user.userPrincipalName || mailboxUpn(),
-        displayName: user.displayName || 'Charter Sales',
-      };
+      if (!isSharedMailConfigured()) {
+        result = {
+          connected: false,
+          configured: false,
+          mailbox: mailboxUpn(),
+          setupHint: 'Set MICROSOFT_MAIL_TENANT_ID, MICROSOFT_MAIL_CLIENT_ID, and MICROSOFT_MAIL_CLIENT_SECRET on the deployment, then reopen Shared inbox.',
+        };
+      } else {
+        const user = await graphRequest(`${mailboxPath()}?$select=displayName,mail,userPrincipalName`);
+        result = {
+          connected: true,
+          configured: true,
+          mailbox: user.mail || user.userPrincipalName || mailboxUpn(),
+          displayName: user.displayName || 'Charter Sales',
+        };
+      }
     } else if (action === 'folders') {
       result = { folders: await listFoldersRecursive() };
     } else if (action === 'messages') {

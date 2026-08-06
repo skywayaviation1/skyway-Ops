@@ -10,6 +10,7 @@ import './theme-classy.css';
 const CommsScreenLazy = lazy(() => import('./CommsStream.jsx'));
 const CharterInboxLazy = lazy(() => import('./CharterInbox.jsx'));
 const UserMailboxLazy = lazy(() => import('./UserMailbox.jsx'));
+const MailboxSettingsPanelLazy = lazy(() => import('./MailboxSettingsPanel.jsx'));
 const TripEmailPanelLazy = lazy(() =>
   import('./CharterInbox.jsx').then((module) => ({ default: module.TripEmailPanel }))
 );
@@ -14748,6 +14749,12 @@ function MyProfileModal({ currentUser, onClose, onSave }) {
               </span>
             </label>
 
+          <div className="pt-2 border-t border-slate-800">
+            <Suspense fallback={<div className="text-xs text-slate-500 py-2">Loading mailbox settings…</div>}>
+              <MailboxSettingsPanelLazy currentUser={currentUser} placement="profile" />
+            </Suspense>
+          </div>
+
           {isMaintenanceRole && (
             <>
               <div className="pt-2 border-t border-slate-800">
@@ -16051,6 +16058,10 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
           <FlightAwarePanel currentUser={currentUser} allTrips={allTrips} />
 
           <QuickBooksConnectionPanel currentUser={currentUser} />
+
+          <Suspense fallback={<div className="text-xs text-slate-500 py-2">Loading mailbox settings…</div>}>
+            <MailboxSettingsPanelLazy currentUser={currentUser} placement="advanced" />
+          </Suspense>
 
           <TabOrderPanel currentUser={currentUser} />
 

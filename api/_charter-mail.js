@@ -25,6 +25,14 @@ export function mailboxUpn() {
   return String(process.env.CHARTER_MAILBOX_UPN || 'charters@flyskyway.com').trim().toLowerCase();
 }
 
+export function isSharedMailConfigured() {
+  return Boolean(
+    process.env.MICROSOFT_MAIL_TENANT_ID
+    && process.env.MICROSOFT_MAIL_CLIENT_ID
+    && process.env.MICROSOFT_MAIL_CLIENT_SECRET,
+  );
+}
+
 export async function authorizeMailboxCaller(idToken, roles = ['admin', 'sales']) {
   if (!idToken) {
     const error = new Error('idToken required');
@@ -68,8 +76,11 @@ async function graphToken(force = false) {
   const clientId = process.env.MICROSOFT_MAIL_CLIENT_ID;
   const clientSecret = process.env.MICROSOFT_MAIL_CLIENT_SECRET;
   if (!tenant || !clientId || !clientSecret) {
-    const error = new Error('Shared mailbox Graph credentials are not configured');
+    const error = new Error(
+      'Shared mailbox Graph credentials are not configured. An administrator must set MICROSOFT_MAIL_TENANT_ID, MICROSOFT_MAIL_CLIENT_ID, and MICROSOFT_MAIL_CLIENT_SECRET on the server (see Settings → Mailboxes).',
+    );
     error.status = 503;
+    error.code = 'shared_mail_not_configured';
     throw error;
   }
   const response = await fetch(

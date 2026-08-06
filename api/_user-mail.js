@@ -10,6 +10,15 @@ import {
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
 const TOKEN_PATH = '/oauth2/v2.0/token';
 
+export function isUserMailConfigured() {
+  const tenant = process.env.MICROSOFT_USER_MAIL_TENANT_ID
+    || process.env.MICROSOFT_MAIL_TENANT_ID;
+  const clientId = process.env.MICROSOFT_USER_MAIL_CLIENT_ID;
+  const clientSecret = process.env.MICROSOFT_USER_MAIL_CLIENT_SECRET;
+  const redirectUri = process.env.MICROSOFT_USER_MAIL_REDIRECT_URI;
+  return Boolean(tenant && clientId && clientSecret && redirectUri);
+}
+
 export function userMailConfig() {
   const tenant = process.env.MICROSOFT_USER_MAIL_TENANT_ID
     || process.env.MICROSOFT_MAIL_TENANT_ID;
@@ -17,8 +26,11 @@ export function userMailConfig() {
   const clientSecret = process.env.MICROSOFT_USER_MAIL_CLIENT_SECRET;
   const redirectUri = process.env.MICROSOFT_USER_MAIL_REDIRECT_URI;
   if (!tenant || !clientId || !clientSecret || !redirectUri) {
-    const error = new Error('Personal work-mail integration is not configured');
+    const error = new Error(
+      'Personal work-mail integration is not configured. An administrator must set MICROSOFT_USER_MAIL_CLIENT_ID, MICROSOFT_USER_MAIL_CLIENT_SECRET, MICROSOFT_USER_MAIL_REDIRECT_URI (and tenant) on the server, then use Profile or Settings → Mailboxes to connect.',
+    );
     error.status = 503;
+    error.code = 'user_mail_not_configured';
     throw error;
   }
   return { tenant, clientId, clientSecret, redirectUri };
@@ -70,9 +82,19 @@ export async function readUserMailbox(uid) {
 }
 
 export function publicUserMailbox(connection) {
-  if (!connection) return { connected: false };
+  const configured = isUserMailConfigured();
+  if (!connection) {
+    return {
+      connected: false,
+      configured,
+      setupHint: configured
+        ? null
+        : 'Server env vars MICROSOFT_USER_MAIL_CLIENT_ID, MICROSOFT_USER_MAIL_CLIENT_SECRET, and MICROSOFT_USER_MAIL_REDIRECT_URI are required before anyone can connect.',
+    };
+  }
   return {
     connected: true,
+    configured,
     mailbox: connection.mail || connection.userPrincipalName || '',
     displayName: connection.displayName || '',
     connectedAt: connection.connectedAt || null,

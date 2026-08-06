@@ -61,6 +61,28 @@ test('navigation gives all roles personal mail but preserves shared-mail restric
   assert.match(app, /id: 'inbox'.*roles: \['sales', 'admin'\]/);
 });
 
+test('settings and profile expose mailbox connection controls', async () => {
+  const panel = await source('src/MailboxSettingsPanel.jsx');
+  const app = await source('src/App.jsx');
+  const settings = await source('src/AdminSettings.jsx');
+  assert.match(panel, /Connect Microsoft work email/);
+  assert.match(panel, /Shared charter inbox/);
+  assert.match(panel, /MICROSOFT_USER_MAIL_/);
+  assert.match(panel, /MICROSOFT_MAIL_/);
+  assert.match(app, /MailboxSettingsPanelLazy/);
+  assert.match(app, /placement="profile"/);
+  assert.match(app, /placement="advanced"/);
+  assert.match(settings, /MailboxSettingsPanel/);
+  assert.match(settings, /placement="settings"/);
+});
+
+test('personal status reports whether server mail integration is configured', async () => {
+  const helper = await source('api/_user-mail.js');
+  assert.match(helper, /export function isUserMailConfigured/);
+  assert.match(helper, /configured,/);
+  assert.match(helper, /setupHint/);
+});
+
 test('OAuth state expires and callback consumes it', async () => {
   const start = await source('api/user-mail-oauth-start.js');
   const callback = await source('api/user-mail-oauth-callback.js');

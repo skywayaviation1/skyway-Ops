@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { AlertTriangle, Check, Loader2, Mail, PlugZap, Unplug } from 'lucide-react';
 import CharterInbox from './CharterInbox.jsx';
-import { Button, Card, StatusChip, cx } from './ui.jsx';
+import { Button, Card, cx } from './ui.jsx';
 
 async function statusRequest() {
   const { auth } = await import('./firebase.js');
@@ -28,7 +28,7 @@ export default function UserMailbox({ currentUser }) {
     try {
       setConnection({ ...(await statusRequest()), loading: false });
     } catch (err) {
-      setConnection({ loading: false, connected: false, error: err.message });
+      setConnection({ loading: false, connected: false, configured: false, error: err.message });
     }
   };
 
@@ -62,7 +62,7 @@ export default function UserMailbox({ currentUser }) {
     try {
       const { disconnectUserMailbox } = await import('./firebase-user-mail.js');
       const result = await disconnectUserMailbox();
-      setConnection({ loading: false, connected: false });
+      setConnection({ loading: false, connected: false, configured: connection.configured !== false });
       setMessage({ tone: 'success', text: result.message || 'Mailbox disconnected.' });
     } catch (err) {
       setMessage({ tone: 'danger', text: err.message || 'Could not disconnect mailbox' });
@@ -92,20 +92,29 @@ export default function UserMailbox({ currentUser }) {
   }
 
   if (!connection.connected) {
+    const notConfigured = connection.configured === false;
     return (
       <div className="flex flex-1 items-center justify-center bg-surface-sunken p-4">
         <Card className="w-full max-w-lg text-center">
           <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-accent-soft text-accent">
             <Mail className="h-7 w-7" />
           </span>
-          <h1 className="mt-4 text-xl font-semibold text-content">Connect your work email</h1>
+          <h1 className="mt-4 text-xl font-semibold text-content">
+            {notConfigured ? 'Work email not ready yet' : 'Connect your work email'}
+          </h1>
           <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-content-muted">
-            Use your own {currentUser?.email || '@flyskyway.com'} Microsoft mailbox inside Skyway for folders, search, sending, replies and attachments.
+            {notConfigured
+              ? 'An administrator must set MICROSOFT_USER_MAIL_* on the deployment (see docs/personal-work-mail-setup.md). Status and connect controls are also under Profile and Organization settings → Mailboxes.'
+              : `Use your own ${currentUser?.email || '@flyskyway.com'} Microsoft mailbox inside Skyway for folders, search, sending, replies and attachments.`}
           </p>
-          <div className="mt-4 rounded-lg border border-edge bg-surface-sunken p-3 text-left text-2xs leading-relaxed text-content-muted">
-            Your password is never shared with Skyway. Microsoft grants a delegated mailbox token that is encrypted at rest by Firestore and only used by authenticated server APIs.
-          </div>
-          {connection.error && <p className="mt-3 text-xs text-danger">{connection.error}</p>}
+          {!notConfigured && (
+            <div className="mt-4 rounded-lg border border-edge bg-surface-sunken p-3 text-left text-2xs leading-relaxed text-content-muted">
+              Your password is never shared with Skyway. Microsoft grants a delegated mailbox token that is encrypted at rest by Firestore and only used by authenticated server APIs. You can also connect from Profile.
+            </div>
+          )}
+          {(connection.error || connection.setupHint) && (
+            <p className="mt-3 text-left text-xs text-warning">{connection.setupHint || connection.error}</p>
+          )}
           {message && (
             <div className={cx(
               'mt-3 flex items-start gap-2 rounded-lg border p-2.5 text-left text-xs',
@@ -117,9 +126,11 @@ export default function UserMailbox({ currentUser }) {
               {message.text}
             </div>
           )}
-          <Button className="mt-5" variant="primary" icon={PlugZap} onClick={connect} loading={busy}>
-            Connect Microsoft work email
-          </Button>
+          {!notConfigured && (
+            <Button className="mt-5" variant="primary" icon={PlugZap} onClick={connect} loading={busy}>
+              Connect Microsoft work email
+            </Button>
+          )}
         </Card>
       </div>
     );
