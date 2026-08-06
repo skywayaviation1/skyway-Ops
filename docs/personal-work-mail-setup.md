@@ -1,8 +1,8 @@
 # Personal Microsoft work mailboxes
 
 Every approved Skyway user can connect their own `@flyskyway.com` Microsoft
-mailbox under **Profile → My work mailbox**, **Organization settings →
-Mailboxes** (admins), **Advanced tools**, or **Comms → My mailbox**. This is
+mailbox under **Email → My mailbox**, **Profile → My work mailbox**,
+**Organization settings → Mailboxes** (admins), or **Advanced tools**. This is
 delegated access: the employee explicitly consents, and Skyway can access only
 the mailbox represented by that employee's token.
 
@@ -63,6 +63,11 @@ optional overrides for future rotation or a non-production deployment.
 Firebase already uses this same secret for Microsoft login, but Firebase does
 not expose it to application code. Copy the same secret **Value** into Vercel
 as `MICROSOFT_USER_MAIL_CLIENT_SECRET`; do not create a second registration.
+
+If Microsoft returns `invalid_client`, the secret is wrong for this app. Create
+a **new** client secret on the same registration, copy the **Value** (never the
+Secret ID), replace `MICROSOFT_USER_MAIL_CLIENT_SECRET`, and redeploy. Do not
+paste quotes or trailing spaces.
 
 ## Identity binding
 

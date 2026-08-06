@@ -59,6 +59,9 @@ test('navigation gives all roles personal mail but preserves shared-mail restric
     /id: 'mailbox'.*roles: \['crew', 'sales', 'ops', 'maint', 'accounting', 'admin'\]/,
   );
   assert.match(app, /id: 'inbox'.*roles: \['sales', 'admin'\]/);
+  assert.match(app, /id: 'email'.*label: 'Email'.*children: \['mailbox', 'inbox'\]/);
+  assert.match(app, /id: 'comms'.*children: \['comms'\]/);
+  assert.doesNotMatch(app, /children: \['comms', 'mailbox', 'inbox'\]/);
 });
 
 test('settings and profile expose mailbox connection controls', async () => {
@@ -90,7 +93,15 @@ test('personal mail reuses the existing Microsoft login registration', async () 
   assert.match(helper, /SKYWAY_TENANT_ID = 'aef6138f-7c46-448a-95fe-dda7a700b80f'/);
   assert.match(helper, /MICROSOFT_SSO_CLIENT_SECRET/);
   assert.match(helper, /api\/user-mail-oauth-callback/);
+  assert.match(helper, /\.trim\(\)\.replace/);
   assert.match(docs, /do not create a second registration/i);
+});
+
+test('invalid_client token failures explain the secret Value mistake', async () => {
+  const callback = await source('api/user-mail-oauth-callback.js');
+  assert.match(callback, /token\.error === 'invalid_client'/);
+  assert.match(callback, /copy the Value \(not Secret ID\)/);
+  assert.match(callback, /MICROSOFT_USER_MAIL_CLIENT_SECRET/);
 });
 
 test('OAuth state expires and callback consumes it', async () => {

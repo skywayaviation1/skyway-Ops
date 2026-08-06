@@ -22040,7 +22040,8 @@ const NAV_SECTIONS = [
 const NAV_GROUPS = [
   { id: 'home',     label: 'Home',     icon: Home,          children: ['home'] },
   { id: 'flights',  label: 'Flights',  icon: Plane,         children: ['schedule', 'ops', 'tracking', 'manifests', 'lodging', 'archive'] },
-  { id: 'comms',    label: 'Comms',    icon: MessageSquare, children: ['comms', 'mailbox', 'inbox'] },
+  { id: 'comms',    label: 'Comms',    icon: MessageSquare, children: ['comms'] },
+  { id: 'email',    label: 'Email',    icon: Mail,          children: ['mailbox', 'inbox'] },
   { id: 'crew',     label: 'Crew',     icon: Users,         children: ['duty', 'currency', 'wear', 'reports', 'expenses'] },
   { id: 'aircraft', label: 'Aircraft', icon: Wrench,        children: ['maint', 'aog'] },
   // Labelled "Finance" for roles without user administration.

@@ -57,7 +57,7 @@ credentials flow with `https://graph.microsoft.com/.default`.
 
 Administrators can confirm configuration status under **Organization
 settings → Mailboxes** (and Advanced tools). There is no per-user OAuth for
-the shared inbox — once the env vars are live, **Comms → Shared inbox**
+the shared inbox — once the env vars are live, **Email → Shared inbox**
 opens for admin and sales.
 
 ## Trip filing

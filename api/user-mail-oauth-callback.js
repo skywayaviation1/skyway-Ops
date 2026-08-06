@@ -64,8 +64,25 @@ export default async function handler(req, res) {
     );
     const token = await tokenResponse.json().catch(() => ({}));
     if (!tokenResponse.ok || !token.access_token || !token.refresh_token) {
-      console.error('[user-mail-oauth-callback] token failure', tokenResponse.status, token);
-      res.redirect(302, appRedirect(false, `Microsoft token exchange failed (${token.error || tokenResponse.status})`));
+      console.error('[user-mail-oauth-callback] token failure', tokenResponse.status, {
+        error: token.error,
+        error_description: token.error_description,
+        clientId: config.clientId,
+        redirectUri: config.redirectUri,
+        hasSecret: Boolean(config.clientSecret),
+        secretLength: config.clientSecret ? config.clientSecret.length : 0,
+      });
+      let message = `Microsoft token exchange failed (${token.error || tokenResponse.status})`;
+      if (token.error === 'invalid_client') {
+        message = 'Microsoft rejected the app secret (invalid_client). In Entra open the Skyway login app, create a new client secret, copy the Value (not Secret ID), set MICROSOFT_USER_MAIL_CLIENT_SECRET in Vercel, and redeploy.';
+      } else if (token.error === 'invalid_grant') {
+        message = 'Microsoft rejected the authorization code. Try Continue with Microsoft again.';
+      } else if (token.error === 'unauthorized_client') {
+        message = 'This Microsoft app is not allowed to request mailbox access. Add Mail.ReadWrite and Mail.Send delegated permissions with admin consent.';
+      } else if (token.error_description) {
+        message = String(token.error_description).slice(0, 240);
+      }
+      res.redirect(302, appRedirect(false, message));
       return;
     }
     const meResponse = await fetch(

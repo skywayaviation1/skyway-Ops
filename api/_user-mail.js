@@ -16,17 +16,29 @@ const SKYWAY_SSO_CLIENT_ID = '6e65ee4c-d6b7-4a1b-9dfe-0056be0946d1';
 const SKYWAY_APP_ORIGIN = 'https://www.skyway.app';
 
 function resolvedUserMailConfig() {
-  const tenant = process.env.MICROSOFT_USER_MAIL_TENANT_ID
+  const tenant = String(
+    process.env.MICROSOFT_USER_MAIL_TENANT_ID
     || process.env.VITE_MICROSOFT_TENANT_ID
-    || SKYWAY_TENANT_ID;
-  const clientId = process.env.MICROSOFT_USER_MAIL_CLIENT_ID
+    || SKYWAY_TENANT_ID,
+  ).trim();
+  const clientId = String(
+    process.env.MICROSOFT_USER_MAIL_CLIENT_ID
     || process.env.MICROSOFT_SSO_CLIENT_ID
-    || SKYWAY_SSO_CLIENT_ID;
-  const clientSecret = process.env.MICROSOFT_USER_MAIL_CLIENT_SECRET
-    || process.env.MICROSOFT_SSO_CLIENT_SECRET;
+    || SKYWAY_SSO_CLIENT_ID,
+  ).trim();
+  // Secrets are often pasted with trailing newlines or surrounding quotes from
+  // password managers / Vercel UI. Trim those so Microsoft does not reject the
+  // exchange as invalid_client for a cosmetic paste mistake.
+  const clientSecret = String(
+    process.env.MICROSOFT_USER_MAIL_CLIENT_SECRET
+    || process.env.MICROSOFT_SSO_CLIENT_SECRET
+    || '',
+  ).trim().replace(/^['"]|['"]$/g, '');
   const appOrigin = String(process.env.NEXT_PUBLIC_APP_URL || SKYWAY_APP_ORIGIN).replace(/\/+$/, '');
-  const redirectUri = process.env.MICROSOFT_USER_MAIL_REDIRECT_URI
-    || `${appOrigin}/api/user-mail-oauth-callback`;
+  const redirectUri = String(
+    process.env.MICROSOFT_USER_MAIL_REDIRECT_URI
+    || `${appOrigin}/api/user-mail-oauth-callback`,
+  ).trim();
   return { tenant, clientId, clientSecret, redirectUri };
 }
 
