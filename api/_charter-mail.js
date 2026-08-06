@@ -142,12 +142,37 @@ export async function graphRequest(pathOrUrl, options = {}, retry = true) {
   }
   const data = response.status === 204 ? {} : await response.json().catch(() => ({}));
   if (!response.ok || data?.error) {
-    const error = new Error(data?.error?.message || `Microsoft Graph returned ${response.status}`);
+    const graphCode = data?.error?.code || null;
+    const error = new Error(sharedMailErrorMessage(
+      response.status,
+      graphCode,
+      data?.error?.message,
+    ));
     error.status = response.status || 502;
-    error.graphCode = data?.error?.code || null;
+    error.graphCode = graphCode;
     throw error;
   }
   return data;
+}
+
+/**
+ * Graph reports missing application Mail grants and missing Exchange mailbox
+ * scoping with the same opaque wording, which reads as a Skyway fault. Name the
+ * administrator action instead.
+ */
+export function sharedMailErrorMessage(status, graphCode, graphMessage) {
+  const raw = String(graphMessage || '').trim();
+  const denied = status === 403
+    || graphCode === 'ErrorAccessDenied'
+    || graphCode === 'Authorization_RequestDenied'
+    || /insufficient privileges/i.test(raw);
+  if (denied) {
+    return `Microsoft denied access to ${mailboxUpn()}. In Entra grant the mailbox app application permissions Mail.ReadWrite and Mail.Send with admin consent, and scope it to this mailbox with Exchange Online application RBAC (see docs/charter-shared-inbox-setup.md).`;
+  }
+  if (status === 404 || graphCode === 'ResourceNotFound' || /object was not found/i.test(raw)) {
+    return `Microsoft could not find the mailbox ${mailboxUpn()}. Confirm CHARTER_MAILBOX_UPN matches a real licensed or shared mailbox in this tenant.`;
+  }
+  return raw || `Microsoft Graph returned ${status}`;
 }
 
 export function mailboxPath(suffix = '') {

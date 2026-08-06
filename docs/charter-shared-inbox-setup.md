@@ -42,6 +42,22 @@ Use the **Enterprise application Object ID**, not the App Registration Object
 ID. Entra-wide Mail application grants and Exchange RBAC grants are additive;
 remove unscoped Entra Mail grants after the scoped RBAC assignment is working.
 
+### "Insufficient privileges to complete the operation"
+
+Graph returns this when the credentials are valid but the application is not
+authorized for the mailbox. Check, in order:
+
+1. **Application** (not delegated) `Mail.ReadWrite` and `Mail.Send` are added to
+   the mailbox app in Entra → API permissions.
+2. **Grant admin consent** was clicked; each permission shows "Granted for
+   Skyway".
+3. Exchange application RBAC (or an application access policy) authorizes that
+   app for `charters@flyskyway.com`. Verify with
+   `Test-ServicePrincipalAuthorization -Identity <enterprise-app-object-id> -Resource charters@flyskyway.com`.
+4. `MICROSOFT_MAIL_CLIENT_ID` matches the app that received those grants.
+
+New consent and RBAC assignments can take a few minutes to propagate.
+
 ## Vercel environment variables
 
 | Variable | Value |

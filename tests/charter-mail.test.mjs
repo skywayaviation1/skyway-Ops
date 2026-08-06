@@ -81,6 +81,17 @@ test('admin and sales profiles can persist an email signature', async () => {
   assert.match(app, /EMAIL SIGNATURE/);
 });
 
+test('Graph permission and mailbox errors name the administrator fix', async () => {
+  const { sharedMailErrorMessage } = await import('../api/_charter-mail.js');
+  const denied = sharedMailErrorMessage(403, 'ErrorAccessDenied', 'Insufficient privileges to complete the operation.');
+  assert.match(denied, /Mail\.ReadWrite and Mail\.Send with admin consent/);
+  assert.match(denied, /application RBAC/);
+  assert.match(denied, /charters@flyskyway\.com/);
+  const missing = sharedMailErrorMessage(404, 'ResourceNotFound', 'Resource could not be discovered.');
+  assert.match(missing, /CHARTER_MAILBOX_UPN/);
+  assert.equal(sharedMailErrorMessage(500, null, 'Backend busy'), 'Backend busy');
+});
+
 test('shared mailbox status soft-fails when Graph credentials are missing', async () => {
   const helper = await readFile(path.join(root, 'api/_charter-mail.js'), 'utf8');
   const route = await readFile(path.join(root, 'api/charter-mail.js'), 'utf8');
