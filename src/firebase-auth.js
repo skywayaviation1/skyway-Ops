@@ -527,7 +527,10 @@ export async function approveUser(uid) {
 }
 
 export async function updateUserProfile(uid, patch) {
-  const allowed = ['name', 'callsign', 'role', 'jetinsightName', 'approved', 'active'];
+  const allowed = [
+    'name', 'callsign', 'role', 'jetinsightName', 'approved', 'active',
+    'certType', 'certNumber', 'emailSignature',
+  ];
   const safe = {};
   for (const k of allowed) if (patch[k] !== undefined) safe[k] = patch[k];
   await updateDoc(doc(db, 'users', uid), safe);

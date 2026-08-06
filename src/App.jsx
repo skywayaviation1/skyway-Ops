@@ -8,6 +8,10 @@ import './theme-classy.css';
 
 // Code-split: Comms screen loads only when the user opens the COMMS tab.
 const CommsScreenLazy = lazy(() => import('./CommsStream.jsx'));
+const CharterInboxLazy = lazy(() => import('./CharterInbox.jsx'));
+const TripEmailPanelLazy = lazy(() =>
+  import('./CharterInbox.jsx').then((module) => ({ default: module.TripEmailPanel }))
+);
 const PwaInstallLazy = lazy(() => import('./PwaInstall.jsx'));
 
 // Code-split: TripChatStream is the same Stream-Chat-powered chat surface,
@@ -7193,6 +7197,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
             // since they don't have crew lodging in the operational sense.
             { id: 'lodging', label: 'Lodging', icon: Hotel, hidden: !trip.info.isOps },
             { id: 'chat', label: 'Comms', icon: MessageSquare, unread: tripChatUnread },
+            { id: 'email', label: 'Email', icon: Mail, hidden: !['admin', 'sales'].includes(currentUser?.role) },
             { id: 'notify', label: 'Notify', icon: Bell, hidden: !trip.info.isOps },
             { id: 'delay', label: 'Delay', icon: AlertTriangle, hidden: !trip.info.isOps },
           ].filter(t => !t.hidden);
@@ -7208,7 +7213,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
               icon: Navigation,
               children: pick(['sheet', 'weather', 'plan', 'lodging', 'notes', 'notify', 'delay']),
             },
-            { id: 'chat', label: 'Comms', icon: MessageSquare, children: pick(['chat']) },
+            { id: 'chat', label: 'Comms', icon: MessageSquare, children: pick(['chat', 'email']) },
           ].filter(g => g.children.length > 0);
 
           const activeGroup = tripGroups.find(g => g.children.some(c => c.id === tab)) || tripGroups[0];
@@ -7606,6 +7611,14 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
               users={users}
               getIdToken={getFirebaseIdToken}
             />
+          </Suspense>
+        ) : tab === 'email' ? (
+          <Suspense fallback={
+            <div className="p-8 flex items-center justify-center text-content-muted">
+              <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading filed emails…
+            </div>
+          }>
+            <TripEmailPanelLazy tripUid={trip.uid} currentUser={currentUser} />
           </Suspense>
         ) : tab === 'notify' ? (
           <div className="p-6 max-w-2xl">
@@ -14664,6 +14677,7 @@ function MyProfileModal({ currentUser, onClose, onSave }) {
   const [jetinsightName, setJetinsightName] = useState(currentUser?.jetinsightName || '');
   const [certType, setCertType] = useState(currentUser?.certType || '');
   const [certNumber, setCertNumber] = useState(currentUser?.certNumber || '');
+  const [emailSignature, setEmailSignature] = useState(currentUser?.emailSignature || '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
 
@@ -14679,6 +14693,7 @@ function MyProfileModal({ currentUser, onClose, onSave }) {
         jetinsightName: jetinsightName.trim(),
         certType: certType.trim(),
         certNumber: certNumber.trim(),
+        emailSignature: emailSignature.trim(),
       });
       onClose();
     } catch (err) {
@@ -14713,6 +14728,25 @@ function MyProfileModal({ currentUser, onClose, onSave }) {
           <FieldInput label="FULL NAME" value={name} onChange={(e) => setName(e.target.value)} />
           <FieldInput label="CALLSIGN" value={callsign} onChange={(e) => setCallsign(e.target.value)} placeholder="e.g. Annalise" />
           <FieldInput label="NAME IN JETINSIGHT" value={jetinsightName} onChange={(e) => setJetinsightName(e.target.value)} placeholder="e.g. Annalise Marie Gonzales" />
+
+          {['admin', 'sales'].includes(currentUser?.role) && (
+            <label className="block">
+              <span className="text-[10px] tracking-widest text-slate-500 uppercase" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                SHARED INBOX EMAIL SIGNATURE
+              </span>
+              <textarea
+                value={emailSignature}
+                onChange={(event) => setEmailSignature(event.target.value)}
+                rows={5}
+                maxLength={4000}
+                placeholder={'Your Name\nCharter Sales\nSkyway Aviation'}
+                className="mt-1 w-full resize-y rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200 outline-none focus:border-cyan-400"
+              />
+              <span className="mt-1 block text-[11px] text-slate-500">
+                Added automatically to messages sent from charters@flyskyway.com.
+              </span>
+            </label>
+          )}
 
           {isMaintenanceRole && (
             <>
@@ -21974,6 +22008,7 @@ const NAV_SECTIONS = [
   { id: 'archive',   label: 'Archive',     icon: Hash,          roles: ['crew', 'ops', 'admin'] },
 
   { id: 'comms',     label: 'Comms',       icon: MessageSquare, roles: ['crew', 'sales', 'ops', 'maint', 'accounting', 'admin'] },
+  { id: 'inbox',     label: 'Shared inbox', icon: Mail,          roles: ['sales', 'admin'] },
 
   { id: 'duty',      label: 'Duty',        icon: Clock,         roles: ['admin'] },
   { id: 'currency',  label: 'Currency',    icon: ShieldCheck,   roles: ['crew', 'ops', 'admin'] },
@@ -21993,7 +22028,7 @@ const NAV_SECTIONS = [
 const NAV_GROUPS = [
   { id: 'home',     label: 'Home',     icon: Home,          children: ['home'] },
   { id: 'flights',  label: 'Flights',  icon: Plane,         children: ['schedule', 'ops', 'tracking', 'manifests', 'lodging', 'archive'] },
-  { id: 'comms',    label: 'Comms',    icon: MessageSquare, children: ['comms'] },
+  { id: 'comms',    label: 'Comms',    icon: MessageSquare, children: ['comms', 'inbox'] },
   { id: 'crew',     label: 'Crew',     icon: Users,         children: ['duty', 'currency', 'wear', 'reports', 'expenses'] },
   { id: 'aircraft', label: 'Aircraft', icon: Wrench,        children: ['maint', 'aog'] },
   // Labelled "Finance" for roles without user administration.
@@ -28208,6 +28243,7 @@ export default function CharterOps() {
       approved: liveProfile.approved === true,
       authProvider: liveProfile.authProvider || null,
       savedSignature: liveProfile.savedSignature || null,
+      emailSignature: liveProfile.emailSignature || '',
       // Per-user tab order overrides. Each area can be an array of tab
       // IDs (custom order saved) or undefined/null (use org default).
       // Carried through here so TopNav/TripDetail receive it without an
@@ -28227,6 +28263,7 @@ export default function CharterOps() {
           role: target.role || 'crew',
           active: target.active !== false,
           approved: target.approved === true,
+          emailSignature: target.emailSignature || '',
           // Show the IMPERSONATED user's saved tab order so admin sees
           // exactly what that role/user sees. Reordering is disabled
           // while impersonating (see saveTabOrder guard) so we never
@@ -29518,6 +29555,17 @@ export default function CharterOps() {
                 : ''}
               getIdToken={getFirebaseIdToken}
             />
+          </Suspense>
+        )}
+
+        {/* === CHARTER SHARED MAILBOX === */}
+        {section === 'inbox' && ['admin', 'sales'].includes(currentUser?.role) && (
+          <Suspense fallback={
+            <div className="flex flex-1 items-center justify-center text-content-muted">
+              <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading charter inbox…
+            </div>
+          }>
+            <CharterInboxLazy currentUser={currentUser} trips={allTrips} />
           </Suspense>
         )}
 
