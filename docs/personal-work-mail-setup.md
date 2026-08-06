@@ -2,7 +2,7 @@
 
 Every approved Skyway user can connect their own `@flyskyway.com` Microsoft
 mailbox under **Profile → My work mailbox**, **Organization settings →
-Mailboxes** (admins), **Advanced tools**, or **Comms → My mailbox**. This is
+Mailboxes** (admins), **Advanced tools**, or **Email → My mailbox**. This is
 delegated access: the employee explicitly consents, and Skyway can access only
 the mailbox represented by that employee's token.
 
