@@ -131,7 +131,7 @@ import {
   Download, Trash2, Plus, FileText, Zap, Radio, AlertCircle, Upload,
   Check, CheckCheck, UserCheck, Sparkles, Hash, Cloud, Wrench, Hotel, BookOpen, Search,
   Activity, Palette, ShieldCheck, Edit2, Home, CreditCard, Fuel, Building2,
-  MoreHorizontal, LogOut, ChevronRight,
+  MoreHorizontal, LogOut, ChevronRight, Inbox, Receipt,
 } from 'lucide-react';
 // Shared design-system primitives. New UI should compose these rather than
 // re-deriving borders, spacing and tone colors inline.
@@ -21998,7 +21998,7 @@ function DraggableTabBar({
    state holds a leaf id and every `{section === '…'}` render
    block keeps working untouched.
 
-   What changed is the presentation: leaves are bucketed into six
+   What changed is the presentation: leaves are bucketed into
    top-level groups. Previously an admin saw seventeen equal-weight
    tabs in one scrolling rail, which made a daily destination
    (Schedule) indistinguishable from a monthly one (Users).
@@ -22020,7 +22020,7 @@ const NAV_SECTIONS = [
 
   { id: 'comms',     label: 'Comms',       icon: MessageSquare, roles: ['crew', 'sales', 'ops', 'maint', 'accounting', 'admin'] },
   { id: 'mailbox',   label: 'My mailbox',  icon: Mail,          roles: ['crew', 'sales', 'ops', 'maint', 'accounting', 'admin'] },
-  { id: 'inbox',     label: 'Shared inbox', icon: Mail,          roles: ['sales', 'admin'] },
+  { id: 'inbox',     label: 'Shared inbox', icon: Inbox,         roles: ['sales', 'admin'] },
 
   { id: 'duty',      label: 'Duty',        icon: Clock,         roles: ['admin'] },
   { id: 'currency',  label: 'Currency',    icon: ShieldCheck,   roles: ['crew', 'ops', 'admin'] },
@@ -22030,7 +22030,7 @@ const NAV_SECTIONS = [
   { id: 'maint',     label: 'Maintenance', icon: Wrench,        roles: ['maint', 'ops', 'admin'] },
   { id: 'aog',       label: 'AOG',         icon: AlertTriangle, roles: ['ops', 'admin'] },
 
-  { id: 'expenses',  label: 'Expenses',    icon: Mail,          roles: ['crew', 'sales', 'ops', 'accounting', 'admin'] },
+  { id: 'expenses',  label: 'Expenses',    icon: Receipt,       roles: ['crew', 'sales', 'ops', 'accounting', 'admin'] },
   { id: 'accounting', label: 'Accounting',  icon: Building2,     roles: ['accounting', 'admin'] },
   { id: 'wallet',    label: 'Wallet',      icon: CreditCard,    roles: ['crew', 'sales', 'ops', 'accounting', 'admin'] },
   { id: 'users',     label: 'Users',       icon: Users,         roles: ['ops', 'admin'] },
@@ -22040,7 +22040,8 @@ const NAV_SECTIONS = [
 const NAV_GROUPS = [
   { id: 'home',     label: 'Home',     icon: Home,          children: ['home'] },
   { id: 'flights',  label: 'Flights',  icon: Plane,         children: ['schedule', 'ops', 'tracking', 'manifests', 'lodging', 'archive'] },
-  { id: 'comms',    label: 'Comms',    icon: MessageSquare, children: ['comms', 'mailbox', 'inbox'] },
+  { id: 'comms',    label: 'Comms',    icon: MessageSquare, children: ['comms'] },
+  { id: 'email',    label: 'Email',    icon: Mail,          children: ['mailbox', 'inbox'] },
   { id: 'crew',     label: 'Crew',     icon: Users,         children: ['duty', 'currency', 'wear', 'reports', 'expenses'] },
   { id: 'aircraft', label: 'Aircraft', icon: Wrench,        children: ['maint', 'aog'] },
   // Labelled "Finance" for roles without user administration.
@@ -22168,7 +22169,7 @@ function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, sync
         </div>
       </div>
 
-      {/* Primary rail — six curated groups. Hidden on small screens, where
+      {/* Primary rail — curated groups. Hidden on small screens, where
           the fixed bottom bar takes over as the primary destination switch. */}
       <nav aria-label="Primary" className="hidden md:block border-t border-edge">
         <div className="flex items-center gap-1 px-3">

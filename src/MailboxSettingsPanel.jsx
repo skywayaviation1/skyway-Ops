@@ -257,7 +257,7 @@ function SharedMailboxCard({ currentUser, compact = false }) {
               || 'Shared mailbox Graph credentials are not configured. Set MICROSOFT_MAIL_TENANT_ID, MICROSOFT_MAIL_CLIENT_ID, and MICROSOFT_MAIL_CLIENT_SECRET on the deployment.'}
           </Banner>
           <p className={cx('text-2xs', compact ? 'text-slate-500' : 'text-content-subtle')}>
-            Setup steps: docs/charter-shared-inbox-setup.md — then open Comms → Shared inbox.
+            Setup steps: docs/charter-shared-inbox-setup.md — then open Email → Shared inbox.
           </p>
         </div>
       )}

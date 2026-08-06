@@ -59,6 +59,8 @@ test('navigation gives all roles personal mail but preserves shared-mail restric
     /id: 'mailbox'.*roles: \['crew', 'sales', 'ops', 'maint', 'accounting', 'admin'\]/,
   );
   assert.match(app, /id: 'inbox'.*roles: \['sales', 'admin'\]/);
+  assert.match(app, /id: 'email',\s*label: 'Email'.*children: \['mailbox', 'inbox'\]/s);
+  assert.match(app, /id: 'comms',\s*label: 'Comms'.*children: \['comms'\]/s);
 });
 
 test('settings and profile expose mailbox connection controls', async () => {
