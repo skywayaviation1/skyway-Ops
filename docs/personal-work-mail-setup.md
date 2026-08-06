@@ -14,17 +14,20 @@ selects **Continue with Microsoft**, signs in with the same company account
 used for Skyway, and accepts the mailbox permission prompt. Employees never
 enter a tenant ID, client ID, client secret, redirect URI, or mailbox password.
 
-This integration is separate from:
-
-1. the Firebase Microsoft SSO app (`docs/microsoft-sso-setup.md`), and
-2. the app-only `charters@` shared mailbox (`docs/charter-shared-inbox-setup.md`).
-
-Keeping separate app registrations limits blast radius and allows independent
-secret rotation.
+Personal mailbox consent reuses the existing Firebase Microsoft SSO Entra app.
+It remains separate from the app-only `charters@` shared mailbox
+(`docs/charter-shared-inbox-setup.md`), because the shared mailbox needs
+unattended application permissions.
 
 ## Entra app registration
 
-Create a single-tenant app registration with a **Web** redirect URI:
+Open the existing Skyway Microsoft login app registration:
+
+- Application (client) ID: `6e65ee4c-d6b7-4a1b-9dfe-0056be0946d1`
+- Directory (tenant) ID: `aef6138f-7c46-448a-95fe-dda7a700b80f`
+
+Keep its existing Firebase callback and add this additional **Web** redirect
+URI:
 
 `https://www.skyway.app/api/user-mail-oauth-callback`
 
@@ -48,16 +51,18 @@ client secret and PKCE verifier.
 
 | Variable | Value |
 | --- | --- |
-| `MICROSOFT_USER_MAIL_TENANT_ID` | Skyway Entra Directory tenant ID |
-| `MICROSOFT_USER_MAIL_CLIENT_ID` | Delegated mailbox app client ID |
-| `MICROSOFT_USER_MAIL_CLIENT_SECRET` | Delegated mailbox app secret Value |
-| `MICROSOFT_USER_MAIL_REDIRECT_URI` | `https://www.skyway.app/api/user-mail-oauth-callback` |
-| `NEXT_PUBLIC_APP_URL` | `https://www.skyway.app` |
+| `MICROSOFT_USER_MAIL_CLIENT_SECRET` | Existing Microsoft login app secret **Value** (required) |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | Existing Firebase Admin service account |
 
-`MICROSOFT_USER_MAIL_TENANT_ID` falls back to
-`MICROSOFT_MAIL_TENANT_ID` when omitted, but setting it explicitly makes the
-registration boundary clear.
+The production tenant ID, client ID, app origin, and callback are already the
+defaults in the server. The corresponding
+`MICROSOFT_USER_MAIL_TENANT_ID`, `MICROSOFT_USER_MAIL_CLIENT_ID`,
+`NEXT_PUBLIC_APP_URL`, and `MICROSOFT_USER_MAIL_REDIRECT_URI` variables remain
+optional overrides for future rotation or a non-production deployment.
+
+Firebase already uses this same secret for Microsoft login, but Firebase does
+not expose it to application code. Copy the same secret **Value** into Vercel
+as `MICROSOFT_USER_MAIL_CLIENT_SECRET`; do not create a second registration.
 
 ## Identity binding
 

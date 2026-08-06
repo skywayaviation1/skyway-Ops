@@ -9,25 +9,37 @@ import {
 
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
 const TOKEN_PATH = '/oauth2/v2.0/token';
+// Public identifiers for the existing Skyway Microsoft SSO registration.
+// Environment overrides keep rotation possible without a code release.
+const SKYWAY_TENANT_ID = 'aef6138f-7c46-448a-95fe-dda7a700b80f';
+const SKYWAY_SSO_CLIENT_ID = '6e65ee4c-d6b7-4a1b-9dfe-0056be0946d1';
+const SKYWAY_APP_ORIGIN = 'https://www.skyway.app';
+
+function resolvedUserMailConfig() {
+  const tenant = process.env.MICROSOFT_USER_MAIL_TENANT_ID
+    || process.env.VITE_MICROSOFT_TENANT_ID
+    || SKYWAY_TENANT_ID;
+  const clientId = process.env.MICROSOFT_USER_MAIL_CLIENT_ID
+    || process.env.MICROSOFT_SSO_CLIENT_ID
+    || SKYWAY_SSO_CLIENT_ID;
+  const clientSecret = process.env.MICROSOFT_USER_MAIL_CLIENT_SECRET
+    || process.env.MICROSOFT_SSO_CLIENT_SECRET;
+  const appOrigin = String(process.env.NEXT_PUBLIC_APP_URL || SKYWAY_APP_ORIGIN).replace(/\/+$/, '');
+  const redirectUri = process.env.MICROSOFT_USER_MAIL_REDIRECT_URI
+    || `${appOrigin}/api/user-mail-oauth-callback`;
+  return { tenant, clientId, clientSecret, redirectUri };
+}
 
 export function isUserMailConfigured() {
-  const tenant = process.env.MICROSOFT_USER_MAIL_TENANT_ID
-    || process.env.MICROSOFT_MAIL_TENANT_ID;
-  const clientId = process.env.MICROSOFT_USER_MAIL_CLIENT_ID;
-  const clientSecret = process.env.MICROSOFT_USER_MAIL_CLIENT_SECRET;
-  const redirectUri = process.env.MICROSOFT_USER_MAIL_REDIRECT_URI;
+  const { tenant, clientId, clientSecret, redirectUri } = resolvedUserMailConfig();
   return Boolean(tenant && clientId && clientSecret && redirectUri);
 }
 
 export function userMailConfig() {
-  const tenant = process.env.MICROSOFT_USER_MAIL_TENANT_ID
-    || process.env.MICROSOFT_MAIL_TENANT_ID;
-  const clientId = process.env.MICROSOFT_USER_MAIL_CLIENT_ID;
-  const clientSecret = process.env.MICROSOFT_USER_MAIL_CLIENT_SECRET;
-  const redirectUri = process.env.MICROSOFT_USER_MAIL_REDIRECT_URI;
+  const { tenant, clientId, clientSecret, redirectUri } = resolvedUserMailConfig();
   if (!tenant || !clientId || !clientSecret || !redirectUri) {
     const error = new Error(
-      'Personal work-mail integration is not configured. An administrator must set MICROSOFT_USER_MAIL_CLIENT_ID, MICROSOFT_USER_MAIL_CLIENT_SECRET, MICROSOFT_USER_MAIL_REDIRECT_URI (and tenant) on the server, then use Profile or Settings → Mailboxes to connect.',
+      'Personal work-mail integration is not configured. Reuse the existing Skyway Microsoft login app: add the mailbox callback URI and delegated Mail permissions in Entra, then set its existing secret as MICROSOFT_USER_MAIL_CLIENT_SECRET on the server.',
     );
     error.status = 503;
     error.code = 'user_mail_not_configured';
@@ -89,7 +101,7 @@ export function publicUserMailbox(connection) {
       configured,
       setupHint: configured
         ? null
-        : 'Server env vars MICROSOFT_USER_MAIL_CLIENT_ID, MICROSOFT_USER_MAIL_CLIENT_SECRET, and MICROSOFT_USER_MAIL_REDIRECT_URI are required before anyone can connect.',
+        : 'Reuse the existing Microsoft login registration. Add the mailbox callback and delegated Mail permissions in Entra, then set only its existing secret as MICROSOFT_USER_MAIL_CLIENT_SECRET.',
     };
   }
   return {

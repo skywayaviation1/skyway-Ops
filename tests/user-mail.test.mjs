@@ -83,6 +83,16 @@ test('personal status reports whether server mail integration is configured', as
   assert.match(helper, /setupHint/);
 });
 
+test('personal mail reuses the existing Microsoft login registration', async () => {
+  const helper = await source('api/_user-mail.js');
+  const docs = await source('docs/personal-work-mail-setup.md');
+  assert.match(helper, /SKYWAY_SSO_CLIENT_ID = '6e65ee4c-d6b7-4a1b-9dfe-0056be0946d1'/);
+  assert.match(helper, /SKYWAY_TENANT_ID = 'aef6138f-7c46-448a-95fe-dda7a700b80f'/);
+  assert.match(helper, /MICROSOFT_SSO_CLIENT_SECRET/);
+  assert.match(helper, /api\/user-mail-oauth-callback/);
+  assert.match(docs, /do not create a second registration/i);
+});
+
 test('OAuth state expires and callback consumes it', async () => {
   const start = await source('api/user-mail-oauth-start.js');
   const callback = await source('api/user-mail-oauth-callback.js');
