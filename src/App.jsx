@@ -5001,7 +5001,7 @@ function PilotHomeScreen({ currentUser, trips, tripStates, config, users, onSele
           <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
             <QuickActionButton icon={Calendar} label="All flights" onClick={() => onSwitchSection?.('schedule')} />
             <QuickActionButton icon={FileText} label="Manifests" onClick={() => onSwitchSection?.('manifests')} />
-            <QuickActionButton icon={Mail} label="Expenses" onClick={() => onSwitchSection?.('expenses')} />
+            <QuickActionButton icon={Receipt} label="Expenses" onClick={() => onSwitchSection?.('expenses')} />
             <QuickActionButton icon={AlertCircle} label="Report" onClick={() => onSwitchSection?.('reports')} />
           </div>
         </Card>
