@@ -13,7 +13,6 @@ import {
   Loader2,
   Mail,
   MailOpen,
-  MoreHorizontal,
   Paperclip,
   Plus,
   RefreshCw,
@@ -23,6 +22,7 @@ import {
   Send,
   Tag,
   Trash2,
+  Unplug,
   X,
 } from 'lucide-react';
 import {
@@ -34,11 +34,11 @@ import {
   cx,
 } from './ui.jsx';
 
-async function mailboxApi(action, body = {}) {
+async function mailboxApi(apiPath, action, body = {}) {
   const { auth } = await import('./firebase.js');
   const idToken = await auth.currentUser?.getIdToken();
   if (!idToken) throw new Error('Your mailbox session expired');
-  const response = await fetch('/api/charter-mail', {
+  const response = await fetch(apiPath, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     cache: 'no-store',
@@ -148,7 +148,7 @@ function MessageRow({ message, active, onClick }) {
   );
 }
 
-function Composer({ mode = 'compose', source, currentUser, onClose, onSent }) {
+function Composer({ mode = 'compose', source, currentUser, apiPath, sentAs, onClose, onSent }) {
   const [to, setTo] = useState(() => {
     if (mode === 'replyAll') {
       return [...(source?.from?.address ? [source.from.address] : []), ...((source?.to || []).map((item) => item.address))]
@@ -186,7 +186,7 @@ function Composer({ mode = 'compose', source, currentUser, onClose, onSent }) {
     setError('');
     try {
       if (isThreadAction) {
-        await mailboxApi('reply', {
+        await mailboxApi(apiPath, 'reply', {
           messageId: source.id,
           mode,
           text,
@@ -200,7 +200,7 @@ function Composer({ mode = 'compose', source, currentUser, onClose, onSent }) {
           attachments.push({ name: file.name, contentType: file.type, contentBase64 });
         }
         const html = `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.5">${text.split(/\r?\n/).map((line) => line ? line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') : '<br>').join('<br>')}</div>`;
-        await mailboxApi('send', {
+        await mailboxApi(apiPath, 'send', {
           to: splitAddresses(to),
           cc: splitAddresses(cc),
           subject,
@@ -259,7 +259,7 @@ function Composer({ mode = 'compose', source, currentUser, onClose, onSent }) {
           </label>
         )}
         <p className="min-w-0 flex-1 truncate text-2xs text-content-subtle">
-          Sent as charters@flyskyway.com · your saved signature is added automatically
+          Sent as {sentAs || currentUser.email} · your saved signature is added automatically
         </p>
         <Button variant="primary" icon={Send} loading={busy} disabled={!text.trim() || ((mode === 'compose' || mode === 'forward') && !to.trim())} onClick={send}>
           Send
@@ -278,7 +278,7 @@ export function TripEmailPanel({ tripUid, currentUser }) {
     let cancelled = false;
     (async () => {
       try {
-        const result = await mailboxApi('tripMessages', { tripUid });
+        const result = await mailboxApi('/api/charter-mail', 'tripMessages', { tripUid });
         if (!cancelled) setMessages(result.messages || []);
       } catch (err) {
         if (!cancelled) setError(err.message || 'Could not load filed emails');
@@ -334,7 +334,17 @@ export function TripEmailPanel({ tripUid, currentUser }) {
   );
 }
 
-export default function CharterInbox({ currentUser, trips = [], initialTripUid = null }) {
+export default function CharterInbox({
+  currentUser,
+  trips = [],
+  initialTripUid = null,
+  mailboxMode = 'shared',
+  connection = null,
+  onDisconnect = null,
+}) {
+  const personal = mailboxMode === 'personal';
+  const apiPath = personal ? '/api/user-mail' : '/api/charter-mail';
+  const attachmentPath = personal ? '/api/user-mail-attachment' : '/api/charter-mail-attachment';
   const [status, setStatus] = useState(null);
   const [folders, setFolders] = useState([]);
   const [folderId, setFolderId] = useState('inbox');
@@ -355,7 +365,7 @@ export default function CharterInbox({ currentUser, trips = [], initialTripUid =
   const selected = messages.find((message) => message.id === selectedId) || detail;
 
   const loadFolders = async () => {
-    const result = await mailboxApi('folders');
+    const result = await mailboxApi(apiPath, 'folders');
     setFolders(result.folders || []);
   };
 
@@ -363,7 +373,7 @@ export default function CharterInbox({ currentUser, trips = [], initialTripUid =
     setLoading(true);
     setError('');
     try {
-      const result = await mailboxApi('messages', {
+      const result = await mailboxApi(apiPath, 'messages', {
         folderId,
         search: query,
         next: append ? next : null,
@@ -382,7 +392,7 @@ export default function CharterInbox({ currentUser, trips = [], initialTripUid =
     (async () => {
       try {
         const [mailStatus] = await Promise.all([
-          mailboxApi('status'),
+          mailboxApi(apiPath, 'status'),
           loadFolders(),
         ]);
         if (!cancelled) setStatus(mailStatus);
@@ -403,7 +413,7 @@ export default function CharterInbox({ currentUser, trips = [], initialTripUid =
     setFilingTrip(message.filing?.tripUid || '');
     setMessages((current) => current.map((item) => item.id === message.id ? { ...item, isRead: true } : item));
     try {
-      const result = await mailboxApi('message', { messageId: message.id });
+      const result = await mailboxApi(apiPath, 'message', { messageId: message.id });
       setDetail(result.message);
       setFilingTrip(result.message?.filing?.tripUid || '');
     } catch (err) {
@@ -418,7 +428,7 @@ export default function CharterInbox({ currentUser, trips = [], initialTripUid =
     setFilingTrip(tripUid);
     try {
       if (tripUid) {
-        const result = await mailboxApi('fileTrip', {
+        const result = await mailboxApi(apiPath, 'fileTrip', {
           messageId: detail.id,
           tripUid,
           conversationId: detail.conversationId,
@@ -429,7 +439,7 @@ export default function CharterInbox({ currentUser, trips = [], initialTripUid =
         setDetail((current) => ({ ...current, filing: result.filing }));
         setMessages((current) => current.map((item) => item.id === detail.id ? { ...item, filing: result.filing } : item));
       } else {
-        await mailboxApi('unfileTrip', {
+        await mailboxApi(apiPath, 'unfileTrip', {
           messageId: detail.id,
           conversationId: detail.conversationId,
         });
@@ -444,7 +454,7 @@ export default function CharterInbox({ currentUser, trips = [], initialTripUid =
   const moveMessage = async (destinationId) => {
     if (!detail || !destinationId) return;
     try {
-      await mailboxApi('move', { messageId: detail.id, destinationId });
+      await mailboxApi(apiPath, 'move', { messageId: detail.id, destinationId });
       setMessages((current) => current.filter((item) => item.id !== detail.id));
       setDetail(null);
       setSelectedId(null);
@@ -459,7 +469,7 @@ export default function CharterInbox({ currentUser, trips = [], initialTripUid =
     const name = window.prompt('New mailbox folder name:');
     if (!name?.trim()) return;
     try {
-      await mailboxApi('createFolder', { name: name.trim() });
+      await mailboxApi(apiPath, 'createFolder', { name: name.trim() });
       await loadFolders();
     } catch (err) {
       setError(err.message || 'Could not create folder');
@@ -470,7 +480,7 @@ export default function CharterInbox({ currentUser, trips = [], initialTripUid =
     try {
       const { auth } = await import('./firebase.js');
       const idToken = await auth.currentUser?.getIdToken();
-      const response = await fetch('/api/charter-mail-attachment', {
+      const response = await fetch(attachmentPath, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ idToken, messageId: detail.id, attachmentId: attachment.id }),
@@ -507,7 +517,7 @@ export default function CharterInbox({ currentUser, trips = [], initialTripUid =
     }).slice(0, 100);
   }, [detail, trips]);
 
-  if (!['admin', 'sales'].includes(currentUser?.role)) return null;
+  if (!personal && !['admin', 'sales'].includes(currentUser?.role)) return null;
 
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden bg-surface-sunken">
@@ -546,6 +556,9 @@ export default function CharterInbox({ currentUser, trips = [], initialTripUid =
               <p className="truncate text-2xs text-content-muted">{status?.mailbox || 'charters@flyskyway.com'}</p>
             </div>
             <IconButton icon={RefreshCw} title="Refresh mailbox" onClick={() => loadMessages()} />
+            {personal && onDisconnect && (
+              <IconButton icon={Unplug} title="Disconnect my mailbox" onClick={onDisconnect} />
+            )}
             <span className="md:hidden"><IconButton icon={Plus} title="New email" onClick={() => setComposer({ mode: 'compose' })} /></span>
           </div>
           <form className="relative mt-3" onSubmit={(event) => {
@@ -582,6 +595,8 @@ export default function CharterInbox({ currentUser, trips = [], initialTripUid =
             mode={composer.mode}
             source={composer.source}
             currentUser={currentUser}
+            apiPath={apiPath}
+            sentAs={status?.mailbox || connection?.mailbox || currentUser.email}
             onClose={() => setComposer(null)}
             onSent={() => loadMessages()}
           />
@@ -621,6 +636,7 @@ export default function CharterInbox({ currentUser, trips = [], initialTripUid =
                   </details>
                 </div>
               </div>
+              {!personal && (
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 <Tag className="h-4 w-4 text-content-subtle" />
                 <select value={filingTrip} onChange={(event) => fileMessage(event.target.value)} className="min-w-0 max-w-full rounded-lg border border-edge bg-surface-sunken px-3 py-2 text-xs text-content">
@@ -633,6 +649,7 @@ export default function CharterInbox({ currentUser, trips = [], initialTripUid =
                 </select>
                 {detail.filing?.filedByName && <span className="text-2xs text-content-subtle">Filed by {detail.filing.filedByName}</span>}
               </div>
+              )}
               {detail.attachments?.filter((attachment) => !attachment.isInline).length > 0 && (
                 <div className="mt-3 flex flex-wrap gap-2">
                   {detail.attachments.filter((attachment) => !attachment.isInline).map((attachment) => (

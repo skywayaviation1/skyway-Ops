@@ -78,5 +78,5 @@ test('admin and sales profiles can persist an email signature', async () => {
   const auth = await readFile(path.join(root, 'src/firebase-auth.js'), 'utf8');
   const app = await readFile(path.join(root, 'src/App.jsx'), 'utf8');
   assert.match(auth, /'emailSignature'/);
-  assert.match(app, /SHARED INBOX EMAIL SIGNATURE/);
+  assert.match(app, /EMAIL SIGNATURE/);
 });
