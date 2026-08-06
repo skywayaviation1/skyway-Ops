@@ -47,6 +47,7 @@ function PersonalMailboxCard({ currentUser, compact = false }) {
   const [state, setState] = useState({ loading: true });
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(null);
+  const isAdmin = currentUser?.role === 'admin';
 
   const load = async () => {
     setState((current) => ({ ...current, loading: true }));
@@ -113,7 +114,7 @@ function PersonalMailboxCard({ currentUser, compact = false }) {
   const body = (
     <>
       <p className={cx('text-sm leading-relaxed', compact ? 'text-slate-400' : 'text-content-muted')}>
-        Connect your own {currentUser?.email || '@flyskyway.com'} Microsoft mailbox for folders, search, send and replies inside Skyway.
+        Sign in once with {currentUser?.email || 'your @flyskyway.com account'} to use folders, search, send and replies inside Skyway. No mailbox password or setup values are required from you.
       </p>
 
       {state.loading ? (
@@ -147,19 +148,23 @@ function PersonalMailboxCard({ currentUser, compact = false }) {
       ) : state.configured === false ? (
         <div className="mt-3 space-y-2">
           <Banner tone="warn">
-            {state.setupHint
-              || state.error
-              || 'Personal work-mail integration is not configured on the server yet. An administrator must add the MICROSOFT_USER_MAIL_* environment variables, then redeploy.'}
+            {isAdmin
+              ? (state.setupHint
+                || state.error
+                || 'Personal work-mail integration is not configured on the server yet. Add the Microsoft mail environment variables once for the company, then redeploy.')
+              : 'Microsoft mail sign-in is not available yet. Your administrator needs to enable it once for the company; there is nothing you need to enter.'}
           </Banner>
-          <p className={cx('text-2xs', compact ? 'text-slate-500' : 'text-content-subtle')}>
-            Setup steps: docs/personal-work-mail-setup.md
-          </p>
+          {isAdmin && (
+            <p className={cx('text-2xs', compact ? 'text-slate-500' : 'text-content-subtle')}>
+              Administrator setup: docs/personal-work-mail-setup.md
+            </p>
+          )}
         </div>
       ) : (
         <div className="mt-3 space-y-2">
           {state.error && <Banner tone="danger">{state.error}</Banner>}
           <Button variant="primary" icon={PlugZap} onClick={connect} loading={busy}>
-            Connect Microsoft work email
+            Continue with Microsoft
           </Button>
         </div>
       )}
@@ -188,7 +193,7 @@ function PersonalMailboxCard({ currentUser, compact = false }) {
     <Card>
       <CardHeader
         title="My work mailbox"
-        subtitle="Delegated Microsoft connection for your own @flyskyway.com inbox."
+        subtitle="One Microsoft sign-in for your own @flyskyway.com inbox."
         icon={Mail}
       />
       {body}

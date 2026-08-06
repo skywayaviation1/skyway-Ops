@@ -65,9 +65,9 @@ test('settings and profile expose mailbox connection controls', async () => {
   const panel = await source('src/MailboxSettingsPanel.jsx');
   const app = await source('src/App.jsx');
   const settings = await source('src/AdminSettings.jsx');
-  assert.match(panel, /Connect Microsoft work email/);
+  assert.match(panel, /Continue with Microsoft/);
+  assert.match(panel, /there is nothing you need to enter/);
   assert.match(panel, /Shared charter inbox/);
-  assert.match(panel, /MICROSOFT_USER_MAIL_/);
   assert.match(panel, /MICROSOFT_MAIL_/);
   assert.match(app, /MailboxSettingsPanelLazy/);
   assert.match(app, /placement="profile"/);

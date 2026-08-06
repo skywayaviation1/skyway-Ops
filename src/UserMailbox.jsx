@@ -93,6 +93,7 @@ export default function UserMailbox({ currentUser }) {
 
   if (!connection.connected) {
     const notConfigured = connection.configured === false;
+    const isAdmin = currentUser?.role === 'admin';
     return (
       <div className="flex flex-1 items-center justify-center bg-surface-sunken p-4">
         <Card className="w-full max-w-lg text-center">
@@ -104,8 +105,10 @@ export default function UserMailbox({ currentUser }) {
           </h1>
           <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-content-muted">
             {notConfigured
-              ? 'An administrator must set MICROSOFT_USER_MAIL_* on the deployment (see docs/personal-work-mail-setup.md). Status and connect controls are also under Profile and Organization settings → Mailboxes.'
-              : `Use your own ${currentUser?.email || '@flyskyway.com'} Microsoft mailbox inside Skyway for folders, search, sending, replies and attachments.`}
+              ? (isAdmin
+                ? 'Enable Microsoft mail once for the company under Organization settings → Mailboxes. Employees will then use one Microsoft sign-in without entering any setup values.'
+                : 'Microsoft mail sign-in is not available yet. Your administrator needs to enable it once for the company; there is nothing you need to enter.')
+              : `Continue once with ${currentUser?.email || 'your @flyskyway.com Microsoft account'} to use folders, search, sending, replies and attachments.`}
           </p>
           {!notConfigured && (
             <div className="mt-4 rounded-lg border border-edge bg-surface-sunken p-3 text-left text-2xs leading-relaxed text-content-muted">
@@ -113,7 +116,11 @@ export default function UserMailbox({ currentUser }) {
             </div>
           )}
           {(connection.error || connection.setupHint) && (
-            <p className="mt-3 text-left text-xs text-warning">{connection.setupHint || connection.error}</p>
+            <p className="mt-3 text-left text-xs text-warning">
+              {isAdmin
+                ? (connection.setupHint || connection.error)
+                : 'Ask an administrator to enable Microsoft mail sign-in.'}
+            </p>
           )}
           {message && (
             <div className={cx(
@@ -128,7 +135,7 @@ export default function UserMailbox({ currentUser }) {
           )}
           {!notConfigured && (
             <Button className="mt-5" variant="primary" icon={PlugZap} onClick={connect} loading={busy}>
-              Connect Microsoft work email
+              Continue with Microsoft
             </Button>
           )}
         </Card>

@@ -6,6 +6,14 @@ Mailboxes** (admins), **Advanced tools**, or **Comms → My mailbox**. This is
 delegated access: the employee explicitly consents, and Skyway can access only
 the mailbox represented by that employee's token.
 
+## Employee experience
+
+The Entra and deployment configuration below is completed once by an
+administrator, not by each employee. After it is enabled, an employee only
+selects **Continue with Microsoft**, signs in with the same company account
+used for Skyway, and accepts the mailbox permission prompt. Employees never
+enter a tenant ID, client ID, client secret, redirect URI, or mailbox password.
+
 This integration is separate from:
 
 1. the Firebase Microsoft SSO app (`docs/microsoft-sso-setup.md`), and
