@@ -386,7 +386,10 @@ export default async function handler(req, res) {
     } else if (action === 'message') {
       const id = safeMessageId(req.body?.messageId);
       const raw = await graphRequest(
-        `${mailboxPath(`/messages/${encodeURIComponent(id)}`)}?$select=${encodeURIComponent(`${MESSAGE_SELECT},body,uniqueBody`)}&$expand=attachments($select=id,name,contentType,size,isInline,contentId)`,
+        // contentId belongs to fileAttachment, not the base attachment type.
+        // Selecting it while expanding a heterogeneous attachment collection
+        // makes Graph reject the entire message with an OData parsing error.
+        `${mailboxPath(`/messages/${encodeURIComponent(id)}`)}?$select=${encodeURIComponent(`${MESSAGE_SELECT},body,uniqueBody`)}&$expand=attachments($select=id,name,contentType,size,isInline)`,
         { headers: { Prefer: 'IdType="ImmutableId", outlook.body-content-type="html"' } },
       );
       const [filing] = await Promise.all([

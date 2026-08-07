@@ -260,7 +260,9 @@ export default async function handler(req, res) {
       const id = safeId(req.body?.messageId, 'message ID');
       const raw = await userGraphRequest(
         caller.uid,
-        `/me/messages/${encodeURIComponent(id)}?$select=${encodeURIComponent(`${MESSAGE_SELECT},body,uniqueBody`)}&$expand=attachments($select=id,name,contentType,size,isInline,contentId)`,
+        // contentId is specific to fileAttachment and cannot be selected on
+        // Graph's base attachment collection during a heterogeneous expand.
+        `/me/messages/${encodeURIComponent(id)}?$select=${encodeURIComponent(`${MESSAGE_SELECT},body,uniqueBody`)}&$expand=attachments($select=id,name,contentType,size,isInline)`,
         { headers: { Prefer: 'IdType="ImmutableId", outlook.body-content-type="html"' } },
       );
       if (!raw.isRead) {

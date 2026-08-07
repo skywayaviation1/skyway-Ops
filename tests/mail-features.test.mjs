@@ -69,6 +69,19 @@ test('both mailboxes expose contacts, delete, and flag actions', async () => {
   }
 });
 
+test('message attachment expansion uses only base attachment properties', async () => {
+  const shared = await source('api/charter-mail.js');
+  const personal = await source('api/user-mail.js');
+  for (const handler of [shared, personal]) {
+    assert.match(handler, /\$expand=attachments\(\$select=id,name,contentType,size,isInline\)/);
+    assert.doesNotMatch(
+      handler,
+      /\$expand=attachments\(\$select=[^)]*contentId/,
+      'contentId is a fileAttachment-only property and causes Graph OData parsing to fail',
+    );
+  }
+});
+
 test('reply builds a draft when cc, bcc, or attachments are added', async () => {
   const shared = await source('api/charter-mail.js');
   const personal = await source('api/user-mail.js');
