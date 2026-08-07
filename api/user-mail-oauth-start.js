@@ -2,12 +2,13 @@
 
 import crypto from 'crypto';
 import {
+  DELEGATED_SCOPES,
   authorizeApprovedUser,
   userMailConfig,
 } from './_user-mail.js';
 import { mailDb } from './_charter-mail.js';
 
-const SCOPES = 'openid profile email offline_access User.Read Mail.ReadWrite Mail.Send';
+const SCOPES = DELEGATED_SCOPES;
 
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');

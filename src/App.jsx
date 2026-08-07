@@ -10,6 +10,7 @@ import './theme-classy.css';
 const CommsScreenLazy = lazy(() => import('./CommsStream.jsx'));
 const CharterInboxLazy = lazy(() => import('./CharterInbox.jsx'));
 const UserMailboxLazy = lazy(() => import('./UserMailbox.jsx'));
+const TeamsHubLazy = lazy(() => import('./TeamsHub.jsx'));
 const MailboxSettingsPanelLazy = lazy(() => import('./MailboxSettingsPanel.jsx'));
 const TripEmailPanelLazy = lazy(() =>
   import('./CharterInbox.jsx').then((module) => ({ default: module.TripEmailPanel }))
@@ -22019,6 +22020,7 @@ const NAV_SECTIONS = [
   { id: 'archive',   label: 'Archive',     icon: Hash,          roles: ['crew', 'ops', 'admin'] },
 
   { id: 'comms',     label: 'Comms',       icon: MessageSquare, roles: ['crew', 'sales', 'ops', 'maint', 'accounting', 'admin'] },
+  { id: 'teams',     label: 'Teams',       icon: Users,         roles: ['crew', 'sales', 'ops', 'maint', 'accounting', 'admin'] },
   { id: 'mailbox',   label: 'My mailbox',  icon: Mail,          roles: ['crew', 'sales', 'ops', 'maint', 'accounting', 'admin'] },
   { id: 'inbox',     label: 'Shared inbox', icon: Mail,          roles: ['sales', 'admin'] },
 
@@ -22041,6 +22043,7 @@ const NAV_GROUPS = [
   { id: 'home',     label: 'Home',     icon: Home,          children: ['home'] },
   { id: 'flights',  label: 'Flights',  icon: Plane,         children: ['schedule', 'ops', 'tracking', 'manifests', 'lodging', 'archive'] },
   { id: 'comms',    label: 'Comms',    icon: MessageSquare, children: ['comms'] },
+  { id: 'teams',    label: 'Teams',    icon: Users,         children: ['teams'] },
   { id: 'email',    label: 'Email',    icon: Mail,          children: ['mailbox', 'inbox'] },
   { id: 'crew',     label: 'Crew',     icon: Users,         children: ['duty', 'currency', 'wear', 'reports', 'expenses'] },
   { id: 'aircraft', label: 'Aircraft', icon: Wrench,        children: ['maint', 'aog'] },
@@ -29569,6 +29572,17 @@ export default function CharterOps() {
                 : ''}
               getIdToken={getFirebaseIdToken}
             />
+          </Suspense>
+        )}
+
+        {/* === MICROSOFT TEAMS === */}
+        {section === 'teams' && currentUser?.approved && (
+          <Suspense fallback={
+            <div className="flex flex-1 items-center justify-center text-content-muted">
+              <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading Microsoft Teams…
+            </div>
+          }>
+            <TeamsHubLazy currentUser={currentUser} />
           </Suspense>
         )}
 

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
+import { DELEGATED_SCOPES } from '../api/_user-mail.js';
 
 const root = path.resolve(import.meta.dirname, '..');
 const source = (file) => readFile(path.join(root, file), 'utf8');
@@ -11,7 +12,12 @@ test('personal mailbox OAuth uses confidential auth code flow with PKCE', async 
   const callback = await source('api/user-mail-oauth-callback.js');
   assert.match(start, /code_challenge_method: 'S256'/);
   assert.match(start, /codeVerifier/);
-  assert.match(start, /offline_access User\.Read Mail\.ReadWrite Mail\.Send/);
+  // Authorization and redemption share one scope list so consent cannot drift.
+  assert.match(start, /const SCOPES = DELEGATED_SCOPES/);
+  assert.match(callback, /scope: DELEGATED_SCOPES/);
+  for (const scope of ['offline_access', 'User.Read', 'Mail.ReadWrite', 'Mail.Send']) {
+    assert.ok(DELEGATED_SCOPES.includes(scope), `missing scope ${scope}`);
+  }
   assert.match(callback, /grant_type: 'authorization_code'/);
   assert.match(callback, /client_secret: config\.clientSecret/);
   assert.match(callback, /code_verifier: saved\.codeVerifier/);

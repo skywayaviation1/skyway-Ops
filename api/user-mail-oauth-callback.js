@@ -2,6 +2,7 @@
 // that initiated the connection.
 
 import {
+  DELEGATED_SCOPES,
   userMailConfig,
   userMailboxRef,
 } from './_user-mail.js';
@@ -58,7 +59,7 @@ export default async function handler(req, res) {
           code,
           redirect_uri: config.redirectUri,
           code_verifier: saved.codeVerifier,
-          scope: 'openid profile email offline_access User.Read Mail.ReadWrite Mail.Send',
+          scope: DELEGATED_SCOPES,
         }).toString(),
       },
     );

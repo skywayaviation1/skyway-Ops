@@ -9,6 +9,35 @@ import {
 
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
 const TOKEN_PATH = '/oauth2/v2.0/token';
+
+// Delegated scopes requested when an employee connects Microsoft. Mail and
+// Teams share a single consent so staff authorize Skyway once.
+export const MAIL_SCOPES = [
+  'openid', 'profile', 'email', 'offline_access',
+  'User.Read', 'Mail.ReadWrite', 'Mail.Send',
+];
+export const TEAMS_SCOPES = [
+  'Team.ReadBasic.All', 'Channel.ReadBasic.All',
+  'ChannelMessage.Read.All', 'ChannelMessage.Send',
+  'Chat.ReadWrite',
+];
+export const DELEGATED_SCOPES = [...MAIL_SCOPES, ...TEAMS_SCOPES].join(' ');
+
+/** Granted scope names, stripped of the Graph resource URI Microsoft returns. */
+export function grantedScopeNames(connection) {
+  return (Array.isArray(connection?.scopes) ? connection.scopes : [])
+    .map((scope) => String(scope).split('/').pop())
+    .filter(Boolean);
+}
+
+/**
+ * Teams requires consent that mail-only connections never asked for, so an
+ * employee who connected before Teams shipped has to reconnect once.
+ */
+export function hasTeamsScopes(connection) {
+  const granted = new Set(grantedScopeNames(connection).map((scope) => scope.toLowerCase()));
+  return ['team.readbasic.all', 'chat.readwrite'].every((scope) => granted.has(scope));
+}
 // Public identifiers for the existing Skyway Microsoft SSO registration.
 // Environment overrides keep rotation possible without a code release.
 const SKYWAY_TENANT_ID = 'aef6138f-7c46-448a-95fe-dda7a700b80f';
@@ -125,7 +154,14 @@ export function publicUserMailbox(connection) {
     lastRefreshedAt: connection.lastRefreshedAt || null,
     accessTokenExpiresAt: connection.accessTokenExpiresAt || null,
     scopes: connection.scopes || [],
+    teamsEnabled: hasTeamsScopes(connection),
   };
+}
+
+function refreshScope(connection) {
+  const granted = grantedScopeNames(connection).filter((scope) => scope !== 'offline_access');
+  if (!granted.length) return MAIL_SCOPES.join(' ');
+  return [...new Set([...granted, 'offline_access'])].join(' ');
 }
 
 async function refreshUserToken(uid, connection) {
@@ -141,7 +177,10 @@ async function refreshUserToken(uid, connection) {
         client_id: config.clientId,
         client_secret: config.clientSecret,
         refresh_token: connection.refreshToken,
-        scope: 'openid profile email offline_access User.Read Mail.ReadWrite Mail.Send',
+        // Only ask for what this connection already consented to. Requesting a
+        // scope the user never granted fails the refresh outright, which would
+        // break mail for everyone who connected before Teams was added.
+        scope: refreshScope(connection),
       }).toString(),
     },
   );
@@ -179,7 +218,7 @@ export async function validUserMailbox(uid, forceRefresh = false) {
   return refresh ? refreshUserToken(uid, connection) : connection;
 }
 
-function validateGraphUrl(pathOrUrl, connection) {
+function validateGraphUrl(pathOrUrl, connection, allowPrefixes = []) {
   const url = String(pathOrUrl).startsWith('https://')
     ? new URL(pathOrUrl)
     : new URL(`${GRAPH_BASE}${pathOrUrl}`);
@@ -187,6 +226,7 @@ function validateGraphUrl(pathOrUrl, connection) {
   const allowed = [
     '/v1.0/me',
     connection?.graphUserId ? `/v1.0/users/${encodeURIComponent(connection.graphUserId)}` : null,
+    ...allowPrefixes,
   ].filter(Boolean);
   if (!allowed.some((prefix) => url.pathname.startsWith(prefix))) {
     throw new Error('Personal mailbox Graph path is not allowed');
@@ -195,15 +235,16 @@ function validateGraphUrl(pathOrUrl, connection) {
 }
 
 export async function userGraphRequest(uid, pathOrUrl, options = {}, retry = true) {
+  const { allowPrefixes = [], ...init } = options;
   let connection = await validUserMailbox(uid);
-  const run = async (conn) => fetch(validateGraphUrl(pathOrUrl, conn), {
-    ...options,
+  const run = async (conn) => fetch(validateGraphUrl(pathOrUrl, conn, allowPrefixes), {
+    ...init,
     headers: {
       Authorization: `Bearer ${conn.accessToken}`,
       Accept: 'application/json',
       Prefer: 'IdType="ImmutableId"',
-      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-      ...(options.headers || {}),
+      ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(init.headers || {}),
     },
   });
   let response = await run(connection);
