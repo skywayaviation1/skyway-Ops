@@ -47,6 +47,7 @@ import {
   addOutsideFlying as fbAddOutsideFlying,
 } from './firebase-duty-v2.js';
 import { evaluateCurrent, LIMITS } from './duty-legality.js';
+import { assignedTailFor, findAssignedTrip } from './duty-assignment.js';
 import { DutyExportButtons } from './DutyExport.jsx';
 import TzAwareDateTimeInput from './TzAwareInput.jsx';
 import { Button, Card, InfoRow, StatusChip, cx } from './ui.jsx';
@@ -869,6 +870,7 @@ function StartDutyForm({ busy, onCancel, onConfirm, myTrips = [], users = [], cu
   const [dutyOnAt, setDutyOnAt] = useState(() => Math.round(Date.now() / 300000) * 300000);
   const [location, setLocation] = useState('');
   const [tail, setTail] = useState('');
+  const [tailAutoAssigned, setTailAutoAssigned] = useState(false);
   const [tripId, setTripId] = useState('');
   const [role, setRole] = useState('PIC');
   const [crewType, setCrewType] = useState('two');
@@ -911,6 +913,38 @@ function StartDutyForm({ busy, onCancel, onConfirm, myTrips = [], users = [], cu
     }),
     [users, currentUserUid]
   );
+
+  // Aircraft assignment for this duty period. Independent of the trip-ID box:
+  // we look at the pilot's own trips and find the one they're flying at
+  // duty-on (or the next one starting within the 14-hour period). This is what
+  // guarantees the tail they are assigned to is recorded on the record even
+  // when the pilot doesn't type a trip.
+  const assignedTrip = useMemo(
+    () => findAssignedTrip(myTrips, dutyOnAt),
+    [myTrips, dutyOnAt],
+  );
+  const assignedTail = useMemo(
+    () => assignedTailFor(myTrips, dutyOnAt),
+    [myTrips, dutyOnAt],
+  );
+
+  // Auto-fill the tail from the assignment whenever the pilot has not typed
+  // one themselves. If they edit it, we stop overwriting.
+  useEffect(() => {
+    if (!assignedTail) return;
+    if (!tail || tailAutoAssigned) {
+      if (tail !== assignedTail) setTail(assignedTail);
+      setTailAutoAssigned(true);
+    }
+    // Fill location/trip from the same assignment when still blank.
+    if (assignedTrip) {
+      if (!location && assignedTrip.info?.from) setLocation(String(assignedTrip.info.from).toUpperCase().slice(0, 30));
+      if (!tripId.trim()) {
+        const id = assignedTrip.id || (assignedTrip.info && (assignedTrip.info.uid || assignedTrip.info.tripId)) || '';
+        if (id) setTripId(String(id));
+      }
+    }
+  }, [assignedTail, assignedTrip]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Look up trip metadata when the user types a trip ID. We accept either
   // a JetInsight tripId (string match against trip.id) or a short label
@@ -987,7 +1021,9 @@ function StartDutyForm({ busy, onCancel, onConfirm, myTrips = [], users = [], cu
     if (!canSubmit) return;
     const payload = {
       location: location.trim(),
-      tail: tail.trim() || null,
+      // Always record the tail the pilot is assigned to for this duty period,
+      // even if the field was left blank.
+      tail: (tail.trim() || assignedTail || '') || null,
       tripId: tripId.trim() || null,
       role,
       crewType,
@@ -1026,14 +1062,19 @@ function StartDutyForm({ busy, onCancel, onConfirm, myTrips = [], users = [], cu
 
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <Label>TAIL (optional)</Label>
+          <Label>TAIL{assignedTail ? ' (auto-assigned)' : ' (optional)'}</Label>
           <input
             type="text"
             value={tail}
-            onChange={(e) => setTail(e.target.value.toUpperCase().slice(0, 10))}
+            onChange={(e) => { setTail(e.target.value.toUpperCase().slice(0, 10)); setTailAutoAssigned(false); }}
             placeholder="N444AM"
             className="w-full bg-slate-950/80 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
           />
+          {assignedTail && tailAutoAssigned && (
+            <p className="mt-1 text-[10px] text-cyan-400">
+              Assigned aircraft {assignedTail} from your trip — recorded for the 14-hour period.
+            </p>
+          )}
         </div>
         <div>
           <Label>TRIP ID (optional)</Label>

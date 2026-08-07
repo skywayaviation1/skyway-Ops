@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Archive,
   ArrowLeft,
@@ -6,6 +6,7 @@ import {
   Download,
   File,
   FileText,
+  Flag,
   Folder,
   FolderPlus,
   Forward,
@@ -33,11 +34,33 @@ import {
   StatusChip,
   cx,
 } from './ui.jsx';
+import { applyContact, filterContacts } from './mail-contacts.js';
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// getIdToken() can throw auth/network-request-failed transiently, which is what
+// blocked a second person opening the shared inbox. Retry a couple of times
+// before surfacing an error so a brief connectivity blip is not fatal.
+async function mailIdToken() {
+  const { auth } = await import('./firebase.js');
+  let lastError = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const token = await auth.currentUser?.getIdToken(attempt > 0);
+      if (token) return token;
+      lastError = new Error('Your mailbox session expired — sign in again');
+    } catch (err) {
+      lastError = err;
+      if (!String(err?.code || '').includes('network-request-failed')) break;
+    }
+    // eslint-disable-next-line no-await-in-loop
+    await sleep(400 * (attempt + 1));
+  }
+  throw new Error(lastError?.message || 'Your mailbox session expired — sign in again');
+}
 
 async function mailboxApi(apiPath, action, body = {}) {
-  const { auth } = await import('./firebase.js');
-  const idToken = await auth.currentUser?.getIdToken();
-  if (!idToken) throw new Error('Your mailbox session expired');
+  const idToken = await mailIdToken();
   const response = await fetch(apiPath, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -148,7 +171,65 @@ function MessageRow({ message, active, onClick }) {
   );
 }
 
-function Composer({ mode = 'compose', source, currentUser, apiPath, sentAs, onClose, onSent }) {
+function RecipientInput({ value, onChange, placeholder, contacts }) {
+  const [focused, setFocused] = useState(false);
+  const [highlight, setHighlight] = useState(0);
+  const boxRef = useRef(null);
+  const suggestions = useMemo(
+    () => (focused ? filterContacts(contacts, value) : []),
+    [focused, contacts, value],
+  );
+
+  useEffect(() => { setHighlight(0); }, [value]);
+
+  const choose = (contact) => {
+    onChange(applyContact(value, contact.address));
+    setHighlight(0);
+  };
+
+  return (
+    <div ref={boxRef} className="relative">
+      <input
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setTimeout(() => setFocused(false), 150)}
+        onKeyDown={(event) => {
+          if (!suggestions.length) return;
+          if (event.key === 'ArrowDown') { event.preventDefault(); setHighlight((h) => (h + 1) % suggestions.length); }
+          else if (event.key === 'ArrowUp') { event.preventDefault(); setHighlight((h) => (h - 1 + suggestions.length) % suggestions.length); }
+          else if (event.key === 'Enter' || event.key === 'Tab') {
+            if (suggestions[highlight]) { event.preventDefault(); choose(suggestions[highlight]); }
+          }
+        }}
+        placeholder={placeholder}
+        autoComplete="off"
+        className="w-full rounded border border-edge bg-surface-sunken px-3 py-2 text-sm text-content outline-none focus:border-accent"
+      />
+      {suggestions.length > 0 && (
+        <ul className="absolute z-30 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-edge bg-surface shadow-lg">
+          {suggestions.map((contact, index) => (
+            <li key={contact.address}>
+              <button
+                type="button"
+                onMouseDown={(event) => { event.preventDefault(); choose(contact); }}
+                className={cx(
+                  'flex w-full flex-col items-start px-3 py-1.5 text-left',
+                  index === highlight ? 'bg-accent-soft' : 'hover:bg-surface-raised',
+                )}
+              >
+                {contact.name && <span className="text-xs font-medium text-content">{contact.name}</span>}
+                <span className="text-2xs text-content-muted">{contact.address}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function Composer({ mode = 'compose', source, currentUser, apiPath, sentAs, contacts = [], onClose, onSent }) {
   const [to, setTo] = useState(() => {
     if (mode === 'replyAll') {
       return [...(source?.from?.address ? [source.from.address] : []), ...((source?.to || []).map((item) => item.address))]
@@ -159,6 +240,9 @@ function Composer({ mode = 'compose', source, currentUser, apiPath, sentAs, onCl
     return '';
   });
   const [cc, setCc] = useState('');
+  const [bcc, setBcc] = useState('');
+  const [showCc, setShowCc] = useState(false);
+  const [importance, setImportance] = useState('normal');
   const [subject, setSubject] = useState(() => (
     mode === 'forward' ? `Fwd: ${source?.subject || ''}`
       : mode.startsWith('reply') ? `Re: ${source?.subject || ''}` : ''
@@ -168,6 +252,8 @@ function Composer({ mode = 'compose', source, currentUser, apiPath, sentAs, onCl
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const isThreadAction = mode !== 'compose';
+  // Every mode now supports adding recipients and attachments, matching Outlook.
+  const showTo = mode === 'compose' || mode === 'forward';
 
   const addFiles = (event) => {
     const selected = [...(event.target.files || [])];
@@ -180,31 +266,41 @@ function Composer({ mode = 'compose', source, currentUser, apiPath, sentAs, onCl
     setFiles((current) => [...current, ...selected]);
   };
 
+  const readAttachments = async () => {
+    const attachments = [];
+    for (const file of files) {
+      // eslint-disable-next-line no-await-in-loop
+      const contentBase64 = await fileToBase64(file);
+      attachments.push({ name: file.name, contentType: file.type, contentBase64 });
+    }
+    return attachments;
+  };
+
   const send = async () => {
     if (!text.trim()) return;
     setBusy(true);
     setError('');
     try {
+      const attachments = await readAttachments();
       if (isThreadAction) {
         await mailboxApi(apiPath, 'reply', {
           messageId: source.id,
           mode,
           text,
           to: mode === 'forward' ? splitAddresses(to) : undefined,
+          cc: splitAddresses(cc),
+          bcc: splitAddresses(bcc),
+          attachments,
         });
       } else {
-        const attachments = [];
-        for (const file of files) {
-          // eslint-disable-next-line no-await-in-loop
-          const contentBase64 = await fileToBase64(file);
-          attachments.push({ name: file.name, contentType: file.type, contentBase64 });
-        }
         const html = `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.5">${text.split(/\r?\n/).map((line) => line ? line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') : '<br>').join('<br>')}</div>`;
         await mailboxApi(apiPath, 'send', {
           to: splitAddresses(to),
           cc: splitAddresses(cc),
+          bcc: splitAddresses(bcc),
           subject,
           html,
+          importance,
           attachments,
         });
       }
@@ -226,20 +322,36 @@ function Composer({ mode = 'compose', source, currentUser, apiPath, sentAs, onCl
         </h2>
       </div>
       <div className="space-y-2 border-b border-edge p-3">
-        {(mode === 'compose' || mode === 'forward') && (
-          <input value={to} onChange={(event) => setTo(event.target.value)} placeholder="To" className="w-full rounded border border-edge bg-surface-sunken px-3 py-2 text-sm text-content outline-none focus:border-accent" />
+        {showTo && (
+          <RecipientInput value={to} onChange={setTo} placeholder="To" contacts={contacts} />
         )}
-        {mode === 'compose' && (
-          <input value={cc} onChange={(event) => setCc(event.target.value)} placeholder="Cc (optional)" className="w-full rounded border border-edge bg-surface-sunken px-3 py-2 text-sm text-content outline-none focus:border-accent" />
+        {!showCc ? (
+          <button type="button" onClick={() => setShowCc(true)} className="text-2xs font-medium text-accent hover:underline">
+            Add Cc / Bcc
+          </button>
+        ) : (
+          <>
+            <RecipientInput value={cc} onChange={setCc} placeholder="Cc" contacts={contacts} />
+            <RecipientInput value={bcc} onChange={setBcc} placeholder="Bcc" contacts={contacts} />
+          </>
         )}
-        <input value={subject} onChange={(event) => setSubject(event.target.value)} readOnly={isThreadAction} placeholder="Subject" className="w-full rounded border border-edge bg-surface-sunken px-3 py-2 text-sm text-content outline-none focus:border-accent read-only:opacity-70" />
+        <div className="flex items-center gap-2">
+          <input value={subject} onChange={(event) => setSubject(event.target.value)} readOnly={isThreadAction} placeholder="Subject" className="min-w-0 flex-1 rounded border border-edge bg-surface-sunken px-3 py-2 text-sm text-content outline-none focus:border-accent read-only:opacity-70" />
+          {mode === 'compose' && (
+            <select value={importance} onChange={(event) => setImportance(event.target.value)} title="Importance" className="rounded border border-edge bg-surface-sunken px-2 py-2 text-2xs text-content-muted">
+              <option value="normal">Normal</option>
+              <option value="high">High</option>
+              <option value="low">Low</option>
+            </select>
+          )}
+        </div>
       </div>
       <textarea
         autoFocus
         value={text}
         onChange={(event) => setText(event.target.value)}
         placeholder="Write your message…"
-        className="min-h-[18rem] flex-1 resize-none bg-surface p-4 text-sm leading-relaxed text-content outline-none"
+        className="min-h-[16rem] flex-1 resize-none bg-surface p-4 text-sm leading-relaxed text-content outline-none"
       />
       {files.length > 0 && (
         <div className="flex flex-wrap gap-2 border-t border-edge px-3 py-2">
@@ -252,16 +364,14 @@ function Composer({ mode = 'compose', source, currentUser, apiPath, sentAs, onCl
       )}
       {error && <p className="border-t border-danger-border bg-danger-soft px-3 py-2 text-xs text-danger">{error}</p>}
       <div className="flex items-center gap-2 border-t border-edge p-3">
-        {mode === 'compose' && (
-          <label className="cursor-pointer rounded-lg border border-edge p-2 text-content-muted hover:text-content">
-            <Paperclip className="h-4 w-4" />
-            <input type="file" multiple className="hidden" onChange={addFiles} />
-          </label>
-        )}
+        <label className="cursor-pointer rounded-lg border border-edge p-2 text-content-muted hover:text-content" title="Attach files">
+          <Paperclip className="h-4 w-4" />
+          <input type="file" multiple className="hidden" onChange={addFiles} />
+        </label>
         <p className="min-w-0 flex-1 truncate text-2xs text-content-subtle">
           Sent as {sentAs || currentUser.email} · your saved signature is added automatically
         </p>
-        <Button variant="primary" icon={Send} loading={busy} disabled={!text.trim() || ((mode === 'compose' || mode === 'forward') && !to.trim())} onClick={send}>
+        <Button variant="primary" icon={Send} loading={busy} disabled={!text.trim() || (showTo && !to.trim())} onClick={send}>
           Send
         </Button>
       </div>
@@ -360,6 +470,7 @@ export default function CharterInbox({
   const [composer, setComposer] = useState(null);
   const [mobileView, setMobileView] = useState('list');
   const [filingTrip, setFilingTrip] = useState(initialTripUid || '');
+  const [contacts, setContacts] = useState([]);
 
   const flatFolders = useMemo(() => flattenFolders(folders), [folders]);
   const selected = messages.find((message) => message.id === selectedId) || detail;
@@ -404,6 +515,10 @@ export default function CharterInbox({
           return;
         }
         await loadFolders();
+        // Address book for recipient autocomplete — best effort, non-blocking.
+        mailboxApi(apiPath, 'contacts')
+          .then((result) => { if (!cancelled) setContacts(result.contacts || []); })
+          .catch(() => {});
       } catch (err) {
         if (!cancelled) setError(err.message || 'Shared mailbox is not configured');
       }
@@ -473,6 +588,44 @@ export default function CharterInbox({
       await loadFolders();
     } catch (err) {
       setError(err.message || 'Could not move email');
+    }
+  };
+
+  const deleteMessage = async () => {
+    if (!detail) return;
+    try {
+      await mailboxApi(apiPath, 'delete', { messageId: detail.id });
+      setMessages((current) => current.filter((item) => item.id !== detail.id));
+      setDetail(null);
+      setSelectedId(null);
+      setMobileView('list');
+      await loadFolders();
+    } catch (err) {
+      setError(err.message || 'Could not delete email');
+    }
+  };
+
+  const toggleRead = async () => {
+    if (!detail) return;
+    const nextRead = !detail.isRead;
+    try {
+      await mailboxApi(apiPath, 'markRead', { messageId: detail.id, isRead: nextRead });
+      setDetail((current) => ({ ...current, isRead: nextRead }));
+      setMessages((current) => current.map((item) => item.id === detail.id ? { ...item, isRead: nextRead } : item));
+    } catch (err) {
+      setError(err.message || 'Could not update message');
+    }
+  };
+
+  const toggleFlag = async () => {
+    if (!detail) return;
+    const flagStatus = detail.flag === 'flagged' ? 'notFlagged' : 'flagged';
+    try {
+      await mailboxApi(apiPath, 'flag', { messageId: detail.id, flagStatus });
+      setDetail((current) => ({ ...current, flag: flagStatus }));
+      setMessages((current) => current.map((item) => item.id === detail.id ? { ...item, flag: flagStatus } : item));
+    } catch (err) {
+      setError(err.message || 'Could not flag message');
     }
   };
 
@@ -607,6 +760,7 @@ export default function CharterInbox({
             source={composer.source}
             currentUser={currentUser}
             apiPath={apiPath}
+            contacts={contacts}
             sentAs={status?.mailbox || connection?.mailbox || currentUser.email}
             onClose={() => setComposer(null)}
             onSent={() => loadMessages()}
@@ -619,6 +773,18 @@ export default function CharterInbox({
                 <IconButton icon={Reply} title="Reply" onClick={() => setComposer({ mode: 'reply', source: detail })} />
                 <IconButton icon={ReplyAll} title="Reply all" onClick={() => setComposer({ mode: 'replyAll', source: detail })} />
                 <IconButton icon={Forward} title="Forward" onClick={() => setComposer({ mode: 'forward', source: detail })} />
+                <IconButton
+                  icon={Flag}
+                  title={detail.flag === 'flagged' ? 'Clear flag' : 'Flag'}
+                  onClick={toggleFlag}
+                  className={detail.flag === 'flagged' ? 'text-danger' : undefined}
+                />
+                <IconButton
+                  icon={detail.isRead ? Mail : MailOpen}
+                  title={detail.isRead ? 'Mark unread' : 'Mark read'}
+                  onClick={toggleRead}
+                />
+                <IconButton icon={Trash2} title="Delete" onClick={deleteMessage} />
                 <select value="" onChange={(event) => moveMessage(event.target.value)} className="ml-1 rounded border border-edge bg-surface px-2 py-1.5 text-2xs text-content-muted">
                   <option value="">Move to…</option>
                   {flatFolders.filter((folder) => folder.id !== detail.parentFolderId).map((folder) => (

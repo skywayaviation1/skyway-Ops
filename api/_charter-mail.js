@@ -252,6 +252,47 @@ export function normalizeMessage(message, includeBody = false) {
   return normalized;
 }
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/**
+ * Build an address book from raw Graph messages. Contacts are the people a
+ * mailbox has actually corresponded with (senders + recipients), ranked by how
+ * often and how recently they appear so autocomplete surfaces real contacts
+ * first. This needs only Mail read scope — no separate People/Contacts grant.
+ */
+export function extractContacts(messages, selfAddresses = []) {
+  const self = new Set(
+    (Array.isArray(selfAddresses) ? selfAddresses : [])
+      .map((value) => String(value || '').trim().toLowerCase())
+      .filter(Boolean),
+  );
+  const byAddress = new Map();
+  const note = (emailAddress, whenMs) => {
+    const address = String(emailAddress?.address || '').trim().toLowerCase();
+    if (!EMAIL_RE.test(address) || self.has(address)) return;
+    const name = String(emailAddress?.name || '').trim();
+    const existing = byAddress.get(address);
+    if (existing) {
+      existing.count += 1;
+      if (name && (!existing.name || existing.name === address)) existing.name = name;
+      if (whenMs > existing.lastSeen) existing.lastSeen = whenMs;
+    } else {
+      byAddress.set(address, { name: name || '', address, count: 1, lastSeen: whenMs || 0 });
+    }
+  };
+  for (const message of Array.isArray(messages) ? messages : []) {
+    const whenMs = new Date(message?.receivedDateTime || message?.sentDateTime || 0).getTime() || 0;
+    note(message?.from?.emailAddress, whenMs);
+    note(message?.sender?.emailAddress, whenMs);
+    for (const recipient of message?.toRecipients || []) note(recipient?.emailAddress, whenMs);
+    for (const recipient of message?.ccRecipients || []) note(recipient?.emailAddress, whenMs);
+  }
+  return [...byAddress.values()]
+    .sort((a, b) => b.count - a.count || b.lastSeen - a.lastSeen || a.address.localeCompare(b.address))
+    .slice(0, 500)
+    .map(({ name, address }) => ({ name, address }));
+}
+
 export function escapeHtml(value) {
   return String(value || '')
     .replace(/&/g, '&amp;')

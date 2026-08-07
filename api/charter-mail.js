@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import {
   authorizeMailboxCaller,
   escapeHtml,
+  extractContacts,
   graphRecipients,
   graphRequest,
   isSharedMailConfigured,
@@ -13,6 +14,20 @@ import {
   normalizeMessage,
   signatureHtml,
 } from './_charter-mail.js';
+
+const CONTACT_SELECT = 'from,sender,toRecipients,ccRecipients,receivedDateTime,sentDateTime';
+
+async function listContacts() {
+  const [inbox, sent] = await Promise.all([
+    graphRequest(
+      `${mailboxPath('/mailFolders/inbox/messages')}?$top=200&$orderby=receivedDateTime%20desc&$select=${encodeURIComponent(CONTACT_SELECT)}`,
+    ).catch(() => ({ value: [] })),
+    graphRequest(
+      `${mailboxPath('/mailFolders/sentitems/messages')}?$top=200&$orderby=sentDateTime%20desc&$select=${encodeURIComponent(CONTACT_SELECT)}`,
+    ).catch(() => ({ value: [] })),
+  ]);
+  return { contacts: extractContacts([...(inbox.value || []), ...(sent.value || [])], [mailboxUpn()]) };
+}
 
 const MESSAGE_SELECT = [
   'id', 'conversationId', 'internetMessageId', 'subject', 'from', 'sender',
@@ -180,21 +195,74 @@ async function sendMessage(body, caller) {
   return { sent: true };
 }
 
+function commentHtml(text, signatureHtmlValue) {
+  const escaped = escapeHtml(text).replace(/\r?\n/g, '<br>');
+  return `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.5">${escaped}</div>${signatureHtmlValue}`;
+}
+
 async function replyMessage(body, caller) {
   const messageId = safeMessageId(body.messageId);
-  const action = ['reply', 'replyAll', 'forward'].includes(body.mode) ? body.mode : 'reply';
+  const mode = ['reply', 'replyAll', 'forward'].includes(body.mode) ? body.mode : 'reply';
   const text = String(body.text || '').trim().slice(0, 100_000);
   if (!text) throw new Error('Reply text is required');
-  const signature = caller.emailSignature || `${caller.name}\nSkyway Aviation\n${mailboxUpn()}`;
-  const payload = { comment: `${text}\n\n${signature}` };
-  if (action === 'forward') {
-    payload.toRecipients = graphRecipients(body.to);
-    if (!payload.toRecipients.length) throw new Error('Forward recipient is required');
+  const extraTo = graphRecipients(body.to);
+  const extraCc = graphRecipients(body.cc);
+  const extraBcc = graphRecipients(body.bcc);
+  const files = attachmentPayloads(body.attachments);
+  // The simple Graph reply/forward endpoints accept only a comment (plus a
+  // forward recipient). When the sender adds Cc/Bcc or attachments we build a
+  // draft instead so every Outlook field is preserved.
+  const needsDraft = files.length > 0 || extraCc.length > 0 || extraBcc.length > 0;
+  const signature = signatureHtml(caller);
+
+  if (!needsDraft) {
+    const payload = { comment: `${text}\n\n${caller.emailSignature || `${caller.name}\nSkyway Aviation\n${mailboxUpn()}`}` };
+    if (mode === 'forward') {
+      payload.toRecipients = extraTo;
+      if (!payload.toRecipients.length) throw new Error('Forward recipient is required');
+    }
+    await graphRequest(mailboxPath(`/messages/${encodeURIComponent(messageId)}/${mode}`), {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    return { sent: true };
   }
-  await graphRequest(mailboxPath(`/messages/${encodeURIComponent(messageId)}/${action}`), {
+
+  const createPath = mode === 'forward' ? 'createForward' : mode === 'replyAll' ? 'createReplyAll' : 'createReply';
+  const draft = await graphRequest(mailboxPath(`/messages/${encodeURIComponent(messageId)}/${createPath}`), {
     method: 'POST',
-    body: JSON.stringify(payload),
+    body: JSON.stringify({}),
   });
+  const draftId = draft.id;
+  const current = await graphRequest(
+    `${mailboxPath(`/messages/${encodeURIComponent(draftId)}`)}?$select=body,toRecipients,ccRecipients,bccRecipients`,
+  );
+  const patch = {
+    body: {
+      contentType: 'HTML',
+      content: `${commentHtml(text, signature)}<br><br>${current.body?.content || ''}`,
+    },
+  };
+  if (mode === 'forward') {
+    if (!extraTo.length) throw new Error('Forward recipient is required');
+    patch.toRecipients = extraTo;
+  } else if (extraTo.length) {
+    patch.toRecipients = [...(current.toRecipients || []), ...extraTo];
+  }
+  if (extraCc.length) patch.ccRecipients = [...(current.ccRecipients || []), ...extraCc];
+  if (extraBcc.length) patch.bccRecipients = [...(current.bccRecipients || []), ...extraBcc];
+  await graphRequest(mailboxPath(`/messages/${encodeURIComponent(draftId)}`), {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  });
+  for (const attachment of files) {
+    // eslint-disable-next-line no-await-in-loop
+    await graphRequest(mailboxPath(`/messages/${encodeURIComponent(draftId)}/attachments`), {
+      method: 'POST',
+      body: JSON.stringify(attachment),
+    });
+  }
+  await graphRequest(mailboxPath(`/messages/${encodeURIComponent(draftId)}/send`), { method: 'POST' });
   return { sent: true };
 }
 
@@ -329,10 +397,29 @@ export default async function handler(req, res) {
         }),
       ]);
       result = { message: { ...normalizeMessage(raw, true), filing: filing.exists ? filing.data() : null } };
+    } else if (action === 'contacts') {
+      result = await listContacts();
     } else if (action === 'send') {
       result = await sendMessage(req.body || {}, caller);
     } else if (action === 'reply') {
       result = await replyMessage(req.body || {}, caller);
+    } else if (action === 'delete') {
+      const id = safeMessageId(req.body?.messageId);
+      const moved = await graphRequest(mailboxPath(`/messages/${encodeURIComponent(id)}/move`), {
+        method: 'POST',
+        body: JSON.stringify({ destinationId: 'deleteditems' }),
+      });
+      result = { deleted: true, message: normalizeMessage(moved) };
+    } else if (action === 'flag') {
+      const id = safeMessageId(req.body?.messageId);
+      const flagStatus = ['flagged', 'complete', 'notFlagged'].includes(req.body?.flagStatus)
+        ? req.body.flagStatus
+        : 'flagged';
+      await graphRequest(mailboxPath(`/messages/${encodeURIComponent(id)}`), {
+        method: 'PATCH',
+        body: JSON.stringify({ flag: { flagStatus } }),
+      });
+      result = { updated: true, flagStatus };
     } else if (action === 'markRead') {
       const id = safeMessageId(req.body?.messageId);
       await graphRequest(mailboxPath(`/messages/${encodeURIComponent(id)}`), {

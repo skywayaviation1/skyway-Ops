@@ -1,6 +1,8 @@
 // Delegated mail operations for the signed-in employee's own work mailbox.
 
 import {
+  escapeHtml,
+  extractContacts,
   graphRecipients,
   normalizeMessage,
 } from './_charter-mail.js';
@@ -11,6 +13,28 @@ import {
   readUserMailbox,
   userGraphRequest,
 } from './_user-mail.js';
+
+const CONTACT_SELECT = 'from,sender,toRecipients,ccRecipients,receivedDateTime,sentDateTime';
+
+async function contacts(uid, caller, connection) {
+  const [inbox, sent] = await Promise.all([
+    userGraphRequest(
+      uid,
+      `/me/mailFolders/inbox/messages?$top=200&$orderby=receivedDateTime%20desc&$select=${encodeURIComponent(CONTACT_SELECT)}`,
+    ).catch(() => ({ value: [] })),
+    userGraphRequest(
+      uid,
+      `/me/mailFolders/sentitems/messages?$top=200&$orderby=sentDateTime%20desc&$select=${encodeURIComponent(CONTACT_SELECT)}`,
+    ).catch(() => ({ value: [] })),
+  ]);
+  const self = [connection?.mail, connection?.userPrincipalName, caller?.email];
+  return { contacts: extractContacts([...(inbox.value || []), ...(sent.value || [])], self) };
+}
+
+function commentHtml(text, signatureHtmlValue) {
+  const escaped = escapeHtml(text).replace(/\r?\n/g, '<br>');
+  return `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.5">${escaped}</div>${signatureHtmlValue}`;
+}
 
 const MESSAGE_SELECT = [
   'id', 'conversationId', 'internetMessageId', 'subject', 'from', 'sender',
@@ -149,16 +173,63 @@ async function reply(uid, body, caller, connection) {
   const mode = ['reply', 'replyAll', 'forward'].includes(body.mode) ? body.mode : 'reply';
   const text = String(body.text || '').trim().slice(0, 100_000);
   if (!text) throw new Error('Reply text is required');
-  const signature = caller.emailSignature || `${caller.name}\nSkyway Aviation\n${connection.mail || caller.email}`;
-  const payload = { comment: `${text}\n\n${signature}` };
-  if (mode === 'forward') {
-    payload.toRecipients = graphRecipients(body.to);
-    if (!payload.toRecipients.length) throw new Error('Forward recipient is required');
+  const extraTo = graphRecipients(body.to);
+  const extraCc = graphRecipients(body.cc);
+  const extraBcc = graphRecipients(body.bcc);
+  const files = attachments(body.attachments);
+  const needsDraft = files.length > 0 || extraCc.length > 0 || extraBcc.length > 0;
+  const signature = personalSignatureHtml(caller, connection.mail || caller.email);
+
+  if (!needsDraft) {
+    const textSignature = caller.emailSignature || `${caller.name}\nSkyway Aviation\n${connection.mail || caller.email}`;
+    const payload = { comment: `${text}\n\n${textSignature}` };
+    if (mode === 'forward') {
+      payload.toRecipients = extraTo;
+      if (!payload.toRecipients.length) throw new Error('Forward recipient is required');
+    }
+    await userGraphRequest(uid, `/me/messages/${encodeURIComponent(id)}/${mode}`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    return { sent: true };
   }
-  await userGraphRequest(uid, `/me/messages/${encodeURIComponent(id)}/${mode}`, {
+
+  const createPath = mode === 'forward' ? 'createForward' : mode === 'replyAll' ? 'createReplyAll' : 'createReply';
+  const draft = await userGraphRequest(uid, `/me/messages/${encodeURIComponent(id)}/${createPath}`, {
     method: 'POST',
-    body: JSON.stringify(payload),
+    body: JSON.stringify({}),
   });
+  const draftId = draft.id;
+  const current = await userGraphRequest(
+    uid,
+    `/me/messages/${encodeURIComponent(draftId)}?$select=body,toRecipients,ccRecipients,bccRecipients`,
+  );
+  const patch = {
+    body: {
+      contentType: 'HTML',
+      content: `${commentHtml(text, signature)}<br><br>${current.body?.content || ''}`,
+    },
+  };
+  if (mode === 'forward') {
+    if (!extraTo.length) throw new Error('Forward recipient is required');
+    patch.toRecipients = extraTo;
+  } else if (extraTo.length) {
+    patch.toRecipients = [...(current.toRecipients || []), ...extraTo];
+  }
+  if (extraCc.length) patch.ccRecipients = [...(current.ccRecipients || []), ...extraCc];
+  if (extraBcc.length) patch.bccRecipients = [...(current.bccRecipients || []), ...extraBcc];
+  await userGraphRequest(uid, `/me/messages/${encodeURIComponent(draftId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  });
+  for (const attachment of files) {
+    // eslint-disable-next-line no-await-in-loop
+    await userGraphRequest(uid, `/me/messages/${encodeURIComponent(draftId)}/attachments`, {
+      method: 'POST',
+      body: JSON.stringify(attachment),
+    });
+  }
+  await userGraphRequest(uid, `/me/messages/${encodeURIComponent(draftId)}/send`, { method: 'POST' });
   return { sent: true };
 }
 
@@ -199,10 +270,29 @@ export default async function handler(req, res) {
         });
       }
       result = { message: normalizeMessage(raw, true) };
+    } else if (action === 'contacts') {
+      result = await contacts(caller.uid, caller, connection);
     } else if (action === 'send') {
       result = await send(caller.uid, req.body || {}, caller, connection);
     } else if (action === 'reply') {
       result = await reply(caller.uid, req.body || {}, caller, connection);
+    } else if (action === 'delete') {
+      const id = safeId(req.body?.messageId, 'message ID');
+      const moved = await userGraphRequest(caller.uid, `/me/messages/${encodeURIComponent(id)}/move`, {
+        method: 'POST',
+        body: JSON.stringify({ destinationId: 'deleteditems' }),
+      });
+      result = { deleted: true, message: normalizeMessage(moved) };
+    } else if (action === 'flag') {
+      const id = safeId(req.body?.messageId, 'message ID');
+      const flagStatus = ['flagged', 'complete', 'notFlagged'].includes(req.body?.flagStatus)
+        ? req.body.flagStatus
+        : 'flagged';
+      await userGraphRequest(caller.uid, `/me/messages/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ flag: { flagStatus } }),
+      });
+      result = { updated: true, flagStatus };
     } else if (action === 'markRead') {
       const id = safeId(req.body?.messageId, 'message ID');
       await userGraphRequest(caller.uid, `/me/messages/${encodeURIComponent(id)}`, {
