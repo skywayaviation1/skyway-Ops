@@ -8614,6 +8614,8 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
         sicName: t.info?.sic || null,
         showPax,
         pax: showPax ? paxRecords : [],
+        // Drives whether the broker sees a catering milestone at all.
+        hasCatering: state.hasCatering !== false,
         status: cleanStatus,
       };
     });

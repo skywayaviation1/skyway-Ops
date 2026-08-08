@@ -1,11 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 import {
   buildActiveOpsTrips,
   computeOutstanding,
   readinessLevel,
   readinessProgress,
+  showsCateringStatus,
 } from '../src/ops-readiness.js';
+
+const root = path.resolve(import.meta.dirname, '..');
+const source = (file) => readFile(path.join(root, file), 'utf8');
 
 const NOW = Date.UTC(2026, 7, 4, 12);
 
@@ -85,4 +91,30 @@ test('status progress omits catering when trip says it does not apply', () => {
   assert.equal(progress.total, 7);
   assert.equal(progress.done, 2);
   assert.equal(progress.next.id, 'pax_arrived');
+});
+
+test('broker page hides catering only when there is none and none was recorded', () => {
+  // No catering on the trip and nothing recorded — hide it.
+  assert.equal(showsCateringStatus({ hasCatering: false, status: {} }), false);
+  // Catering on the trip but not yet aboard — still show the pending milestone.
+  assert.equal(showsCateringStatus({ hasCatering: true, status: {} }), true);
+  // Recorded catering always shows, even if the flag was turned off later.
+  assert.equal(
+    showsCateringStatus({ hasCatering: false, status: { catering_aboard: { at: NOW } } }),
+    true,
+  );
+  // Older shares predate the flag; those trips had catering.
+  assert.equal(showsCateringStatus({ status: {} }), true);
+  assert.equal(showsCateringStatus(undefined), true);
+});
+
+test('catering flag reaches the broker page through share, API and render', async () => {
+  const app = await source('src/App.jsx');
+  const share = await source('api/trip-share.js');
+  const publicApi = await source('api/trip-public.js');
+  const page = await source('src/TripTrack.jsx');
+  assert.match(app, /hasCatering: state\.hasCatering !== false/);
+  assert.match(share, /hasCatering: leg\.hasCatering !== false/);
+  assert.match(publicApi, /hasCatering/);
+  assert.match(page, /showsCateringStatus\(leg\) &&/);
 });

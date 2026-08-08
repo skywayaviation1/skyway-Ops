@@ -36,6 +36,7 @@ import { flightCategoryStyle, normalizeTrail, distanceNm } from './tracking-map.
 // no getIdToken since the broker page is anonymous; the endpoint accepts
 // unauthenticated reads for now (NOTAM data is public FAA info).
 import FAANotamBadge from './FAANotamBadge.jsx';
+import { showsCateringStatus } from './ops-readiness.js';
 
 const POLL_MS = 120000; // refresh live position every 2 minutes
 
@@ -798,10 +799,14 @@ function Leg({ leg, isActive, position }) {
         <div className="space-y-1 pt-2 border-t border-slate-800">
           <StatusDot on={!!legStatuses.crew_onsite?.at}    label="Crew on site"    ts={legStatuses.crew_onsite?.at}    iataCode={leg.from} />
           <StatusDot on={!!legStatuses.aircraft_ready?.at} label="Aircraft ready"  ts={legStatuses.aircraft_ready?.at} iataCode={leg.from} />
-          {/* Revenue legs get catering + pax arrived / boarded milestones */}
+          {/* Revenue legs get catering + pax arrived / boarded milestones.
+              Catering is omitted entirely when the trip has none, so the
+              broker never sees a milestone that will never complete. */}
           {isRevenue && (
             <>
-              <StatusDot on={!!legStatuses.catering_aboard?.at} label="Catering on board" ts={legStatuses.catering_aboard?.at} iataCode={leg.from} />
+              {showsCateringStatus(leg) && (
+                <StatusDot on={!!legStatuses.catering_aboard?.at} label="Catering on board" ts={legStatuses.catering_aboard?.at} iataCode={leg.from} />
+              )}
               <StatusDot on={!!legStatuses.pax_arrived?.at}     label="Passengers arrived" ts={legStatuses.pax_arrived?.at}    iataCode={leg.from} />
               <StatusDot on={!!legStatuses.pax_boarded?.at}     label="Passengers boarded" ts={legStatuses.pax_boarded?.at}    iataCode={leg.from} />
             </>

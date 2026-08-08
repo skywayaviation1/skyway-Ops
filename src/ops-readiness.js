@@ -13,6 +13,20 @@ export const OPS_STATUS_STEPS = Object.freeze([
   { id: 'landed', label: 'DOWN' },
 ]);
 
+/**
+ * Whether a leg's status list should include the catering milestone.
+ *
+ * A leg with no catering ordered would otherwise show a milestone that can
+ * never complete, which reads to a broker as something outstanding. Catering
+ * already recorded still shows, so turning the flag off later never hides
+ * history.
+ */
+export function showsCateringStatus(leg) {
+  const recorded = leg?.status?.catering_aboard;
+  if (recorded && (recorded.at || recorded === true || recorded.timestamp)) return true;
+  return leg?.hasCatering !== false;
+}
+
 export function tripStartMs(trip) {
   const value = trip?.start;
   const ms = value instanceof Date ? value.getTime() : new Date(value).getTime();

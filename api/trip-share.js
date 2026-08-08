@@ -92,6 +92,9 @@ async function ensureTokenIssued(tripId, opts = {}) {
         // Pax visibility flag (per privacy spec). Even if pax array is
         // present, the broker page must honor showPax — defensive defense.
         showPax: leg.showPax === true,
+        // Absent on shares created before catering could be turned off, and
+        // those trips did have catering, so only an explicit false hides it.
+        hasCatering: leg.hasCatering !== false,
         // Per-pax records: each entry is an object the broker page can
         // render with individual check-in indicators. Whitelist the four
         // fields we care about; reject anything else (covers PII leakage
