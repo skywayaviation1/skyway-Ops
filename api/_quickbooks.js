@@ -12,6 +12,22 @@ const API_BASE = {
 
 let app = null;
 
+/**
+ * Which Intuit host to use. Real companies run against production, so that is
+ * the default; sandbox has to be asked for explicitly. An unrecognized value is
+ * treated as production rather than silently pointing live accounting at a
+ * sandbox company.
+ */
+export function qboEnvironment() {
+  return String(process.env.INTUIT_ENV || '').trim().toLowerCase() === 'sandbox'
+    ? 'sandbox'
+    : 'production';
+}
+
+export function qboApiBase(environment) {
+  return API_BASE[environment] || API_BASE.production;
+}
+
 export function getAdminApp() {
   if (app) return app;
   const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
@@ -62,12 +78,18 @@ export async function authorizeQboCaller(idToken, roles = ['accounting', 'admin'
 }
 
 export function publicConnection(connection) {
-  if (!connection) return { connected: false };
+  const serverEnvironment = qboEnvironment();
+  if (!connection) return { connected: false, serverEnvironment };
+  const environment = connection.environment || 'production';
   return {
     connected: true,
     realmId: connection.realmId || null,
     companyName: connection.companyName || null,
-    environment: connection.environment || 'sandbox',
+    environment,
+    serverEnvironment,
+    // A company connected under a different mode than the server now uses
+    // would read or write the wrong QuickBooks data, so surface it loudly.
+    environmentMismatch: environment !== serverEnvironment,
     connectedBy: connection.connectedBy || null,
     connectedByName: connection.connectedByName || null,
     connectedAt: connection.connectedAt || null,
@@ -144,7 +166,7 @@ export async function getValidConnection(forceRefresh = false) {
 export async function qboRequest(path, options = {}, retry = true) {
   let connection = await getValidConnection();
   const run = (conn) => fetch(
-    `${API_BASE[conn.environment] || API_BASE.sandbox}/v3/company/${conn.realmId}${path}`,
+    `${qboApiBase(conn.environment)}/v3/company/${conn.realmId}${path}`,
     {
       ...options,
       headers: {

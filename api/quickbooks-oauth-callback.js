@@ -15,15 +15,9 @@
 //   5. Delete the used state token
 //   6. Redirect back to the app's settings (with a success/error param)
 
-import { getDb } from './_quickbooks.js';
+import { getDb, qboApiBase, qboEnvironment } from './_quickbooks.js';
 
 const TOKEN_URL = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer';
-
-// QBO API base differs by environment
-const QBO_API_BASE = {
-  sandbox: 'https://sandbox-quickbooks.api.intuit.com',
-  production: 'https://quickbooks.api.intuit.com',
-};
 
 // Where to send the user after we're done. Must match the deployed app URL.
 function buildAppRedirect(success, message) {
@@ -82,7 +76,7 @@ export default async function handler(req, res) {
     const clientId = process.env.INTUIT_CLIENT_ID;
     const clientSecret = process.env.INTUIT_CLIENT_SECRET;
     const redirectUri = process.env.INTUIT_REDIRECT_URI;
-    const env = (process.env.INTUIT_ENV || 'sandbox').toLowerCase();
+    const env = qboEnvironment();
     if (!clientId || !clientSecret || !redirectUri) {
       res.redirect(302, buildAppRedirect(false, 'Server not configured (missing Intuit env vars)'));
       return;
@@ -123,7 +117,7 @@ export default async function handler(req, res) {
     // === Fetch company name for display ===
     let companyName = '';
     try {
-      const apiBase = QBO_API_BASE[env] || QBO_API_BASE.sandbox;
+      const apiBase = qboApiBase(env);
       const companyResp = await fetch(
         `${apiBase}/v3/company/${realmId}/companyinfo/${realmId}?minorversion=70`,
         {

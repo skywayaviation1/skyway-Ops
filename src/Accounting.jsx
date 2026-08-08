@@ -13,6 +13,7 @@ import {
   Receipt,
   Scale,
   TrendingUp,
+  Users,
 } from 'lucide-react';
 import {
   Button,
@@ -28,6 +29,7 @@ import { qboSyncEligibility } from './qbo-expense.js';
 import { reportNumber, reportSections } from './qbo-report.js';
 
 const ExpenseAccountingLazy = lazy(() => import('./ExpenseAccounting.jsx'));
+const QuickBooksWorkspaceLazy = lazy(() => import('./QuickBooksWorkspace.jsx'));
 
 function money(value) {
   return Number(value || 0).toLocaleString('en-US', {
@@ -288,6 +290,8 @@ export default function Accounting({ currentUser, users = [] }) {
           <div className="flex gap-1 overflow-x-auto">
             {[
               ['overview', 'Overview', TrendingUp],
+              ['invoices', 'Invoices & A/R', DollarSign],
+              ['customers', 'Customers', Users],
               ['cards', 'Credit cards', CreditCard],
               ['expenses', 'Receipt matching', Receipt],
               ['reports', 'Reports', FileText],
@@ -369,6 +373,16 @@ export default function Accounting({ currentUser, users = [] }) {
                     <ReportTable title="Balance Sheet" report={balance} />
                   </div>
                 </>
+              )}
+
+              {(tab === 'invoices' || tab === 'customers') && (
+                <Suspense fallback={(
+                  <div className="flex items-center justify-center py-16 text-content-muted">
+                    <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading QuickBooks…
+                  </div>
+                )}>
+                  <QuickBooksWorkspaceLazy view={tab === 'customers' ? 'customers' : 'invoices'} />
+                </Suspense>
               )}
 
               {tab === 'cards' && (

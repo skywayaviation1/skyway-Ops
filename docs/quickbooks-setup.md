@@ -8,13 +8,34 @@ reports, card accounts, posted purchases, Bills, and account balances directly.
 
 1. Create an app in the [Intuit Developer dashboard](https://developer.intuit.com/app/developer/dashboard).
 2. Enable the **QuickBooks Online Accounting** scope.
-3. Register the exact redirect URI:
+3. Register the exact redirect URI **on the Production keys tab**:
 
    `https://www.skyway.app/api/quickbooks-oauth-callback`
 
-   The value must match `INTUIT_REDIRECT_URI` character for character.
-4. Start with an Intuit sandbox company. Switch to production only after the
-   chart-of-accounts mappings and sample expense sync are verified.
+   The value must match `INTUIT_REDIRECT_URI` character for character. Sandbox
+   and production have separate keys and separate redirect URI lists; a
+   production connection fails if the URI is only registered under sandbox.
+4. Intuit requires an app to **go live** before production keys work. In the
+   developer dashboard complete the app profile / EULA / host-domain steps and
+   move the app to production, then copy the **Production** Client ID and
+   Client Secret.
+
+## Connecting to the real company (no sandbox)
+
+Production is the default. The server only uses sandbox when `INTUIT_ENV` is
+set literally to `sandbox`; any other value (or none) uses
+`https://quickbooks.api.intuit.com`.
+
+To connect the live books:
+
+1. Set `INTUIT_CLIENT_ID` / `INTUIT_CLIENT_SECRET` to the **Production** keys.
+2. Leave `INTUIT_ENV` unset, or set it to `production`.
+3. Redeploy, then use **Accounting → Connection & export → Connect QuickBooks**
+   and pick the real company in Intuit's account chooser.
+
+If a connection was made earlier under sandbox, the Accounting page shows an
+environment-mismatch warning. Disconnect and reconnect so tokens and the realm
+ID belong to the live company — sandbox tokens are not valid in production.
 
 ## Vercel environment variables
 
@@ -25,7 +46,7 @@ Set these for the production deployment and redeploy:
 | `INTUIT_CLIENT_ID` | Intuit app client ID |
 | `INTUIT_CLIENT_SECRET` | Intuit app client secret |
 | `INTUIT_REDIRECT_URI` | `https://www.skyway.app/api/quickbooks-oauth-callback` |
-| `INTUIT_ENV` | `sandbox` while testing, then `production` |
+| `INTUIT_ENV` | Omit for production; set to `sandbox` only for testing |
 | `NEXT_PUBLIC_APP_URL` | `https://www.skyway.app` |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | Existing Firebase Admin service account |
 
@@ -42,6 +63,25 @@ QuickBooks OAuth values are server-side; no `VITE_` variable is required.
 
 The default account names are suggestions only. Direct sync fails clearly
 rather than posting to an incorrect account when an account cannot be found.
+
+## Working in QuickBooks from the app
+
+**Accounting → Invoices & A/R** and **Accounting → Customers** read and write
+the connected company live:
+
+- A/R aging buckets (current, 1–30, 31–60, 61–90, 90+)
+- Invoice list filtered by open / overdue / paid
+- Create an invoice against QuickBooks products & services, with quantity,
+  rate, dates and memo
+- Email an invoice using QuickBooks' own delivery (`/invoice/{id}/send`)
+- Receive a payment against an invoice, optionally choosing the deposit account
+- Create customers, reusing an existing customer when the display name matches
+- Per-row link that opens the same transaction in QuickBooks Online
+
+Everything posts through the standard Accounting API as the connected company,
+so entries appear in QuickBooks immediately with normal audit history. Payroll,
+banking rules, reconciliation workflows and the Banking → For Review queue stay
+in QuickBooks Online; Intuit does not expose them to third-party apps.
 
 ## Sync behavior
 
