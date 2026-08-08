@@ -19,7 +19,7 @@ export const MAIL_SCOPES = [
 export const TEAMS_SCOPES = [
   'Team.ReadBasic.All', 'Channel.ReadBasic.All',
   'ChannelMessage.Read.All', 'ChannelMessage.Send',
-  'Chat.ReadWrite',
+  'Chat.ReadWrite', 'Files.ReadWrite.All',
 ];
 export const DELEGATED_SCOPES = [...MAIL_SCOPES, ...TEAMS_SCOPES].join(' ');
 
@@ -36,7 +36,8 @@ export function grantedScopeNames(connection) {
  */
 export function hasTeamsScopes(connection) {
   const granted = new Set(grantedScopeNames(connection).map((scope) => scope.toLowerCase()));
-  return ['team.readbasic.all', 'chat.readwrite'].every((scope) => granted.has(scope));
+  return ['team.readbasic.all', 'chat.readwrite', 'files.readwrite.all']
+    .every((scope) => granted.has(scope));
 }
 // Public identifiers for the existing Skyway Microsoft SSO registration.
 // Environment overrides keep rotation possible without a code release.

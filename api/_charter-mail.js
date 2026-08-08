@@ -6,6 +6,33 @@ import { getFirestore } from 'firebase-admin/firestore';
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
 let app = null;
 let tokenCache = null;
+// A warm serverless instance may serve several users at once. Microsoft
+// counts every request against one shared-mailbox concurrency bucket, so queue
+// them instead of firing a burst at charters@.
+let mailboxGraphQueue = Promise.resolve();
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function enqueueMailboxFetch(run) {
+  const result = mailboxGraphQueue.catch(() => {}).then(run);
+  mailboxGraphQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+
+export function isMailboxConcurrencyError(status, graphCode, message) {
+  const text = `${graphCode || ''} ${message || ''}`;
+  return status === 429
+    || status === 503
+    || /MailboxConcurrency|ErrorExceededConnectionCount|over its MailboxConcurrency limit/i.test(text);
+}
+
+export function graphRetryDelayMs(response, attempt) {
+  const retryAfter = Number(response?.headers?.get?.('retry-after'));
+  if (Number.isFinite(retryAfter) && retryAfter > 0) {
+    return Math.min(retryAfter * 1000, 30_000);
+  }
+  return Math.min(750 * (2 ** attempt), 12_000);
+}
 
 export function mailAdminApp() {
   if (app) return app;
@@ -110,49 +137,82 @@ async function graphToken(force = false) {
   return tokenCache.token;
 }
 
-export async function graphRequest(pathOrUrl, options = {}, retry = true) {
-  const token = await graphToken();
+export async function graphRequest(pathOrUrl, options = {}) {
+  const { raw = false, ...init } = options;
   const url = String(pathOrUrl).startsWith('https://')
     ? pathOrUrl
     : `${GRAPH_BASE}${pathOrUrl}`;
   if (!url.startsWith(`${GRAPH_BASE}/users/`) && !url.startsWith(`${GRAPH_BASE}/subscriptions`)) {
     throw new Error('Invalid Microsoft Graph URL');
   }
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: 'application/json',
-      Prefer: 'IdType="ImmutableId"',
-      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-      ...(options.headers || {}),
-    },
-  });
-  if (response.status === 401 && retry) {
-    tokenCache = null;
-    return graphRequest(pathOrUrl, options, false);
-  }
-  if (options.raw) {
-    if (!response.ok) {
-      const error = new Error(`Microsoft Graph returned ${response.status}`);
-      error.status = response.status;
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    // eslint-disable-next-line no-await-in-loop
+    const token = await graphToken();
+    // eslint-disable-next-line no-await-in-loop
+    const response = await enqueueMailboxFetch(() => fetch(url, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+        Prefer: 'IdType="ImmutableId"',
+        ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+        ...(init.headers || {}),
+      },
+    }));
+
+    if (response.status === 401 && attempt === 0) {
+      tokenCache = null;
+      continue;
+    }
+
+    // Read a clone when checking an error so successful raw downloads keep
+    // their original body stream.
+    // eslint-disable-next-line no-await-in-loop
+    const errorData = response.ok ? {} : await response.clone().json().catch(() => ({}));
+    const graphCode = errorData?.error?.code || null;
+    const graphMessage = errorData?.error?.message || '';
+    if (
+      isMailboxConcurrencyError(response.status, graphCode, graphMessage)
+      && attempt < 4
+    ) {
+      // eslint-disable-next-line no-await-in-loop
+      await sleep(graphRetryDelayMs(response, attempt));
+      continue;
+    }
+
+    if (raw) {
+      if (!response.ok) {
+        const error = new Error(sharedMailErrorMessage(response.status, graphCode, graphMessage));
+        error.status = response.status;
+        error.graphCode = graphCode;
+        throw error;
+      }
+      return response;
+    }
+
+    // eslint-disable-next-line no-await-in-loop
+    const data = response.status === 204 ? {} : await response.json().catch(() => ({}));
+    if (!response.ok || data?.error) {
+      const code = data?.error?.code || graphCode;
+      const error = new Error(sharedMailErrorMessage(
+        response.status,
+        code,
+        data?.error?.message || graphMessage,
+      ));
+      error.status = response.status || 502;
+      error.graphCode = code || null;
       throw error;
     }
-    return response;
+    return data;
   }
-  const data = response.status === 204 ? {} : await response.json().catch(() => ({}));
-  if (!response.ok || data?.error) {
-    const graphCode = data?.error?.code || null;
-    const error = new Error(sharedMailErrorMessage(
-      response.status,
-      graphCode,
-      data?.error?.message,
-    ));
-    error.status = response.status || 502;
-    error.graphCode = graphCode;
-    throw error;
-  }
-  return data;
+
+  const error = new Error(
+    `Microsoft is temporarily limiting concurrent access to ${mailboxUpn()}. Skyway retried automatically; wait a moment and refresh.`,
+  );
+  error.status = 503;
+  error.graphCode = 'MailboxConcurrency';
+  throw error;
 }
 
 /**

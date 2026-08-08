@@ -12,6 +12,7 @@
     "verify:sso": "node scripts/verify-microsoft-sso.mjs"
   },
   "dependencies": {
+    "dompurify": "^3.4.13",
     "firebase": "10.13.2",
     "firebase-admin": "12.5.0",
     "jspdf": "2.5.2",

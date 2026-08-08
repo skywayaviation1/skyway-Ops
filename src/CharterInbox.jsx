@@ -456,6 +456,7 @@ export default function CharterInbox({
   const apiPath = personal ? '/api/user-mail' : '/api/charter-mail';
   const attachmentPath = personal ? '/api/user-mail-attachment' : '/api/charter-mail-attachment';
   const [status, setStatus] = useState(null);
+  const [mailReady, setMailReady] = useState(false);
   const [folders, setFolders] = useState([]);
   const [folderId, setFolderId] = useState('inbox');
   const [messages, setMessages] = useState([]);
@@ -504,8 +505,8 @@ export default function CharterInbox({
       try {
         const mailStatus = await mailboxApi(apiPath, 'status');
         if (cancelled) return;
-        setStatus(mailStatus);
         if (mailStatus?.configured === false) {
+          setStatus(mailStatus);
           setError(
             mailStatus.setupHint
               || (personal
@@ -515,10 +516,13 @@ export default function CharterInbox({
           return;
         }
         await loadFolders();
-        // Address book for recipient autocomplete — best effort, non-blocking.
-        mailboxApi(apiPath, 'contacts')
-          .then((result) => { if (!cancelled) setContacts(result.contacts || []); })
-          .catch(() => {});
+        // Deliberately sequential. Starting folders, contacts and messages in
+        // parallel is enough to trip Graph's shared MailboxConcurrency limit.
+        const addressBook = await mailboxApi(apiPath, 'contacts').catch(() => ({ contacts: [] }));
+        if (cancelled) return;
+        setContacts(addressBook.contacts || []);
+        setStatus(mailStatus);
+        setMailReady(true);
       } catch (err) {
         if (!cancelled) setError(err.message || 'Shared mailbox is not configured');
       }
@@ -527,9 +531,9 @@ export default function CharterInbox({
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (status?.configured === false) return;
+    if (!mailReady || status?.configured === false) return;
     loadMessages({ query: '' });
-  }, [folderId, status?.configured]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [folderId, status?.configured, mailReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const openMessage = async (message) => {
     setSelectedId(message.id);

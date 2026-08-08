@@ -16,17 +16,21 @@ import {
 } from './_charter-mail.js';
 
 const CONTACT_SELECT = 'from,sender,toRecipients,ccRecipients,receivedDateTime,sentDateTime';
+let contactsCache = null;
 
 async function listContacts() {
-  const [inbox, sent] = await Promise.all([
-    graphRequest(
-      `${mailboxPath('/mailFolders/inbox/messages')}?$top=200&$orderby=receivedDateTime%20desc&$select=${encodeURIComponent(CONTACT_SELECT)}`,
-    ).catch(() => ({ value: [] })),
-    graphRequest(
-      `${mailboxPath('/mailFolders/sentitems/messages')}?$top=200&$orderby=sentDateTime%20desc&$select=${encodeURIComponent(CONTACT_SELECT)}`,
-    ).catch(() => ({ value: [] })),
-  ]);
-  return { contacts: extractContacts([...(inbox.value || []), ...(sent.value || [])], [mailboxUpn()]) };
+  if (contactsCache?.expiresAt > Date.now()) return { contacts: contactsCache.contacts };
+  // Keep mailbox calls sequential: Graph enforces a small concurrency bucket
+  // for app-only access to one mailbox.
+  const inbox = await graphRequest(
+    `${mailboxPath('/mailFolders/inbox/messages')}?$top=200&$orderby=receivedDateTime%20desc&$select=${encodeURIComponent(CONTACT_SELECT)}`,
+  ).catch(() => ({ value: [] }));
+  const sent = await graphRequest(
+    `${mailboxPath('/mailFolders/sentitems/messages')}?$top=200&$orderby=sentDateTime%20desc&$select=${encodeURIComponent(CONTACT_SELECT)}`,
+  ).catch(() => ({ value: [] }));
+  const contacts = extractContacts([...(inbox.value || []), ...(sent.value || [])], [mailboxUpn()]);
+  contactsCache = { contacts, expiresAt: Date.now() + 5 * 60 * 1000 };
+  return { contacts };
 }
 
 const MESSAGE_SELECT = [

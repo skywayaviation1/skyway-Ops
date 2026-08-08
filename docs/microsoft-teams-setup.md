@@ -28,6 +28,7 @@ On the existing Skyway login app registration, add these Microsoft Graph
 | `ChannelMessage.Read.All` | Read channel conversations |
 | `ChannelMessage.Send` | Post a channel message as the employee |
 | `Chat.ReadWrite` | List chats, read them, and send chat messages |
+| `Files.ReadWrite.All` | Browse channel files and open them in Microsoft 365 for editing |
 
 Grant tenant-wide admin consent. `ChannelMessage.Read.All` and
 `Team.ReadBasic.All` require an administrator; users cannot consent themselves.
@@ -51,10 +52,17 @@ working for employees who have not reconnected yet.
 - Recent one-to-one and group chats
 - Channel and chat message history, newest last
 - Posting messages as the signed-in employee
-- Attachment links and "Open in Teams" deep links
+- Threaded channel replies
+- Teams-style Chat / Teams rail and channel Posts / Files tabs
+- Channel file browsing, folders, attachment links and "Open in Teams" deep links
+- Office files open in the employee's authenticated Microsoft 365 editor
 
-Skyway posts plain text (escaped to HTML). Rich composition, reactions, calls
-and meetings stay in the Teams client, which the deep links open directly.
+Skyway posts plain text (escaped to HTML). Microsoft does not expose every
+native Teams feature through Graph, and Teams/Office web editors deny
+third-party iframe embedding. Calls, meetings, reactions and full-fidelity
+Office editing therefore open through authenticated Microsoft deep links.
+This preserves the real Teams/Office editor, coauthoring, version history and
+compliance controls instead of pretending a custom editor is equivalent.
 
 ## Troubleshooting
 

@@ -9,6 +9,7 @@ import {
 import {
   normalizeChannel,
   normalizeChat,
+  normalizeDriveItem,
   normalizeTeam,
   normalizeTeamsMessage,
   outgoingMessageBody,
@@ -48,12 +49,38 @@ async function chats(uid, connection) {
 async function channelMessages(uid, teamId, channelId) {
   const page = await teamsGraphRequest(
     uid,
-    `/teams/${encodeURIComponent(teamId)}/channels/${encodeURIComponent(channelId)}/messages?$top=${MESSAGE_TOP}`,
+    `/teams/${encodeURIComponent(teamId)}/channels/${encodeURIComponent(channelId)}/messages?$top=${MESSAGE_TOP}&$expand=replies`,
   );
   return (page.value || [])
     .map(normalizeTeamsMessage)
     .filter((message) => !message.deleted)
     .sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
+}
+
+async function channelFiles(uid, teamId, channelId) {
+  const folder = await teamsGraphRequest(
+    uid,
+    `/teams/${encodeURIComponent(teamId)}/channels/${encodeURIComponent(channelId)}/filesFolder`,
+  );
+  const driveId = folder?.parentReference?.driveId;
+  if (!driveId || !folder?.id) return { files: [], driveId: driveId || '', folderId: folder?.id || '' };
+  const page = await teamsGraphRequest(
+    uid,
+    `/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(folder.id)}/children?$top=200&$select=id,name,size,file,folder,webUrl,lastModifiedDateTime,lastModifiedBy,parentReference`,
+  );
+  return {
+    files: (page.value || []).map(normalizeDriveItem),
+    driveId,
+    folderId: folder.id,
+  };
+}
+
+async function driveChildren(uid, driveId, itemId) {
+  const page = await teamsGraphRequest(
+    uid,
+    `/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}/children?$top=200&$select=id,name,size,file,folder,webUrl,lastModifiedDateTime,lastModifiedBy,parentReference`,
+  );
+  return { files: (page.value || []).map(normalizeDriveItem), driveId, folderId: itemId };
 }
 
 async function chatMessages(uid, chatId) {
@@ -118,6 +145,18 @@ export default async function handler(req, res) {
           safeGraphId(req.body?.channelId, 'channel ID'),
         ),
       };
+    } else if (action === 'channelFiles') {
+      result = await channelFiles(
+        caller.uid,
+        safeGraphId(req.body?.teamId, 'team ID'),
+        safeGraphId(req.body?.channelId, 'channel ID'),
+      );
+    } else if (action === 'driveChildren') {
+      result = await driveChildren(
+        caller.uid,
+        safeGraphId(req.body?.driveId, 'drive ID'),
+        safeGraphId(req.body?.itemId, 'folder ID'),
+      );
     } else if (action === 'chatMessages') {
       result = { messages: await chatMessages(caller.uid, safeGraphId(req.body?.chatId, 'chat ID')) };
     } else if (action === 'sendChannelMessage') {
@@ -126,6 +165,16 @@ export default async function handler(req, res) {
       const sent = await teamsGraphRequest(
         caller.uid,
         `/teams/${encodeURIComponent(teamId)}/channels/${encodeURIComponent(channelId)}/messages`,
+        { method: 'POST', body: JSON.stringify({ body: outgoingMessageBody(req.body?.text) }) },
+      );
+      result = { sent: true, message: normalizeTeamsMessage(sent) };
+    } else if (action === 'sendChannelReply') {
+      const teamId = safeGraphId(req.body?.teamId, 'team ID');
+      const channelId = safeGraphId(req.body?.channelId, 'channel ID');
+      const messageId = safeGraphId(req.body?.messageId, 'message ID');
+      const sent = await teamsGraphRequest(
+        caller.uid,
+        `/teams/${encodeURIComponent(teamId)}/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}/replies`,
         { method: 'POST', body: JSON.stringify({ body: outgoingMessageBody(req.body?.text) }) },
       );
       result = { sent: true, message: normalizeTeamsMessage(sent) };

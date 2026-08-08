@@ -5,6 +5,7 @@ import test from 'node:test';
 import {
   messagePreview,
   normalizeChat,
+  normalizeDriveItem,
   normalizeTeamsMessage,
   outgoingMessageBody,
   safeGraphId,
@@ -23,6 +24,7 @@ test('delegated consent covers mail and Teams in one authorization', () => {
     'Mail.ReadWrite', 'Mail.Send', 'offline_access',
     'Team.ReadBasic.All', 'Channel.ReadBasic.All',
     'ChannelMessage.Read.All', 'ChannelMessage.Send', 'Chat.ReadWrite',
+    'Files.ReadWrite.All',
   ]) {
     assert.ok(DELEGATED_SCOPES.includes(scope), `missing scope ${scope}`);
   }
@@ -35,6 +37,7 @@ test('Teams readiness is detected from granted scopes', () => {
       'https://graph.microsoft.com/Mail.ReadWrite',
       'https://graph.microsoft.com/Team.ReadBasic.All',
       'https://graph.microsoft.com/Chat.ReadWrite',
+      'https://graph.microsoft.com/Files.ReadWrite.All',
     ],
   };
   assert.equal(hasTeamsScopes(mailOnly), false);
@@ -75,6 +78,24 @@ test('Teams messages normalize sender, body and attachments', () => {
   assert.equal(message.attachments[0].name, 'brief.pdf');
 });
 
+test('channel files normalize for browsing and Microsoft 365 editing', () => {
+  const file = normalizeDriveItem({
+    id: 'f1',
+    name: 'Trip brief.docx',
+    size: 1234,
+    file: { mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
+    webUrl: 'https://tenant.sharepoint.com/brief.docx',
+    parentReference: { driveId: 'drive-1' },
+    lastModifiedBy: { user: { displayName: 'Dispatch' } },
+  });
+  assert.equal(file.driveId, 'drive-1');
+  assert.equal(file.isFolder, false);
+  assert.match(file.webUrl, /sharepoint/);
+  const folder = normalizeDriveItem({ id: 'd1', name: 'Briefs', folder: { childCount: 3 } });
+  assert.equal(folder.isFolder, true);
+  assert.equal(folder.childCount, 3);
+});
+
 test('message preview strips markup and entities', () => {
   assert.equal(messagePreview('<div>A &amp; B</div>'), 'A & B');
 });
@@ -99,6 +120,7 @@ test('Teams Graph calls are restricted to Teams resources', async () => {
   assert.match(helper, /'\/v1\.0\/me\/joinedTeams'/);
   assert.match(helper, /'\/v1\.0\/teams\/'/);
   assert.match(helper, /'\/v1\.0\/chats\/'/);
+  assert.match(helper, /'\/v1\.0\/drives\/'/);
   assert.match(helper, /allowPrefixes: TEAMS_PREFIXES/);
   const mail = await source('api/_user-mail.js');
   assert.match(mail, /validateGraphUrl\(pathOrUrl, connection, allowPrefixes = \[\]\)/);
@@ -109,7 +131,8 @@ test('Teams API requires consent and exposes conversation actions', async () => 
   assert.match(handler, /requireTeamsConsent\(connection\)/);
   for (const action of [
     'overview', 'channels', 'channelMessages', 'chatMessages',
-    'sendChannelMessage', 'sendChatMessage',
+    'channelFiles', 'driveChildren', 'sendChannelMessage',
+    'sendChannelReply', 'sendChatMessage',
   ]) {
     assert.match(handler, new RegExp(`action === '${action}'`));
   }
@@ -131,5 +154,9 @@ test('Teams tab guides connection and Teams consent separately', async () => {
   assert.match(hub, /Connect Microsoft to use Teams/);
   assert.match(hub, /Approve Teams access/);
   assert.match(hub, /Open in Teams/);
+  assert.match(hub, /Posts/);
+  assert.match(hub, /Files/);
+  assert.match(hub, /Open \/ edit/);
+  assert.match(hub, /DOMPurify\.sanitize/);
   assert.doesNotMatch(hub, /MICROSOFT_USER_MAIL_CLIENT_SECRET/);
 });

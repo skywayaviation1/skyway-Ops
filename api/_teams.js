@@ -13,6 +13,7 @@ const TEAMS_PREFIXES = [
   '/v1.0/me/chats',
   '/v1.0/teams/',
   '/v1.0/chats/',
+  '/v1.0/drives/',
 ];
 
 export function teamsGraphRequest(uid, pathOrUrl, options = {}) {
@@ -94,7 +95,7 @@ export function normalizeChat(chat, selfIds = []) {
 
 export function normalizeTeamsMessage(message) {
   const from = message?.from?.user || message?.from?.application || null;
-  return {
+  const normalized = {
     id: message?.id || '',
     createdAt: message?.createdDateTime || null,
     editedAt: message?.lastEditedDateTime || null,
@@ -114,7 +115,26 @@ export function normalizeTeamsMessage(message) {
       contentUrl: attachment?.contentUrl || '',
     })),
     replyCount: Array.isArray(message?.replies) ? message.replies.length : 0,
+    replies: [],
     webUrl: message?.webUrl || '',
+  };
+  normalized.replies = (message?.replies || []).map((reply) => normalizeTeamsMessage(reply));
+  return normalized;
+}
+
+export function normalizeDriveItem(item) {
+  const driveId = item?.parentReference?.driveId || item?.remoteItem?.parentReference?.driveId || '';
+  return {
+    id: item?.id || '',
+    driveId,
+    name: item?.name || 'File',
+    size: Number(item?.size || 0),
+    isFolder: Boolean(item?.folder),
+    childCount: Number(item?.folder?.childCount || 0),
+    mimeType: item?.file?.mimeType || '',
+    webUrl: item?.webUrl || item?.remoteItem?.webUrl || '',
+    modifiedAt: item?.lastModifiedDateTime || null,
+    modifiedBy: item?.lastModifiedBy?.user?.displayName || '',
   };
 }
 

@@ -1,8 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import DOMPurify from 'dompurify';
 import {
   AlertTriangle,
   ArrowLeft,
+  ChevronRight,
   ExternalLink,
+  File as FileIcon,
+  Folder,
   Hash,
   Loader2,
   MessageSquare,
@@ -63,9 +67,13 @@ function fmtWhen(value) {
 function messageHtml(message) {
   const content = message?.body?.content || '';
   if ((message?.body?.type || 'html').toLowerCase() !== 'html') {
-    return `<p>${String(content).replace(/[<>&]/g, '')}</p>`;
+    return DOMPurify.sanitize(`<p>${String(content)}</p>`, { ALLOWED_TAGS: ['p', 'br'] });
   }
-  return content;
+  return DOMPurify.sanitize(content, {
+    USE_PROFILES: { html: true },
+    FORBID_TAGS: ['form', 'iframe', 'object', 'embed', 'script', 'style'],
+    FORBID_ATTR: ['style'],
+  });
 }
 
 function ConnectPanel({ title, description, actionLabel, onAction, busy, error }) {
@@ -109,8 +117,15 @@ export default function TeamsHub({ currentUser }) {
   const [openTeamId, setOpenTeamId] = useState(null);
   const [target, setTarget] = useState(null);
   const [messages, setMessages] = useState([]);
+  const [files, setFiles] = useState([]);
+  const [filePath, setFilePath] = useState([]);
+  const [channelTab, setChannelTab] = useState('posts');
+  const [railMode, setRailMode] = useState('chat');
   const [loadingMessages, setLoadingMessages] = useState(false);
+  const [loadingFiles, setLoadingFiles] = useState(false);
   const [draft, setDraft] = useState('');
+  const [replyingTo, setReplyingTo] = useState(null);
+  const [replyDraft, setReplyDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -178,7 +193,12 @@ export default function TeamsHub({ currentUser }) {
   const openTarget = async (nextTarget) => {
     setTarget(nextTarget);
     setMessages([]);
+    setFiles([]);
+    setFilePath([]);
+    setChannelTab('posts');
     setDraft('');
+    setReplyingTo(null);
+    setReplyDraft('');
     setError('');
     setLoadingMessages(true);
     setMobileView('thread');
@@ -194,6 +214,59 @@ export default function TeamsHub({ currentUser }) {
     }
   };
 
+  const loadChannelFiles = async () => {
+    if (!target || target.kind !== 'channel') return;
+    setChannelTab('files');
+    setLoadingFiles(true);
+    setError('');
+    try {
+      const data = await teamsApi('channelFiles', {
+        teamId: target.teamId,
+        channelId: target.channelId,
+      });
+      setFiles(data.files || []);
+      setFilePath([{ id: data.folderId, driveId: data.driveId, name: target.channelName }]);
+    } catch (err) {
+      setError(err.message || 'Could not load channel files');
+    } finally {
+      setLoadingFiles(false);
+    }
+  };
+
+  const openFolder = async (file) => {
+    if (!file?.isFolder) return;
+    setLoadingFiles(true);
+    setError('');
+    try {
+      const data = await teamsApi('driveChildren', { driveId: file.driveId, itemId: file.id });
+      setFiles(data.files || []);
+      setFilePath((current) => [...current, {
+        id: file.id,
+        driveId: file.driveId,
+        name: file.name,
+      }]);
+    } catch (err) {
+      setError(err.message || 'Could not open folder');
+    } finally {
+      setLoadingFiles(false);
+    }
+  };
+
+  const openFilePath = async (index) => {
+    const folder = filePath[index];
+    if (!folder || index === filePath.length - 1) return;
+    setLoadingFiles(true);
+    try {
+      const data = await teamsApi('driveChildren', { driveId: folder.driveId, itemId: folder.id });
+      setFiles(data.files || []);
+      setFilePath((current) => current.slice(0, index + 1));
+    } catch (err) {
+      setError(err.message || 'Could not open folder');
+    } finally {
+      setLoadingFiles(false);
+    }
+  };
+
   const send = async () => {
     if (!draft.trim() || !target) return;
     setSending(true);
@@ -206,6 +279,35 @@ export default function TeamsHub({ currentUser }) {
       setDraft('');
     } catch (err) {
       setError(err.message || 'Message could not be sent');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const sendReply = async (messageId) => {
+    if (!replyDraft.trim() || target?.kind !== 'channel') return;
+    setSending(true);
+    setError('');
+    try {
+      const data = await teamsApi('sendChannelReply', {
+        teamId: target.teamId,
+        channelId: target.channelId,
+        messageId,
+        text: replyDraft,
+      });
+      setMessages((current) => current.map((message) => (
+        message.id === messageId
+          ? {
+            ...message,
+            replies: [...(message.replies || []), data.message],
+            replyCount: Number(message.replyCount || 0) + 1,
+          }
+          : message
+      )));
+      setReplyDraft('');
+      setReplyingTo(null);
+    } catch (err) {
+      setError(err.message || 'Reply could not be sent');
     } finally {
       setSending(false);
     }
@@ -283,75 +385,107 @@ export default function TeamsHub({ currentUser }) {
           </div>
           <IconButton icon={RefreshCw} title="Refresh Teams" onClick={loadOverview} />
         </div>
+        <div className="grid grid-cols-2 border-b border-edge bg-surface-sunken p-1">
+          <button
+            type="button"
+            onClick={() => setRailMode('chat')}
+            className={cx(
+              'flex items-center justify-center gap-1.5 rounded px-2 py-2 text-xs font-semibold',
+              railMode === 'chat' ? 'bg-[#5b5fc7] text-white shadow-sm' : 'text-content-muted hover:bg-surface-raised',
+            )}
+          >
+            <MessageSquare className="h-4 w-4" /> Chat
+          </button>
+          <button
+            type="button"
+            onClick={() => setRailMode('teams')}
+            className={cx(
+              'flex items-center justify-center gap-1.5 rounded px-2 py-2 text-xs font-semibold',
+              railMode === 'teams' ? 'bg-[#5b5fc7] text-white shadow-sm' : 'text-content-muted hover:bg-surface-raised',
+            )}
+          >
+            <Users className="h-4 w-4" /> Teams
+          </button>
+        </div>
         <div className="min-h-0 flex-1 overflow-y-auto p-2">
-          <p className="px-2 pb-1 pt-2 text-2xs font-semibold uppercase tracking-wider text-content-subtle">Teams</p>
-          {teams.length === 0 && <p className="px-2 py-2 text-2xs text-content-subtle">No teams found.</p>}
-          {teams.map((team) => (
-            <div key={team.id}>
-              <button
-                type="button"
-                onClick={() => openTeam(team)}
-                className={cx(
-                  'flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs transition-colors',
-                  openTeamId === team.id ? 'bg-surface-raised text-content' : 'text-content-muted hover:bg-surface-raised hover:text-content',
-                )}
-              >
-                <Users className="h-4 w-4 shrink-0" />
-                <span className="min-w-0 flex-1 truncate font-medium">{team.name}</span>
-              </button>
-              {openTeamId === team.id && (
-                <div className="mb-1 ml-3 border-l border-edge pl-2">
-                  {(channelsByTeam[team.id] || []).length === 0 ? (
-                    <p className="px-2 py-1.5 text-2xs text-content-subtle">Loading channels…</p>
-                  ) : channelsByTeam[team.id].map((channel) => {
-                    const active = target?.kind === 'channel' && target.channelId === channel.id;
-                    return (
-                      <button
-                        key={channel.id}
-                        type="button"
-                        onClick={() => openTarget({
-                          kind: 'channel',
-                          teamId: team.id,
-                          teamName: team.name,
-                          channelId: channel.id,
-                          channelName: channel.name,
-                          webUrl: channel.webUrl,
-                        })}
-                        className={cx(
-                          'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors',
-                          active ? 'bg-accent-soft font-semibold text-accent' : 'text-content-muted hover:bg-surface-raised hover:text-content',
-                        )}
-                      >
-                        <Hash className="h-3.5 w-3.5 shrink-0" />
-                        <span className="min-w-0 flex-1 truncate">{channel.name}</span>
-                      </button>
-                    );
-                  })}
+          {railMode === 'teams' ? (
+            <>
+              <p className="px-2 pb-1 pt-2 text-2xs font-semibold uppercase tracking-wider text-content-subtle">Your teams</p>
+              {teams.length === 0 && <p className="px-2 py-2 text-2xs text-content-subtle">No teams found.</p>}
+              {teams.map((team) => (
+                <div key={team.id}>
+                  <button
+                    type="button"
+                    onClick={() => openTeam(team)}
+                    className={cx(
+                      'flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs transition-colors',
+                      openTeamId === team.id ? 'bg-surface-raised text-content' : 'text-content-muted hover:bg-surface-raised hover:text-content',
+                    )}
+                  >
+                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded bg-[#5b5fc7] text-xs font-bold text-white">
+                      {team.name.charAt(0).toUpperCase()}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate font-semibold">{team.name}</span>
+                  </button>
+                  {openTeamId === team.id && (
+                    <div className="mb-1 ml-3 border-l border-edge pl-2">
+                      {(channelsByTeam[team.id] || []).length === 0 ? (
+                        <p className="px-2 py-1.5 text-2xs text-content-subtle">Loading channels…</p>
+                      ) : channelsByTeam[team.id].map((channel) => {
+                        const active = target?.kind === 'channel' && target.channelId === channel.id;
+                        return (
+                          <button
+                            key={channel.id}
+                            type="button"
+                            onClick={() => openTarget({
+                              kind: 'channel',
+                              teamId: team.id,
+                              teamName: team.name,
+                              channelId: channel.id,
+                              channelName: channel.name,
+                              webUrl: channel.webUrl,
+                            })}
+                            className={cx(
+                              'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors',
+                              active ? 'bg-[#e8e8f8] font-semibold text-[#464775]' : 'text-content-muted hover:bg-surface-raised hover:text-content',
+                            )}
+                          >
+                            <Hash className="h-3.5 w-3.5 shrink-0" />
+                            <span className="min-w-0 flex-1 truncate">{channel.name}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-          ))}
-
-          <p className="px-2 pb-1 pt-3 text-2xs font-semibold uppercase tracking-wider text-content-subtle">Chats</p>
-          {chats.length === 0 && <p className="px-2 py-2 text-2xs text-content-subtle">No recent chats.</p>}
-          {chats.map((chat) => {
-            const active = target?.kind === 'chat' && target.chatId === chat.id;
-            return (
-              <button
-                key={chat.id}
-                type="button"
-                onClick={() => openTarget({ kind: 'chat', chatId: chat.id, name: chat.name, webUrl: chat.webUrl })}
-                className={cx(
-                  'flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs transition-colors',
-                  active ? 'bg-accent-soft font-semibold text-accent' : 'text-content-muted hover:bg-surface-raised hover:text-content',
-                )}
-              >
-                <MessageSquare className="h-4 w-4 shrink-0" />
-                <span className="min-w-0 flex-1 truncate">{chat.name}</span>
-                {chat.chatType === 'group' && <StatusChip tone="neutral" size="sm">Group</StatusChip>}
-              </button>
-            );
-          })}
+              ))}
+            </>
+          ) : (
+            <>
+              <p className="px-2 pb-1 pt-2 text-2xs font-semibold uppercase tracking-wider text-content-subtle">Recent chats</p>
+              {chats.length === 0 && <p className="px-2 py-2 text-2xs text-content-subtle">No recent chats.</p>}
+              {chats.map((chat) => {
+                const active = target?.kind === 'chat' && target.chatId === chat.id;
+                return (
+                  <button
+                    key={chat.id}
+                    type="button"
+                    onClick={() => openTarget({ kind: 'chat', chatId: chat.id, name: chat.name, webUrl: chat.webUrl })}
+                    className={cx(
+                      'flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs transition-colors',
+                      active ? 'bg-[#e8e8f8] font-semibold text-[#464775]' : 'text-content-muted hover:bg-surface-raised hover:text-content',
+                    )}
+                  >
+                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#5b5fc7] text-xs font-semibold text-white">
+                      {chat.name.charAt(0).toUpperCase()}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate">{chat.name}</span>
+                    {chat.chatType === 'group' && <StatusChip tone="neutral" size="sm">Group</StatusChip>}
+                  </button>
+                );
+              })}
+            </>
+          )}
         </div>
       </aside>
 
@@ -378,8 +512,8 @@ export default function TeamsHub({ currentUser }) {
               </div>
               <IconButton
                 icon={RefreshCw}
-                title="Refresh conversation"
-                onClick={() => openTarget(target)}
+                title={channelTab === 'files' ? 'Refresh files' : 'Refresh conversation'}
+                onClick={() => (channelTab === 'files' ? loadChannelFiles() : openTarget(target))}
               />
               {target.webUrl && (
                 <a
@@ -392,9 +526,111 @@ export default function TeamsHub({ currentUser }) {
                 </a>
               )}
             </div>
+            {target.kind === 'channel' && (
+              <div className="flex shrink-0 items-center gap-1 border-b border-edge px-3">
+                <button
+                  type="button"
+                  onClick={() => setChannelTab('posts')}
+                  className={cx(
+                    'border-b-2 px-3 py-2 text-xs font-semibold',
+                    channelTab === 'posts'
+                      ? 'border-[#5b5fc7] text-[#464775]'
+                      : 'border-transparent text-content-muted hover:text-content',
+                  )}
+                >
+                  Posts
+                </button>
+                <button
+                  type="button"
+                  onClick={loadChannelFiles}
+                  className={cx(
+                    'border-b-2 px-3 py-2 text-xs font-semibold',
+                    channelTab === 'files'
+                      ? 'border-[#5b5fc7] text-[#464775]'
+                      : 'border-transparent text-content-muted hover:text-content',
+                  )}
+                >
+                  Files
+                </button>
+              </div>
+            )}
 
             {error && <p className="border-b border-danger-border bg-danger-soft px-3 py-2 text-2xs text-danger">{error}</p>}
 
+            {channelTab === 'files' && target.kind === 'channel' ? (
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                <div className="flex flex-wrap items-center gap-1 border-b border-edge px-4 py-2">
+                  {filePath.map((folder, index) => (
+                    <React.Fragment key={`${folder.id}-${index}`}>
+                      {index > 0 && <ChevronRight className="h-3 w-3 text-content-subtle" />}
+                      <button
+                        type="button"
+                        onClick={() => openFilePath(index)}
+                        className={cx(
+                          'text-2xs',
+                          index === filePath.length - 1
+                            ? 'font-semibold text-content'
+                            : 'text-[#5b5fc7] hover:underline',
+                        )}
+                      >
+                        {folder.name}
+                      </button>
+                    </React.Fragment>
+                  ))}
+                  <span className="ml-auto text-[10px] text-content-subtle">
+                    Files open in Microsoft 365 for full-fidelity editing
+                  </span>
+                </div>
+                {loadingFiles ? (
+                  <div className="flex items-center justify-center py-16 text-content-muted">
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading files…
+                  </div>
+                ) : files.length === 0 ? (
+                  <EmptyState icon={Folder} title="No files in this channel" />
+                ) : (
+                  <div className="divide-y divide-edge">
+                    {files.map((file) => (
+                      file.isFolder ? (
+                        <button
+                          key={file.id}
+                          type="button"
+                          onClick={() => openFolder(file)}
+                          className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-surface-raised"
+                        >
+                          <Folder className="h-5 w-5 shrink-0 text-[#5b5fc7]" />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-sm font-medium text-content">{file.name}</span>
+                            <span className="text-2xs text-content-subtle">{file.childCount} items</span>
+                          </span>
+                          <ChevronRight className="h-4 w-4 text-content-subtle" />
+                        </button>
+                      ) : (
+                        <a
+                          key={file.id}
+                          href={file.webUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="flex items-center gap-3 px-4 py-3 hover:bg-surface-raised"
+                        >
+                          <FileIcon className="h-5 w-5 shrink-0 text-[#5b5fc7]" />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-sm font-medium text-content">{file.name}</span>
+                            <span className="text-2xs text-content-subtle">
+                              {file.modifiedBy || 'Microsoft Teams'}
+                              {file.modifiedAt ? ` · ${fmtWhen(file.modifiedAt)}` : ''}
+                              {file.size ? ` · ${Math.ceil(file.size / 1024)} KB` : ''}
+                            </span>
+                          </span>
+                          <span className="inline-flex items-center gap-1 text-2xs font-medium text-[#5b5fc7]">
+                            Open / edit <ExternalLink className="h-3 w-3" />
+                          </span>
+                        </a>
+                      )
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
             <div className="min-h-0 flex-1 overflow-y-auto p-4">
               {loadingMessages ? (
                 <div className="flex h-full items-center justify-center text-content-muted">
@@ -437,6 +673,57 @@ export default function TeamsHub({ currentUser }) {
                             ))}
                           </ul>
                         )}
+                        {target.kind === 'channel' && (
+                          <div className="mt-2">
+                            {(message.replies || []).length > 0 && (
+                              <div className="space-y-2 border-l-2 border-[#d6d6ee] pl-3">
+                                {message.replies.map((reply) => (
+                                  <div key={reply.id}>
+                                    <p className="flex items-baseline gap-2">
+                                      <span className="text-2xs font-semibold text-content">
+                                        {reply.from?.name || 'Unknown'}
+                                      </span>
+                                      <span className="text-[10px] text-content-subtle">{fmtWhen(reply.createdAt)}</span>
+                                    </p>
+                                    <div
+                                      className="text-xs leading-relaxed text-content-muted [&_a]:text-[#5b5fc7]"
+                                      dangerouslySetInnerHTML={{ __html: messageHtml(reply) }}
+                                    />
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            {replyingTo === message.id ? (
+                              <div className="mt-2 flex items-end gap-2">
+                                <textarea
+                                  autoFocus
+                                  value={replyDraft}
+                                  onChange={(event) => setReplyDraft(event.target.value)}
+                                  rows={2}
+                                  placeholder="Reply to this post"
+                                  className="min-w-0 flex-1 resize-y rounded border border-edge bg-surface-sunken px-2 py-1.5 text-xs text-content outline-none focus:border-[#5b5fc7]"
+                                />
+                                <Button
+                                  size="sm"
+                                  variant="primary"
+                                  loading={sending}
+                                  disabled={!replyDraft.trim()}
+                                  onClick={() => sendReply(message.id)}
+                                >
+                                  Reply
+                                </Button>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => { setReplyingTo(message.id); setReplyDraft(''); }}
+                                className="mt-1 text-2xs font-semibold text-[#5b5fc7] hover:underline"
+                              >
+                                {message.replyCount ? `${message.replyCount} replies · Reply` : 'Reply'}
+                              </button>
+                            )}
+                          </div>
+                        )}
                       </div>
                     </article>
                   ))}
@@ -444,7 +731,9 @@ export default function TeamsHub({ currentUser }) {
                 </div>
               )}
             </div>
+            )}
 
+            {channelTab !== 'files' && (
             <div className="shrink-0 border-t border-edge p-3">
               <div className="flex items-end gap-2">
                 <textarea
@@ -466,6 +755,7 @@ export default function TeamsHub({ currentUser }) {
               </div>
               <p className="mt-1 text-[10px] text-content-subtle">Posted to Teams as you · ⌘/Ctrl + Enter to send</p>
             </div>
+            )}
           </>
         )}
       </main>

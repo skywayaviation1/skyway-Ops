@@ -5,7 +5,9 @@ import test from 'node:test';
 import {
   addressList,
   escapeHtml,
+  graphRetryDelayMs,
   graphRecipients,
+  isMailboxConcurrencyError,
   normalizeMessage,
 } from '../api/_charter-mail.js';
 
@@ -99,4 +101,31 @@ test('shared mailbox status soft-fails when Graph credentials are missing', asyn
   assert.match(route, /isSharedMailConfigured\(\)/);
   assert.match(route, /configured: false/);
   assert.match(route, /setupHint/);
+});
+
+test('shared mailbox recognizes Microsoft concurrency throttles and retry delays', () => {
+  assert.equal(isMailboxConcurrencyError(
+    500,
+    'MailboxConcurrency',
+    'Application is over its MailboxConcurrency limit.',
+  ), true);
+  assert.equal(isMailboxConcurrencyError(429, null, ''), true);
+  assert.equal(isMailboxConcurrencyError(503, null, ''), true);
+  assert.equal(isMailboxConcurrencyError(400, 'BadRequest', 'Invalid field'), false);
+  const response = { headers: { get: (name) => name === 'retry-after' ? '4' : null } };
+  assert.equal(graphRetryDelayMs(response, 0), 4000);
+  assert.equal(graphRetryDelayMs({ headers: { get: () => null } }, 1), 1500);
+});
+
+test('shared mailbox Graph requests are serialized and contacts are cached', async () => {
+  const helper = await readFile(path.join(root, 'api/_charter-mail.js'), 'utf8');
+  const route = await readFile(path.join(root, 'api/charter-mail.js'), 'utf8');
+  const client = await readFile(path.join(root, 'src/CharterInbox.jsx'), 'utf8');
+  assert.match(helper, /mailboxGraphQueue/);
+  assert.match(helper, /enqueueMailboxFetch/);
+  assert.match(helper, /attempt < 5/);
+  assert.match(route, /contactsCache/);
+  assert.doesNotMatch(route, /const \[inbox, sent\] = await Promise\.all/);
+  assert.match(client, /setMailReady\(true\)/);
+  assert.match(client, /if \(!mailReady/);
 });

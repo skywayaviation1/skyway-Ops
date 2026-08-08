@@ -71,6 +71,16 @@ New consent and RBAC assignments can take a few minutes to propagate.
 Set them for Production and redeploy. The Graph client uses the client-
 credentials flow with `https://graph.microsoft.com/.default`.
 
+### Shared mailbox concurrency
+
+Microsoft gives app-only access to one mailbox a small concurrency bucket.
+Skyway serializes Graph calls within each server instance, loads folders,
+contacts and messages sequentially, caches the shared address book for five
+minutes, and retries `MailboxConcurrency`, `ErrorExceededConnectionCount`,
+HTTP 429 and transient 503 responses with exponential backoff. This lets
+multiple admin/sales users share the inbox without every page load creating a
+burst against `charters@`.
+
 Administrators can confirm configuration status under **Organization
 settings → Mailboxes** (and Advanced tools). There is no per-user OAuth for
 the shared inbox — once the env vars are live, **Email → Shared inbox**
