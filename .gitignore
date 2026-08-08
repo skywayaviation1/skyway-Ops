@@ -2,3 +2,5 @@ node_modules
 dist
 .vercel
 *.log
+tools/screenshot-harness/node_modules
+marketing/assets/screens/*.png
