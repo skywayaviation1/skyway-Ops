@@ -56,11 +56,17 @@ const CurrencyImporterLazy = lazy(() => import('./CurrencyImporter.jsx'));
 
 const ACTIVE_TYPES = CURRENCY_TYPES.filter(t => !t.hidden && t.category !== 'LEGACY');
 
-const CATEGORY_ORDER = [
+// Display order for the category bands. Only categories that CURRENCY_TYPES
+// actually uses are rendered, and any category not named here still appears
+// (alphabetically, after the known ones) — a currency type can never go
+// invisible just because this list wasn't updated alongside the data model.
+const CATEGORY_PRIORITY = [
   'FAA RECENCY',
+  'FAA',
   'PART 135 GENERAL',
   'AIRCRAFT-SPECIFIC',
   'PART 135 CHECKS',
+  'PART 135',
   'TRAINING',
   'SPECIAL OPS',
   'BADGES',
@@ -68,18 +74,28 @@ const CATEGORY_ORDER = [
 
 const CATEGORY_COLORS = {
   'FAA RECENCY':       'text-cyan-400 border-cyan-500/40',
+  'FAA':               'text-cyan-400 border-cyan-500/40',
   'PART 135 GENERAL':  'text-violet-400 border-violet-500/40',
   'AIRCRAFT-SPECIFIC': 'text-orange-400 border-orange-500/40',
   'PART 135 CHECKS':   'text-blue-400 border-blue-500/40',
+  'PART 135':          'text-blue-400 border-blue-500/40',
   'TRAINING':          'text-emerald-400 border-emerald-500/40',
   'SPECIAL OPS':       'text-pink-400 border-pink-500/40',
   'BADGES':            'text-yellow-400 border-yellow-500/40',
   'MEDICAL':           'text-red-400 border-red-500/40',
 };
 
+const CATEGORY_ORDER = (() => {
+  const rank = (cat) => {
+    const i = CATEGORY_PRIORITY.indexOf(cat);
+    return i === -1 ? CATEGORY_PRIORITY.length : i;
+  };
+  return [...new Set(ACTIVE_TYPES.map(t => t.category))]
+    .sort((a, b) => (rank(a) - rank(b)) || a.localeCompare(b));
+})();
+
 const TYPES_BY_CATEGORY = (() => {
   const map = {};
-  for (const cat of CATEGORY_ORDER) map[cat] = [];
   for (const t of ACTIVE_TYPES) {
     if (!map[t.category]) map[t.category] = [];
     map[t.category].push(t);
