@@ -25,10 +25,14 @@ python3 -m http.server 8088
 
 ## Deploy
 
-It is fully static — host `marketing/` on any static host (Vercel, Netlify,
-S3/CloudFront, GitHub Pages). `vercel.json` here lets it deploy as its own
-Vercel project with the project root set to `marketing/`. It is independent of
-the application's root `vercel.json` and does not change how the app deploys.
+The production URL is **https://135ops.app**. The root build copies this site
+into `dist/marketing`, and host-based rules serve it on that domain without
+changing the existing Skyway Ops application hostname. See
+[`DOMAIN.md`](DOMAIN.md) for the one-time Vercel and DNS setup.
+
+The site is also fully static, so `marketing/` can instead be hosted directly
+on any static host. `vercel.json` here supports a separate Vercel project whose
+project root is set to `marketing/`.
 
 ## Screenshots
 

@@ -40,7 +40,31 @@
       "maxDuration": 60
     }
   },
+  "redirects": [
+    {
+      "source": "/:path*",
+      "has": [
+        { "type": "host", "value": "www.135ops.app" }
+      ],
+      "destination": "https://135ops.app/:path*",
+      "permanent": true
+    }
+  ],
   "rewrites": [
+    {
+      "source": "/",
+      "has": [
+        { "type": "host", "value": "135ops.app" }
+      ],
+      "destination": "/marketing/index.html"
+    },
+    {
+      "source": "/:path*",
+      "has": [
+        { "type": "host", "value": "135ops.app" }
+      ],
+      "destination": "/marketing/:path*"
+    },
     {
       "source": "/__/auth/:path*",
       "destination": "https://skyway-ops-app.firebaseapp.com/__/auth/:path*"
