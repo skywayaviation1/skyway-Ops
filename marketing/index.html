@@ -1,0 +1,772 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Skyway Ops — Flight department software for Part 135 charter operators</title>
+  <meta name="description" content="Skyway Ops is the operations platform for business aviation flight departments: live schedule and dispatch, FlightAware tracking, a Part 135.267 duty & rest engine, crew currency, maintenance, AOG, expenses, and broker tracking links — in one console." />
+  <meta name="theme-color" content="#060C16" />
+  <link rel="icon" type="image/png" href="/assets/favicon.png" />
+
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="Skyway Ops — the console for Part 135 flight departments" />
+  <meta property="og:description" content="Dispatch, live tracking, a native FAR 135.267 duty engine, crew currency, maintenance, AOG and expenses — one platform, built for charter operations." />
+  <meta property="og:image" content="/assets/screens/command-center.webp" />
+  <meta name="twitter:card" content="summary_large_image" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600;9..40,700&family=JetBrains+Mono:wght@400;500;600&display=swap" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <!-- ============================================================= NAV -->
+  <header class="nav" id="nav">
+    <div class="shell nav__inner">
+      <a class="brand" href="#top" aria-label="Skyway Ops home">
+        <span class="brand__mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.8 19.2 16 11l3.5-3.5C21 6 21.5 4 21 3c-1-.5-3 0-4.5 1.5L13 8 4.8 6.2c-.5-.1-.9.1-1.1.5l-.3.5c-.2.5-.1 1 .3 1.3L9 12l-2 3H4l-1 1 3 2 2 3 1-1v-3l3-2 3.5 5.3c.3.4.8.5 1.3.3l.5-.2c.4-.3.6-.7.5-1.2z"/></svg>
+        </span>
+        <span class="brand__text">SKY<span>WAY</span> OPS</span>
+      </a>
+
+      <nav class="nav__links" aria-label="Primary">
+        <a href="#tour">Product</a>
+        <a href="#compliance">Compliance</a>
+        <a href="#features">Features</a>
+        <a href="#integrations">Integrations</a>
+        <a href="#gallery">Screens</a>
+      </nav>
+
+      <div class="nav__cta">
+        <a class="btn btn--ghost" href="#gallery">See the screens</a>
+        <a class="btn btn--primary" href="#demo">Request a demo</a>
+      </div>
+
+      <button class="nav__toggle" id="navToggle" aria-label="Menu" aria-expanded="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+    </div>
+
+    <div class="nav__drawer" id="navDrawer">
+      <a href="#tour">Product</a>
+      <a href="#compliance">Compliance</a>
+      <a href="#features">Features</a>
+      <a href="#integrations">Integrations</a>
+      <a href="#gallery">Screens</a>
+      <a class="btn btn--primary" href="#demo">Request a demo</a>
+    </div>
+  </header>
+
+  <main id="top">
+    <!-- =========================================================== HERO -->
+    <section class="hero">
+      <div class="hero__grid" aria-hidden="true"></div>
+      <div class="shell hero__inner">
+        <span class="hero__badge">
+          <span class="dot" aria-hidden="true"></span>
+          Built for <b>Part 91 &amp; 135</b> flight departments
+        </span>
+
+        <h1>The whole flight department, on <em>one console.</em></h1>
+
+        <p class="hero__sub">
+          Skyway Ops runs the operating day end to end — schedule and dispatch, live
+          FlightAware tracking, a native FAR&nbsp;135.267 duty&nbsp;&amp;&nbsp;rest engine,
+          crew currency, maintenance and AOG, expenses, and broker-facing tracking links.
+          One real-time platform for the pilots, dispatchers, maintenance techs, and
+          administrators who move the aircraft.
+        </p>
+
+        <div class="hero__actions">
+          <a class="btn btn--primary" href="#demo">
+            Request a demo
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+          </a>
+          <a class="btn" href="#tour">Take the tour</a>
+        </div>
+
+        <p class="hero__meta">Real-time sync · Progressive web app · iOS &amp; Android · Microsoft SSO</p>
+
+        <div class="hero__stage" data-reveal>
+          <div class="frame">
+            <div class="frame__bar">
+              <span class="frame__dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span class="frame__url">app.flyskyway.com — Operations Command Center</span>
+            </div>
+            <img src="/assets/screens/command-center.webp"
+                 alt="Skyway Ops command center showing fleet status, block hours, open squawks and a requires-attention panel"
+                 width="2200" height="1405" fetchpriority="high" />
+          </div>
+          <div class="frame frame--phone hero__phone" aria-hidden="true">
+            <img src="/assets/screens/phone-pilot-home.webp" alt="" width="900" height="1926" loading="lazy" />
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========================================================== STATS -->
+    <section class="stats">
+      <div class="shell">
+        <div class="stats__grid">
+          <div class="stat" data-reveal>
+            <div class="stat__value">17<span>+</span></div>
+            <div class="stat__label">Operational modules</div>
+          </div>
+          <div class="stat" data-reveal>
+            <div class="stat__value">135<span>.267</span></div>
+            <div class="stat__label">Native duty &amp; rest engine</div>
+          </div>
+          <div class="stat" data-reveal>
+            <div class="stat__value">30<span>s</span></div>
+            <div class="stat__label">Live fleet position refresh</div>
+          </div>
+          <div class="stat" data-reveal>
+            <div class="stat__value">21k<span>+</span></div>
+            <div class="stat__label">Airports mapped</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========================================================= PILLARS -->
+    <section class="section">
+      <div class="shell">
+        <div class="section-head" data-reveal>
+          <p class="eyebrow">Why Skyway Ops</p>
+          <h2>Software that already speaks charter.</h2>
+          <p class="lede">
+            Most flight departments run on a calendar, a spreadsheet, and a group text.
+            Skyway Ops replaces that stack with one system that understands trips, tails,
+            crews, and the regulations they fly under.
+          </p>
+        </div>
+
+        <div class="pillars">
+          <div class="pillar" data-reveal>
+            <div class="pillar__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+            </div>
+            <h3>Compliance is built in, not bolted on</h3>
+            <p>
+              A duty engine that encodes real FAR&nbsp;135.267 limits, quarterly rest, and
+              extended-rest tiers — plus currency tracking against §61.57 and the §135 check
+              cycle. Every record is retained a full year with an immutable audit trail.
+            </p>
+          </div>
+          <div class="pillar" data-reveal>
+            <div class="pillar__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/></svg>
+            </div>
+            <h3>Live from onsite to landing</h3>
+            <p>
+              Crews advance an eight-step trip timeline from the ramp; FlightAware webhooks
+              auto-fire wheels-up and landing; dispatch watches the whole fleet on one map;
+              and brokers follow a sanitized live link — all off the same event stream.
+            </p>
+          </div>
+          <div class="pillar" data-reveal>
+            <div class="pillar__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v4H4zM4 10h16v10H4z"/><path d="M8 14h8M8 17h5"/></svg>
+            </div>
+            <h3>One record, every role</h3>
+            <p>
+              Pilots, dispatch, sales, maintenance, accounting, and administrators each see
+              the same trip through their own lens. Role-based access means one source of
+              truth instead of six copies of the schedule.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- =========================================================== TOUR -->
+    <section class="section section--tint" id="tour">
+      <div class="shell">
+        <div class="section-head" data-reveal>
+          <p class="eyebrow">The product tour</p>
+          <h2>Follow a trip through the system.</h2>
+          <p class="lede">
+            From the schedule feed to a broker's phone, every screen below is the real
+            application — the same components your crews use in the cockpit and your
+            dispatchers use on the desk.
+          </p>
+        </div>
+
+        <div class="tour">
+          <!-- Dispatch -->
+          <article class="tour__item" data-reveal>
+            <div class="tour__copy">
+              <span class="tour__tag">Dispatch · Ops Console</span>
+              <h3>Run the day from one board.</h3>
+              <p>
+                The Ops Console pulls today's trips plus anything still in progress into a
+                single card grid, each with a live eight-step status strip. Skyway flags what's
+                missing before it bites — no trip sheet, no broker email, unparsed passengers,
+                no PIC or SIC assigned — and pushes updates straight to the crew's phones.
+              </p>
+              <ul class="checks">
+                <li>Filters for <b>with flags</b> and <b>in progress</b>, plus totals at a glance</li>
+                <li>Schedule syncs from a <b>JetInsight iCal feed</b> or manual entry</li>
+                <li>Send-update pushes to assigned dispatchers via Firebase Cloud Messaging</li>
+              </ul>
+            </div>
+            <figure class="tour__figure" data-lightbox data-caption="Dispatch — Ops Console">
+              <div class="frame">
+                <div class="frame__bar"><span class="frame__dots"><i></i><i></i><i></i></span><span class="frame__url">Dispatch · Ops Console</span></div>
+                <img src="/assets/screens/dispatch-console.webp" alt="Dispatch Ops Console with trip cards, status strips and outstanding-item flags" width="2200" height="1405" loading="lazy" />
+              </div>
+            </figure>
+          </article>
+
+          <!-- Trip detail -->
+          <article class="tour__item" data-reveal>
+            <div class="tour__copy">
+              <span class="tour__tag">Crew · Trip status</span>
+              <h3>Eight taps from onsite to landing.</h3>
+              <p>
+                On each trip the crew works a status timeline — crew onsite (with a GPS lock at
+                the FBO), aircraft ready, catering aboard, passengers arrived and boarded, taxi,
+                wheels up, landed. Every step can fire a branded broker email automatically, and
+                FlightAware confirms the airborne and landing events on its own.
+              </p>
+              <ul class="checks">
+                <li>Per-leg <b>weather, NOTAMs, FBOs and crew</b> on the same screen</li>
+                <li>Tail status badge surfaces open <b>squawks and MEL</b> deferrals at acceptance</li>
+                <li>Repositioning legs get their own status language automatically</li>
+              </ul>
+            </div>
+            <figure class="tour__figure" data-lightbox data-caption="Crew — Trip status timeline">
+              <div class="frame">
+                <div class="frame__bar"><span class="frame__dots"><i></i><i></i><i></i></span><span class="frame__url">Flights · Trip detail — Status</span></div>
+                <img src="/assets/screens/schedule-trip-detail.webp" alt="Trip detail showing the eight-step flight-progress timeline, weather, crew and aircraft panels" width="2200" height="1405" loading="lazy" />
+              </div>
+            </figure>
+          </article>
+
+          <!-- Tracking -->
+          <article class="tour__item" data-reveal>
+            <div class="tour__copy">
+              <span class="tour__tag">Flights · Live tracking</span>
+              <h3>The whole fleet, moving in real time.</h3>
+              <p>
+                Skyway polls every tail through FlightAware AeroAPI and draws each aircraft on a
+                shared map with an altitude-colored trail, projected path, ETA, and origin and
+                destination METARs. Parked aircraft show at their last landing airport. The same
+                map engine renders the TV flight board and the public broker page.
+              </p>
+              <ul class="checks">
+                <li>Dark, satellite and terrain basemaps with a weather-radar overlay</li>
+                <li>Positions refresh every <b>30 seconds</b>; full track logs on demand</li>
+                <li>No Mapbox token required — Carto, Esri and OpenTopoMap tiles</li>
+              </ul>
+            </div>
+            <figure class="tour__figure" data-lightbox data-caption="Flights — Live fleet tracking">
+              <div class="frame">
+                <div class="frame__bar"><span class="frame__dots"><i></i><i></i><i></i></span><span class="frame__url">Flights · Tracking</span></div>
+                <img src="/assets/screens/live-tracking.webp" alt="Live tracking map with an airborne aircraft, altitude-colored trail, ETA and airport weather" width="2200" height="1405" loading="lazy" />
+              </div>
+            </figure>
+          </article>
+
+          <!-- Duty -->
+          <article class="tour__item" data-reveal>
+            <div class="tour__copy">
+              <span class="tour__tag">Crew · Duty &amp; rest</span>
+              <h3>A duty engine that reads the reg.</h3>
+              <p>
+                Skyway evaluates every duty period against 14&nbsp;CFR&nbsp;135.267 — the 10-hour
+                rest requirement, the 14-hour duty limit, the extended-rest tiers after a flight-time
+                excursion, and the quarterly 13&times;24-hour rest rule from §135.265(c). Legality is
+                shown as LEGAL / WARNING / ILLEGAL, and the administrator report rolls it up across the
+                fleet with a full audit trail.
+              </p>
+              <ul class="checks">
+                <li>Paired-crew flow: PIC starts duty, SIC confirms fit-for-duty</li>
+                <li><b>365 days</b> of records retained; corrections are audited, never deleted</li>
+                <li>Export to CSV or PDF for the ops manual and the POI</li>
+              </ul>
+            </div>
+            <figure class="tour__figure" data-lightbox data-caption="Crew — Duty &amp; rest report">
+              <div class="frame">
+                <div class="frame__bar"><span class="frame__dots"><i></i><i></i><i></i></span><span class="frame__url">Crew · Duty &amp; Rest — Part 135 official record</span></div>
+                <img src="/assets/screens/duty-rest.webp" alt="Duty and rest administrator report with compliance scope, per-pilot findings and a pilot summary table" width="2200" height="1405" loading="lazy" />
+              </div>
+            </figure>
+          </article>
+
+          <!-- Broker -->
+          <article class="tour__item" data-reveal>
+            <div class="tour__copy">
+              <span class="tour__tag">Brokers &amp; clients · Share link</span>
+              <h3>Give the broker a link, not your ops data.</h3>
+              <p>
+                One tap mints an HMAC-signed public tracking page. Brokers and clients see the tail,
+                itinerary, live map, weather and status timeline — and nothing else. No pricing, no
+                crew contacts, no internal notes. Rotate or revoke the link anytime; it expires 24
+                hours after the last leg lands.
+              </p>
+              <ul class="checks">
+                <li>Works on any device, no login — <b>premium or classic</b> broker themes</li>
+                <li>Optional passenger check-in status, only when you enable it</li>
+                <li>Same live position and trail your dispatchers see</li>
+              </ul>
+            </div>
+            <figure class="tour__figure" data-lightbox data-caption="Public broker tracking page">
+              <div class="frame">
+                <div class="frame__bar"><span class="frame__dots"><i></i><i></i><i></i></span><span class="frame__url">trip-track.html?token=… (public, no login)</span></div>
+                <img src="/assets/screens/broker-tracking.webp" alt="Public broker tracking page with live flight, altitude-colored trail and departure and arrival weather" width="2200" height="1405" loading="lazy" />
+              </div>
+            </figure>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- ====================================================== COMPLIANCE -->
+    <section class="section section--panel" id="compliance">
+      <div class="shell">
+        <div class="section-head" data-reveal>
+          <p class="eyebrow">Regulatory engine</p>
+          <h2>Purpose-built for unscheduled Part&nbsp;135.</h2>
+          <p class="lede">
+            Skyway's legality engine encodes the actual rules charter crews fly under —
+            with the citation attached to each one. It is conservative by design: it prefers a
+            warning over a silent pass, and every interpretation is meant for your Director of
+            Operations and Chief Pilot to review.
+          </p>
+        </div>
+
+        <div class="reg-grid">
+          <div class="reg" data-reveal>
+            <div class="reg__cite">14 CFR §135.267(b)(3)</div>
+            <div class="reg__rule">10 consecutive hours of rest</div>
+            <p class="reg__detail">Required in the 24 hours before a planned assignment completes — evaluated on every duty period.</p>
+          </div>
+          <div class="reg" data-reveal>
+            <div class="reg__cite">14 CFR §135.267(c)</div>
+            <div class="reg__rule">14-hour duty period limit</div>
+            <p class="reg__detail">The regular-assignment duty cap, flagged as crews approach and exceed it.</p>
+          </div>
+          <div class="reg" data-reveal>
+            <div class="reg__cite">14 CFR §135.267(d)</div>
+            <div class="reg__rule">Extended rest after an excursion</div>
+            <p class="reg__detail">Tiered make-up rest — 11, 12, or 16 hours — when a prior period ran past its flight-time limit.</p>
+          </div>
+          <div class="reg" data-reveal>
+            <div class="reg__cite">14 CFR §135.265(c)</div>
+            <div class="reg__rule">13 × 24-hour rest per quarter</div>
+            <p class="reg__detail">Tracks the thirteen 24-hour rest periods required each calendar quarter.</p>
+          </div>
+          <div class="reg" data-reveal>
+            <div class="reg__cite">14 CFR §61.57</div>
+            <div class="reg__rule">Takeoff, night &amp; instrument recency</div>
+            <p class="reg__detail">Auto-computed from assigned trips — night is judged from local sunrise/sunset at each airport.</p>
+          </div>
+          <div class="reg" data-reveal>
+            <div class="reg__cite">§135.293 / .297 / .299 / .351</div>
+            <div class="reg__rule">The Part 135 check cycle</div>
+            <p class="reg__detail">Competency checks, instrument proficiency, line checks and recurrent training, with 60/30/14-day alerts.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ====================================================== DUTY VISUAL -->
+    <section class="section">
+      <div class="shell">
+        <div class="tour__item" data-reveal style="align-items:stretch">
+          <div class="tour__copy" style="align-self:center">
+            <span class="tour__tag">Crew · Command Center</span>
+            <h3>Legality, live on the ops board.</h3>
+            <p>
+              The crew duty board shows who is on duty, resting, available, or approaching a limit
+              in real time — with elapsed duty, seat, and the trailing 7/30/90-day workload for each
+              pilot. Administrators drill into a timeline editor, link PIC and SIC periods, and export
+              the official record without leaving the screen.
+            </p>
+            <ul class="checks">
+              <li>Trailing-window duty and flight-hour aggregates per pilot</li>
+              <li>Illegal periods are flagged but never block a submission — override is audited</li>
+              <li>JetInsight duty history and 24-column currency grids import in bulk</li>
+            </ul>
+          </div>
+          <figure data-lightbox data-caption="Crew duty status board" style="margin:0">
+            <div class="frame">
+              <div class="frame__bar"><span class="frame__dots"><i></i><i></i><i></i></span><span class="frame__url">Home · Crew duty status</span></div>
+              <img src="/assets/screens/crew-duty-board.webp" alt="Crew duty status board showing on-duty, resting and available pilots with legality and trailing workload" width="2200" height="1405" loading="lazy" />
+            </div>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======================================================== FEATURES -->
+    <section class="section section--tint" id="features">
+      <div class="shell">
+        <div class="section-head section-head--center" data-reveal>
+          <p class="eyebrow eyebrow--center">Everything in the box</p>
+          <h2>One platform, seventeen modules.</h2>
+          <p class="lede">
+            Skyway Ops is not a point tool. It's the operating system for a flight department —
+            here is what ships inside.
+          </p>
+        </div>
+
+        <div class="features">
+          <div class="feature-group" data-reveal>
+            <div class="feature-group__head"><h3>Schedule &amp; Dispatch</h3><span class="feature-group__count">Flights</span></div>
+            <ul>
+              <li><b>Schedule</b>JetInsight iCal sync, tail filters, and Today / Tomorrow / Upcoming grouping.</li>
+              <li><b>Ops Console</b>Live dispatch board with status strips and missing-item flags.</li>
+              <li><b>Command Center</b>Fleet status, block hours, weather grid and a requires-attention panel.</li>
+              <li><b>Manifests</b>Digital S-5/R-37 load manifests with e-signatures, auto-filled from duty times.</li>
+              <li><b>Archive</b>Completed trips retained and searchable.</li>
+            </ul>
+          </div>
+
+          <div class="feature-group" data-reveal>
+            <div class="feature-group__head"><h3>Tracking &amp; Broker</h3><span class="feature-group__count">Live</span></div>
+            <ul>
+              <li><b>Live tracking</b>FlightAware positions, trails, and ETAs on a shared map.</li>
+              <li><b>Flight board</b>TV-ready fleet movement display with a great-circle route map.</li>
+              <li><b>Broker share links</b>Signed, revocable public tracking pages — no ops data exposed.</li>
+              <li><b>Automated status emails</b>Branded broker updates on each milestone, CC'd to ops.</li>
+              <li><b>NOTAM &amp; weather badges</b>Significant FAA NOTAMs and METAR/TAF inline.</li>
+            </ul>
+          </div>
+
+          <div class="feature-group" data-reveal>
+            <div class="feature-group__head"><h3>Crew &amp; Compliance</h3><span class="feature-group__count">Part 135</span></div>
+            <ul>
+              <li><b>Duty &amp; rest</b>Native FAR 135.267 engine with calendar, timeline and grid views.</li>
+              <li><b>Pilot currency</b>§61.57 recency and the §135 check cycle with expiry alerts.</li>
+              <li><b>Pilot documents</b>Certificate, medical, passport and license vault with AI parsing.</li>
+              <li><b>Malfunction reports</b>§135.65 incident reports as PDFs, emailed on submit.</li>
+            </ul>
+          </div>
+
+          <div class="feature-group" data-reveal>
+            <div class="feature-group__head"><h3>Aircraft &amp; Maintenance</h3><span class="feature-group__count">Airworthiness</span></div>
+            <ul>
+              <li><b>Fleet status &amp; squawks</b>Open discrepancies, MEL deferrals and grounding at a glance.</li>
+              <li><b>Aircraft maintenance log</b>Digital AML (S-3-2/R-31) with deferral, grounding and RTS.</li>
+              <li><b>MEL library</b>AI-assisted search over your FAA-approved MEL revisions.</li>
+              <li><b>AOG events</b>Declare, coordinate parts and vendors, and track return-to-service.</li>
+              <li><b>Wear Watch &amp; MX projections</b>Tire/brake cadence and Veryon due-list projections.</li>
+            </ul>
+          </div>
+
+          <div class="feature-group" data-reveal>
+            <div class="feature-group__head"><h3>Finance &amp; Travel</h3><span class="feature-group__count">Back office</span></div>
+            <ul>
+              <li><b>Expenses</b>Photograph a receipt; AI extracts vendor, total and line items.</li>
+              <li><b>QuickBooks sync</b>Approved expenses pushed to QuickBooks Online.</li>
+              <li><b>Fleet wallet</b>Shared vault of fuel and FBO cards.</li>
+              <li><b>Crew lodging</b>Hotel bookings linked to trips, Marriott and Expedia TAAP.</li>
+            </ul>
+          </div>
+
+          <div class="feature-group" data-reveal>
+            <div class="feature-group__head"><h3>Comms &amp; Platform</h3><span class="feature-group__count">Foundation</span></div>
+            <ul>
+              <li><b>Comms</b>Stream Chat DMs, group chats and a per-trip channel.</li>
+              <li><b>Push notifications</b>FCM alerts with quiet hours and AOG override.</li>
+              <li><b>Microsoft SSO</b>Entra ID sign-in with admin-approved, role-based access.</li>
+              <li><b>PWA &amp; offline-aware</b>Installable on iOS and Android with real-time sync.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- =========================================================== ROLES -->
+    <section class="section">
+      <div class="shell">
+        <div class="section-head" data-reveal>
+          <p class="eyebrow">Role-based by design</p>
+          <h2>Every seat, the right view.</h2>
+          <p class="lede">
+            Access is scoped to the job. The same trip is a checklist to a pilot, a board to a
+            dispatcher, a coverage record to sales, and an airworthiness view to maintenance.
+          </p>
+        </div>
+
+        <div class="roles">
+          <div class="role" data-reveal>
+            <span class="role__badge">CREW</span>
+            <h3>Pilots &amp; flight attendants</h3>
+            <p>Personal home, trip status, manifests, lodging, duty tracker, and their own currency and documents.</p>
+          </div>
+          <div class="role" data-reveal>
+            <span class="role__badge">OPS</span>
+            <h3>Dispatch &amp; scheduling</h3>
+            <p>Full flights stack, dispatch console, live tracking, broker links, and crew duty management.</p>
+          </div>
+          <div class="role" data-reveal>
+            <span class="role__badge">SALES</span>
+            <h3>Charter sales</h3>
+            <p>Command Center, trip creation, broker tracking links, and AOG coverage offers.</p>
+          </div>
+          <div class="role" data-reveal>
+            <span class="role__badge">MAINT</span>
+            <h3>Maintenance</h3>
+            <p>Fleet status, squawks and MEL, the AML, AOG events, service requests, and fleet wear.</p>
+          </div>
+          <div class="role" data-reveal>
+            <span class="role__badge">ACCOUNTING</span>
+            <h3>Finance</h3>
+            <p>Expense review and approval, CSV export, QuickBooks sync, and the fleet wallet.</p>
+          </div>
+          <div class="role" data-reveal>
+            <span class="role__badge">ADMIN</span>
+            <h3>Administrators</h3>
+            <p>Everything ops can do, plus user management, duty tools, and org-wide defaults.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================================================== INTEGRATIONS -->
+    <section class="section section--panel" id="integrations">
+      <div class="shell">
+        <div class="section-head" data-reveal>
+          <p class="eyebrow">Connected to your stack</p>
+          <h2>It plugs into the tools you already run.</h2>
+          <p class="lede">
+            Skyway Ops meets your flight department where its data already lives — schedule feed,
+            tracking provider, maintenance system of record, and back office.
+          </p>
+        </div>
+
+        <div class="integrations">
+          <div class="integration" data-reveal><div class="integration__name">FlightAware AeroAPI</div><p class="integration__role">Live fleet positions, tracks, ETAs, and auto-fired out/off/on status events.</p></div>
+          <div class="integration" data-reveal><div class="integration__name">JetInsight</div><p class="integration__role">iCal schedule feed plus trip-sheet and duty-history import.</p></div>
+          <div class="integration" data-reveal><div class="integration__name">Microsoft Entra ID</div><p class="integration__role">Company SSO with admin-approved, role-based access.</p></div>
+          <div class="integration" data-reveal><div class="integration__name">Stream Chat</div><p class="integration__role">Direct messages, group chats, and per-trip channels.</p></div>
+          <div class="integration" data-reveal><div class="integration__name">Veryon Tracking</div><p class="integration__role">Maintenance due-list import and OAuth connection for times and cycles.</p></div>
+          <div class="integration" data-reveal><div class="integration__name">QuickBooks Online</div><p class="integration__role">Approved expenses synced to your accounting ledger.</p></div>
+          <div class="integration" data-reveal><div class="integration__name">FAA &amp; NOAA</div><p class="integration__role">Significant NOTAMs, METAR/TAF, and winds aloft for planning.</p></div>
+          <div class="integration" data-reveal><div class="integration__name">Anthropic Claude</div><p class="integration__role">Receipt, pilot-document and MEL parsing, plus wear-photo assessment.</p></div>
+          <div class="integration" data-reveal><div class="integration__name">Firebase</div><p class="integration__role">Real-time sync, authentication, storage, and cloud messaging.</p></div>
+          <div class="integration" data-reveal><div class="integration__name">Marriott &amp; Expedia TAAP</div><p class="integration__role">Crew lodging deep links with points or agency commission.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========================================================= GALLERY -->
+    <section class="section" id="gallery">
+      <div class="shell">
+        <div class="section-head section-head--center" data-reveal>
+          <p class="eyebrow eyebrow--center">Screens</p>
+          <h2>See the real thing.</h2>
+          <p class="lede">
+            Every image is a live capture of the application — click any screen to enlarge.
+          </p>
+        </div>
+
+        <div class="gallery">
+          <figure data-lightbox data-caption="Operations Command Center — airport weather &amp; crew availability" data-reveal>
+            <img src="/assets/screens/command-center-weather.webp" alt="Command center weather grid and crew availability" width="2200" height="1405" loading="lazy" />
+            <figcaption><b>Command Center</b><span>Weather grid &amp; crew availability</span></figcaption>
+          </figure>
+          <figure data-lightbox data-caption="Passenger manifest with ID verification" data-reveal>
+            <img src="/assets/screens/trip-passengers.webp" alt="Passenger manifest and ID verification" width="2200" height="1405" loading="lazy" />
+            <figcaption><b>Passengers</b><span>Manifest &amp; ID verification</span></figcaption>
+          </figure>
+          <figure data-lightbox data-caption="Per-leg weather, TAF and winds aloft" data-reveal>
+            <img src="/assets/screens/trip-weather.webp" alt="Per-leg weather, TAF and winds aloft" width="2200" height="1405" loading="lazy" />
+            <figcaption><b>Weather &amp; flight plan</b><span>METAR, TAF &amp; winds aloft</span></figcaption>
+          </figure>
+          <figure data-lightbox data-caption="Pilot currency &amp; training matrix" data-reveal>
+            <img src="/assets/screens/currency-matrix.webp" alt="Pilot currency and training matrix" width="2200" height="1405" loading="lazy" />
+            <figcaption><b>Pilot currency</b><span>§61.57 &amp; §135 check cycle</span></figcaption>
+          </figure>
+          <figure data-lightbox data-caption="Duty calendar — fleet-wide by day" data-reveal>
+            <img src="/assets/screens/duty-calendar.webp" alt="Duty calendar showing fleet-wide duty by day" width="2200" height="1405" loading="lazy" />
+            <figcaption><b>Duty calendar</b><span>Fleet-wide, month view</span></figcaption>
+          </figure>
+          <figure data-lightbox data-caption="Fleet status &amp; open squawks" data-reveal>
+            <img src="/assets/screens/maintenance-log.webp" alt="Maintenance fleet status with squawks and MEL" width="2200" height="1405" loading="lazy" />
+            <figcaption><b>Maintenance</b><span>Fleet status, squawks &amp; MEL</span></figcaption>
+          </figure>
+          <figure data-lightbox data-caption="Aircraft Maintenance Log (S-3-2/R-31)" data-reveal>
+            <img src="/assets/screens/aml-log.webp" alt="Digital aircraft maintenance log entries" width="2200" height="1405" loading="lazy" />
+            <figcaption><b>Aircraft maintenance log</b><span>Discrepancy, deferral &amp; RTS</span></figcaption>
+          </figure>
+          <figure data-lightbox data-caption="AOG event coordination" data-reveal>
+            <img src="/assets/screens/aog-events.webp" alt="AOG event coordination with parts and vendor tracking" width="2200" height="1405" loading="lazy" />
+            <figcaption><b>AOG events</b><span>Parts, vendor &amp; return-to-service</span></figcaption>
+          </figure>
+          <figure data-lightbox data-caption="Wear Watch — tire &amp; brake tracking" data-reveal>
+            <img src="/assets/screens/wear-watch.webp" alt="Wear Watch fleet tire and brake tracking" width="2200" height="1405" loading="lazy" />
+            <figcaption><b>Wear Watch</b><span>Tire &amp; brake cadence</span></figcaption>
+          </figure>
+          <figure data-lightbox data-caption="Expenses with AI receipt parsing" data-reveal>
+            <img src="/assets/screens/expenses.webp" alt="Expense detail with parsed receipt" width="2200" height="1405" loading="lazy" />
+            <figcaption><b>Expenses</b><span>AI receipt parsing &amp; QuickBooks</span></figcaption>
+          </figure>
+          <figure data-lightbox data-caption="Crew lodging linked to trips" data-reveal>
+            <img src="/assets/screens/lodging.webp" alt="Crew lodging dashboard linked to trips" width="2200" height="1405" loading="lazy" />
+            <figcaption><b>Lodging</b><span>Hotel bookings by trip</span></figcaption>
+          </figure>
+          <figure data-lightbox data-caption="TV flight board" data-reveal>
+            <img src="/assets/screens/flight-board.webp" alt="TV-ready flight board with route map" width="2200" height="1123" loading="lazy" />
+            <figcaption><b>Flight board</b><span>TV display mode</span></figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================ HONEST / STRAIGHT -->
+    <section class="section section--tint">
+      <div class="shell">
+        <div class="section-head" data-reveal>
+          <p class="eyebrow">Straight talk</p>
+          <h2>Built by operators, scoped honestly.</h2>
+          <p class="lede">
+            Skyway Ops is production software running a live Part 135 flight department — and we
+            describe it the way an ops manual would.
+          </p>
+        </div>
+        <div class="straight">
+          <div class="straight__item" data-reveal>
+            <h3>A finding aid, not the authority</h3>
+            <p>The MEL search and duty engine help crews find and check the rule. Deferrability and airworthiness decisions stay with your qualified personnel and your Director of Maintenance.</p>
+          </div>
+          <div class="straight__item" data-reveal>
+            <h3>Veryon remains the system of record</h3>
+            <p>Skyway coordinates maintenance and projects due dates, but treats your maintenance-tracking provider as authoritative for airworthiness.</p>
+          </div>
+          <div class="straight__item" data-reveal>
+            <h3>Human-in-the-loop AI</h3>
+            <p>Receipts, pilot documents and MEL text are parsed to save typing, then shown for review. Nothing regulatory is decided by a model.</p>
+          </div>
+          <div class="straight__item" data-reveal>
+            <h3>Records you can hand to a POI</h3>
+            <p>Duty and rest records are retained a full year with an immutable audit trail and export to CSV and PDF, footnoted to 14 CFR §135.267.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ FAQ -->
+    <section class="section">
+      <div class="shell" style="max-width:900px">
+        <div class="section-head" data-reveal>
+          <p class="eyebrow">Questions</p>
+          <h2>What operators ask first.</h2>
+        </div>
+        <div class="faq" data-reveal>
+          <details>
+            <summary>Who is Skyway Ops for?</summary>
+            <p>Business and corporate aviation flight departments operating under Part 91 and Part 135 — charter operators, management companies, and owner-flown fleets that need dispatch, tracking, duty and rest, maintenance, and back-office in one place.</p>
+          </details>
+          <details>
+            <summary>Do we have to replace our scheduling software?</summary>
+            <p>No. Skyway syncs your existing JetInsight schedule through an iCal feed and layers operations on top. You can also add trips by hand for anything the feed doesn't carry.</p>
+          </details>
+          <details>
+            <summary>How does the duty engine handle our specific operation?</summary>
+            <p>The engine encodes 14 CFR §135.267 for unscheduled operations plus the quarterly rest rule from §135.265(c), with the citation attached to each limit. It is conservative and meant to be reviewed by your Director of Operations and Chief Pilot against your ops specs — it is a compliance aid, not a legal authority.</p>
+          </details>
+          <details>
+            <summary>What about our maintenance system of record?</summary>
+            <p>Skyway coordinates squawks, MEL deferrals, the AML, and AOG events, and projects due dates from a Veryon due-list import. Your maintenance-tracking provider stays authoritative for airworthiness; Skyway is the operational layer around it.</p>
+          </details>
+          <details>
+            <summary>Does it work on a phone in the cockpit?</summary>
+            <p>Yes. Skyway Ops is a progressive web app that installs on iOS and Android, syncs in real time, and is designed for use on the ramp — including GPS-locked crew-onsite check-in and push notifications with quiet hours.</p>
+          </details>
+          <details>
+            <summary>How do crews sign in?</summary>
+            <p>Through Microsoft Entra ID single sign-on with your company accounts. New users are provisioned with crew access pending administrator approval, and every role is scoped to what that job needs.</p>
+          </details>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ CTA -->
+    <section class="section" id="demo">
+      <div class="shell">
+        <div class="cta" data-reveal>
+          <p class="eyebrow eyebrow--center">Get started</p>
+          <h2>Bring your flight department onto one console.</h2>
+          <p class="lede">
+            Walk through Skyway Ops with your own trips, tails, and crews. We'll show you dispatch,
+            duty and rest, tracking, and the broker experience end to end.
+          </p>
+          <div class="cta__actions">
+            <a class="btn btn--primary" href="mailto:ops@flyskyway.com?subject=Skyway%20Ops%20demo%20request">
+              Request a demo
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+            </a>
+            <a class="btn" href="#tour">Take the tour again</a>
+          </div>
+          <p class="cta__contact">Talk to the team · <a href="mailto:ops@flyskyway.com">ops@flyskyway.com</a></p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ========================================================= FOOTER -->
+  <footer class="footer">
+    <div class="shell">
+      <div class="footer__grid">
+        <div class="footer__about">
+          <a class="brand" href="#top" aria-label="Skyway Ops home">
+            <span class="brand__mark" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.8 19.2 16 11l3.5-3.5C21 6 21.5 4 21 3c-1-.5-3 0-4.5 1.5L13 8 4.8 6.2c-.5-.1-.9.1-1.1.5l-.3.5c-.2.5-.1 1 .3 1.3L9 12l-2 3H4l-1 1 3 2 2 3 1-1v-3l3-2 3.5 5.3c.3.4.8.5 1.3.3l.5-.2c.4-.3.6-.7.5-1.2z"/></svg>
+            </span>
+            <span class="brand__text">SKY<span>WAY</span> OPS</span>
+          </a>
+          <p>The operations platform for Part&nbsp;91 &amp; 135 flight departments. Dispatch, tracking, duty &amp; rest, maintenance, and back office — one real-time console.</p>
+        </div>
+
+        <div>
+          <h4>Product</h4>
+          <ul>
+            <li><a href="#tour">Product tour</a></li>
+            <li><a href="#features">Features</a></li>
+            <li><a href="#gallery">Screens</a></li>
+            <li><a href="#integrations">Integrations</a></li>
+          </ul>
+        </div>
+
+        <div>
+          <h4>Compliance</h4>
+          <ul>
+            <li><a href="#compliance">Duty &amp; rest engine</a></li>
+            <li><a href="#compliance">Currency tracking</a></li>
+            <li><a href="#features">Maintenance &amp; AOG</a></li>
+          </ul>
+        </div>
+
+        <div>
+          <h4>Company</h4>
+          <ul>
+            <li><a href="#demo">Request a demo</a></li>
+            <li><a href="mailto:ops@flyskyway.com">Contact</a></li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="footer__legal">
+        <p>© <span id="year">2026</span> Skyway Aviation Services, Inc. All rights reserved. Aircraft registrations, crew, brokers, and passengers shown are fictional and used for demonstration.</p>
+        <p>Skyway Ops is a compliance and operations aid. It does not replace your operations specifications, your qualified personnel, or the pilot in command's authority.</p>
+      </div>
+    </div>
+  </footer>
+
+  <!-- ======================================================= LIGHTBOX -->
+  <div class="lightbox" id="lightbox" aria-hidden="true">
+    <button class="lightbox__close" id="lightboxClose" aria-label="Close">×</button>
+    <div>
+      <img id="lightboxImg" src="" alt="" />
+      <p class="lightbox__caption" id="lightboxCaption"></p>
+    </div>
+  </div>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>

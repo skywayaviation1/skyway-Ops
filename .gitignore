@@ -4,3 +4,6 @@ dist
 *.log
 tools/screenshot-harness/node_modules
 marketing/assets/screens/*.png
+
+# marketing preview renders (regenerate with tools/screenshot-harness/shoot-site.mjs)
+marketing/.preview
