@@ -52,13 +52,6 @@
   ],
   "rewrites": [
     {
-      "source": "/",
-      "has": [
-        { "type": "host", "value": "135ops.app" }
-      ],
-      "destination": "/marketing/index.html"
-    },
-    {
       "source": "/:path*",
       "has": [
         { "type": "host", "value": "135ops.app" }
