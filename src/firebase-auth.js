@@ -4,11 +4,13 @@
 // Missing profiles are provisioned server-side with crew/pending defaults;
 // the browser never chooses its own role or approval state.
 
-import { auth, db } from './firebase.js';
+import { auth, db, AUTH_DOMAIN } from './firebase.js';
 import {
   OAuthProvider,
   getRedirectResult,
   signInWithRedirect,
+  signInWithPopup,
+  signInWithCredential,
   signInWithCustomToken,
   signOut as fbSignOut,
   onAuthStateChanged,
@@ -22,8 +24,41 @@ import {
   collection,
   onSnapshot,
 } from 'firebase/firestore';
+import {
+  isSameOriginAuthDomain,
+  isStandaloneApp,
+  microsoftAuthMethod,
+  resolveMicrosoftTenant,
+} from './auth-environment.js';
 
 const COMPANY_DOMAIN = 'flyskyway.com';
+
+/**
+ * Whether Firebase's sign-in helper is served from the app's own origin.
+ * Diagnostics depend on this: a returning sign-in that carries no session means
+ * something entirely different when the helper is already same-origin.
+ */
+export function authDomainIsSameOrigin() {
+  return isSameOriginAuthDomain(AUTH_DOMAIN);
+}
+
+export function configuredAuthDomain() {
+  return AUTH_DOMAIN;
+}
+
+/**
+ * The directory sign-in targets. A single-tenant Entra application refuses
+ * Microsoft's multi-tenant /common endpoint with AADSTS50194, so this must
+ * never fall back to "common" for Skyway.
+ */
+export function microsoftTenant() {
+  return resolveMicrosoftTenant(import.meta.env.VITE_MICROSOFT_TENANT_ID, COMPANY_DOMAIN);
+}
+
+/** Whether an explicit tenant GUID was deployed, as opposed to the domain default. */
+export function microsoftTenantConfigured() {
+  return String(import.meta.env.VITE_MICROSOFT_TENANT_ID || '').trim().length > 0;
+}
 
 function isPreviewHostname(host) {
   return host.endsWith('.vercel.app')
@@ -84,11 +119,13 @@ function isMicrosoftUser(user) {
 
 function microsoftProvider() {
   const provider = new OAuthProvider('microsoft.com');
-  const tenant = String(import.meta.env.VITE_MICROSOFT_TENANT_ID || '').trim();
+  // Always send a tenant. Omitting it makes Firebase use /common, which the
+  // single-tenant Skyway app registration rejects before a user ever sees a
+  // prompt. The company domain identifies the directory when no GUID is set.
   provider.setCustomParameters({
     prompt: 'select_account',
     domain_hint: COMPANY_DOMAIN,
-    ...(tenant ? { tenant } : {}),
+    tenant: microsoftTenant(),
   });
   // Entra only issues an `email` claim when it is actually asked for. Without
   // these scopes Firebase leaves user.email null for most work accounts, the
@@ -296,7 +333,99 @@ function consumeRedirectFlag() {
   }
 }
 
+async function validateMicrosoftResult(user) {
+  if (!isMicrosoftUser(user)) {
+    await fbSignOut(auth).catch(() => {});
+    const err = new Error('Use your @flyskyway.com Microsoft account');
+    err.code = 'auth/company-account-required';
+    throw err;
+  }
+  if (verifiedEmails(user).length === 0) {
+    await fbSignOut(auth).catch(() => {});
+    const err = new Error('Microsoft returned no email address');
+    err.code = 'auth/missing-email';
+    throw err;
+  }
+  if (!companyEmailFor(user)) {
+    await fbSignOut(auth).catch(() => {});
+    const err = new Error('Use your @flyskyway.com Microsoft account');
+    err.code = 'auth/company-account-required';
+    throw err;
+  }
+  return user;
+}
+
+/**
+ * Legacy password (and other) accounts share an email with the Microsoft
+ * identity trying to sign in. Firebase refuses to create a second Auth user
+ * for that email; instead we link Microsoft onto the existing UID so every
+ * Firestore document keyed by it keeps working, drop the old providers, and
+ * retry the pending credential.
+ */
+async function mergeExistingAccountWithMicrosoft(err) {
+  if (err?.code !== 'auth/account-exists-with-different-credential') return null;
+
+  const credential = OAuthProvider.credentialFromError(err);
+  const accessToken = credential?.accessToken;
+  if (!accessToken) {
+    setDiag('account-merge-no-credential', err);
+    return null;
+  }
+
+  const email = err.customData?.email || null;
+  let response;
+  try {
+    response = await fetch('/api/auth-link-microsoft', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      cache: 'no-store',
+      body: JSON.stringify({ accessToken, idToken: credential.idToken || null, email }),
+    });
+  } catch (networkErr) {
+    setDiag('account-merge-network', networkErr, { email });
+    throw err;
+  }
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    setDiag('account-merge-rejected', new Error(data.error || 'merge failed'), {
+      email,
+      status: response.status,
+      code: data.code || null,
+    });
+    // Surface a clearer code when the server identified the failure; otherwise
+    // rethrow the original so the login screen's existing mapping still applies.
+    if (data.code === 'microsoft-oid-conflict') {
+      const conflict = new Error(data.error || 'Microsoft account conflict');
+      conflict.code = 'auth/microsoft-oid-conflict';
+      throw conflict;
+    }
+    throw err;
+  }
+
+  console.info('[auth] merged Microsoft onto existing account', {
+    email,
+    uid: data.uid,
+    action: data.action,
+    unlinked: data.unlinked || [],
+  });
+
+  const result = await signInWithCredential(auth, credential);
+  return validateMicrosoftResult(result.user);
+}
+
 export async function signInWithMicrosoft() {
+  const method = microsoftAuthMethod({ authDomain: AUTH_DOMAIN });
+  if (method === 'popup') {
+    try {
+      const result = await signInWithPopup(auth, microsoftProvider());
+      return validateMicrosoftResult(result.user);
+    } catch (err) {
+      const merged = await mergeExistingAccountWithMicrosoft(err);
+      if (merged) return merged;
+      throw err;
+    }
+  }
   markRedirectStarted();
   try {
     await signInWithRedirect(auth, microsoftProvider());
@@ -306,41 +435,74 @@ export async function signInWithMicrosoft() {
   }
 }
 
-export async function completeMicrosoftRedirect() {
+let redirectCompletionPromise = null;
+
+async function completeMicrosoftRedirectOnce() {
   // Resolves once Firebase has finished restoring persisted auth state, so
   // auth.currentUser is trustworthy immediately afterwards.
-  const result = await getRedirectResult(auth);
+  let result;
+  try {
+    result = await getRedirectResult(auth);
+  } catch (err) {
+    // A legacy password account with the same email is recoverable: link
+    // Microsoft onto that UID and continue. Directory refusals are not.
+    try {
+      const merged = await mergeExistingAccountWithMicrosoft(err);
+      if (merged) {
+        consumeRedirectFlag();
+        return merged;
+      }
+    } catch (mergeErr) {
+      setDiag('redirect-merge', mergeErr, {
+        original: err?.code || null,
+      });
+      consumeRedirectFlag();
+      throw mergeErr;
+    }
+
+    // Directory rejections arrive here wrapped by Firebase, with Entra's own
+    // AADSTS text as the message. Record it so the cause is recoverable from
+    // the UI instead of only a browser console.
+    setDiag('redirect-result', err, {
+      authDomain: AUTH_DOMAIN,
+      sameOriginHelper: isSameOriginAuthDomain(AUTH_DOMAIN),
+      tenant: microsoftTenant(),
+      tenantExplicit: microsoftTenantConfigured(),
+    });
+    consumeRedirectFlag();
+    throw err;
+  }
 
   if (result?.user) {
     consumeRedirectFlag();
-    if (!isMicrosoftUser(result.user)) {
-      await fbSignOut(auth).catch(() => {});
-      const err = new Error('Use your @flyskyway.com Microsoft account');
-      err.code = 'auth/company-account-required';
-      throw err;
-    }
-    if (verifiedEmails(result.user).length === 0) {
-      await fbSignOut(auth).catch(() => {});
-      const err = new Error('Microsoft returned no email address');
-      err.code = 'auth/missing-email';
-      throw err;
-    }
-    if (!companyEmailFor(result.user)) {
-      await fbSignOut(auth).catch(() => {});
-      const err = new Error('Use your @flyskyway.com Microsoft account');
-      err.code = 'auth/company-account-required';
-      throw err;
-    }
-    return result.user;
+    return validateMicrosoftResult(result.user);
   }
 
   const startedAt = consumeRedirectFlag();
   if (startedAt && (Date.now() - startedAt) < REDIRECT_WINDOW_MS && !auth.currentUser) {
     const err = new Error('Sign-in did not carry back to the app');
     err.code = 'auth/redirect-session-lost';
+    // Record what distinguishes a blocked cross-origin helper from a cancelled
+    // prompt. Without this the same message is shown for both, which sends an
+    // administrator to change settings that may already be correct.
+    setDiag('redirect-no-session', err, {
+      authDomain: AUTH_DOMAIN,
+      sameOriginHelper: isSameOriginAuthDomain(AUTH_DOMAIN),
+      secondsAway: Math.round((Date.now() - startedAt) / 1000),
+      installedApp: isStandaloneApp(),
+    });
     throw err;
   }
   return null;
+}
+
+/** Safe to call from app boot and StrictMode replays; Firebase consumes a
+ * redirect result once, so every caller shares the same completion promise. */
+export function completeMicrosoftRedirect() {
+  if (!redirectCompletionPromise) {
+    redirectCompletionPromise = completeMicrosoftRedirectOnce();
+  }
+  return redirectCompletionPromise;
 }
 
 export async function signOut() {
@@ -365,7 +527,10 @@ export async function approveUser(uid) {
 }
 
 export async function updateUserProfile(uid, patch) {
-  const allowed = ['name', 'callsign', 'role', 'jetinsightName', 'approved', 'active'];
+  const allowed = [
+    'name', 'callsign', 'role', 'jetinsightName', 'approved', 'active',
+    'certType', 'certNumber', 'emailSignature',
+  ];
   const safe = {};
   for (const k of allowed) if (patch[k] !== undefined) safe[k] = patch[k];
   await updateDoc(doc(db, 'users', uid), safe);

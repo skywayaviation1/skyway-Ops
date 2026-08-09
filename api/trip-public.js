@@ -159,6 +159,11 @@ function sanitizeTrip(tripId, data, legs, liveLegData = {}) {
       // policy from the snapshot is enforced as the last line of defense.
       pax: paxForLeg(leg),
       showPax: leg.showPax === true,
+      // Live value wins so catering turned off after sharing disappears from
+      // the broker page without re-sharing.
+      hasCatering: (leg.tripId && typeof liveLegData[leg.tripId]?.hasCatering === 'boolean')
+        ? liveLegData[leg.tripId].hasCatering
+        : leg.hasCatering !== false,
       // Per-leg status timeline — MERGED snapshot + live. Live wins where
       // present so brokers see post-share-time events (landed, etc.).
       status: mergeStatusForLeg(leg.tripId, leg.status),
@@ -474,7 +479,13 @@ async function fetchLiveLegData(legs) {
         livePax = buildPaxRecordsFromLiveData(sd.preloadedPax, sd.passengers);
       }
 
-      out[tid] = { statuses: liveStatuses, pax: livePax };
+      out[tid] = {
+        statuses: liveStatuses,
+        pax: livePax,
+        // Only a stored boolean overrides the snapshot; a missing field means
+        // ops never made a catering decision on this leg.
+        hasCatering: typeof sd.hasCatering === 'boolean' ? sd.hasCatering : undefined,
+      };
     } catch (e) {
       // Swallow — broker page renders fine without live overlay for this leg.
       console.warn('[trip-public] fetchLiveLegData failed for', tid, e?.message);

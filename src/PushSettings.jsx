@@ -4,13 +4,15 @@
 //   - Enable or disable lock-screen push on this device
 //   - Set quiet hours (start/end, local tz auto-detected)
 //   - Toggle AOG-override-quiet-hours (default ON — AOGs always wake you)
+//   - Hide message previews on the lock screen
 //
 // Profile fields written:
 //   quietHours: { enabled, startHour, endHour, tz }
 //   aogOverridesQuietHours: boolean
+//   messagePreviewInNotifications: boolean
 
 import React, { useEffect, useState } from 'react';
-import { Bell, AlertTriangle, Loader2, Check } from 'lucide-react';
+import { Bell, AlertTriangle, Loader2, Check, Eye, EyeOff } from 'lucide-react';
 import { db } from './firebase.js';
 import { doc, updateDoc } from 'firebase/firestore';
 import {
@@ -66,6 +68,7 @@ function PushSettings({ currentUser, onClose }) {
   const [startHour, setStartHour] = useState(Number.isFinite(q.startHour) ? q.startHour : 22);
   const [endHour, setEndHour] = useState(Number.isFinite(q.endHour) ? q.endHour : 6);
   const [aogOverride, setAogOverride] = useState(currentUser?.aogOverridesQuietHours !== false);
+  const [showPreviews, setShowPreviews] = useState(currentUser?.messagePreviewInNotifications !== false);
   const [savedTick, setSavedTick] = useState(false);
 
   const tz = detectTz();
@@ -108,6 +111,7 @@ function PushSettings({ currentUser, onClose }) {
       await updateDoc(doc(db, 'users', uid), {
         quietHours: { enabled: enabledQH, startHour, endHour, tz },
         aogOverridesQuietHours: aogOverride,
+        messagePreviewInNotifications: showPreviews,
       });
       setSavedTick(true);
       setTimeout(() => setSavedTick(false), 1800);
@@ -203,6 +207,23 @@ function PushSettings({ currentUser, onClose }) {
         <label className="flex items-center gap-2 cursor-pointer mb-3">
           <input type="checkbox" checked={aogOverride} onChange={(e) => setAogOverride(e.target.checked)} className="accent-red-400" />
           <span className="text-xs text-slate-300">AOG messages override quiet hours</span>
+        </label>
+        <label className="mb-3 flex cursor-pointer items-start gap-2 border-t border-slate-800 pt-3">
+          <input
+            type="checkbox"
+            checked={showPreviews}
+            onChange={(e) => setShowPreviews(e.target.checked)}
+            className="mt-0.5 accent-cyan-400"
+          />
+          <span className="min-w-0">
+            <span className="flex items-center gap-1.5 text-xs text-slate-300">
+              {showPreviews ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+              Show message previews
+            </span>
+            <span className="mt-1 block text-[11px] leading-relaxed text-slate-500">
+              Turn off to show only “New message” on your lock screen.
+            </span>
+          </span>
         </label>
         <button onClick={saveQuietHours} disabled={busy} className="flex items-center gap-2 px-3 py-1.5 border border-slate-700 hover:border-cyan-500/50 text-xs tracking-widest text-slate-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
           {savedTick ? <><Check className="w-3.5 h-3.5 text-emerald-400" /> SAVED</> : 'SAVE'}

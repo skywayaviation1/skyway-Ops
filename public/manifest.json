@@ -7,8 +7,11 @@
   "scope": "/",
   "display": "standalone",
   "display_override": ["standalone", "browser"],
-  "background_color": "#060C16",
-  "theme_color": "#060C16",
+  "launch_handler": {
+    "client_mode": "navigate-existing"
+  },
+  "background_color": "#0A0B0D",
+  "theme_color": "#0A0B0D",
   "orientation": "any",
   "lang": "en",
   "dir": "ltr",
@@ -38,6 +41,22 @@
       "sizes": "180x180",
       "type": "image/png",
       "purpose": "any"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "/screenshots/skyway-mobile.webp",
+      "sizes": "780x1688",
+      "type": "image/webp",
+      "form_factor": "narrow",
+      "label": "Skyway Ops on iPhone"
+    },
+    {
+      "src": "/screenshots/skyway-desktop.webp",
+      "sizes": "2560x1440",
+      "type": "image/webp",
+      "form_factor": "wide",
+      "label": "Skyway operations workspace"
     }
   ]
 }

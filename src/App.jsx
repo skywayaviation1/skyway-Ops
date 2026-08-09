@@ -8,6 +8,14 @@ import './theme-classy.css';
 
 // Code-split: Comms screen loads only when the user opens the COMMS tab.
 const CommsScreenLazy = lazy(() => import('./CommsStream.jsx'));
+const CharterInboxLazy = lazy(() => import('./CharterInbox.jsx'));
+const UserMailboxLazy = lazy(() => import('./UserMailbox.jsx'));
+const TeamsHubLazy = lazy(() => import('./TeamsHub.jsx'));
+const MailboxSettingsPanelLazy = lazy(() => import('./MailboxSettingsPanel.jsx'));
+const TripEmailPanelLazy = lazy(() =>
+  import('./CharterInbox.jsx').then((module) => ({ default: module.TripEmailPanel }))
+);
+const PwaInstallLazy = lazy(() => import('./PwaInstall.jsx'));
 
 // Code-split: TripChatStream is the same Stream-Chat-powered chat surface,
 // but scoped to a single trip. Rendered inside TripDetail's COMMS tab.
@@ -15,6 +23,19 @@ const CommsScreenLazy = lazy(() => import('./CommsStream.jsx'));
 const TripChatStreamLazy = lazy(() =>
   import('./CommsStream.jsx').then((m) => ({ default: m.TripChatStream }))
 );
+
+// Stable reference matters: Stream connection hooks depend on this function.
+// Passing a new inline callback every render caused token remints and listener
+// teardown whenever any unrelated app state changed.
+async function getFirebaseIdToken() {
+  try {
+    const { auth } = await import('./firebase.js');
+    return auth.currentUser ? auth.currentUser.getIdToken() : null;
+  } catch (err) {
+    console.warn('[auth] getIdToken failed:', err);
+    return null;
+  }
+}
 
 // Stream presence layer (unread tracking + FCM device registration).
 // This module is light — it dynamic-imports stream-chat inside the
@@ -33,6 +54,8 @@ const PushSettingsLazy = lazy(() => import('./PushSettings.jsx'));
 
 // Code-split: Ops Console loads only when ops/admin opens that section.
 const OpsConsoleLazy = lazy(() => import('./OpsConsole.jsx'));
+const OpsShiftLogLazy = lazy(() => import('./OpsShiftLog.jsx'));
+const AccountingLazy = lazy(() => import('./Accounting.jsx'));
 
 // Code-split: MuteToggle loads only when a chat surface renders.
 const MuteToggleLazy = lazy(() => import('./MuteToggle.jsx'));
@@ -40,10 +63,16 @@ const MuteToggleLazy = lazy(() => import('./MuteToggle.jsx'));
 // Code-split: FlightBoard loads only when ?board=1 URL is hit.
 const FlightBoardLazy = lazy(() => import('./FlightBoard.jsx'));
 
-// Code-split: OpsCommandCenter is the home screen for ops/admin/sales
-// users. Pilots and crew see PilotHomeScreen instead. Lazy because non-ops
-// roles never render it.
+// Code-split: OpsCommandCenter is the home screen for ops/sales users.
+// Pilots and crew see PilotHomeScreen instead. Lazy because those roles
+// never render it.
 const OpsCommandCenterLazy = lazy(() => import('./OpsCommandCenter.jsx'));
+
+// Code-split: the administrator operations control board. It opens several
+// live Firestore subscriptions and pulls in the map, so it must not load for
+// roles that never see it.
+const OpsDashboardLazy = lazy(() => import('./OpsDashboard.jsx'));
+const AdminSettingsLazy = lazy(() => import('./AdminSettings.jsx'));
 
 // Code-split: Lodging tab loads only when a user opens it on a trip.
 // Trip detail is the most-touched screen — keeping this lazy means the
@@ -110,7 +139,7 @@ import {
 import {
   cx, Button, IconButton, StatusChip, StatusDot, Card, CardHeader, PageHeader,
   ScreenHeader, RouteLine, InfoRow, SectionLabel, MetricTile, EmptyState, Spinner,
-  ToastProvider, useToast, notify,
+  ToastProvider, useToast, notify, Wordmark,
 } from './ui.jsx';
 // Shared tracking-map toolkit. Every map surface (ops Tracking, TV flight
 // board, public broker page) draws aircraft, trails and weather through these
@@ -130,6 +159,13 @@ import {
 } from './travel-actions.js';
 import { compareNames } from './name-matching.js';
 import { lookupCoords } from './airport-coords.js';
+import { resolveManagedTails } from './fleet-config.js';
+import { DUTY_TRACKER_ENABLED } from './duty-feature.js';
+import {
+  analyzeFrameReadiness,
+  autoCapturePrompt,
+  frameDifference,
+} from './id-auto-capture.js';
 
 /* ============================================================
    iCal parser — handles line folding & VEVENT extraction
@@ -458,7 +494,7 @@ const USER_ROLES = {
   sales:      { label: 'SALES',      tone: 'green',  description: 'Sales team — trip creation, broker contact' },
   ops:        { label: 'OPS',        tone: 'amber',  description: 'Dispatch, scheduling, ground ops' },
   maint:      { label: 'MAINT',      tone: 'red',    description: 'Maintenance — AOG events and aircraft status' },
-  accounting: { label: 'ACCOUNTING', tone: 'violet', description: 'Read-only access to all expenses + CSV export' },
+  accounting: { label: 'ACCOUNTING', tone: 'violet', description: 'QuickBooks reporting, card matching, expenses, and exports' },
   admin:      { label: 'ADMIN',      tone: 'violet', description: 'Full access — manage users & system' },
 };
 
@@ -1785,28 +1821,51 @@ function useAuth() {
   const [authState, setAuthState] = useState('loading');
   const [profile, setProfile] = useState(null);
   const [user, setUser] = useState(null);
-  // Why the last sign-in attempt was refused, when it was refused by our own
-  // policy rather than by Firebase. Without this the login screen reappears
-  // with no explanation.
+  // Why the last sign-in attempt was refused: { code, message }. Without this
+  // the login screen reappears with no explanation.
   const [authError, setAuthError] = useState(null);
 
   useEffect(() => {
     let unsub = null;
+    let active = true;
     (async () => {
       try {
-        const { watchAuth } = await import('./firebase-auth.js');
+        const { watchAuth, completeMicrosoftRedirect } = await import('./firebase-auth.js');
+        let redirectError = null;
+        try {
+          // Always consume the redirect result at app boot. Successful auth can
+          // skip LoginScreen entirely, so completing only inside that screen
+          // left Firebase's one-shot redirect state unresolved.
+          await completeMicrosoftRedirect();
+        } catch (err) {
+          // Keep the message, not just the code. Entra reports the actual
+          // misconfiguration as an AADSTS code inside the text Firebase wraps,
+          // and reducing this to "auth/invalid-credential" throws that away.
+          redirectError = {
+            code: err?.code || 'auth/redirect-session-lost',
+            message: err?.message || '',
+          };
+          console.error('Microsoft redirect completion failed:', err);
+        }
+        if (!active) return;
         unsub = watchAuth(({ state, user: u, profile: p, authError: reason }) => {
+          const bootRedirectError = state === 'signed-out' ? redirectError : null;
+          // A redirect failure belongs to the first signed-out state after
+          // boot. Do not keep replaying it after a later clean retry/sign-out.
+          if (bootRedirectError) redirectError = null;
           setAuthState(state);
           setUser(u || null);
           setProfile(p || null);
-          setAuthError(reason || null);
+          setAuthError(
+            reason ? { code: reason, message: '' } : bootRedirectError || null,
+          );
         });
       } catch (err) {
         console.error('Failed to load auth module:', err);
         setAuthState('signed-out');
       }
     })();
-    return () => { if (unsub) unsub(); };
+    return () => { active = false; if (unsub) unsub(); };
   }, []);
 
   const doSignOut = async () => {
@@ -2644,6 +2703,7 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
   const [error, setError] = useState(null);
   const [torchSupported, setTorchSupported] = useState(false);
   const [torchOn, setTorchOn] = useState(false);
+  const [autoCaptureMessage, setAutoCaptureMessage] = useState('Starting camera…');
 
   // Verification checkbox
   const [idVerified, setIdVerified] = useState(false);
@@ -2668,7 +2728,12 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
   // Camera refs
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
+  const autoCanvasRef = useRef(null);
   const streamRef = useRef(null);
+  const autoCaptureTriggeredRef = useRef(false);
+  const autoStableFramesRef = useRef(0);
+  const previousAutoFrameRef = useRef(null);
+  const barcodeDetectorRef = useRef(null);
 
   const stopCamera = useCallback(() => {
     if (streamRef.current) {
@@ -2769,6 +2834,10 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
   // flip to the capturing phase. Shared between the primary getUserMedia
   // attempt and the relaxed-constraints retry below.
   const attachCameraStream = (stream) => {
+    autoCaptureTriggeredRef.current = false;
+    autoStableFramesRef.current = 0;
+    previousAutoFrameRef.current = null;
+    setAutoCaptureMessage('Starting camera…');
     streamRef.current = stream;
     const track = stream.getVideoTracks()[0];
     const capabilities = track?.getCapabilities ? track.getCapabilities() : {};
@@ -2924,9 +2993,11 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
     } catch (e) { /* ignore */ }
   };
 
-  const capturePhoto = () => {
+  const capturePhoto = useCallback(() => {
     if (!videoRef.current || !canvasRef.current) return;
     const v = videoRef.current;
+    if (!v.videoWidth || !v.videoHeight) return;
+    autoCaptureTriggeredRef.current = true;
     const c = canvasRef.current;
     const maxW = 1600;
     const scale = Math.min(1, maxW / v.videoWidth);
@@ -2939,7 +3010,102 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
       width: c.width,
       height: c.height,
     }, 'camera');
-  };
+  }, [applyPhoto]);
+
+  // Auto-shutter: prefer a real PDF417 detection when the browser exposes
+  // BarcodeDetector (mainly Android). iOS/Safari falls back to an inexpensive
+  // visual check over the guide region and requires three sharp, stable frames.
+  // Both paths call the exact same capturePhoto function as the manual button,
+  // so OCR, review, upload and retention behavior cannot diverge.
+  useEffect(() => {
+    if (phase !== 'capturing') return undefined;
+    let cancelled = false;
+    let checking = false;
+
+    (async () => {
+      try {
+        if (!globalThis.BarcodeDetector?.getSupportedFormats) return;
+        const formats = await globalThis.BarcodeDetector.getSupportedFormats();
+        if (!cancelled && formats.includes('pdf417')) {
+          barcodeDetectorRef.current = new globalThis.BarcodeDetector({ formats: ['pdf417'] });
+        }
+      } catch {
+        barcodeDetectorRef.current = null;
+      }
+    })();
+
+    const sample = async () => {
+      if (cancelled || checking || autoCaptureTriggeredRef.current) return;
+      const video = videoRef.current;
+      const canvas = autoCanvasRef.current;
+      if (!video || !canvas || video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
+        setAutoCaptureMessage('Starting camera…');
+        return;
+      }
+      checking = true;
+      try {
+        if (barcodeDetectorRef.current) {
+          try {
+            const codes = await barcodeDetectorRef.current.detect(video);
+            if (codes?.length && !cancelled && !autoCaptureTriggeredRef.current) {
+              autoCaptureTriggeredRef.current = true;
+              setAutoCaptureMessage('ID read — capturing…');
+              capturePhoto();
+              return;
+            }
+          } catch {
+            // Detection support varies by camera source; visual readiness below
+            // remains available when BarcodeDetector rejects a video element.
+          }
+        }
+
+        const width = 240;
+        const height = 150;
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (!ctx) return;
+        const sx = Math.round(video.videoWidth * 0.08);
+        const sy = Math.round(video.videoHeight * 0.08);
+        const sw = Math.round(video.videoWidth * 0.84);
+        const sh = Math.round(video.videoHeight * 0.84);
+        ctx.drawImage(video, sx, sy, sw, sh, 0, 0, width, height);
+        const analysis = analyzeFrameReadiness(ctx.getImageData(0, 0, width, height));
+        const difference = frameDifference(previousAutoFrameRef.current, analysis.pixels);
+        previousAutoFrameRef.current = analysis.pixels;
+
+        if (analysis.readable) {
+          autoStableFramesRef.current = Number.isFinite(difference) && difference <= 8
+            ? autoStableFramesRef.current + 1
+            : 1;
+        } else {
+          autoStableFramesRef.current = 0;
+        }
+        setAutoCaptureMessage(autoCapturePrompt(analysis.reason, autoStableFramesRef.current));
+
+        if (autoStableFramesRef.current >= 3 && !autoCaptureTriggeredRef.current) {
+          autoCaptureTriggeredRef.current = true;
+          setAutoCaptureMessage('ID read — capturing…');
+          capturePhoto();
+        }
+      } catch (err) {
+        console.warn('[IDCheckInPanel] auto-capture sample skipped:', err);
+      } finally {
+        checking = false;
+      }
+    };
+
+    // 450 ms keeps camera analysis cool on iPhone while still feeling instant.
+    const timer = window.setInterval(sample, 450);
+    sample();
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      barcodeDetectorRef.current = null;
+      previousAutoFrameRef.current = null;
+      autoStableFramesRef.current = 0;
+    };
+  }, [phase, capturePhoto]);
 
   const retake = (source = 'camera') => {
     setPhoto(null);
@@ -3331,13 +3497,17 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
               muted
             />
             <canvas ref={canvasRef} className="hidden" />
+            <canvas ref={autoCanvasRef} className="hidden" />
             {/* Capture guide: the saved image is still the complete frame; this
                 overlay only helps crew keep all document edges visible. */}
             <div className="pointer-events-none absolute inset-[8%] rounded-lg border-2 border-white/70 shadow-[0_0_0_999px_rgba(0,0,0,0.28)]">
               <span className="absolute -bottom-7 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-black/60 px-2 py-1 text-[10px] text-white">
-                Align all four corners
+                {autoCaptureMessage}
               </span>
             </div>
+            <span className="pointer-events-none absolute left-2 top-2 rounded bg-black/70 px-2 py-1 text-[9px] font-semibold tracking-wider text-white">
+              AUTO CAPTURE ON
+            </span>
             {torchSupported && (
               <button
                 onClick={toggleTorch}
@@ -3365,9 +3535,12 @@ function IDCheckInPanel({ mode, expectedPax, onComplete, onCancel, tripContext }
               className="py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs font-medium tracking-widest flex items-center justify-center gap-2"
               style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}
             >
-              <Camera className="w-4 h-4" /> CAPTURE
+              <Camera className="w-4 h-4" /> CAPTURE NOW
             </button>
           </div>
+          <p className="text-center text-2xs text-content-subtle">
+            The camera captures automatically when the ID is sharp and steady. Use Capture Now as a backup.
+          </p>
         </div>
       )}
 
@@ -4561,7 +4734,7 @@ function timeUntil(iso) {
    DUTY TRACKER — Part 135 §135.267 duty/rest
    ------------------------------------------------------------
    ISOLATION CONTRACT:
-   - Gated behind config.dutyTrackerEnabled (default OFF).
+   - Always enabled as a core safety/compliance feature.
    - Wrapped in DutyErrorBoundary: any render/runtime fault shows
      a small fallback box, NEVER crashes the app. This is the
      specific failure mode (TDZ blue-screen) we are engineering
@@ -4649,10 +4822,9 @@ function parseDutyTimeInput(hhmm) {
   }
 }
 
-// Public entry point: gated + error-boundaried. This is the ONLY thing
-// PilotHomeScreen renders. If the flag is off, renders nothing.
+// Public entry point: always-on + error-boundaried. This is the ONLY thing
+// PilotHomeScreen renders.
 function DutyCard({ currentUser, config, myTrips, users }) {
-  if (!config?.dutyTrackerEnabled) return null;
   // Duty applies to CREW only. During impersonation currentUser.role is the
   // impersonated person's role, so an admin viewing-as a crew member still
   // sees the card (to inspect/edit that pilot's duty); a real admin/ops user
@@ -5360,7 +5532,14 @@ function PlanField({ label, value, onChange, type = 'text', placeholder }) {
    Trip detail view
    ============================================================ */
 function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], allTrips, opsEmail, onBack, onArchive, tripDetailOrder, onReorderTripDetail }) {
-  const [tab, setTab] = useState(trip.info.isOps ? 'status' : 'chat');
+  const requestedTripTab = () => {
+    if (typeof window === 'undefined') return null;
+    const id = window.location.hash.replace(/^#/, '').toLowerCase();
+    return ['status', 'pax', 'sheet', 'notes', 'weather', 'plan', 'lodging', 'chat', 'notify', 'delay'].includes(id)
+      ? id
+      : null;
+  };
+  const [tab, setTab] = useState(() => requestedTripTab() || (trip.info.isOps ? 'status' : 'chat'));
   // Unread count for THIS trip's chat channel. Updates live via the
   // global StreamPresenceProvider — no per-mount API call needed. Shows
   // as a cyan badge on the COMMS tab whenever the user is not on it.
@@ -5565,7 +5744,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
 
   // Reset tab when switching trips
   useEffect(() => {
-    setTab(trip.info.isOps ? 'status' : 'chat');
+    setTab(requestedTripTab() || (trip.info.isOps ? 'status' : 'chat'));
   }, [trip.uid, trip.info.isOps]);
 
   // Clear the UPDATE ETA result banner when switching trips so the message
@@ -7021,6 +7200,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
             // since they don't have crew lodging in the operational sense.
             { id: 'lodging', label: 'Lodging', icon: Hotel, hidden: !trip.info.isOps },
             { id: 'chat', label: 'Comms', icon: MessageSquare, unread: tripChatUnread },
+            { id: 'email', label: 'Email', icon: Mail, hidden: !['admin', 'sales'].includes(currentUser?.role) },
             { id: 'notify', label: 'Notify', icon: Bell, hidden: !trip.info.isOps },
             { id: 'delay', label: 'Delay', icon: AlertTriangle, hidden: !trip.info.isOps },
           ].filter(t => !t.hidden);
@@ -7036,7 +7216,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
               icon: Navigation,
               children: pick(['sheet', 'weather', 'plan', 'lodging', 'notes', 'notify', 'delay']),
             },
-            { id: 'chat', label: 'Comms', icon: MessageSquare, children: pick(['chat']) },
+            { id: 'chat', label: 'Comms', icon: MessageSquare, children: pick(['chat', 'email']) },
           ].filter(g => g.children.length > 0);
 
           const activeGroup = tripGroups.find(g => g.children.some(c => c.id === tab)) || tripGroups[0];
@@ -7432,17 +7612,16 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
               trip={trip}
               currentUser={currentUser}
               users={users}
-              getIdToken={async () => {
-                try {
-                  const { auth } = await import('./firebase.js');
-                  if (!auth.currentUser) return null;
-                  return auth.currentUser.getIdToken();
-                } catch (err) {
-                  console.warn('[TripChatStream] getIdToken failed:', err);
-                  return null;
-                }
-              }}
+              getIdToken={getFirebaseIdToken}
             />
+          </Suspense>
+        ) : tab === 'email' ? (
+          <Suspense fallback={
+            <div className="p-8 flex items-center justify-center text-content-muted">
+              <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading filed emails…
+            </div>
+          }>
+            <TripEmailPanelLazy tripUid={trip.uid} currentUser={currentUser} />
           </Suspense>
         ) : tab === 'notify' ? (
           <div className="p-6 max-w-2xl">
@@ -8435,6 +8614,8 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
         sicName: t.info?.sic || null,
         showPax,
         pax: showPax ? paxRecords : [],
+        // Drives whether the broker sees a catering milestone at all.
+        hasCatering: state.hasCatering !== false,
         status: cleanStatus,
       };
     });
@@ -14501,6 +14682,7 @@ function MyProfileModal({ currentUser, onClose, onSave }) {
   const [jetinsightName, setJetinsightName] = useState(currentUser?.jetinsightName || '');
   const [certType, setCertType] = useState(currentUser?.certType || '');
   const [certNumber, setCertNumber] = useState(currentUser?.certNumber || '');
+  const [emailSignature, setEmailSignature] = useState(currentUser?.emailSignature || '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
 
@@ -14516,6 +14698,7 @@ function MyProfileModal({ currentUser, onClose, onSave }) {
         jetinsightName: jetinsightName.trim(),
         certType: certType.trim(),
         certNumber: certNumber.trim(),
+        emailSignature: emailSignature.trim(),
       });
       onClose();
     } catch (err) {
@@ -14550,6 +14733,30 @@ function MyProfileModal({ currentUser, onClose, onSave }) {
           <FieldInput label="FULL NAME" value={name} onChange={(e) => setName(e.target.value)} />
           <FieldInput label="CALLSIGN" value={callsign} onChange={(e) => setCallsign(e.target.value)} placeholder="e.g. Annalise" />
           <FieldInput label="NAME IN JETINSIGHT" value={jetinsightName} onChange={(e) => setJetinsightName(e.target.value)} placeholder="e.g. Annalise Marie Gonzales" />
+
+          <label className="block">
+              <span className="text-[10px] tracking-widest text-slate-500 uppercase" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                EMAIL SIGNATURE
+              </span>
+              <textarea
+                value={emailSignature}
+                onChange={(event) => setEmailSignature(event.target.value)}
+                rows={5}
+                maxLength={4000}
+                placeholder={'Your Name\nCharter Sales\nSkyway Aviation'}
+                className="mt-1 w-full resize-y rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200 outline-none focus:border-cyan-400"
+              />
+              <span className="mt-1 block text-[11px] text-slate-500">
+                Added automatically to messages sent from your connected work mailbox
+                {['admin', 'sales'].includes(currentUser?.role) ? ' and the shared charter inbox' : ''}.
+              </span>
+            </label>
+
+          <div className="pt-2 border-t border-slate-800">
+            <Suspense fallback={<div className="text-xs text-slate-500 py-2">Loading mailbox settings…</div>}>
+              <MailboxSettingsPanelLazy currentUser={currentUser} placement="profile" />
+            </Suspense>
+          </div>
 
           {isMaintenanceRole && (
             <>
@@ -15212,7 +15419,7 @@ function QuickBooksConnectionPanel({ currentUser }) {
   const [error, setError] = useState(null);
   const [info, setInfo] = useState(null);
 
-  const isAdmin = currentUser?.role === 'admin';
+  const canManageQbo = ['accounting', 'admin'].includes(currentUser?.role);
 
   // Subscribe to connection state. Non-admin still sees the panel but it's
   // read-only and the Connect/Disconnect buttons are hidden.
@@ -15344,7 +15551,7 @@ function QuickBooksConnectionPanel({ currentUser }) {
               })()}
             </div>
           </div>
-          {isAdmin && (
+          {canManageQbo && (
             <button
               onClick={handleDisconnect}
               disabled={busy}
@@ -15355,7 +15562,7 @@ function QuickBooksConnectionPanel({ currentUser }) {
             </button>
           )}
           <p className="text-[10px] text-slate-500" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-            Approved expenses can be pushed to QuickBooks from the EXPENSES tab. The push attempts to match each receipt against an existing bank-feed transaction in QBO; reimbursements are pushed as Bills payable to the submitter.
+            Use the Accounting page to match company-card receipts to posted QBO card Purchases. Personal reimbursements create Bills payable to the submitter.
           </p>
         </div>
       ) : (
@@ -15363,7 +15570,7 @@ function QuickBooksConnectionPanel({ currentUser }) {
           <p className="text-xs text-slate-400" style={{ fontFamily: 'DM Sans, sans-serif' }}>
             Connect a QuickBooks Online company to push approved expenses directly. The connection is shared by all users — only one company at a time.
           </p>
-          {isAdmin ? (
+          {canManageQbo ? (
             <button
               onClick={handleConnect}
               disabled={busy}
@@ -15374,7 +15581,7 @@ function QuickBooksConnectionPanel({ currentUser }) {
             </button>
           ) : (
             <div className="p-2 border border-slate-700 bg-slate-900/40 text-[11px] text-slate-500">
-              Only admins can connect or disconnect QuickBooks. Ask an admin to set this up.
+              Accounting or an administrator can connect QuickBooks from the Accounting page.
             </div>
           )}
         </div>
@@ -15507,10 +15714,8 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
   const [crewName, setCrewName] = useState(config.crewName || '');
   const [textMode, setTextMode] = useState(false);
   const isAdminUser = currentUser?.role === 'admin';
-  const [dutyEnabled, setDutyEnabled] = useState(!!config.dutyTrackerEnabled);
-  const [dutyEmails, setDutyEmails] = useState(
-    Array.isArray(config.dutyAlertEmails) ? config.dutyAlertEmails.join(', ') : ''
-  );
+  const dutyEnabled = DUTY_TRACKER_ENABLED;
+  const dutyEmails = 'Jim@flyskyway.com, Jake@flyskyway.com, zack.taylor@flyskyway.com';
   const [dutyBusy, setDutyBusy] = useState(false);
   const [dutyMsg, setDutyMsg] = useState('');
 
@@ -15618,10 +15823,10 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
         .filter(e => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
       await setDoc(
         doc(db, 'flightaware', 'config'),
-        { dutyTrackerEnabled: dutyEnabled, dutyAlertEmails: emails },
+        { dutyTrackerEnabled: DUTY_TRACKER_ENABLED, dutyAlertEmails: emails },
         { merge: true }
       );
-      setDutyMsg(`Saved. ${dutyEnabled ? 'Duty tracker ON' : 'Duty tracker OFF'} · ${emails.length} alert recipient(s).`);
+      setDutyMsg(`Saved. Duty tracker always enabled · ${emails.length} alert recipient(s).`);
     } catch (e) {
       setDutyMsg('Failed: ' + e.message);
     } finally {
@@ -15703,34 +15908,32 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
               </div>
               <label className="flex items-center justify-between gap-3 mb-3">
                 <div className="min-w-0">
-                  <span className="text-sm text-slate-200">Enable duty/rest tracker</span>
+                  <span className="text-sm text-slate-200">Duty/rest tracker</span>
                   <span className="text-[11px] text-slate-500 block mt-0.5">
-                    Shows the Part 135.267 duty card on every pilot's home screen.
-                    Off by default.
+                    Core Part 135.267 safety and compliance tracking. Always enabled.
                   </span>
                 </div>
                 <button
                   type="button"
-                  onClick={() => setDutyEnabled(v => !v)}
-                  className={`shrink-0 px-3 py-2 text-xs tracking-widest font-medium border ${dutyEnabled ? 'bg-green-600/20 border-green-500/40 text-green-300' : 'bg-slate-900 border-slate-700 text-slate-300'}`}
+                  disabled
+                  className="shrink-0 border border-green-500/40 bg-green-600/20 px-3 py-2 text-xs font-medium tracking-widest text-green-300"
                   style={{ fontFamily: 'JetBrains Mono, monospace' }}
                 >
-                  {dutyEnabled ? 'ENABLED' : 'DISABLED'}
+                  ALWAYS ON
                 </button>
               </label>
               <label className="block">
                 <span className="text-[10px] tracking-widest text-slate-500 uppercase" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                  OVER-14H ALERT EMAILS (comma-separated)
+                  OVER-14H ALERT RECIPIENTS
                 </span>
                 <input
                   value={dutyEmails}
-                  onChange={e => setDutyEmails(e.target.value)}
-                  placeholder="ops@flyskyway.com, jake@flyskyway.com"
-                  className="mt-1 w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
+                  readOnly
+                  className="mt-1 w-full bg-slate-900/30 border border-slate-800 px-3 py-2 text-sm text-slate-400"
                   style={{ fontFamily: 'JetBrains Mono, monospace' }}
                 />
                 <span className="text-[11px] text-slate-500 mt-1 block">
-                  Notified when a crew exceeds the 14-hour duty limit.
+                  Fixed leadership escalation. Saving over 14 hours requires explicit verification.
                 </span>
               </label>
               <button
@@ -15859,6 +16062,10 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
 
           <QuickBooksConnectionPanel currentUser={currentUser} />
 
+          <Suspense fallback={<div className="text-xs text-slate-500 py-2">Loading mailbox settings…</div>}>
+            <MailboxSettingsPanelLazy currentUser={currentUser} placement="advanced" />
+          </Suspense>
+
           <TabOrderPanel currentUser={currentUser} />
 
           <button
@@ -15891,23 +16098,40 @@ function MicrosoftMark({ className = '' }) {
 function LoginScreen({ authError = null }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
-  // A rejection raised while completing the redirect wins, since it is the
-  // more specific of the two; otherwise fall back to whatever watchAuth
-  // refused the session for.
-  const shownError = error || (authError ? describeAuthError({ code: authError }) : null);
+  // How sign-in is actually wired, so guidance never tells an administrator to
+  // apply a fix they have already applied.
+  const [authContext, setAuthContext] = useState(null);
+  const [diagnostic, setDiagnostic] = useState(null);
 
   useEffect(() => {
     let active = true;
     (async () => {
       try {
-        const { completeMicrosoftRedirect } = await import('./firebase-auth.js');
-        await completeMicrosoftRedirect();
-      } catch (err) {
-        if (active) setError(describeAuthError(err));
-      }
+        const module = await import('./firebase-auth.js');
+        if (!active) return;
+        setAuthContext({
+          authDomain: module.configuredAuthDomain(),
+          sameOrigin: module.authDomainIsSameOrigin(),
+          tenant: module.microsoftTenant?.() || null,
+        });
+        // The failing stage is already recorded; surfacing it means the real
+        // cause does not require a browser console to read.
+        setDiagnostic(module.getLastDiagnostic?.() || null);
+      } catch { /* guidance degrades to the generic message */ }
     })();
     return () => { active = false; };
-  }, []);
+  }, [authError]);
+
+  // Immediate launch errors (popup blocked, provider disabled) win; redirect
+  // completion errors are handled once at app boot and arrive as authError.
+  // Both now carry the directory's own text, so they explain themselves.
+  // The recorded diagnostic is module-global and outlives the attempt that
+  // produced it, so it may only fill in when nothing live is on screen —
+  // otherwise a stale failure keeps overriding the current one.
+  const diagnosticAge = diagnostic ? Date.now() - diagnostic.timestamp : Infinity;
+  const shownError = error
+    || (authError ? describeAuthError(authError, authContext) : null)
+    || (diagnosticAge < 5 * 60 * 1000 ? describeDirectoryError(diagnostic?.error) : null);
 
   const handleMicrosoftLogin = async () => {
     setSubmitting(true);
@@ -15915,11 +16139,12 @@ function LoginScreen({ authError = null }) {
     try {
       const { signInWithMicrosoft } = await import('./firebase-auth.js');
       await signInWithMicrosoft();
-      // Redirect navigation takes over. Keep the button busy so it cannot
-      // launch two OAuth transactions.
+      // Redirect navigation takes over before this line matters. Popup is the
+      // installed-iOS cross-origin fallback and returns normally.
+      setSubmitting(false);
     } catch (err) {
       setSubmitting(false);
-      setError(describeAuthError(err));
+      setError(describeAuthError(err, authContext));
     }
   };
 
@@ -15932,12 +16157,7 @@ function LoginScreen({ authError = null }) {
 
       <div className="relative mx-auto grid min-h-screen w-full max-w-6xl items-center gap-10 px-5 py-10 md:grid-cols-[1.1fr_0.9fr] md:px-10 lg:gap-20">
         <section className="hidden md:block">
-          <img
-            src="/skyway-logo.png"
-            srcSet="/skyway-logo.png 1x, /skyway-logo@2x.png 2x"
-            alt="Skyway Aviation"
-            className="h-20 w-auto"
-          />
+          <Wordmark className="h-20 w-auto" />
           <p className="mt-8 max-w-xl text-4xl font-semibold leading-tight text-content">
             Your operation.<br />
             <span className="text-accent">One secure workspace.</span>
@@ -15962,12 +16182,7 @@ function LoginScreen({ authError = null }) {
 
         <section className="mx-auto w-full max-w-md">
           <div className="mb-8 text-center md:hidden">
-            <img
-              src="/skyway-logo.png"
-              srcSet="/skyway-logo.png 1x, /skyway-logo@2x.png 2x"
-              alt="Skyway Aviation"
-              className="mx-auto h-16 w-auto"
-            />
+            <Wordmark className="mx-auto h-16 w-auto" />
           </div>
 
           <Card className="border-edge-strong bg-surface/95 p-6 shadow-overlay sm:p-8">
@@ -15996,6 +16211,27 @@ function LoginScreen({ authError = null }) {
                 {shownError.code && (
                   <p className="mt-1.5 font-mono text-[10px] text-content-subtle">{shownError.code}</p>
                 )}
+                {/* The recorded stage is the difference between "storage was
+                    blocked" and "the token carried no company address". */}
+                {diagnostic && (
+                  <details className="mt-2 border-t border-danger-border pt-2">
+                    <summary className="cursor-pointer text-[10px] font-semibold text-content-subtle">
+                      Technical detail for an administrator
+                    </summary>
+                    <p className="mt-1.5 font-mono text-[10px] leading-relaxed text-content-muted">
+                      stage: {diagnostic.stage}
+                      {diagnostic.code ? ` · ${diagnostic.code}` : ''}
+                      {diagnostic.error ? ` · ${diagnostic.error}` : ''}
+                    </p>
+                    {authContext && (
+                      <p className="mt-1 font-mono text-[10px] leading-relaxed text-content-subtle">
+                        sign-in helper: {authContext.authDomain}
+                        {authContext.sameOrigin ? ' (same-origin)' : ' (cross-origin)'}
+                        {authContext.tenant ? ` · directory: ${authContext.tenant}` : ''}
+                      </p>
+                    )}
+                  </details>
+                )}
               </div>
             )}
 
@@ -16003,13 +16239,22 @@ function LoginScreen({ authError = null }) {
               type="button"
               onClick={handleMicrosoftLogin}
               disabled={submitting}
-              className="mt-6 flex h-13 w-full items-center justify-center gap-3 rounded-lg bg-white px-4 text-sm font-semibold text-slate-900 shadow-card transition hover:bg-slate-100 disabled:cursor-wait disabled:opacity-60"
+              /* The grey edge is Microsoft's specified treatment for the white
+                 button, and it is what keeps the control visible at all on the
+                 light theme, where it would otherwise be white on white. */
+              className="mt-6 flex h-13 w-full items-center justify-center gap-3 rounded-lg border border-slate-400 bg-white px-4 text-sm font-semibold text-slate-900 shadow-card transition hover:bg-slate-100 disabled:cursor-wait disabled:opacity-60"
             >
               {submitting
                 ? <Loader2 className="h-5 w-5 animate-spin" />
                 : <MicrosoftMark className="h-5 w-5" />}
               {submitting ? 'Opening Microsoft…' : 'Continue with Microsoft'}
             </button>
+
+            <div className="mt-3 flex justify-center">
+              <Suspense fallback={null}>
+                <PwaInstallLazy compact />
+              </Suspense>
+            </div>
 
             <div className="mt-5 flex items-center justify-center gap-2 text-2xs text-content-muted">
               <Building2 className="h-3.5 w-3.5" />
@@ -16137,8 +16382,8 @@ function LegacyLoginScreen({ initialMode = 'login' }) {
       <div className="max-w-md w-full relative">
         <div className="text-center mb-8">
           <img
-            src="/skyway-logo.png"
-            srcSet="/skyway-logo.png 1x, /skyway-logo@2x.png 2x"
+            src="/skyway-logo-reverse.png"
+            srcSet="/skyway-logo-reverse.png 1x, /skyway-logo-reverse@2x.png 2x"
             alt="Skyway Aviation"
             className="mx-auto mb-4 h-16 w-auto"
           />
@@ -16269,10 +16514,75 @@ function isEphemeralPreviewHost(host) {
   return host.includes('-git-') || /-[a-z0-9]{8,}-/.test(host);
 }
 
-function describeAuthError(err) {
+/**
+ * Microsoft reports directory-level refusals as AADSTS codes inside the message
+ * Firebase wraps. Those codes name the exact misconfiguration, so surfacing them
+ * is the difference between an actionable instruction and a generic failure.
+ */
+const AADSTS_ERRORS = {
+  50194: {
+    message: 'The Microsoft application is single-tenant, but sign-in used the shared endpoint.',
+    fix: 'Sign-in now targets the Skyway directory by default, so this indicates an older build is still deployed — redeploy this version. If it persists, set VITE_MICROSOFT_TENANT_ID to the Entra Directory (tenant) ID and redeploy; VITE_ values are compiled at build time, so setting one without a new build has no effect. Do not switch the Entra app to multi-tenant: that would let other organisations reach sign-in.',
+  },
+  50011: {
+    message: 'The redirect address is not registered on the Microsoft application.',
+    fix: 'Add the exact handler URL shown by Firebase to the Entra application\'s Web redirect URIs. It must match character for character, including the /__/auth/handler path.',
+  },
+  700016: {
+    message: 'Microsoft does not recognise the application ID.',
+    fix: 'Confirm the Entra application (client) ID in Firebase Authentication → Sign-in method → Microsoft matches the app registration in the intended directory.',
+  },
+  7000215: {
+    message: 'Microsoft rejected the application secret.',
+    fix: 'The Entra client secret is wrong or expired. Generate a new secret in Entra and paste it into the Firebase Microsoft provider. Copy the secret Value, not the Secret ID.',
+  },
+  7000222: {
+    message: 'The Microsoft application secret has expired.',
+    fix: 'Entra client secrets expire. Create a new one under the app registration\'s Certificates & secrets, then paste its Value into Firebase Authentication → Sign-in method → Microsoft.',
+  },
+  9002327: {
+    message: 'The redirect address is registered as a single-page application.',
+    fix: 'Firebase redeems the sign-in from a server using a client secret, which Entra refuses for single-page application redirect URIs. In the Entra app registration, move the /__/auth/handler URL from the "Single-page application" platform to the "Web" platform.',
+  },
+  90002: {
+    message: 'The Microsoft directory in the request does not exist.',
+    fix: 'VITE_MICROSOFT_TENANT_ID does not match a real directory. Use the Directory (tenant) ID from Entra ID → Overview.',
+  },
+  50020: {
+    message: 'This account does not belong to the Skyway Microsoft directory.',
+    fix: 'Sign in with the @flyskyway.com work account. Personal Microsoft accounts and guests from other directories are refused by the tenant restriction.',
+  },
+  65001: {
+    message: 'Consent has not been granted for the Skyway sign-in application.',
+    fix: 'An Entra administrator needs to grant admin consent for the application\'s requested permissions (openid, profile, email).',
+  },
+};
+
+function describeDirectoryError(text) {
+  const match = /AADSTS(\d+)/.exec(String(text || ''));
+  if (!match) return null;
+  const code = Number(match[1]);
+  const known = AADSTS_ERRORS[code];
+  if (!known) {
+    return {
+      code: `AADSTS${code}`,
+      message: 'Microsoft refused the sign-in request.',
+      fix: 'The directory reported AADSTS' + code + '. Look that code up in Microsoft Entra sign-in logs for the exact cause; the technical detail below carries the full response.',
+    };
+  }
+  return { code: `AADSTS${code}`, ...known };
+}
+
+function describeAuthError(err, authContext = null) {
   const code = err?.code || '';
   const host = typeof window !== 'undefined' ? window.location.hostname : 'this address';
+  // AADSTS names the exact misconfiguration; the Firebase code it arrives
+  // under is usually just "invalid credential", so the directory wins.
+  const directory = describeDirectoryError(err?.message);
+  if (directory) return directory;
   const ephemeral = isEphemeralPreviewHost(host);
+  const authHelperHost = authContext?.authDomain || 'the Firebase sign-in helper';
+  const sameOriginAuth = authContext?.sameOrigin === true;
 
   const CONFIG_ERRORS = {
     'auth/unauthorized-domain': {
@@ -16297,13 +16607,34 @@ function describeAuthError(err) {
       message: 'Microsoft signed you in but returned no email address.',
       fix: 'In Entra ID, confirm the account has a mail address and that the app registration requests the "email" scope and includes the email optional claim. Skyway Ops authorizes accounts by their verified company address, so it cannot proceed without one.',
     },
+    'auth/account-exists-with-different-credential': {
+      message: 'This email already has a Skyway account from before Microsoft sign-in.',
+      fix: 'Sign-in normally merges that account automatically — keep the same @flyskyway.com address and try again. If this message keeps appearing, ask an administrator to confirm the account exists in Firebase Authentication under that email.',
+    },
+    'auth/microsoft-oid-conflict': {
+      message: 'This email is already linked to a different Microsoft account.',
+      fix: 'An administrator needs to inspect the Firebase Authentication user for this address. Two Microsoft directory subjects cannot share one Skyway profile.',
+    },
+    // Three genuinely different situations produce "no session came back", and
+    // giving the cross-origin fix to someone who has already applied it sends
+    // them to redo settings that are correct. Branch on what is actually
+    // configured rather than assuming the storage-partitioning case.
     'auth/redirect-session-lost': {
       message: 'The sign-in did not carry back to the app.',
       fix: ephemeral
         // Wiring up a throwaway hostname is worse than useless: it looks like
         // a fix and then breaks on the next deploy.
         ? `If you completed the Microsoft prompt, this is Safari blocking the cross-origin sign-in helper. ${host} is a preview deployment and gets a new address every build, so it cannot be registered as a redirect URI. Sign in on the stable production address instead, where VITE_FIREBASE_AUTH_DOMAIN and the Entra redirect URI can be set once. See docs/microsoft-sso-setup.md.`
-        : `If you completed the Microsoft prompt, this is Safari blocking the cross-origin sign-in helper, which installed iPhone apps do by default. An administrator can fix it by setting VITE_FIREBASE_AUTH_DOMAIN to ${host} and adding https://${host}/__/auth/handler to the Entra app's redirect URIs. See docs/microsoft-sso-setup.md.`,
+        : sameOriginAuth
+          ? `Same-origin sign-in is already configured for ${host}, so this is not the Safari storage problem. Most often the prompt was cancelled or dismissed — try once more. If it repeats: confirm ${host} is listed under Firebase Authentication → Settings → Authorized domains, that https://${host}/__/auth/handler is a redirect URI on the Entra app, and that the account is a member of the configured tenant. The technical detail below identifies the failing stage.`
+          : `If you completed the Microsoft prompt, this is Safari blocking the cross-origin sign-in helper, which installed iPhone apps do by default. Sign-in currently runs through ${authHelperHost}. An administrator can fix it by setting VITE_FIREBASE_AUTH_DOMAIN to ${host} and adding https://${host}/__/auth/handler to the Entra app's redirect URIs. See docs/microsoft-sso-setup.md.`,
+    },
+    // Reached only after Microsoft has already accepted the person, so this is
+    // never a bad password. Firebase failed to redeem the authorization code
+    // against Entra, and both causes are settings an administrator controls.
+    'auth/invalid-credential': {
+      message: 'Microsoft signed you in, but Firebase could not complete the exchange.',
+      fix: `This happens after the Microsoft prompt succeeds, so the account is fine — the failure is between Firebase and Entra. Check the app registration: the client secret in Firebase Authentication → Sign-in method → Microsoft must be the secret Value (not the Secret ID) and must not have expired, and https://${host}/__/auth/handler must be registered under the Entra app's "Web" platform. A redirect URI listed under "Single-page application" cannot be redeemed with a client secret and fails exactly here.`,
     },
     'auth/dev-bypass-unavailable': {
       message: 'The development authentication bypass could not start.',
@@ -16316,7 +16647,6 @@ function describeAuthError(err) {
     'auth/company-account-required': 'Use your @flyskyway.com Microsoft account.',
     'auth/profile-identity-mismatch': 'This Microsoft account does not match the Skyway profile on file. Contact an administrator to relink it.',
     'auth/account-disabled': 'This account has been deactivated. Contact a Skyway administrator.',
-    'auth/account-exists-with-different-credential': 'This email was previously registered another way. Ask an administrator to migrate the account to Microsoft.',
     'auth/popup-blocked': 'Microsoft sign-in was blocked by the browser. Allow pop-ups and try again.',
     'auth/cancelled-popup-request': 'The sign-in request was cancelled. Please try again.',
     'auth/redirect-cancelled-by-user': 'Sign-in was cancelled before it finished.',
@@ -16324,7 +16654,6 @@ function describeAuthError(err) {
     'auth/email-already-in-use': 'An account with this email already exists. Try signing in instead.',
     'auth/invalid-email': 'That email address looks invalid.',
     'auth/user-not-found': 'No account with that email.',
-    'auth/invalid-credential': 'Microsoft rejected those sign-in details.',
     'auth/too-many-requests': 'Too many failed attempts. Try again in a few minutes.',
     'auth/network-request-failed': 'Network error. Check your connection.',
     'auth/user-disabled': 'This account has been disabled.',
@@ -16380,7 +16709,7 @@ function VerificationScreen({ user, profile, onSignOut }) {
     <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6 text-slate-100">
       <div className="max-w-md w-full">
         <div className="text-center mb-8">
-          <img src="/skyway-logo.png" srcSet="/skyway-logo.png 1x, /skyway-logo@2x.png 2x" alt="Skyway Aviation" className="mx-auto mb-4 h-16 w-auto" />
+          <Wordmark className="mx-auto mb-4 h-16 w-auto" />
         </div>
         <div className="border border-cyan-500/30 bg-cyan-500/5 p-5">
           <h2 className="text-xl tracking-wider mb-2" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>VERIFY YOUR EMAIL</h2>
@@ -16412,7 +16741,7 @@ function PendingApprovalScreen({ user, profile, onSignOut }) {
     <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6 text-slate-100">
       <div className="max-w-md w-full">
         <div className="text-center mb-8">
-          <img src="/skyway-logo.png" srcSet="/skyway-logo.png 1x, /skyway-logo@2x.png 2x" alt="Skyway Aviation" className="mx-auto mb-4 h-16 w-auto" />
+          <Wordmark className="mx-auto mb-4 h-16 w-auto" />
         </div>
         <div className="border border-cyan-500/30 bg-cyan-500/5 p-5">
           <h2 className="text-xl tracking-wider mb-2" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>AWAITING APPROVAL</h2>
@@ -16452,7 +16781,7 @@ function NoProfileScreen({ user, onSignOut }) {
     <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6 text-content sw-safe-inset">
       <div className="max-w-md w-full">
         <div className="text-center mb-8">
-          <img src="/skyway-logo.png" srcSet="/skyway-logo.png 1x, /skyway-logo@2x.png 2x" alt="Skyway Aviation" className="mx-auto h-16 w-auto" />
+          <Wordmark className="mx-auto h-16 w-auto" />
         </div>
         <Card className="border-warning-border bg-warning-soft p-6">
           <AlertTriangle className="h-6 w-6 text-warning" />
@@ -16556,7 +16885,7 @@ function FleetStatusTab({ currentUser, fleetTails }) {
     setSeeding(true);
     try {
       const m = await import('./firebase-maint.js');
-      for (const t of (fleetTails && fleetTails.length ? fleetTails : m.FLEET_TAILS)) {
+      for (const t of (Array.isArray(fleetTails) ? fleetTails : m.FLEET_TAILS)) {
         // eslint-disable-next-line no-await-in-loop
         await m.upsertAircraft(t);
       }
@@ -16576,7 +16905,7 @@ function FleetStatusTab({ currentUser, fleetTails }) {
       if (cancelled) return;
       const tails = fleet.length
         ? fleet.map(a => a.tail)
-        : (fleetTails && fleetTails.length ? fleetTails : m.FLEET_TAILS);
+        : (Array.isArray(fleetTails) ? fleetTails : m.FLEET_TAILS);
       const map = {};
       for (const t of tails) map[t] = m.deriveAircraftStatus(t, squawks, mel);
       setStatusByTail(map);
@@ -16586,7 +16915,7 @@ function FleetStatusTab({ currentUser, fleetTails }) {
 
   const tails = fleet.length
     ? fleet.map(a => a.tail)
-    : (fleetTails && fleetTails.length ? fleetTails : []);
+    : (Array.isArray(fleetTails) ? fleetTails : []);
 
   const fmtTimes = (a) => {
     const af = a && a.times && a.times.airframe;
@@ -21693,6 +22022,9 @@ const NAV_SECTIONS = [
   { id: 'archive',   label: 'Archive',     icon: Hash,          roles: ['crew', 'ops', 'admin'] },
 
   { id: 'comms',     label: 'Comms',       icon: MessageSquare, roles: ['crew', 'sales', 'ops', 'maint', 'accounting', 'admin'] },
+  { id: 'teams',     label: 'Teams',       icon: Users,         roles: ['crew', 'sales', 'ops', 'maint', 'accounting', 'admin'] },
+  { id: 'mailbox',   label: 'My mailbox',  icon: Mail,          roles: ['crew', 'sales', 'ops', 'maint', 'accounting', 'admin'] },
+  { id: 'inbox',     label: 'Shared inbox', icon: Mail,          roles: ['sales', 'admin'] },
 
   { id: 'duty',      label: 'Duty',        icon: Clock,         roles: ['admin'] },
   { id: 'currency',  label: 'Currency',    icon: ShieldCheck,   roles: ['crew', 'ops', 'admin'] },
@@ -21703,18 +22035,22 @@ const NAV_SECTIONS = [
   { id: 'aog',       label: 'AOG',         icon: AlertTriangle, roles: ['ops', 'admin'] },
 
   { id: 'expenses',  label: 'Expenses',    icon: Mail,          roles: ['crew', 'sales', 'ops', 'accounting', 'admin'] },
+  { id: 'accounting', label: 'Accounting',  icon: Building2,     roles: ['accounting', 'admin'] },
   { id: 'wallet',    label: 'Wallet',      icon: CreditCard,    roles: ['crew', 'sales', 'ops', 'accounting', 'admin'] },
   { id: 'users',     label: 'Users',       icon: Users,         roles: ['ops', 'admin'] },
+  { id: 'settings',  label: 'Settings',    icon: SettingsIcon,  roles: ['admin'] },
 ];
 
 const NAV_GROUPS = [
   { id: 'home',     label: 'Home',     icon: Home,          children: ['home'] },
   { id: 'flights',  label: 'Flights',  icon: Plane,         children: ['schedule', 'ops', 'tracking', 'manifests', 'lodging', 'archive'] },
   { id: 'comms',    label: 'Comms',    icon: MessageSquare, children: ['comms'] },
+  { id: 'teams',    label: 'Teams',    icon: Users,         children: ['teams'] },
+  { id: 'email',    label: 'Email',    icon: Mail,          children: ['mailbox', 'inbox'] },
   { id: 'crew',     label: 'Crew',     icon: Users,         children: ['duty', 'currency', 'wear', 'reports', 'expenses'] },
   { id: 'aircraft', label: 'Aircraft', icon: Wrench,        children: ['maint', 'aog'] },
   // Labelled "Finance" for roles without user administration.
-  { id: 'admin',    label: 'Admin',    icon: Building2,     altLabel: 'Finance', children: ['wallet', 'users'] },
+  { id: 'admin',    label: 'Admin',    icon: Building2,     altLabel: 'Finance', children: ['accounting', 'wallet', 'users', 'settings'] },
 ];
 
 if (import.meta.env?.DEV) {
@@ -21777,10 +22113,9 @@ function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, sync
       <div className="px-4 md:px-6 py-3 flex items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
           <div className="min-w-0">
-            <img
-              src="/skyway-logo-nav.png"
-              srcSet="/skyway-logo-nav.png 1x, /skyway-logo-nav@2x.png 2x"
-              alt="Skyway Aviation"
+            <Wordmark
+              variant="compact"
+              surface="dark"
               className="h-8 w-auto block"
             />
             {/* App timezone switcher. Click the clock to choose a TZ
@@ -22249,7 +22584,7 @@ function ManualTripModal({ onCancel, onSubmit }) {
 /* ============================================================
    Ops Dashboard
    ============================================================ */
-function OpsDashboard({ trips, currentUser, onSelectTrip, onAddManualTrip, onRemoveManualTrip, syncStatus, syncLog, onRunSync, feedStats, hasIcalUrl, onOpenPaste }) {
+function ScheduleFeedPanel({ trips, currentUser, onSelectTrip, onAddManualTrip, onRemoveManualTrip, syncStatus, syncLog, onRunSync, feedStats, hasIcalUrl, onOpenPaste }) {
   const [showManual, setShowManual] = useState(false);
 
   const stats = useMemo(() => {
@@ -22676,16 +23011,16 @@ function airportCoords(code) {
    ============================================================ */
 
 function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
-  const fleetTails = useMemo(() => (
-    Array.isArray(config?.fleetTails) && config.fleetTails.length > 0
-      ? config.fleetTails
-      : ['N20UF', 'N168ZZ', 'N286N', 'N444AM', 'N651TW', 'N551FP', 'N85AH', 'N525CR']
-  ), [config?.fleetTails]);
+  const fleetTails = useMemo(() => resolveManagedTails(config), [config]);
 
   const [selectedTail, setSelectedTail] = useState(fleetTails[0]);
   const [tailStates, setTailStates] = useState({});
   const [loadingFleet, setLoadingFleet] = useState(true);
   const [lastPolledAt, setLastPolledAt] = useState(null);
+
+  useEffect(() => {
+    if (!fleetTails.includes(selectedTail)) setSelectedTail(fleetTails[0] || null);
+  }, [fleetTails, selectedTail]);
 
   // Poll every tail's FlightAware position. One request for the whole fleet.
   useEffect(() => {
@@ -22798,7 +23133,7 @@ function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
         if (originPos && trackPoints.length < 2) {
           routes.push({
             points: [[originPos.lat, originPos.lon], [selectedState.latitude, selectedState.longitude]],
-            color: '#22d3ee', weight: 3, opacity: 0.8,
+            color: '#3FA9CC', weight: 3, opacity: 0.8,
           });
         }
       } else if (selectedState.airborne === false) {
@@ -23634,7 +23969,7 @@ function DetailMap({ tail, detail, trackLog }) {
         const inner = document.createElement('div');
         inner.style.cssText = `
           width: 18px; height: 18px; display: flex; align-items: center; justify-content: center;
-          color: #22d3ee; transform: rotate(${heading}deg);
+          color: #3FA9CC; transform: rotate(${heading}deg);
         `;
         inner.innerHTML = `<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
           <path d="M12,1 L13,8 L12.5,21 L12,23 L11.5,21 L11,8 Z M12,9 L23,16 L12,14 L1,16 Z M12,18 L17,22 L12,20.5 L7,22 Z"/>
@@ -24042,12 +24377,12 @@ function DetailAltSpeedChart({ trackLog, detail }) {
         <path d={altPath} stroke="#22c55e" strokeWidth="2" fill="none"/>
         {spdPath && <path d={spdPath} stroke="#fbbf24" strokeWidth="1.5" fill="none"/>}
 
-        <line x1={lastX} y1={padT} x2={lastX} y2={padT + innerH} stroke="#22d3ee" strokeWidth="1" strokeDasharray="3,3"/>
-        <circle cx={lastX} cy={lastAltY} r="4" fill="#22d3ee"/>
+        <line x1={lastX} y1={padT} x2={lastX} y2={padT + innerH} stroke="#3FA9CC" strokeWidth="1" strokeDasharray="3,3"/>
+        <circle cx={lastX} cy={lastAltY} r="4" fill="#3FA9CC"/>
         {lastSpdY != null && <circle cx={lastX} cy={lastSpdY} r="3" fill="#fbbf24"/>}
 
         <text x={padL} y={H - 4} fill="#64748b" fontSize="9" fontFamily="JetBrains Mono">{fmtTime(minT)}</text>
-        <text x={W - padR - 30} y={H - 4} fill="#22d3ee" fontSize="9" fontFamily="JetBrains Mono">{fmtTime(maxT)}</text>
+        <text x={W - padR - 30} y={H - 4} fill="#3FA9CC" fontSize="9" fontFamily="JetBrains Mono">{fmtTime(maxT)}</text>
       </svg>
 
       <div className="grid grid-cols-4 gap-3 mt-3 pt-3 border-t border-slate-800">
@@ -24641,7 +24976,7 @@ function TrackingScreen({ currentUser, allTrips, trackingEnabled }) {
   );
 }
 
-function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName }) {
+function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName, users = [] }) {
   const [expenses, setExpenses] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('mine'); // 'mine' | 'all' | 'pending' | 'approved' | 'unexported'
@@ -25975,6 +26310,11 @@ function ExpenseRow({ expense, selected, onClick }) {
           {expense.vendor || (isParsing ? 'Parsing...' : '(no vendor)')}
         </span>
         <div className="flex items-center gap-1 shrink-0">
+          {expense.reconciledAt && (
+            <span className="text-[9px] tracking-widest text-emerald-300" style={{ fontFamily: 'JetBrains Mono, monospace' }} title={`Reconciled to card statement${expense.reconciledCardLast4 ? ` ••${expense.reconciledCardLast4}` : ''}`}>
+              ⇄REC
+            </span>
+          )}
           {isExported && (
             <span className="text-[9px] tracking-widest text-violet-300" style={{ fontFamily: 'JetBrains Mono, monospace' }} title={`Exported ${new Date(expense.exportedAt).toLocaleString()}`}>
               ↓EXP
@@ -26883,10 +27223,8 @@ export function ExternalTechPage({ token }) {
       <div className="max-w-2xl mx-auto px-4 py-6 pt-[max(1.5rem,env(safe-area-inset-top))]">
         {/* Header */}
         <div className="flex items-center justify-between mb-1">
-          <img
-            src="/skyway-logo-nav.png"
-            srcSet="/skyway-logo-nav.png 1x, /skyway-logo-nav@2x.png 2x"
-            alt="Skyway Aviation"
+          <Wordmark
+            variant="compact"
             className="h-8 w-auto block"
           />
           <span className="text-[10px] text-slate-500 tracking-widest" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
@@ -27482,7 +27820,7 @@ function IosInstallBanner() {
     // Edge iOS (EdgiOS), and in-app browsers (FBAN/FBAV for Facebook,
     // Instagram, etc — they can't even add to home screen)
     const isSafari = /Safari/.test(ua) &&
-      !/CriOS|FxiOS|EdgiOS|FBAN|FBAV|Instagram/.test(ua);
+      !/CriOS|FxiOS|EdgiOS|OPiOS|FBAN|FBAV|Instagram/.test(ua);
     if (!isSafari) return;
     setShow(true);
   }, []);
@@ -27544,22 +27882,34 @@ export default function CharterOps() {
   const { users, loading: usersLoading, updateUser, removeUser, approveUser } = useFirestoreUsers(profile);
 
   // App state
-  const [config, setConfig] = useState({ icalUrl: DEFAULT_ICAL_URL, opsEmail: '', crewName: '' });
+  const [config, setConfig] = useState({
+    icalUrl: DEFAULT_ICAL_URL,
+    opsEmail: '',
+    crewName: '',
+    dutyTrackerEnabled: DUTY_TRACKER_ENABLED,
+  });
   const [trips, setTrips] = useState([]);
   const [manualTrips, setManualTrips] = useState([]);
-  const [selectedId, setSelectedId] = useState(null);
+  const [selectedId, setSelectedId] = useState(() => {
+    if (typeof window === 'undefined') return null;
+    return new URLSearchParams(window.location.search).get('trip') || null;
+  });
   const [loading, setLoading] = useState(true);
   const [showSettings, setShowSettings] = useState(() => {
     // Auto-open Settings on return from QBO OAuth so the user sees the result
     if (typeof window !== 'undefined') {
       const p = new URLSearchParams(window.location.search);
-      if (p.get('qbo') === 'connected' || p.get('qbo') === 'error') return true;
+      if (
+        p.get('section') !== 'accounting'
+        && (p.get('qbo') === 'connected' || p.get('qbo') === 'error')
+      ) return true;
     }
     return false;
   });
   const [showProfile, setShowProfile] = useState(false);
   const [showAdminDutyTools, setShowAdminDutyTools] = useState(false);
   const [adminDutyView, setAdminDutyView] = useState('report'); // report | calendar
+  const [dispatchView, setDispatchView] = useState('control'); // control | schedule | handoff
   // UI theme — 'dark' (default cyan/slate) or 'classy' (warm + gold).
   // Persisted in localStorage so the choice survives reloads. The actual
   // visual switch happens via the data-theme attribute on the html
@@ -27574,7 +27924,7 @@ export default function CharterOps() {
     try { localStorage.setItem('skyway-theme', themeMode); } catch (_) {}
     // Keep iOS status-bar / theme-color in sync with the active palette so
     // the homescreen chrome doesn't flash the wrong color on theme toggle.
-    const color = themeMode === 'classy' ? '#E8EFF8' : '#060C16';
+    const color = themeMode === 'classy' ? '#EFF1F3' : '#0A0B0D';
     document.querySelectorAll('meta[name="theme-color"]').forEach((m) => {
       m.setAttribute('content', color);
     });
@@ -27615,10 +27965,18 @@ export default function CharterOps() {
   // Default landing section for ALL roles is HOME — gives everyone the
   // personalized landing experience (focus trip, mini flight board, etc).
   // Users can navigate to SCHEDULE or any other tab from there.
-  const [section, setSection] = useState('home');
+  const [section, setSection] = useState(() => {
+    if (typeof window === 'undefined') return 'home';
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('trip')) return 'schedule';
+    if (params.get('section') === 'accounting' || params.has('qbo')) return 'accounting';
+    if (params.get('section') === 'mailbox' || params.has('userMail')) return 'mailbox';
+    return params.get('channel') || window.location.hash === '#comms' ? 'comms' : 'home';
+  });
   // FlightAware live tracking kill switch — synced from Firestore so admin can
   // disable it cluster-wide if costs spike. Default: enabled.
   const [trackingEnabled, setTrackingEnabled] = useState(true);
+  const managedFleetTails = useMemo(() => resolveManagedTails(config), [config]);
 
   // Subscribe to FlightAware tracking config — admin kill switch
   useEffect(() => {
@@ -27635,10 +27993,10 @@ export default function CharterOps() {
             const data = snap.data();
             // Default to true if field missing; only false explicitly disables
             setTrackingEnabled(data.trackingEnabled !== false);
-            // Duty tracker flag + alert emails are shared (admin sets once,
-            // every pilot's app sees it live). Default OFF.
+            // Duty tracking is a core safety feature and cannot be disabled.
+            // Keep reading alert recipients from shared config.
             setConfig(prev => {
-              const dutyEnabled = data.dutyTrackerEnabled === true;
+              const dutyEnabled = DUTY_TRACKER_ENABLED;
               const dutyEmails = Array.isArray(data.dutyAlertEmails) ? data.dutyAlertEmails : [];
               if (prev &&
                   prev.dutyTrackerEnabled === dutyEnabled &&
@@ -27651,6 +28009,43 @@ export default function CharterOps() {
         });
       } catch (err) {
         console.warn('[tracking] config subscribe failed:', err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (unsub) unsub();
+    };
+  }, []);
+
+  // Shared managed-fleet source of truth. Schedule feeds legitimately contain
+  // vendor and partner aircraft; this document says which tails are actually
+  // Skyway fleet without deleting any trip that references another tail.
+  useEffect(() => {
+    let unsub = null;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { db } = await import('./firebase.js');
+        const { doc, onSnapshot } = await import('firebase/firestore');
+        if (cancelled) return;
+        unsub = onSnapshot(doc(db, 'app-config', 'fleet'), (snap) => {
+          if (cancelled || !snap.exists()) return;
+          const data = snap.data() || {};
+          setConfig((previous) => ({
+            ...(previous || {}),
+            fleetConfigured: data.configured === true,
+            fleetTails: Array.isArray(data.managedTails) ? data.managedTails : [],
+            aircraftByTail: data.aircraftByTail && typeof data.aircraftByTail === 'object'
+              ? data.aircraftByTail
+              : {},
+            fleetUpdatedAt: data.updatedAt || null,
+            fleetUpdatedByName: data.updatedByName || null,
+          }));
+        }, (err) => {
+          console.warn('[fleet] config subscribe failed:', err);
+        });
+      } catch (err) {
+        console.warn('[fleet] config load failed:', err);
       }
     })();
     return () => {
@@ -27867,6 +28262,7 @@ export default function CharterOps() {
       approved: liveProfile.approved === true,
       authProvider: liveProfile.authProvider || null,
       savedSignature: liveProfile.savedSignature || null,
+      emailSignature: liveProfile.emailSignature || '',
       // Per-user tab order overrides. Each area can be an array of tab
       // IDs (custom order saved) or undefined/null (use org default).
       // Carried through here so TopNav/TripDetail receive it without an
@@ -27886,6 +28282,7 @@ export default function CharterOps() {
           role: target.role || 'crew',
           active: target.active !== false,
           approved: target.approved === true,
+          emailSignature: target.emailSignature || '',
           // Show the IMPERSONATED user's saved tab order so admin sees
           // exactly what that role/user sees. Reordering is disabled
           // while impersonating (see saveTabOrder guard) so we never
@@ -27898,6 +28295,7 @@ export default function CharterOps() {
     }
     return realUser;
   }, [profile, impersonateUid, users]);
+  const activeDispatchView = dispatchView;
 
   // Tick clock
   useEffect(() => {
@@ -27982,9 +28380,23 @@ export default function CharterOps() {
   useEffect(() => {
     (async () => {
       const cfg = await storage.get('settings:config', false, null);
-      const effectiveCfg = cfg || { icalUrl: DEFAULT_ICAL_URL, opsEmail: '', crewName: '' };
+      const effectiveCfg = {
+        ...(cfg || { icalUrl: DEFAULT_ICAL_URL, opsEmail: '', crewName: '' }),
+        dutyTrackerEnabled: DUTY_TRACKER_ENABLED,
+      };
       if (!effectiveCfg.icalUrl) effectiveCfg.icalUrl = DEFAULT_ICAL_URL;
-      setConfig(effectiveCfg);
+      setConfig((previous) => (
+        previous?.fleetConfigured === true
+          ? {
+              ...effectiveCfg,
+              fleetConfigured: true,
+              fleetTails: previous.fleetTails || [],
+              aircraftByTail: previous.aircraftByTail || {},
+              fleetUpdatedAt: previous.fleetUpdatedAt || null,
+              fleetUpdatedByName: previous.fleetUpdatedByName || null,
+            }
+          : effectiveCfg
+      ));
 
       const cached = await storage.get('cached:ical', false, null);
       if (cached?.text) {
@@ -28512,15 +28924,7 @@ export default function CharterOps() {
     <div className="sw-app-shell bg-slate-950 text-slate-100 antialiased">
       <StreamPresenceProvider
         currentUser={currentUser}
-        getIdToken={async () => {
-          try {
-            const { auth } = await import('./firebase.js');
-            if (!auth.currentUser) return null;
-            return auth.currentUser.getIdToken();
-          } catch {
-            return null;
-          }
-        }}
+        getIdToken={getFirebaseIdToken}
       >
       <div className="h-full min-h-0 flex flex-col">
         {/* iOS install banner — dismissible, shown only on iOS Safari
@@ -28562,7 +28966,14 @@ export default function CharterOps() {
           syncStatus={syncStatus}
           now={now}
           tripCount={allTrips.length}
-          onOpenSettings={() => setShowSettings(true)}
+          onOpenSettings={() => {
+            if (currentUser?.role === 'admin') {
+              setSection('settings');
+              setSelectedId(null);
+            } else {
+              setShowSettings(true);
+            }
+          }}
           onOpenProfile={() => setShowProfile(true)}
           themeMode={themeMode}
           onToggleTheme={() => setThemeMode((m) => m === 'classy' ? 'dark' : 'classy')}
@@ -28575,13 +28986,38 @@ export default function CharterOps() {
         />
 
         {/* === HOME SECTION === */}
-        {/* Ops/admin/sales users see the fleet-wide command center.
-            Pilots, maintenance, and accounting see the personalized
-            PilotHomeScreen (their own trips, duty status, etc.).
-            The role gate happens here so the call site stays single-line
-            and either home component can evolve independently. */}
+        {/* Three homes, by what the role is accountable for:
+              admin       — the operations control board (fleet-wide, live)
+              ops / sales — the existing command centre
+              everyone else — the personalized PilotHomeScreen
+            Gating here keeps each home component independent of the others. */}
         {section === 'home' && (
-          ['ops', 'admin', 'sales'].includes(currentUser?.role) ? (
+          currentUser?.role === 'admin' ? (
+            <Suspense fallback={
+              <div className="flex-1 flex items-center justify-center bg-slate-950 text-content-subtle">
+                <Loader2 className="w-4 h-4 animate-spin inline mr-2" />
+                Loading operations control
+              </div>
+            }>
+              <OpsDashboardLazy
+                currentUser={currentUser}
+                trips={allTrips}
+                users={users}
+                config={config}
+                onSelectTrip={(uid) => { setSelectedId(uid); setSection('schedule'); }}
+                onSwitchSection={(id) => {
+                  if (id === 'ops') setDispatchView('control');
+                  setSelectedId(null);
+                  setSection(id);
+                }}
+                onOpenDispatch={(view) => {
+                  setDispatchView(view || 'control');
+                  setSelectedId(null);
+                  setSection('ops');
+                }}
+              />
+            </Suspense>
+          ) : ['ops', 'sales'].includes(currentUser?.role) ? (
             <Suspense fallback={
               <div className="flex-1 flex items-center justify-center bg-slate-950 text-slate-500"
                 style={{ fontFamily: 'JetBrains Mono, monospace' }}>
@@ -28593,6 +29029,7 @@ export default function CharterOps() {
                 currentUser={currentUser}
                 trips={allTrips}
                 users={users}
+                config={config}
                 onSelectTrip={(uid) => { setSelectedId(uid); setSection('schedule'); }}
                 onSwitchSection={(id) => setSection(id)}
               />
@@ -28666,7 +29103,7 @@ export default function CharterOps() {
                 <div className="sticky top-0 z-10 border-b border-edge bg-slate-950/80 px-3 py-2">
                   <div className="sw-no-scrollbar flex items-center gap-1.5 overflow-x-auto">
                     <TailChip label="All" active={tailFilter === ''} onClick={() => setTailFilter('')} />
-                    {SKYWAY_TAILS.map(tail => (
+                    {managedFleetTails.map(tail => (
                       <TailChip key={tail} label={tail} active={tailFilter === tail} onClick={() => setTailFilter(tail)} />
                     ))}
                   </div>
@@ -28923,7 +29360,19 @@ export default function CharterOps() {
             currentUser={currentUser}
             currentUserUid={currentUser?.uid || currentUser?.id}
             currentUserDisplayName={userDisplayName}
+            users={users}
           />
+        )}
+
+        {/* === ACCOUNTING / QUICKBOOKS === */}
+        {section === 'accounting' && ['accounting', 'admin'].includes(currentUser?.role) && (
+          <Suspense fallback={
+            <div className="flex flex-1 items-center justify-center text-content-muted">
+              <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading accounting…
+            </div>
+          }>
+            <AccountingLazy currentUser={currentUser} users={users} />
+          </Suspense>
         )}
 
         {/* === MANIFESTS SECTION === */}
@@ -28966,29 +29415,74 @@ export default function CharterOps() {
         {/* MAINT LOG and MEL section renders removed — they now render
             as sub-tabs inside MAINT (see MaintScreen above). */}
 
-        {/* === OPS DASHBOARD SECTION === */}
-        {section === 'ops' && (
-          <div className="flex-1 overflow-y-auto scroll-area">
-            <Suspense fallback={<div className="flex items-center justify-center py-16 text-slate-500"><Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading ops console...</div>}>
-              <OpsConsoleLazy
-                currentUser={currentUser}
-                allTrips={allTrips}
-                onOpenTrip={(uid) => { setSelectedId(uid); setSection('schedule'); }}
-              />
-            </Suspense>
-            <OpsDashboard
-              trips={allTrips}
-              currentUser={currentUser}
-              onSelectTrip={(uid) => { setSelectedId(uid); setSection('schedule'); }}
-              onAddManualTrip={addManualTrip}
-              onRemoveManualTrip={removeManualTrip}
-              syncStatus={syncStatus}
-              syncLog={syncLog}
-              onRunSync={() => loadFromUrl(config.icalUrl)}
-              feedStats={feedStats}
-              hasIcalUrl={!!config.icalUrl}
-              onOpenPaste={() => setShowSettings(true)}
-            />
+        {/* === OPERATIONS CONTROL CENTER ===
+            Admins get the complete OCC command view; ops users get the same
+            flight-control, schedule and handoff workflows without admin-only
+            fleet-wide duty/qualification subscriptions. */}
+        {section === 'ops' && ['ops', 'admin'].includes(currentUser?.role) && (
+          <div className="flex min-h-0 flex-1 flex-col bg-surface-sunken">
+            <div className="shrink-0 border-b border-edge bg-surface px-3 py-2 md:px-6">
+              <div className="mx-auto flex max-w-screen-2xl items-center gap-2 overflow-x-auto sw-no-scrollbar">
+                {[
+                  { id: 'control', label: 'Flight control', icon: Zap },
+                  { id: 'schedule', label: 'Schedule & feeds', icon: Calendar },
+                  { id: 'handoff', label: 'Shift handoff', icon: FileText },
+                ].map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setDispatchView(item.id)}
+                    className={cx(
+                      'inline-flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold transition-colors',
+                      activeDispatchView === item.id
+                        ? 'bg-accent-soft text-accent'
+                        : 'text-content-muted hover:bg-surface-raised hover:text-content',
+                    )}
+                  >
+                    <item.icon className="h-4 w-4" />
+                    {item.label}
+                  </button>
+                ))}
+                <span className="ml-auto hidden text-2xs text-content-subtle lg:block">
+                  OCC coordination · live data · audited actions
+                </span>
+              </div>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto scroll-area">
+              {activeDispatchView === 'control' && (
+                <Suspense fallback={<div className="flex items-center justify-center py-16 text-content-muted"><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading flight control…</div>}>
+                  <OpsConsoleLazy
+                    currentUser={currentUser}
+                    users={users}
+                    allTrips={allTrips}
+                    onOpenTrip={(uid) => { setSelectedId(uid); setSection('schedule'); }}
+                  />
+                </Suspense>
+              )}
+
+              {activeDispatchView === 'schedule' && (
+                <ScheduleFeedPanel
+                  trips={allTrips}
+                  currentUser={currentUser}
+                  onSelectTrip={(uid) => { setSelectedId(uid); setSection('schedule'); }}
+                  onAddManualTrip={addManualTrip}
+                  onRemoveManualTrip={removeManualTrip}
+                  syncStatus={syncStatus}
+                  syncLog={syncLog}
+                  onRunSync={() => loadFromUrl(config.icalUrl)}
+                  feedStats={feedStats}
+                  hasIcalUrl={!!config.icalUrl}
+                  onOpenPaste={() => setShowSettings(true)}
+                />
+              )}
+
+              {activeDispatchView === 'handoff' && (
+                <Suspense fallback={<div className="flex items-center justify-center py-16 text-content-muted"><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading shift handoff…</div>}>
+                  <OpsShiftLogLazy currentUser={currentUser} />
+                </Suspense>
+              )}
+            </div>
           </div>
         )}
 
@@ -28998,7 +29492,7 @@ export default function CharterOps() {
             currentUser={currentUser}
             users={users}
             allTrips={allTrips}
-            fleetTails={Array.isArray(config?.fleetTails) ? config.fleetTails : ['N20UF', 'N168ZZ', 'N286N', 'N444AM', 'N651TW', 'N551FP', 'N85AH', 'N525CR']}
+            fleetTails={managedFleetTails}
           />
         )}
 
@@ -29075,17 +29569,44 @@ export default function CharterOps() {
               currentUser={currentUser}
               users={users}
               allTrips={allTrips}
-              getIdToken={async () => {
-                try {
-                  const { auth } = await import('./firebase.js');
-                  if (!auth.currentUser) return null;
-                  return auth.currentUser.getIdToken();
-                } catch (err) {
-                  console.warn('[CommsStream] getIdToken failed:', err);
-                  return null;
-                }
-              }}
+              initialChannelId={typeof window !== 'undefined'
+                ? new URLSearchParams(window.location.search).get('channel') || ''
+                : ''}
+              getIdToken={getFirebaseIdToken}
             />
+          </Suspense>
+        )}
+
+        {/* === MICROSOFT TEAMS === */}
+        {section === 'teams' && currentUser?.approved && (
+          <Suspense fallback={
+            <div className="flex flex-1 items-center justify-center text-content-muted">
+              <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading Microsoft Teams…
+            </div>
+          }>
+            <TeamsHubLazy currentUser={currentUser} />
+          </Suspense>
+        )}
+
+        {/* === PERSONAL WORK MAILBOX === */}
+        {section === 'mailbox' && currentUser?.approved && (
+          <Suspense fallback={
+            <div className="flex flex-1 items-center justify-center text-content-muted">
+              <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading your work mailbox…
+            </div>
+          }>
+            <UserMailboxLazy currentUser={currentUser} />
+          </Suspense>
+        )}
+
+        {/* === CHARTER SHARED MAILBOX === */}
+        {section === 'inbox' && ['admin', 'sales'].includes(currentUser?.role) && (
+          <Suspense fallback={
+            <div className="flex flex-1 items-center justify-center text-content-muted">
+              <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading charter inbox…
+            </div>
+          }>
+            <CharterInboxLazy currentUser={currentUser} trips={allTrips} />
           </Suspense>
         )}
 
@@ -29104,8 +29625,25 @@ export default function CharterOps() {
           </div>
         )}
 
+        {/* === ADMIN SETTINGS === */}
+        {section === 'settings' && currentUser.role === 'admin' && (
+          <Suspense fallback={
+            <div className="flex flex-1 items-center justify-center text-content-muted">
+              <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading organization settings…
+            </div>
+          }>
+            <AdminSettingsLazy
+              currentUser={currentUser}
+              config={config}
+              allTrips={allTrips}
+              trackingEnabled={trackingEnabled}
+              onOpenAdvanced={() => setShowSettings(true)}
+            />
+          </Suspense>
+        )}
+
         {/* === DUTY SECTION (admin duty/rest oversight) === */}
-        {section === 'duty' && (currentUser.role === 'admin' || currentUser._impersonating === true) && config?.dutyTrackerEnabled && (
+        {section === 'duty' && (currentUser.role === 'admin' || currentUser._impersonating === true) && (
           <div className="flex-1 overflow-y-auto scroll-area bg-slate-950 p-4 md:p-6">
             <div className="mx-auto mb-5 flex max-w-[1500px] flex-wrap items-center justify-between gap-3">
               <div className="inline-flex rounded-lg border border-edge bg-surface p-1">
@@ -29152,6 +29690,7 @@ export default function CharterOps() {
                 <AdminDutyReportLazy
                   currentUser={currentUser}
                   users={users}
+                  trips={allTrips}
                 />
               ) : (
                 <DutyAdminCalendarLazy currentUser={currentUser} users={users} />
@@ -29159,19 +29698,18 @@ export default function CharterOps() {
             </Suspense>
           </div>
         )}
-        {section === 'duty' && (currentUser.role === 'admin' || currentUser._impersonating === true) && !config?.dutyTrackerEnabled && (
-          <div className="flex-1 overflow-y-auto scroll-area bg-slate-950 p-6">
-            <div className="max-w-2xl mx-auto bg-slate-900 border border-slate-800 p-4 text-sm text-slate-400">
-              The duty tracker is currently disabled. Enable it in Settings → DUTY TRACKER (ADMIN) to use this dashboard.
-            </div>
-          </div>
-        )}
-
         <MobileNav
           currentSection={section}
           setCurrentSection={(s) => { setSection(s); setSelectedId(null); }}
           currentUser={currentUser}
-          onOpenSettings={() => setShowSettings(true)}
+          onOpenSettings={() => {
+            if (currentUser?.role === 'admin') {
+              setSection('settings');
+              setSelectedId(null);
+            } else {
+              setShowSettings(true);
+            }
+          }}
           onToggleTheme={() => setThemeMode((m) => m === 'classy' ? 'dark' : 'classy')}
           themeMode={themeMode}
           onLogout={signOut}

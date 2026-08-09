@@ -7,3 +7,9 @@ marketing/assets/screens/*.png
 
 # marketing preview renders (regenerate with tools/screenshot-harness/shoot-site.mjs)
 marketing/.preview
+
+# Never commit credentials. Intuit, Microsoft and Firebase secrets belong in
+# the Vercel environment, not the repository.
+.env
+.env.*
+!.env.example

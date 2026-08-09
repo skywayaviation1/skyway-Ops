@@ -7,11 +7,10 @@
 //      unread-count events flow even when the user is not on COMMS.
 //      Exposes totalUnread and per-channel unread via React Context.
 //
-//   2. Register the user's FCM push tokens with Stream's 'firebase'
-//      push provider so Stream's server can send pushes when the user
-//      is offline. Reads tokens from users/{uid}.fcmTokens — the same
-//      array Skyway's existing PushSettings flow writes to. Re-syncs
-//      whenever the doc changes.
+//   2. Keep unread state live across every app screen. Push delivery itself
+//      is handled by api/stream-webhook.js -> FCM, not Stream native push.
+//      That is intentional: only the Skyway bridge can enforce the profile's
+//      quiet hours, lock-screen preview privacy and Firestore mute settings.
 //
 // Why "persistent": CommsStream and TripChatStream each call their own
 // useStreamClient hook, but those only fire when their component is
@@ -29,7 +28,8 @@
 // chunk only loads when the provider actually mounts (i.e. after the
 // user signs in).
 
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
+import { notify } from './ui.jsx';
 
 /* ─────────────────────────────────────────────────────────────────────
    Context
@@ -42,6 +42,33 @@ const PresenceContext = createContext({
                      // cid is `messaging:trip-{tripUid}` for trip channels.
   isConnected: false,
 });
+
+async function fetchStreamSession(getIdToken) {
+  const idToken = await getIdToken();
+  if (!idToken) throw new Error('No Firebase idToken');
+  const response = await fetch('/api/stream-token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ idToken }),
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.error || `Token mint failed (${response.status})`);
+  }
+  return response.json();
+}
+
+function tokenProvider(getIdToken, initialToken) {
+  let first = initialToken;
+  return async () => {
+    if (first) {
+      const value = first;
+      first = null;
+      return value;
+    }
+    return (await fetchStreamSession(getIdToken)).token;
+  };
+}
 
 export function useStreamPresence() {
   return useContext(PresenceContext);
@@ -67,6 +94,7 @@ export function useTripUnread(tripUid) {
 export function StreamPresenceProvider({ currentUser, getIdToken, children }) {
   const [channelUnread, setChannelUnread] = useState({});
   const [isConnected, setIsConnected] = useState(false);
+  const disconnectTimer = useRef(null);
 
   // Derived: total unread COUNTS DM and group channels only. Trip channels
   // are excluded from the COMMS top-nav badge because clicking COMMS won't
@@ -82,6 +110,10 @@ export function StreamPresenceProvider({ currentUser, getIdToken, children }) {
   }, [channelUnread]);
 
   useEffect(() => {
+    if (disconnectTimer.current && currentUser?.uid) {
+      clearTimeout(disconnectTimer.current.id);
+      disconnectTimer.current = null;
+    }
     // Tear down on sign-out / user switch.
     if (!currentUser?.uid) {
       setChannelUnread({});
@@ -92,7 +124,6 @@ export function StreamPresenceProvider({ currentUser, getIdToken, children }) {
     let cancelled = false;
     let streamClient = null;
     const cleanups = [];
-    const registeredFcmTokens = new Set();
 
     (async () => {
       try {
@@ -104,19 +135,7 @@ export function StreamPresenceProvider({ currentUser, getIdToken, children }) {
 
         // 1. Mint Stream token via backend (also bulk-syncs all approved
         //    users to Stream so any of them can be channel members later).
-        const idToken = await getIdToken();
-        if (!idToken) throw new Error('No Firebase idToken');
-
-        const resp = await fetch('/api/stream-token', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ idToken }),
-        });
-        if (!resp.ok) {
-          const data = await resp.json().catch(() => ({}));
-          throw new Error(data.error || `Token mint failed (${resp.status})`);
-        }
-        const { token, apiKey, user } = await resp.json();
+        const { token, apiKey, user } = await fetchStreamSession(getIdToken);
         if (cancelled) return;
 
         // 2. Connect the Stream singleton. If a previous user is still
@@ -127,7 +146,10 @@ export function StreamPresenceProvider({ currentUser, getIdToken, children }) {
           await streamClient.disconnectUser();
         }
         if (!streamClient.userID) {
-          await streamClient.connectUser({ id: user.id, name: user.name }, token);
+          await streamClient.connectUser(
+            { id: user.id, name: user.name },
+            tokenProvider(getIdToken, token),
+          );
         }
         if (cancelled) return;
 
@@ -155,6 +177,18 @@ export function StreamPresenceProvider({ currentUser, getIdToken, children }) {
           console.warn('[StreamPresence] initial queryChannels failed:', err?.message || err);
         }
         if (!cancelled) setIsConnected(true);
+
+        // FCM routes background messages through the service worker. While the
+        // app is open, surface the same event as a lightweight in-app banner.
+        // The listener is restored here on every app boot, not only when the
+        // user happens to open Push Settings.
+        const { listenForForegroundPush } = await import('./firebase-push.js');
+        listenForForegroundPush({ uid: user.id }, (message) => {
+          notify.info(
+            [message.title, message.body].filter(Boolean).join(' · '),
+            { duration: 5000 },
+          );
+        });
 
         // 4. Live updates. Stream fires:
         //      notification.message_new — message arrived in a channel the
@@ -200,76 +234,6 @@ export function StreamPresenceProvider({ currentUser, getIdToken, children }) {
         cleanups.push(() => streamClient.off('notification.mark_unread', onMsgNew));
         cleanups.push(() => streamClient.off('notification.mark_read', onMarkRead));
 
-        // 5. FCM device registration. Skyway's PushSettings flow writes
-        //    each device's FCM token as a document in the SUBCOLLECTION
-        //    `users/{uid}/push-tokens`. Each doc looks like:
-        //      { token: 'cfSz6YM9...:APA91bFI...',
-        //        platform: 'ios' | 'web' | 'android',
-        //        userAgent: '...',
-        //        createdAt, lastSeenAt }
-        //    The token field is what Stream's 'firebase' provider needs;
-        //    Stream relays it through FCM to APNs for iOS PWAs.
-        //
-        //    We watch the subcollection and register each token with
-        //    Stream as a separate device. registeredFcmTokens guards
-        //    against duplicate API calls — Stream dedupes server-side
-        //    too, but skipping when we know we already pushed it is
-        //    cheaper.
-        try {
-          const { db } = await import('./firebase.js');
-          const { collection, onSnapshot } = await import('firebase/firestore');
-          const tokensRef = collection(db, 'users', user.id, 'push-tokens');
-
-          const unsubTokens = onSnapshot(
-            tokensRef,
-            async (snap) => {
-              if (cancelled) return;
-              for (const docSnap of snap.docs) {
-                const data = docSnap.data();
-                const fcmToken = data?.token;
-                if (!fcmToken) continue;
-                if (registeredFcmTokens.has(fcmToken)) continue;
-                try {
-                  // Device id can be any stable string per device. The
-                  // FCM token itself is the most stable identifier we
-                  // have (per device + per app install). Sanitize to
-                  // Stream's allowed chars and trim to a tail slice so
-                  // it fits comfortably in Stream's 60-char limit.
-                  const deviceId =
-                    'fcm-' +
-                    fcmToken
-                      .slice(-32)
-                      .replace(/[^A-Za-z0-9_-]/g, '_');
-                  await streamClient.addDevice(fcmToken, 'firebase', deviceId);
-                  registeredFcmTokens.add(fcmToken);
-                  console.log(
-                    '[StreamPresence] FCM device registered with Stream:',
-                    deviceId,
-                    '(platform:', data.platform || 'unknown', ')'
-                  );
-                } catch (err) {
-                  // Most commonly fails with "InvalidArgument" if the
-                  // Stream dashboard hasn't been configured with a
-                  // Firebase service account yet, or if the token is
-                  // dead. Both are recoverable — log and move on.
-                  console.warn(
-                    '[StreamPresence] addDevice failed (token may be stale or dashboard not configured):',
-                    err?.message || err
-                  );
-                }
-              }
-            },
-            (err) => {
-              console.warn('[StreamPresence] push-tokens snapshot error:', err);
-            }
-          );
-          cleanups.push(unsubTokens);
-        } catch (err) {
-          console.warn(
-            '[StreamPresence] FCM device hookup failed (push will not work for this session):',
-            err?.message || err
-          );
-        }
       } catch (err) {
         console.warn('[StreamPresence] connect failed:', err?.message || err);
         if (!cancelled) setIsConnected(false);
@@ -281,15 +245,21 @@ export function StreamPresenceProvider({ currentUser, getIdToken, children }) {
       for (const fn of cleanups) {
         try { fn(); } catch {}
       }
-      // We do NOT call disconnectUser() here. The Stream singleton is
-      // shared with CommsStream and TripChatStream — disconnecting would
-      // tear out a connection that other surfaces depend on. The cleanup
-      // path above already removes our event handlers, which is what
-      // this effect actually owns.
-      //
-      // Disconnect happens implicitly when the user signs out: the new
-      // currentUser?.uid is null, the effect's early return above wipes
-      // state, and the next sign-in's connectUser swaps the user cleanly.
+      // This provider owns the app-lifetime connection. Its dependencies are
+      // stable, so cleanup means sign-out, account switch, or app teardown —
+      // not a normal screen change. Disconnect promptly so a shared device
+      // cannot retain the previous user's messages after Firebase signs out.
+      // The short delay is cancelled by React StrictMode's immediate effect
+      // replay, avoiding a development-only disconnect/connect race.
+      if (streamClient?.userID) {
+        const uid = streamClient.userID;
+        const id = setTimeout(() => {
+          streamClient.disconnectUser().catch((err) => {
+            console.warn('[StreamPresence] disconnect failed:', err?.message || err);
+          });
+        }, 100);
+        disconnectTimer.current = { id, uid };
+      }
     };
   }, [currentUser?.uid, getIdToken]);
 

@@ -1,6 +1,7 @@
 // src/OpsCommandCenter.jsx
 //
-// The home-screen view for OPS, ADMIN, and SALES roles. Replaces the
+// The home-screen view for OPS and SALES roles. Administrators use the
+// separate OpsDashboard; crew use PilotHomeScreen. Replaces the
 // pilot-personalized PilotHomeScreen for these users because they don't
 // fly trips themselves — they need a FLEET-WIDE overview, not "my next
 // trip."
@@ -31,37 +32,14 @@
 import React, { useMemo, useState, useEffect, Suspense, lazy } from 'react';
 import {
   Loader2, Calendar, FileText, Mail, AlertCircle, Plane, Clock, Cloud,
-  AlertTriangle, Receipt, Wrench, Wind, Users, ArrowRight, CheckCircle2,
+  AlertTriangle, Receipt, Wrench, Wind, ArrowRight, CheckCircle2,
   Activity, MapPin,
 } from 'lucide-react';
 import {
   Button, Card, CardHeader, EmptyState, MetricTile, PageHeader, StatusChip, cx,
 } from './ui.jsx';
-// Live crew duty board (V2). Reads duty-periods-v2 collection,
-// evaluates legality per pilot, shows on-duty / resting / available /
-// illegal / warning state.
-const CrewBoardV2Lazy = lazy(() => import('./CrewBoardV2.jsx'));
-
+import { resolveAircraftMeta, resolveManagedTails } from './fleet-config.js';
 const FlightBoardLazy = lazy(() => import('./FlightBoard.jsx'));
-
-// The fleet — single source of truth for "which aircraft do we operate."
-// Hardcoded because it doesn't change daily, and a dynamic derivation
-// from `trips` would miss aircraft that aren't flying today.
-// If a tail joins or leaves the fleet, update this list.
-const FLEET = ['N20UF', 'N168ZZ', 'N286N', 'N444AM', 'N651TW', 'N551FP', 'N85AH', 'N525CR'];
-
-// Aircraft type lookup — purely cosmetic, shown next to the tail. Kept
-// here so we don't need a Firestore call for static metadata.
-const AIRCRAFT_TYPE = {
-  N20UF:  'Citation V',
-  N168ZZ: 'Learjet 60',
-  N286N:  'Citation Excel',
-  N444AM: 'King Air 350',
-  N651TW: 'Falcon 50',
-  N551FP: 'CJ3',
-  N85AH:  'Hawker 800',
-  N525CR: 'CJ2+',
-};
 
 // ====================================================================
 // Weather fetcher — duplicated from App.jsx for module isolation.
@@ -205,7 +183,8 @@ function statusPill(state) {
 // Component
 // ====================================================================
 
-export default function OpsCommandCenter({ currentUser, trips, users, onSelectTrip, onSwitchSection }) {
+export default function OpsCommandCenter({ currentUser, trips, config, onSelectTrip, onSwitchSection }) {
+  const managedFleet = useMemo(() => resolveManagedTails(config), [config]);
   // ---- 1. Time + refresh ----
   // Re-render every 60s so the "now"-relative stats refresh without a
   // full page reload. Not 1s — that would cause excessive re-renders for
@@ -225,8 +204,9 @@ export default function OpsCommandCenter({ currentUser, trips, users, onSelectTr
   const [expenses, setExpenses] = useState([]);
   const [fleet, setFleet] = useState([]); // maintenance fleet records (for AOG state)
   const [mel, setMel] = useState([]);
-  // Duty state removed — CrewBoardV2 subscribes to duty-periods-v2 directly
-  // and renders the crew status section itself. No need for parent state.
+  // Duty and compliance data are intentionally absent. Crew may see only
+  // their own record; the fleet-wide duty board belongs exclusively to the
+  // administrator home/report surfaces.
 
   useEffect(() => {
     let cancelled = false;
@@ -248,13 +228,6 @@ export default function OpsCommandCenter({ currentUser, trips, users, onSelectTr
           unsubs.push(m.subscribeToAllExpenses((list) => setExpenses(list)));
         }
       } catch (e) { console.warn('[OpsCommandCenter] expense subscribe failed:', e?.message); }
-    })();
-    (async () => {
-      try {
-        // (Duty subscription removed during V2 migration. CrewBoardV2
-        // mounts in this dashboard and subscribes to duty-periods-v2
-        // directly. Nothing to do here.)
-      } catch (_) {}
     })();
     return () => {
       cancelled = true;
@@ -321,7 +294,7 @@ export default function OpsCommandCenter({ currentUser, trips, users, onSelectTr
       if (!byTail[tail]) byTail[tail] = [];
       byTail[tail].push(t);
     }
-    return FLEET.map((tail) => {
+    return managedFleet.map((tail) => {
       const todayLegs = (byTail[tail] || []).sort((a, b) => new Date(a.start) - new Date(b.start));
       const legCount = todayLegs.length;
       const hours = todayLegs.reduce((sum, t) => sum + tripDurationHours(t), 0);
@@ -373,7 +346,7 @@ export default function OpsCommandCenter({ currentUser, trips, users, onSelectTr
       }
       return {
         tail,
-        type: AIRCRAFT_TYPE[tail] || '',
+        type: resolveAircraftMeta(tail, config).displayName,
         legCount,
         hours: Math.round(hours * 10) / 10,
         state,
@@ -381,7 +354,7 @@ export default function OpsCommandCenter({ currentUser, trips, users, onSelectTr
         nextDep,
       };
     });
-  }, [buckets.today, flights, now, aogTails]);
+  }, [buckets.today, flights, now, aogTails, managedFleet, config]);
 
   // ---- 5. Today's airports (unique) ----
   // Build a deduplicated set of airports across today's legs. The weather
@@ -508,7 +481,7 @@ export default function OpsCommandCenter({ currentUser, trips, users, onSelectTr
           />
           <MetricTile
             label="Aircraft active"
-            value={`${stats.activeFleetCount} of ${FLEET.length}`}
+            value={`${stats.activeFleetCount} of ${managedFleet.length}`}
             hint={`${stats.tomorrowCount} flights tomorrow`}
             tone="success"
             icon={Activity}
@@ -527,7 +500,7 @@ export default function OpsCommandCenter({ currentUser, trips, users, onSelectTr
             <div className="p-4 pb-3">
               <CardHeader
                 title="Fleet status"
-                subtitle={`${FLEET.length} aircraft · today's scheduled activity`}
+                subtitle={`${managedFleet.length} aircraft · today's scheduled activity`}
                 icon={Plane}
                 action={(
                   <Button variant="ghost" size="sm" iconRight={ArrowRight} onClick={() => onSwitchSection?.('schedule')}>
@@ -579,7 +552,7 @@ export default function OpsCommandCenter({ currentUser, trips, users, onSelectTr
           </div>
         </Card>
 
-        <div className="grid gap-5 lg:grid-cols-2">
+        <div>
           {todaysAirports.length > 0 && (
             <Card>
               <CardHeader title="Airport weather" subtitle={`${todaysAirports.length} airports on today's schedule`} icon={Cloud} />
@@ -590,14 +563,6 @@ export default function OpsCommandCenter({ currentUser, trips, users, onSelectTr
               </div>
             </Card>
           )}
-          <Card padded={false} className="overflow-hidden">
-            <div className="p-4 pb-0">
-              <CardHeader title="Crew availability" subtitle="Live Part 135 duty and legality status" icon={Users} />
-            </div>
-            <Suspense fallback={<div className="p-6 text-sm text-content-muted"><Loader2 className="mr-2 inline h-4 w-4 animate-spin" />Loading crew…</div>}>
-              <CrewBoardV2Lazy currentUser={currentUser} users={users} trips={trips} />
-            </Suspense>
-          </Card>
         </div>
       </div>
     </div>

@@ -21,6 +21,7 @@ import { evaluateCurrent, LIMITS } from './duty-legality.js';
 import {
   Button, Card, EmptyState, MetricTile, PageHeader, Spinner, StatusChip, cx, notify,
 } from './ui.jsx';
+import DutyPairSync from './DutyPairSync.jsx';
 
 const MS_HOUR = 3600 * 1000;
 const MS_DAY = 24 * MS_HOUR;
@@ -102,7 +103,15 @@ function recordIssues(period, periodById, overlapIds, now) {
   const flight = Number.isFinite(period.flightTimeMs) ? period.flightTimeMs : 0;
 
   const add = (code, label, tone = 'warning', kind = 'compliance') => {
-    issues.push({ code, label, tone, kind });
+    const approval = period.findingApprovals?.[code] || null;
+    issues.push({
+      code,
+      label,
+      tone,
+      kind,
+      approved: approval?.status === 'approved',
+      approval,
+    });
   };
 
   if (!Number.isFinite(period.dutyOnAt)) add('MISSING_ON', 'Missing duty-on time', 'danger', 'data');
@@ -114,7 +123,7 @@ function recordIssues(period, periodById, overlapIds, now) {
   }
   if (overlapIds.has(period.id)) add('OVERLAP', 'Overlaps another record for this pilot', 'danger', 'data');
 
-  if (period.confirmStatus === 'pending') add('PENDING', 'SIC confirmation pending', 'warning');
+  if (period.confirmStatus === 'pending') add('PENDING', `${period.role || 'Crew'} confirmation pending`, 'warning');
   if (period.confirmStatus === 'declined') add('DECLINED', 'Pilot declined paired duty', 'danger');
   if (confirmationCounts(period) && period.fitForDuty !== true) {
     add('FIT', 'Fit-for-duty attestation missing', 'danger');
@@ -273,7 +282,8 @@ function printAdminReport({ summaries, periods, outside, issuesById, rangeDays, 
   win.document.close();
 }
 
-export default function AdminDutyReport({ currentUser, users = [], onOpenAdminTools }) {
+export default function AdminDutyReport({ currentUser, users = [], trips = [], onOpenAdminTools }) {
+  const canViewAll = currentUser?.role === 'admin' || currentUser?._impersonating === true;
   const [periods, setPeriods] = useState([]);
   const [outside, setOutside] = useState([]);
   const [periodsLoaded, setPeriodsLoaded] = useState(false);
@@ -293,6 +303,13 @@ export default function AdminDutyReport({ currentUser, users = [], onOpenAdminTo
   // Pull the full retention window once so the legality engine has enough
   // history for quarterly rest even when the visible report is only 7 days.
   useEffect(() => {
+    if (!canViewAll) {
+      setPeriods([]);
+      setOutside([]);
+      setPeriodsLoaded(true);
+      setOutsideLoaded(true);
+      return undefined;
+    }
     const unsubPeriods = subscribeDutyReportForAllPilots(RETENTION_DAYS, (list) => {
       setPeriods(list);
       setPeriodsLoaded(true);
@@ -305,15 +322,32 @@ export default function AdminDutyReport({ currentUser, users = [], onOpenAdminTo
       unsubPeriods?.();
       unsubOutside?.();
     };
-  }, []);
+  }, [canViewAll]);
 
   const periodById = useMemo(() => new Map(periods.map(p => [p.id, p])), [periods]);
   const overlapIds = useMemo(() => findOverlaps(periods, now), [periods, now]);
-  const issuesById = useMemo(() => {
+  const allIssuesById = useMemo(() => {
     const map = new Map();
     periods.forEach((p) => map.set(p.id, recordIssues(p, periodById, overlapIds, now)));
     return map;
   }, [periods, periodById, overlapIds, now]);
+  const issuesById = useMemo(() => {
+    const map = new Map();
+    allIssuesById.forEach((issues, id) => map.set(id, issues.filter((issue) => !issue.approved)));
+    return map;
+  }, [allIssuesById]);
+  const approvedIssuesById = useMemo(() => {
+    const map = new Map();
+    allIssuesById.forEach((issues, id) => map.set(id, issues.filter((issue) => issue.approved)));
+    return map;
+  }, [allIssuesById]);
+
+  // Keep an open drawer live as the subscription delivers edits/approvals.
+  useEffect(() => {
+    if (!selectedPeriod?.id) return;
+    const fresh = periodById.get(selectedPeriod.id);
+    if (fresh && fresh !== selectedPeriod) setSelectedPeriod(fresh);
+  }, [periodById, selectedPeriod?.id]);
 
   const cutoff = now - rangeDays * MS_DAY;
   const rangePeriods = useMemo(
@@ -390,13 +424,14 @@ export default function AdminDutyReport({ currentUser, users = [], onOpenAdminTo
       if (statusFilter === 'closed' && p.status !== 'off') return false;
       if (statusFilter === 'pending' && p.confirmStatus !== 'pending') return false;
       if (statusFilter === 'exceptions' && issues.length === 0) return false;
+      if (statusFilter === 'approved' && (approvedIssuesById.get(p.id) || []).length === 0) return false;
       if (!q) return true;
       return [
         p.pilotName, p.location, p.tail, p.tripId, p.role, p.assignmentType,
         p.confirmStatus, p.overrideStatus, p.excursionReason,
       ].some(v => String(v || '').toLowerCase().includes(q));
     });
-  }, [rangePeriods, pilotFilter, statusFilter, search, issuesById]);
+  }, [rangePeriods, pilotFilter, statusFilter, search, issuesById, approvedIssuesById]);
 
   const filteredOutside = useMemo(() => rangeOutside.filter(o => (
     pilotFilter === 'all' || o.pilotUid === pilotFilter
@@ -415,6 +450,17 @@ export default function AdminDutyReport({ currentUser, users = [], onOpenAdminTo
   const rangeOverlapCount = rangePeriods.filter(p => overlapIds.has(p.id)).length;
   const rangeAuditEdits = rangePeriods.reduce((s, p) => s + (p.adminEdits?.length || 0), 0);
 
+  if (!canViewAll) {
+    return (
+      <Card>
+        <EmptyState
+          icon={Shield}
+          title="Administrator access required"
+          description="Crew can view only their own duty and compliance record."
+        />
+      </Card>
+    );
+  }
   if (!periodsLoaded || !outsideLoaded) return <Spinner label="Loading complete duty report…" />;
 
   return (
@@ -448,6 +494,7 @@ export default function AdminDutyReport({ currentUser, users = [], onOpenAdminTo
             >
               Print / PDF
             </Button>
+            <DutyPairSync trips={trips} />
             {onOpenAdminTools && (
               <Button variant="primary" size="sm" icon={FileText} onClick={onOpenAdminTools}>
                 Admin tools
@@ -471,6 +518,7 @@ export default function AdminDutyReport({ currentUser, users = [], onOpenAdminTo
           <option value="closed">Closed</option>
           <option value="pending">Pending confirmation</option>
           <option value="exceptions">Needs review</option>
+          <option value="approved">Approved findings</option>
         </FilterSelect>
         <label className="min-w-[220px] flex-1">
           <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-content-subtle">Search</span>
@@ -626,6 +674,7 @@ export default function AdminDutyReport({ currentUser, users = [], onOpenAdminTo
         <DutyRecordDrawer
           period={selectedPeriod}
           issues={issuesById.get(selectedPeriod.id) || []}
+          approvedIssues={approvedIssuesById.get(selectedPeriod.id) || []}
           partner={selectedPeriod.partnerPeriodId ? periodById.get(selectedPeriod.partnerPeriodId) : null}
           onClose={() => setSelectedPeriod(null)}
         />
@@ -746,7 +795,111 @@ function Detail({ label, value, mono = false }) {
   );
 }
 
-function DutyRecordDrawer({ period, issues, partner, onClose }) {
+async function runAdminDutyAction(payload) {
+  const { auth } = await import('./firebase.js');
+  if (!auth.currentUser) throw new Error('You must be signed in');
+  const idToken = await auth.currentUser.getIdToken();
+  const response = await fetch('/api/duty-admin-action', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ idToken, ...payload }),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok || !result.ok) throw new Error(result.error || `Duty update failed (${response.status})`);
+  return result;
+}
+
+function toLocalInput(ms) {
+  if (!Number.isFinite(ms)) return '';
+  const date = new Date(ms);
+  const offset = date.getTimezoneOffset() * 60000;
+  return new Date(ms - offset).toISOString().slice(0, 16);
+}
+
+function fromLocalInput(value) {
+  const ms = new Date(value).getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function DutyRecordDrawer({ period, issues, approvedIssues = [], partner, onClose }) {
+  const [editing, setEditing] = useState(false);
+  const [dutyOn, setDutyOn] = useState(() => toLocalInput(period.dutyOnAt));
+  const [dutyOff, setDutyOff] = useState(() => toLocalInput(period.dutyOffAt));
+  const [editNote, setEditNote] = useState('');
+  const [verifyOver14, setVerifyOver14] = useState(false);
+  const [approvalNotes, setApprovalNotes] = useState({});
+  const [findingVerifications, setFindingVerifications] = useState({});
+  const [busyAction, setBusyAction] = useState('');
+
+  useEffect(() => {
+    if (editing) return;
+    setDutyOn(toLocalInput(period.dutyOnAt));
+    setDutyOff(toLocalInput(period.dutyOffAt));
+  }, [period.dutyOnAt, period.dutyOffAt, editing]);
+
+  const onMs = fromLocalInput(dutyOn);
+  const offMs = dutyOff ? fromLocalInput(dutyOff) : null;
+  const editedDuration = onMs != null ? (offMs ?? Date.now()) - onMs : 0;
+  const editedOver14 = editedDuration > 14 * MS_HOUR;
+
+  const saveTimes = async () => {
+    if (onMs == null || (offMs != null && offMs <= onMs)) {
+      notify.error('Duty-off must be after duty-on.');
+      return;
+    }
+    setBusyAction('times');
+    try {
+      const result = await runAdminDutyAction({
+        action: 'update-times',
+        periodId: period.id,
+        dutyOnAt: onMs,
+        dutyOffAt: offMs,
+        status: offMs == null ? 'on' : 'off',
+        over14Verified: verifyOver14,
+        note: editNote.trim() || undefined,
+      });
+      setEditing(false);
+      setVerifyOver14(false);
+      setEditNote('');
+      notify.success(
+        `${result.updated?.length || 1} linked duty record${result.updated?.length === 1 ? '' : 's'} updated.`
+        + (result.over14
+          ? result.email?.sent && (!result.partnerEmail || result.partnerEmail.sent)
+            ? ' Over-14 notification sent.'
+            : ' Over-14 verified; notification delivery needs review.'
+          : ''),
+      );
+    } catch (err) {
+      notify.error(err?.message || 'Could not update duty times');
+    } finally {
+      setBusyAction('');
+    }
+  };
+
+  const approveIssue = async (issue) => {
+    const note = String(approvalNotes[issue.code] || '').trim();
+    if (!note) {
+      notify.error('Enter an approval note explaining the disposition.');
+      return;
+    }
+    setBusyAction(issue.code);
+    try {
+      await runAdminDutyAction({
+        action: 'approve-finding',
+        periodId: period.id,
+        issueCode: issue.code,
+        note,
+        over14Verified: issue.code === 'OVER_14' ? findingVerifications[issue.code] === true : undefined,
+      });
+      setApprovalNotes((current) => ({ ...current, [issue.code]: '' }));
+      notify.success(`${issue.code} approved with an audit entry.`);
+    } catch (err) {
+      notify.error(err?.message || 'Could not approve finding');
+    } finally {
+      setBusyAction('');
+    }
+  };
+
   const fields = [
     ['Record ID', period.id, true],
     ['Pilot UID', period.pilotUid, true],
@@ -794,16 +947,147 @@ function DutyRecordDrawer({ period, issues, partner, onClose }) {
             <h2 className="text-lg font-semibold text-content">{period.pilotName || 'Duty record'}</h2>
             <p className="mt-0.5 font-mono text-2xs text-content-muted">{fmtDateTime(period.dutyOnAt)}</p>
           </div>
-          <button type="button" onClick={onClose} className="rounded p-2 text-content-muted hover:bg-surface-raised hover:text-content" aria-label="Close">
-            <X className="h-5 w-5" />
-          </button>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => setEditing((value) => !value)}>
+              {editing ? 'Cancel edit' : 'Edit duty times'}
+            </Button>
+            <button type="button" onClick={onClose} className="rounded p-2 text-content-muted hover:bg-surface-raised hover:text-content" aria-label="Close">
+              <X className="h-5 w-5" />
+            </button>
+          </div>
         </div>
         <div className="flex-1 overflow-y-auto p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+          {editing && (
+            <Card className="mb-4 border-accent-border bg-accent-soft">
+              <h3 className="text-sm font-semibold text-content">Edit linked duty times</h3>
+              <p className="mt-1 text-2xs leading-relaxed text-content-muted">
+                When this record has a linked PIC/SIC partner, both periods receive the same
+                duty-on and duty-off times with an audit entry.
+              </p>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <label>
+                  <span className="mb-1 block text-[10px] uppercase tracking-wider text-content-subtle">Duty on</span>
+                  <input
+                    type="datetime-local"
+                    value={dutyOn}
+                    onChange={(event) => setDutyOn(event.target.value)}
+                    className="h-10 w-full rounded-lg border border-edge bg-surface px-3 text-sm text-content"
+                  />
+                </label>
+                <label>
+                  <span className="mb-1 block text-[10px] uppercase tracking-wider text-content-subtle">Duty off (blank = open)</span>
+                  <input
+                    type="datetime-local"
+                    value={dutyOff}
+                    onChange={(event) => setDutyOff(event.target.value)}
+                    className="h-10 w-full rounded-lg border border-edge bg-surface px-3 text-sm text-content"
+                  />
+                </label>
+              </div>
+              <label className="mt-3 block">
+                <span className="mb-1 block text-[10px] uppercase tracking-wider text-content-subtle">Correction note</span>
+                <input
+                  value={editNote}
+                  onChange={(event) => setEditNote(event.target.value)}
+                  placeholder="Why were these times corrected?"
+                  className="h-10 w-full rounded-lg border border-edge bg-surface px-3 text-sm text-content"
+                />
+              </label>
+              {editedOver14 && (
+                <label className="mt-3 flex cursor-pointer items-start gap-2 rounded-lg border border-danger-border bg-danger-soft p-3">
+                  <input
+                    type="checkbox"
+                    checked={verifyOver14}
+                    onChange={(event) => setVerifyOver14(event.target.checked)}
+                    className="mt-0.5 accent-red-500"
+                  />
+                  <span className="text-2xs leading-relaxed text-content-muted">
+                    I verified this period actually exceeded 14 hours ({fmtHours(editedDuration)}).
+                    Saving will email Jim, Jake, and Zack Taylor.
+                  </span>
+                </label>
+              )}
+              <div className="mt-3 flex justify-end">
+                <Button
+                  variant={editedOver14 ? 'danger' : 'primary'}
+                  size="sm"
+                  onClick={saveTimes}
+                  disabled={busyAction === 'times' || (editedOver14 && !verifyOver14)}
+                >
+                  {busyAction === 'times' ? 'Saving…' : 'Save duty times'}
+                </Button>
+              </div>
+            </Card>
+          )}
+
           {issues.length > 0 && (
             <Card className="mb-4 border-warning-border bg-warning-soft">
-              <p className="text-sm font-semibold text-content">Findings</p>
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {issues.map(i => <StatusChip key={i.code} tone={i.tone} size="sm">{i.code} · {i.label}</StatusChip>)}
+              <p className="text-sm font-semibold text-content">Outstanding findings</p>
+              <div className="mt-3 space-y-3">
+                {issues.map((issue) => (
+                  <div key={issue.code} className="rounded-lg border border-edge bg-surface p-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <p className="text-xs font-semibold text-content">{issue.code} · {issue.label}</p>
+                        <p className="mt-1 text-[11px] text-content-subtle">
+                          Approval acknowledges the finding; it does not alter the underlying duty data.
+                        </p>
+                      </div>
+                      <StatusChip tone={issue.tone} size="sm">{issue.kind}</StatusChip>
+                    </div>
+                    <div className="mt-2 flex gap-2">
+                      <input
+                        value={approvalNotes[issue.code] || ''}
+                        onChange={(event) => setApprovalNotes((current) => ({
+                          ...current,
+                          [issue.code]: event.target.value,
+                        }))}
+                        placeholder="Disposition / approval note"
+                        className="h-9 min-w-0 flex-1 rounded-lg border border-edge bg-surface-sunken px-3 text-xs text-content"
+                      />
+                      {issue.code === 'OVER_14' && (
+                        <label className="flex max-w-[12rem] cursor-pointer items-center gap-1.5 text-[10px] leading-tight text-danger">
+                          <input
+                            type="checkbox"
+                            checked={findingVerifications[issue.code] === true}
+                            onChange={(event) => setFindingVerifications((current) => ({
+                              ...current,
+                              [issue.code]: event.target.checked,
+                            }))}
+                            className="accent-red-500"
+                          />
+                          Verified over 14h; email leadership
+                        </label>
+                      )}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => approveIssue(issue)}
+                        disabled={busyAction === issue.code || (issue.code === 'OVER_14' && findingVerifications[issue.code] !== true)}
+                      >
+                        Approve
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+          {approvedIssues.length > 0 && (
+            <Card className="mb-4 border-success-border bg-success-soft">
+              <p className="text-sm font-semibold text-content">Approved findings</p>
+              <div className="mt-2 space-y-2">
+                {approvedIssues.map((issue) => (
+                  <div key={issue.code} className="flex items-start justify-between gap-3 text-xs">
+                    <div>
+                      <p className="font-medium text-content">{issue.code} · {issue.label}</p>
+                      <p className="mt-0.5 text-content-muted">{issue.approval?.note}</p>
+                    </div>
+                    <span className="shrink-0 text-2xs text-success">
+                      {issue.approval?.approvedByName} · {fmtDateTime(issue.approval?.approvedAt)}
+                    </span>
+                  </div>
+                ))}
               </div>
             </Card>
           )}

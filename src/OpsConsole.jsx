@@ -13,10 +13,18 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  AlertTriangle, CheckCircle2, Clock, FileText, Mail,
-  Users, MessageSquare, Send, Loader2, X, ExternalLink,
+  AlertTriangle, CheckCircle2, Clock, Search, ShieldAlert,
+  Users, UserCheck, Send, Loader2, X, ExternalLink,
 } from 'lucide-react';
 import { statusEventAt } from './trip-status.js';
+import {
+  OPS_STATUS_STEPS,
+  buildActiveOpsTrips,
+  computeOutstanding,
+  readinessLevel,
+} from './ops-readiness.js';
+
+export { computeOutstanding } from './ops-readiness.js';
 
 // Inject the pulse keyframes once. Inline <style> rather than a CSS
 // import so this code-split chunk is self-contained — no separate CSS
@@ -62,80 +70,13 @@ function hoursUntil(d) {
 // check is on `statuses[id]` as a whole, not `.completedAt`, because the
 // stored shape is { at, by, gps } and the presence of the entry IS the
 // completion signal.
-const STATUS_STEPS = [
-  { id: 'crew_onsite',     label: 'CREW' },
-  { id: 'aircraft_ready',  label: 'A/C' },
-  { id: 'catering_aboard', label: 'CTR',     revenueOnly: true },
-  { id: 'pax_arrived',     label: 'PAX IN',  revenueOnly: true },
-  { id: 'pax_boarded',     label: 'PAX BRD', revenueOnly: true },
-  { id: 'taxi_dep',        label: 'TAXI' },
-  { id: 'wheels_up',       label: 'UP' },
-  { id: 'landed',          label: 'DOWN' },
-];
-
-// ------------- outstanding-items detector ---------------------------------
-
-/**
- * Compute the list of missing/outstanding items for a trip. Returns an
- * array of { code, label, severity } where severity is 'warn' (something
- * to flag) or 'info' (worth noting but not urgent). Pure function — easy
- * to test, no React/Firestore dependencies.
- */
-export function computeOutstanding(trip, state) {
-  const out = [];
-  if (!trip || !trip.info) return out;
-  const info = trip.info;
-  const isRevenue = info.legType === 'REVENUE';
-  const s = state || {};
-
-  // Trip sheet: applies to ALL trips
-  if (!s.tripSheetUrl) {
-    out.push({ code: 'no-sheet', label: 'No trip sheet', severity: 'warn' });
-  }
-
-  // Broker email: revenue only
-  if (isRevenue) {
-    const email = (s.brokerEmail || info.broker || '').trim();
-    if (!email) {
-      out.push({ code: 'no-broker', label: 'No broker email', severity: 'warn' });
-    }
-  }
-
-  // Pax parsed: revenue only. Pax considered "parsed" if either
-  // state.passengers has entries, OR there's a paxOverride number > 0
-  // (manual entry), OR info.pax = 0 (no pax expected on this leg).
-  if (isRevenue) {
-    const paxCount = (info.pax != null ? info.pax : 0);
-    const parsedCount = Array.isArray(s.passengers) ? s.passengers.length : 0;
-    const overrideCount = typeof s.paxOverride === 'number' ? s.paxOverride : null;
-    if (paxCount > 0 && parsedCount === 0 && overrideCount == null) {
-      out.push({ code: 'no-pax', label: `${paxCount} pax not parsed`, severity: 'warn' });
-    }
-  }
-
-  // Dispatchers: any trip without dispatcherUids falls back to all-ops.
-  // Flag as info (not warn) since the fallback still works — it's just
-  // the operational hygiene we want to encourage.
-  if (!Array.isArray(s.dispatcherUids) || s.dispatcherUids.length === 0) {
-    out.push({ code: 'no-dispatch', label: 'No dispatcher set', severity: 'info' });
-  }
-
-  // PIC/SIC missing — only matters for revenue trips that actually need crew
-  if (isRevenue && !info.pic) {
-    out.push({ code: 'no-pic', label: 'No PIC', severity: 'warn' });
-  }
-  if (isRevenue && !info.sic) {
-    out.push({ code: 'no-sic', label: 'No SIC', severity: 'info' });
-  }
-
-  return out;
-}
-
 // ------------- status strip -----------------------------------------------
 
-function StatusStrip({ trip, statuses }) {
+function StatusStrip({ trip, statuses, hasCatering = true }) {
   const isRevenue = trip?.info?.legType === 'REVENUE';
-  const visible = STATUS_STEPS.filter((s) => !s.revenueOnly || isRevenue);
+  const visible = OPS_STATUS_STEPS.filter((s) => (
+    (!s.revenueOnly || isRevenue) && (!s.cateringOnly || hasCatering)
+  ));
   const total = visible.length;
 
   // For each step, capture { id, label, done, at }. Tooltip text built up
@@ -370,19 +311,39 @@ function SendUpdateModal({ trip, currentUser, onClose }) {
 
 // ------------- trip card --------------------------------------------------
 
-function TripCard({ trip, state, currentUser, onOpenTrip, onSendUpdate }) {
+function TripCard({
+  trip,
+  state,
+  currentUser,
+  users,
+  onOpenTrip,
+  onSendUpdate,
+  onControl,
+  controlBusy,
+}) {
   const outstanding = computeOutstanding(trip, state);
+  const critical = outstanding.filter((o) => o.severity === 'critical');
   const warns = outstanding.filter((o) => o.severity === 'warn');
   const infos = outstanding.filter((o) => o.severity === 'info');
   const hrs = hoursUntil(trip.start);
   const hrsLabel = hrs == null ? '' : hrs < 0 ? 'IN PROGRESS' : hrs < 1 ? '< 1h' : `${Math.floor(hrs)}h`;
   const isInProgress = hrs != null && hrs < 0;
   const completed = state?.completed;
+  const disposition = state?.opsDisposition || 'monitoring';
+  const assigned = Array.isArray(state?.dispatcherUids) ? state.dispatcherUids : [];
+  const myUid = currentUser?.uid || currentUser?.id;
+  const claimedByMe = assigned.includes(myUid);
+  const assignedNames = assigned
+    .map((uid) => users?.find((user) => (user.uid || user.id) === uid)?.name)
+    .filter(Boolean);
+  const readiness = readinessLevel(outstanding);
 
   return (
     <div
       className={`bg-slate-900 border ${
-        warns.length > 0 ? 'border-amber-500/30' : 'border-slate-800'
+        disposition === 'hold' || critical.length > 0
+          ? 'border-red-500/50'
+          : warns.length > 0 ? 'border-amber-500/30' : 'border-slate-800'
       } p-3 hover:border-cyan-500/40 transition-colors`}
     >
       {/* Header row */}
@@ -425,6 +386,27 @@ function TripCard({ trip, state, currentUser, onOpenTrip, onSendUpdate }) {
         )}
       </div>
 
+      {/* OCC coordination state — explicitly separate from regulatory release. */}
+      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+        <span className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider ${
+          disposition === 'hold'
+            ? 'border-red-500/40 bg-red-500/15 text-red-300'
+            : disposition === 'ready'
+              ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
+              : 'border-slate-700 bg-slate-800 text-slate-400'
+        }`}>
+          {disposition === 'hold' && <ShieldAlert className="h-2.5 w-2.5" />}
+          {disposition === 'ready' ? 'Ops ready' : disposition}
+        </span>
+        <span className={`text-[9px] uppercase tracking-wider ${
+          readiness === 'critical' ? 'text-red-300'
+            : readiness === 'warning' ? 'text-amber-300'
+              : readiness === 'ready' ? 'text-emerald-300' : 'text-slate-400'
+        }`}>
+          {readiness === 'ready' ? 'Checklist clean' : `${critical.length + warns.length} action item${critical.length + warns.length === 1 ? '' : 's'}`}
+        </span>
+      </div>
+
       {/* Crew */}
       {(trip.info?.pic || trip.info?.sic) && (
         <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1.5 text-[11px]">
@@ -443,12 +425,25 @@ function TripCard({ trip, state, currentUser, onOpenTrip, onSendUpdate }) {
         </div>
       )}
 
+      <div className="mt-2 flex items-center gap-1.5 text-[10px] text-slate-500">
+        <UserCheck className="h-3 w-3" />
+        {assigned.length === 0
+          ? 'Unassigned controller'
+          : assignedNames.length ? assignedNames.join(', ') : `${assigned.length} controller${assigned.length === 1 ? '' : 's'} assigned`}
+      </div>
+
       {/* Status strip */}
-      <StatusStrip trip={trip} statuses={state?.statuses} />
+      <StatusStrip trip={trip} statuses={state?.statuses} hasCatering={state?.hasCatering !== false} />
 
       {/* Outstanding items */}
-      {(warns.length > 0 || infos.length > 0) && (
+      {(critical.length > 0 || warns.length > 0 || infos.length > 0) && (
         <div className="mt-2 flex flex-wrap gap-1">
+          {critical.map((item) => (
+            <span key={item.code} className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-red-500/15 border border-red-500/30 text-red-300 text-[10px]" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              <AlertTriangle className="w-2.5 h-2.5" />
+              {item.label}
+            </span>
+          ))}
           {warns.map((w) => (
             <span key={w.code} className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-amber-500/15 border border-amber-500/30 text-amber-300 text-[10px]" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
               <AlertTriangle className="w-2.5 h-2.5" />
@@ -463,6 +458,13 @@ function TripCard({ trip, state, currentUser, onOpenTrip, onSendUpdate }) {
         </div>
       )}
 
+      {state?.opsLatestNote && (
+        <div className="mt-2 rounded border border-slate-700 bg-slate-950/60 px-2 py-1.5">
+          <p className="line-clamp-2 text-[10px] leading-relaxed text-slate-400">{state.opsLatestNote}</p>
+          <p className="mt-1 text-[9px] text-slate-600">{state.opsLatestNoteByName || 'Operations'}</p>
+        </div>
+      )}
+
       {/* Completed badge */}
       {completed && (
         <div className="mt-2 inline-flex items-center gap-1.5 px-2 py-0.5 bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[10px]" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
@@ -471,7 +473,42 @@ function TripCard({ trip, state, currentUser, onOpenTrip, onSendUpdate }) {
       )}
 
       {/* Actions */}
-      <div className="mt-3 pt-2 border-t border-slate-800 flex items-center justify-between gap-2">
+      <div className="mt-3 border-t border-slate-800 pt-2">
+        <div className="mb-2 flex flex-wrap gap-1.5">
+          <button
+            type="button"
+            disabled={controlBusy}
+            onClick={() => onControl(trip, claimedByMe ? 'unclaim' : 'claim')}
+            className="rounded border border-slate-700 px-2 py-1 text-[9px] font-semibold uppercase tracking-wider text-slate-300 hover:border-cyan-500/40 hover:text-cyan-300 disabled:opacity-50"
+          >
+            {claimedByMe ? 'Unclaim' : 'Claim'}
+          </button>
+          <button
+            type="button"
+            disabled={controlBusy}
+            onClick={() => onControl(trip, 'set-disposition', { disposition: 'ready' })}
+            className="rounded border border-emerald-500/30 px-2 py-1 text-[9px] font-semibold uppercase tracking-wider text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-50"
+          >
+            Ops ready
+          </button>
+          <button
+            type="button"
+            disabled={controlBusy}
+            onClick={() => onControl(trip, 'set-disposition', { disposition: 'hold' })}
+            className="rounded border border-red-500/30 px-2 py-1 text-[9px] font-semibold uppercase tracking-wider text-red-300 hover:bg-red-500/10 disabled:opacity-50"
+          >
+            Hold
+          </button>
+          <button
+            type="button"
+            disabled={controlBusy}
+            onClick={() => onControl(trip, 'add-trip-note')}
+            className="rounded border border-slate-700 px-2 py-1 text-[9px] font-semibold uppercase tracking-wider text-slate-300 hover:border-slate-500 disabled:opacity-50"
+          >
+            Note
+          </button>
+        </div>
+        <div className="flex items-center justify-between gap-2">
         <button
           onClick={() => onOpenTrip(trip.uid)}
           className="text-[10px] tracking-widest text-slate-400 hover:text-cyan-300 flex items-center gap-1"
@@ -486,6 +523,7 @@ function TripCard({ trip, state, currentUser, onOpenTrip, onSendUpdate }) {
         >
           <Send className="w-2.5 h-2.5" /> SEND UPDATE
         </button>
+        </div>
       </div>
     </div>
   );
@@ -499,11 +537,14 @@ function TripCard({ trip, state, currentUser, onOpenTrip, onSendUpdate }) {
  *   allTrips      Array of trip objects from the schedule (iCal + manual)
  *   onOpenTrip    (tripUid) -> void — caller-supplied navigation
  */
-function OpsConsole({ currentUser, allTrips, onOpenTrip }) {
+function OpsConsole({ currentUser, allTrips, users = [], onOpenTrip }) {
   const [stateMap, setStateMap] = useState(new Map());
   const [loaded, setLoaded] = useState(false);
   const [sendingTo, setSendingTo] = useState(null); // trip object or null
-  const [filter, setFilter] = useState('all'); // 'all' | 'flags' | 'inprogress'
+  const [filter, setFilter] = useState('all');
+  const [query, setQuery] = useState('');
+  const [controlBusy, setControlBusy] = useState(null);
+  const [controlMessage, setControlMessage] = useState(null);
 
   useEffect(() => {
     let unsub = () => {};
@@ -517,95 +558,95 @@ function OpsConsole({ currentUser, allTrips, onOpenTrip }) {
     return () => { try { unsub(); } catch (_) {} };
   }, []);
 
-  // Active trips: starts during TODAY (Eastern), OR started earlier and is
-  // still in progress (started in the past, not yet completed). This is
-  // the "what's flying today, what's about to fly today, plus what's
-  // still up from last night" view. Filter out completed/archived.
-  const active = useMemo(() => {
-    const now = Date.now();
-    // Compute the start and end of TODAY in Eastern time, expressed as
-    // UTC ms. Use Intl to get today's Y-M-D in ET, then anchor 00:00 ET
-    // and 24:00 ET as UTC instants.
-    let todayStart = 0, todayEnd = now + 24 * 3600 * 1000;
-    try {
-      const etParts = new Intl.DateTimeFormat('en-US', {
-        timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit',
-      }).formatToParts(new Date(now));
-      const y = Number(etParts.find(p => p.type === 'year').value);
-      const mo = Number(etParts.find(p => p.type === 'month').value);
-      const d = Number(etParts.find(p => p.type === 'day').value);
-      const naive = new Date(Date.UTC(y, mo - 1, d, 0, 0, 0));
-      const etStr = naive.toLocaleString('en-US', { timeZone: 'America/New_York' });
-      const utcStr = naive.toLocaleString('en-US', { timeZone: 'UTC' });
-      const offset = new Date(etStr).getTime() - new Date(utcStr).getTime();
-      todayStart = naive.getTime() - offset;
-      todayEnd = todayStart + 24 * 3600 * 1000;
-    } catch (_) { /* fall back to wide window */ }
-
-    const candidate = (allTrips || []).filter((t) => {
-      const ts = t.start instanceof Date ? t.start.getTime() : new Date(t.start).getTime();
-      if (!Number.isFinite(ts)) return false;
-      // Drop non-operational trips: CREW HOLD placeholders, MX, training.
-      // These are calendar entries, not real flight legs that ops needs to
-      // track on this console. The trip.info.isOps flag is true only for
-      // REVENUE/REPO/FERRY/OWNER (operational categories).
-      if (t.info && t.info.isOps === false) return false;
-      // Also drop legs where from === to and there's no pax — these are
-      // calendar placeholders even when isOps wasn't set (older imports).
-      if (t.info && t.info.from && t.info.from === t.info.to && !t.info.pax) return false;
-      const s = stateMap.get(t.uid);
-      if (s?.completed || s?.archived) return false;
-      // In-window if:
-      //   (a) starts today (Eastern), OR
-      //   (b) started in the last 24h and isn't marked complete (the trip
-      //       might still be in the air — flights are at most ~10-15h, so
-      //       24h covers any plausibly-still-flying case; anything older
-      //       is definitely landed even if nobody tapped MARK COMPLETE).
-      //
-      // Without the 24h cap, every past trip ever flown shows here because
-      // most legacy trips were never explicitly marked complete.
-      const startsToday = ts >= todayStart && ts < todayEnd;
-      const inProgress = ts < now && ts > now - (24 * 60 * 60 * 1000);
-      return startsToday || inProgress;
-    });
-    candidate.sort((a, b) => {
-      const ta = a.start instanceof Date ? a.start.getTime() : new Date(a.start).getTime();
-      const tb = b.start instanceof Date ? b.start.getTime() : new Date(b.start).getTime();
-      return ta - tb;
-    });
-    return candidate;
-  }, [allTrips, stateMap]);
+  const active = useMemo(
+    () => buildActiveOpsTrips(allTrips, stateMap),
+    [allTrips, stateMap],
+  );
 
   // Apply current filter.
   const visible = useMemo(() => {
-    if (filter === 'all') return active;
+    let filtered = active;
     if (filter === 'flags') {
-      return active.filter((t) => {
+      filtered = active.filter((t) => {
         const out = computeOutstanding(t, stateMap.get(t.uid));
-        return out.some((o) => o.severity === 'warn');
+        return out.some((o) => o.severity === 'critical' || o.severity === 'warn');
       });
-    }
-    if (filter === 'inprogress') {
-      return active.filter((t) => {
+    } else if (filter === 'inprogress') {
+      filtered = active.filter((t) => {
         const ts = t.start instanceof Date ? t.start.getTime() : new Date(t.start).getTime();
         return ts < Date.now();
       });
+    } else if (filter === 'hold') {
+      filtered = active.filter((t) => stateMap.get(t.uid)?.opsDisposition === 'hold');
+    } else if (filter === 'unassigned') {
+      filtered = active.filter((t) => !(stateMap.get(t.uid)?.dispatcherUids?.length));
     }
-    return active;
-  }, [active, filter, stateMap]);
+    const needle = query.trim().toLowerCase();
+    if (!needle) return filtered;
+    return filtered.filter((trip) => [
+      trip.info?.tail,
+      trip.info?.from,
+      trip.info?.to,
+      trip.info?.pic,
+      trip.info?.sic,
+      trip.info?.customer,
+      trip.info?.broker,
+    ].some((value) => String(value || '').toLowerCase().includes(needle)));
+  }, [active, filter, query, stateMap]);
 
   // Summary counts for the header.
   const counts = useMemo(() => {
-    let withFlags = 0, inProgress = 0;
+    let withFlags = 0, inProgress = 0, holds = 0, ready = 0, unassigned = 0;
     const now = Date.now();
     active.forEach((t) => {
       const out = computeOutstanding(t, stateMap.get(t.uid));
-      if (out.some((o) => o.severity === 'warn')) withFlags++;
+      if (out.some((o) => o.severity === 'critical' || o.severity === 'warn')) withFlags++;
       const ts = t.start instanceof Date ? t.start.getTime() : new Date(t.start).getTime();
       if (ts < now) inProgress++;
+      const state = stateMap.get(t.uid);
+      if (state?.opsDisposition === 'hold') holds++;
+      if (state?.opsDisposition === 'ready') ready++;
+      if (!state?.dispatcherUids?.length) unassigned++;
     });
-    return { total: active.length, withFlags, inProgress };
+    return { total: active.length, withFlags, inProgress, holds, ready, unassigned };
   }, [active, stateMap]);
+
+  const runControl = async (trip, action, extra = {}) => {
+    const key = `${trip.uid}-${action}`;
+    setControlBusy(key);
+    setControlMessage(null);
+    try {
+      const payload = { ...extra };
+      if (action === 'set-disposition' && extra.disposition === 'hold') {
+        const reason = window.prompt('Reason for operational hold (required):', stateMap.get(trip.uid)?.opsDispositionReason || '');
+        if (reason == null) return;
+        if (!reason.trim()) throw new Error('A hold reason is required');
+        payload.reason = reason.trim();
+      }
+      if (action === 'add-trip-note') {
+        const note = window.prompt('Add an OCC note for this trip:', '');
+        if (note == null) return;
+        if (!note.trim()) throw new Error('A note is required');
+        payload.note = note.trim();
+      }
+      const { auth } = await import('./firebase.js');
+      const idToken = await auth.currentUser?.getIdToken();
+      if (!idToken) throw new Error('Your operations session expired');
+      const response = await fetch('/api/ops-control-action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        cache: 'no-store',
+        body: JSON.stringify({ idToken, action, tripId: trip.uid, ...payload }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || 'Control action failed');
+      setControlMessage({ tone: 'success', text: `${trip.info?.tail || 'Trip'} updated.` });
+    } catch (error) {
+      setControlMessage({ tone: 'danger', text: error.message || 'Control action failed' });
+    } finally {
+      setControlBusy(null);
+    }
+  };
 
   if (!['ops', 'admin'].includes(currentUser?.role)) {
     return (
@@ -626,7 +667,7 @@ function OpsConsole({ currentUser, allTrips, onOpenTrip }) {
             OPS CONSOLE
           </h1>
           <p className="text-[11px] text-slate-500 mt-0.5">
-            Today's trips · plus anything still in progress
+            Rolling 48-hour flight-control board · coordination status is not a regulatory release
           </p>
         </div>
         <div className="flex items-center gap-3 text-[11px]" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
@@ -639,29 +680,59 @@ function OpsConsole({ currentUser, allTrips, onOpenTrip }) {
           <span className="text-slate-400">
             <span className="text-amber-300 text-base tabular-nums">{counts.withFlags}</span> FLAGS
           </span>
+          <span className="text-slate-400">
+            <span className="text-red-300 text-base tabular-nums">{counts.holds}</span> HOLD
+          </span>
+          <span className="text-slate-400">
+            <span className="text-emerald-300 text-base tabular-nums">{counts.ready}</span> READY
+          </span>
         </div>
       </div>
 
-      {/* Filter buttons */}
-      <div className="flex gap-2 mb-4">
-        {[
-          { id: 'all', label: 'ALL' },
-          { id: 'flags', label: 'WITH FLAGS' },
-          { id: 'inprogress', label: 'IN PROGRESS' },
-        ].map((f) => (
-          <button
-            key={f.id}
-            onClick={() => setFilter(f.id)}
-            className={`px-3 py-1.5 text-[11px] tracking-widest border ${
-              filter === f.id
-                ? 'bg-cyan-500/15 border-cyan-500/40 text-cyan-300'
-                : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700'
-            }`}
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}
-          >
-            {f.label}
-          </button>
-        ))}
+      {controlMessage && (
+        <div className={`mb-3 rounded border px-3 py-2 text-xs ${
+          controlMessage.tone === 'success'
+            ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+            : 'border-red-500/30 bg-red-500/10 text-red-300'
+        }`}>
+          {controlMessage.text}
+        </div>
+      )}
+
+      {/* Controller filters and fast search */}
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap gap-2">
+          {[
+            { id: 'all', label: 'ALL', count: counts.total },
+            { id: 'flags', label: 'WITH FLAGS', count: counts.withFlags },
+            { id: 'inprogress', label: 'IN PROGRESS', count: counts.inProgress },
+            { id: 'hold', label: 'ON HOLD', count: counts.holds },
+            { id: 'unassigned', label: 'UNASSIGNED', count: counts.unassigned },
+          ].map((f) => (
+            <button
+              key={f.id}
+              onClick={() => setFilter(f.id)}
+              className={`px-3 py-1.5 text-[11px] tracking-widest border ${
+                filter === f.id
+                  ? 'bg-cyan-500/15 border-cyan-500/40 text-cyan-300'
+                  : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700'
+              }`}
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              {f.label} <span className="ml-1 opacity-70">{f.count}</span>
+            </button>
+          ))}
+        </div>
+        <label className="relative ml-auto min-w-[14rem] flex-1 sm:max-w-xs">
+          <Search className="pointer-events-none absolute left-2.5 top-2 h-3.5 w-3.5 text-slate-500" />
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Tail, route, crew, customer…"
+            className="w-full border border-slate-800 bg-slate-900 py-1.5 pl-8 pr-3 text-xs text-slate-200 outline-none focus:border-cyan-500/50"
+          />
+        </label>
       </div>
 
       {!loaded ? (
@@ -672,7 +743,7 @@ function OpsConsole({ currentUser, allTrips, onOpenTrip }) {
         <div className="bg-slate-900 border border-slate-800 p-8 text-center">
           <p className="text-sm text-slate-500">
             {filter === 'all'
-              ? 'No active trips in the next 48 hours.'
+              ? 'No active trips in the rolling 48-hour window.'
               : filter === 'flags'
                 ? 'No trips with outstanding items. Nice.'
                 : 'No trips currently in progress.'}
@@ -686,8 +757,11 @@ function OpsConsole({ currentUser, allTrips, onOpenTrip }) {
               trip={trip}
               state={stateMap.get(trip.uid)}
               currentUser={currentUser}
+              users={users}
               onOpenTrip={onOpenTrip}
               onSendUpdate={(t) => setSendingTo(t)}
+              onControl={runControl}
+              controlBusy={Boolean(controlBusy?.startsWith(`${trip.uid}-`))}
             />
           ))}
         </div>

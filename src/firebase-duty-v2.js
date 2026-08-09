@@ -72,9 +72,9 @@
 // Security rules notes (for whoever's writing rules):
 //   - Pilots can READ their own duty-periods-v2 + duty-outside-flying-v2
 //   - Pilots can CREATE / UPDATE their own (own pilotUid)
-//   - Pilots can NEVER set overrideApprovedBy / overrideApprovedAt — only
-//     admin/ops/chief-pilot roles can approve
-//   - Admin / ops / chief-pilot can read ALL pilots' records
+//   - Pilots can NEVER set overrideApprovedBy / overrideApprovedAt
+//   - Only admin can read all pilots or approve compliance findings/overrides
+//   - Ops, maintenance, accounting and sales have no fleet-duty read access
 //   - Deletes are not permitted — periods are corrected via edits, not removed
 
 import { db, auth } from './firebase.js';
@@ -300,6 +300,34 @@ export async function fetchPeriodsByTailInRange(tail, startMs, endMs) {
   if (!tail) return [];
   const start = Number.isFinite(startMs) ? startMs : 0;
   const end = Number.isFinite(endMs) ? endMs : Date.now();
+  const user = auth.currentUser;
+  if (!user) return [];
+  let isAdmin = false;
+  try {
+    const profile = await getDoc(doc(db, 'users', user.uid));
+    isAdmin = profile.exists()
+      && String(profile.data()?.role || '').toLowerCase() === 'admin';
+  } catch {
+    // Fail private. A profile-read error must never fall back to fleet-wide.
+    isAdmin = false;
+  }
+
+  // Crew manifest flows may use duty timing, but only from the signed-in
+  // pilot's own records. Admins retain the fleet-wide tail lookup. This split
+  // is enforced before the query so another pilot's document never reaches a
+  // crew browser, even transiently.
+  if (!isAdmin) {
+    const own = await fetchPeriodsForPilotInRange(user.uid, start, end);
+    return own
+      .filter((period) => String(period.tail || '').toUpperCase() === String(tail).toUpperCase())
+      .filter((period) => (
+        !period.confirmStatus
+        || period.confirmStatus === 'self-attested'
+        || period.confirmStatus === 'admin-attested'
+      ))
+      .sort((a, b) => (a.dutyOnAt || 0) - (b.dutyOnAt || 0));
+  }
+
   const q = query(
     collection(db, COLL),
     where('tail', '==', tail),
@@ -430,162 +458,29 @@ export async function startDuty(opts) {
 }
 
 // =====================================================================
-// PAIRED DUTY START (PIC → SIC sync)
+// PAIRED DUTY START (symmetric PIC ↔ SIC sync)
 // =====================================================================
 //
-// startDutyPair atomically creates two linked duty periods: one for the
-// PIC (self-attested, immediately active) and one for the SIC (pending,
-// awaiting SIC confirmation). The SIC opens DutyV2 and sees a "your
-// partner is starting duty" card; they confirm or decline.
+// Cross-user writes run through Admin SDK. Either pilot can initiate. The
+// caller is self-attested; their counterpart starts operational duty at the
+// same time but remains pending until personally confirming fitness.
 //
-// Why a separate function rather than letting startDuty take a partner
-// option:
-//   1. Atomic-ish: refuses if EITHER pilot has an open period. Without
-//      a single entry point, you could half-succeed (PIC starts, SIC
-//      fails) and leave a confusing partial state.
-//   2. Different validation: the SIC record is created with fitForDuty
-//      = null (not true). The SIC must attest themselves on confirm.
-//   3. Cross-links: each doc gets the OTHER's id in partnerPeriodId,
-//      computed before either write. Hard to do cleanly from inside
-//      startDuty without a second pass.
-//
-// HONEST CAVEAT: Firestore does not provide true atomic writes across
-// docs unless we use a transaction. Below we use a writeBatch which is
-// atomic from the SERVER'S perspective — both docs commit or neither
-// does. Network/auth failures can still cause one-sided state, but the
-// failure surface is the same as a single setDoc.
-//
-// picOpts and sicOpts are both the same shape as startDuty's opts.
-// SIC's fitForDuty is FORCED to null regardless of input. priorRestMs
-// can be inherited from PIC's value by the UI before calling here.
-//
-// Returns: { picPeriod, sicPeriod }
-
+// Returns the caller's own period only. Partner duty/compliance data is never
+// returned to a crew client.
 export async function startDutyPair(picOpts, sicOpts) {
-  if (!picOpts?.pilotUid) throw new Error('PIC pilotUid required');
-  if (!sicOpts?.pilotUid) throw new Error('SIC pilotUid required');
-  if (picOpts.pilotUid === sicOpts.pilotUid) {
-    throw new Error('PIC and SIC must be different pilots');
+  const { auth } = await import('./firebase.js');
+  if (!auth.currentUser) throw new Error('You must be signed in to start paired duty');
+  const idToken = await auth.currentUser.getIdToken();
+  const response = await fetch('/api/duty-start-pair', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ idToken, picOpts, sicOpts }),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok || !result.ok) {
+    throw new Error(result.error || `Paired duty start failed (${response.status})`);
   }
-  if (picOpts.fitForDuty !== true) {
-    throw new Error('PIC fit-for-duty attestation required');
-  }
-  if (!['unscheduled', 'regular'].includes(picOpts.assignmentType)) {
-    throw new Error('assignmentType must be "unscheduled" or "regular"');
-  }
-
-  // Refuse if EITHER pilot has an open period. Two separate queries
-  // because Firestore doesn't support OR across `in` queries on the
-  // same field combined with another filter.
-  for (const [label, uid] of [['PIC', picOpts.pilotUid], ['SIC', sicOpts.pilotUid]]) {
-    const existing = await getDocs(query(
-      collection(db, COLL),
-      where('pilotUid', '==', uid),
-      where('status', '==', 'on')
-    ));
-    if (!existing.empty) {
-      throw new Error(`${label} already has an open duty period. End it before starting a paired duty.`);
-    }
-  }
-
-  const dutyOnAt = Number.isFinite(picOpts.dutyOnAt) ? picOpts.dutyOnAt : Date.now();
-  const now = Date.now();
-  const picId = `${picOpts.pilotUid}_${dutyOnAt}`;
-  // SIC id uses the SAME dutyOnAt so the two docs share a clear pairing
-  // timestamp. Tiebreaker via uid prevents collision if PIC tries to
-  // pair themselves (which we already rejected above).
-  const sicId = `${sicOpts.pilotUid}_${dutyOnAt}`;
-
-  // PIC doc — fully active, self-attested.
-  const picDoc = {
-    id: picId,
-    pilotUid: picOpts.pilotUid,
-    pilotName: picOpts.pilotName || 'Unknown',
-    location: picOpts.location || '',
-    tail: picOpts.tail || null,
-    tripId: picOpts.tripId || null,
-    role: 'PIC',
-    crewType: 'two',                      // pairing implies two-pilot crew
-    assignmentType: picOpts.assignmentType,
-    fitForDuty: true,
-    priorRestMs: Number.isFinite(picOpts.priorRestMs) ? picOpts.priorRestMs : null,
-    dutyOnAt,
-    dutyOffAt: null,
-    flightTimeMs: 0,
-    excursionReason: null,
-    overrideStatus: 'none',
-    overrideRequestedBy: null,
-    overrideRequestedAt: null,
-    overrideRequestReason: null,
-    overrideApprovedBy: null,
-    overrideApprovedAt: null,
-    overrideApprovalNotes: null,
-    confirmStatus: 'self-attested',
-    partnerPeriodId: sicId,
-    pendingCreatedBy: null,
-    confirmedAt: null,
-    declinedAt: null,
-    declinedReason: null,
-    adminEdits: [],
-    createdAt: now,
-    updatedAt: now,
-    status: 'on',
-    over14: false,
-  };
-
-  // SIC doc — pending, fit-for-duty is NULL (forcing SIC to attest
-  // themselves on confirm). Other fields inherit from PIC's submission.
-  // priorRestMs is inherited as a default; the SIC can adjust it on the
-  // confirmation card before clicking CONFIRM.
-  const sicDoc = {
-    id: sicId,
-    pilotUid: sicOpts.pilotUid,
-    pilotName: sicOpts.pilotName || 'Unknown',
-    location: picOpts.location || '',      // same FBO
-    tail: picOpts.tail || null,
-    tripId: picOpts.tripId || null,
-    role: 'SIC',
-    crewType: 'two',
-    assignmentType: picOpts.assignmentType,
-    // Critical: fitForDuty is NULL on a pending record. The SIC must
-    // confirm to set it true. Legality engine ignores pending periods.
-    fitForDuty: null,
-    priorRestMs: Number.isFinite(sicOpts.priorRestMs)
-      ? sicOpts.priorRestMs
-      : (Number.isFinite(picOpts.priorRestMs) ? picOpts.priorRestMs : null),
-    dutyOnAt,
-    dutyOffAt: null,
-    flightTimeMs: 0,
-    excursionReason: null,
-    overrideStatus: 'none',
-    overrideRequestedBy: null,
-    overrideRequestedAt: null,
-    overrideRequestReason: null,
-    overrideApprovedBy: null,
-    overrideApprovedAt: null,
-    overrideApprovalNotes: null,
-    confirmStatus: 'pending',              // <-- key flag
-    partnerPeriodId: picId,
-    pendingCreatedBy: picOpts.pilotUid,    // audit: which PIC initiated
-    confirmedAt: null,
-    declinedAt: null,
-    declinedReason: null,
-    adminEdits: [],
-    createdAt: now,
-    updatedAt: now,
-    status: 'on',                          // appears in subscribe-on-duty
-                                            // queries; legality engine
-                                            // excludes by confirmStatus
-    over14: false,
-  };
-
-  // Batched write — both commit or both don't.
-  const batch = writeBatch(db);
-  batch.set(doc(db, COLL, picId), picDoc);
-  batch.set(doc(db, COLL, sicId), sicDoc);
-  await batch.commit();
-
-  return { picPeriod: picDoc, sicPeriod: sicDoc };
+  return result.period;
 }
 
 // =====================================================================
@@ -745,7 +640,7 @@ export async function endDuty(periodId, opts = {}) {
  * crew-manage end button should call — NOT the low-level endDuty() above, which
  * only closes a single period and is kept for completeness / single-pilot use.
  *
- * opts: { dutyOffAt?, flightTimeMs?, excursionReason?, endedBy? }
+ * opts: { dutyOffAt?, flightTimeMs?, excursionReason?, over14Verified?, endedBy? }
  * Returns: { ok, closed: [ids], dutyOffAt, alreadyClosed? }
  */
 export async function endDutyPair(periodId, opts = {}) {
@@ -763,6 +658,7 @@ export async function endDutyPair(periodId, opts = {}) {
       dutyOffAt: Number.isFinite(opts.dutyOffAt) ? opts.dutyOffAt : undefined,
       flightTimeMs: Number.isFinite(opts.flightTimeMs) ? opts.flightTimeMs : undefined,
       excursionReason: opts.excursionReason || undefined,
+      over14Verified: opts.over14Verified === true,
       endedByName: opts.endedBy || user.displayName || null,
     }),
   });
