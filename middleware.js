@@ -12,7 +12,12 @@ import { next, rewrite } from '@vercel/edge';
  */
 export const config = { matcher: ['/', '/index.html'] };
 
-const MARKETING_HOSTS = new Set(['135ops.app', 'www.135ops.app']);
+const MARKETING_HOSTS = new Set([
+  '135ops.app',
+  'www.135ops.app',
+  // TEMPORARY: proving middleware claims "/" on Vercel. Removed after testing.
+  'skyway-ops-wv8r-git-cursor-mar-617c69-skywayaviation1s-projects.vercel.app',
+]);
 
 export default function middleware(request) {
   try {
