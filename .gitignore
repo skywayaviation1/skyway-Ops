@@ -2,3 +2,14 @@ node_modules
 dist
 .vercel
 *.log
+
+# Native Firebase configuration is downloaded per registered app.
+android/app/google-services.json
+ios/App/App/GoogleService-Info.plist
+
+# Local release signing material must never be committed.
+*.jks
+*.keystore
+android/keystore.properties
+ios/*.mobileprovision
+ios/*.p12

@@ -6,11 +6,23 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "mobile:sync": "npm run build && cap sync",
+    "mobile:android": "npm run mobile:sync && cap open android",
+    "mobile:ios": "npm run mobile:sync && cap open ios",
+    "mobile:doctor": "cap doctor"
   },
   "dependencies": {
-    "firebase": "10.13.2",
-    "firebase-admin": "12.5.0",
+    "@capacitor-firebase/authentication": "^8.3.0",
+    "@capacitor-firebase/messaging": "^8.3.0",
+    "@capacitor/app": "^8.1.1",
+    "@capacitor/core": "^8.5.0",
+    "@capacitor/haptics": "^8.0.2",
+    "@capacitor/keyboard": "^8.0.5",
+    "@capacitor/network": "^8.0.1",
+    "@capacitor/status-bar": "^8.0.3",
+    "firebase": "^12.17.1",
+    "firebase-admin": "^14.2.0",
     "jspdf": "2.5.2",
     "jszip": "3.10.1",
     "lucide-react": "0.383.0",
@@ -22,9 +34,14 @@
     "stream-chat-react": "^13.13.0"
   },
   "devDependencies": {
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/assets": "^3.0.5",
+    "@capacitor/cli": "^8.5.0",
+    "@capacitor/ios": "^8.5.0",
     "@vitejs/plugin-react": "4.3.1",
     "autoprefixer": "10.4.19",
     "postcss": "8.4.39",
+    "signal-exit": "^4.1.0",
     "tailwindcss": "3.4.4",
     "vite": "5.3.3"
   }

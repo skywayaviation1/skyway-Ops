@@ -22,6 +22,7 @@ import {
   collection,
   onSnapshot,
 } from 'firebase/firestore';
+import { isNativeApp } from './mobile-runtime.js';
 
 const COMPANY_DOMAIN = 'flyskyway.com';
 
@@ -297,6 +298,33 @@ function consumeRedirectFlag() {
 }
 
 export async function signInWithMicrosoft() {
+  if (isNativeApp()) {
+    const { FirebaseAuthentication } = await import('@capacitor-firebase/authentication');
+    await FirebaseAuthentication.signInWithMicrosoft({
+      scopes: ['openid', 'profile', 'email'],
+      customParameters: [
+        { key: 'prompt', value: 'select_account' },
+        { key: 'domain_hint', value: COMPANY_DOMAIN },
+      ],
+    });
+
+    const { token: nativeIdToken } = await FirebaseAuthentication.getIdToken({
+      forceRefresh: true,
+    });
+    const response = await fetch('/api/mobile-auth-token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      cache: 'no-store',
+      body: JSON.stringify({ idToken: nativeIdToken }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.token) {
+      await FirebaseAuthentication.signOut().catch(() => {});
+      throw new Error(data.error || 'Could not complete mobile sign-in');
+    }
+    return signInWithCustomToken(auth, data.token);
+  }
+
   markRedirectStarted();
   try {
     await signInWithRedirect(auth, microsoftProvider());
@@ -307,6 +335,8 @@ export async function signInWithMicrosoft() {
 }
 
 export async function completeMicrosoftRedirect() {
+  if (isNativeApp()) return null;
+
   // Resolves once Firebase has finished restoring persisted auth state, so
   // auth.currentUser is trustworthy immediately afterwards.
   const result = await getRedirectResult(auth);
@@ -344,6 +374,10 @@ export async function completeMicrosoftRedirect() {
 }
 
 export async function signOut() {
+  if (isNativeApp()) {
+    const { FirebaseAuthentication } = await import('@capacitor-firebase/authentication');
+    await FirebaseAuthentication.signOut().catch(() => {});
+  }
   await fbSignOut(auth);
 }
 

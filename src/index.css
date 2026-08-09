@@ -217,7 +217,8 @@ body {
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
 }
-html[data-standalone='1'] #root {
+html[data-standalone='1'] #root,
+html[data-native] #root {
   /* Homescreen launches always mount the app shell — lock outer scroll so
      iOS rubber-banding doesn't flash the body color behind chrome. */
   overflow: hidden;
@@ -313,11 +314,13 @@ a:focus:not(:focus-visible) { outline: none; }
 
 /* Standalone homescreen polish: slightly taller bottom nav hit targets,
    and keep the status-bar region painted with the shell color. */
-html[data-standalone='1'] {
+html[data-standalone='1'],
+html[data-native] {
   /* Prevent rubber-band revealing white behind the fixed body. */
   background: var(--sw-bg);
 }
-html[data-standalone='1'] .sw-mobile-tab {
+html[data-standalone='1'] .sw-mobile-tab,
+html[data-native] .sw-mobile-tab {
   min-height: 48px;
 }
 
