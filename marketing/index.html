@@ -52,6 +52,7 @@
 
       <nav class="nav__links" aria-label="Primary">
         <a href="#tour">Product</a>
+        <a href="#cockpit">For pilots</a>
         <a href="#compliance">Compliance</a>
         <a href="#features">Features</a>
         <a href="#integrations">Integrations</a>
@@ -70,6 +71,7 @@
 
     <div class="nav__drawer" id="navDrawer">
       <a href="#tour">Product</a>
+      <a href="#cockpit">For pilots</a>
       <a href="#compliance">Compliance</a>
       <a href="#features">Features</a>
       <a href="#integrations">Integrations</a>
@@ -421,6 +423,131 @@
       </div>
     </section>
 
+    <!-- ========================================================= COCKPIT -->
+    <section class="section section--panel" id="cockpit">
+      <div class="shell">
+        <div class="section-head" data-reveal>
+          <p class="eyebrow">In the cockpit</p>
+          <h2>What the pilot actually holds.</h2>
+          <p class="lede">
+            Crews don't work from a desk. Skyway Ops installs on a phone as a progressive web
+            app, and everything a pilot needs for the operating day — the trip, the duty clock,
+            passenger check-in, the preflight wear check, receipts — is a thumb away. These are
+            live captures of a captain's own view.
+          </p>
+        </div>
+
+        <div class="cockpit" data-reveal>
+          <figure data-lightbox data-caption="Pilot home — the next trip and the duty clock">
+            <div class="frame frame--phone">
+              <img src="assets/screens/phone-pilot-home.webp" alt="Pilot home screen with the in-progress trip and a duty timer showing 5:24 of 14:00 maximum" width="900" height="1925" loading="lazy" />
+            </div>
+            <figcaption>
+              <span class="cockpit__step">Start of day</span>
+              <b>Home</b>
+              <span>The trip in progress, show time, and a duty ring against the 14-hour limit.</span>
+            </figcaption>
+          </figure>
+
+          <figure data-lightbox data-caption="Assigned trips for the day">
+            <div class="frame frame--phone">
+              <img src="assets/screens/phone-schedule.webp" alt="Pilot schedule listing today's assigned legs with status pills" width="900" height="1925" loading="lazy" />
+            </div>
+            <figcaption>
+              <span class="cockpit__step">Their legs only</span>
+              <b>Schedule</b>
+              <span>Just the trips this crew is on, grouped by day with live status.</span>
+            </figcaption>
+          </figure>
+
+          <figure data-lightbox data-caption="Duty on and off, with the fit-for-duty attestation">
+            <div class="frame frame--phone">
+              <img src="assets/screens/phone-duty.webp" alt="Duty tracker showing duty start, prior rest, flight time and an End Duty action" width="900" height="1925" loading="lazy" />
+            </div>
+            <figcaption>
+              <span class="cockpit__step">Duty on / off</span>
+              <b>Duty tracker</b>
+              <span>Prior rest, time remaining, and a fit-for-duty attestation on the record.</span>
+            </figcaption>
+          </figure>
+
+          <figure data-lightbox data-caption="Working the eight-step trip timeline">
+            <div class="frame frame--phone">
+              <img src="assets/screens/phone-trip-status.webp" alt="Trip status timeline on a phone with crew onsite, aircraft ready and catering steps complete" width="900" height="1925" loading="lazy" />
+            </div>
+            <figcaption>
+              <span class="cockpit__step">On the ramp</span>
+              <b>Trip status</b>
+              <span>Eight taps from crew onsite to landed, each one time-stamped and attributed.</span>
+            </figcaption>
+          </figure>
+
+          <figure data-lightbox data-caption="Passenger check-in and ID verification">
+            <div class="frame frame--phone">
+              <img src="assets/screens/phone-passengers.webp" alt="Passenger list on a phone with check-in and skip actions per passenger" width="900" height="1925" loading="lazy" />
+            </div>
+            <figcaption>
+              <span class="cockpit__step">At the aircraft</span>
+              <b>Passenger check-in</b>
+              <span>Scan a government ID, match it to the trip sheet, and count heads before boarding.</span>
+            </figcaption>
+          </figure>
+
+          <figure data-lightbox data-caption="Preflight wear check — tires, brakes, engines, systems">
+            <div class="frame frame--phone">
+              <img src="assets/screens/phone-wear.webp" alt="Wear check on a phone listing ten inspection items with a take-photo prompt" width="900" height="1925" loading="lazy" />
+            </div>
+            <figcaption>
+              <span class="cockpit__step">Preflight</span>
+              <b>Wear check</b>
+              <span>Ten items per airframe, a photo each, and a status the shop sees immediately.</span>
+            </figcaption>
+          </figure>
+
+          <figure data-lightbox data-caption="A pilot's own currency and training record">
+            <div class="frame frame--phone">
+              <img src="assets/screens/phone-currency.webp" alt="Pilot currency record showing medical and 61.57 items with days remaining" width="900" height="1925" loading="lazy" />
+            </div>
+            <figcaption>
+              <span class="cockpit__step">Know before you go</span>
+              <b>My currency</b>
+              <span>Medical and §61.57 recency with days remaining — their own record, not the fleet's.</span>
+            </figcaption>
+          </figure>
+
+          <figure data-lightbox data-caption="Receipt capture from the FBO">
+            <div class="frame frame--phone">
+              <img src="assets/screens/phone-expenses.webp" alt="Pilot expense history on a phone with a monthly total and an upload action" width="900" height="1925" loading="lazy" />
+            </div>
+            <figcaption>
+              <span class="cockpit__step">After the leg</span>
+              <b>Expenses</b>
+              <span>Photograph the fuel ticket at the truck; the vendor, total and card are read for them.</span>
+            </figcaption>
+          </figure>
+        </div>
+
+        <div class="cockpit-note" data-reveal>
+          <div>
+            <h4>Installs like an app</h4>
+            <p>Add to Home Screen on iOS or Android — full screen, its own icon and splash, no app store.</p>
+          </div>
+          <div>
+            <h4>GPS-locked check-in</h4>
+            <p>Crew onsite records a position fix at the FBO, so the timeline reflects where the crew actually was.</p>
+          </div>
+          <div>
+            <h4>Push with quiet hours</h4>
+            <p>Dispatch updates reach the crew's phone, silenced overnight — with an AOG override that always rings.</p>
+          </div>
+          <div>
+            <h4>Built for one hand</h4>
+            <p>Bottom navigation, large tap targets, and an 11px type floor so it stays readable in a bright cockpit.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- ======================================================== FEATURES -->
     <section class="section section--tint" id="features">
       <div class="shell">
@@ -747,6 +874,7 @@
           <h4>Product</h4>
           <ul>
             <li><a href="#tour">Product tour</a></li>
+            <li><a href="#cockpit">For pilots</a></li>
             <li><a href="#features">Features</a></li>
             <li><a href="#gallery">Screens</a></li>
             <li><a href="#integrations">Integrations</a></li>

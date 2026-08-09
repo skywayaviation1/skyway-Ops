@@ -240,6 +240,70 @@ const SHOTS = [
       await wait(3000);
     },
   },
+  {
+    name: 'phone-schedule',
+    viewport: PHONE,
+    url: '/?as=crew',
+    settle: 4200,
+    async prepare(page) {
+      await clickText(page, 'Flights');
+      await wait(2800);
+    },
+  },
+  {
+    name: 'phone-passengers',
+    viewport: PHONE,
+    url: '/?as=crew',
+    settle: 4200,
+    async prepare(page) {
+      await clickText(page, 'Flights');
+      await wait(2200);
+      await clickMatching(page, (text) => text.includes('TEB') && text.includes('PBI'));
+      await wait(2600);
+      await clickText(page, 'Passengers');
+      await wait(2400);
+    },
+  },
+  {
+    name: 'phone-expenses',
+    viewport: PHONE,
+    url: '/?as=crew',
+    settle: 4200,
+    async prepare(page) {
+      await clickText(page, 'Crew');
+      await wait(2200);
+      await clickText(page, 'Expenses');
+      await wait(2800);
+    },
+  },
+  {
+    name: 'phone-wear',
+    viewport: PHONE,
+    url: '/?as=crew',
+    settle: 4200,
+    async prepare(page) {
+      await clickText(page, 'Crew');
+      await wait(2200);
+      await clickText(page, 'Wear');
+      await wait(2400);
+      await clickText(page, 'CREATE INSPECTION');
+      await wait(3000);
+    },
+  },
+  {
+    name: 'phone-currency',
+    viewport: PHONE,
+    url: '/?as=crew',
+    settle: 4200,
+    async prepare(page) {
+      await clickText(page, 'Crew');
+      await wait(2200);
+      await clickText(page, 'Currency');
+      await wait(2400);
+      await clickMatching(page, (text) => text.startsWith('Ken Alvarez'));
+      await wait(2600);
+    },
+  },
 ];
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
