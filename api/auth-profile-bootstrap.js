@@ -58,7 +58,9 @@ export default async function handler(req, res) {
 
     const email = normalizedEmail(decoded);
     const provider = decoded.firebase?.sign_in_provider;
-    if (provider !== 'microsoft.com') {
+    const verifiedNativeMicrosoft =
+      provider === 'custom' && decoded.nativeMicrosoft === true;
+    if (provider !== 'microsoft.com' && !verifiedNativeMicrosoft) {
       res.status(403).json({ error: 'A @flyskyway.com Microsoft account is required' });
       return;
     }

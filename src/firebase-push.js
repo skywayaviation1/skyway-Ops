@@ -27,6 +27,7 @@ import { db } from './firebase.js';
 import {
   doc, setDoc, deleteDoc, serverTimestamp,
 } from 'firebase/firestore';
+import { isNativeApp } from './mobile-runtime.js';
 
 // Cached so we don't repeatedly import the heavy messaging SDK.
 let cachedMessaging = null;
@@ -41,6 +42,7 @@ function getVapidKey() {
 
 export function pushSupported() {
   if (typeof window === 'undefined') return false;
+  if (isNativeApp()) return true;
   if (!('serviceWorker' in navigator)) return false;
   if (!('Notification' in window)) return false;
   if (!('PushManager' in window)) return false;
@@ -52,6 +54,7 @@ export function pushSupported() {
 // Returns null when undetermined.
 export function iosNeedsHomeScreenInstall() {
   if (typeof window === 'undefined') return null;
+  if (isNativeApp()) return false;
   const ua = navigator.userAgent || '';
   const isIos = /iPad|iPhone|iPod/.test(ua) && !window.MSStream;
   if (!isIos) return false;
@@ -64,6 +67,13 @@ export function iosNeedsHomeScreenInstall() {
 }
 
 export function notificationPermissionState() {
+  if (isNativeApp()) {
+    try {
+      return localStorage.getItem('skyway_native_push_permission') || 'default';
+    } catch {
+      return 'default';
+    }
+  }
   if (typeof Notification === 'undefined') return 'unsupported';
   return Notification.permission; // 'granted' | 'denied' | 'default'
 }
@@ -106,6 +116,47 @@ export async function enablePush(user, opts = {}) {
   if (!pushSupported()) {
     throw new Error('Push notifications are not supported in this browser.');
   }
+
+  if (isNativeApp()) {
+    const { FirebaseMessaging } = await import('@capacitor-firebase/messaging');
+    const permission = await FirebaseMessaging.requestPermissions();
+    const granted = permission.receive === 'granted';
+    try {
+      localStorage.setItem(
+        'skyway_native_push_permission',
+        granted ? 'granted' : 'denied',
+      );
+    } catch {}
+    if (!granted) {
+      const error = new Error('Notification permission was not granted.');
+      error.code = 'permission-denied';
+      throw error;
+    }
+
+    const { token } = await FirebaseMessaging.getToken();
+    if (!token) throw new Error('Firebase did not return a device push token.');
+    await savePushToken(uid, token, 'native');
+    cachedToken = token;
+
+    if (!foregroundUnsub) {
+      const received = await FirebaseMessaging.addListener(
+        'notificationReceived',
+        (event) => {
+          const notification = event.notification || event;
+          opts.onForegroundMessage?.({
+            title: notification.title || 'Skyway',
+            body: notification.body || '',
+            url: notification.data?.url || '/',
+            conversationId: notification.data?.conversationId || null,
+            kind: notification.data?.kind || null,
+          });
+        },
+      );
+      foregroundUnsub = () => received.remove();
+    }
+    return token;
+  }
+
   if (iosNeedsHomeScreenInstall()) {
     const e = new Error('On iPhone, push requires the app to be added to your Home Screen first. Open in Safari → share → "Add to Home Screen" → open from the home-screen icon.');
     e.code = 'ios-not-installed';
@@ -168,6 +219,15 @@ export async function enablePush(user, opts = {}) {
   // user can see "iPhone — Safari" in their settings later.
   const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || '';
   const platform = guessPlatform(ua);
+  await savePushToken(uid, token, platform, ua);
+
+  cachedToken = token;
+  startForegroundListener(uid, opts.onForegroundMessage);
+  return token;
+}
+
+async function savePushToken(uid, token, platform, userAgent = null) {
+  const ua = userAgent ?? ((typeof navigator !== 'undefined' && navigator.userAgent) || '');
   await setDoc(
     doc(db, 'users', uid, 'push-tokens', token),
     {
@@ -181,9 +241,6 @@ export async function enablePush(user, opts = {}) {
     { merge: true },
   );
 
-  cachedToken = token;
-  startForegroundListener(uid, opts.onForegroundMessage);
-  return token;
 }
 
 export async function disablePush(user, token = null) {
@@ -194,6 +251,12 @@ export async function disablePush(user, token = null) {
   if (foregroundUnsub) { try { foregroundUnsub(); } catch (_) {} foregroundUnsub = null; }
   if (t) {
     try { await deleteDoc(doc(db, 'users', uid, 'push-tokens', t)); } catch (_) {}
+  }
+  if (isNativeApp()) {
+    try {
+      const { FirebaseMessaging } = await import('@capacitor-firebase/messaging');
+      await FirebaseMessaging.deleteToken();
+    } catch {}
   }
   cachedToken = null;
 }
