@@ -10,6 +10,7 @@
     "mobile:sync": "npm run build && cap sync",
     "mobile:android": "npm run mobile:sync && cap open android",
     "mobile:ios": "npm run mobile:sync && cap open ios",
+    "ios:setup": "./scripts/setup-ios.sh",
     "mobile:doctor": "cap doctor"
   },
   "dependencies": {

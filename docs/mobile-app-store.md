@@ -20,34 +20,64 @@ network state, status-bar behavior, and native-safe screen insets.
 Capacitor 8 targets iOS 15+ and Android 7+ (API 24) and compiles Android against
 API 36.
 
+## What the repository already configures
+
+The Xcode project is committed pre-wired, so the usual manual capability setup
+is unnecessary:
+
+- Bundle identifier `com.flyskyway.ops`, iOS 15 deployment target, iPhone and
+  iPad device families
+- Push Notifications capability and `App.entitlements` with `aps-environment`
+- `Background Modes > Remote notifications` and camera, location, and photo
+  usage strings in `Info.plist`
+- A `GoogleService-Info.plist` reference in the App target, so the file only has
+  to be saved to the expected path
+- A build phase that reads `REVERSED_CLIENT_ID` from `GoogleService-Info.plist`
+  and injects the Microsoft OAuth callback URL scheme automatically
+- `FirebaseApp.configure()` and the Firebase OAuth/push delegate callbacks in
+  `AppDelegate.swift`
+
+What still requires a human: Apple/Google account registration, downloading the
+Firebase platform files, and selecting a signing team.
+
 ## One-time Firebase setup
 
 1. In Firebase Console, add an Android app with package
    `com.flyskyway.ops`. Download `google-services.json` to
    `android/app/google-services.json`.
 2. Add an iOS app with bundle ID `com.flyskyway.ops`. Download
-   `GoogleService-Info.plist` to `ios/App/App/GoogleService-Info.plist`, then
-   add it to the App target in Xcode.
-3. In the iOS target's **Info > URL Types**, add the `REVERSED_CLIENT_ID` value
-   from `GoogleService-Info.plist` as a URL scheme. This is required for the
-   Microsoft OAuth callback.
-4. Keep Microsoft enabled in Firebase Authentication. In the Entra app
+   `GoogleService-Info.plist` to `ios/App/App/GoogleService-Info.plist`. Do not
+   drag it into Xcode; the project already references that path.
+3. Keep Microsoft enabled in Firebase Authentication. In the Entra app
    registration, keep Firebase's documented Web redirect URI configured.
-5. In Xcode, enable **Push Notifications** and **Background Modes > Remote
-   notifications** for the App target.
-6. Create or select an APNs auth key in Apple Developer and upload it in
+4. Create or select an APNs auth key in Apple Developer and upload it in
    Firebase Console under **Project Settings > Cloud Messaging**.
 
 The Firebase platform files and signing keys are intentionally ignored by Git.
 
 ## Build and run
 
+### iOS (macOS only)
+
 ```bash
-npm install
-npm run mobile:sync
+./scripts/setup-ios.sh
 ```
 
-Android:
+The script verifies macOS, Xcode, and Node, installs dependencies, builds the
+web bundle, syncs the native project, reports any missing Firebase file, and
+opens Xcode. Then, in Xcode, select the Skyway team under **Signing &
+Capabilities**, choose a physical iPhone, and run the `App` scheme.
+
+To rebuild after web code changes:
+
+```bash
+npm run mobile:ios
+```
+
+Microsoft login and push notifications must be verified on physical devices;
+neither works on the Simulator.
+
+### Android
 
 ```bash
 npm run mobile:android
@@ -55,23 +85,14 @@ npm run mobile:android
 
 Select a device or emulator in Android Studio and run the `app` configuration.
 
-iOS (macOS only):
-
-```bash
-npm run mobile:ios
-```
-
-Select the Skyway development team and a device in Xcode, then run the `App`
-scheme. Microsoft login and push notifications must be tested on physical
-devices before release.
-
 ## Release builds
 
 ### iOS
 
 1. Set the marketing version and build number in Xcode.
 2. Confirm the App target uses `com.flyskyway.ops` and the production signing
-   team.
+   team. Automatic signing promotes `aps-environment` to `production` on export,
+   so the committed development value does not need editing.
 3. Use **Product > Archive**, validate the archive, then upload to App Store
    Connect.
 4. Distribute through TestFlight first. For this employee operations app,

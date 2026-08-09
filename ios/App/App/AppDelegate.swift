@@ -1,6 +1,7 @@
 import UIKit
 import Capacitor
 import FirebaseAuth
+import FirebaseCore
 
 @UIApplicationMain
 class AppDelegate: UIResponder, UIApplicationDelegate {
@@ -8,7 +9,12 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        // Override point for customization after application launch.
+        // The Capacitor Firebase plugins configure Firebase lazily when their
+        // bridge loads. Configuring here first guarantees `Auth.auth()` is
+        // usable from the OAuth callback below regardless of that ordering.
+        if FirebaseApp.app() == nil {
+            FirebaseApp.configure()
+        }
         return true
     }
 
