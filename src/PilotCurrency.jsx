@@ -118,7 +118,14 @@ export default function PilotCurrencyScreen({ currentUser, users, allTrips }) {
     if (isAdminOrOps) {
       unsub = subscribePilotCurrencies(setCurrenciesByUid);
     } else if (isCrew) {
-      unsub = subscribeMyPilotCurrency(currentUser.uid, setCurrenciesByUid);
+      // The fleet subscription emits a map keyed by uid, which is how every
+      // view below looks a record up. The self subscription emits one bare
+      // document, so it has to be keyed the same way — passing it straight
+      // through left a pilot's own record unreachable and every item read
+      // "NOT SET".
+      unsub = subscribeMyPilotCurrency(currentUser.uid, (record) => {
+        setCurrenciesByUid(record ? { [currentUser.uid]: record } : {});
+      });
     }
     return () => { if (unsub) unsub(); };
   }, [currentUser, isAdminOrOps, isCrew]);
