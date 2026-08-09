@@ -1,0 +1,14 @@
+{
+  "name": "skyway-screenshot-harness",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Renders the real Skyway Ops screens against an in-memory dataset and captures marketing screenshots.",
+  "scripts": {
+    "dev": "vite --config vite.config.mjs",
+    "capture": "node capture.mjs"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^23.6.0"
+  }
+}

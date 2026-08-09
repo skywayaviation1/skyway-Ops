@@ -1,0 +1,16 @@
+{
+  "name": "Skyway Ops",
+  "short_name": "135 Ops",
+  "description": "Flight department operations software for Part 91 and Part 135 operators.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#060c16",
+  "theme_color": "#060c16",
+  "icons": [
+    {
+      "src": "assets/favicon.png",
+      "sizes": "32x32",
+      "type": "image/png"
+    }
+  ]
+}

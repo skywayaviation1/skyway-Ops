@@ -1,0 +1,13 @@
+{
+  "name": "135ops-marketing",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Marketing website for Skyway Ops at 135ops.app",
+  "type": "module",
+  "scripts": {
+    "test": "node scripts/check-site.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
