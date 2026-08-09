@@ -114,7 +114,7 @@
           <div class="frame">
             <div class="frame__bar">
               <span class="frame__dots" aria-hidden="true"><i></i><i></i><i></i></span>
-              <span class="frame__url">app.flyskyway.com — Operations Command Center</span>
+              <span class="frame__url">app.flyskyway.com — Operations Control</span>
             </div>
             <img src="assets/screens/command-center.webp"
                  alt="Skyway Ops command center showing fleet status, block hours, open squawks and a requires-attention panel"
@@ -223,12 +223,13 @@
               <h3>Run the day from one board.</h3>
               <p>
                 The Ops Console pulls today's trips plus anything still in progress into a
-                single card grid, each with a live eight-step status strip. Skyway flags what's
-                missing before it bites — no trip sheet, no broker email, unparsed passengers,
-                no PIC or SIC assigned — and pushes updates straight to the crew's phones.
+                single flight-control board, each with a live eight-step status strip. Dispatchers
+                claim a leg, mark it ops-ready or on hold, leave an audited shift note, and see
+                what's missing before it bites — no trip sheet, no broker email, unparsed
+                passengers, no PIC or SIC assigned.
               </p>
               <ul class="checks">
-                <li>Filters for <b>with flags</b> and <b>in progress</b>, plus totals at a glance</li>
+                <li>Filters for <b>with flags</b>, <b>in progress</b>, <b>on hold</b>, and unassigned legs</li>
                 <li>Schedule syncs from a <b>JetInsight iCal feed</b> or manual entry</li>
                 <li>Send-update pushes to assigned dispatchers via Firebase Cloud Messaging</li>
               </ul>
@@ -390,35 +391,6 @@
             <div class="reg__rule">The Part 135 check cycle</div>
             <p class="reg__detail">Competency checks, instrument proficiency, line checks and recurrent training, with 60/30/14-day alerts.</p>
           </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ====================================================== DUTY VISUAL -->
-    <section class="section">
-      <div class="shell">
-        <div class="tour__item" data-reveal style="align-items:stretch">
-          <div class="tour__copy" style="align-self:center">
-            <span class="tour__tag">Crew · Command Center</span>
-            <h3>Legality, live on the ops board.</h3>
-            <p>
-              The crew duty board shows who is on duty, resting, available, or approaching a limit
-              in real time — with elapsed duty, seat, and the trailing 7/30/90-day workload for each
-              pilot. Administrators drill into a timeline editor, link PIC and SIC periods, and export
-              the official record without leaving the screen.
-            </p>
-            <ul class="checks">
-              <li>Trailing-window duty and flight-hour aggregates per pilot</li>
-              <li>Illegal periods are flagged but never block a submission — override is audited</li>
-              <li>JetInsight duty history and 24-column currency grids import in bulk</li>
-            </ul>
-          </div>
-          <figure data-lightbox data-caption="Crew duty status board" style="margin:0">
-            <div class="frame">
-              <div class="frame__bar"><span class="frame__dots"><i></i><i></i><i></i></span><span class="frame__url">Home · Crew duty status</span></div>
-              <img src="assets/screens/crew-duty-board.webp" alt="Crew duty status board showing on-duty, resting and available pilots with legality and trailing workload" width="2200" height="1382" loading="lazy" />
-            </div>
-          </figure>
         </div>
       </div>
     </section>
@@ -713,9 +685,9 @@
         </div>
 
         <div class="gallery">
-          <figure data-lightbox data-caption="Operations Command Center — airport weather &amp; crew availability" data-reveal>
-            <img src="assets/screens/command-center-weather.webp" alt="Command center weather grid and crew availability" width="2200" height="1382" loading="lazy" />
-            <figcaption><b>Command Center</b><span>Weather grid &amp; crew availability</span></figcaption>
+          <figure data-lightbox data-caption="Operations Control — live fleet state and ranked exceptions" data-reveal>
+            <img src="assets/screens/command-center.webp" alt="Operations Control showing fleet state, current and next legs, and ranked operational exceptions" width="2200" height="1382" loading="lazy" />
+            <figcaption><b>Operations Control</b><span>Live fleet state &amp; ranked exceptions</span></figcaption>
           </figure>
           <figure data-lightbox data-caption="Passenger manifest with ID verification" data-reveal>
             <img src="assets/screens/trip-passengers.webp" alt="Passenger manifest and ID verification" width="2200" height="1382" loading="lazy" />

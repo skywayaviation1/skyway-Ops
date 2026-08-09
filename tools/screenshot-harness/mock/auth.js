@@ -53,6 +53,8 @@ export class OAuthProvider {
 }
 
 export async function signInWithRedirect() {}
+export async function signInWithPopup() { return { user: identity() }; }
+export async function signInWithCredential() { return { user: identity() }; }
 export async function getRedirectResult() { return null; }
 export async function signInWithCustomToken() { return { user: HARNESS_USER }; }
 export async function signOut() {}

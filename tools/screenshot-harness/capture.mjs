@@ -270,8 +270,8 @@ const SHOTS = [
     url: '/?as=crew',
     settle: 4200,
     async prepare(page) {
-      await clickText(page, 'Crew');
-      await wait(2200);
+      await clickText(page, 'More');
+      await wait(1600);
       await clickText(page, 'Expenses');
       await wait(2800);
     },
@@ -282,8 +282,8 @@ const SHOTS = [
     url: '/?as=crew',
     settle: 4200,
     async prepare(page) {
-      await clickText(page, 'Crew');
-      await wait(2200);
+      await clickText(page, 'More');
+      await wait(1600);
       await clickText(page, 'Wear');
       await wait(2400);
       await clickText(page, 'CREATE INSPECTION');
@@ -296,8 +296,8 @@ const SHOTS = [
     url: '/?as=crew',
     settle: 4200,
     async prepare(page) {
-      await clickText(page, 'Crew');
-      await wait(2200);
+      await clickText(page, 'More');
+      await wait(1600);
       await clickText(page, 'Currency');
       await wait(2400);
       await clickMatching(page, (text) => text.startsWith('Ken Alvarez'));
