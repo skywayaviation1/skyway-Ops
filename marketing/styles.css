@@ -53,7 +53,10 @@ body {
   overflow-x: hidden;
 }
 
-img { max-width: 100%; display: block; }
+/* height:auto is load-bearing: the width/height attributes on each <img> are
+   there to reserve layout space, and without this they win over max-width and
+   stretch every screenshot vertically. */
+img { max-width: 100%; height: auto; display: block; }
 a { color: inherit; }
 
 ::selection { background: rgba(34, 211, 238, 0.28); }
