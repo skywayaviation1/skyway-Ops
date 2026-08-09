@@ -87,7 +87,48 @@ export default async function handler(req, res) {
         res.status(409).json({ error: 'Profile email does not match Microsoft identity' });
         return;
       }
+      // A password-era profile that was later linked to Microsoft still needs
+      // its sign-in method recorded for admin visibility.
+      if (profile.authProvider !== 'microsoft.com') {
+        await ref.set({ authProvider: 'microsoft.com' }, { merge: true });
+        profile.authProvider = 'microsoft.com';
+      }
       res.status(200).json({ ok: true, profile: { uid: decoded.uid, ...profile } });
+      return;
+    }
+
+    // The Auth UID is new but a profile may still exist under a retired
+    // password-era UID for the same email. Reclaim it so role and approval
+    // survive the migration; creating a fresh pending crew profile would
+    // lock an already-approved person out.
+    const orphanSnap = await db.collection('users')
+      .where('email', '==', email)
+      .limit(5)
+      .get();
+    const orphans = orphanSnap.docs.filter((docSnap) => docSnap.id !== decoded.uid);
+    if (orphans.length === 1) {
+      const orphan = orphans[0];
+      const profile = { ...(orphan.data() || {}) };
+      if (profile.email && String(profile.email).toLowerCase() !== email) {
+        res.status(409).json({ error: 'Profile email does not match Microsoft identity' });
+        return;
+      }
+      profile.authProvider = 'microsoft.com';
+      profile.reclaimedFromUid = orphan.id;
+      profile.reclaimedAt = Date.now();
+      await ref.set(profile);
+      await orphan.ref.delete().catch((err) => {
+        console.warn('[auth-profile-bootstrap] orphan cleanup failed', orphan.id, err?.message);
+      });
+      console.log(`[auth-profile-bootstrap] reclaimed profile ${orphan.id} → ${decoded.uid}`);
+      res.status(200).json({ ok: true, profile: { uid: decoded.uid, ...profile } });
+      return;
+    }
+    if (orphans.length > 1) {
+      res.status(409).json({
+        code: 'ambiguous-profile',
+        error: 'Multiple profiles share this email. An administrator must resolve them before sign-in can continue.',
+      });
       return;
     }
 

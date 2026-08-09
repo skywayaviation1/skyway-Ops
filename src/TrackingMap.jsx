@@ -183,7 +183,7 @@ export default function TrackingMap({
 
     if (Array.isArray(scene.projected) && scene.projected.length >= 2) {
       L.polyline(scene.projected, {
-        color: '#22d3ee', weight: 2.5, opacity: 0.5,
+        color: '#3FA9CC', weight: 2.5, opacity: 0.5,
         dashArray: '6 8', lineCap: 'round', lineJoin: 'round',
       }).addTo(group);
     }

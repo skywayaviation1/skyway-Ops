@@ -36,12 +36,13 @@
 
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
+import { sendOver14DutyEmail } from './_duty-alert.js';
 
 export const config = { runtime: 'nodejs', maxDuration: 30 };
 
 const COLL = 'duty-periods-v2';
 const MS_14H = 14 * 3600 * 1000;
-const ADMIN_ROLES = new Set(['admin', 'ops', 'chief-pilot', 'chief_pilot', 'dispatcher', 'dom']);
+const ADMIN_ROLES = new Set(['admin']);
 
 let _adminApp = null;
 let _db = null;
@@ -104,16 +105,17 @@ export default async function handler(req, res) {
     }
 
     // --- Authorize: either paired pilot, or an admin-ish role ---
-    let authorized =
-      callerUid === period.pilotUid ||
-      (partner && callerUid === partner.pilotUid);
-    if (!authorized) {
-      try {
-        const userSnap = await db.collection('users').doc(callerUid).get();
-        const role = userSnap.exists ? (userSnap.data().role || '') : '';
-        if (ADMIN_ROLES.has(role)) authorized = true;
-      } catch { /* fall through to deny */ }
-    }
+    let isAdmin = false;
+    try {
+      const userSnap = await db.collection('users').doc(callerUid).get();
+      const role = userSnap.exists ? String(userSnap.data().role || '').toLowerCase() : '';
+      isAdmin = ADMIN_ROLES.has(role);
+    } catch { /* fall through to deny */ }
+    // Crew must address their OWN period id. Otherwise a pilot who learns the
+    // linked id could submit flight time/excursion data against the partner's
+    // record. The server still closes both records, but only the caller's own
+    // period accepts caller-supplied details.
+    const authorized = callerUid === period.pilotUid || isAdmin;
     if (!authorized) {
       res.status(403).json({ ok: false, error: 'not authorized to end this duty period' });
       return;
@@ -134,6 +136,21 @@ export default async function handler(req, res) {
     const endedBy = body.endedByName || period.pilotName || 'pilot';
     const now = Date.now();
     const closed = [];
+    const initiatorOver14 = (dutyOffAt - period.dutyOnAt) > MS_14H;
+    const partnerOffAt = partner && dutyOffAt <= partner.dutyOnAt
+      ? partner.dutyOnAt + 1
+      : dutyOffAt;
+    const partnerOver14 = Boolean(
+      partner && partner.status === 'on' && partnerOffAt - partner.dutyOnAt > MS_14H,
+    );
+    if ((initiatorOver14 || partnerOver14) && body.over14Verified !== true) {
+      res.status(400).json({
+        ok: false,
+        error: 'Confirm that this duty period actually exceeded 14 hours before ending duty',
+        code: 'over14-verification-required',
+      });
+      return;
+    }
 
     const batch = db.batch();
 
@@ -145,7 +162,10 @@ export default async function handler(req, res) {
       flightTimeMs,
       excursionReason: body.excursionReason || period.excursionReason || null,
       status: 'off',
-      over14: (dutyOffAt - period.dutyOnAt) > MS_14H,
+      over14: initiatorOver14,
+      over14VerifiedAt: initiatorOver14 ? now : null,
+      over14VerifiedBy: initiatorOver14 ? endedBy : null,
+      over14VerificationSource: initiatorOver14 ? 'pilot-duty-off' : null,
       updatedAt: now,
       adminEdits: [...pEdits, {
         by: endedBy,
@@ -163,12 +183,14 @@ export default async function handler(req, res) {
     // already be 'off' in that case, but we double-guard). The partner's own
     // flightTimeMs is left untouched — each pilot owns their flight time.
     if (partner && partnerRef && partner.status === 'on' && partner.confirmStatus !== 'declined') {
-      const partnerOffAt = dutyOffAt > partner.dutyOnAt ? dutyOffAt : (partner.dutyOnAt + 1);
       const sEdits = Array.isArray(partner.adminEdits) ? partner.adminEdits : [];
       batch.update(partnerRef, {
         dutyOffAt: partnerOffAt,
         status: 'off',
-        over14: (partnerOffAt - partner.dutyOnAt) > MS_14H,
+        over14: partnerOver14,
+        over14VerifiedAt: partnerOver14 ? now : null,
+        over14VerifiedBy: partnerOver14 ? endedBy : null,
+        over14VerificationSource: partnerOver14 ? 'crew-synced-duty-off' : null,
         updatedAt: now,
         adminEdits: [...sEdits, {
           by: endedBy,
@@ -184,7 +206,60 @@ export default async function handler(req, res) {
 
     await batch.commit();
 
-    res.status(200).json({ ok: true, closed, dutyOffAt });
+    let email = null;
+    if (initiatorOver14) {
+      try {
+        email = await sendOver14DutyEmail({
+          period: {
+            ...period,
+            dutyOffAt,
+            flightTimeMs,
+            excursionReason: body.excursionReason || period.excursionReason || null,
+            over14: true,
+          },
+          verifiedBy: endedBy,
+          verificationSource: 'Pilot duty-off confirmation',
+        });
+      } catch (err) {
+        email = { sent: false, reason: err?.message || 'email failed' };
+        await db.collection('duty-alert-failures').add({
+          type: 'over14',
+          periodId,
+          recipients: ['Jim@flyskyway.com', 'Jake@flyskyway.com', 'zack.taylor@flyskyway.com'],
+          error: email.reason,
+          createdAt: Date.now(),
+        }).catch(() => {});
+      }
+    }
+    if (partnerOver14 && partner) {
+      try {
+        await sendOver14DutyEmail({
+          period: {
+            ...partner,
+            dutyOffAt: partnerOffAt,
+            over14: true,
+          },
+          verifiedBy: endedBy,
+          verificationSource: 'Crew-synced pilot duty-off confirmation',
+        });
+      } catch (err) {
+        await db.collection('duty-alert-failures').add({
+          type: 'over14',
+          periodId: partner.id || period.partnerPeriodId,
+          recipients: ['Jim@flyskyway.com', 'Jake@flyskyway.com', 'zack.taylor@flyskyway.com'],
+          error: err?.message || 'email failed',
+          createdAt: Date.now(),
+        }).catch(() => {});
+      }
+    }
+
+    res.status(200).json({
+      ok: true,
+      closed,
+      dutyOffAt,
+      over14: initiatorOver14 || partnerOver14,
+      email,
+    });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message || 'duty-end-pair failed' });
   }

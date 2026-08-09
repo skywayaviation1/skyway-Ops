@@ -13,22 +13,8 @@
 //   6. Admin authorizes on Intuit's site
 //   7. Intuit redirects to /api/quickbooks-oauth-callback with code + state
 
-import admin from 'firebase-admin';
 import crypto from 'crypto';
-
-// Singleton Admin SDK init — same pattern as /api/delete-user
-let adminApp = null;
-function getAdmin() {
-  if (adminApp) return adminApp;
-  if (!process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
-    throw new Error('FIREBASE_SERVICE_ACCOUNT_JSON not configured');
-  }
-  const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
-  adminApp = admin.apps.length
-    ? admin.app()
-    : admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
-  return adminApp;
-}
+import { authorizeQboCaller, getDb } from './_quickbooks.js';
 
 const INTUIT_AUTH_URL = 'https://appcenter.intuit.com/connect/oauth2';
 const SCOPE = 'com.intuit.quickbooks.accounting';
@@ -40,32 +26,17 @@ export default async function handler(req, res) {
   }
 
   try {
-    getAdmin();
-
     const { idToken } = req.body || {};
     if (!idToken) {
       res.status(400).json({ error: 'idToken required' });
       return;
     }
 
-    // Verify the caller is signed in
-    let decoded;
+    let caller;
     try {
-      decoded = await admin.auth().verifyIdToken(idToken);
+      caller = await authorizeQboCaller(idToken, ['accounting', 'admin']);
     } catch (err) {
-      res.status(401).json({ error: 'Invalid token: ' + err.message });
-      return;
-    }
-
-    // Check admin role from Firestore profile
-    const profileSnap = await admin.firestore().collection('users').doc(decoded.uid).get();
-    if (!profileSnap.exists) {
-      res.status(403).json({ error: 'No profile found' });
-      return;
-    }
-    const profile = profileSnap.data();
-    if (profile.role !== 'admin') {
-      res.status(403).json({ error: 'Admin role required' });
+      res.status(err.status || 403).json({ error: err.message });
       return;
     }
 
@@ -80,9 +51,10 @@ export default async function handler(req, res) {
     // Generate a CSRF state token: random + uid + ts. Store in Firestore briefly
     // so the callback can verify it. Expires after 10 minutes.
     const state = crypto.randomBytes(24).toString('hex');
-    const stateRef = admin.firestore().collection('quickbooks-oauth-state').doc(state);
+    const stateRef = getDb().collection('quickbooks-oauth-state').doc(state);
     await stateRef.set({
-      uid: decoded.uid,
+      uid: caller.uid,
+      role: caller.role,
       createdAt: Date.now(),
       expiresAt: Date.now() + 10 * 60 * 1000,
     });

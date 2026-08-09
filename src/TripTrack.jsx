@@ -28,6 +28,7 @@ import {
 import { formatLocalTime, formatLocalDate } from './airports.js';
 // The same map component and visual language the ops Tracking screen uses, so
 // a broker and a dispatcher are looking at the identical picture of the flight.
+import { Wordmark } from './ui.jsx';
 import TrackingMap from './TrackingMap.jsx';
 import { flightCategoryStyle, normalizeTrail, distanceNm } from './tracking-map.js';
 // FAA NOTAM badge — renders silently when no significant NOTAMs are active,
@@ -35,6 +36,7 @@ import { flightCategoryStyle, normalizeTrail, distanceNm } from './tracking-map.
 // no getIdToken since the broker page is anonymous; the endpoint accepts
 // unauthenticated reads for now (NOTAM data is public FAA info).
 import FAANotamBadge from './FAANotamBadge.jsx';
+import { showsCateringStatus } from './ops-readiness.js';
 
 const POLL_MS = 120000; // refresh live position every 2 minutes
 
@@ -321,7 +323,7 @@ function StatusDot({ on, label, ts, iataCode }) {
 const BROKER_PHASE_COLORS = {
   pending:    '#64748b',
   preflight:  '#f59e0b',
-  airborne:   '#22d3ee',
+  airborne:   '#3FA9CC',
   landed:     '#10b981',
   completed:  '#475569',
 };
@@ -797,10 +799,14 @@ function Leg({ leg, isActive, position }) {
         <div className="space-y-1 pt-2 border-t border-slate-800">
           <StatusDot on={!!legStatuses.crew_onsite?.at}    label="Crew on site"    ts={legStatuses.crew_onsite?.at}    iataCode={leg.from} />
           <StatusDot on={!!legStatuses.aircraft_ready?.at} label="Aircraft ready"  ts={legStatuses.aircraft_ready?.at} iataCode={leg.from} />
-          {/* Revenue legs get catering + pax arrived / boarded milestones */}
+          {/* Revenue legs get catering + pax arrived / boarded milestones.
+              Catering is omitted entirely when the trip has none, so the
+              broker never sees a milestone that will never complete. */}
           {isRevenue && (
             <>
-              <StatusDot on={!!legStatuses.catering_aboard?.at} label="Catering on board" ts={legStatuses.catering_aboard?.at} iataCode={leg.from} />
+              {showsCateringStatus(leg) && (
+                <StatusDot on={!!legStatuses.catering_aboard?.at} label="Catering on board" ts={legStatuses.catering_aboard?.at} iataCode={leg.from} />
+              )}
               <StatusDot on={!!legStatuses.pax_arrived?.at}     label="Passengers arrived" ts={legStatuses.pax_arrived?.at}    iataCode={leg.from} />
               <StatusDot on={!!legStatuses.pax_boarded?.at}     label="Passengers boarded" ts={legStatuses.pax_boarded?.at}    iataCode={leg.from} />
             </>
@@ -904,10 +910,9 @@ export default function TripTrackPage({ token }) {
       <header className="border-b border-slate-800 bg-slate-900/50 px-4 py-4 sticky top-0 z-10 backdrop-blur">
         <div className="max-w-3xl mx-auto flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
-            <img
-              src="/skyway-logo-nav.png"
-              srcSet="/skyway-logo-nav.png 1x, /skyway-logo-nav@2x.png 2x"
-              alt="Skyway Aviation"
+            <Wordmark
+              variant="compact"
+              surface="dark"
               className="h-7 w-auto shrink-0"
             />
             <div className="min-w-0">

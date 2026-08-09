@@ -31,6 +31,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { lookupCoords } from './airport-coords.js';
 import { statusEventAt } from './trip-status.js';
+import { Wordmark } from './ui.jsx';
 
 // ====================================================================
 // LEAFLET LOADER
@@ -84,7 +85,7 @@ const STATUS_STEPS = [
 const PHASE_COLORS = {
   pending:    '#64748b',  // slate-500
   preflight:  '#f59e0b',  // amber-500
-  airborne:   '#22d3ee',  // cyan-400
+  airborne:   '#3FA9CC',  // cyan-400
   landed:     '#10b981',  // emerald-500
   completed:  '#475569',  // slate-600
 };
@@ -640,12 +641,12 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
           // Flown portion: origin → current position
           layer.addLayer(L.polyline(
             [[r.from.lat, r.from.lng], [fa.latitude, fa.longitude]],
-            { color: '#22d3ee', weight: 4, opacity: 1, lineCap: 'round', lineJoin: 'round' }
+            { color: '#3FA9CC', weight: 4, opacity: 1, lineCap: 'round', lineJoin: 'round' }
           ));
           // Remaining portion: current → destination
           layer.addLayer(L.polyline(
             [[fa.latitude, fa.longitude], [r.to.lat, r.to.lng]],
-            { color: '#22d3ee', weight: 2.5, opacity: 0.5, dashArray: '6 6', lineCap: 'round', lineJoin: 'round' }
+            { color: '#3FA9CC', weight: 2.5, opacity: 0.5, dashArray: '6 6', lineCap: 'round', lineJoin: 'round' }
           ));
         } else {
           // No FA position yet — draw the full route as a single
@@ -653,7 +654,7 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
           // don't know exactly where yet).
           layer.addLayer(L.polyline(
             [[r.from.lat, r.from.lng], [r.to.lat, r.to.lng]],
-            { color: '#22d3ee', weight: 3, opacity: 0.8, dashArray: '6 6', lineCap: 'round', lineJoin: 'round' }
+            { color: '#3FA9CC', weight: 3, opacity: 0.8, dashArray: '6 6', lineCap: 'round', lineJoin: 'round' }
           ));
         }
         return; // No tail label on the line — we draw it WITH the plane marker below
@@ -719,10 +720,10 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
           const planeSvg = `
             <svg width="28" height="28" viewBox="0 0 24 24" fill="none" style="transform: rotate(${heading}deg); transform-origin: center; filter: drop-shadow(0 0 4px rgba(34,211,238,0.7));">
               <path d="M12 2 L13.5 10 L22 12 L22 14 L13.5 14 L13 19 L15 21 L15 22 L12 21 L9 22 L9 21 L11 19 L10.5 14 L2 14 L2 12 L10.5 10 Z"
-                    fill="#22d3ee" stroke="#0e7490" stroke-width="0.5"/>
+                    fill="#3FA9CC" stroke="#0e7490" stroke-width="0.5"/>
             </svg>`;
           const labelHtml = `
-            <div style="position: absolute; left: 32px; top: -4px; background: rgba(2,6,23,0.9); border: 1px solid #22d3ee; padding: 2px 5px; white-space: nowrap;">
+            <div style="position: absolute; left: 32px; top: -4px; background: rgba(2,6,23,0.9); border: 1px solid #3FA9CC; padding: 2px 5px; white-space: nowrap;">
               <div style="color: #a5f3fc; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700; line-height: 1;">${p.ident}</div>
               <div style="color: #67e8f9; font-family: 'JetBrains Mono', monospace; font-size: 9px; line-height: 1.4; margin-top: 1px;">${altStr} ${spdStr}</div>
             </div>`;
@@ -809,8 +810,8 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
       <div className="absolute bottom-3 left-3 bg-slate-900/90 border border-slate-800 px-3 py-2 text-[11px] tracking-widest z-[1000]" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
         <div className="flex items-center gap-2 mb-1">
           <svg width="28" height="4">
-            <line x1="0" y1="2" x2="14" y2="2" stroke="#22d3ee" strokeWidth="4" />
-            <line x1="14" y1="2" x2="28" y2="2" stroke="#22d3ee" strokeWidth="2.5" strokeDasharray="3 3" strokeOpacity="0.5" />
+            <line x1="0" y1="2" x2="14" y2="2" stroke="#3FA9CC" strokeWidth="4" />
+            <line x1="14" y1="2" x2="28" y2="2" stroke="#3FA9CC" strokeWidth="2.5" strokeDasharray="3 3" strokeOpacity="0.5" />
           </svg>
           <span className="text-cyan-200">AIRBORNE</span>
         </div>
@@ -1091,10 +1092,7 @@ function FlightBoard({ allTrips, compact = false }) {
       {!compact && (
       <div className="px-6 py-4 border-b-2 border-cyan-500/30 bg-gradient-to-r from-slate-950 via-cyan-950/40 to-slate-950 flex items-center justify-between">
         <div className="flex items-center gap-5">
-          <img
-            src="/skyway-logo.png"
-            srcSet="/skyway-logo.png 1x, /skyway-logo@2x.png 2x"
-            alt="Skyway Aviation"
+          <Wordmark
             className="h-14 w-auto"
             // High-DPI rendering helps the logo look crisp on 4K TVs
             style={{ imageRendering: '-webkit-optimize-contrast' }}

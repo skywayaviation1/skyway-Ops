@@ -32,6 +32,8 @@ import {
 let cachedMessaging = null;
 let cachedToken = null;
 let foregroundUnsub = null;
+let foregroundUid = null;
+let foregroundHandler = null;
 
 function getVapidKey() {
   // Vite injects VITE_-prefixed env at build time. Empty string when unset
@@ -192,6 +194,8 @@ export async function disablePush(user, token = null) {
   if (!uid) return;
   const t = token || cachedToken;
   if (foregroundUnsub) { try { foregroundUnsub(); } catch (_) {} foregroundUnsub = null; }
+  foregroundUid = null;
+  foregroundHandler = null;
   if (t) {
     try { await deleteDoc(doc(db, 'users', uid, 'push-tokens', t)); } catch (_) {}
   }
@@ -205,6 +209,8 @@ export async function disablePush(user, token = null) {
 // invoke an optional callback so the host app can render an in-app toast
 // or play a tick sound.
 function startForegroundListener(uid, onForeground) {
+  foregroundUid = uid;
+  if (onForeground) foregroundHandler = onForeground;
   if (foregroundUnsub) return;
   (async () => {
     try {
@@ -214,8 +220,8 @@ function startForegroundListener(uid, onForeground) {
       foregroundUnsub = onMessage(messaging, (payload) => {
         try {
           const data = payload.data || {};
-          if (data.senderUid && data.senderUid === uid) return; // never notify self
-          onForeground && onForeground({
+          if (data.senderUid && data.senderUid === foregroundUid) return; // never notify self
+          foregroundHandler && foregroundHandler({
             title: data.title || 'Skyway',
             body: data.body || '',
             url: data.url || '/',
@@ -230,6 +236,15 @@ function startForegroundListener(uid, onForeground) {
       console.error('[push] foreground listener setup:', e);
     }
   })();
+}
+
+// Restore foreground message handling on every signed-in app boot. The FCM
+// token itself remains registered in Firestore; this only reconnects the
+// in-app toast path for sessions where PushSettings is never opened.
+export function listenForForegroundPush(user, onForeground) {
+  const uid = user?.uid || user?.id;
+  if (!uid || notificationPermissionState() !== 'granted') return;
+  startForegroundListener(uid, onForeground);
 }
 
 function guessPlatform(ua) {

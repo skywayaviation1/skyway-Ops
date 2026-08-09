@@ -305,6 +305,70 @@ export function RouteLine({ from, to, size = 'md', muted = false, className = ''
   );
 }
 
+/* ── WORDMARK ───────────────────────────────────────────────────────────────
+   The logo artwork mixes two inks: brand cyan, which reads on anything, and a
+   dark navy used for "AVIATION", the speed lines and the aircraft. That navy
+   disappears on a dark shell, so a reversed set with the navy lifted to
+   platinum ships alongside it — and that one disappears on a light shell.
+
+   Which is correct therefore depends on the surface, and the surface can
+   change while the page is open (the theme toggle). Reading the attribute the
+   theme actually sets keeps the two in step without threading state through
+   every caller. Surfaces that stay dark regardless of theme — the nav header,
+   the boot splash — pass surface="dark" and opt out of the swap. */
+
+const WORDMARK_ART = {
+  full:    { light: '/skyway-logo',     dark: '/skyway-logo-reverse' },
+  compact: { light: '/skyway-logo-nav', dark: '/skyway-logo-nav-reverse' },
+};
+
+function readThemeMode() {
+  if (typeof document === 'undefined') return 'dark';
+  return document.documentElement.getAttribute('data-theme') || 'dark';
+}
+
+/** Current value of <html data-theme>, kept live across theme switches. */
+export function useThemeMode() {
+  const [mode, setMode] = useState(readThemeMode);
+  useEffect(() => {
+    const el = document.documentElement;
+    const observer = new MutationObserver(() => setMode(readThemeMode()));
+    observer.observe(el, { attributes: true, attributeFilter: ['data-theme'] });
+    setMode(readThemeMode()); // in case it changed before the observer attached
+    return () => observer.disconnect();
+  }, []);
+  return mode;
+}
+
+/**
+ * Skyway wordmark.
+ *
+ * @param variant  'full' for the stacked lockup, 'compact' for the nav strip.
+ * @param surface  'auto' follows the theme; 'dark' pins the reversed artwork
+ *                 for surfaces that stay dark in both themes.
+ */
+export function Wordmark({
+  variant = 'full',
+  surface = 'auto',
+  className = '',
+  alt = 'Skyway Aviation',
+  ...rest
+}) {
+  const theme = useThemeMode();
+  const art = WORDMARK_ART[variant] || WORDMARK_ART.full;
+  const onLight = surface === 'auto' && theme === 'classy';
+  const base = onLight ? art.light : art.dark;
+  return (
+    <img
+      src={`${base}.png`}
+      srcSet={`${base}.png 1x, ${base}@2x.png 2x`}
+      alt={alt}
+      className={className}
+      {...rest}
+    />
+  );
+}
+
 /** Icon + label on the left, value on the right. The detail-list workhorse. */
 export function InfoRow({ icon: Icon, label, value, tone = 'neutral', className = '' }) {
   const t = TONES[resolveTone(tone)];

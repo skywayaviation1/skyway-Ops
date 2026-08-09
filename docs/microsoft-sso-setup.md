@@ -1,109 +1,202 @@
-# Microsoft company sign-in setup
+# Microsoft company sign-in — complete setup
 
-The application only accepts Microsoft identities whose verified email ends
-exactly in `@flyskyway.com`. New identities receive a `crew` profile with
-`approved: false`; an existing Skyway administrator must approve access.
+Skyway Ops accepts Microsoft identities only, and only those whose verified
+email ends exactly in `@flyskyway.com`. A new identity receives a `crew`
+profile with `approved: false`; an existing administrator must approve it.
 
-## Setup steps
+Sign-in spans four places — the Entra app registration, Firebase
+Authentication, Vercel environment variables, and Vercel routing — and a
+mistake in any one of them surfaces in the browser as the same unhelpful
+error. Run the verifier before changing anything:
 
-1. **Entra application.** In Microsoft Entra ID, create a **single-tenant** web
-   application.
-2. **Redirect URI.** Add the callback URL that Firebase shows when you enable
-   the Microsoft provider. It looks like
-   `https://skyway-ops-app.firebaseapp.com/__/auth/handler` — the trailing
-   `/__/auth/handler` matters.
-   **Also grant the `email` claim.** The app requests the `openid`, `profile`
-   and `email` scopes, but Entra only issues an address if the account has a
-   mail attribute and the app registration is configured to return it (Token
-   configuration → add optional claim → `email`). Without it, sign-in
-   completes and is then refused with `auth/missing-email`, because
-   authorization is by verified company address.
-3. **Enable the provider.** In Firebase Authentication → Sign-in method, enable
-   Microsoft with the Entra application (client) ID and client secret.
-4. **Authorize the app's web address.** In Firebase Authentication → Settings →
-   **Authorized domains**, add every hostname the app is served from:
-   - the production domain (for example `ops.flyskyway.com`)
-   - the Vercel domain (for example `skyway-ops.vercel.app`)
-   - `localhost` for local development
-   Add the bare hostname with no scheme and no port.
-   **Skipping this is what produces `auth/unauthorized-domain`.**
-5. **Tenant lock.** Set `VITE_MICROSOFT_TENANT_ID` in Vercel to the Entra
-   Directory (tenant) ID.
-6. **Service account.** Confirm `FIREBASE_SERVICE_ACCOUNT_JSON` is available to
-   `/api/auth-profile-bootstrap`.
-7. **Disable password auth** once existing users can sign in with their
-   matching Microsoft company accounts.
-8. **Firestore rules** for the named `appusers` database:
+```bash
+npm run verify:sso                      # defaults to https://www.skyway.app
+npm run verify:sso -- https://other.host
+```
+
+It walks the real request chain against the live deployment and names the
+stage that is wrong, instead of leaving you to guess which console to open.
+
+## Current production configuration
+
+These are the live values. The verifier confirms each one from outside.
+
+| Setting | Value |
+| --- | --- |
+| App origin | `https://www.skyway.app` (apex `skyway.app` 308-redirects here) |
+| Firebase project | `skyway-ops-app` |
+| `VITE_FIREBASE_AUTH_DOMAIN` | `www.skyway.app` (same-origin — required for iPhone) |
+| `VITE_MICROSOFT_TENANT_ID` | `aef6138f-7c46-448a-95fe-dda7a700b80f` |
+| Entra application (client) ID | `6e65ee4c-d6b7-4a1b-9dfe-0056be0946d1` |
+| Redirect URI Firebase sends | `https://www.skyway.app/__/auth/handler` |
+
+None of these are secrets: the browser bundle and the Microsoft authorization
+URL already expose all of them. The client secret is the only secret, and it
+lives solely in the Firebase console.
+
+## Setup
+
+1. **Entra application.** A **single-tenant** app registration in the Skyway
+   directory. Single-tenant is deliberate — a multi-tenant registration would
+   let accounts from any other organisation reach sign-in, leaving the
+   company-domain check as the only thing refusing them.
+
+2. **Redirect URI, registered under the "Web" platform.** Add
+   `https://www.skyway.app/__/auth/handler`, exactly, including the
+   `/__/auth/handler` path. The platform matters as much as the URL: Firebase
+   redeems the authorization code from a server using a client secret, and
+   Entra refuses that for URIs registered under "Single-page application".
+   That combination fails *after* the person successfully signs in, which is
+   why it looks like a rejected account rather than a settings mistake.
+
+3. **Email claim.** The app requests `openid`, `profile` and `email`, but Entra
+   only issues an address if the account has a mail attribute and the
+   registration returns it (Token configuration → add optional claim →
+   `email`). Without it sign-in completes and is then refused with
+   `auth/missing-email`, because authorization is by verified company address.
+
+4. **Client secret.** Firebase Authentication → Sign-in method → Microsoft
+   takes the Entra application (client) ID and a client secret. Copy the secret
+   **Value**, not the **Secret ID** — Entra shows both, they look alike, and the
+   Value is only displayed once, immediately after you create it. Entra secrets
+   also expire; note the expiry date, because the app will sign in perfectly
+   until it lapses and then fail for everyone at once.
+
+5. **Authorized domains.** Firebase Authentication → Settings → Authorized
+   domains needs every hostname the app is served from, as a bare hostname with
+   no scheme or port: `www.skyway.app`, the Vercel aliases, and `localhost`.
+   Omitting one produces `auth/unauthorized-domain`.
+
+6. **Same-origin auth domain.** `VITE_FIREBASE_AUTH_DOMAIN=www.skyway.app`, and
+   `vercel.json` proxies `/__/auth/*` to `skyway-ops-app.firebaseapp.com` ahead
+   of the single-page catch-all. See the section below for why this is not
+   optional here.
+
+7. **Tenant.** `VITE_MICROSOFT_TENANT_ID` is the Entra Directory (tenant) ID.
+   Sign-in must target a specific directory: a single-tenant registration
+   refuses Microsoft's shared `/common` endpoint with **AADSTS50194**. When the
+   variable is unset the company domain `flyskyway.com` is used as the
+   directory instead, which also works. `VITE_*` values are compiled in at build
+   time, so setting one without redeploying changes nothing.
+
+8. **Service account.** `FIREBASE_SERVICE_ACCOUNT_JSON` must be available to
+   `/api/auth-profile-bootstrap`, which provisions profiles server-side.
+
+9. **Firestore rules** for the named `appusers` database:
    - deny client creation of `/users/{uid}` profiles;
-   - prevent users from changing their own `role`, `approved`, `active`,
-     `email`, or `authProvider`;
-   - require approved/active profiles for operational collections.
+   - prevent users changing their own `role`, `approved`, `active`, `email`, or
+     `authProvider`;
+   - require an approved, active profile for operational collections.
 
-The React domain check improves the experience, but it is not the security
-boundary. The bootstrap endpoint verifies the signed Firebase token and the
-sign-in provider before creating a least-privilege profile. Disabling password
-auth and enforcing Firestore rules closes the direct-client paths that never
-pass through React.
+The React domain check is experience, not the security boundary. The bootstrap
+endpoint verifies the signed Firebase token and the sign-in provider before
+creating a least-privilege profile; Firestore rules close the direct-client
+paths that never pass through React.
+
+## Why same-origin sign-in is required
+
+`signInWithRedirect` sends the browser to `authDomain` to run Firebase's
+sign-in helper, then back to the app. When `authDomain` is a different origin,
+Safari and every browser that partitions third-party storage block that
+helper's storage, so the redirect completes with no session and the person
+lands back on the login screen with nothing explaining why. Skyway Ops is used
+as an installed iPhone app, where this is the default behaviour, so the
+same-origin proxy is a requirement rather than a tuning option.
+
+As a safety net the client detects an installed iOS app whose helper is still
+cross-origin and uses Firebase's popup flow for that login. That prevents a
+silent failure; it does not replace the configuration above.
+
+Redirect completion runs once at application boot, before the auth observer, so
+successful, pending-approval, and rejected returns all consume Firebase's
+one-shot result consistently.
+
+Reference: [Firebase — best practices for `signInWithRedirect`](https://firebase.google.com/docs/auth/web/redirect-best-practices).
+
+### Preview deployments cannot use Microsoft sign-in
+
+Vercel branch deployments get a new hostname on every build. Firebase
+Authorized domains and Entra redirect URIs both require exact hostnames, so an
+ephemeral preview address cannot be wired up in any lasting way. Previews use
+the development-auth bypass instead. Verify real Microsoft sign-in on
+`www.skyway.app`.
+
+## When every external check passes and sign-in still fails
+
+Two settings cannot be observed from outside the deployment, and both fail
+*after* Microsoft has already accepted the person — which is why the app
+reports something that sounds like a bad account:
+
+1. **The client secret in Firebase is wrong or expired.** Symptom:
+   `auth/invalid-credential`, or `AADSTS7000215` / `AADSTS7000222` in the
+   login screen's technical detail. Issue a new secret in Entra under
+   Certificates & secrets and paste its **Value** into the Firebase Microsoft
+   provider.
+2. **The redirect URI is registered under "Single-page application" instead of
+   "Web".** Symptom: `auth/invalid-credential`, or `AADSTS9002327`. Move the
+   `/__/auth/handler` URL to the Web platform in the Entra app registration.
+
+Entra's own **Sign-in logs** (Entra ID → Monitoring → Sign-in logs) record every
+attempt with the exact failure reason, including ones the browser never sees.
+That is the fastest way to separate these two.
 
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| `auth/unauthorized-domain` | The **web address serving the app** is not allowlisted. Nothing to do with the email domain. | Add the hostname shown in the on-screen error to Firebase Authentication → Settings → Authorized domains (step 4). |
+| `auth/invalid-credential` after the Microsoft prompt succeeded | Firebase could not redeem the code against Entra. | The two causes above: client secret, or Web vs single-page platform. |
+| `auth/unauthorized-domain` | The **web address serving the app** is not allowlisted. Nothing to do with the email domain. | Add the hostname from the on-screen error to Firebase Authorized domains (step 5). |
 | `auth/operation-not-allowed` | Microsoft provider is off. | Enable it under Firebase Authentication → Sign-in method. |
-| `auth/invalid-oauth-client-id` | Entra client ID or secret is wrong or expired. | Re-enter both in the Firebase Microsoft provider. Entra client secrets expire — check the expiry date. |
-| `AADSTS50011: redirect URI does not match` (shown on the Microsoft page, not in the app) | The Entra app registration does not list the Firebase handler URL. | Add the exact `https://<authDomain>/__/auth/handler` URL to the Entra app's redirect URIs (step 2). |
-| `auth/account-exists-with-different-credential` | The email already exists as a password account. | Link or migrate the user in Firebase Authentication rather than creating a second profile. |
-| `auth/missing-email` — "Microsoft signed you in but returned no email address" | Entra issued a token with no `email` claim. Access is granted by verified company address, so there is nothing to authorize against. | Confirm the account has a mail address in Entra, and that the app registration requests the `email` scope and includes the email optional claim. The app requests `openid profile email`; Entra still has to be willing to issue it. |
-| `auth/redirect-session-lost` — sign-in succeeds at Microsoft, then returns to the login page | The browser blocked the cross-origin sign-in helper's storage. Standard behaviour in Safari and installed iPhone apps. | Apply the same-origin auth domain below. |
+| `auth/invalid-oauth-client-id` | Entra client ID or secret wrong or expired. | Re-enter both in the Firebase Microsoft provider. |
+| `auth/missing-email` | Entra issued a token with no `email` claim, and access is granted by verified company address. | Confirm the account has a mail address and the registration returns the email claim (step 3). |
+| `auth/redirect-session-lost` — sign-in succeeds at Microsoft, then returns to the login page | If the helper is cross-origin, the browser blocked its storage. If it is already same-origin, the prompt was most likely cancelled or dismissed. | Apply same-origin sign-in (step 6), or retry. Run `npm run verify:sso` to tell the two apart. |
+| `auth/account-exists-with-different-credential` | A legacy password (or other) Auth user already owns this email. | Automatic: sign-in links Microsoft onto that existing UID, drops the old providers, and continues. No administrator action needed unless the merge itself fails. |
+| `auth/microsoft-oid-conflict` | This email is already linked to a different Microsoft directory subject. | Inspect the Firebase Authentication user; two Microsoft identities cannot share one Skyway profile. |
 | `auth/profile-identity-mismatch` | The Microsoft address does not match `users/{uid}.email`. | Relink or correct the profile in Firestore rather than creating a second one. |
+| `permission-denied` from Firestore on the login screen | Expected. Data subscriptions start before sign-in completes and are refused until there is a session. | Nothing, unless it persists after a successful sign-in — then it is a Firestore rules problem, not an auth one. |
 
-The login screen prints the failing error code and, for the configuration
-faults above, the specific console setting to change.
+The login screen prints the failing code, the specific console setting to
+change, and a **Technical detail for an administrator** panel carrying the
+recorded stage, the auth domain in use, whether the helper is same-origin, and
+Microsoft's own AADSTS text. Include that panel's contents in any bug report.
 
-## Same-origin auth domain (needed for iOS / Safari)
+## Directory refusals (AADSTS codes)
 
-`signInWithRedirect` sends the browser to `authDomain` to run Firebase's
-sign-in helper and then back to the app. When `authDomain` is a different
-origin from the app, Safari — and any browser that partitions third-party
-storage — blocks that helper's storage access, so the redirect completes with
-no session and the user silently lands back on the login screen. Because
-Skyway Ops is used as an installed iPhone PWA, expect to need this.
+Microsoft reports directory-level refusals as `AADSTS` codes, which Firebase
+wraps in `auth/invalid-credential`. The login screen extracts and explains the
+code rather than showing the generic wrapper.
 
-The plumbing is already in the repository and is inert until switched on:
+| Code | Meaning | Fix |
+| --- | --- | --- |
+| `AADSTS50194` | Single-tenant app registration, but sign-in used `/common`. | Set `VITE_MICROSOFT_TENANT_ID` and redeploy (step 7). Do not make the app multi-tenant. |
+| `AADSTS50011` | Redirect URI not registered. | Add `https://www.skyway.app/__/auth/handler` in Entra (step 2). |
+| `AADSTS9002327` | Redirect URI is registered as a single-page application. | Move it to the Web platform (step 2). |
+| `AADSTS700016` | Application ID not recognised. | Check the client ID in the Firebase Microsoft provider. |
+| `AADSTS7000215` | Client secret wrong. | Issue a new Entra secret and update Firebase (step 4). |
+| `AADSTS7000222` | Client secret expired. | Same, and note the new expiry date. |
+| `AADSTS90002` | Directory does not exist. | `VITE_MICROSOFT_TENANT_ID` is not a real tenant ID. |
+| `AADSTS50020` | Account is outside the directory. | Sign in with the `@flyskyway.com` work account. |
+| `AADSTS65001` | Admin consent not granted. | Grant consent for `openid`, `profile`, `email`. |
 
-- `vercel.json` transparently proxies `/__/auth/*` to
-  `skyway-ops-app.firebaseapp.com`, ahead of the SPA catch-all.
-- `src/firebase.js` reads `VITE_FIREBASE_AUTH_DOMAIN` and falls back to the
-  default Firebase domain when it is unset.
+## Existing users / merging accounts that share an email
 
-### Preview deployments cannot use this
+Microsoft must return the same address already stored in `users/{uid}.email`.
+Legacy accounts created with email/password (or another provider) keep that
+address on a Firebase Auth user whose UID keys every operational document.
 
-Vercel branch and commit deployments get a new hostname on every build
-(`skyway-ops-git-<branch>-<hash>-<scope>.vercel.app`). Firebase Authorized
-domains and Entra redirect URIs both require exact hostnames, so an ephemeral
-preview address cannot be wired up in any lasting way.
+When Microsoft sign-in hits `auth/account-exists-with-different-credential`,
+the app merges automatically:
 
-Sign-in on a preview deployment will therefore fail with
-`auth/redirect-session-lost` in Safari. That is expected. Verify Microsoft
-sign-in on the stable production address — `skyway-ops.vercel.app` or a custom
-domain such as `ops.flyskyway.com` — where the configuration below is set once.
+1. The pending Microsoft access token is sent to `/api/auth-link-microsoft`.
+2. The server confirms the token with Microsoft Graph, finds the existing Auth
+   user by email, links `microsoft.com` onto that UID, and unlinks password
+   (and any other non-Microsoft providers).
+3. The client retries the pending credential against the same UID.
 
-To switch it on:
+Role, approval, duty history, and chat membership are unchanged because the
+UID never changes. A safety net in `/api/auth-profile-bootstrap` also reclaims
+a Firestore profile by email if an Auth UID somehow changed.
 
-1. Set `VITE_FIREBASE_AUTH_DOMAIN` in Vercel to the app's own hostname, for
-   example `ops.flyskyway.com`.
-2. Add `https://ops.flyskyway.com/__/auth/handler` to the Entra application's
-   redirect URIs. Keep the old firebaseapp.com handler registered until the
-   change is verified in production.
-3. Confirm that hostname is in Firebase Authorized domains (step 4).
-4. Redeploy.
-
-Reference: [Firebase — best practices for `signInWithRedirect`](https://firebase.google.com/docs/auth/web/redirect-best-practices).
-
-## Existing users
-
-Microsoft must return the same email address already stored in
-`users/{uid}.email`. If Firebase reports
-`auth/account-exists-with-different-credential`, link or migrate that user in
-Firebase Authentication rather than creating a duplicate operational profile.
+There is nothing to bulk-merge ahead of time: Microsoft's directory subject
+(`oid`) is only known when that person signs in. The first successful
+Microsoft login for each legacy email performs the merge.

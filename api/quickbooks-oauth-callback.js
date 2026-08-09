@@ -15,43 +15,25 @@
 //   5. Delete the used state token
 //   6. Redirect back to the app's settings (with a success/error param)
 
-import admin from 'firebase-admin';
-
-let adminApp = null;
-function getAdmin() {
-  if (adminApp) return adminApp;
-  if (!process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
-    throw new Error('FIREBASE_SERVICE_ACCOUNT_JSON not configured');
-  }
-  const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
-  adminApp = admin.apps.length
-    ? admin.app()
-    : admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
-  return adminApp;
-}
+import { getDb, qboApiBase, qboEnvironment } from './_quickbooks.js';
 
 const TOKEN_URL = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer';
-
-// QBO API base differs by environment
-const QBO_API_BASE = {
-  sandbox: 'https://sandbox-quickbooks.api.intuit.com',
-  production: 'https://quickbooks.api.intuit.com',
-};
 
 // Where to send the user after we're done. Must match the deployed app URL.
 function buildAppRedirect(success, message) {
   // Use the deployed app URL; fallback to relative if env var not set
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://skyway-ops.vercel.app';
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://www.skyway.app';
   const params = new URLSearchParams({
     qbo: success ? 'connected' : 'error',
     msg: message || '',
   });
-  return `${appUrl}/?${params.toString()}#settings`;
+  params.set('section', 'accounting');
+  return `${appUrl}/?${params.toString()}#accounting`;
 }
 
 export default async function handler(req, res) {
   try {
-    getAdmin();
+    const db = getDb();
 
     const { code, state, realmId, error: oauthError, error_description } = req.query;
 
@@ -69,7 +51,7 @@ export default async function handler(req, res) {
     }
 
     // === Validate state token ===
-    const stateRef = admin.firestore().collection('quickbooks-oauth-state').doc(state);
+    const stateRef = db.collection('quickbooks-oauth-state').doc(state);
     const stateSnap = await stateRef.get();
     if (!stateSnap.exists) {
       res.redirect(302, buildAppRedirect(false, 'Invalid or expired state token'));
@@ -86,7 +68,7 @@ export default async function handler(req, res) {
     // === Get the user's profile for the connectedByName field ===
     let connectedByName = '';
     try {
-      const profile = await admin.firestore().collection('users').doc(uid).get();
+      const profile = await db.collection('users').doc(uid).get();
       if (profile.exists) connectedByName = profile.data().name || '';
     } catch (_) { /* non-fatal */ }
 
@@ -94,7 +76,7 @@ export default async function handler(req, res) {
     const clientId = process.env.INTUIT_CLIENT_ID;
     const clientSecret = process.env.INTUIT_CLIENT_SECRET;
     const redirectUri = process.env.INTUIT_REDIRECT_URI;
-    const env = (process.env.INTUIT_ENV || 'sandbox').toLowerCase();
+    const env = qboEnvironment();
     if (!clientId || !clientSecret || !redirectUri) {
       res.redirect(302, buildAppRedirect(false, 'Server not configured (missing Intuit env vars)'));
       return;
@@ -135,7 +117,7 @@ export default async function handler(req, res) {
     // === Fetch company name for display ===
     let companyName = '';
     try {
-      const apiBase = QBO_API_BASE[env] || QBO_API_BASE.sandbox;
+      const apiBase = qboApiBase(env);
       const companyResp = await fetch(
         `${apiBase}/v3/company/${realmId}/companyinfo/${realmId}?minorversion=70`,
         {
@@ -157,7 +139,7 @@ export default async function handler(req, res) {
     }
 
     // === Save connection ===
-    await admin.firestore().collection('quickbooks').doc('connection').set({
+    await db.collection('quickbooks').doc('connection').set({
       realmId,
       companyName,
       environment: env,

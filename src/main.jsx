@@ -5,6 +5,21 @@ import { ServiceTechPage } from './ServiceRequests.jsx';
 import TripTrackPage from './TripTrack.jsx';
 import './index.css';
 
+// Chromium's install event is one-shot and can fire while Firebase is still
+// resolving auth, before the lazy install button exists. Capture it at module
+// startup and notify whichever UI is mounted later.
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeinstallprompt', (event) => {
+    event.preventDefault();
+    window.__SKYWAY_INSTALL_PROMPT__ = event;
+    window.dispatchEvent(new CustomEvent('skyway:install-prompt'));
+  });
+  window.addEventListener('appinstalled', () => {
+    window.__SKYWAY_INSTALL_PROMPT__ = null;
+    window.dispatchEvent(new CustomEvent('skyway:app-installed'));
+  });
+}
+
 /* ============================================================
    STALE CHUNK RECOVERY
    ------------------------------------------------------------
@@ -98,10 +113,9 @@ const isTripTrackRoute =
    criteria. Without an active SW, Chrome/Android won't show the
    "Install app" affordance.
 
-   The SW handles push notifications when present, but its mere
-   existence is what unlocks installability. We do NOT add app
-   caching here — Vercel handles cache headers, and adding a
-   cache strategy is a tarpit (stale code after deploys etc.).
+   The SW handles push notifications and navigation fetches. It caches
+   only a static offline explanation — never index.html or hashed app
+   chunks — so installed iPhones remain update-safe after deploys.
 
    Failures are swallowed: SW registration shouldn't block app
    startup. The app works fine without it; users just don't get
@@ -117,6 +131,20 @@ if (typeof window !== 'undefined' && 'serviceWorker' in navigator
         // Don't surface to user. SW is non-critical for app function.
         console.warn('[pwa] service worker registration skipped:', err && err.message);
       });
+  });
+
+  // When a lock-screen notification focuses an already-open PWA, the service
+  // worker cannot navigate React directly. It posts the deep link here. A
+  // full same-origin navigation is deliberate: auth state is persisted, and
+  // a clean boot lets App.jsx resolve the trip/channel before rendering.
+  navigator.serviceWorker.addEventListener('message', (event) => {
+    if (event?.data?.type !== 'navigate' || !event.data.url) return;
+    try {
+      const target = new URL(event.data.url, window.location.origin);
+      if (target.origin === window.location.origin) window.location.assign(target.href);
+    } catch (err) {
+      console.warn('[pwa] ignored malformed notification URL:', err?.message || err);
+    }
   });
 }
 

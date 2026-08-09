@@ -1,0 +1,278 @@
+// Delegated Microsoft Graph client for each employee's own work mailbox.
+
+import admin from 'firebase-admin';
+import {
+  escapeHtml,
+  mailAdminApp,
+  mailDb,
+} from './_charter-mail.js';
+
+const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
+const TOKEN_PATH = '/oauth2/v2.0/token';
+
+// Delegated scopes requested when an employee connects Microsoft. Mail and
+// Teams share a single consent so staff authorize Skyway once.
+export const MAIL_SCOPES = [
+  'openid', 'profile', 'email', 'offline_access',
+  'User.Read', 'Mail.ReadWrite', 'Mail.Send',
+];
+export const TEAMS_SCOPES = [
+  'Team.ReadBasic.All', 'Channel.ReadBasic.All',
+  'ChannelMessage.Read.All', 'ChannelMessage.Send',
+  'Chat.ReadWrite', 'Files.ReadWrite.All',
+];
+export const DELEGATED_SCOPES = [...MAIL_SCOPES, ...TEAMS_SCOPES].join(' ');
+
+/** Granted scope names, stripped of the Graph resource URI Microsoft returns. */
+export function grantedScopeNames(connection) {
+  return (Array.isArray(connection?.scopes) ? connection.scopes : [])
+    .map((scope) => String(scope).split('/').pop())
+    .filter(Boolean);
+}
+
+/**
+ * Teams requires consent that mail-only connections never asked for, so an
+ * employee who connected before Teams shipped has to reconnect once.
+ */
+export function hasTeamsScopes(connection) {
+  const granted = new Set(grantedScopeNames(connection).map((scope) => scope.toLowerCase()));
+  return ['team.readbasic.all', 'chat.readwrite', 'files.readwrite.all']
+    .every((scope) => granted.has(scope));
+}
+// Public identifiers for the existing Skyway Microsoft SSO registration.
+// Environment overrides keep rotation possible without a code release.
+const SKYWAY_TENANT_ID = 'aef6138f-7c46-448a-95fe-dda7a700b80f';
+const SKYWAY_SSO_CLIENT_ID = '6e65ee4c-d6b7-4a1b-9dfe-0056be0946d1';
+const SKYWAY_APP_ORIGIN = 'https://www.skyway.app';
+
+function resolvedUserMailConfig() {
+  const tenant = String(
+    process.env.MICROSOFT_USER_MAIL_TENANT_ID
+    || process.env.VITE_MICROSOFT_TENANT_ID
+    || SKYWAY_TENANT_ID,
+  ).trim();
+  const clientId = String(
+    process.env.MICROSOFT_USER_MAIL_CLIENT_ID
+    || process.env.MICROSOFT_SSO_CLIENT_ID
+    || SKYWAY_SSO_CLIENT_ID,
+  ).trim();
+  // Secrets are often pasted with trailing newlines or surrounding quotes from
+  // password managers / Vercel UI. Trim those so Microsoft does not reject the
+  // exchange as invalid_client for a cosmetic paste mistake.
+  const clientSecret = String(
+    process.env.MICROSOFT_USER_MAIL_CLIENT_SECRET
+    || process.env.MICROSOFT_SSO_CLIENT_SECRET
+    || '',
+  ).trim().replace(/^['"]|['"]$/g, '');
+  const appOrigin = String(process.env.NEXT_PUBLIC_APP_URL || SKYWAY_APP_ORIGIN).replace(/\/+$/, '');
+  const redirectUri = String(
+    process.env.MICROSOFT_USER_MAIL_REDIRECT_URI
+    || `${appOrigin}/api/user-mail-oauth-callback`,
+  ).trim();
+  return { tenant, clientId, clientSecret, redirectUri };
+}
+
+export function isUserMailConfigured() {
+  const { tenant, clientId, clientSecret, redirectUri } = resolvedUserMailConfig();
+  return Boolean(tenant && clientId && clientSecret && redirectUri);
+}
+
+export function userMailConfig() {
+  const { tenant, clientId, clientSecret, redirectUri } = resolvedUserMailConfig();
+  if (!tenant || !clientId || !clientSecret || !redirectUri) {
+    const error = new Error(
+      'Personal work-mail integration is not configured. Reuse the existing Skyway Microsoft login app: add the mailbox callback URI and delegated Mail permissions in Entra, then set its existing secret as MICROSOFT_USER_MAIL_CLIENT_SECRET on the server.',
+    );
+    error.status = 503;
+    error.code = 'user_mail_not_configured';
+    throw error;
+  }
+  return { tenant, clientId, clientSecret, redirectUri };
+}
+
+export async function authorizeApprovedUser(idToken) {
+  if (!idToken) {
+    const error = new Error('idToken required');
+    error.status = 401;
+    throw error;
+  }
+  let decoded;
+  try {
+    decoded = await admin.auth(mailAdminApp()).verifyIdToken(idToken, true);
+  } catch {
+    const error = new Error('Invalid or revoked session');
+    error.status = 401;
+    throw error;
+  }
+  const snap = await mailDb().collection('users').doc(decoded.uid).get();
+  const profile = snap.data() || {};
+  if (!snap.exists || profile.active === false || profile.approved !== true) {
+    const error = new Error('Active approved company account required');
+    error.status = 403;
+    throw error;
+  }
+  const email = String(decoded.email || profile.email || '').trim().toLowerCase();
+  if (!email.endsWith('@flyskyway.com')) {
+    const error = new Error('A @flyskyway.com work account is required');
+    error.status = 403;
+    throw error;
+  }
+  return {
+    uid: decoded.uid,
+    email,
+    name: profile.name || decoded.name || email,
+    role: profile.role || 'crew',
+    emailSignature: String(profile.emailSignature || '').slice(0, 4000),
+  };
+}
+
+export function userMailboxRef(uid) {
+  return mailDb().collection('user-mailboxes').doc(uid);
+}
+
+export async function readUserMailbox(uid) {
+  const snap = await userMailboxRef(uid).get();
+  return snap.exists ? snap.data() : null;
+}
+
+export function publicUserMailbox(connection) {
+  const configured = isUserMailConfigured();
+  if (!connection) {
+    return {
+      connected: false,
+      configured,
+      setupHint: configured
+        ? null
+        : 'Reuse the existing Microsoft login registration. Add the mailbox callback and delegated Mail permissions in Entra, then set only its existing secret as MICROSOFT_USER_MAIL_CLIENT_SECRET.',
+    };
+  }
+  return {
+    connected: true,
+    configured,
+    mailbox: connection.mail || connection.userPrincipalName || '',
+    displayName: connection.displayName || '',
+    connectedAt: connection.connectedAt || null,
+    lastRefreshedAt: connection.lastRefreshedAt || null,
+    accessTokenExpiresAt: connection.accessTokenExpiresAt || null,
+    scopes: connection.scopes || [],
+    teamsEnabled: hasTeamsScopes(connection),
+  };
+}
+
+function refreshScope(connection) {
+  const granted = grantedScopeNames(connection).filter((scope) => scope !== 'offline_access');
+  if (!granted.length) return MAIL_SCOPES.join(' ');
+  return [...new Set([...granted, 'offline_access'])].join(' ');
+}
+
+async function refreshUserToken(uid, connection) {
+  const config = userMailConfig();
+  if (!connection?.refreshToken) throw new Error('Mailbox refresh token is missing — reconnect your mailbox');
+  const response = await fetch(
+    `https://login.microsoftonline.com/${encodeURIComponent(config.tenant)}${TOKEN_PATH}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        client_id: config.clientId,
+        client_secret: config.clientSecret,
+        refresh_token: connection.refreshToken,
+        // Only ask for what this connection already consented to. Requesting a
+        // scope the user never granted fails the refresh outright, which would
+        // break mail for everyone who connected before Teams was added.
+        scope: refreshScope(connection),
+      }).toString(),
+    },
+  );
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.access_token) {
+    console.error('[user-mail] refresh failed', response.status, data);
+    const error = new Error(data.error === 'invalid_grant'
+      ? 'Microsoft mailbox authorization expired — reconnect your mailbox'
+      : `Microsoft mailbox refresh failed (${data.error || response.status})`);
+    error.status = 401;
+    throw error;
+  }
+  const now = Date.now();
+  const patch = {
+    accessToken: data.access_token,
+    refreshToken: data.refresh_token || connection.refreshToken,
+    accessTokenExpiresAt: now + (Number(data.expires_in) || 3600) * 1000,
+    lastRefreshedAt: now,
+    scopes: String(data.scope || '').split(/\s+/).filter(Boolean),
+  };
+  await userMailboxRef(uid).set(patch, { merge: true });
+  return { ...connection, ...patch };
+}
+
+export async function validUserMailbox(uid, forceRefresh = false) {
+  const connection = await readUserMailbox(uid);
+  if (!connection?.accessToken) {
+    const error = new Error('Work mailbox is not connected');
+    error.status = 409;
+    throw error;
+  }
+  const refresh = forceRefresh
+    || !connection.accessTokenExpiresAt
+    || connection.accessTokenExpiresAt <= Date.now() + 5 * 60 * 1000;
+  return refresh ? refreshUserToken(uid, connection) : connection;
+}
+
+function validateGraphUrl(pathOrUrl, connection, allowPrefixes = []) {
+  const url = String(pathOrUrl).startsWith('https://')
+    ? new URL(pathOrUrl)
+    : new URL(`${GRAPH_BASE}${pathOrUrl}`);
+  if (url.origin !== 'https://graph.microsoft.com') throw new Error('Invalid Microsoft Graph URL');
+  const allowed = [
+    '/v1.0/me',
+    connection?.graphUserId ? `/v1.0/users/${encodeURIComponent(connection.graphUserId)}` : null,
+    ...allowPrefixes,
+  ].filter(Boolean);
+  if (!allowed.some((prefix) => url.pathname.startsWith(prefix))) {
+    throw new Error('Personal mailbox Graph path is not allowed');
+  }
+  return url.toString();
+}
+
+export async function userGraphRequest(uid, pathOrUrl, options = {}, retry = true) {
+  const { allowPrefixes = [], ...init } = options;
+  let connection = await validUserMailbox(uid);
+  const run = async (conn) => fetch(validateGraphUrl(pathOrUrl, conn, allowPrefixes), {
+    ...init,
+    headers: {
+      Authorization: `Bearer ${conn.accessToken}`,
+      Accept: 'application/json',
+      Prefer: 'IdType="ImmutableId"',
+      ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(init.headers || {}),
+    },
+  });
+  let response = await run(connection);
+  if (response.status === 401 && retry) {
+    connection = await validUserMailbox(uid, true);
+    response = await run(connection);
+  }
+  if (options.raw) {
+    if (!response.ok) {
+      const error = new Error(`Microsoft Graph returned ${response.status}`);
+      error.status = response.status;
+      throw error;
+    }
+    return response;
+  }
+  const data = response.status === 204 ? {} : await response.json().catch(() => ({}));
+  if (!response.ok || data?.error) {
+    const error = new Error(data?.error?.message || `Microsoft Graph returned ${response.status}`);
+    error.status = response.status || 502;
+    throw error;
+  }
+  return data;
+}
+
+export function personalSignatureHtml(caller, mailbox) {
+  const custom = caller.emailSignature
+    ? escapeHtml(caller.emailSignature).replace(/\r?\n/g, '<br>')
+    : `${escapeHtml(caller.name)}<br>Skyway Aviation`;
+  return `<br><br><div style="font-family:Arial,sans-serif;font-size:13px;color:#334155">${custom}<br><a href="mailto:${escapeHtml(mailbox)}">${escapeHtml(mailbox)}</a></div>`;
+}

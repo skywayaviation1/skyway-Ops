@@ -5,11 +5,14 @@
 
    DESIGN LANGUAGE
    ───────────────
-   Dark nav + light content. The <header> stays deep navy so the Skyway logo
+   Dark nav + light content. The <header> stays graphite so the Skyway logo
    reads naturally and the app looks authoritative at the top. The content area
-   goes to a cool blue-gray with white card surfaces and real elevation shadows.
-   Status colors are saturated against the light background. Typography shifts
-   to deep navy for high contrast.
+   goes to a neutral warm-grey with white card surfaces and real elevation
+   shadows. Status colors are saturated against the light background.
+
+   The palette is deliberately neutral rather than blue-tinted: the brand cyan
+   should be the only saturated colour in the interface, which is what lets it
+   register as intentional instead of decorative.
 
    Think: Stripe dashboard, Vercel, or a modern airline ops portal.
 
@@ -26,8 +29,8 @@
    ─────────────────────────────────────────────────────────────────────────── */
 html[data-theme="classy"],
 html[data-theme="classy"] body {
-  background-color: #E8EFF8 !important;
-  color: #0B1829 !important;
+  background-color: #EFF1F3 !important;
+  color: #121417 !important;
   color-scheme: light;
 }
 
@@ -35,39 +38,43 @@ html[data-theme="classy"] body {
    The <header> (top nav + tab bar) keeps its dark navy look. This gives the
    app a "dark crown / light body" feel — professional and distinctive.
    ─────────────────────────────────────────────────────────────────────────── */
+/* NOTE: this is an element selector with !important, so it captures EVERY
+   <header> in the app, not just the nav. Section and card headings must use a
+   <div>; a nested <header> renders dark-on-dark here because its text colours
+   still follow the light theme. */
 [data-theme="classy"] header {
-  background-color: #0B1A2C !important;
+  background-color: #16181C !important;
   background-image: none !important;
   border-bottom-color: rgba(255,255,255,0.06) !important;
 }
 
 /* Restore dark-mode text/bg colors inside the header so the nav
    elements don't inherit the inverted text scale below */
-[data-theme="classy"] header .text-slate-100 { color: #f1f5f9 !important; }
-[data-theme="classy"] header .text-slate-200 { color: #e2e8f0 !important; }
-[data-theme="classy"] header .text-slate-300 { color: #cbd5e1 !important; }
-[data-theme="classy"] header .text-slate-400 { color: #94a3b8 !important; }
-[data-theme="classy"] header .text-slate-500 { color: #64748b  !important; }
-[data-theme="classy"] header .text-cyan-300  { color: #67e8f9  !important; }
-[data-theme="classy"] header .text-cyan-400  { color: #22d3ee  !important; }
+[data-theme="classy"] header .text-slate-100 { color: #EDEEF0 !important; }
+[data-theme="classy"] header .text-slate-200 { color: #DCDEE1 !important; }
+[data-theme="classy"] header .text-slate-300 { color: #C5C8CD !important; }
+[data-theme="classy"] header .text-slate-400 { color: #B4B8BE !important; }
+[data-theme="classy"] header .text-slate-500 { color: #979CA4  !important; }
+[data-theme="classy"] header .text-cyan-300  { color: #74C4DF  !important; }
+[data-theme="classy"] header .text-cyan-400  { color: #3FA9CC  !important; }
 [data-theme="classy"] header .border-slate-800 { border-color: rgba(255,255,255,0.07) !important; }
 [data-theme="classy"] header .border-slate-700 { border-color: rgba(255,255,255,0.12) !important; }
-[data-theme="classy"] header .bg-slate-950\/80  { background-color: rgba(11,26,44,0.85) !important; }
-[data-theme="classy"] header .bg-slate-900     { background-color: #162438 !important; box-shadow: none !important; }
-[data-theme="classy"] header .bg-cyan-500\/10  { background-color: rgba(34,211,238,0.10) !important; }
-[data-theme="classy"] header .border-cyan-500\/40 { border-color: rgba(34,211,238,0.40) !important; }
-[data-theme="classy"] header .bg-cyan-400      { background-color: #22d3ee !important; }
-[data-theme="classy"] header .text-slate-950   { color: #020617 !important; }
+[data-theme="classy"] header .bg-slate-950\/80  { background-color: rgba(22,24,28,0.85) !important; }
+[data-theme="classy"] header .bg-slate-900     { background-color: #1E2126 !important; box-shadow: none !important; }
+[data-theme="classy"] header .bg-cyan-500\/10  { background-color: rgba(63,169,204,0.10) !important; }
+[data-theme="classy"] header .border-cyan-500\/40 { border-color: rgba(63,169,204,0.40) !important; }
+[data-theme="classy"] header .bg-cyan-400      { background-color: #3FA9CC !important; }
+[data-theme="classy"] header .text-slate-950   { color: #08090B !important; }
 [data-theme="classy"] header .hover\:border-slate-600:hover { border-color: rgba(255,255,255,0.18) !important; }
-[data-theme="classy"] header .hover\:text-slate-200:hover   { color: #e2e8f0 !important; }
-[data-theme="classy"] header .hover\:text-slate-300:hover   { color: #cbd5e1 !important; }
-[data-theme="classy"] header .hover\:border-cyan-500\/40:hover { border-color: rgba(34,211,238,0.4) !important; }
+[data-theme="classy"] header .hover\:text-slate-200:hover   { color: #DCDEE1 !important; }
+[data-theme="classy"] header .hover\:text-slate-300:hover   { color: #C5C8CD !important; }
+[data-theme="classy"] header .hover\:border-cyan-500\/40:hover { border-color: rgba(63,169,204,0.4) !important; }
 [data-theme="classy"] header .hover\:text-red-400:hover     { color: #f87171 !important; }
 [data-theme="classy"] header .border-red-500\/40  { border-color: rgba(239,68,68,0.4) !important; }
 
 /* ─── BACKGROUNDS — CONTENT AREA ─────────────────────────────────────────────
    Two-level surface system:
-     slate-950 → app shell background (#E8EFF8, cool blue-gray)
+     slate-950 → app shell background (#EFF1F3, cool blue-gray)
      slate-900 → card/panel white surface with elevation shadow
      slate-800 → input / secondary surface
      slate-700 → hover / tertiary surface
@@ -75,32 +82,32 @@ html[data-theme="classy"] body {
 
 /* App shell */
 [data-theme="classy"] .bg-slate-950 {
-  background-color: #E8EFF8 !important;
+  background-color: #EFF1F3 !important;
   background-image: none !important;
 }
 
 /* Alpha variants of the shell */
-[data-theme="classy"] .bg-slate-950\/5  { background-color: rgba(232,239,248,0.10) !important; }
-[data-theme="classy"] .bg-slate-950\/10 { background-color: rgba(232,239,248,0.20) !important; }
-[data-theme="classy"] .bg-slate-950\/20 { background-color: rgba(232,239,248,0.30) !important; }
-[data-theme="classy"] .bg-slate-950\/30 { background-color: rgba(232,239,248,0.50) !important; }
-[data-theme="classy"] .bg-slate-950\/40 { background-color: rgba(232,239,248,0.65) !important; }
-[data-theme="classy"] .bg-slate-950\/50 { background-color: rgba(232,239,248,0.75) !important; }
-[data-theme="classy"] .bg-slate-950\/60 { background-color: rgba(232,239,248,0.80) !important; }
-[data-theme="classy"] .bg-slate-950\/70 { background-color: rgba(232,239,248,0.88) !important; }
+[data-theme="classy"] .bg-slate-950\/5  { background-color: rgba(239,241,243,0.10) !important; }
+[data-theme="classy"] .bg-slate-950\/10 { background-color: rgba(239,241,243,0.20) !important; }
+[data-theme="classy"] .bg-slate-950\/20 { background-color: rgba(239,241,243,0.30) !important; }
+[data-theme="classy"] .bg-slate-950\/30 { background-color: rgba(239,241,243,0.50) !important; }
+[data-theme="classy"] .bg-slate-950\/40 { background-color: rgba(239,241,243,0.65) !important; }
+[data-theme="classy"] .bg-slate-950\/50 { background-color: rgba(239,241,243,0.75) !important; }
+[data-theme="classy"] .bg-slate-950\/60 { background-color: rgba(239,241,243,0.80) !important; }
+[data-theme="classy"] .bg-slate-950\/70 { background-color: rgba(239,241,243,0.88) !important; }
 [data-theme="classy"] .bg-slate-950\/80 {
-  background-color: rgba(232,239,248,0.92) !important;
+  background-color: rgba(239,241,243,0.92) !important;
   background-image: none !important;
   backdrop-filter: blur(12px) !important;
   -webkit-backdrop-filter: blur(12px) !important;
 }
-[data-theme="classy"] .bg-slate-950\/90 { background-color: rgba(232,239,248,0.96) !important; }
-[data-theme="classy"] .bg-slate-950\/95 { background-color: #E8EFF8 !important; }
+[data-theme="classy"] .bg-slate-950\/90 { background-color: rgba(239,241,243,0.96) !important; }
+[data-theme="classy"] .bg-slate-950\/95 { background-color: #EFF1F3 !important; }
 
 /* Card / panel surfaces — white with elevation */
 [data-theme="classy"] .bg-slate-900 {
   background-color: #FFFFFF !important;
-  box-shadow: 0 1px 3px rgba(11,24,41,0.07), 0 1px 2px rgba(11,24,41,0.05) !important;
+  box-shadow: 0 1px 3px rgba(18,20,23,0.07), 0 1px 2px rgba(18,20,23,0.05) !important;
 }
 
 /* Semitransparent card overlays */
@@ -114,19 +121,19 @@ html[data-theme="classy"] body {
 [data-theme="classy"] .bg-slate-900\/90 { background-color: rgba(255,255,255,0.97) !important; }
 
 /* Input / secondary surface */
-[data-theme="classy"] .bg-slate-800     { background-color: #F2F6FC !important; }
-[data-theme="classy"] .bg-slate-800\/30 { background-color: rgba(242,246,252,0.50) !important; }
-[data-theme="classy"] .bg-slate-800\/40 { background-color: rgba(242,246,252,0.65) !important; }
-[data-theme="classy"] .bg-slate-800\/50 { background-color: rgba(242,246,252,0.75) !important; }
-[data-theme="classy"] .bg-slate-800\/60 { background-color: rgba(242,246,252,0.85) !important; }
-[data-theme="classy"] .bg-slate-800\/70 { background-color: rgba(242,246,252,0.90) !important; }
-[data-theme="classy"] .bg-slate-800\/80 { background-color: #F2F6FC !important; }
+[data-theme="classy"] .bg-slate-800     { background-color: #F6F7F9 !important; }
+[data-theme="classy"] .bg-slate-800\/30 { background-color: rgba(246,247,249,0.50) !important; }
+[data-theme="classy"] .bg-slate-800\/40 { background-color: rgba(246,247,249,0.65) !important; }
+[data-theme="classy"] .bg-slate-800\/50 { background-color: rgba(246,247,249,0.75) !important; }
+[data-theme="classy"] .bg-slate-800\/60 { background-color: rgba(246,247,249,0.85) !important; }
+[data-theme="classy"] .bg-slate-800\/70 { background-color: rgba(246,247,249,0.90) !important; }
+[data-theme="classy"] .bg-slate-800\/80 { background-color: #F6F7F9 !important; }
 
 /* Hover / tertiary */
-[data-theme="classy"] .bg-slate-700     { background-color: #E2EAF4 !important; }
-[data-theme="classy"] .bg-slate-700\/30 { background-color: rgba(226,234,244,0.50) !important; }
-[data-theme="classy"] .bg-slate-700\/50 { background-color: rgba(226,234,244,0.70) !important; }
-[data-theme="classy"] .bg-slate-700\/80 { background-color: rgba(226,234,244,0.88) !important; }
+[data-theme="classy"] .bg-slate-700     { background-color: #E5E8EB !important; }
+[data-theme="classy"] .bg-slate-700\/30 { background-color: rgba(229,232,235,0.50) !important; }
+[data-theme="classy"] .bg-slate-700\/50 { background-color: rgba(229,232,235,0.70) !important; }
+[data-theme="classy"] .bg-slate-700\/80 { background-color: rgba(229,232,235,0.88) !important; }
 
 /* ─── HOVER BACKGROUNDS ──────────────────────────────────────────────────────
    Interactive elements need visible hover states on the light background.
@@ -135,8 +142,8 @@ html[data-theme="classy"] body {
 [data-theme="classy"] .hover\:bg-slate-900\/50:hover { background-color: rgba(255,255,255,0.80) !important; }
 [data-theme="classy"] .hover\:bg-slate-900\/60:hover { background-color: rgba(255,255,255,0.88) !important; }
 [data-theme="classy"] .hover\:bg-slate-900\/70:hover { background-color: rgba(255,255,255,0.93) !important; }
-[data-theme="classy"] .hover\:bg-slate-800:hover     { background-color: #E8EFF8 !important; }
-[data-theme="classy"] .hover\:bg-slate-800\/50:hover { background-color: rgba(226,234,244,0.60) !important; }
+[data-theme="classy"] .hover\:bg-slate-800:hover     { background-color: #EFF1F3 !important; }
+[data-theme="classy"] .hover\:bg-slate-800\/50:hover { background-color: rgba(229,232,235,0.60) !important; }
 [data-theme="classy"] .hover\:bg-slate-900\/30:hover { background-color: rgba(255,255,255,0.55) !important; }
 [data-theme="classy"] .hover\:bg-slate-900\/20:hover { background-color: rgba(255,255,255,0.40) !important; }
 
@@ -144,31 +151,37 @@ html[data-theme="classy"] body {
    In dark mode, text-slate-100 is near-white (lightest). On a white/light
    surface we flip this: the same utility becomes the DARKEST readable color.
    ─────────────────────────────────────────────────────────────────────────── */
-[data-theme="classy"] .text-slate-100 { color: #0B1829 !important; }
-[data-theme="classy"] .text-slate-200 { color: #1E3048 !important; }
-[data-theme="classy"] .text-slate-300 { color: #334E6A !important; }
-[data-theme="classy"] .text-slate-400 { color: #4E6880 !important; }
-[data-theme="classy"] .text-slate-500 { color: #7A8FA6 !important; }
-[data-theme="classy"] .text-slate-600 { color: #A8BACC !important; }
+/* Contrast against the white card surface is noted per step. The dim end used
+   to bottom out around 2:1, which is unreadable; every prose tier now clears
+   the 4.5:1 AA threshold. These rules carry !important because the whole file
+   does, so they — not the token defaults in index.css — decide the light theme. */
+[data-theme="classy"] .text-slate-100 { color: #121417 !important; }  /* 18.5:1 */
+[data-theme="classy"] .text-slate-200 { color: #1E2126 !important; }  /* 16.1:1 */
+[data-theme="classy"] .text-slate-300 { color: #2B2F35 !important; }  /* 13.5:1 */
+[data-theme="classy"] .text-slate-400 { color: #4B5058 !important; }  /*  8.1:1 */
+[data-theme="classy"] .text-slate-500 { color: #5A6068 !important; }  /*  6.4:1 (was 3.3:1) */
+[data-theme="classy"] .text-slate-600 { color: #6B7078 !important; }  /*  5.0:1 (was 2.0:1) */
+/* Decorative glyphs and disabled states — 3:1 non-text minimum. */
+[data-theme="classy"] .text-slate-700 { color: #7C818A !important; }  /*  3.9:1 */
 
 /* Hover text states */
-[data-theme="classy"] .hover\:text-slate-100:hover { color: #0B1829 !important; }
-[data-theme="classy"] .hover\:text-slate-200:hover { color: #1E3048 !important; }
-[data-theme="classy"] .hover\:text-slate-300:hover { color: #334E6A !important; }
-[data-theme="classy"] .hover\:text-slate-100:hover { color: #0B1829 !important; }
+[data-theme="classy"] .hover\:text-slate-100:hover { color: #121417 !important; }
+[data-theme="classy"] .hover\:text-slate-200:hover { color: #1E2126 !important; }
+[data-theme="classy"] .hover\:text-slate-300:hover { color: #2B2F35 !important; }
+[data-theme="classy"] .hover\:text-slate-100:hover { color: #121417 !important; }
 
 /* ─── BORDERS ─────────────────────────────────────────────────────────────────
    Dark slate borders → pale steel-blue edges.
    ─────────────────────────────────────────────────────────────────────────── */
-[data-theme="classy"] .border-slate-900      { border-color: #E2EAF4 !important; }
-[data-theme="classy"] .border-slate-800      { border-color: #D0DCE9 !important; }
-[data-theme="classy"] .border-slate-800\/60  { border-color: rgba(208,220,233,0.80) !important; }
-[data-theme="classy"] .border-slate-800\/50  { border-color: rgba(208,220,233,0.70) !important; }
-[data-theme="classy"] .border-slate-700      { border-color: #B8CCDE !important; }
-[data-theme="classy"] .border-slate-700\/60  { border-color: rgba(184,204,222,0.75) !important; }
+[data-theme="classy"] .border-slate-900      { border-color: #E5E8EB !important; }
+[data-theme="classy"] .border-slate-800      { border-color: #DCDEE1 !important; }
+[data-theme="classy"] .border-slate-800\/60  { border-color: rgba(220,222,225,0.80) !important; }
+[data-theme="classy"] .border-slate-800\/50  { border-color: rgba(220,222,225,0.70) !important; }
+[data-theme="classy"] .border-slate-700      { border-color: #C5C8CD !important; }
+[data-theme="classy"] .border-slate-700\/60  { border-color: rgba(197,200,205,0.75) !important; }
 
-[data-theme="classy"] .hover\:border-slate-600:hover { border-color: #93AABE !important; }
-[data-theme="classy"] .hover\:border-slate-700:hover { border-color: #B8CCDE !important; }
+[data-theme="classy"] .hover\:border-slate-600:hover { border-color: #A9ADB4 !important; }
+[data-theme="classy"] .hover\:border-slate-700:hover { border-color: #C5C8CD !important; }
 
 /* ─── CYAN ACCENT ─────────────────────────────────────────────────────────────
    Keep the Skyway cyan but shift to deeper values so it has proper contrast
@@ -176,51 +189,51 @@ html[data-theme="classy"] body {
    ─────────────────────────────────────────────────────────────────────────── */
 
 /* Text */
-[data-theme="classy"] .text-cyan-200 { color: #0369A1 !important; }
-[data-theme="classy"] .text-cyan-300 { color: #0284C7 !important; }
-[data-theme="classy"] .text-cyan-400 { color: #0EA5E9 !important; }
-[data-theme="classy"] .text-cyan-500 { color: #0284C7 !important; }
+[data-theme="classy"] .text-cyan-200 { color: #0F5F79 !important; }
+[data-theme="classy"] .text-cyan-300 { color: #12708C !important; }
+[data-theme="classy"] .text-cyan-400 { color: #17809E !important; }
+[data-theme="classy"] .text-cyan-500 { color: #12708C !important; }
 
 /* Solid bg */
-[data-theme="classy"] .bg-cyan-400   { background-color: #0EA5E9 !important; }
-[data-theme="classy"] .bg-cyan-500   { background-color: #0284C7 !important; }
+[data-theme="classy"] .bg-cyan-400   { background-color: #17809E !important; }
+[data-theme="classy"] .bg-cyan-500   { background-color: #12708C !important; }
 
 /* Alpha tints */
-[data-theme="classy"] .bg-cyan-400\/40  { background-color: rgba(14,165,233,0.12) !important; }
-[data-theme="classy"] .bg-cyan-500\/5   { background-color: rgba(2,132,199,0.05)  !important; }
-[data-theme="classy"] .bg-cyan-500\/10  { background-color: rgba(2,132,199,0.09)  !important; }
-[data-theme="classy"] .bg-cyan-500\/15  { background-color: rgba(2,132,199,0.11)  !important; }
-[data-theme="classy"] .bg-cyan-500\/20  { background-color: rgba(2,132,199,0.14)  !important; }
-[data-theme="classy"] .bg-cyan-500\/30  { background-color: rgba(2,132,199,0.18)  !important; }
-[data-theme="classy"] .bg-cyan-500\/40  { background-color: rgba(2,132,199,0.22)  !important; }
+[data-theme="classy"] .bg-cyan-400\/40  { background-color: rgba(23,128,158,0.12) !important; }
+[data-theme="classy"] .bg-cyan-500\/5   { background-color: rgba(18,112,140,0.05)  !important; }
+[data-theme="classy"] .bg-cyan-500\/10  { background-color: rgba(18,112,140,0.09)  !important; }
+[data-theme="classy"] .bg-cyan-500\/15  { background-color: rgba(18,112,140,0.11)  !important; }
+[data-theme="classy"] .bg-cyan-500\/20  { background-color: rgba(18,112,140,0.14)  !important; }
+[data-theme="classy"] .bg-cyan-500\/30  { background-color: rgba(18,112,140,0.18)  !important; }
+[data-theme="classy"] .bg-cyan-500\/40  { background-color: rgba(18,112,140,0.22)  !important; }
 
 /* Borders */
-[data-theme="classy"] .border-cyan-300        { border-color: #38BDF8 !important; }
-[data-theme="classy"] .border-cyan-400        { border-color: #0EA5E9 !important; }
-[data-theme="classy"] .border-cyan-500        { border-color: #0284C7 !important; }
-[data-theme="classy"] .border-cyan-400\/40    { border-color: rgba(14,165,233,0.40) !important; }
-[data-theme="classy"] .border-cyan-400\/60    { border-color: rgba(14,165,233,0.60) !important; }
-[data-theme="classy"] .border-cyan-500\/30    { border-color: rgba(2,132,199,0.35)  !important; }
-[data-theme="classy"] .border-cyan-500\/40    { border-color: rgba(2,132,199,0.42)  !important; }
-[data-theme="classy"] .border-cyan-500\/50    { border-color: rgba(2,132,199,0.52)  !important; }
-[data-theme="classy"] .border-cyan-500\/60    { border-color: rgba(2,132,199,0.62)  !important; }
+[data-theme="classy"] .border-cyan-300        { border-color: #4A9DB8 !important; }
+[data-theme="classy"] .border-cyan-400        { border-color: #17809E !important; }
+[data-theme="classy"] .border-cyan-500        { border-color: #12708C !important; }
+[data-theme="classy"] .border-cyan-400\/40    { border-color: rgba(23,128,158,0.40) !important; }
+[data-theme="classy"] .border-cyan-400\/60    { border-color: rgba(23,128,158,0.60) !important; }
+[data-theme="classy"] .border-cyan-500\/30    { border-color: rgba(18,112,140,0.35)  !important; }
+[data-theme="classy"] .border-cyan-500\/40    { border-color: rgba(18,112,140,0.42)  !important; }
+[data-theme="classy"] .border-cyan-500\/50    { border-color: rgba(18,112,140,0.52)  !important; }
+[data-theme="classy"] .border-cyan-500\/60    { border-color: rgba(18,112,140,0.62)  !important; }
 
 /* Hover variants */
-[data-theme="classy"] .hover\:bg-cyan-400:hover  { background-color: #0EA5E9 !important; }
-[data-theme="classy"] .hover\:bg-cyan-500:hover  { background-color: #0284C7 !important; }
-[data-theme="classy"] .hover\:text-cyan-300:hover { color: #0284C7 !important; }
-[data-theme="classy"] .hover\:text-cyan-400:hover { color: #0EA5E9 !important; }
-[data-theme="classy"] .hover\:border-cyan-400:hover { border-color: #0EA5E9 !important; }
-[data-theme="classy"] .hover\:border-cyan-500\/40:hover { border-color: rgba(2,132,199,0.45) !important; }
-[data-theme="classy"] .hover\:bg-cyan-500\/10:hover { background-color: rgba(2,132,199,0.09) !important; }
-[data-theme="classy"] .hover\:bg-cyan-500\/20:hover { background-color: rgba(2,132,199,0.14) !important; }
+[data-theme="classy"] .hover\:bg-cyan-400:hover  { background-color: #17809E !important; }
+[data-theme="classy"] .hover\:bg-cyan-500:hover  { background-color: #12708C !important; }
+[data-theme="classy"] .hover\:text-cyan-300:hover { color: #12708C !important; }
+[data-theme="classy"] .hover\:text-cyan-400:hover { color: #17809E !important; }
+[data-theme="classy"] .hover\:border-cyan-400:hover { border-color: #17809E !important; }
+[data-theme="classy"] .hover\:border-cyan-500\/40:hover { border-color: rgba(18,112,140,0.45) !important; }
+[data-theme="classy"] .hover\:bg-cyan-500\/10:hover { background-color: rgba(18,112,140,0.09) !important; }
+[data-theme="classy"] .hover\:bg-cyan-500\/20:hover { background-color: rgba(18,112,140,0.14) !important; }
 
 /* Rings */
-[data-theme="classy"] .ring-cyan-200 { --tw-ring-color: #38BDF8 !important; }
-[data-theme="classy"] .ring-cyan-400 { --tw-ring-color: #0EA5E9 !important; }
+[data-theme="classy"] .ring-cyan-200 { --tw-ring-color: #4A9DB8 !important; }
+[data-theme="classy"] .ring-cyan-400 { --tw-ring-color: #17809E !important; }
 
 /* Tab active indicator  */
-[data-theme="classy"] .bg-cyan-400.h-0\.5 { background-color: #0EA5E9 !important; }
+[data-theme="classy"] .bg-cyan-400.h-0\.5 { background-color: #17809E !important; }
 
 /* ─── STATUS COLORS — SATURATED FOR LIGHT BACKGROUNDS ────────────────────────
    On dark we use pastel tints (text-red-300) that read against near-black.
@@ -274,12 +287,12 @@ html[data-theme="classy"] body {
 [data-theme="classy"] .border-emerald-500\/40 { border-color: rgba(5,150,105,0.48) !important; }
 
 /* SKY BLUE */
-[data-theme="classy"] .text-sky-300 { color: #0284C7 !important; }
-[data-theme="classy"] .text-sky-400 { color: #0EA5E9 !important; }
-[data-theme="classy"] .bg-sky-500\/10 { background-color: rgba(14,165,233,0.09) !important; }
-[data-theme="classy"] .bg-sky-500\/15 { background-color: rgba(14,165,233,0.11) !important; }
-[data-theme="classy"] .border-sky-500\/30 { border-color: rgba(14,165,233,0.38) !important; }
-[data-theme="classy"] .border-sky-500\/40 { border-color: rgba(14,165,233,0.48) !important; }
+[data-theme="classy"] .text-sky-300 { color: #12708C !important; }
+[data-theme="classy"] .text-sky-400 { color: #17809E !important; }
+[data-theme="classy"] .bg-sky-500\/10 { background-color: rgba(23,128,158,0.09) !important; }
+[data-theme="classy"] .bg-sky-500\/15 { background-color: rgba(23,128,158,0.11) !important; }
+[data-theme="classy"] .border-sky-500\/30 { border-color: rgba(23,128,158,0.38) !important; }
+[data-theme="classy"] .border-sky-500\/40 { border-color: rgba(23,128,158,0.48) !important; }
 
 /* PURPLE — admin */
 [data-theme="classy"] .text-purple-100  { color: #581C87 !important; }
@@ -299,7 +312,7 @@ html[data-theme="classy"] body {
 
 /* Focus ring in classy mode */
 [data-theme="classy"] :focus-visible {
-  outline-color: rgba(2,132,199,0.50) !important;
+  outline-color: rgba(18,112,140,0.50) !important;
 }
 
 /* ─── TYPOGRAPHY ──────────────────────────────────────────────────────────── */
@@ -307,13 +320,13 @@ html[data-theme="classy"] body {
 [data-theme="classy"] .tracking-wider  { letter-spacing: 0.04em !important; }
 
 /* ─── SCROLLBAR ───────────────────────────────────────────────────────────── */
-[data-theme="classy"] ::-webkit-scrollbar-track { background: #EEF3FA; }
-[data-theme="classy"] ::-webkit-scrollbar-thumb { background: #C0D0E0; border-radius: 3px; }
-[data-theme="classy"] ::-webkit-scrollbar-thumb:hover { background: #9AB0C8; }
+[data-theme="classy"] ::-webkit-scrollbar-track { background: #E9EBED; }
+[data-theme="classy"] ::-webkit-scrollbar-thumb { background: #C5C8CD; border-radius: 3px; }
+[data-theme="classy"] ::-webkit-scrollbar-thumb:hover { background: #A9ADB4; }
 
 /* ─── MODAL OVERLAYS ─────────────────────────────────────────────────────── */
-[data-theme="classy"] .bg-black\/70 { background-color: rgba(11,24,41,0.55) !important; }
-[data-theme="classy"] .bg-black\/85 { background-color: rgba(11,24,41,0.65) !important; }
+[data-theme="classy"] .bg-black\/70 { background-color: rgba(18,20,23,0.55) !important; }
+[data-theme="classy"] .bg-black\/85 { background-color: rgba(18,20,23,0.65) !important; }
 
 /* ─── FIXED / STICKY PANELS ──────────────────────────────────────────────── */
 /* Sticky content panels inherit the correct light base */
@@ -321,10 +334,9 @@ html[data-theme="classy"] body {
 
 /* ─── ANIMATION PULSE ─────────────────────────────────────────────────────── */
 /* The cyan animate-pulse on live indicators needs to stay visible on light */
-[data-theme="classy"] .animate-pulse.bg-cyan-400 { background-color: #0EA5E9 !important; }
-[data-theme="classy"] .animate-ping.bg-cyan-400  { background-color: #0EA5E9 !important; }
+[data-theme="classy"] .animate-pulse.bg-cyan-400 { background-color: #17809E !important; }
+[data-theme="classy"] .animate-ping.bg-cyan-400  { background-color: #17809E !important; }
 
-/* ─── LOGO — DARK CHIP ────────────────────────────────────────────────────── */
-/* The Skyway logo PNG has a dark navy background baked in. Inside the
-   dark <header> this is invisible (dark on dark = fine). No special
-   treatment needed — the logo sits in the dark header naturally. */
+/* ─── LOGO ────────────────────────────────────────────────────────────────── */
+/* The wordmark PNGs now carry a real alpha channel, so they composite onto any
+   surface. Nothing theme-specific is required here. */

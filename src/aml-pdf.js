@@ -21,6 +21,9 @@ import jsPDF from 'jspdf';
 
 // Cache the logo as a data URL after first fetch so generating
 // multiple PDFs doesn't re-download it.
+//
+// Deliberately the base wordmark rather than the `-reverse` variant the app
+// chrome uses: the page is white, so this needs the navy ink.
 let logoDataUrlCache = null;
 async function getLogoDataUrl() {
   if (logoDataUrlCache) return logoDataUrlCache;
