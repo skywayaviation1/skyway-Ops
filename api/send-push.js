@@ -33,6 +33,43 @@
 
 export const config = { runtime: 'nodejs', maxDuration: 30 };
 
+/**
+ * Resolve which aircraft and route a trip notification describes.
+ *
+ * The caller is the authority: it sends the tail/route of the exact leg the
+ * user acted on. The `trips/{id}` document is a legacy record that nothing in
+ * the app writes any more, so when it disagrees it is stale — preferring it
+ * put another aircraft's tail on the notification. It stays only as a fallback
+ * for callers that send nothing.
+ */
+export function resolveTripMeta(tripDoc, body = {}) {
+  const info = (tripDoc && tripDoc.info) || {};
+  const pick = (fromBody, ...fallbacks) => {
+    const supplied = String(fromBody || '').trim();
+    if (supplied) return supplied;
+    for (const value of fallbacks) {
+      const candidate = String(value || '').trim();
+      if (candidate) return candidate;
+    }
+    return '';
+  };
+  const tail = pick(body.tripTail, info.tail, tripDoc && tripDoc.tail);
+  const from = pick(body.tripFrom, info.from);
+  const to = pick(body.tripTo, info.to);
+  const staleTail = Boolean(
+    tail && info.tail && String(info.tail).trim().toUpperCase() !== tail.toUpperCase(),
+  );
+  return {
+    tail,
+    from,
+    to,
+    picName: pick(body.tripPicName, info.pic),
+    sicName: pick(body.tripSicName, info.sic),
+    label: [tail, from && to ? `${from}→${to}` : ''].filter(Boolean).join(' · '),
+    staleTail,
+  };
+}
+
 // ---- Lazy Firebase Admin init (mirrors existing endpoints) ---------------
 let cachedAdmin = null;
 async function getAdmin() {
@@ -179,11 +216,15 @@ export default async function handler(req, res) {
       const trip = tripSnap.exists ? tripSnap.data() : null;
       const info = (trip && trip.info) || {};
 
-      // Prefer Firestore values when present; otherwise use what the
-      // client sent in the request. PIC/SIC names matter only for
-      // name-matched recipient resolution.
-      const picName = info.pic || req.body.tripPicName || '';
-      const sicName = info.sic || req.body.tripSicName || '';
+      // The client sends the leg the user actually acted on, so it wins over
+      // the legacy trips doc for both the title and recipient matching.
+      const tripMeta = resolveTripMeta(trip, req.body);
+      if (tripMeta.staleTail) {
+        console.warn('[send-push] ignoring stale trips/%s tail %s; using %s from caller',
+          tripId, info.tail, tripMeta.tail);
+      }
+      const picName = tripMeta.picName;
+      const sicName = tripMeta.sicName;
 
       // Resolve recipients: PIC (name-matched) + SIC (name-matched) +
       // dispatchers. Caller (firebase-comms) is expected to also flag
@@ -229,14 +270,9 @@ export default async function handler(req, res) {
       threadKind = 'trip';
 
       // Title includes tail + route so users can tell at a glance which
-      // trip a notification is from. From/To come from the trip doc if
-      // we have it, otherwise from the request payload (iCal trips
-      // without a Firestore doc).
-      const tail = info.tail || (trip && trip.tail) || req.body.tripTail || '';
-      const from = info.from || req.body.tripFrom || '';
-      const to = info.to || req.body.tripTo || '';
-      const tripLabel = [tail, from && to ? `${from}→${to}` : '']
-        .filter(Boolean).join(' · ');
+      // trip a notification is from.
+      const tail = tripMeta.tail;
+      const tripLabel = tripMeta.label;
 
       // Status updates use a different body. The client sends kind:
       // 'trip-status' along with a `statusLabel` field describing which
