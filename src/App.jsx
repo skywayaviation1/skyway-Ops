@@ -160,6 +160,7 @@ import {
 import { compareNames } from './name-matching.js';
 import { lookupCoords } from './airport-coords.js';
 import { resolveManagedTails } from './fleet-config.js';
+import { buildFleetMapScene } from './fleet-tracking.js';
 import { DUTY_TRACKER_ENABLED } from './duty-feature.js';
 import {
   analyzeFrameReadiness,
@@ -23022,46 +23023,33 @@ function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
     if (!fleetTails.includes(selectedTail)) setSelectedTail(fleetTails[0] || null);
   }, [fleetTails, selectedTail]);
 
-  // Poll every tail's FlightAware position. One request for the whole fleet.
+  // The server cron polls the managed fleet and writes one shared Firestore
+  // snapshot. Every tracking screen subscribes to it instead of each browser
+  // spending AeroAPI calls independently.
   useEffect(() => {
     let cancelled = false;
-    let timer = null;
-
-    async function pollAll() {
+    let unsubscribe = () => {};
+    (async () => {
       try {
-        const { auth } = await import('./firebase.js');
-        const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : null;
-        if (!idToken) return;
-        const r = await fetch('/api/flightaware-positions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ idToken, idents: fleetTails }),
-        });
-        if (!r.ok) {
-          console.warn('[tracking] positions endpoint returned', r.status);
-          if (!cancelled) setLoadingFleet(false);
-          return;
-        }
-        const data = await r.json();
-        const positions = Array.isArray(data?.positions) ? data.positions : [];
+        const m = await import('./firebase-data.js');
         if (cancelled) return;
-        const next = {};
-        for (const p of positions) {
-          if (p && p.ident) next[String(p.ident).toUpperCase()] = p;
-        }
-        setTailStates(next);
-        setLastPolledAt(Date.now());
-        setLoadingFleet(false);
+        unsubscribe = m.subscribeFleetPositions((map) => {
+          if (cancelled) return;
+          setTailStates(map || {});
+          const latest = Object.values(map || {}).reduce(
+            (max, item) => Math.max(max, Number(item?.polledAt || 0)),
+            0,
+          );
+          setLastPolledAt(latest || null);
+          setLoadingFleet(false);
+        });
       } catch (e) {
-        console.warn('[tracking] poll failed:', e?.message);
+        console.warn('[tracking] fleet subscription failed:', e?.message);
         if (!cancelled) setLoadingFleet(false);
       }
-    }
-
-    pollAll();
-    timer = setInterval(pollAll, 30000);
-    return () => { cancelled = true; if (timer) clearInterval(timer); };
-  }, [fleetTails]);
+    })();
+    return () => { cancelled = true; unsubscribe(); };
+  }, []);
 
   const selectedState = tailStates[selectedTail];
   const selectedAirborne = selectedState?.airborne === true;
@@ -23084,40 +23072,16 @@ function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
   // Build the map scene. Everything Leaflet-shaped lives in TrackingMap; this
   // is purely a projection of fleet state into that contract.
   const scene = useMemo(() => {
-    const aircraft = [];
+    const fleetScene = buildFleetMapScene({
+      fleetTails,
+      positions: tailStates,
+      trips,
+      aircraftByTail: config?.aircraftByTail || {},
+    });
+    const aircraft = fleetScene.aircraft;
     const airports = [];
     const routes = [];
     let projected = null;
-
-    fleetTails.forEach((tail) => {
-      const s = tailStates[tail];
-      if (!s) return;
-      if (s.airborne === true && Number.isFinite(s.latitude) && Number.isFinite(s.longitude)) {
-        aircraft.push({
-          id: tail,
-          tail,
-          lat: s.latitude,
-          lon: s.longitude,
-          heading: s.heading ?? 0,
-          altitude: s.altitude ?? null,
-          groundspeed: s.groundspeed ?? null,
-          airborne: true,
-          showLabel: tail === selectedTail || fleetTails.length <= 6,
-        });
-      } else if (s.airborne === false) {
-        const g = resolvePos(s.groundedAt, s.groundedLat, s.groundedLon);
-        if (g) {
-          aircraft.push({
-            id: tail,
-            tail,
-            lat: g.lat,
-            lon: g.lon,
-            airborne: false,
-            groundedAt: s.groundedAt || null,
-          });
-        }
-      }
-    });
 
     if (selectedState) {
       const originPos = resolvePos(selectedState.origin, selectedState.originLat, selectedState.originLon);
@@ -23150,15 +23114,22 @@ function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
       }
     }
 
-    return { aircraft, airports, routes, trail: trackPoints.length >= 2 ? trackPoints : null, projected };
-  }, [fleetTails, tailStates, selectedTail, selectedState, selectedAirborne, trackPoints]);
+    return {
+      ...fleetScene,
+      aircraft,
+      airports,
+      routes,
+      trail: trackPoints.length >= 2 ? trackPoints : null,
+      projected,
+    };
+  }, [fleetTails, tailStates, trips, config?.aircraftByTail, selectedTail, selectedState, selectedAirborne, trackPoints]);
 
   // Re-fit on selection change and when a trail first arrives, but not on every
   // 30-second position tick — that would fight the user's own pan and zoom.
   const fitKey = `${selectedTail}:${trackPoints.length >= 2 ? 'trail' : 'no-trail'}:${selectedAirborne ? 'air' : 'gnd'}`;
-  // Frame only the selected aircraft. Parked fleet members stay visible as
-  // context but must not drag the viewport across the country.
-  const focusIds = useMemo(() => [selectedTail], [selectedTail]);
+  // Keep the whole managed fleet in view. Selecting a tail changes detail and
+  // trail emphasis without making every other aircraft disappear off-screen.
+  const focusIds = null;
 
   const [mobileView, setMobileView] = useState('map');
   const [isMobile, setIsMobile] = useState(() => (typeof window === 'undefined' ? false : window.innerWidth < 768));

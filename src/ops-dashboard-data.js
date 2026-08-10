@@ -7,6 +7,7 @@
 // and tested without mounting React or Firestore.
 
 import { computeOutstanding } from './ops-readiness.js';
+import { statusEventAt, statusEventDone } from './trip-status.js';
 
 export const MS_HOUR = 3600_000;
 
@@ -52,6 +53,160 @@ export function legHours(trip) {
   const end = toMillis(trip?.end);
   if (!start || !end || end <= start) return 0;
   return (end - start) / MS_HOUR;
+}
+
+function stateForTrip(tripStates, uid) {
+  if (!tripStates || !uid) return null;
+  return typeof tripStates.get === 'function' ? tripStates.get(uid) || null : tripStates[uid] || null;
+}
+
+function normalizedPerson(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+export function pilotMatchesAssignment(pilotName, assignedName) {
+  const pilot = normalizedPerson(pilotName);
+  const assigned = normalizedPerson(assignedName);
+  if (!pilot.length || !assigned.length) return false;
+  if (pilot.join(' ') === assigned.join(' ')) return true;
+  const overlap = pilot.filter((token) => assigned.includes(token)).length;
+  return overlap >= Math.min(2, pilot.length, assigned.length);
+}
+
+function telemetryMatchesTrip(position, trip) {
+  if (!position || !trip) return false;
+  const sameTail = normalizeTail(position.ident) === normalizeTail(trip.info?.tail);
+  if (!sameTail) return false;
+  const origin = normalizeAirport(position.origin);
+  const destination = normalizeAirport(position.destination || position.groundedAt);
+  const from = normalizeAirport(trip.info?.from);
+  const to = normalizeAirport(trip.info?.to);
+  return (!origin || !from || origin === from) && (!destination || !to || destination === to);
+}
+
+/** Actual airborne time from FlightAware-fired steps, with live telemetry fallback. */
+export function actualFlightMsForTrip(trip, state, position, now = Date.now()) {
+  const statuses = state?.statuses || {};
+  const off = statusEventAt(statuses.wheels_up)
+    || (telemetryMatchesTrip(position, trip) ? toMillis(position.actualOff) : null);
+  if (!off) return 0;
+  const on = statusEventAt(statuses.landed)
+    || (telemetryMatchesTrip(position, trip) ? toMillis(position.actualOn) : null)
+    || (position?.airborne === true && telemetryMatchesTrip(position, trip) ? now : null);
+  if (!on || on <= off) return 0;
+  return on - off;
+}
+
+export function flightPhase(trip, state, position, now = Date.now()) {
+  const statuses = state?.statuses || {};
+  if (state?.completed === true) return 'complete';
+  if (statusEventDone(statuses.landed)) return 'landed';
+  if (position?.airborne === true && telemetryMatchesTrip(position, trip)) return 'airborne';
+  if (statusEventDone(statuses.wheels_up)) {
+    const off = statusEventAt(statuses.wheels_up);
+    return off && now - off <= 12 * MS_HOUR ? 'airborne' : 'landed';
+  }
+  if (
+    statusEventDone(statuses.taxi_dep)
+    || statusEventDone(statuses.aircraft_ready)
+    || statusEventDone(statuses.crew_onsite)
+  ) return 'preflight';
+  const start = toMillis(trip?.start);
+  if (start != null && start < now) return 'delayed';
+  return 'scheduled';
+}
+
+export function buildTodayFlightRows(trips, tripStates, positions, now = Date.now()) {
+  const dayStart = startOfDay(now);
+  const dayEnd = dayStart + 24 * MS_HOUR;
+  return (Array.isArray(trips) ? trips : [])
+    .filter(isFlightLeg)
+    .filter((trip) => {
+      const start = toMillis(trip.start);
+      return start != null && start >= dayStart && start < dayEnd;
+    })
+    .map((trip) => {
+      const tail = normalizeTail(trip.info?.tail);
+      const state = stateForTrip(tripStates, trip.uid);
+      const position = positions?.[tail] || null;
+      return {
+        uid: trip.uid,
+        tail,
+        from: normalizeAirport(trip.info?.from),
+        to: normalizeAirport(trip.info?.to),
+        startAt: toMillis(trip.start),
+        endAt: toMillis(trip.end),
+        pic: trip.info?.pic || '',
+        sic: trip.info?.sic || '',
+        scheduledMs: legHours(trip) * MS_HOUR,
+        actualMs: actualFlightMsForTrip(trip, state, position, now),
+        phase: flightPhase(trip, state, position, now),
+        estimatedOn: telemetryMatchesTrip(position, trip) ? position?.estimatedOn || null : null,
+      };
+    })
+    .sort((a, b) => (a.startAt || 0) - (b.startAt || 0));
+}
+
+export function buildOnDutyRows({
+  dutyPeriods = [],
+  trips = [],
+  tripStates = null,
+  positions = {},
+  now = Date.now(),
+}) {
+  return (Array.isArray(dutyPeriods) ? dutyPeriods : [])
+    .filter((period) => (
+      period?.status === 'on'
+      && period.confirmStatus !== 'pending'
+      && period.confirmStatus !== 'declined'
+      && Number.isFinite(period.dutyOnAt)
+    ))
+    .map((period) => {
+      const dutyEndAt = period.dutyOnAt + 14 * MS_HOUR;
+      const assigned = (Array.isArray(trips) ? trips : [])
+        .filter(isFlightLeg)
+        .filter((trip) => {
+          const start = toMillis(trip.start);
+          if (start == null) return false;
+          const end = toMillis(trip.end) || start;
+          if (end < period.dutyOnAt || start > dutyEndAt) return false;
+          return pilotMatchesAssignment(period.pilotName, trip.info?.pic)
+            || pilotMatchesAssignment(period.pilotName, trip.info?.sic);
+        });
+      const scheduledFlightMs = assigned.reduce(
+        (sum, trip) => sum + legHours(trip) * MS_HOUR,
+        0,
+      );
+      const actualFlightMs = assigned.reduce((sum, trip) => {
+        const tail = normalizeTail(trip.info?.tail);
+        return sum + actualFlightMsForTrip(
+          trip,
+          stateForTrip(tripStates, trip.uid),
+          positions?.[tail],
+          now,
+        );
+      }, 0);
+      return {
+        uid: period.pilotUid,
+        name: period.pilotName || 'Unknown pilot',
+        dutyOnAt: period.dutyOnAt,
+        dutyEndAt,
+        remainingMs: Math.max(0, dutyEndAt - now),
+        overLimit: now > dutyEndAt,
+        overByMs: Math.max(0, now - dutyEndAt),
+        tail: period.tail || assigned[0]?.info?.tail || null,
+        role: period.role || null,
+        scheduledFlightMs,
+        actualFlightMs,
+        reportedFlightMs: Number(period.flightTimeMs || 0),
+        assignedTrips: assigned.length,
+      };
+    })
+    .sort((a, b) => a.remainingMs - b.remainingMs || a.name.localeCompare(b.name));
 }
 
 /* ── Fleet state ─────────────────────────────────────────────────────────

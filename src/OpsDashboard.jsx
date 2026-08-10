@@ -27,13 +27,16 @@ import {
 } from 'lucide-react';
 import { Card, EmptyState, Spinner, StatusChip, cx } from './ui.jsx';
 import {
-  buildExceptions, buildFleetRows, buildTimeline, formatCountdown,
+  buildExceptions, buildFleetRows, buildOnDutyRows,
+  buildTodayFlightRows, formatCountdown,
   isFlightLeg, normalizeTail, summarizeFleet, toMillis, MS_HOUR,
 } from './ops-dashboard-data.js';
 import { resolveManagedTails } from './fleet-config.js';
+import { buildFleetMapScene } from './fleet-tracking.js';
 import { buildActiveOpsTrips, computeOutstanding } from './ops-readiness.js';
 
 const TrackingMapLazy = lazy(() => import('./TrackingMap.jsx'));
+const DashboardMailboxPreviewLazy = lazy(() => import('./DashboardMailboxPreview.jsx'));
 
 const SEVERITY_TONE = { critical: 'danger', warning: 'warning', info: 'info' };
 
@@ -51,6 +54,12 @@ function fmtLegTime(value) {
   const ms = toMillis(value);
   if (ms == null) return '—';
   return new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+function fmtDuration(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return '0:00';
+  const minutes = Math.round(ms / 60000);
+  return `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, '0')}`;
 }
 
 /* ── Live operational data ───────────────────────────────────────────────
@@ -395,110 +404,89 @@ function ExceptionQueue({ items, onSwitchSection, onSelectTrip, onOpenDispatch }
   );
 }
 
-function DayTimeline({ timeline, onSelectTrip }) {
-  return (
-    <div className="px-3 pb-3">
-      <div className="relative ml-[4.5rem] mb-1 h-4">
-        {timeline.ticks.map((tick) => (
-          <span
-            key={tick.at}
-            className="absolute -translate-x-1/2 font-mono text-[10px] text-content-subtle"
-            style={{ left: `${tick.left}%` }}
-          >
-            {String(tick.label).padStart(2, '0')}
-          </span>
-        ))}
-      </div>
+const FLIGHT_PHASE = {
+  scheduled: { label: 'Scheduled', tone: 'neutral' },
+  delayed: { label: 'Delayed', tone: 'warning' },
+  preflight: { label: 'Preflight', tone: 'info' },
+  airborne: { label: 'Airborne', tone: 'accent' },
+  landed: { label: 'Landed', tone: 'success' },
+  complete: { label: 'Complete', tone: 'success' },
+};
 
-      <div className="space-y-1">
-        {timeline.rows.map((row) => (
-          <div key={row.tail} className="flex items-center gap-2">
-            <span className="w-16 shrink-0 font-mono text-[11px] text-content-muted">{row.tail}</span>
-            <div className="relative h-7 flex-1 overflow-hidden rounded-md border border-edge bg-surface-sunken">
-              {timeline.ticks.slice(1, -1).map((tick) => (
-                <span
-                  key={tick.at}
-                  className="absolute top-0 h-full w-px bg-edge"
-                  style={{ left: `${tick.left}%` }}
-                  aria-hidden="true"
-                />
-              ))}
-              {row.blocks.map((block) => (
-                <button
-                  key={block.uid}
-                  type="button"
-                  onClick={() => onSelectTrip?.(block.uid)}
-                  title={`${block.from} → ${block.to}`}
-                  className={cx(
-                    'absolute top-1 flex h-5 items-center justify-center overflow-hidden rounded px-1 text-[10px] font-medium',
-                    block.active ? 'bg-accent text-accent-contrast'
-                      : block.done ? 'bg-surface-raised text-content-subtle'
-                        : block.isFlight ? 'bg-accent-soft text-accent' : 'bg-warning-soft text-warning',
-                    'border',
-                    block.active ? 'border-accent' : block.isFlight ? 'border-accent-border' : 'border-warning-border',
-                  )}
-                  style={{ left: `${block.left}%`, width: `${block.width}%` }}
-                >
-                  <span className="truncate">{block.from}–{block.to}</span>
-                </button>
-              ))}
-              <span
-                className="pointer-events-none absolute top-0 z-10 h-full w-0.5 bg-danger"
-                style={{ left: `${timeline.nowPct}%` }}
-                aria-hidden="true"
-              />
-            </div>
-          </div>
-        ))}
+function TodayFlightBoard({ rows, onSelectTrip }) {
+  if (!rows.length) {
+    return <EmptyState icon={CalendarDays} title="No flights scheduled today" />;
+  }
+  return (
+    <div>
+      <div className="hidden grid-cols-[5rem_6rem_1fr_6rem_6rem] gap-2 border-b border-edge bg-surface-sunken px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-content-subtle md:grid">
+        <span>Time</span><span>Tail</span><span>Route / crew</span><span>Status</span><span className="text-right">Sched / actual</span>
+      </div>
+      <div className="divide-y divide-edge">
+        {rows.map((row) => {
+          const phase = FLIGHT_PHASE[row.phase] || FLIGHT_PHASE.scheduled;
+          return (
+            <button
+              key={row.uid}
+              type="button"
+              onClick={() => onSelectTrip?.(row.uid)}
+              className="grid w-full grid-cols-[4.5rem_1fr_auto] gap-2 px-3 py-3 text-left hover:bg-surface-raised md:grid-cols-[5rem_6rem_1fr_6rem_6rem] md:items-center"
+            >
+              <span className="font-mono text-xs text-content">{fmtLegTime(row.startAt)}</span>
+              <span className="font-mono text-xs font-semibold text-content">{row.tail || 'TBD'}</span>
+              <span className="min-w-0">
+                <span className="block truncate font-mono text-xs text-content">{row.from || '???'} → {row.to || '???'}</span>
+                <span className="mt-0.5 block truncate text-2xs text-content-subtle">
+                  {[row.pic, row.sic].filter(Boolean).join(' / ') || 'Crew not assigned'}
+                </span>
+              </span>
+              <StatusChip tone={phase.tone} size="sm">{phase.label}</StatusChip>
+              <span className="col-span-3 text-right font-mono text-2xs tabular-nums text-content-muted md:col-span-1">
+                {fmtDuration(row.scheduledMs)} / {row.actualMs > 0 ? fmtDuration(row.actualMs) : '—'}
+              </span>
+            </button>
+          );
+        })}
       </div>
     </div>
   );
 }
 
-function CrewPanel({ rows, onSwitchSection }) {
-  const onDuty = rows.filter((r) => r.state === 'ON DUTY');
-  const attention = rows.filter((r) => r.legality.status !== 'legal');
-  const shown = [...attention, ...onDuty.filter((r) => !attention.includes(r))].slice(0, 6);
-
-  if (rows.length === 0) {
-    return <EmptyState icon={Users} title="No duty records" description="Duty periods appear here once crew start logging." />;
+function OnDutyBoard({ rows, onSwitchSection }) {
+  if (!rows.length) {
+    return <EmptyState icon={Users} title="No pilots currently on duty" />;
   }
-
   return (
     <div>
-      <div className="grid grid-cols-3 gap-2 px-3 pb-3">
-        <PostureTile label="On duty" value={onDuty.length} tone="accent" />
-        <PostureTile label="Resting" value={rows.filter((r) => r.state === 'RESTING').length} />
-        <PostureTile
-          label="Not legal"
-          value={rows.filter((r) => r.legality.status === 'illegal').length}
-          tone={rows.some((r) => r.legality.status === 'illegal') ? 'danger' : 'neutral'}
-        />
+      <div className="hidden grid-cols-[1fr_5.5rem_5rem_5rem_7rem] gap-2 border-b border-edge bg-surface-sunken px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-content-subtle md:grid">
+        <span>Pilot</span><span>Duty on</span><span>Time left</span><span>Aircraft</span><span className="text-right">Flight sched / actual</span>
       </div>
-      <div className="divide-y divide-edge border-t border-edge">
-        {shown.map((row) => (
+      <div className="divide-y divide-edge">
+        {rows.map((row) => (
           <button
-            key={row.uid}
+            key={`${row.uid}-${row.dutyOnAt}`}
             type="button"
             onClick={() => onSwitchSection?.('duty')}
-            className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left hover:bg-surface-raised"
+            className="grid w-full grid-cols-[1fr_auto] gap-2 px-3 py-3 text-left hover:bg-surface-raised md:grid-cols-[1fr_5.5rem_5rem_5rem_7rem] md:items-center"
           >
             <span className="min-w-0">
-              <span className="block truncate text-sm text-content">{row.name}</span>
+              <span className="block truncate text-sm font-medium text-content">{row.name}</span>
               <span className="block truncate text-2xs text-content-subtle">
-                {row.state === 'ON DUTY' && row.active?.dutyOnAt
-                  ? `On duty ${formatCountdown(Date.now() - row.active.dutyOnAt)}`
-                  : row.state.toLowerCase()}
+                {row.role || 'Crew'} · {row.assignedTrips} scheduled leg{row.assignedTrips === 1 ? '' : 's'}
               </span>
             </span>
-            <StatusChip
-              tone={row.legality.status === 'illegal' ? 'danger'
-                : row.legality.status === 'warning' ? 'warning' : 'success'}
-              size="sm"
-            >
-              {row.legality.status === 'illegal' ? 'Illegal'
-                : row.legality.status === 'warning' ? 'Watch' : 'Legal'}
-            </StatusChip>
+            <span className="font-mono text-xs text-content-muted">{fmtLegTime(row.dutyOnAt)}</span>
+            <span className={cx(
+              'font-mono text-xs font-semibold tabular-nums',
+              row.overLimit ? 'text-danger' : row.remainingMs <= 2 * MS_HOUR ? 'text-warning' : 'text-content',
+            )}>
+              {row.overLimit ? `+${fmtDuration(row.overByMs)}` : fmtDuration(row.remainingMs)}
+            </span>
+            <span className="font-mono text-xs text-content-muted">{row.tail || '—'}</span>
+            <span className="col-span-2 text-right font-mono text-xs tabular-nums text-content md:col-span-1">
+              {fmtDuration(row.scheduledFlightMs)} / {row.actualFlightMs > 0 ? fmtDuration(row.actualFlightMs) : '—'}
+              <span className="block text-[9px] text-content-subtle">FlightAware airborne</span>
+            </span>
           </button>
         ))}
       </div>
@@ -574,6 +562,20 @@ export default function OpsDashboard({
     () => buildCrewRows(data.dutyPeriods, data.legalityFn, now),
     [data.dutyPeriods, data.legalityFn, now],
   );
+  const todayFlights = useMemo(
+    () => buildTodayFlightRows(trips, data.tripStates, data.positions, now),
+    [trips, data.tripStates, data.positions, now],
+  );
+  const onDutyRows = useMemo(
+    () => buildOnDutyRows({
+      dutyPeriods: data.dutyPeriods,
+      trips,
+      tripStates: data.tripStates,
+      positions: data.positions,
+      now,
+    }),
+    [data.dutyPeriods, trips, data.tripStates, data.positions, now],
+  );
 
   const summary = useMemo(() => summarizeFleet(fleetRows, trips, now), [fleetRows, trips, now]);
 
@@ -601,28 +603,13 @@ export default function OpsDashboard({
   const maintenanceItems = data.squawks.filter((item) => item?.status !== 'closed').length
     + data.mel.filter((item) => item?.status !== 'cleared' && item?.status !== 'closed').length;
 
-  const timeline = useMemo(() => buildTimeline(fleetRows, now), [fleetRows, now]);
-
-  const mapScene = useMemo(() => {
-    const aircraft = [];
-    for (const row of fleetRows) {
-      const p = row.position;
-      if (!p || !Number.isFinite(p.latitude) || !Number.isFinite(p.longitude)) continue;
-      aircraft.push({
-        id: row.tail,
-        tail: row.tail,
-        lat: p.latitude,
-        lon: p.longitude,
-        heading: Number.isFinite(p.heading) ? p.heading : 0,
-        altitude: Number.isFinite(p.altitude) ? p.altitude : null,
-        groundspeed: Number.isFinite(p.groundspeed) ? p.groundspeed : null,
-        airborne: p.airborne === true,
-        groundedAt: p.groundedAt || null,
-        showLabel: true,
-      });
-    }
-    return { aircraft, airports: [], routes: [], trail: [], projected: null };
-  }, [fleetRows]);
+  const mapScene = useMemo(() => buildFleetMapScene({
+    fleetTails,
+    positions: data.positions,
+    trips,
+    aircraftByTail: config?.aircraftByTail || {},
+    now,
+  }), [fleetTails, data.positions, trips, config?.aircraftByTail, now]);
 
   const criticalCount = exceptions.filter((e) => e.severity === 'critical').length;
   const nowDate = new Date(now);
@@ -674,6 +661,66 @@ export default function OpsDashboard({
               <p className="mt-1 text-[10px] uppercase tracking-wider text-content-subtle">Local</p>
             </div>
           </div>
+        </div>
+
+        {/* The map is the first operational surface: every managed aircraft,
+            airborne live or at its most recent known ground position. */}
+        <SectionCard
+          title="Live fleet tracking"
+          subtitle={`${mapScene.aircraft.length}/${fleetTails.length} managed aircraft located · ${summary.airborne} airborne`}
+          icon={Navigation}
+          count={fleetTails.length}
+        >
+          {mapScene.unlocated?.length > 0 && (
+            <div className="border-b border-warning-border bg-warning-soft px-3 py-2 text-2xs text-warning">
+              No known position for {mapScene.unlocated.join(', ')}. Add a home base in Settings or wait for the next FlightAware position.
+            </div>
+          )}
+          <div className="h-[28rem] md:h-[34rem]">
+            <Suspense fallback={<div className="flex h-full items-center justify-center"><Spinner label="Loading fleet map" /></div>}>
+              <TrackingMapLazy
+                scene={mapScene}
+                fitKey={`managed-fleet-${mapScene.aircraft.map((item) => `${item.id}:${item.airborne}`).join('|')}`}
+                basemapDefault="dark"
+                showTrailToggle={false}
+                className="h-full w-full"
+              />
+            </Suspense>
+          </div>
+        </SectionCard>
+
+        {/* Personal and shared mail at a glance. */}
+        <div className="grid gap-4 xl:grid-cols-2">
+          <SectionCard title="Personal email" subtitle="Your Microsoft 365 inbox" icon={MessageSquare}>
+            <Suspense fallback={<div className="flex min-h-48 items-center justify-center"><Spinner label="Loading personal email" /></div>}>
+              <DashboardMailboxPreviewLazy mode="personal" onOpen={() => onSwitchSection?.('mailbox')} />
+            </Suspense>
+          </SectionCard>
+          <SectionCard title="Shared charter inbox" subtitle="charters@flyskyway.com" icon={MessageSquare}>
+            <Suspense fallback={<div className="flex min-h-48 items-center justify-center"><Spinner label="Loading shared email" /></div>}>
+              <DashboardMailboxPreviewLazy mode="shared" onOpen={() => onSwitchSection?.('inbox')} />
+            </Suspense>
+          </SectionCard>
+        </div>
+
+        {/* Today's movement and the crew available to operate it. */}
+        <div className="grid gap-4 2xl:grid-cols-2">
+          <SectionCard
+            title="Today's flight board"
+            subtitle="Schedule and live FlightAware status"
+            icon={CalendarDays}
+            count={todayFlights.length}
+          >
+            <TodayFlightBoard rows={todayFlights} onSelectTrip={onSelectTrip} />
+          </SectionCard>
+          <SectionCard
+            title="Pilots currently on duty"
+            subtitle="14-hour duty clock · scheduled versus FlightAware airborne time"
+            icon={Users}
+            count={onDutyRows.length}
+          >
+            <OnDutyBoard rows={onDutyRows} onSwitchSection={onSwitchSection} />
+          </SectionCard>
         </div>
 
         {/* Posture strip */}
@@ -746,42 +793,6 @@ export default function OpsDashboard({
               onSelectTrip={onSelectTrip}
               onOpenDispatch={onOpenDispatch}
             />
-          </SectionCard>
-        </div>
-
-        {/* Day timeline */}
-        <SectionCard
-          title="Next 24 hours"
-          subtitle="Scheduled blocks by aircraft — the red line is now"
-          icon={CalendarDays}
-        >
-          {timeline.rows.length === 0
-            ? <EmptyState icon={CalendarDays} title="Nothing scheduled today" />
-            : <DayTimeline timeline={timeline} onSelectTrip={onSelectTrip} />}
-        </SectionCard>
-
-        {/* Map + crew */}
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,1.65fr)_minmax(0,1fr)]">
-          <SectionCard
-            title="Live fleet map"
-            subtitle={`${mapScene.aircraft.length} aircraft reporting position`}
-            icon={Plane}
-          >
-            <div className="h-[22rem]">
-              <Suspense fallback={<div className="flex h-full items-center justify-center"><Spinner label="Loading map" /></div>}>
-                <TrackingMapLazy
-                  scene={mapScene}
-                  fitKey={`fleet-${mapScene.aircraft.length}`}
-                  basemapDefault="dark"
-                  showTrailToggle={false}
-                  className="h-full w-full"
-                />
-              </Suspense>
-            </div>
-          </SectionCard>
-
-          <SectionCard title="Crew posture" subtitle="Duty state and Part 135 legality" icon={Users}>
-            <CrewPanel rows={crewRows} onSwitchSection={onSwitchSection} />
           </SectionCard>
         </div>
 
