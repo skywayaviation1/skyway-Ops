@@ -23157,6 +23157,10 @@ function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
   }, [mobileView]);
 
   const airborneCount = fleetTails.filter((t) => tailStates[t]?.airborne === true).length;
+  const mapAircraftByTail = useMemo(
+    () => new Map((scene.aircraft || []).map((aircraft) => [aircraft.tail, aircraft])),
+    [scene.aircraft],
+  );
 
   const mapPanel = (
     <TrackingMap
@@ -23195,17 +23199,26 @@ function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
           <Loader2 className="mx-auto mb-1 h-4 w-4 animate-spin" /> Loading positions…
         </div>
       ) : (
-        fleetTails.map((tail) => (
-          <FleetListItem
-            key={tail}
-            tail={tail}
-            state={tailStates[tail]}
-            trips={trips}
-            tripStates={tripStates}
-            isSelected={tail === selectedTail}
-            onClick={() => handleSelectTail(tail)}
-          />
-        ))
+        fleetTails.map((tail) => {
+          const raw = tailStates[tail] || {};
+          const marker = mapAircraftByTail.get(tail);
+          const displayState = marker ? {
+            ...raw,
+            airborne: marker.airborne,
+            groundedAt: raw.groundedAt || marker.groundedAt,
+          } : raw;
+          return (
+            <FleetListItem
+              key={tail}
+              tail={tail}
+              state={displayState}
+              trips={trips}
+              tripStates={tripStates}
+              isSelected={tail === selectedTail}
+              onClick={() => handleSelectTail(tail)}
+            />
+          );
+        })
       )}
     </div>
   );

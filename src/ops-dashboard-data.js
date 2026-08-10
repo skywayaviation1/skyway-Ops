@@ -615,7 +615,7 @@ export function summarizeFleet(fleetRows, trips, now = Date.now()) {
   return {
     total: fleet.length,
     offFleet: fleetRows.length - fleet.length,
-    airborne: fleetRows.filter((r) => r.state.id === 'AIRBORNE').length,
+    airborne: fleet.filter((r) => r.state.id === 'AIRBORNE').length,
     aog: fleet.filter((r) => r.state.id === 'AOG').length,
     restricted: fleet.filter(
       (r) => r.state.id !== 'AOG' && r.airworthiness.status === 'RESTRICTED',
