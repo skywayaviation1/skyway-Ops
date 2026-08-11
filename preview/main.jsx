@@ -8,6 +8,7 @@ import React, { Suspense, lazy } from 'react';
 import ReactDOM from 'react-dom/client';
 import '../src/index.css';
 import '../src/theme-classy.css';
+import { applyBrandAccent } from '../src/brand.js';
 import { installFetchStub, sampleIcal } from './fetch-stub.js';
 import { CONFIG, CURRENT_USER, EXPENSES, PILOT_USER, TRIPS, USERS } from './sample-data.js';
 
@@ -40,6 +41,10 @@ function seedFictitiousSchedule() {
 
 seedFictitiousSchedule();
 installFetchStub();
+
+// Standalone surfaces do not mount App, which is what normally applies the
+// tenant's accent, so it is applied here for every surface.
+applyBrandAccent(document.documentElement.getAttribute('data-theme') || 'dark');
 
 const OpsDashboard = lazy(() => import('../src/OpsDashboard.jsx'));
 const CharterInbox = lazy(() => import('../src/CharterInbox.jsx'));

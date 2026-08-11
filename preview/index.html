@@ -3,10 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Skyway Ops — preview</title>
+    <title>Operations preview</title>
     <style>
       html, body, #root { height: 100%; margin: 0; }
     </style>
+    <script>
+      // Which operator the harness is presenting as. This runs before any module
+      // is evaluated, because the brand's wordmark is resolved at module load.
+      (function () {
+        var requested = new URLSearchParams(window.location.search).get('tenant');
+        window.__TENANT__ = requested || 'skyway';
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

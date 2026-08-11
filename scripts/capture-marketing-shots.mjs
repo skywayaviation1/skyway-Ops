@@ -15,11 +15,33 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { chromium, devices } from 'playwright';
 
+import { tenant } from '../preview/tenants.js';
+
 const root = path.resolve(import.meta.dirname, '..');
-const outDir = path.join(root, 'marketing/raw2');
+
+// Which operator to capture. The harness renders the product as any tenant it
+// knows about, so the booklet can be produced for a prospect as easily as for
+// the operator that runs it.
+const TENANT = process.env.TENANT || 'skyway';
+
+const outDir = path.join(root, 'marketing/raw2', TENANT);
 mkdirSync(outDir, { recursive: true });
 
 const BASE = process.env.PREVIEW_URL || 'http://127.0.0.1:4178';
+
+// The leg the sample day puts in the air. Its tail and destination are what the
+// pilot's trip screens are reached by, and they differ per operator.
+const LEAD_LEG = (() => {
+  const t = tenant(TENANT);
+  const leg = t.schedule[1];
+  return { ...leg, tail: leg.tail };
+})();
+
+/** Every surface is opened as the selected tenant. */
+const urlFor = (query) => {
+  const joiner = query.includes('?') ? '&' : '?';
+  return `${BASE}/${query}${joiner}tenant=${TENANT}`;
+};
 const DESKTOP = { width: 1600, height: 1000 };
 const PHONE = { width: 390, height: 844 };
 
@@ -130,7 +152,7 @@ const DESKTOP_SHOTS = [
   {
     name: 'broker.png',
     url: '?surface=broker',
-    ready: 'N444AM',
+    ready: LEAD_LEG.tail,
     wait: 4200,
     // The broker page is a max-w-3xl column; a 1600px viewport surrounds it with
     // empty margin that then dominates the page it is printed on.
@@ -150,6 +172,38 @@ const DESKTOP_SHOTS = [
     },
   },
   {
+    name: 'email-open.png',
+    url: '?surface=email',
+    ready: 'Inbox',
+    after: async (page) => {
+      // An open message shows the reading pane, which is the point of the page.
+      const first = page.locator('[role="button"], li, div').filter({ hasText: 'Aircraft Ready for Passengers' }).last();
+      await first.click({ timeout: 10_000 }).catch(() => {});
+      await settle(page, 1800);
+    },
+  },
+  {
+    name: 'teams-channel.png',
+    url: '?surface=teams',
+    ready: 'Teams',
+    after: async (page) => {
+      await tap(page, 'Dispatch').catch(() => {});
+      await settle(page, 2000);
+    },
+  },
+  {
+    name: 'accounting-all.png',
+    url: '?surface=accounting',
+    ready: 'Invoices',
+    wait: 2400,
+    after: async (page) => {
+      // The list opens filtered to open invoices; the whole ledger, including
+      // paid and overdue, is what shows receivables working.
+      await tap(page, 'All', { exact: true }).catch(() => {});
+      await settle(page, 1600);
+    },
+  },
+  {
     name: 'schedule.png',
     url: '?surface=app&role=admin',
     ready: 'Flights',
@@ -164,12 +218,12 @@ const DESKTOP_SHOTS = [
   },
 ];
 
-console.log('Desktop captures:');
+console.log(`Capturing as tenant: ${TENANT}\n\nDesktop captures:`);
 for (const shot of DESKTOP_SHOTS) {
   const page = await desktop.newPage();
   try {
     if (shot.viewport) await page.setViewportSize(shot.viewport);
-    await page.goto(`${BASE}/${shot.url}`, { waitUntil: 'networkidle', timeout: 45_000 });
+    await page.goto(urlFor(shot.url), { waitUntil: 'networkidle', timeout: 45_000 });
     const found = shot.ready ? await waitForText(page, shot.ready) : true;
     await settle(page, shot.wait || 1600);
     if (shot.after) await shot.after(page);
@@ -201,7 +255,7 @@ for (const shot of [
 ]) {
   const page = await phone.newPage();
   try {
-    await page.goto(`${BASE}/${shot.url}`, { waitUntil: 'networkidle', timeout: 45_000 });
+    await page.goto(urlFor(shot.url), { waitUntil: 'networkidle', timeout: 45_000 });
     await waitForText(page, shot.ready);
     await settle(page);
     await page.screenshot({ path: path.join(outDir, shot.name) });
@@ -229,13 +283,13 @@ for (const shot of [
   };
 
   try {
-    await page.goto(`${BASE}/?surface=app&role=crew`, { waitUntil: 'networkidle', timeout: 45_000 });
+    await page.goto(urlFor('?surface=app&role=crew'), { waitUntil: 'networkidle', timeout: 45_000 });
     await waitForText(page, 'Good');
     await settle(page, 2600);
 
     await step('phone-pilot-home.png');
     await step('phone-flights.png', () => tap(page, 'Flights'));
-    await step('phone-trip.png', () => tap(page, 'HYA'));
+    await step('phone-trip.png', () => tap(page, LEAD_LEG.to));
     await step('phone-trip-status.png', async () => {
       // The status list opens by default; bring the milestones into frame.
       const landed = page.getByText('WHEELS UP', { exact: false }).first();
@@ -260,7 +314,7 @@ await phone.close();
 await browser.close();
 
 const failed = results.filter((r) => !r.ok);
-console.log(`\n${results.length - failed.length}/${results.length} captures written to marketing/raw2/`);
+console.log(`\n${results.length - failed.length}/${results.length} captures written to ${path.relative(root, outDir)}/`);
 if (failed.length) {
   console.log('Failed:');
   for (const f of failed) console.log(`  ${f.name}: ${f.detail}`);

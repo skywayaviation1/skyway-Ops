@@ -1,8 +1,9 @@
 // Auth stand-in so the real App renders as an already-approved user.
 // The role comes from ?role= on the preview URL, which is what lets the same
 // harness capture both the pilot phone experience and the administrator console.
+// Who those people are comes from the active tenant, never from a fixed roster.
 
-import { CURRENT_USER, USERS } from '../sample-data.js';
+import { CURRENT_USER, PILOT_USER, TENANT, USERS, emailFor } from '../sample-data.js';
 
 function requestedRole() {
   if (typeof window === 'undefined') return 'admin';
@@ -12,23 +13,26 @@ function requestedRole() {
 
 function profileFor(role) {
   if (role === 'crew') {
+    const pilot = TENANT.crew[0];
     return {
-      ...USERS.find((u) => u.uid === 'pilot-max'),
-      callsign: 'Max',
-      certType: 'ATP',
-      certNumber: '3458291',
-      jetinsightName: 'Maxwell Hagberg',
-      emailSignature: 'Maxwell Hagberg\nCaptain\nSkyway Aviation',
+      ...PILOT_USER,
+      emailSignature: `${pilot.name}\nCaptain\n${TENANT.company}`,
     };
   }
   if (role === 'admin') return CURRENT_USER;
-  const match = USERS.find((u) => u.role === role);
-  return match || CURRENT_USER;
+
+  const staff = TENANT.staff.find((s) => s.role === role);
+  if (staff) {
+    return {
+      uid: staff.uid, id: staff.uid, name: staff.name, callsign: staff.first,
+      role: staff.role, approved: true, active: true, email: emailFor(staff),
+    };
+  }
+  return USERS.find((u) => u.role === role) || CURRENT_USER;
 }
 
 export function watchAuth(onChange) {
-  const role = requestedRole();
-  const profile = profileFor(role);
+  const profile = profileFor(requestedRole());
   onChange({
     state: 'active',
     user: {
@@ -59,5 +63,5 @@ export async function deleteUserProfile() {}
 export function getLastDiagnostic() { return null; }
 export function configuredAuthDomain() { return 'preview.local'; }
 export function authDomainIsSameOrigin() { return true; }
-export function microsoftTenant() { return 'flyskyway.com'; }
+export function microsoftTenant() { return TENANT.domain; }
 export function microsoftTenantConfigured() { return true; }
