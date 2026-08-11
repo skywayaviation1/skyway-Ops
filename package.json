@@ -8,6 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "logo:build": "node scripts/build-logo-assets.mjs",
+    "preview:surfaces": "vite --config vite.preview.config.js",
+    "marketing:pdf": "node scripts/prepare-marketing-shots.mjs && node scripts/build-marketing-pdf.mjs",
     "test": "node --test tests/*.test.mjs",
     "verify:sso": "node scripts/verify-microsoft-sso.mjs"
   },
