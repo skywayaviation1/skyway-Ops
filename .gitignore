@@ -12,3 +12,4 @@ dist
 # Untrimmed browser captures. The cropped versions in marketing/shots are the
 # ones the PDF is built from and those are tracked.
 marketing/raw
+marketing/raw2

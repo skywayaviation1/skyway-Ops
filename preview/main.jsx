@@ -8,15 +8,50 @@ import React, { Suspense, lazy } from 'react';
 import ReactDOM from 'react-dom/client';
 import '../src/index.css';
 import '../src/theme-classy.css';
-import { installFetchStub } from './fetch-stub.js';
-import { CONFIG, CURRENT_USER, TRIPS, USERS } from './sample-data.js';
+import { installFetchStub, sampleIcal } from './fetch-stub.js';
+import { CONFIG, CURRENT_USER, EXPENSES, PILOT_USER, TRIPS, USERS } from './sample-data.js';
 
+/**
+ * The app caches the raw schedule feed in localStorage and replays it on boot.
+ * A browser that once loaded the real JetInsight feed would therefore keep
+ * showing live customer trips here. Wipe Skyway's keys and seed the fictitious
+ * feed so the preview is deterministic regardless of browser state.
+ */
+function seedFictitiousSchedule() {
+  try {
+    for (const key of Object.keys(window.localStorage)) {
+      if (key.startsWith('skyway.') || key.startsWith('skyway:') || key.startsWith('skyway-')) {
+        window.localStorage.removeItem(key);
+      }
+    }
+    window.localStorage.setItem(
+      'skyway.user.cached:ical',
+      JSON.stringify({ text: sampleIcal(), fetchedAt: Date.now() }),
+    );
+    // Keep the install prompt out of captured imagery.
+    window.localStorage.setItem(
+      'skyway_pwa_banner_dismissed_until',
+      String(Date.now() + 365 * 86_400_000),
+    );
+  } catch {
+    // Private-mode browsers block storage; the fetch stub still serves the feed.
+  }
+}
+
+seedFictitiousSchedule();
 installFetchStub();
 
 const OpsDashboard = lazy(() => import('../src/OpsDashboard.jsx'));
 const CharterInbox = lazy(() => import('../src/CharterInbox.jsx'));
 const TeamsHub = lazy(() => import('../src/TeamsHub.jsx'));
 const QuickBooksWorkspace = lazy(() => import('../src/QuickBooksWorkspace.jsx'));
+const App = lazy(() => import('../src/App.jsx'));
+const DutyV2 = lazy(() => import('../src/DutyV2.jsx'));
+const ExpenseAccounting = lazy(() => import('../src/ExpenseAccounting.jsx'));
+const OpsConsole = lazy(() => import('../src/OpsConsole.jsx'));
+const FlightBoard = lazy(() => import('../src/FlightBoard.jsx'));
+const AdminDutyReport = lazy(() => import('../src/AdminDutyReport.jsx'));
+const TripTrackPage = lazy(() => import('../src/TripTrack.jsx'));
 
 const SURFACES = {
   dashboard: {
@@ -48,6 +83,63 @@ const SURFACES = {
     render: () => (
       <div style={{ padding: '20px', overflowY: 'auto', height: '100%' }}>
         <QuickBooksWorkspace view="invoices" />
+      </div>
+    ),
+  },
+
+  // The full application, signed in. ?role= picks whose experience is shown,
+  // which is how the pilot phone screens are captured.
+  app: {
+    label: 'Full application',
+    render: () => <App />,
+  },
+
+  duty: {
+    label: 'Crew duty and rest',
+    render: () => (
+      <div style={{ overflowY: 'auto', height: '100%' }}>
+        <DutyV2 currentUser={PILOT_USER} myTrips={TRIPS} users={USERS} />
+      </div>
+    ),
+  },
+
+  expenses: {
+    label: 'Expenses',
+    render: () => (
+      <div style={{ overflowY: 'auto', height: '100%' }}>
+        <ExpenseAccounting expenses={EXPENSES} users={USERS} currentUser={CURRENT_USER} />
+      </div>
+    ),
+  },
+
+  dispatch: {
+    label: 'Dispatch flight control',
+    render: () => (
+      <OpsConsole
+        currentUser={CURRENT_USER}
+        trips={TRIPS}
+        users={USERS}
+        config={CONFIG}
+        onSelectTrip={() => {}}
+      />
+    ),
+  },
+
+  board: {
+    label: 'Flight board display',
+    render: () => <FlightBoard allTrips={TRIPS} />,
+  },
+
+  broker: {
+    label: 'Broker live tracking link',
+    render: () => <TripTrackPage token="preview-token" />,
+  },
+
+  dutyreport: {
+    label: 'Duty compliance report',
+    render: () => (
+      <div style={{ overflowY: 'auto', height: '100%' }}>
+        <AdminDutyReport currentUser={CURRENT_USER} users={USERS} />
       </div>
     ),
   },

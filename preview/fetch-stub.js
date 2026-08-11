@@ -2,6 +2,8 @@
 // server responses, so the real mail, Teams and accounting components render
 // their genuine loaded state.
 
+import { BASE, SCHEDULE } from './sample-data.js';
+
 const HOUR = 3600_000;
 const MIN = 60_000;
 const now = () => Date.now();
@@ -318,6 +320,123 @@ function quickbooksResponse(action) {
   }
 }
 
+/* ── Broker-facing live tracking link ──────────────────────────────────── */
+
+const brokerStep = (msAgo) => ({ at: now() - msAgo });
+
+function brokerTrip() {
+  return {
+    tripId: 'sky-1001',
+    tripCode: 'SKY-1042',
+    tail: 'N444AM',
+    aircraftType: 'Citation XLS+',
+    completed: false,
+    completedAt: null,
+    legs: [
+      {
+        legNumber: 1,
+        from: 'IAD', to: 'HYA',
+        fromFbo: 'Signature Flight Support', toFbo: 'Rectrix Aviation',
+        departure: new Date(now() - 95 * MIN).toISOString(),
+        arrival: new Date(now() + 26 * MIN).toISOString(),
+        category: 'REVENUE',
+        pic: 'Maxwell Hagberg', sic: 'Timothy Woods',
+        showPax: true,
+        hasCatering: true,
+        pax: [
+          { name: 'A. Whitmore', status: 'checked_in', checkedInAt: now() - 110 * MIN, walkUp: false },
+          { name: 'C. Whitmore', status: 'checked_in', checkedInAt: now() - 108 * MIN, walkUp: false },
+          { name: 'R. Delacroix', status: 'checked_in', checkedInAt: now() - 104 * MIN, walkUp: false },
+          { name: 'S. Ambrose', status: 'checked_in', checkedInAt: now() - 101 * MIN, walkUp: false },
+        ],
+        status: {
+          crew_onsite: brokerStep(3 * HOUR),
+          aircraft_ready: brokerStep(2.6 * HOUR),
+          catering_aboard: brokerStep(2.4 * HOUR),
+          pax_arrived: brokerStep(2.1 * HOUR),
+          pax_boarded: brokerStep(1.8 * HOUR),
+          taxi_dep: brokerStep(1.4 * HOUR),
+          wheels_up: brokerStep(74 * MIN),
+        },
+      },
+      {
+        legNumber: 2,
+        from: 'HYA', to: 'TEB',
+        fromFbo: 'Rectrix Aviation', toFbo: 'Jet Aviation',
+        departure: new Date(now() + 4 * HOUR).toISOString(),
+        arrival: new Date(now() + 5.4 * HOUR).toISOString(),
+        category: 'REVENUE',
+        pic: 'Maxwell Hagberg', sic: 'Timothy Woods',
+        showPax: true,
+        hasCatering: false,
+        pax: [
+          { name: 'A. Whitmore', status: 'pending', checkedInAt: null, walkUp: false },
+          { name: 'C. Whitmore', status: 'pending', checkedInAt: null, walkUp: false },
+        ],
+        status: {},
+      },
+    ],
+    statuses: {},
+  };
+}
+
+function brokerPayload() {
+  return {
+    ok: true,
+    trip: brokerTrip(),
+    position: {
+      ident: 'N444AM', airborne: true,
+      latitude: 40.6431, longitude: -73.1259,
+      heading: 62, altitude: 41000, groundspeed: 452,
+      origin: 'KIAD', destination: 'KHYA',
+      originLat: 38.9531, originLon: -77.4565,
+      destinationLat: 41.6693, destinationLon: -70.2804,
+      actualOff: new Date(now() - 74 * MIN).toISOString(),
+      estimatedOn: new Date(now() + 26 * MIN).toISOString(),
+      progressPercent: 74,
+    },
+    trail: [
+      { lat: 38.95, lon: -77.45, altitude_ft: 1200, groundspeed_kt: 180, time: now() - 73 * MIN },
+      { lat: 39.15, lon: -76.9, altitude_ft: 12000, groundspeed_kt: 300, time: now() - 66 * MIN },
+      { lat: 39.45, lon: -76.1, altitude_ft: 27000, groundspeed_kt: 410, time: now() - 56 * MIN },
+      { lat: 39.8, lon: -75.2, altitude_ft: 37000, groundspeed_kt: 442, time: now() - 44 * MIN },
+      { lat: 40.15, lon: -74.4, altitude_ft: 41000, groundspeed_kt: 452, time: now() - 32 * MIN },
+      { lat: 40.45, lon: -73.7, altitude_ft: 41000, groundspeed_kt: 452, time: now() - 18 * MIN },
+      { lat: 40.6431, lon: -73.1259, altitude_ft: 41000, groundspeed_kt: 452, time: now() - 2 * MIN },
+    ],
+    weather: {
+      KIAD: { metar: { raw: 'KIAD 181551Z 31012KT 10SM FEW250 24/09 A3011', flightCategory: 'VFR' } },
+      KHYA: { metar: { raw: 'KHYA 181553Z 20008KT 10SM SCT035 22/14 A3009', flightCategory: 'VFR' } },
+    },
+  };
+}
+
+/* ── Schedule feed ─────────────────────────────────────────────────────────
+   The application ships a real JetInsight feed URL as its default. Left alone,
+   the preview fetches it and live customer trips appear in captured imagery, so
+   the harness serves a fictitious feed in JetInsight's own format and refuses
+   any request that would reach the live scheduler. */
+
+export function sampleIcal() {
+  const stamp = (hours) => new Date(BASE + hours * HOUR)
+    .toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+
+  let out = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//SKYWAY//PREVIEW//EN\r\n';
+  for (const t of SCHEDULE) {
+    out += 'BEGIN:VEVENT\r\n';
+    out += `UID:${t.uid}\r\n`;
+    out += `DTSTART:${stamp(t.startH)}\r\n`;
+    out += `DTEND:${stamp(t.endH)}\r\n`;
+    out += `SUMMARY:[${t.tail}] ${t.customer} (${t.from} - ${t.to}) - ${t.type}\r\n`;
+    out += `DESCRIPTION:Pax: ${t.pax}\\nPIC: ${t.pic}\\nSIC: ${t.sic}\r\n`;
+    out += `LOCATION:${t.from}\r\n`;
+    out += 'END:VEVENT\r\n';
+  }
+  return `${out}END:VCALENDAR\r\n`;
+}
+
+const LIVE_SCHEDULE_HOSTS = /jetinsight\.com|corsproxy\.io|allorigins\.win|codetabs\.com/i;
+
 export function installFetchStub() {
   const real = window.fetch ? window.fetch.bind(window) : null;
 
@@ -326,6 +445,20 @@ export function installFetchStub() {
     const path = (() => {
       try { return new URL(url, window.location.origin).pathname; } catch { return String(url); }
     })();
+
+    // The app's own proxy route carries the upstream feed URL in its query
+    // string, so this is handled before the host block below — which matches on
+    // hostname only, for the same reason.
+    if (path === '/api/ical') {
+      return new Response(sampleIcal(), {
+        status: 200, headers: { 'Content-Type': 'text/calendar' },
+      });
+    }
+
+    // Never let a capture reach the live scheduler or a public CORS proxy.
+    if (LIVE_SCHEDULE_HOSTS.test(url.hostname)) {
+      return new Response('blocked in preview', { status: 403 });
+    }
 
     if (!path.startsWith('/api/')) {
       if (real) return real(input, init);
@@ -340,6 +473,15 @@ export function installFetchStub() {
       status: 200, headers: { 'Content-Type': 'application/json' },
     });
 
+    // Presence needs a real Stream project. Fail cleanly so the provider logs
+    // once and the app renders without a live chat socket.
+    if (path === '/api/stream-token') {
+      return new Response(JSON.stringify({ error: 'Stream is not connected in preview' }), {
+        status: 503, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (path === '/api/trip-public') return json(brokerPayload());
     if (path === '/api/user-mail') return json(mailResponse(action, true));
     if (path === '/api/charter-mail') return json(mailResponse(action, false));
     if (path === '/api/teams') return json(teamsResponse(action));

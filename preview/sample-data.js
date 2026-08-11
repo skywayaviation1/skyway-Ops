@@ -7,14 +7,28 @@
 const HOUR = 3600_000;
 const MIN = 60_000;
 
-const dayAnchor = () => {
-  const d = new Date();
-  d.setHours(6, 0, 0, 0);
-  return d.getTime();
-};
-
-export const BASE = dayAnchor();
+// Anchored a few hours behind "now" rather than to a fixed clock time, so a
+// capture taken at any hour shows a live day: legs already flown, legs airborne
+// right now, and legs still to come. A fixed anchor put every trip in the past
+// by the evening, which made the pilot's screens read as empty.
+export const BASE = Date.now() - 4 * HOUR;
 export const at = (hours) => new Date(BASE + hours * HOUR);
+
+/**
+ * The operating day, as offsets in hours from BASE. This is the single source
+ * for both the in-memory trips and the synthesized schedule feed, so the two
+ * can never drift apart.
+ */
+export const SCHEDULE = [
+  { uid: 'sky-1003', tail: 'N286N', customer: 'Monarch Air Group', from: 'TVC', to: 'IAD', type: 'Charter', pax: 4, pic: 'Cade Kaftel', sic: 'Jenelle Szelest', startH: 0.2, endH: 2.4 },
+  { uid: 'sky-1001', tail: 'N444AM', customer: 'Outlier Jets', from: 'IAD', to: 'HYA', type: 'Charter', pax: 4, pic: 'Maxwell Hagberg', sic: 'Timothy Woods', startH: 2.8, endH: 4.4 },
+  { uid: 'sky-1004', tail: 'N651TW', customer: 'Jet Linx Aviation', from: 'APF', to: 'DFW', type: 'Charter', pax: 3, pic: 'Melissa Rippy', sic: 'Andre Cole', startH: 3.2, endH: 6.1 },
+  { uid: 'sky-1005', tail: 'N20UF', customer: 'Private Jet Co', from: 'TEB', to: 'PBI', type: 'Charter', pax: 7, pic: 'Dana Whitfield', sic: 'Grant Ellis', startH: 4.6, endH: 7.4 },
+  { uid: 'sky-1002', tail: 'N444AM', customer: 'Outlier Jets', from: 'HYA', to: 'TEB', type: 'Charter', pax: 4, pic: 'Maxwell Hagberg', sic: 'Timothy Woods', startH: 8, endH: 9.4 },
+  { uid: 'sky-1006', tail: 'N551FP', customer: 'Skyway Aviation', from: 'PBI', to: 'OPF', type: 'Positioning', pax: 0, pic: 'Rosa Delgado', sic: 'Kyle Brenner', startH: 9, endH: 9.9 },
+  { uid: 'sky-1007', tail: 'N168ZZ', customer: 'Victor US Flight Management', from: 'FXE', to: 'MDW', type: 'Charter', pax: 5, pic: 'Victor Alvarez', sic: 'Nina Park', startH: 10.5, endH: 13.4 },
+  { uid: 'sky-1008', tail: 'N525CR', customer: 'Coastal Air Charter', from: 'FLL', to: 'CHS', type: 'Charter', pax: 4, pic: 'Ian McPherson', sic: 'Bree Coleman', startH: 12, endH: 13.6 },
+];
 
 export const FLEET_TAILS = [
   'N20UF', 'N168ZZ', 'N286N', 'N444AM', 'N525CR', 'N551FP', 'N651TW', 'N85AH',
@@ -39,34 +53,38 @@ export const CONFIG = {
   dutyTrackerEnabled: true,
 };
 
-function leg({ uid, tail, from, to, startH, endH, pic, sic, pax, broker, category = 'REVENUE' }) {
-  return {
-    uid,
-    id: uid,
-    start: at(startH),
-    end: at(endH),
-    info: {
-      tail, from, to, pic, sic, pax, broker,
-      legType: category,
-      category,
-      isFlight: true,
-      aircraftType: AIRCRAFT_BY_TAIL[tail]?.displayName || '',
-      fromFbo: 'Signature Flight Support',
-      toFbo: 'Ross Aviation',
-    },
-  };
-}
+const BROKER_EMAIL = {
+  'Outlier Jets': 'charter@outlierjets.com',
+  'Monarch Air Group': 'ops@monarchair.com',
+  'Jet Linx Aviation': 'sales@jetlinx.com',
+  'Private Jet Co': 'charter@privatejet.co',
+  'Victor US Flight Management': 'trips@victorusfm.com',
+  'Coastal Air Charter': 'charter@coastalair.com',
+  'Skyway Aviation': '',
+};
 
-export const TRIPS = [
-  leg({ uid: 'sky-1001', tail: 'N444AM', from: 'IAD', to: 'HYA', startH: 3, endH: 5.1, pic: 'Maxwell Hagberg', sic: 'Timothy Woods', pax: 6, broker: 'charter@outlierjets.com' }),
-  leg({ uid: 'sky-1002', tail: 'N444AM', from: 'HYA', to: 'TEB', startH: 8.5, endH: 9.9, pic: 'Maxwell Hagberg', sic: 'Timothy Woods', pax: 6, broker: 'charter@outlierjets.com' }),
-  leg({ uid: 'sky-1003', tail: 'N286N', from: 'TVC', to: 'IAD', startH: 2, endH: 4.2, pic: 'Cade Kaftel', sic: 'Jenelle Szelest', pax: 4, broker: 'ops@monarchair.com' }),
-  leg({ uid: 'sky-1004', tail: 'N651TW', from: 'APF', to: 'DFW', startH: 5.5, endH: 8.4, pic: 'Melissa Rippy', sic: 'Andre Cole', pax: 3, broker: 'sales@jetlinx.com' }),
-  leg({ uid: 'sky-1005', tail: 'N20UF', from: 'TEB', to: 'PBI', startH: 7, endH: 9.8, pic: 'Dana Whitfield', sic: 'Grant Ellis', pax: 7, broker: 'charter@privatejet.co' }),
-  leg({ uid: 'sky-1006', tail: 'N551FP', from: 'PBI', to: 'OPF', startH: 11, endH: 11.9, pic: 'Rosa Delgado', sic: 'Kyle Brenner', pax: 2, broker: 'ops@skybroker.io' }),
-  leg({ uid: 'sky-1007', tail: 'N168ZZ', from: 'FXE', to: 'MDW', startH: 12.5, endH: 15.4, pic: 'Victor Alvarez', sic: 'Nina Park', pax: 5, broker: 'trips@victorusfm.com' }),
-  leg({ uid: 'sky-1008', tail: 'N525CR', from: 'FLL', to: 'CHS', startH: 14, endH: 15.6, pic: 'Ian McPherson', sic: 'Bree Coleman', pax: 4, broker: 'charter@coastalair.com' }),
-];
+export const TRIPS = SCHEDULE.map((s) => ({
+  uid: s.uid,
+  id: s.uid,
+  start: at(s.startH),
+  end: at(s.endH),
+  info: {
+    tail: s.tail,
+    from: s.from,
+    to: s.to,
+    pic: s.pic,
+    sic: s.sic,
+    pax: s.pax,
+    broker: BROKER_EMAIL[s.customer] ?? '',
+    customer: s.customer,
+    legType: s.pax > 0 ? 'REVENUE' : 'REPO',
+    category: s.pax > 0 ? 'REVENUE' : 'REPO',
+    isFlight: true,
+    aircraftType: AIRCRAFT_BY_TAIL[s.tail]?.displayName || '',
+    fromFbo: 'Signature Flight Support',
+    toFbo: 'Ross Aviation',
+  },
+}));
 
 /** Live FlightAware/ADS-B snapshot: two airborne, the rest parked. */
 export function fleetPositions(now = Date.now()) {
@@ -132,10 +150,60 @@ export function fleetPositions(now = Date.now()) {
 
 const step = (ms) => ({ timestamp: ms, author: 'Maxwell Hagberg' });
 
+const PAX = [
+  { id: 'p1', firstName: 'Alexander', lastName: 'Whitmore', checkInStatus: 'matched', dob: '4/18/71' },
+  { id: 'p2', firstName: 'Caroline', lastName: 'Whitmore', checkInStatus: 'matched', dob: '9/2/74' },
+  { id: 'p3', firstName: 'Renard', lastName: 'Delacroix', checkInStatus: 'matched', dob: '1/30/68' },
+  { id: 'p4', firstName: 'Sylvia', lastName: 'Ambrose', checkInStatus: 'matched', dob: '11/7/80' },
+];
+
+/**
+ * Screens read many optional fields straight off the trip-state document, so a
+ * partial object makes them fail on `undefined.filter(...)`. Every sample state
+ * is completed to the full shape the real subscription returns.
+ */
+function tripState(overrides = {}) {
+  return {
+    statuses: {},
+    passengers: [],
+    preloadedPax: [],
+    brokerEmail: '',
+    autoNotify: false,
+    completed: false,
+    completedAt: null,
+    archived: false,
+    archivedAt: null,
+    hasCatering: true,
+    paxOverride: null,
+    tripSheetUrl: null,
+    tripSheetPath: null,
+    tripSheetFilename: null,
+    tripSheetUploadedAt: null,
+    tripSheetUploadedBy: null,
+    tripSheetNotes: null,
+    tripSheetNotesEditedAt: null,
+    tripSheetData: null,
+    dispatcherUids: [],
+    opsDisposition: 'monitoring',
+    opsDispositionReason: '',
+    opsUpdatedAt: null,
+    opsUpdatedByName: '',
+    opsLatestNote: '',
+    opsLatestNoteAt: null,
+    opsLatestNoteByName: '',
+    fromFbo: null,
+    toFbo: null,
+    ...overrides,
+  };
+}
+
 export function tripStates(now = Date.now()) {
   const map = new Map();
-  map.set('sky-1001', {
+  map.set('sky-1001', tripState({
     tripId: 'sky-1001',
+    passengers: PAX.map((pax) => ({ ...pax, preloadedRefId: pax.id, verifiedAt: now - 100 * MIN })),
+    preloadedPax: PAX,
+    brokerEmail: 'charter@outlierjets.com',
     statuses: {
       crew_onsite: step(now - 3 * HOUR),
       aircraft_ready: step(now - 2.6 * HOUR),
@@ -148,9 +216,8 @@ export function tripStates(now = Date.now()) {
     completed: false, archived: false, hasCatering: true,
     fromFbo: 'Signature IAD', toFbo: 'Rectrix HYA',
     dispatcherUids: ['dispatch-1'],
-    opsDisposition: 'monitoring',
-  });
-  map.set('sky-1003', {
+  }));
+  map.set('sky-1003', tripState({
     tripId: 'sky-1003',
     statuses: {
       crew_onsite: step(now - 6 * HOUR),
@@ -162,8 +229,8 @@ export function tripStates(now = Date.now()) {
       landed: step(now - 3.1 * HOUR),
     },
     completed: true, completedAt: now - 3 * HOUR, archived: false, hasCatering: false,
-  });
-  map.set('sky-1004', {
+  }));
+  map.set('sky-1004', tripState({
     tripId: 'sky-1004',
     statuses: {
       crew_onsite: step(now - 2 * HOUR),
@@ -174,15 +241,17 @@ export function tripStates(now = Date.now()) {
       wheels_up: step(now - 51 * MIN),
     },
     completed: false, archived: false, hasCatering: true,
-  });
-  map.set('sky-1005', {
+  }));
+  map.set('sky-1005', tripState({
     tripId: 'sky-1005',
     statuses: { crew_onsite: step(now - 20 * MIN), aircraft_ready: step(now - 8 * MIN) },
     completed: false, archived: false, hasCatering: true,
-  });
-  map.set('sky-1006', { tripId: 'sky-1006', statuses: {}, completed: false, hasCatering: true });
-  map.set('sky-1007', { tripId: 'sky-1007', statuses: {}, completed: false, hasCatering: true });
-  map.set('sky-1008', { tripId: 'sky-1008', statuses: {}, completed: false, hasCatering: false });
+  }));
+  map.set('sky-1006', tripState({ tripId: 'sky-1006', hasCatering: false }));
+  map.set('sky-1007', tripState({ tripId: 'sky-1007' }));
+  map.set('sky-1008', tripState({ tripId: 'sky-1008', hasCatering: false }));
+  // Legs with no state yet still need the full shape.
+  map.set('sky-1002', tripState({ tripId: 'sky-1002', preloadedPax: PAX.slice(0, 2), brokerEmail: 'charter@outlierjets.com' }));
   return map;
 }
 
@@ -258,8 +327,69 @@ export const USERS = [
   { uid: 'admin-1', id: 'admin-1', name: 'Jim Skyway', role: 'admin', approved: true, active: true, email: 'jim@flyskyway.com' },
 ];
 
+const HR = 3600_000;
+
+// Field names follow the expense document the reporting helpers read
+// (src/expense-export.js): uid, authorName, vendor, totalAmount, category from
+// the QuickBooks account map, and transactionDate.
+function expense({ id, uid, authorName, tripUid, tail, category, vendor, totalAmount, daysAgo, card, method = 'Company card', notes = '', reconciled = false }) {
+  const at = new Date(Date.now() - daysAgo * 86_400_000);
+  return {
+    id,
+    uid,
+    authorName,
+    authorEmail: `${authorName.split(' ')[0].toLowerCase()}@flyskyway.com`,
+    tripUid,
+    tail,
+    category,
+    vendor,
+    totalAmount,
+    currency: 'USD',
+    paymentMethod: method,
+    cardLast4: card || null,
+    transactionDate: at.toISOString().slice(0, 10),
+    createdAt: at.getTime(),
+    receiptUrl: '#',
+    notes,
+    status: 'approved',
+    ...(reconciled ? { qbTransactionId: `PUR-${1000 + Number(id.split('-')[1])}`, qboReconciledAt: at.getTime() } : {}),
+  };
+}
+
+export const EXPENSES = [
+  expense({ id: 'exp-1', uid: 'pilot-max', authorName: 'Maxwell Hagberg', tripUid: 'sky-1001', tail: 'N444AM', category: 'Fuel', vendor: 'Signature Flight Support IAD', totalAmount: 4820.55, daysAgo: 0, card: '4412', notes: 'Uplift 620 gal', reconciled: true }),
+  expense({ id: 'exp-2', uid: 'pilot-max', authorName: 'Maxwell Hagberg', tripUid: 'sky-1001', tail: 'N444AM', category: 'Catering', vendor: 'Rectrix Catering HYA', totalAmount: 386.4, daysAgo: 0, card: '4412', notes: 'Fruit and cheese, 2 vegetarian', reconciled: true }),
+  expense({ id: 'exp-3', uid: 'pilot-mel', authorName: 'Melissa Rippy', tripUid: 'sky-1004', tail: 'N651TW', category: 'Crew Meals', vendor: 'Terminal Cafe APF', totalAmount: 62.18, daysAgo: 0, method: 'Personal card', notes: 'Reimbursable' }),
+  expense({ id: 'exp-4', uid: 'pilot-dana', authorName: 'Dana Whitfield', tripUid: 'sky-1005', tail: 'N20UF', category: 'Ground Transport', vendor: 'Teterboro Car Service', totalAmount: 145, daysAgo: 1, card: '9903', reconciled: true }),
+  expense({ id: 'exp-5', uid: 'pilot-tim', authorName: 'Timothy Woods', tripUid: 'sky-1002', tail: 'N444AM', category: 'Crew Lodging', vendor: 'Hyatt Place Hyannis', totalAmount: 289.7, daysAgo: 1, method: 'Personal card', notes: 'Overnight crew rest' }),
+  expense({ id: 'exp-6', uid: 'pilot-cade', authorName: 'Cade Kaftel', tripUid: 'sky-1003', tail: 'N286N', category: 'FBO Fees', vendor: 'Traverse City Airport Authority', totalAmount: 210, daysAgo: 2, card: '4412', reconciled: true }),
+  expense({ id: 'exp-7', uid: 'pilot-max', authorName: 'Maxwell Hagberg', tripUid: 'sky-1002', tail: 'N444AM', category: 'Hangar', vendor: 'Jet Aviation Teterboro', totalAmount: 675, daysAgo: 3, card: '4412', notes: 'Overnight hangar' }),
+  expense({ id: 'exp-8', uid: 'pilot-dana', authorName: 'Dana Whitfield', tripUid: 'sky-1005', tail: 'N20UF', category: 'Fuel', vendor: 'Sheltair PBI', totalAmount: 3915.2, daysAgo: 4, card: '9903', notes: 'Uplift 505 gal', reconciled: true }),
+  expense({ id: 'exp-9', uid: 'pilot-mel', authorName: 'Melissa Rippy', tripUid: 'sky-1004', tail: 'N651TW', category: 'Supplies', vendor: 'Aviall Parts Counter', totalAmount: 118.44, daysAgo: 5, card: '4412' }),
+  expense({ id: 'exp-10', uid: 'pilot-tim', authorName: 'Timothy Woods', tripUid: 'sky-1001', tail: 'N444AM', category: 'Crew Meals', vendor: 'Provisions HYA', totalAmount: 84.9, daysAgo: 6, method: 'Personal card' }),
+];
+
+export const WALLET_CARDS = [
+  { id: 'card-1', label: 'Capital One Spark', last4: '4412', holder: 'Skyway Aviation', kind: 'company' },
+  { id: 'card-2', label: 'Amex Business Platinum', last4: '9903', holder: 'Skyway Aviation', kind: 'company' },
+];
+
+export const MANIFESTS = [
+  {
+    id: 'manifest-1', tail: 'N444AM', date: new Date(BASE).toISOString().slice(0, 10),
+    legs: [{ tripUid: 'sky-1001', from: 'IAD', to: 'HYA', pax: [] }],
+    createdAt: BASE, updatedAt: BASE + HR,
+  },
+];
+
 export const CURRENT_USER = {
   uid: 'admin-1', id: 'admin-1', name: 'Jim Skyway', callsign: 'Jim',
   role: 'admin', approved: true, active: true, email: 'jim@flyskyway.com',
   emailSignature: 'Jim Skyway\nDirector of Operations\nSkyway Aviation',
+};
+
+export const PILOT_USER = {
+  uid: 'pilot-max', id: 'pilot-max', name: 'Maxwell Hagberg', callsign: 'Max',
+  role: 'crew', approved: true, active: true, email: 'max@flyskyway.com',
+  certType: 'ATP', certNumber: '3458291', jetinsightName: 'Maxwell Hagberg',
 };

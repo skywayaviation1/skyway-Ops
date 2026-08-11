@@ -18,13 +18,32 @@ const stub = (file) => path.join(root, 'preview/stubs', file);
 // rewritten.
 const FIREBASE_STUBS = new Map([
   ['./firebase.js', stub('firebase.js')],
+  ['./firebase-auth.js', stub('firebase-auth.js')],
   ['./firebase-data.js', stub('firebase-data.js')],
   ['./firebase-maint.js', stub('firebase-ops.js')],
   ['./firebase-aog.js', stub('firebase-ops.js')],
   ['./firebase-duty-v2.js', stub('firebase-ops.js')],
-  ['./firebase-pilotdocs.js', stub('firebase-ops.js')],
-  ['./firebase-expenses.js', stub('firebase-ops.js')],
   ['./firebase-user-mail.js', stub('firebase-ops.js')],
+  ['./firebase-pilotdocs.js', stub('firebase-misc.js')],
+  ['./firebase-expenses.js', stub('firebase-misc.js')],
+  ['./firebase-comms.js', stub('firebase-misc.js')],
+  ['./firebase-manifests.js', stub('firebase-misc.js')],
+  ['./firebase-mel.js', stub('firebase-misc.js')],
+  ['./firebase-mx.js', stub('firebase-misc.js')],
+  ['./firebase-quickbooks.js', stub('firebase-misc.js')],
+  ['./firebase-reports.js', stub('firebase-misc.js')],
+  ['./firebase-service.js', stub('firebase-misc.js')],
+  ['./firebase-storage.js', stub('firebase-misc.js')],
+  ['./firebase-travel.js', stub('firebase-misc.js')],
+  ['./firebase-wallet.js', stub('firebase-misc.js')],
+  ['./firebase-push.js', stub('firebase-misc.js')],
+]);
+
+// Screens that call the Firestore SDK directly with the `db` handle need the SDK
+// itself replaced, otherwise collection(db, ...) throws and the screen never
+// finishes rendering.
+const SDK_STUBS = new Map([
+  ['firebase/firestore', stub('firestore.js')],
 ]);
 
 function previewStubs() {
@@ -32,10 +51,12 @@ function previewStubs() {
     name: 'skyway-preview-stubs',
     enforce: 'pre',
     resolveId(source, importer) {
-      if (!importer || !FIREBASE_STUBS.has(source)) return null;
+      if (!importer) return null;
       const normalized = importer.split(path.sep).join('/');
       if (!normalized.includes('/src/')) return null;
-      return FIREBASE_STUBS.get(source);
+      if (FIREBASE_STUBS.has(source)) return FIREBASE_STUBS.get(source);
+      if (SDK_STUBS.has(source)) return SDK_STUBS.get(source);
+      return null;
     },
   };
 }
