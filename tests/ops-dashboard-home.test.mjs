@@ -7,6 +7,7 @@ import {
   buildOnDutyRows,
   buildTodayFlightRows,
   flightPhase,
+  groupOnDutyCrews,
   pilotMatchesAssignment,
 } from '../src/ops-dashboard-data.js';
 
@@ -145,6 +146,69 @@ test('admin dashboard renders requested top-to-bottom surfaces', async () => {
   assert.ok(mapAt > 0 && mailAt > mapAt && flightsAt > mailAt);
   assert.match(source, /mode="personal"/);
   assert.match(source, /mode="shared"/);
-  assert.match(source, /Pilots currently on duty/);
+  assert.match(source, /Crew currently on duty/);
   assert.match(source, /FlightAware airborne/);
+});
+
+test('duty board groups a two-pilot crew with PIC above SIC', () => {
+  const dutyOnAt = NOW_MS - 2 * 3600_000;
+  const rows = buildOnDutyRows({
+    dutyPeriods: [
+      { id: 'p-sic', pilotUid: 'sic', pilotName: 'Timothy Woods', status: 'on', confirmStatus: 'self-attested', dutyOnAt, tail: 'N444AM', role: 'SIC', partnerPeriodId: 'p-pic' },
+      { id: 'p-pic', pilotUid: 'pic', pilotName: 'Maxwell Hagberg', status: 'on', confirmStatus: 'self-attested', dutyOnAt, tail: 'N444AM', role: 'PIC', partnerPeriodId: 'p-sic' },
+    ],
+    trips: [],
+    now: NOW_MS,
+  });
+  const crews = groupOnDutyCrews(rows);
+  assert.equal(crews.length, 1, 'a paired crew is one row, not two');
+  assert.equal(crews[0].paired, true);
+  assert.deepEqual(crews[0].members.map((m) => m.role), ['PIC', 'SIC']);
+  assert.equal(crews[0].tail, 'N444AM');
+});
+
+test('crews are inferred from shared aircraft when duty records are not linked', () => {
+  const dutyOnAt = NOW_MS - 3 * 3600_000;
+  const rows = buildOnDutyRows({
+    dutyPeriods: [
+      { id: 'a', pilotUid: 'a', pilotName: 'Dana Whitfield', status: 'on', confirmStatus: 'self-attested', dutyOnAt, tail: 'N20UF', role: 'PIC' },
+      { id: 'b', pilotUid: 'b', pilotName: 'Grant Ellis', status: 'on', confirmStatus: 'self-attested', dutyOnAt: dutyOnAt + 10 * 60_000, tail: 'N20UF', role: 'SIC' },
+      { id: 'c', pilotUid: 'c', pilotName: 'Melissa Rippy', status: 'on', confirmStatus: 'self-attested', dutyOnAt, tail: 'N651TW', role: 'PIC' },
+    ],
+    trips: [],
+    now: NOW_MS,
+  });
+  const crews = groupOnDutyCrews(rows);
+  assert.equal(crews.length, 2);
+  const paired = crews.find((c) => c.paired);
+  assert.deepEqual(paired.members.map((m) => m.name), ['Dana Whitfield', 'Grant Ellis']);
+  const solo = crews.find((c) => !c.paired);
+  assert.equal(solo.members.length, 1);
+  assert.equal(solo.members[0].name, 'Melissa Rippy');
+});
+
+test('same aircraft far apart in time is not treated as one crew', () => {
+  const rows = buildOnDutyRows({
+    dutyPeriods: [
+      { id: 'a', pilotUid: 'a', pilotName: 'Early Captain', status: 'on', confirmStatus: 'self-attested', dutyOnAt: NOW_MS - 10 * 3600_000, tail: 'N286N', role: 'PIC' },
+      { id: 'b', pilotUid: 'b', pilotName: 'Late Officer', status: 'on', confirmStatus: 'self-attested', dutyOnAt: NOW_MS - 30 * 60_000, tail: 'N286N', role: 'SIC' },
+    ],
+    trips: [],
+    now: NOW_MS,
+  });
+  assert.equal(groupOnDutyCrews(rows).length, 2, 'a later relief pilot is its own crew');
+});
+
+test('crew duty clock reports the tightest limit in the pair', () => {
+  const rows = buildOnDutyRows({
+    dutyPeriods: [
+      { id: 'a', pilotUid: 'a', pilotName: 'Captain', status: 'on', confirmStatus: 'self-attested', dutyOnAt: NOW_MS - 13 * 3600_000, tail: 'N1', role: 'PIC' },
+      { id: 'b', pilotUid: 'b', pilotName: 'Officer', status: 'on', confirmStatus: 'self-attested', dutyOnAt: NOW_MS - 12 * 3600_000, tail: 'N1', role: 'SIC' },
+    ],
+    trips: [],
+    now: NOW_MS,
+  });
+  const [crew] = groupOnDutyCrews(rows);
+  assert.equal(crew.paired, true);
+  assert.equal(crew.remainingMs, 3600_000, 'the captain runs out first, so the crew does');
 });

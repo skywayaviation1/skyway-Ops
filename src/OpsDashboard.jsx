@@ -27,8 +27,8 @@ import {
 } from 'lucide-react';
 import { Card, EmptyState, Spinner, StatusChip, cx } from './ui.jsx';
 import {
-  buildExceptions, buildFleetRows, buildOnDutyRows,
-  buildTodayFlightRows, formatCountdown,
+  buildExceptions, buildFleetRows, buildOnDutyRows, buildTodayFlightRows,
+  formatCountdown, groupOnDutyCrews,
   isFlightLeg, normalizeTail, summarizeFleet, toMillis, MS_HOUR,
 } from './ops-dashboard-data.js';
 import { resolveManagedTails } from './fleet-config.js';
@@ -452,39 +452,49 @@ function TodayFlightBoard({ rows, onSelectTrip }) {
   );
 }
 
-function OnDutyBoard({ rows, onSwitchSection }) {
-  if (!rows.length) {
-    return <EmptyState icon={Users} title="No pilots currently on duty" />;
+/** Crews, not loose pilots: a two-pilot trip is dispatched as a pair. */
+function OnDutyBoard({ crews, onSwitchSection }) {
+  if (!crews.length) {
+    return <EmptyState icon={Users} title="No crew currently on duty" />;
   }
   return (
     <div>
       <div className="hidden grid-cols-[1fr_5.5rem_5rem_5rem_7rem] gap-2 border-b border-edge bg-surface-sunken px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-content-subtle md:grid">
-        <span>Pilot</span><span>Duty on</span><span>Time left</span><span>Aircraft</span><span className="text-right">Flight sched / actual</span>
+        <span>Crew</span><span>Duty on</span><span>Time left</span><span>Aircraft</span><span className="text-right">Flight sched / actual</span>
       </div>
       <div className="divide-y divide-edge">
-        {rows.map((row) => (
+        {crews.map((crew) => (
           <button
-            key={`${row.uid}-${row.dutyOnAt}`}
+            key={crew.id}
             type="button"
             onClick={() => onSwitchSection?.('duty')}
-            className="grid w-full grid-cols-[1fr_auto] gap-2 px-3 py-3 text-left hover:bg-surface-raised md:grid-cols-[1fr_5.5rem_5rem_5rem_7rem] md:items-center"
+            className="grid w-full grid-cols-[1fr_auto] gap-2 px-3 py-3 text-left hover:bg-surface-raised md:grid-cols-[1fr_5.5rem_5rem_5rem_7rem] md:items-start"
           >
             <span className="min-w-0">
-              <span className="block truncate text-sm font-medium text-content">{row.name}</span>
-              <span className="block truncate text-2xs text-content-subtle">
-                {row.role || 'Crew'} · {row.assignedTrips} scheduled leg{row.assignedTrips === 1 ? '' : 's'}
+              {crew.members.map((member) => (
+                <span key={member.uid} className="flex items-baseline gap-2">
+                  <span className="w-7 shrink-0 font-mono text-[10px] font-semibold text-accent">
+                    {member.role || '—'}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-sm font-medium text-content">{member.name}</span>
+                </span>
+              ))}
+              <span className="mt-1 block truncate text-2xs text-content-subtle">
+                {crew.paired ? 'Two-pilot crew' : 'Single pilot'}
+                {' · '}
+                {crew.assignedTrips} scheduled leg{crew.assignedTrips === 1 ? '' : 's'}
               </span>
             </span>
-            <span className="font-mono text-xs text-content-muted">{fmtLegTime(row.dutyOnAt)}</span>
+            <span className="font-mono text-xs text-content-muted">{fmtLegTime(crew.dutyOnAt)}</span>
             <span className={cx(
               'font-mono text-xs font-semibold tabular-nums',
-              row.overLimit ? 'text-danger' : row.remainingMs <= 2 * MS_HOUR ? 'text-warning' : 'text-content',
+              crew.overLimit ? 'text-danger' : crew.remainingMs <= 2 * MS_HOUR ? 'text-warning' : 'text-content',
             )}>
-              {row.overLimit ? `+${fmtDuration(row.overByMs)}` : fmtDuration(row.remainingMs)}
+              {crew.overLimit ? `+${fmtDuration(crew.overByMs)}` : fmtDuration(crew.remainingMs)}
             </span>
-            <span className="font-mono text-xs text-content-muted">{row.tail || '—'}</span>
+            <span className="font-mono text-xs text-content-muted">{crew.tail || '—'}</span>
             <span className="col-span-2 text-right font-mono text-xs tabular-nums text-content md:col-span-1">
-              {fmtDuration(row.scheduledFlightMs)} / {row.actualFlightMs > 0 ? fmtDuration(row.actualFlightMs) : '—'}
+              {fmtDuration(crew.scheduledFlightMs)} / {crew.actualFlightMs > 0 ? fmtDuration(crew.actualFlightMs) : '—'}
               <span className="block text-[9px] text-content-subtle">FlightAware airborne</span>
             </span>
           </button>
@@ -566,14 +576,14 @@ export default function OpsDashboard({
     () => buildTodayFlightRows(trips, data.tripStates, data.positions, now),
     [trips, data.tripStates, data.positions, now],
   );
-  const onDutyRows = useMemo(
-    () => buildOnDutyRows({
+  const onDutyCrews = useMemo(
+    () => groupOnDutyCrews(buildOnDutyRows({
       dutyPeriods: data.dutyPeriods,
       trips,
       tripStates: data.tripStates,
       positions: data.positions,
       now,
-    }),
+    })),
     [data.dutyPeriods, trips, data.tripStates, data.positions, now],
   );
 
@@ -714,12 +724,12 @@ export default function OpsDashboard({
             <TodayFlightBoard rows={todayFlights} onSelectTrip={onSelectTrip} />
           </SectionCard>
           <SectionCard
-            title="Pilots currently on duty"
-            subtitle="14-hour duty clock · scheduled versus FlightAware airborne time"
+            title="Crew currently on duty"
+            subtitle="PIC and SIC grouped by crew · 14-hour duty clock · scheduled versus FlightAware airborne time"
             icon={Users}
-            count={onDutyRows.length}
+            count={onDutyCrews.length}
           >
-            <OnDutyBoard rows={onDutyRows} onSwitchSection={onSwitchSection} />
+            <OnDutyBoard crews={onDutyCrews} onSwitchSection={onSwitchSection} />
           </SectionCard>
         </div>
 

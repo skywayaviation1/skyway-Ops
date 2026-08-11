@@ -192,14 +192,17 @@ export function buildOnDutyRows({
       }, 0);
       return {
         uid: period.pilotUid,
+        periodId: period.id || null,
+        partnerPeriodId: period.partnerPeriodId || null,
         name: period.pilotName || 'Unknown pilot',
         dutyOnAt: period.dutyOnAt,
         dutyEndAt,
         remainingMs: Math.max(0, dutyEndAt - now),
         overLimit: now > dutyEndAt,
         overByMs: Math.max(0, now - dutyEndAt),
-        tail: period.tail || assigned[0]?.info?.tail || null,
+        tail: normalizeTail(period.tail || assigned[0]?.info?.tail) || null,
         role: period.role || null,
+        crewType: period.crewType || null,
         scheduledFlightMs,
         actualFlightMs,
         reportedFlightMs: Number(period.flightTimeMs || 0),
@@ -207,6 +210,85 @@ export function buildOnDutyRows({
       };
     })
     .sort((a, b) => a.remainingMs - b.remainingMs || a.name.localeCompare(b.name));
+}
+
+const ROLE_ORDER = { PIC: 0, SIC: 1 };
+
+/**
+ * Collapse the on-duty list into crews.
+ *
+ * A two-pilot trip is dispatched as a crew, so listing the captain and the
+ * first officer as unrelated rows makes a controller reconstruct the pairing by
+ * eye. Pilots are grouped when duty records are explicitly paired, or when they
+ * share an aircraft and went on duty within the same window. PIC sorts above
+ * SIC inside a crew, and a single pilot still yields a one-member crew.
+ */
+export function groupOnDutyCrews(rows, { toleranceMs = 90 * 60_000 } = {}) {
+  const byPeriodId = new Map();
+  for (const row of rows || []) {
+    if (row.periodId) byPeriodId.set(row.periodId, row);
+  }
+
+  const crewOf = new Map();
+  const crews = [];
+  const assign = (row, crew) => {
+    crew.members.push(row);
+    crewOf.set(row, crew);
+  };
+
+  for (const row of rows || []) {
+    if (crewOf.has(row)) continue;
+
+    // An explicit pairing is authoritative.
+    const partner = row.partnerPeriodId ? byPeriodId.get(row.partnerPeriodId) : null;
+    if (partner && !crewOf.has(partner)) {
+      const crew = { members: [] };
+      crews.push(crew);
+      assign(row, crew);
+      assign(partner, crew);
+      continue;
+    }
+    if (partner && crewOf.has(partner)) {
+      assign(row, crewOf.get(partner));
+      continue;
+    }
+
+    // Otherwise infer: same aircraft, duty starting close together.
+    const mate = (rows || []).find((other) => (
+      other !== row
+      && !crewOf.has(other)
+      && other.tail
+      && row.tail
+      && other.tail === row.tail
+      && Math.abs((other.dutyOnAt || 0) - (row.dutyOnAt || 0)) <= toleranceMs
+      && other.role !== row.role
+    ));
+    const crew = { members: [] };
+    crews.push(crew);
+    assign(row, crew);
+    if (mate) assign(mate, crew);
+  }
+
+  return crews.map((crew) => {
+    const members = crew.members.slice().sort((a, b) => (
+      (ROLE_ORDER[a.role] ?? 2) - (ROLE_ORDER[b.role] ?? 2)
+      || a.name.localeCompare(b.name)
+    ));
+    const lead = members[0];
+    return {
+      id: members.map((m) => m.periodId || m.uid).join('+'),
+      tail: lead.tail,
+      dutyOnAt: Math.min(...members.map((m) => m.dutyOnAt)),
+      remainingMs: Math.min(...members.map((m) => m.remainingMs)),
+      overLimit: members.some((m) => m.overLimit),
+      overByMs: Math.max(...members.map((m) => m.overByMs || 0)),
+      scheduledFlightMs: Math.max(...members.map((m) => m.scheduledFlightMs || 0)),
+      actualFlightMs: Math.max(...members.map((m) => m.actualFlightMs || 0)),
+      assignedTrips: Math.max(...members.map((m) => m.assignedTrips || 0)),
+      paired: members.length > 1,
+      members,
+    };
+  }).sort((a, b) => a.remainingMs - b.remainingMs || a.members[0].name.localeCompare(b.members[0].name));
 }
 
 /* ── Fleet state ─────────────────────────────────────────────────────────
