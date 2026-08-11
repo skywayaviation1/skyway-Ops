@@ -162,6 +162,7 @@ import { lookupCoords } from './airport-coords.js';
 import { resolveManagedTails } from './fleet-config.js';
 import { buildFleetMapScene } from './fleet-tracking.js';
 import { DUTY_TRACKER_ENABLED } from './duty-feature.js';
+import { applyBrandAccent, brand } from './brand.js';
 import {
   analyzeFrameReadiness,
   autoCapturePrompt,
@@ -16382,12 +16383,7 @@ function LegacyLoginScreen({ initialMode = 'login' }) {
       <div className="absolute inset-0 grid-bg-login pointer-events-none" />
       <div className="max-w-md w-full relative">
         <div className="text-center mb-8">
-          <img
-            src="/skyway-logo-reverse.png"
-            srcSet="/skyway-logo-reverse.png 1x, /skyway-logo-reverse@2x.png 2x"
-            alt="Skyway Aviation"
-            className="mx-auto mb-4 h-16 w-auto"
-          />
+          <Wordmark surface="dark" className="mx-auto mb-4 h-16 w-auto" />
           <p className="text-[10px] tracking-[0.3em] text-slate-500 mt-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
             OPS CONSOLE · SECURE LOGIN
           </p>
@@ -27905,6 +27901,9 @@ export default function CharterOps() {
   useEffect(() => {
     if (typeof document === 'undefined') return;
     document.documentElement.setAttribute('data-theme', themeMode);
+    // The two themes carry different accent inks, so the tenant's accent is
+    // re-applied on every switch rather than written once at boot.
+    applyBrandAccent(themeMode);
     try { localStorage.setItem('skyway-theme', themeMode); } catch (_) {}
     // Keep iOS status-bar / theme-color in sync with the active palette so
     // the homescreen chrome doesn't flash the wrong color on theme toggle.
