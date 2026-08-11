@@ -17,8 +17,10 @@ const BRANDS = {
     name: 'Skyway Aviation',
     shortName: 'Skyway',
     legalName: 'Skyway Aviation Services',
+    domain: 'flyskyway.com',
     contactEmail: 'charters@flyskyway.com',
     contactPhone: '727-605-5000',
+    tagline: 'Private Jet & Helicopter Charter Services',
     wordmark: {
       full: { light: '/skyway-logo', dark: '/skyway-logo-reverse' },
       compact: { light: '/skyway-logo-nav', dark: '/skyway-logo-nav-reverse' },
@@ -45,8 +47,10 @@ const BRANDS = {
     name: 'Elite Jets',
     shortName: 'Elite',
     legalName: 'Elite Jets',
+    domain: 'elitejets.com',
     contactEmail: 'charters@elitejets.com',
     contactPhone: '239-330-4114',
+    tagline: 'Private Jet Charter',
     wordmark: {
       full: { light: '/elite-logo', dark: '/elite-logo-reverse' },
       compact: { light: '/elite-logo-nav', dark: '/elite-logo-nav-reverse' },

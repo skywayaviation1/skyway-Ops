@@ -889,7 +889,7 @@ function parseJetInsightTripSheet(rawText) {
     const re = new RegExp(
       `${labelPattern}\\s*:\\s*([\\s\\S]*?)(?=(?:` +
         `Trip notes \\(|Customer notes:|Special items:|Leg \\s*\\d+|Distance:|Client:|Planner:|` +
-        `Skyway Aviation|` +
+        `${brand().name}|` +
         `\\d{3,5}\\s+[A-Z][a-z]+\\s+(?:Blvd|St|Ave|Rd|Way|Dr|Ln|Pkwy)|` +
         `[A-Za-z0-9._-]+@[A-Za-z0-9.-]+\\.(?:com|net|org)|` +
         `\\d{3}[-.\\s]?\\d{3}[-.\\s]?\\d{4}` +
@@ -1562,8 +1562,8 @@ function buildStatusEmail(step, trip, brokerEmail) {
   const sigLines = [
     '',
     '',
-    '— Skyway Aviation',
-    'Private Jet & Helicopter Charter Services',
+    `— ${brand().name}`,
+    brand().tagline,
   ];
   if (trip.info.pic || trip.info.sic) {
     // Insert "Your flight crew:" + names ABOVE the company line for a more
@@ -1720,7 +1720,7 @@ function buildStatusEmail(step, trip, brokerEmail) {
         subject: `Landed — ${tail} ${route}`,
         text:
           `${greeting}\n\n` +
-          `${tail} has landed at ${trip.info.to || ''} at ${arrTimeStr}. Thank you for choosing Skyway Aviation. ` +
+          `${tail} has landed at ${trip.info.to || ''} at ${arrTimeStr}. Thank you for choosing ${brand().name}. ` +
           `We look forward to serving you again.` +
           signature,
       };
@@ -3937,7 +3937,7 @@ function DelayPanel({ trip, opsEmail, brokerEmail, currentUser, statuses, setSta
     const greeting = notifyBroker && brokerEmails[0]
       ? `Hi ${greetingFromEmail(brokerEmails[0])},`
       : `Ops,`;
-    const signature = '\n\n— Skyway Aviation\nPrivate Jet & Helicopter Charter Services';
+    const signature = `\n\n— ${brand().name}\n${brand().tagline}`;
 
     const lines = [
       `${greeting}`,
@@ -6249,7 +6249,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       const fromAirport = (trip.info?.from || pos.origin || '').toUpperCase();
       const greetingName = brokerEmails[0].split('@')[0].split('.')[0];
       const greeting = greetingName ? `Hi ${greetingName.charAt(0).toUpperCase() + greetingName.slice(1)},` : 'Hello,';
-      const signature = '\n\n— Skyway Aviation\nPrivate Jet & Helicopter Charter Services';
+      const signature = `\n\n— ${brand().name}\n${brand().tagline}`;
       const subject = `Updated ETA — ${tailLabel} ${fromAirport}-${dest}`;
       const bodyLines = [
         greeting,
@@ -14745,7 +14745,7 @@ function MyProfileModal({ currentUser, onClose, onSave }) {
                 onChange={(event) => setEmailSignature(event.target.value)}
                 rows={5}
                 maxLength={4000}
-                placeholder={'Your Name\nCharter Sales\nSkyway Aviation'}
+                placeholder={`Your Name\nCharter Sales\n${brand().name}`}
                 className="mt-1 w-full resize-y rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200 outline-none focus:border-cyan-400"
               />
               <span className="mt-1 block text-[11px] text-slate-500">
@@ -25351,7 +25351,7 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName, u
         '',
         `Please reply to this email with the requested info, or log in to https://skyway-ops.vercel.app to update the expense and resubmit.`,
         '',
-        '— Skyway Aviation',
+        `— ${brand().name}`,
       ];
       const r = await sendEmailViaApi({
         to: [recipient, ...(reviewerEmail ? [reviewerEmail] : [])], // CC the reviewer so they have a record

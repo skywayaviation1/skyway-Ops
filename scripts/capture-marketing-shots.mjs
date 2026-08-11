@@ -187,8 +187,14 @@ const DESKTOP_SHOTS = [
     url: '?surface=teams',
     ready: 'Teams',
     after: async (page) => {
+      // Opens on the chat list; the channel view is what shows trip discussion
+      // sitting beside the operation.
+      await tap(page, 'Teams', { exact: true }).catch(() => {});
+      await settle(page, 1400);
+      await tap(page, 'Operations').catch(() => {});
+      await settle(page, 1600);
       await tap(page, 'Dispatch').catch(() => {});
-      await settle(page, 2000);
+      await settle(page, 2400);
     },
   },
   {
