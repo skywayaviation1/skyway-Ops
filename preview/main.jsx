@@ -117,10 +117,9 @@ const SURFACES = {
     render: () => (
       <OpsConsole
         currentUser={CURRENT_USER}
-        trips={TRIPS}
+        allTrips={TRIPS}
         users={USERS}
-        config={CONFIG}
-        onSelectTrip={() => {}}
+        onOpenTrip={() => {}}
       />
     ),
   },
@@ -139,7 +138,7 @@ const SURFACES = {
     label: 'Duty compliance report',
     render: () => (
       <div style={{ overflowY: 'auto', height: '100%' }}>
-        <AdminDutyReport currentUser={CURRENT_USER} users={USERS} />
+        <AdminDutyReport currentUser={CURRENT_USER} users={USERS} trips={TRIPS} />
       </div>
     ),
   },

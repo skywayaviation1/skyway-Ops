@@ -1,12 +1,15 @@
-// Builds the Skyway Ops marketing PDF from the prepared preview captures.
+// Builds the Skyway Ops marketing booklet from the prepared preview captures.
 //
-//   node scripts/prepare-marketing-shots.mjs   # crop raw browser captures
-//   node scripts/build-marketing-pdf.mjs       # -> marketing/Skyway-Ops-Overview.pdf
+//   node scripts/prepare-marketing-shots.mjs   # trim/crop raw browser captures
+//   node scripts/build-marketing-pdf.mjs       # -> marketing/Skyway-Ops-Booklet.pdf
 //
 // Every screenshot is a real render of the shipping components (see
-// vite.preview.config.js), populated with a sample operating day rather than
+// vite.preview.config.js), populated with a fictitious operating day rather than
 // live customer data. That is stated on each screenshot page so the document
 // never implies the numbers are a real operation.
+//
+// A missing capture degrades to a labelled placeholder rather than aborting the
+// build, so the booklet can be regenerated while shots are still being taken.
 
 import { createWriteStream, existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
@@ -14,7 +17,7 @@ import PDFDocument from 'pdfkit';
 
 const root = path.resolve(import.meta.dirname, '..');
 const shots = path.join(root, 'marketing/shots');
-const outPath = path.join(root, 'marketing/Skyway-Ops-Overview.pdf');
+const outPath = path.join(root, 'marketing/Skyway-Ops-Booklet.pdf');
 mkdirSync(path.dirname(outPath), { recursive: true });
 
 const INK = {
@@ -33,48 +36,64 @@ const W = 792;
 const H = 612;
 const M = 52;
 
-const doc = new PDFDocument({ size: 'LETTER', layout: 'landscape', margin: 0, info: {
-  Title: 'Skyway Ops — Part 135 Charter Operations Platform',
-  Author: 'Skyway Aviation',
-  Subject: 'Product overview',
-} });
-doc.pipe(createWriteStream(outPath));
-
 const BOLD = 'Helvetica-Bold';
 const BODY = 'Helvetica';
+
+const doc = new PDFDocument({
+  size: 'LETTER',
+  layout: 'landscape',
+  margin: 0,
+  info: {
+    Title: 'Skyway Ops — Part 135 Charter Operations Platform',
+    Author: 'Skyway Aviation',
+    Subject: 'Product booklet',
+  },
+});
+doc.pipe(createWriteStream(outPath));
+
+const missing = [];
+let pageNo = 0;
 
 function page({ first = false } = {}) {
   if (!first) doc.addPage({ size: 'LETTER', layout: 'landscape', margin: 0 });
   doc.rect(0, 0, W, H).fill(INK.bg);
+  pageNo += 1;
 }
 
-function logo(x, y, width) {
-  const file = path.join(root, 'public/skyway-logo-reverse.png');
-  if (existsSync(file)) doc.image(file, x, y, { width });
+function shot(name) {
+  const file = path.join(shots, name);
+  if (existsSync(file)) return file;
+  if (!missing.includes(name)) missing.push(name);
+  return null;
+}
+
+function placeholder(box, name) {
+  doc.roundedRect(box.x, box.y, box.w, box.h, 6).fill(INK.panel);
+  doc.roundedRect(box.x, box.y, box.w, box.h, 6).lineWidth(0.75).strokeColor(INK.edge).stroke();
+  doc.font(BODY).fontSize(8).fillColor(INK.subtle)
+    .text(`capture pending: ${name}`, box.x + 12, box.y + box.h / 2 - 5, {
+      width: box.w - 24, align: 'center',
+    });
 }
 
 function footer(text) {
   doc.font(BODY).fontSize(7.5).fillColor(INK.subtle)
-    .text(text, M, H - 34, { width: W - M * 2 });
-}
-
-function pageNumber(n) {
+    .text(text, M, H - 34, { width: W - M * 2 - 28 });
   doc.font(BODY).fontSize(7.5).fillColor(INK.subtle)
-    .text(String(n), W - M - 20, H - 34, { width: 20, align: 'right' });
+    .text(String(pageNo), W - M - 20, H - 34, { width: 20, align: 'right' });
 }
 
-/** Heading block shared by every interior page. */
-function heading(kicker, title, subtitle) {
+function heading(kicker, title, subtitle, { subtitleWidth = W - M * 2 } = {}) {
   doc.font(BOLD).fontSize(8).fillColor(INK.accent)
-    .text(kicker.toUpperCase(), M, 44, { characterSpacing: 1.2 });
-  doc.font(BOLD).fontSize(21).fillColor(INK.text).text(title, M, 60);
+    .text(kicker.toUpperCase(), M, 42, { characterSpacing: 1.2 });
+  doc.font(BOLD).fontSize(20).fillColor(INK.text).text(title, M, 57);
   if (subtitle) {
-    doc.font(BODY).fontSize(10.5).fillColor(INK.muted)
-      .text(subtitle, M, 90, { width: W - M * 2 });
+    doc.font(BODY).fontSize(9.5).fillColor(INK.muted)
+      .text(subtitle, M, 84, { width: subtitleWidth, lineGap: 1.5 });
   }
 }
 
-/** Fit an image inside a box and return the drawn rectangle. */
+/** Fit an image inside a box, centred, and return the drawn rectangle. */
 function fitted(file, box, { align = 'center' } = {}) {
   const { width: iw, height: ih } = doc.openImage(file);
   const scale = Math.min(box.w / iw, box.h / ih);
@@ -90,14 +109,48 @@ function fitted(file, box, { align = 'center' } = {}) {
   return { x, y, w, h };
 }
 
-function bullets(items, { x, y, width, gap = 14 }) {
+/**
+ * A phone capture drawn inside a device frame. Screenshots of a 390x844 viewport
+ * read as arbitrary tall rectangles without one; the frame makes it immediately
+ * obvious these are the screens a pilot uses on a phone.
+ */
+function phone(file, { x, y, h, caption }) {
+  const screenH = h;
+  const screenW = screenH * (390 / 844);
+  const bezel = 5;
+  const outerW = screenW + bezel * 2;
+  const outerH = screenH + bezel * 2;
+
+  doc.roundedRect(x, y, outerW, outerH, 17).fill('#000000');
+  doc.roundedRect(x, y, outerW, outerH, 17).lineWidth(0.9).strokeColor('#2A2E34').stroke();
+
+  if (file) {
+    doc.save();
+    doc.roundedRect(x + bezel, y + bezel, screenW, screenH, 13).clip();
+    doc.image(file, x + bezel, y + bezel, { width: screenW, height: screenH });
+    doc.restore();
+  } else {
+    doc.roundedRect(x + bezel, y + bezel, screenW, screenH, 13).fill(INK.panel);
+  }
+
+  // Home indicator, to read as a modern handset.
+  doc.roundedRect(x + outerW / 2 - 20, y + outerH - 9, 40, 2.6, 1.3).fill('#4A4F57');
+
+  if (caption) {
+    doc.font(BOLD).fontSize(8).fillColor(INK.text)
+      .text(caption, x - 6, y + outerH + 9, { width: outerW + 12, align: 'center' });
+  }
+  return { x, y, w: outerW, h: outerH };
+}
+
+function bullets(items, { x, y, width, gap = 12, size = 8.8 }) {
   let cursor = y;
   for (const item of items) {
-    doc.circle(x + 2.5, cursor + 4.5, 2.5).fill(INK.accent);
-    doc.font(BOLD).fontSize(9).fillColor(INK.text)
+    doc.circle(x + 2.5, cursor + 4.2, 2.5).fill(INK.accent);
+    doc.font(BOLD).fontSize(size).fillColor(INK.text)
       .text(item.title, x + 12, cursor, { width: width - 12 });
     if (item.body) {
-      doc.font(BODY).fontSize(8.5).fillColor(INK.muted)
+      doc.font(BODY).fontSize(size - 0.4).fillColor(INK.muted)
         .text(item.body, x + 12, doc.y + 1.5, { width: width - 12, lineGap: 1 });
     }
     cursor = doc.y + gap;
@@ -105,85 +158,173 @@ function bullets(items, { x, y, width, gap = 14 }) {
   return cursor;
 }
 
-const SAMPLE_NOTE = 'Genuine interface render from the shipping application. Aircraft, crew, brokers and figures are sample data.';
+const SAMPLE_NOTE = 'Genuine interface render from the shipping application. Aircraft, crew, brokers, passengers and figures are fictitious sample data.';
 
-/**
- * A screenshot page. Layout follows the capture's shape so dense screens stay
- * legible: wide-and-short captures run the full page width with callouts in a
- * row beneath, taller captures sit beside a callout column.
- */
-function surfacePage({ kicker, title, subtitle, image, points, note, n }) {
+/** A full-width desktop screenshot with callouts in a row beneath. */
+function desktopPage({ kicker, title, subtitle, image, points, note, imageH = 330, layout = 'wide' }) {
   page();
   heading(kicker, title, subtitle);
 
-  const file = path.join(shots, image);
-  const { width: iw, height: ih } = doc.openImage(file);
-  const wide = ih / iw < 0.62;
+  const file = shot(image);
+  const top = 118;
+  const available = 560 - top;
 
-  if (wide) {
-    const rect = fitted(file, { x: M, y: 118, w: W - M * 2, h: 356 }, { align: 'top' });
-    const colW = (W - M * 2 - 3 * 18) / 4;
-    points.slice(0, 4).forEach((point, i) => {
-      bullets([point], { x: M + i * (colW + 18), y: rect.y + rect.h + 26, width: colW });
-    });
-  } else {
-    const colW = 232;
-    const rect = fitted(file, { x: M, y: 118, w: W - M * 2 - colW - 26, h: 432 });
-    bullets(points, { x: W - M - colW, y: rect.y, width: colW });
+  // A portrait capture printed full width would be reduced to a sliver, so it
+  // runs tall down the left with the callouts stacked beside it instead.
+  if (layout === 'tall') {
+    const imgW = 316;
+    const box = { x: M, y: top, w: imgW, h: 424 };
+    const rect = file ? fitted(file, box, { align: 'top' }) : (placeholder(box, image), box);
+    const colX = M + imgW + 34;
+    bullets(points, { x: colX, y: top + 6, width: W - M - colX });
+    footer(note || SAMPLE_NOTE);
+    return;
   }
 
+  const box = { x: M, y: top, w: W - M * 2, h: imageH };
+
+  // A wide, short card leaves the lower half of the page empty if it is pinned
+  // under the heading, so the image and its callouts are centred as one block.
+  if (file) {
+    const { width: iw, height: ih } = doc.openImage(file);
+    const drawnH = ih * Math.min(box.w / iw, box.h / ih);
+    const blockH = drawnH + 96;
+    if (blockH < available) box.y = top + (available - blockH) / 2;
+  }
+
+  const rect = file ? fitted(file, box, { align: 'top' }) : (placeholder(box, image), box);
+
+  const cols = Math.min(points.length, 4);
+  const colW = (W - M * 2 - (cols - 1) * 18) / cols;
+  points.slice(0, cols).forEach((point, i) => {
+    bullets([point], { x: M + i * (colW + 18), y: rect.y + rect.h + 22, width: colW });
+  });
+
   footer(note || SAMPLE_NOTE);
-  pageNumber(n);
 }
 
-/* ─────────────────────────── 1. Cover ─────────────────────────── */
+/** One or two phone frames beside a callout column. */
+function phonePage({ kicker, title, subtitle, phones, points, note }) {
+  page();
+  const frameH = 372;
+  const frameW = frameH * (390 / 844) + 10;
+  const gap = 20;
+  const bank = phones.length * frameW + (phones.length - 1) * gap;
+  const colX = M + bank + 34;
+  const colW = W - M - colX;
+
+  heading(kicker, title, subtitle, { subtitleWidth: W - M * 2 });
+
+  phones.forEach((item, i) => {
+    phone(shot(item.image), {
+      x: M + i * (frameW + gap),
+      y: 134,
+      h: frameH,
+      caption: item.caption,
+    });
+  });
+
+  // One phone leaves a wide column; two short columns of callouts fill it far
+  // better than one column of half-length lines.
+  if (phones.length === 1 && points.length >= 4) {
+    const half = Math.ceil(points.length / 2);
+    const gutter = 22;
+    const halfW = (colW - gutter) / 2;
+    bullets(points.slice(0, half), { x: colX, y: 140, width: halfW });
+    bullets(points.slice(half), { x: colX + halfW + gutter, y: 140, width: halfW });
+  } else {
+    bullets(points, { x: colX, y: 140, width: colW });
+  }
+  footer(note || SAMPLE_NOTE);
+}
+
+/** A phone frame beside a desktop capture — the same record on both devices. */
+function splitPage({ kicker, title, subtitle, phone: phoneItem, desktop, points, note }) {
+  page();
+  heading(kicker, title, subtitle);
+
+  const frameH = 356;
+  phone(shot(phoneItem.image), { x: M, y: 128, h: frameH, caption: phoneItem.caption });
+  const frameW = frameH * (390 / 844) + 10;
+
+  const rightX = M + frameW + 30;
+  const rightW = W - M - rightX;
+  const file = shot(desktop.image);
+  const box = { x: rightX, y: 128, w: rightW, h: 236 };
+  const rect = file ? fitted(file, box, { align: 'top' }) : (placeholder(box, desktop.image), box);
+  if (desktop.caption) {
+    doc.font(BOLD).fontSize(8).fillColor(INK.text)
+      .text(desktop.caption, rightX, rect.y + rect.h + 8, { width: rightW, align: 'center' });
+  }
+
+  const cols = 2;
+  const colW = (rightW - 18) / cols;
+  points.slice(0, 4).forEach((point, i) => {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    bullets([point], {
+      x: rightX + col * (colW + 18),
+      y: rect.y + rect.h + 30 + row * 74,
+      width: colW,
+      size: 8.4,
+    });
+  });
+
+  footer(note || SAMPLE_NOTE);
+}
+
+/* ══════════════════════════ 1. Cover ══════════════════════════ */
 page({ first: true });
 doc.rect(0, 0, 6, H).fill(INK.accent);
-logo(M, 92, 250);
 
-doc.font(BOLD).fontSize(34).fillColor(INK.text)
-  .text('Run the whole operation', M, 212, { width: 520 });
-doc.font(BOLD).fontSize(34).fillColor(INK.accent)
-  .text('in one place.', M, 250, { width: 520 });
+const logoFile = path.join(root, 'public/skyway-logo-reverse.png');
+if (existsSync(logoFile)) doc.image(logoFile, M, 88, { width: 240 });
 
-doc.font(BODY).fontSize(12).fillColor(INK.muted).text(
-  'Skyway Ops is the Part 135 charter operations platform built around a single '
-  + 'operating day: live fleet tracking, dispatch, crew duty and rest, passenger '
-  + 'manifests, maintenance, company email and Microsoft Teams, and QuickBooks '
-  + 'accounting — for the whole team, on any device.',
-  M, 306, { width: 500, lineGap: 3.5 },
+doc.font(BOLD).fontSize(33).fillColor(INK.text)
+  .text('Run the whole operation', M, 202, { width: 540 });
+doc.font(BOLD).fontSize(33).fillColor(INK.accent)
+  .text('from one record.', M, 239, { width: 540 });
+
+doc.font(BODY).fontSize(11.5).fillColor(INK.muted).text(
+  'Skyway Ops is a Part 135 charter operations platform built around a single '
+  + 'operating day. Dispatch, pilots, maintenance, brokers and accounting all work '
+  + 'from the same trip record — live fleet tracking, crew duty and rest, passenger '
+  + 'manifests, expenses, company email and Microsoft Teams, and QuickBooks.',
+  M, 294, { width: 505, lineGap: 3.5 },
 );
 
-const stats = [
-  ['Fleet', 'Every aircraft, always located'],
-  ['Duty', '14-hour clock, live'],
-  ['Money', 'Invoices in QuickBooks'],
+const coverStats = [
+  ['On the ramp', 'Pilots run the trip from a phone'],
+  ['In the office', 'Dispatch sees the whole fleet live'],
+  ['For the broker', 'One link, no phone calls'],
 ];
 let sx = M;
-for (const [big, small] of stats) {
-  doc.roundedRect(sx, 428, 150, 62, 8).lineWidth(0.75).strokeColor(INK.edge).stroke();
-  doc.font(BOLD).fontSize(11).fillColor(INK.accent).text(big, sx + 14, 444);
-  doc.font(BODY).fontSize(8.5).fillColor(INK.muted).text(small, sx + 14, 460, { width: 124 });
-  sx += 164;
+for (const [big, small] of coverStats) {
+  doc.roundedRect(sx, 424, 148, 68, 8).lineWidth(0.75).strokeColor(INK.edge).stroke();
+  doc.font(BOLD).fontSize(10).fillColor(INK.accent).text(big, sx + 13, 439);
+  doc.font(BODY).fontSize(8).fillColor(INK.muted).text(small, sx + 13, 454, { width: 124 });
+  sx += 160;
 }
 
-doc.font(BODY).fontSize(8).fillColor(INK.subtle)
-  .text('Product overview · Skyway Aviation · flyskyway.com', M, H - 52);
+// The product is used on a phone more than anywhere else, so the cover shows one.
+phone(shot('phone-pilot-home.png'), { x: 566, y: 96, h: 424 });
 
-/* ───────────────────── 2. How it works ───────────────────── */
+doc.font(BODY).fontSize(8).fillColor(INK.subtle)
+  .text('Product booklet · Skyway Aviation · flyskyway.com', M, H - 50);
+
+/* ══════════════════════ 2. How it works ══════════════════════ */
 page();
 heading('How it works', 'One operating day, one system of record',
-  'The schedule drives everything. Each step below writes to the same trip record, so dispatch, crew, brokers and accounting are never looking at different versions of the day.');
+  'The schedule drives everything. Each step writes to the same trip record, so dispatch, crew, brokers and accounting are never looking at different versions of the day.');
 
 const flow = [
-  ['1', 'Schedule arrives', 'Trips import from your scheduling feed. Aircraft, route, crew and passengers land on one trip record.'],
-  ['2', 'Dispatch readies the leg', 'Trip sheet, FBOs, catering and passenger manifest are completed and checked against a readiness list.'],
-  ['3', 'Crew works the trip', 'Pilots go on duty, scan passenger IDs, and tap each milestone from crew on-site through landed.'],
-  ['4', 'Everyone sees it live', 'FlightAware positions and status steps update the fleet map, the flight board and the broker tracking link at the same time.'],
+  ['1', 'The schedule arrives', 'Trips import from your scheduling feed. Aircraft, route, crew and passengers land on one trip record.'],
+  ['2', 'Dispatch readies the leg', 'Trip sheet, FBOs, catering and the passenger manifest are completed and checked against a readiness list.'],
+  ['3', 'Crew works the trip', 'Pilots go on duty, verify passenger IDs, and tap each milestone from crew on-site through landed.'],
+  ['4', 'Everyone sees it live', 'FlightAware positions and crew milestones update the fleet map, the flight board and the broker link at once.'],
   ['5', 'The day settles', 'Duty and flight time are recorded for compliance, expenses match to card charges, and invoices post to QuickBooks.'],
 ];
-
-let fy = 140;
+let fy = 138;
 for (const [num, title, body] of flow) {
   doc.roundedRect(M, fy, W - M * 2, 62, 8).fill(INK.panel);
   doc.circle(M + 30, fy + 31, 15).fill(INK.accent);
@@ -192,167 +333,309 @@ for (const [num, title, body] of flow) {
   doc.font(BODY).fontSize(9).fillColor(INK.muted).text(body, M + 58, fy + 33, { width: W - M * 2 - 80 });
   fy += 70;
 }
+footer('Roles decide what each person sees: crew get their trips and duty, dispatch gets the fleet, administrators get everything.');
 
-footer('Roles decide what each person sees: crew get their trips and duty; dispatch gets the fleet; administrators get everything.');
-pageNumber(2);
-
-/* ─────────────── 3. Live fleet tracking ─────────────── */
-surfacePage({
-  n: 3,
+/* ═══════════════════ 3. Live fleet tracking ═══════════════════ */
+desktopPage({
   kicker: 'Live fleet tracking',
-  title: 'Every aircraft, always on the map',
-  subtitle: 'Airborne aircraft show live position, altitude and speed. Aircraft on the ground show where they actually are — so the fleet is never partly invisible.',
-  image: 'fleet-map.png',
+  title: 'Every aircraft, always located',
+  subtitle: 'Airborne aircraft follow their FlightAware track. Aircraft on the ground hold their last known position, so nothing on the fleet ever goes missing from the board.',
+  image: 'flight-board-tv.png',
+  imageH: 322,
   points: [
-    { title: 'Airborne from ADS-B', body: 'Live FlightAware position, altitude, ground speed and progress, refreshed continuously.' },
-    { title: 'On the ground, still shown', body: 'Parked aircraft sit at their last landing airport. If the position feed gaps, the last known point is kept rather than dropping the aircraft off the map.' },
-    { title: 'Whole managed fleet', body: 'Tracking follows the fleet you configure in Settings. Add a tail and it appears — no deployment needed.' },
-    { title: 'One shared feed', body: 'Positions are polled once for the company rather than once per browser, so tracking cost stays flat as the team grows.' },
+    { title: 'Whole fleet, one view', body: 'Airborne and on-ground aircraft together, with the day\'s legs beside the map.' },
+    { title: 'Status at a glance', body: 'Airborne, in turn, pre-flight and complete are colour-coded down the board.' },
+    { title: 'Built for a wall display', body: 'A full-screen board for the dispatch office that needs no interaction.' },
+    { title: 'No manual updates', body: 'Positions come from FlightAware; milestones come from the crew\'s own taps.' },
   ],
 });
 
-/* ─────────── 4. Today's flight board ─────────── */
-surfacePage({
-  n: 4,
+/* ═════════════════ 4. The dashboard, top to bottom ═════════════════ */
+desktopPage({
+  kicker: 'Operations control',
+  title: 'The whole morning briefing on one screen',
+  subtitle: 'Fleet map at the top, personal and shared mail side by side, then the day\'s flight board next to the crews currently on duty — the order a controller actually works in.',
+  image: 'crew-grouped.png',
+  imageH: 348,
+  points: [
+    { title: 'Mail where decisions happen', body: 'A pilot\'s own inbox and the shared charter inbox, both live.' },
+    { title: 'The day at a glance', body: 'Every leg with live status, crew and scheduled against actual time.' },
+    { title: 'Crews and their clocks', body: 'Who is on duty, on which aircraft, and how long they have left.' },
+    { title: 'Exceptions counted', body: 'Legs, block hours, aircraft available and anything flagged critical.' },
+  ],
+});
+
+/* ═════════════ 5. Crew on duty — PIC/SIC grouped ═════════════ */
+desktopPage({
+  kicker: 'Crew on duty',
+  title: 'A two-pilot trip reads as one crew',
+  subtitle: 'A crew is dispatched together, so the board shows it together: captain above first officer, on one aircraft, against one duty clock. The clock shown is whichever pilot runs out first, because that is when the crew stops flying.',
+  image: 'on-duty-crews.png',
+  imageH: 326,
+  points: [
+    { title: 'Grouped without being told', body: 'Linked duty records pair up, and so do pilots sharing an aircraft and report time.' },
+    { title: 'The tightest clock wins', body: 'A crew is legal only as long as its most-limited pilot, so that is the time displayed.' },
+    { title: 'Single pilots still shown', body: 'A one-pilot crew is labelled as such rather than left looking incomplete.' },
+    { title: 'Closest to the limit first', body: 'Crews sort by time remaining; over-limit reads in red, not buried in a list.' },
+  ],
+});
+
+/* ═════════════════ 5. Dispatch flight control ═════════════════ */
+desktopPage({
   kicker: 'Dispatch',
-  title: "Today's flights, and what actually happened",
-  subtitle: 'The whole day in departure order, with live status and scheduled block time compared against real airborne time.',
-  image: 'flight-board.png',
+  title: 'Flight control for the rolling day',
+  subtitle: 'A working queue rather than a calendar: every leg in the next 48 hours with what is missing, who is watching it, and what has to happen next.',
+  image: 'dispatch.png',
+  imageH: 344,
   points: [
-    { title: 'Status that reflects reality', body: 'Complete, airborne, preflight, delayed or scheduled — derived from crew milestones and live aircraft position together, not from the calendar alone.' },
-    { title: 'Scheduled versus actual', body: 'Each leg shows planned block time next to actual airborne time from FlightAware, so padding and schedule creep become visible.' },
-    { title: 'Crew on every leg', body: 'PIC and SIC are shown inline, and a leg with no assigned captain is raised as an exception before it becomes a problem.' },
-    { title: 'One tap to the trip', body: 'Selecting a row opens the full trip: manifest, trip sheet, FBOs, filed email and status history.' },
+    { title: 'Readiness, not guesswork', body: 'Trip sheet, crew, manifest and catering are checked per leg and flagged when incomplete.' },
+    { title: 'Filter to the problems', body: 'Jump straight to legs with flags, on hold, unassigned or already in progress.' },
+    { title: 'Owned by a controller', body: 'Legs are assigned to a dispatcher with a disposition and a running note.' },
+    { title: 'Shift handover included', body: 'The day\'s notes and dispositions carry across to the next controller.' },
   ],
 });
 
-/* ─────────── 5. Pilots currently on duty ─────────── */
-surfacePage({
-  n: 5,
-  kicker: 'Crew duty & rest',
-  title: 'Who is on duty, and how much clock is left',
-  subtitle: 'Part 135 duty tracking sits next to the flight board, so the question "can this crew take the leg" is answered without opening anything.',
-  image: 'on-duty.png',
+/* ══════════════════════ 6. The schedule ══════════════════════ */
+desktopPage({
+  kicker: 'Schedule',
+  title: 'The day, leg by leg',
+  subtitle: 'The imported schedule with live status against each leg — airborne, on time, scheduled — plus aircraft, crew, passenger count and the customer on the trip.',
+  image: 'schedule.png',
+  imageH: 320,
   points: [
-    { title: '14-hour duty clock', body: 'Every pilot on duty shows when they went on duty and the time remaining, turning amber as the limit approaches and red once exceeded.' },
-    { title: 'Assigned aircraft recorded', body: 'The tail a pilot is flying is captured on the duty record automatically at duty-on and kept for the whole period.' },
-    { title: 'Scheduled versus flown', body: 'Planned flight time is compared with actual airborne time, so a duty day that is running long is obvious early.' },
-    { title: 'Built for the audit', body: 'Duty, rest, flight time, overrides and who changed what are all retained and exportable for the FAA.' },
+    { title: 'Straight from your scheduler', body: 'Legs import from an iCal feed, so the office keeps the scheduling tool it already uses.' },
+    { title: 'Filter by aircraft', body: 'One tail at a time when a controller is working a single aircraft\'s day.' },
+    { title: 'Revenue and repositioning', body: 'Leg category is derived automatically and counted for the day.' },
+    { title: 'Everything links onward', body: 'A leg opens the full trip: manifest, status, expenses, messages and documents.' },
   ],
 });
 
-/* ─────────────────── 6. Email ─────────────────── */
-surfacePage({
-  n: 6,
-  kicker: 'Company email',
-  title: 'The charter inbox, inside the operation',
-  subtitle: 'Your Microsoft 365 mail — the shared charter inbox and each employee\'s own mailbox — without leaving the app or losing the trip context.',
-  image: 'email-open.png',
+/* ═════════════ 7. The pilot's phone — home and trips ═════════════ */
+phonePage({
+  kicker: 'For pilots',
+  title: 'The whole trip, in a pilot\'s pocket',
+  subtitle: 'Pilots do not get a cut-down companion app. They get the operation: the leg they are flying, their duty clock, and every action the trip needs — installed to the home screen, no laptop on the ramp.',
+  phones: [
+    { image: 'phone-pilot-home.png', caption: 'Home — the leg in progress and the duty clock' },
+    { image: 'phone-flights.png', caption: 'Flights — the pilot\'s own schedule' },
+  ],
   points: [
-    { title: 'Shared and personal', body: 'One shared charters@ inbox for the sales desk, plus each employee\'s own work mailbox. Sign in once with Microsoft.' },
-    { title: 'File mail to the trip', body: 'Attach a message to a trip and the whole conversation follows it, so the next person sees the history.' },
-    { title: 'Full Outlook actions', body: 'Reply, reply-all, forward with attachments, Cc and Bcc, folders, search, flags and recipient autocomplete.' },
-    { title: 'Mail stays in Microsoft', body: 'Nothing is copied into a second mail store. Skyway reads and sends through Microsoft Graph as you.' },
+    { title: 'What matters, first', body: 'The leg in progress leads: route, aircraft, time since departure and live status.' },
+    { title: 'The duty clock is always there', body: 'Hours used against the 14-hour limit, time remaining, and whether the pilot is legal.' },
+    { title: 'Only their own trips', body: 'A pilot sees the legs they are assigned as PIC or SIC, matched on the scheduler\'s crew names.' },
+    { title: 'Installs like an app', body: 'A progressive web app on iPhone and Android — no app store, no separate build to distribute.' },
+    { title: 'Push, not chasing', body: 'Assignment changes, duty confirmations and trip messages arrive as notifications.' },
   ],
 });
 
-/* ─────────────────── 7. Teams ─────────────────── */
-surfacePage({
-  n: 7,
-  kicker: 'Microsoft Teams',
-  title: 'Dispatch conversations where the work is',
-  subtitle: 'Teams channels, threaded replies and chats alongside the flight they are about — with channel files opening in Microsoft 365.',
-  image: 'teams-channel.png',
+/* ═════════════ 8. The pilot's phone — working the trip ═════════════ */
+phonePage({
+  kicker: 'For pilots',
+  title: 'Working the trip, one tap per milestone',
+  subtitle: 'The crew records the trip as they fly it. Each tap timestamps the step against the pilot who made it, and that is what the office, the flight board and the broker link all read.',
+  phones: [
+    { image: 'phone-trip.png', caption: 'Trip detail — status, passengers, operational' },
+    { image: 'phone-trip-status.png', caption: 'Milestones, timestamped and attributed' },
+  ],
   points: [
-    { title: 'Channels and chats', body: 'The teams and chats you already use, read and answered from inside the operations app.' },
-    { title: 'Threaded replies', body: 'Reply in-thread on a channel post so a dispatch decision keeps its context.' },
-    { title: 'Channel files', body: 'Browse channel files and open them in the real Microsoft 365 editor, with coauthoring and version history intact.' },
-    { title: 'Acts as the signed-in user', body: 'Delegated access only: each person sees exactly the conversations they can already see in Teams.' },
+    { title: 'Crew on-site to landed', body: 'Aircraft ready, catering aboard, passengers arrived and boarded, taxi, wheels up, landed.' },
+    { title: 'Signed by name', body: 'Every completed step carries the time and the crew member who recorded it.' },
+    { title: 'Wheels up detected for you', body: 'Departure and arrival are confirmed from FlightAware rather than typed in twice.' },
+    { title: 'Catering only when there is catering', body: 'Steps that do not apply to a leg are not shown, so the list is never noise.' },
+    { title: 'One tap notifies everyone', body: 'A milestone pushes to dispatch and updates the broker\'s tracking page at the same moment.' },
   ],
 });
 
-/* ───────────────── 8. Accounting ───────────────── */
-surfacePage({
-  n: 8,
+/* ══════════════ 9. Manifests and passenger check-in ══════════════ */
+phonePage({
+  kicker: 'Manifests',
+  title: 'Passengers verified on the ramp',
+  subtitle: 'The manifest from the trip sheet is checked against who actually boards. Crew verify each passenger on the phone, add walk-ups, and the manifest closes with the leg.',
+  phones: [
+    { image: 'phone-trip-pax.png', caption: 'Passenger manifest and verification' },
+  ],
+  points: [
+    { title: 'Expected against actual', body: 'Names from the trip sheet sit beside the verified manifest, so a mismatch is obvious before the door closes.' },
+    { title: 'Verified, not assumed', body: 'Crew confirm each passenger against their identification, with age derived from date of birth.' },
+    { title: 'Walk-ups and children', body: 'Late additions and passengers without identification are handled without leaving the leg.' },
+    { title: 'No-shows recorded', body: 'A passenger who does not travel is marked, not quietly deleted, so the record matches the flight.' },
+    { title: 'Feeds the day\'s manifest', body: 'Per-leg manifests roll up to the aircraft\'s daily manifest for the office.' },
+  ],
+});
+
+/* ═══════════════════ 10. Duty and rest ═══════════════════ */
+phonePage({
+  kicker: 'Duty and rest',
+  title: 'The 14-hour clock belongs to the pilot',
+  subtitle: 'Pilots start and end their own duty on the phone, and the aircraft they are assigned is written onto the period and held for the whole window — so the record says which tail the time was flown on.',
+  phones: [
+    { image: 'phone-duty.png', caption: 'Duty clock, rest before duty and the assigned tail' },
+  ],
+  points: [
+    { title: 'Started, and by how much', body: 'Report time, hours used against the 14-hour limit and time remaining, all on one dial.' },
+    { title: 'Rest before duty recorded', body: 'The rest period that qualifies the duty is captured with it, not reconstructed later.' },
+    { title: 'The tail is on the record', body: 'The aircraft assigned at the start of the period stays on the duty record for the full window.' },
+    { title: 'Crews go on duty together', body: 'Paired pilots start and end as a crew, which is what makes the crew view on the board possible.' },
+    { title: 'The pilot can export it', body: 'A pilot can pull their own duty history to CSV or PDF without asking the office.' },
+  ],
+});
+
+/* ═════════════ 11. Duty compliance reporting ═════════════ */
+desktopPage({
+  kicker: 'Compliance',
+  title: 'The duty record an audit asks for',
+  subtitle: 'Every pilot, every period, with legality assessed rather than left to interpretation — duty and flight time, outside commercial flying, average rest, exceptions and any edits made to the record.',
+  image: 'duty-report-table.png',
+  imageH: 168,
+  points: [
+    { title: 'Legality is stated', body: 'Each pilot reads legal or warning against the limit, with the live duty time beside it.' },
+    { title: 'Outside flying counted', body: 'Commercial flying done elsewhere is included, because the limit follows the pilot.' },
+    { title: 'Rest averaged', body: 'Average rest across the window shows whether the schedule is sustainable, not just legal.' },
+    { title: 'Edits are visible', body: 'Corrections are counted per pilot, so the record shows what was changed after the fact.' },
+  ],
+});
+
+/* ═══════════════════ 12. Expenses ═══════════════════ */
+phonePage({
+  kicker: 'Expenses',
+  title: 'Receipts captured where they happen',
+  subtitle: 'A crew member photographs the receipt at the FBO counter and it is booked against the leg they are flying, categorised, and already attributed to them. Nothing to reconcile from an envelope at month end.',
+  phones: [
+    { image: 'phone-expenses.png', caption: 'A pilot\'s own spend for the month, by category' },
+  ],
+  points: [
+    { title: 'Their month, at the top', body: 'Total spend for the month with the category split, before the receipt list.' },
+    { title: 'Booked to the leg', body: 'Fuel, catering, hangar and crew costs attach to the trip that incurred them.' },
+    { title: 'Card tagging prompted', body: 'A charge still needing its company card flagged is called out rather than left to accounting.' },
+    { title: 'Personal spend separated', body: 'Reimbursable personal-card spend is tracked apart from company card charges.' },
+    { title: 'Reports on the same screen', body: 'Crew can pull their own history without an export request.' },
+  ],
+});
+
+/* ═════════════ 13. Expense reconciliation ═════════════ */
+desktopPage({
   kicker: 'Accounting',
-  title: 'Invoices and receivables against live books',
-  subtitle: 'A/R aging, invoicing, payments and customers driven directly by the connected QuickBooks Online company.',
-  image: 'accounting-all.png',
+  title: 'Reconciled against the company file',
+  subtitle: 'Accounting sees the same charges rolled up by crew member and by QuickBooks account, with the connection to the production company file live and each category already mapped to an account.',
+  image: 'expense-summary.png',
+  imageH: 336,
   points: [
-    { title: 'Real A/R aging', body: 'Current through 90-plus days late, computed from the invoices actually in QuickBooks.' },
-    { title: 'Invoice and collect', body: 'Create an invoice from your products and services, email it through QuickBooks, and record the payment to a deposit account.' },
-    { title: 'Expenses that reconcile', body: 'Crew receipts match to posted company-card charges; personal spend becomes a reimbursable bill.' },
-    { title: 'No second ledger', body: 'Everything posts through the QuickBooks API to the live company file, with normal audit history.' },
+    { title: 'Connected, not exported', body: 'A live QuickBooks Online connection to the real company file, shown with who connected it.' },
+    { title: 'Mapped once', body: 'Expense categories map to accounts in the chart of accounts and hold for every posting.' },
+    { title: 'By crew or by account', body: 'The period totals both ways, which is what a close actually needs.' },
+    { title: 'Reimbursements as bills', body: 'Personal-card spend can be raised as reimbursement bills in one action.' },
   ],
 });
 
-/* ─────────── 9. Platform and security ─────────── */
-page();
-heading('Platform', 'Built for a company that has to prove things',
-  'Charter operations carry compliance and privacy obligations. The platform is designed around who may see what, and around leaving the record intact.');
+/* ═══════════════════ 12. Broker live link ═══════════════════ */
+desktopPage({
+  kicker: 'Broker sharing',
+  title: 'One link instead of a morning of phone calls',
+  subtitle: 'A read-only page the broker can watch: the aircraft moving on its track, the legs, and the milestones the crew is completing. No login, no access to anything else.',
+  image: 'broker.png',
+  layout: 'tall',
+  points: [
+    { title: 'Live, not a snapshot', body: 'The map, the progress and the milestones update as the crew and FlightAware report them.' },
+    { title: 'Only what they should see', body: 'Crew names without contact details, and passengers only when the trip is set to show them.' },
+    { title: 'Honest about what is not booked', body: 'Catering that was never ordered is simply absent rather than shown as outstanding.' },
+    { title: 'Expires on its own', body: 'The link stops working after the trip completes, and can be revoked at any time.' },
+    { title: 'Weather at both ends', body: 'Departure and arrival conditions with a flight category, so a delay explains itself.' },
+    { title: 'Works on their phone', body: 'The same page on a handset, which is where a broker usually opens it.' },
+  ],
+});
 
-const cards = [
-  ['Microsoft sign-in only', 'Access requires a company Microsoft account. A new identity gets no access until an administrator approves it.'],
-  ['Roles, not honour system', 'Crew, dispatch, maintenance, accounting and administrators each see their own scope, enforced on the server as well as the screen.'],
-  ['Passenger data handled carefully', 'Broker tracking links are token-gated and time-limited, and never expose passenger names, pricing or crew contact details.'],
-  ['Duty and rest on the record', 'Part 135 duty periods, rest, flight time and overrides are captured with an audit trail and exportable for the FAA.'],
-  ['Works on the ramp', 'Installs on an iPhone as an app, survives poor signal, and keeps working when a service it depends on is briefly unavailable.'],
-  ['Your systems stay yours', 'Mail and Teams remain in Microsoft 365 and the books remain in QuickBooks. Skyway connects to them; it does not replace them.'],
+/* ═══════════════════ 13. Company email ═══════════════════ */
+desktopPage({
+  kicker: 'Email',
+  title: 'Company mail where the trip is',
+  subtitle: 'Personal and shared mailboxes over Microsoft 365, signed in with the same Microsoft account. Trip correspondence stays with the trip rather than in one person\'s inbox.',
+  image: 'email-open.png',
+  imageH: 306,
+  points: [
+    { title: 'Personal and shared', body: 'A pilot\'s own mail and the shared operations inbox, side by side.' },
+    { title: 'Sign in with Microsoft', body: 'No mailbox credentials to distribute or maintain per user.' },
+    { title: 'Reply from the trip', body: 'Broker correspondence is answered in context, attachments included.' },
+    { title: 'Contacts autocomplete', body: 'Recipients resolve from the company directory as you type.' },
+  ],
+});
+
+/* ═══════════════════ 14. Microsoft Teams ═══════════════════ */
+desktopPage({
+  kicker: 'Teams',
+  title: 'Teams, without leaving the operation',
+  subtitle: 'Channels, chats and files rendered in the platform, so the conversation about a trip happens next to the trip instead of in another window.',
+  image: 'teams-channel.png',
+  imageH: 306,
+  points: [
+    { title: 'Real channels and chats', body: 'The company\'s existing Teams, with the same messages and threads.' },
+    { title: 'Files open in place', body: 'Documents shared in a channel open without switching applications.' },
+    { title: 'One identity', body: 'The same Microsoft sign-in that provides mail and directory access.' },
+    { title: 'Crew messaging too', body: 'Direct and group messaging inside the platform for crews who are not on Teams.' },
+  ],
+});
+
+/* ═══════════════════ 15. Accounting ═══════════════════ */
+desktopPage({
+  kicker: 'Accounting',
+  title: 'Invoices and receivables against QuickBooks',
+  subtitle: 'Connected directly to the production QuickBooks Online company file. Trips become invoices, payments and ageing are visible to operations without a second system.',
+  image: 'accounting-all.png',
+  imageH: 262,
+  points: [
+    { title: 'The real company file', body: 'A direct connection to QuickBooks Online — not an export, and not a sandbox.' },
+    { title: 'Trip to invoice', body: 'Completed trips carry their charges into an invoice with the customer already set.' },
+    { title: 'Receivables in view', body: 'Outstanding balances and ageing sit alongside the operation that created them.' },
+    { title: 'Accounts stay mapped', body: 'Expense categories map once to QuickBooks accounts and hold for every posting.' },
+  ],
+});
+
+/* ═══════════════════ 16. Closing ═══════════════════ */
+page();
+heading('In short', 'One platform instead of six',
+  'Most Part 135 operators run a scheduler, a tracking site, a duty spreadsheet, a shared mailbox, a chat tool and an accounting package that never speak to each other. This is those jobs on one record.');
+
+const replaces = [
+  ['Tracking site open all day', 'The whole fleet on the dashboard, airborne and on the ground'],
+  ['Duty times in a spreadsheet', 'A live 14-hour clock per crew, with an exportable compliance record'],
+  ['Status phoned in by the crew', 'One tap per milestone, timestamped and attributed'],
+  ['Brokers calling for updates', 'A live link that expires on its own'],
+  ['Receipts in an envelope', 'Expenses captured against the leg and posted to QuickBooks'],
+  ['Trip email in one inbox', 'Personal and shared Microsoft 365 mail beside the trip'],
 ];
 
-let cx = M;
-let cy = 132;
-const cardW = (W - M * 2 - 24) / 2;
-cards.forEach(([title, body], i) => {
-  doc.roundedRect(cx, cy, cardW, 96, 8).fill(INK.panel);
-  doc.rect(cx, cy, 3, 96).fill(INK.accent);
-  doc.font(BOLD).fontSize(11).fillColor(INK.text).text(title, cx + 18, cy + 18, { width: cardW - 34 });
-  doc.font(BODY).fontSize(9).fillColor(INK.muted).text(body, cx + 18, cy + 38, { width: cardW - 34, lineGap: 1.5 });
-  if (i % 2 === 0) {
-    cx += cardW + 24;
-  } else {
-    cx = M;
-    cy += 108;
-  }
-});
+let ry = 142;
+for (const [before, after] of replaces) {
+  doc.roundedRect(M, ry, W - M * 2, 44, 6).fill(INK.panel);
+  doc.font(BODY).fontSize(9).fillColor(INK.subtle)
+    .text(before, M + 16, ry + 16, { width: 268 });
+  // Drawn rather than set: an arrow glyph is outside the base font's encoding.
+  const ax = M + 296;
+  const ay = ry + 22;
+  doc.moveTo(ax, ay).lineTo(ax + 13, ay).lineWidth(1.1).strokeColor(INK.accent).stroke();
+  doc.moveTo(ax + 12, ay - 3.4).lineTo(ax + 18, ay).lineTo(ax + 12, ay + 3.4).fill(INK.accent);
+  doc.font(BOLD).fontSize(9.2).fillColor(INK.text)
+    .text(after, M + 322, ry + 16, { width: W - M * 2 - 340 });
+  ry += 52;
+}
 
-footer('Skyway Ops is an internal operations platform for Skyway Aviation personnel and its approved partners.');
-pageNumber(9);
-
-/* ───────────────────── 10. Close ───────────────────── */
-page();
-doc.rect(0, 0, 6, H).fill(INK.accent);
-logo(M, 84, 210);
-doc.font(BOLD).fontSize(26).fillColor(INK.text)
-  .text('One operation. One workspace.', M, 190, { width: 560 });
-doc.font(BODY).fontSize(11).fillColor(INK.muted).text(
-  'Every screen in this document is the working product, rendered from the shipping '
-  + 'application against a sample operating day. Aircraft registrations, crew names, '
-  + 'brokers, passengers and dollar figures are invented for illustration.',
-  M, 236, { width: 520, lineGap: 3 },
+doc.roundedRect(M, ry + 10, W - M * 2, 74, 8).fill(INK.panel);
+doc.rect(M, ry + 10, 3, 74).fill(INK.accent);
+doc.font(BOLD).fontSize(10.5).fillColor(INK.text)
+  .text('What it runs on', M + 20, ry + 24);
+doc.font(BODY).fontSize(8.8).fillColor(INK.muted).text(
+  'Firebase and Vercel, with Microsoft Entra single sign-on for mail, Teams and the '
+  + 'directory; FlightAware AeroAPI for positions; QuickBooks Online for accounting. '
+  + 'Installs to a phone home screen as a progressive web app, so there is no app store '
+  + 'release to wait on and no separate build to distribute to crews.',
+  M + 20, ry + 40, { width: W - M * 2 - 40, lineGap: 1.5 },
 );
 
-const closing = [
-  'Live fleet tracking with ground positions',
-  'Dispatch readiness and today\'s flight board',
-  'Part 135 duty, rest and flight-time records',
-  'Passenger manifests and ID check-in',
-  'Maintenance squawks, MEL and AOG recovery',
-  'Microsoft 365 email and Teams',
-  'QuickBooks invoicing and expense matching',
-  'Broker-facing live tracking links',
-];
-let ly = 320;
-closing.forEach((item, i) => {
-  const col = i % 2;
-  const x = M + col * 340;
-  if (col === 0 && i > 0) ly += 22;
-  doc.circle(x + 3, ly + 4.5, 2.5).fill(INK.accent);
-  doc.font(BODY).fontSize(9.5).fillColor(INK.text).text(item, x + 13, ly, { width: 310 });
-});
-
-doc.font(BODY).fontSize(9).fillColor(INK.subtle)
-  .text('Skyway Aviation · flyskyway.com · Private jet and helicopter charter services', M, H - 56);
+footer('Skyway Aviation · flyskyway.com · All aircraft, crew, brokers, passengers and figures shown in this booklet are fictitious.');
 
 doc.end();
-console.log(`wrote ${path.relative(root, outPath)}`);
+
+console.log(`Wrote ${path.relative(root, outPath)} (${pageNo} pages)`);
+if (missing.length) {
+  console.log('\nCaptures still pending (drawn as placeholders):');
+  for (const name of missing) console.log(`  ${name}`);
+}

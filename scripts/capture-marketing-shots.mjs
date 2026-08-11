@@ -109,7 +109,14 @@ const DESKTOP_SHOTS = [
       await cardShot(page, "Today's flight board", 'flight-board-card.png');
     },
   },
-  { name: 'dispatch.png', url: '?surface=dispatch', ready: 'Ops console' },
+  {
+    name: 'dispatch.png',
+    url: '?surface=dispatch',
+    ready: 'Ops console',
+    // Printed at page width, a 1600px capture reduces the card text past reading
+    // size. A narrower, shorter viewport shows fewer legs but keeps them legible.
+    viewport: { width: 1000, height: 520 },
+  },
   {
     name: 'duty-report.png',
     url: '?surface=dutyreport',
@@ -120,9 +127,28 @@ const DESKTOP_SHOTS = [
       await cardShot(page, 'Pilot summary', 'duty-report-table.png');
     },
   },
-  { name: 'broker.png', url: '?surface=broker', ready: 'N444AM', wait: 4200 },
+  {
+    name: 'broker.png',
+    url: '?surface=broker',
+    ready: 'N444AM',
+    wait: 4200,
+    // The broker page is a max-w-3xl column; a 1600px viewport surrounds it with
+    // empty margin that then dominates the page it is printed on.
+    viewport: { width: 820, height: 1180 },
+  },
   { name: 'flight-board-tv.png', url: '?surface=board', ready: 'FLIGHT BOARD', wait: 3200 },
-  { name: 'expenses.png', url: '?surface=expenses', ready: 'expense' },
+  {
+    name: 'expenses.png',
+    url: '?surface=expenses',
+    ready: 'By crew member',
+    viewport: { width: 1120, height: 1000 },
+    after: async (page) => {
+      // The per-crew and per-account breakdown is the part accounting reads, and
+      // it survives page width where the whole screen does not.
+      const grid = page.locator('div.grid').filter({ hasText: 'By crew member' }).first();
+      await grid.screenshot({ path: path.join(outDir, 'expense-summary.png') });
+    },
+  },
   {
     name: 'schedule.png',
     url: '?surface=app&role=admin',
@@ -130,6 +156,10 @@ const DESKTOP_SHOTS = [
     after: async (page) => {
       await tap(page, 'Flights');
       await settle(page, 2200);
+      // Without a trip selected the detail panel is an empty "select a trip"
+      // placeholder, which is most of the screen.
+      await tap(page, 'HYA').catch(() => {});
+      await settle(page, 2000);
     },
   },
 ];

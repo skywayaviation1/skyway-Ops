@@ -11,7 +11,9 @@
     "preview:surfaces": "vite --config vite.preview.config.js",
     "marketing:pdf": "node scripts/prepare-marketing-shots.mjs && node scripts/build-marketing-pdf.mjs",
     "test": "node --test tests/*.test.mjs",
-    "verify:sso": "node scripts/verify-microsoft-sso.mjs"
+    "verify:sso": "node scripts/verify-microsoft-sso.mjs",
+    "marketing:capture": "node scripts/capture-marketing-shots.mjs",
+    "preview:stubs": "node scripts/check-preview-stubs.mjs"
   },
   "dependencies": {
     "dompurify": "^3.4.13",
