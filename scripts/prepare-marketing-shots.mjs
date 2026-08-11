@@ -12,7 +12,10 @@ import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 
 const root = path.resolve(import.meta.dirname, '..');
-const outDir = path.join(root, 'marketing/shots');
+
+const TENANT = process.env.TENANT || 'skyway';
+
+const outDir = path.join(root, 'marketing/shots', TENANT);
 mkdirSync(outDir, { recursive: true });
 
 // Python + Pillow does the pixel work; it is already present in the image and
@@ -53,8 +56,7 @@ im.crop((0, top, w, bottom)).save(dst, 'PNG', optimize=True)
 print(f"  {dst.split('/')[-1]:26s} {w}x{bottom - top}  (trimmed top={top} bottom={h - bottom})")
 `;
 
-const raw = (name) => path.join(root, 'marketing/raw', name);
-const raw2 = (name) => path.join(root, 'marketing/raw2', name);
+const raw2 = (name) => path.join(root, 'marketing/raw2', TENANT, name);
 const out = (name) => path.join(outDir, name);
 
 /** Captures that only need chrome/dead-space trimming. */
@@ -64,9 +66,9 @@ const TRIM = [
   [raw2('schedule.png'), 'schedule.png'],
   [raw2('broker.png'), 'broker.png'],
   [raw2('flight-board-tv.png'), 'flight-board-tv.png'],
-  [raw('email-open.png'), 'email-open.png'],
-  [raw('teams-channel.png'), 'teams-channel.png'],
-  [raw('accounting-all.png'), 'accounting-all.png'],
+  [raw2('email-open.png'), 'email-open.png'],
+  [raw2('teams-channel.png'), 'teams-channel.png'],
+  [raw2('accounting-all.png'), 'accounting-all.png'],
 ];
 
 /** Phone captures: already exactly the device viewport. */
@@ -91,7 +93,7 @@ const CARDS = [
   'duty-report-table.png',
 ];
 
-console.log('Trimming captures:');
+console.log(`Preparing shots for tenant: ${TENANT}\n\nTrimming captures:`);
 for (const [src, name] of TRIM) {
   if (!existsSync(src)) {
     console.log(`  ${name.padEnd(26)} MISSING (${path.relative(root, src)})`);

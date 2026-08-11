@@ -1,7 +1,11 @@
-// Builds the Skyway Ops marketing booklet from the prepared preview captures.
+// Builds the marketing booklet from the prepared preview captures.
 //
 //   node scripts/prepare-marketing-shots.mjs   # trim/crop raw browser captures
-//   node scripts/build-marketing-pdf.mjs       # -> marketing/Skyway-Ops-Booklet.pdf
+//   node scripts/build-marketing-pdf.mjs       # -> marketing/<operator>.pdf
+//
+// TENANT selects the operator; the screenshots, accent, wordmark and copy all
+// follow it, so the same pipeline produces the operator's own booklet or a
+// branded preview for a prospect.
 //
 // Every screenshot is a real render of the shipping components (see
 // vite.preview.config.js), populated with a fictitious operating day rather than
@@ -16,8 +20,38 @@ import path from 'node:path';
 import PDFDocument from 'pdfkit';
 
 const root = path.resolve(import.meta.dirname, '..');
-const shots = path.join(root, 'marketing/shots');
-const outPath = path.join(root, 'marketing/Skyway-Ops-Booklet.pdf');
+
+// The booklet is produced per operator: the screenshots, the accent and the
+// wordmark all follow whichever tenant was captured.
+const TENANT = process.env.TENANT || 'skyway';
+
+const OPERATORS = {
+  skyway: {
+    name: 'Skyway Aviation',
+    file: 'Skyway-Ops-Booklet.pdf',
+    accent: '#3FA9CC',
+    logo: 'public/skyway-logo-reverse@2x.png',
+    logoWidth: 240,
+    site: 'flyskyway.com',
+    // Shown as the operator's own platform.
+    proposal: false,
+  },
+  elite: {
+    name: 'Elite Jets',
+    file: 'Elite-Jets-Operations-Preview.pdf',
+    accent: '#C9A24B',
+    logo: 'public/elite-logo-reverse@2x.png',
+    logoWidth: 250,
+    site: 'elitejets.com',
+    // Shown to a prospective operator as their own branded instance.
+    proposal: true,
+  },
+};
+
+const OP = OPERATORS[TENANT] || OPERATORS.skyway;
+
+const shots = path.join(root, 'marketing/shots', TENANT);
+const outPath = path.join(root, 'marketing', OP.file);
 mkdirSync(path.dirname(outPath), { recursive: true });
 
 const INK = {
@@ -27,7 +61,7 @@ const INK = {
   text: '#F7F8F9',
   muted: '#92969E',
   subtle: '#686D76',
-  accent: '#3FA9CC',
+  accent: OP.accent,
   success: '#4FA97B',
   warning: '#D6A445',
 };
@@ -44,9 +78,9 @@ const doc = new PDFDocument({
   layout: 'landscape',
   margin: 0,
   info: {
-    Title: 'Skyway Ops — Part 135 Charter Operations Platform',
-    Author: 'Skyway Aviation',
-    Subject: 'Product booklet',
+    Title: `${OP.name} — Part 135 Charter Operations Platform`,
+    Author: OP.name,
+    Subject: OP.proposal ? 'Branded platform preview' : 'Product booklet',
   },
 });
 doc.pipe(createWriteStream(outPath));
@@ -277,8 +311,8 @@ function splitPage({ kicker, title, subtitle, phone: phoneItem, desktop, points,
 page({ first: true });
 doc.rect(0, 0, 6, H).fill(INK.accent);
 
-const logoFile = path.join(root, 'public/skyway-logo-reverse.png');
-if (existsSync(logoFile)) doc.image(logoFile, M, 88, { width: 240 });
+const logoFile = path.join(root, OP.logo);
+if (existsSync(logoFile)) doc.image(logoFile, M, 88, { width: OP.logoWidth });
 
 doc.font(BOLD).fontSize(33).fillColor(INK.text)
   .text('Run the whole operation', M, 202, { width: 540 });
@@ -286,10 +320,16 @@ doc.font(BOLD).fontSize(33).fillColor(INK.accent)
   .text('from one record.', M, 239, { width: 540 });
 
 doc.font(BODY).fontSize(11.5).fillColor(INK.muted).text(
-  'Skyway Ops is a Part 135 charter operations platform built around a single '
-  + 'operating day. Dispatch, pilots, maintenance, brokers and accounting all work '
-  + 'from the same trip record — live fleet tracking, crew duty and rest, passenger '
-  + 'manifests, expenses, company email and Microsoft Teams, and QuickBooks.',
+  OP.proposal
+    ? `A Part 135 charter operations platform, shown here running as ${OP.name}. `
+      + 'Dispatch, pilots, maintenance, brokers and accounting all work from the same '
+      + 'trip record — live fleet tracking, crew duty and rest, passenger manifests, '
+      + 'expenses, company email and Microsoft Teams, and QuickBooks. Every screen in '
+      + 'this document is the real product, carrying your name and your colours.'
+    : `${OP.name} runs a Part 135 charter operations platform built around a single `
+      + 'operating day. Dispatch, pilots, maintenance, brokers and accounting all work '
+      + 'from the same trip record — live fleet tracking, crew duty and rest, passenger '
+      + 'manifests, expenses, company email and Microsoft Teams, and QuickBooks.',
   M, 294, { width: 505, lineGap: 3.5 },
 );
 
@@ -310,7 +350,12 @@ for (const [big, small] of coverStats) {
 phone(shot('phone-pilot-home.png'), { x: 566, y: 96, h: 424 });
 
 doc.font(BODY).fontSize(8).fillColor(INK.subtle)
-  .text('Product booklet · Skyway Aviation · flyskyway.com', M, H - 50);
+  .text(
+    OP.proposal
+      ? `Platform preview configured for ${OP.name} · ${OP.site}`
+      : `Product booklet · ${OP.name} · ${OP.site}`,
+    M, H - 50,
+  );
 
 /* ══════════════════════ 2. How it works ══════════════════════ */
 page();
@@ -630,11 +675,11 @@ doc.font(BODY).fontSize(8.8).fillColor(INK.muted).text(
   M + 20, ry + 40, { width: W - M * 2 - 40, lineGap: 1.5 },
 );
 
-footer('Skyway Aviation · flyskyway.com · All aircraft, crew, brokers, passengers and figures shown in this booklet are fictitious.');
+footer(`${OP.name} · ${OP.site} · All aircraft, crew, brokers, passengers and figures shown in this booklet are fictitious sample data.`);
 
 doc.end();
 
-console.log(`Wrote ${path.relative(root, outPath)} (${pageNo} pages)`);
+console.log(`Wrote ${path.relative(root, outPath)} for ${OP.name} (${pageNo} pages)`);
 if (missing.length) {
   console.log('\nCaptures still pending (drawn as placeholders):');
   for (const name of missing) console.log(`  ${name}`);

@@ -13,7 +13,8 @@
     "test": "node --test tests/*.test.mjs",
     "verify:sso": "node scripts/verify-microsoft-sso.mjs",
     "marketing:capture": "node scripts/capture-marketing-shots.mjs",
-    "preview:stubs": "node scripts/check-preview-stubs.mjs"
+    "preview:stubs": "node scripts/check-preview-stubs.mjs",
+    "logo:elite": "node scripts/build-elite-logo.mjs"
   },
   "dependencies": {
     "dompurify": "^3.4.13",
