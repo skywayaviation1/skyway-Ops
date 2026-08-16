@@ -12,6 +12,8 @@ const CharterInboxLazy = lazy(() => import('./CharterInbox.jsx'));
 const UserMailboxLazy = lazy(() => import('./UserMailbox.jsx'));
 const TeamsHubLazy = lazy(() => import('./TeamsHub.jsx'));
 const MailboxSettingsPanelLazy = lazy(() => import('./MailboxSettingsPanel.jsx'));
+const ForeFlightPlanLazy = lazy(() => import('./ForeFlightPlan.jsx'));
+const ForeFlightSettingsPanelLazy = lazy(() => import('./ForeFlightSettingsPanel.jsx'));
 const TripEmailPanelLazy = lazy(() =>
   import('./CharterInbox.jsx').then((module) => ({ default: module.TripEmailPanel }))
 );
@@ -5188,347 +5190,8 @@ function QuickActionButton({ icon: Icon, label, onClick }) {
 }
 
 /* ============================================================
-   ForeFlight handoff — pre-fill ForeFlight Mobile with trip data
-   so pilots can review and file from the certified app they use.
-   We never touch the FAA filing system directly.
+   Flight Plan tab lives in ForeFlightPlan.jsx (Dispatch API + deep links).
    ============================================================ */
-
-// Default cruise performance per aircraft type (rough)
-const _aircraftDefaults = {
-  // Citation-style jets — Skyway's fleet
-  'C25B': { cruiseKts: 380, burnGph: 180, cruiseFt: 39000 }, // CJ3
-  'C25A': { cruiseKts: 360, burnGph: 165, cruiseFt: 39000 }, // CJ2
-  'C25':  { cruiseKts: 340, burnGph: 150, cruiseFt: 39000 }, // CJ1
-  'C56X': { cruiseKts: 400, burnGph: 230, cruiseFt: 45000 }, // Excel
-  'C680': { cruiseKts: 430, burnGph: 280, cruiseFt: 45000 }, // Sovereign
-  // Helicopter
-  'AS50': { cruiseKts: 130, burnGph: 55,  cruiseFt: 5000 },
-  'EC30': { cruiseKts: 135, burnGph: 60,  cruiseFt: 5000 },
-};
-
-function getAircraftDefaults(aircraftType) {
-  if (!aircraftType) return { cruiseKts: 380, burnGph: 180, cruiseFt: 39000 };
-  const key = String(aircraftType).toUpperCase().replace(/[\s\-]/g, '');
-  // Try exact match first, then prefix
-  if (_aircraftDefaults[key]) return _aircraftDefaults[key];
-  for (const k of Object.keys(_aircraftDefaults)) {
-    if (key.startsWith(k)) return _aircraftDefaults[k];
-  }
-  return { cruiseKts: 380, burnGph: 180, cruiseFt: 39000 };
-}
-
-/**
- * Normalize an airport code to ICAO format that ForeFlight expects.
- * 3-letter US airports get a "K" prefix (APF → KAPF). Already-prefixed
- * codes and non-US codes pass through unchanged.
- */
-function normalizeIcao(code) {
-  if (!code) return '';
-  const c = String(code).toUpperCase().trim();
-  // Already 4-letter ICAO — pass through (KAPF, MYNN, EGLL, etc)
-  if (/^[A-Z0-9]{4}$/.test(c)) return c;
-  // 3-letter US airport — add K prefix (APF → KAPF)
-  if (/^[A-Z]{3}$/.test(c)) return 'K' + c;
-  return c;
-}
-
-/**
- * Build a ForeFlight Mobile URL that opens the route on the Maps view
- * with speed, fuel burn, altitude, tail, and ETD pre-populated.
- *
- * Format (from foreflight.com/support/app-urls):
- *   foreflightmobile://maps/search?q=KAPF+KGON+380kts+180gph+39000ft+N444AM
- *
- * Notes:
- * - 3-letter codes (APF, GON) are auto-prefixed to ICAO (KAPF, KGON) for US airports
- * - ETD is skipped if it's in the past (ForeFlight rejects stale departure times)
- * - The "+" between parts is a space-separator per ForeFlight's URL spec
- */
-function buildForeFlightUrl({ from, to, cruiseKts, burnGph, cruiseFt, tail, etdIso }) {
-  const fromIcao = normalizeIcao(from);
-  const toIcao = normalizeIcao(to);
-  if (!fromIcao || !toIcao) return null;
-  const parts = [fromIcao, toIcao];
-  if (cruiseKts) parts.push(`${cruiseKts}kts`);
-  if (burnGph) parts.push(`${burnGph}gph`);
-  if (cruiseFt) parts.push(`${cruiseFt}ft`);
-  if (tail) parts.push(String(tail).toUpperCase());
-  if (etdIso) {
-    // ForeFlight expects YYYYMMDDTHH:MM:SSZ format. Skip if departure is in the past.
-    try {
-      const d = new Date(etdIso);
-      if (d.getTime() > Date.now()) {
-        const yyyy = d.getUTCFullYear();
-        const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-        const dd = String(d.getUTCDate()).padStart(2, '0');
-        const hh = String(d.getUTCHours()).padStart(2, '0');
-        const mi = String(d.getUTCMinutes()).padStart(2, '0');
-        const ss = String(d.getUTCSeconds()).padStart(2, '0');
-        parts.push(`${yyyy}${mm}${dd}T${hh}:${mi}:${ss}Z`);
-      }
-    } catch (_) { /* skip ETD */ }
-  }
-  // Join with '+' which ForeFlight parses as space-separator. Do NOT
-  // URL-encode the entire query string — the '+' chars are meant to be literal.
-  return `foreflightmobile://maps/search?q=${parts.join('+')}`;
-}
-
-/**
- * Detect whether the user is on iOS (where ForeFlight Mobile lives).
- * On non-iOS, the deep link won't do anything useful.
- */
-function isIosDevice() {
-  if (typeof navigator === 'undefined') return false;
-  const ua = navigator.userAgent || '';
-  return /iPad|iPhone|iPod/.test(ua)
-    || (ua.includes('Mac') && navigator.maxTouchPoints > 1); // iPadOS 13+
-}
-
-function ForeFlightHandoff({ trip, currentUser }) {
-  const from = trip?.info?.from || '';
-  const to = trip?.info?.to || '';
-  const tail = trip?.info?.tail || '';
-  const aircraftType = trip?.info?.aircraftType || trip?.info?.acType || '';
-  const etdIso = trip?.start || '';
-
-  const acDefaults = getAircraftDefaults(aircraftType);
-
-  // Editable plan fields. Default from aircraft type, but pilot can override.
-  const [cruiseKts, setCruiseKts] = useState(acDefaults.cruiseKts);
-  const [burnGph, setBurnGph] = useState(acDefaults.burnGph);
-  const [cruiseFt, setCruiseFt] = useState(acDefaults.cruiseFt);
-  const [alternate, setAlternate] = useState('');
-  const [routeNotes, setRouteNotes] = useState('');
-
-  const url = buildForeFlightUrl({
-    from, to,
-    cruiseKts: cruiseKts || acDefaults.cruiseKts,
-    burnGph: burnGph || acDefaults.burnGph,
-    cruiseFt: cruiseFt || acDefaults.cruiseFt,
-    tail,
-    etdIso,
-  });
-
-  // Fallback URL with just the route — minimal version that's more likely to
-  // work if the full URL with all parameters has issues.
-  const minimalUrl = buildForeFlightUrl({
-    from, to,
-  });
-
-  // Show the normalized ICAO codes so the user can see what's being sent
-  const fromIcao = normalizeIcao(from);
-  const toIcao = normalizeIcao(to);
-  const codesNormalized = (fromIcao !== from?.toUpperCase()) || (toIcao !== to?.toUpperCase());
-
-  // Plain-text summary that the pilot can copy and paste into 1800wxbrief etc.
-  // Uses ICAO order: from/to/alt at top, then route, then remarks
-  const ttSummary = [
-    `AIRCRAFT: ${tail || '—'} ${aircraftType ? `(${aircraftType})` : ''}`,
-    `ROUTE: ${from || '—'} → ${to || '—'}${alternate ? `  ALT: ${alternate}` : ''}`,
-    `CRUISE: ${cruiseFt}ft @ ${cruiseKts}kts, ${burnGph}gph`,
-    etdIso ? `ETD (Z): ${new Date(etdIso).toISOString().replace(/\.\d+Z$/, 'Z')}` : null,
-    trip?.info?.pic ? `PIC: ${trip.info.pic}` : null,
-    trip?.info?.sic ? `SIC: ${trip.info.sic}` : null,
-    `SOULS ON BOARD: ${(trip?.info?.pax || 0) + (trip?.info?.pic ? 1 : 0) + (trip?.info?.sic ? 1 : 0)}`,
-    routeNotes ? `NOTES: ${routeNotes}` : null,
-  ].filter(Boolean).join('\n');
-
-  const [copied, setCopied] = useState(false);
-  function copySummary() {
-    if (!navigator.clipboard) return;
-    navigator.clipboard.writeText(ttSummary).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }).catch(() => {});
-  }
-
-  const onIos = isIosDevice();
-
-  return (
-    <div className="p-4 max-w-3xl space-y-4">
-      {/* Disclaimer */}
-      <div className="border border-amber-500/30 bg-amber-500/5 px-3 py-2 flex items-start gap-2">
-        <AlertCircle className="w-3.5 h-3.5 text-amber-400 mt-0.5 shrink-0" />
-        <div className="text-[11px] text-amber-200/80" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-          <strong className="text-amber-300">Pilot files the actual plan.</strong> This page pre-fills ForeFlight with trip data so you can review the route and file from inside ForeFlight. Skyway Ops does not file directly with the FAA.
-        </div>
-      </div>
-
-      {/* Trip summary card */}
-      <div className="border border-slate-800 bg-slate-900/40 p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>TRIP</span>
-          <span className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{tail || '—'}</span>
-        </div>
-        <div className="flex items-center gap-3 text-lg" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-          <span className="text-slate-100">{from || '—'}</span>
-          <ArrowRight className="w-4 h-4 text-cyan-400" />
-          <span className="text-slate-100">{to || '—'}</span>
-        </div>
-        {etdIso && (
-          <div className="text-[11px] text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            ETD: {new Date(etdIso).toISOString().replace(/\.\d+Z$/, 'Z')}
-          </div>
-        )}
-      </div>
-
-      {/* Editable performance fields */}
-      <div className="border border-slate-800 bg-slate-900/40 p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>PERFORMANCE</span>
-          {aircraftType && (
-            <span className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{aircraftType} defaults</span>
-          )}
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <PlanField label="CRUISE ALT (ft)" value={cruiseFt} onChange={setCruiseFt} type="number" />
-          <PlanField label="CRUISE SPEED (kts)" value={cruiseKts} onChange={setCruiseKts} type="number" />
-          <PlanField label="FUEL BURN (gph)" value={burnGph} onChange={setBurnGph} type="number" />
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <PlanField label="ALTERNATE (optional)" value={alternate} onChange={setAlternate} placeholder="e.g. KJAX" />
-          <PlanField label="ROUTE NOTES (optional)" value={routeNotes} onChange={setRouteNotes} placeholder="e.g. DCT WAYPT DCT" />
-        </div>
-      </div>
-
-      {/* Primary action: open in ForeFlight */}
-      <div className="border border-cyan-500/30 bg-cyan-500/5 p-4 space-y-3">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <div className="text-[10px] tracking-widest text-cyan-400 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>OPEN IN FOREFLIGHT</div>
-            <div className="text-[11px] text-slate-400" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-              Loads the route on the ForeFlight Maps view with speed, fuel, altitude, tail and ETD pre-populated. From there, send to Flights to file.
-            </div>
-          </div>
-        </div>
-        {codesNormalized && (
-          <div className="text-[10px] text-cyan-300/80 bg-cyan-500/5 border border-cyan-500/20 px-2 py-1.5"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            Codes normalized: {from} → <strong>{fromIcao}</strong>, {to} → <strong>{toIcao}</strong>
-          </div>
-        )}
-        {!onIos && (
-          <div className="text-[10px] text-amber-300/80" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            ⚠ This link only works on iOS devices with ForeFlight installed.
-          </div>
-        )}
-        <a
-          href={url || '#'}
-          className={`block w-full text-center py-3 text-sm tracking-widest border transition-colors ${
-            url
-              ? 'bg-cyan-500/10 border-cyan-400 text-cyan-300 hover:bg-cyan-500/20'
-              : 'bg-slate-900 border-slate-800 text-slate-600 cursor-not-allowed pointer-events-none'
-          }`}
-          style={{ fontFamily: 'JetBrains Mono, monospace' }}
-        >
-          OPEN IN FOREFLIGHT →
-        </a>
-        {/* Fallback: minimal URL — try if the full one doesn't load the route */}
-        {minimalUrl && url && minimalUrl !== url && (
-          <details className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            <summary className="cursor-pointer hover:text-slate-300">Route not loading? Try minimal URL</summary>
-            <div className="mt-2 space-y-2">
-              <div className="text-slate-400 text-[10px]">
-                This URL has just the airports — no aircraft data or ETD. Useful if ForeFlight is rejecting the full URL.
-              </div>
-              <a
-                href={minimalUrl}
-                className="block w-full text-center py-2 text-xs tracking-widest border border-slate-700 text-slate-300 hover:bg-slate-800/50"
-                style={{ fontFamily: 'JetBrains Mono, monospace' }}
-              >
-                OPEN ROUTE ONLY →
-              </a>
-              <div className="p-2 bg-slate-950 border border-slate-800 break-all text-slate-500">{minimalUrl}</div>
-            </div>
-          </details>
-        )}
-        {url && (
-          <details className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            <summary className="cursor-pointer hover:text-slate-300">Show full URL</summary>
-            <div className="mt-2 p-2 bg-slate-950 border border-slate-800 break-all">{url}</div>
-          </details>
-        )}
-      </div>
-
-      {/* In-ForeFlight instructions */}
-      <div className="border border-slate-800 bg-slate-900/40 p-4">
-        <div className="flex items-center gap-2 mb-3">
-          <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>NEXT STEPS IN FOREFLIGHT</span>
-        </div>
-        <ol className="space-y-2.5">
-          <li className="flex gap-3 items-start">
-            <span className="shrink-0 inline-flex items-center justify-center w-5 h-5 bg-cyan-500/10 border border-cyan-500/40 text-cyan-300 text-[10px]"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}>1</span>
-            <div className="text-[11px] text-slate-300" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-              Tap <strong className="text-cyan-300">OPEN IN FOREFLIGHT</strong> above. The Maps view will load with your route.
-            </div>
-          </li>
-          <li className="flex gap-3 items-start">
-            <span className="shrink-0 inline-flex items-center justify-center w-5 h-5 bg-cyan-500/10 border border-cyan-500/40 text-cyan-300 text-[10px]"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}>2</span>
-            <div className="text-[11px] text-slate-300" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-              In ForeFlight, tap the <strong className="text-cyan-300">Send To</strong> button (square with up-arrow, bottom-left of the Route Editor).
-            </div>
-          </li>
-          <li className="flex gap-3 items-start">
-            <span className="shrink-0 inline-flex items-center justify-center w-5 h-5 bg-cyan-500/10 border border-cyan-500/40 text-cyan-300 text-[10px]"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}>3</span>
-            <div className="text-[11px] text-slate-300" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-              Select <strong className="text-cyan-300">Flights</strong>. ForeFlight creates a new flight plan record pre-filled with the route, aircraft, and performance.
-            </div>
-          </li>
-          <li className="flex gap-3 items-start">
-            <span className="shrink-0 inline-flex items-center justify-center w-5 h-5 bg-cyan-500/10 border border-cyan-500/40 text-cyan-300 text-[10px]"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}>4</span>
-            <div className="text-[11px] text-slate-300" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-              Complete any remaining required fields (alternate, fuel on board, souls, ICAO equipment), then tap <strong className="text-cyan-300">Proceed to File</strong>.
-            </div>
-          </li>
-        </ol>
-        <div className="mt-3 pt-3 border-t border-slate-800 text-[10px] text-slate-500" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-          Aircraft profile, ICAO equipment codes, and crew contact info come from your personal ForeFlight setup. If a tail isn't recognized, add it as an Aircraft Profile in ForeFlight first.
-        </div>
-      </div>
-
-      {/* Plain-text summary for 1800wxbrief / radio call / etc */}
-      <div className="border border-slate-800 bg-slate-900/40 p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>FLIGHT PLAN SUMMARY</span>
-          <button
-            onClick={copySummary}
-            className="text-[10px] tracking-widest text-cyan-400 hover:text-cyan-300 transition-colors"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}
-          >
-            {copied ? '✓ COPIED' : 'COPY'}
-          </button>
-        </div>
-        <pre className="text-[11px] text-slate-300 leading-relaxed whitespace-pre-wrap bg-slate-950 border border-slate-800 p-3"
-          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-{ttSummary}
-        </pre>
-        <div className="text-[10px] text-slate-500" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-          Use this for radio briefings, 1800wxbrief.com manual entry, or pasting into other dispatch tools.
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function PlanField({ label, value, onChange, type = 'text', placeholder }) {
-  return (
-    <label className="block">
-      <span className="block text-[10px] tracking-widest text-slate-500 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{label}</span>
-      <input
-        type={type}
-        value={value}
-        onChange={(e) => onChange(type === 'number' ? Number(e.target.value) || 0 : e.target.value)}
-        placeholder={placeholder}
-        className="w-full px-2 py-1.5 bg-slate-950 border border-slate-800 text-slate-200 text-sm focus:outline-none focus:border-cyan-500/50"
-        style={{ fontFamily: 'JetBrains Mono, monospace' }}
-      />
-    </label>
-  );
-}
 
 /* ============================================================
    Trip detail view
@@ -7599,7 +7262,9 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
         ) : tab === 'weather' ? (
           <TripWeatherSection trip={trip} />
         ) : tab === 'plan' ? (
-          <ForeFlightHandoff trip={trip} currentUser={currentUser} />
+          <Suspense fallback={<div className="p-8 text-center text-slate-500"><Loader2 className="w-5 h-5 animate-spin inline-block mr-2" />Loading flight plan...</div>}>
+            <ForeFlightPlanLazy trip={trip} currentUser={currentUser} users={users} />
+          </Suspense>
         ) : tab === 'lodging' ? (
           <Suspense fallback={<div className="p-8 text-center text-slate-500"><Loader2 className="w-5 h-5 animate-spin inline-block mr-2" />Loading lodging...</div>}>
             <LodgingLazy trip={trip} currentUser={currentUser} users={users} />
@@ -16061,6 +15726,10 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
           </section>
 
           <FlightAwarePanel currentUser={currentUser} allTrips={allTrips} />
+
+          <Suspense fallback={<div className="text-xs text-slate-500 py-2">Loading ForeFlight settings…</div>}>
+            <ForeFlightSettingsPanelLazy currentUser={currentUser} />
+          </Suspense>
 
           <QuickBooksConnectionPanel currentUser={currentUser} />
 
