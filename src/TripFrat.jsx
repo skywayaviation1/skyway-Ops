@@ -5,12 +5,13 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  AlertTriangle, CheckCircle2, Loader2, RefreshCw, Shield,
+  AlertTriangle, CheckCircle2, Loader2, RefreshCw, Settings2, Shield,
 } from 'lucide-react';
 import {
   FRAT_CHECKLIST,
   computeFrat,
   fratSummary,
+  normalizeFratConfig,
 } from './frat.js';
 import { computeOutstanding } from './ops-readiness.js';
 import { resolvePilot } from './duty-pairing.js';
@@ -18,7 +19,8 @@ import { evaluateCurrent } from './duty-legality.js';
 import { deriveAircraftStatus, subscribeMel, subscribeSquawks } from './firebase-maint.js';
 import { rollupPilotStatus } from './firebase-currency.js';
 import { subscribePeriodsForPilot } from './firebase-duty-v2.js';
-import { saveTripState } from './firebase-data.js';
+import { saveTripState, subscribeFratConfig } from './firebase-data.js';
+import FratSettingsPanel from './FratSettingsPanel.jsx';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from './firebase.js';
 
@@ -158,10 +160,17 @@ export default function TripFrat({
   const [sicCurrency, setSicCurrency] = useState(null);
   const [checklist, setChecklist] = useState(() => tripState?.frat?.checklist || {});
   const [saved, setSaved] = useState(tripState?.frat || null);
+  const [fratConfig, setFratConfig] = useState(() => normalizeFratConfig(null));
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [info, setInfo] = useState(null);
+
+  useEffect(() => {
+    const unsub = subscribeFratConfig((data) => setFratConfig(normalizeFratConfig(data)));
+    return () => unsub?.();
+  }, []);
 
   const picResolved = useMemo(
     () => resolvePilot(trip?.info?.pic, users),
@@ -271,6 +280,7 @@ export default function TripFrat({
 
   const result = useMemo(() => computeFrat({
     trip: { ...trip, sameDayLegCount },
+    config: fratConfig,
     tripState,
     originWx,
     destWx,
@@ -293,7 +303,7 @@ export default function TripFrat({
       currency: rollupPilotStatus(sicCurrency),
     },
   }), [
-    trip, sameDayLegCount, tripState, originWx, destWx, originNotams, destNotams,
+    trip, sameDayLegCount, fratConfig, tripState, originWx, destWx, originNotams, destNotams,
     aircraftStatus, squawkSummary, outstanding, checklist,
     picUid, sicUid, picLegality, sicLegality, picCurrency, sicCurrency,
   ]);
@@ -316,6 +326,8 @@ export default function TripFrat({
       const summary = {
         ...fratSummary(result),
         checklist: { ...checklist },
+        configVersion: fratConfig.version || null,
+        configUpdatedAt: fratConfig.updatedAt || null,
         signedAt: Date.now(),
         signedByUid: currentUser?.uid || null,
         signedByName: currentUser?.name || currentUser?.email || 'Crew',
@@ -364,6 +376,29 @@ export default function TripFrat({
           <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
         </button>
       </div>
+
+      <div className="flex flex-wrap items-center gap-3 text-[10px]" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        <span className="text-slate-500">
+          BANDS · LOW ≤{fratConfig.levels.low} · MOD ≤{fratConfig.levels.moderate} · HIGH ≤{fratConfig.levels.high}
+        </span>
+        {currentUser?.role === 'admin' && (
+          <button
+            type="button"
+            onClick={() => setSettingsOpen(true)}
+            className="inline-flex items-center gap-1.5 text-cyan-400 hover:text-cyan-300"
+          >
+            <Settings2 className="w-3 h-3" /> ADJUST SCORING
+          </button>
+        )}
+      </div>
+
+      {settingsOpen && (
+        <FratSettingsPanel
+          currentUser={currentUser}
+          asModal
+          onClose={() => setSettingsOpen(false)}
+        />
+      )}
 
       {error && (
         <div className="p-2 border border-red-500/40 bg-red-500/5 text-xs text-red-300">{error}</div>
@@ -439,8 +474,9 @@ export default function TripFrat({
             <div className="text-[10px] tracking-widest text-cyan-400/80" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
               {group}
             </div>
-            {FRAT_CHECKLIST.filter((i) => i.group === group).map((item) => {
+            {FRAT_CHECKLIST.filter((i) => i.group === group).filter((i) => fratConfig.checklist[i.id]?.enabled).map((item) => {
               const value = checklist[item.id];
+              const itemCfg = fratConfig.checklist[item.id];
               const yesLabel = item.invert ? 'DONE' : 'YES';
               const noLabel = item.invert ? 'NOT YET' : 'NO';
               const yesIsAdverse = !item.invert;
@@ -448,6 +484,9 @@ export default function TripFrat({
                 <div key={item.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border border-slate-800/80 px-3 py-2">
                   <div className="text-[11px] text-slate-200" style={{ fontFamily: 'DM Sans, sans-serif' }}>
                     {item.label}
+                    <span className="ml-1.5 text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                      +{itemCfg.points}{itemCfg.blocks ? ' · BLOCKS' : ''}{itemCfg.required ? '' : ' · optional'}
+                    </span>
                   </div>
                   <div className="flex gap-2">
                     <button

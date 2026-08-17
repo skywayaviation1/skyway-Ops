@@ -13,6 +13,7 @@ const UserMailboxLazy = lazy(() => import('./UserMailbox.jsx'));
 const TeamsHubLazy = lazy(() => import('./TeamsHub.jsx'));
 const MailboxSettingsPanelLazy = lazy(() => import('./MailboxSettingsPanel.jsx'));
 const TripFratLazy = lazy(() => import('./TripFrat.jsx'));
+const FratSettingsPanelLazy = lazy(() => import('./FratSettingsPanel.jsx'));
 const TripEmailPanelLazy = lazy(() =>
   import('./CharterInbox.jsx').then((module) => ({ default: module.TripEmailPanel }))
 );
@@ -16112,6 +16113,10 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
           </section>
 
           <FlightAwarePanel currentUser={currentUser} allTrips={allTrips} />
+
+          <Suspense fallback={<div className="text-xs text-slate-500 py-2">Loading FRAT scoring…</div>}>
+            <FratSettingsPanelLazy currentUser={currentUser} />
+          </Suspense>
 
           <QuickBooksConnectionPanel currentUser={currentUser} />
 
