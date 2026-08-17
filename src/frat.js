@@ -304,7 +304,7 @@ function scoreCrewMember(factors, role, crew) {
       category: 'Crew',
       label: `${role} duty status illegal`,
       points: 30,
-      detail: (legality.blockers || []).map((b) => b.label || b.code || b).slice(0, 2).join('; ') || null,
+      detail: (legality.blockers || []).map((b) => b.message || b.label || b.code || b).slice(0, 2).join('; ') || null,
       severity: 'critical',
       blocker: true,
     });
@@ -314,7 +314,7 @@ function scoreCrewMember(factors, role, crew) {
       category: 'Crew',
       label: `${role} duty caution`,
       points: 10,
-      detail: (legality.warnings || []).map((w) => w.label || w.code || w).slice(0, 2).join('; ') || null,
+      detail: (legality.warnings || []).map((w) => w.message || w.label || w.code || w).slice(0, 2).join('; ') || null,
       severity: 'warn',
     });
   }
