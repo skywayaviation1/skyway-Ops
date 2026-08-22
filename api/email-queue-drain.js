@@ -38,6 +38,7 @@
 
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
+import { isPermanentSendFailure, STALE_SENDING_MS } from './_email-delivery.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -67,8 +68,65 @@ const ADMIN_ALERT_EMAILS = (process.env.OPS_ALERT_EMAILS || '')
   .split(',').map(s => s.trim()).filter(Boolean);
 
 const MAX_ATTEMPTS_DEFAULT = 5;
-const BATCH_SIZE = 25;                    // max items per cron run
+const BATCH_SIZE = 25;                    // max items delivered per cron run
+const PAGE_SIZE = 100;                    // Firestore reads per page while scanning
+const MAX_PAGES = 20;                     // scan cap: 2000 queue rows per tick
 const BACKOFF_SECONDS = [10, 30, 120, 600, 1800];  // 10s, 30s, 2min, 10min, 30min
+
+/**
+ * Page through queue rows awaiting delivery and return the ones that are due.
+ *
+ * Ordering is by document name, which is also roughly chronological because
+ * queue IDs are `q_<base36 timestamp>_<random>`. That keeps the oldest mail
+ * first without needing a composite index on (status, nextAttemptAt).
+ *
+ * `sending` is included because that flag is an optimistic lock: if a previous
+ * run was cut short after taking the lock but before recording the outcome, the
+ * row would otherwise sit in `sending` forever and never be retried.
+ */
+async function collectDueItems(db, now) {
+  const due = [];
+  let scanned = 0;
+  let backlog = 0;
+  let reclaimed = 0;
+  let cursor = null;
+
+  for (let page = 0; page < MAX_PAGES; page += 1) {
+    let query = db.collection('email-queue')
+      .where('status', 'in', ['pending', 'failed', 'sending'])
+      .orderBy('__name__')
+      .limit(PAGE_SIZE);
+    if (cursor) query = query.startAfter(cursor);
+
+    const snap = await query.get();
+    if (snap.empty) break;
+
+    for (const doc of snap.docs) {
+      scanned += 1;
+      const data = doc.data();
+
+      if (data.status === 'sending') {
+        const startedAt = data.lastAttemptAt || 0;
+        if (now - startedAt < STALE_SENDING_MS) {
+          backlog += 1;              // another run holds the lock right now
+          continue;
+        }
+        reclaimed += 1;              // abandoned lock — take it over
+      } else if ((data.nextAttemptAt || 0) > now) {
+        backlog += 1;                // still waiting on backoff
+        continue;
+      }
+
+      if (due.length < BATCH_SIZE) due.push(doc);
+    }
+
+    cursor = snap.docs[snap.docs.length - 1];
+    if (snap.size < PAGE_SIZE) break;      // reached the end of the queue
+    if (due.length >= BATCH_SIZE) break;   // enough work for this tick
+  }
+
+  return { due, scanned, backlog, reclaimed };
+}
 
 // Send via Resend. Returns { ok, id?, error? }.
 async function sendViaResend({ to, cc, subject, html, from }) {
@@ -131,32 +189,21 @@ export default async function handler(req, res) {
     const db = getDb();
     const now = Date.now();
 
-    // Simple query — avoid composite index requirement.
-    // Get pending + failed items, filter nextAttemptAt in memory.
-    // For our scale (< few hundred queue items) this is totally fine.
-    const pendingSnap = await db.collection('email-queue')
-      .where('status', 'in', ['pending', 'failed'])
-      .limit(100)
-      .get();
+    // Collect items whose retry time has arrived.
+    //
+    // This pages through the queue instead of reading a single fixed slice.
+    // A single `.limit(100)` with no ordering returns the 100 lowest document
+    // IDs, which are the oldest entries. Once that many not-yet-due failures
+    // sat at the head of the queue, every newer email became invisible to this
+    // cron and never went out. Paging keeps scanning until enough due items are
+    // found, so a backlog can no longer starve new mail.
+    const { due, scanned, backlog, reclaimed } = await collectDueItems(db, now);
 
-    console.log('[email-queue-drain] tick: found', pendingSnap.size, 'pending/failed items');
-
-    if (pendingSnap.empty) {
-      res.status(200).json({ ok: true, processed: 0 });
-      return;
-    }
-
-    // In-memory filter for items whose nextAttemptAt has arrived
-    const due = pendingSnap.docs.filter(doc => {
-      const d = doc.data();
-      const next = d.nextAttemptAt || 0;
-      return next <= now;
-    }).slice(0, BATCH_SIZE);
-
-    console.log('[email-queue-drain] of those,', due.length, 'are due now');
+    console.log('[email-queue-drain] tick: scanned', scanned, 'awaiting delivery ·',
+      due.length, 'due now ·', backlog, 'waiting ·', reclaimed, 'stale locks reclaimed');
 
     if (due.length === 0) {
-      res.status(200).json({ ok: true, processed: 0, totalInQueue: pendingSnap.size });
+      res.status(200).json({ ok: true, processed: 0, scanned, waiting: backlog });
       return;
     }
 
@@ -201,8 +248,10 @@ export default async function handler(req, res) {
 
       console.warn('[email-queue-drain] FAIL', id, '· attempt', attempts, '· error:', send.error);
 
-      // Failed. Decide retry vs dead.
-      const dead = attempts >= maxAttempts;
+      // Failed. Decide retry vs dead. A configuration rejection fails
+      // identically every time, so it goes straight to dead and raises the
+      // admin alert now instead of after five silent retries.
+      const dead = attempts >= maxAttempts || isPermanentSendFailure(send.error);
       const backoffIdx = Math.min(attempts - 1, BACKOFF_SECONDS.length - 1);
       const nextAttemptAt = Date.now() + (BACKOFF_SECONDS[backoffIdx] * 1000);
 

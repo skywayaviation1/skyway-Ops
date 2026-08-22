@@ -32,6 +32,7 @@
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import { applySkywaySignature, ensureCharterCc, textToHtml } from './_email-signature.js';
+import { explainSendFailure, isPermanentSendFailure } from './_email-delivery.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -207,28 +208,42 @@ export default async function handler(req, res) {
         '· resend id:', sendResult.id, '· source:', source || '-');
       return res.status(200).json({
         ok: true,
+        delivered: true,
         queueId: id,
         resendId: sendResult.id,
         delivery: 'inline',
+        error: null,
       });
     }
 
-    // SLOW PATH: Resend failed (transient or otherwise). Queue for retry.
+    // SLOW PATH: Resend rejected the message. A configuration rejection (bad
+    // key, unverified sending domain, malformed from) will fail identically on
+    // every retry, so it is reported as permanent instead of being dressed up
+    // as a queued success that never arrives.
+    const permanent = isPermanentSendFailure(sendResult.error);
     await db.collection('email-queue').doc(id).set({
       ...baseRecord,
-      status: 'failed',
+      status: permanent ? 'dead' : 'failed',
       sentAt: null,
       resendId: null,
       lastError: sendResult.error || 'unknown error',
-      nextAttemptAt: now + 10 * 1000,    // retry in 10 seconds
-      deadAt: null,
+      nextAttemptAt: permanent ? null : now + 10 * 1000,   // retry in 10 seconds
+      deadAt: permanent ? now : null,
     });
     console.warn('[email-enqueue] inline send failed for', id, '· error:', sendResult.error,
-      '· queued for retry');
+      permanent ? '· permanent, not retrying' : '· queued for retry');
+
+    // `delivered: false` is the contract the app relies on to keep the status
+    // marked un-notified and show the retry affordance. Returning ok:true with
+    // no delivery signal is what previously made failures look like successes.
     return res.status(200).json({
       ok: true,
+      delivered: false,
       queueId: id,
-      delivery: 'queued',
+      delivery: permanent ? 'failed' : 'queued',
+      willRetry: !permanent,
+      error: sendResult.error || 'unknown error',
+      explanation: explainSendFailure(sendResult.error),
       reason: sendResult.error,
     });
   } catch (err) {
