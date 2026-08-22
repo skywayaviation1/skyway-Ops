@@ -12,6 +12,7 @@ const CharterInboxLazy = lazy(() => import('./CharterInbox.jsx'));
 const UserMailboxLazy = lazy(() => import('./UserMailbox.jsx'));
 const TeamsHubLazy = lazy(() => import('./TeamsHub.jsx'));
 const MailboxSettingsPanelLazy = lazy(() => import('./MailboxSettingsPanel.jsx'));
+const EmailDiagnosticsPanelLazy = lazy(() => import('./EmailDiagnosticsPanel.jsx'));
 const TripEmailPanelLazy = lazy(() =>
   import('./CharterInbox.jsx').then((module) => ({ default: module.TripEmailPanel }))
 );
@@ -1470,7 +1471,9 @@ async function sendEmailViaApi({ to, subject, text, source, tripId, statusKey, i
   // Reliable delivery: writes to the email-queue collection. The
   // /api/email-queue-drain cron picks it up within ~60s and delivers via
   // Resend, retrying failures with backoff. Returns a faux Response object
-  // so existing callers that check .ok keep working.
+  // so existing callers that check .ok keep working, where `ok` means the
+  // message actually reached the mail provider — not merely that it was
+  // recorded.
   let idToken = null;
   try {
     const { auth } = await import('./firebase.js');
@@ -1498,15 +1501,14 @@ async function sendEmailViaApi({ to, subject, text, source, tripId, statusKey, i
     });
     if (r.ok) {
       const data = await r.json().catch(() => ({}));
-      if (data.delivery === 'inline') {
-      } else {
-      }
-      // Return a Response-like shim so existing .ok checks pass.
-      // Important: callers that previously did `await r.json()` for a Resend id
-      // will now get a queueId instead. That's fine — none of our existing call
-      // sites use the returned id for anything other than logging.
-      return new Response(JSON.stringify({ ok: true, ...data }), {
-        status: 200,
+      // The endpoint returns 200 for both "handed to the mail provider" and
+      // "provider rejected it, kept for retry". Only the first is a send, so
+      // the shim's `ok` follows `delivered`. Reporting a rejection as success
+      // is what previously let a status show the broker as notified while the
+      // email never left the building.
+      const delivered = data.delivered !== false;
+      return new Response(JSON.stringify({ ...data, ok: delivered }), {
+        status: delivered ? 200 : 502,
         headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -6089,6 +6091,15 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       const respData = await r.json().catch(() => ({}));
       if (!r.ok) {
         console.error('[email] Send failed:', r.status, respData.error || '', respData);
+        // The status itself is recorded; only the notification failed. Say so,
+        // because the alternative is a dispatcher believing the broker was
+        // told. `notified` stays false, so the timeline keeps its retry action.
+        notify.error(
+          respData.willRetry
+            ? 'Status saved, but the broker email has not gone out yet — retrying automatically.'
+            : 'Status saved, but the broker email failed to send.',
+          { description: respData.explanation || respData.error || 'Check Settings → Email delivery.' },
+        );
         return;
       }
       // Email sent successfully — mark notified=true now
@@ -6160,7 +6171,10 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       const respData = await r.json().catch(() => ({}));
       if (!r.ok) {
         console.error('[resend] failed:', r.status, respData);
-        notify.error(`Resend failed: ${respData.error || r.status}. Try again or check NOTIFY tab.`);
+        notify.error('Broker email still not sent.', {
+          description: respData.explanation || respData.error
+            || 'Check Settings → Email delivery for the provider error.',
+        });
         return;
       }
       // Success — flip notified=true on the same status object
@@ -16059,6 +16073,10 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
           </section>
 
           <FlightAwarePanel currentUser={currentUser} allTrips={allTrips} />
+
+          <Suspense fallback={<div className="text-xs text-slate-500 py-2">Loading email delivery…</div>}>
+            <EmailDiagnosticsPanelLazy currentUser={currentUser} />
+          </Suspense>
 
           <QuickBooksConnectionPanel currentUser={currentUser} />
 
