@@ -17,6 +17,43 @@
 export const FRAT_VERSION = 2;
 
 /**
+ * Individual automatic signals an administrator can include or exclude.
+ * These are separate from category-wide switches: a department can, for
+ * example, score IFR/MVFR but ignore the generic "weather unavailable" item.
+ */
+export const FRAT_FACTOR_OPTIONS = Object.freeze([
+  { id: 'weatherMissing', group: 'weather', label: 'Weather unavailable' },
+  { id: 'weatherCategory', group: 'weather', label: 'METAR flight category' },
+  { id: 'weatherCeiling', group: 'weather', label: 'Ceiling thresholds' },
+  { id: 'weatherVisibility', group: 'weather', label: 'Visibility thresholds' },
+  { id: 'weatherGust', group: 'weather', label: 'Wind gust thresholds' },
+  { id: 'weatherWind', group: 'weather', label: 'Sustained wind threshold' },
+  { id: 'weatherTaf', group: 'weather', label: 'TAF forecast category' },
+  { id: 'notamHigh', group: 'notam', label: 'High-severity NOTAMs' },
+  { id: 'notamMedium', group: 'notam', label: 'Medium-severity NOTAMs' },
+  { id: 'aircraftAog', group: 'aircraft', label: 'Aircraft AOG / grounded' },
+  { id: 'aircraftRestricted', group: 'aircraft', label: 'Open MEL / restricted' },
+  { id: 'aircraftGroundingSquawk', group: 'aircraft', label: 'Grounding squawk' },
+  { id: 'aircraftOpenSquawk', group: 'aircraft', label: 'Open non-grounding squawk' },
+  { id: 'crewMissingPic', group: 'crew', label: 'PIC not assigned' },
+  { id: 'crewMissingSic', group: 'crew', label: 'SIC not assigned' },
+  { id: 'crewUnresolved', group: 'crew', label: 'Crew not matched to profile' },
+  { id: 'crewDutyIllegal', group: 'crew', label: 'Duty legality blocker' },
+  { id: 'crewDutyWarning', group: 'crew', label: 'Duty legality warning' },
+  { id: 'crewCurrencyExpired', group: 'crew', label: 'Expired pilot currency' },
+  { id: 'crewCurrencyWarning', group: 'crew', label: 'Pilot currency warning' },
+  { id: 'crewNotFit', group: 'crew', label: 'Not fit for duty' },
+  { id: 'opsHold', group: 'ops', label: 'Ops HOLD disposition' },
+  { id: 'opsReadiness', group: 'ops', label: 'Operational readiness gaps' },
+  { id: 'opsPax', group: 'ops', label: 'High passenger count' },
+  { id: 'opsInternational', group: 'ops', label: 'International / non-CONUS leg' },
+  { id: 'opsCircadian', group: 'ops', label: 'Circadian low departure' },
+  { id: 'opsRepo', group: 'ops', label: 'Repo / ferry leg' },
+  { id: 'opsLongBlock', group: 'ops', label: 'Long scheduled block' },
+  { id: 'opsMultiLeg', group: 'ops', label: 'Multi-leg duty day' },
+]);
+
+/**
  * Default scoring model. Every number here is adjustable in
  * Settings → FRAT scoring. Thresholds are inclusive-at-or-worse.
  */
@@ -24,6 +61,7 @@ export const DEFAULT_FRAT_CONFIG = Object.freeze({
   version: FRAT_VERSION,
   levels: { low: 15, moderate: 30, high: 50 },
   severeIsNoGo: true,
+  factors: Object.fromEntries(FRAT_FACTOR_OPTIONS.map((factor) => [factor.id, true])),
   weather: {
     enabled: true,
     missingPoints: 4,
@@ -295,6 +333,10 @@ export function normalizeFratConfig(stored) {
     version: FRAT_VERSION,
     levels: { low: levelLow, moderate: levelModerate, high: levelHigh },
     severeIsNoGo: bool(s.severeIsNoGo, d.severeIsNoGo),
+    factors: Object.fromEntries(FRAT_FACTOR_OPTIONS.map((factor) => [
+      factor.id,
+      bool(s.factors?.[factor.id], true),
+    ])),
     weather: mergeNums('weather'),
     notam: mergeNums('notam'),
     aircraft: mergeNums('aircraft'),
@@ -379,23 +421,25 @@ function categoryPoints(cat, weather) {
   return { points, severity };
 }
 
-function scoreAirportWeather(factors, side, wx, weather) {
+function scoreAirportWeather(factors, side, wx, weather, enabled) {
   if (!weather.enabled) return;
   if (!wx?.ok && !wx?.metar && !wx?.parsed) {
-    pushFactor(factors, {
-      id: `wx-missing-${side}`,
-      category: 'Weather',
-      label: `${side} weather unavailable`,
-      points: weather.missingPoints,
-      detail: 'Could not load METAR — treat as unknown risk',
-      severity: 'warn',
-    });
+    if (enabled.weatherMissing) {
+      pushFactor(factors, {
+        id: `wx-missing-${side}`,
+        category: 'Weather',
+        label: `${side} weather unavailable`,
+        points: weather.missingPoints,
+        detail: 'Could not load METAR — treat as unknown risk',
+        severity: 'warn',
+      });
+    }
     return;
   }
   const metar = wx.metar || wx.parsed || {};
   const cat = metar.flightCategory || wx.parsed?.flightCategory;
   const scored = categoryPoints(cat, weather);
-  if (scored.points) {
+  if (enabled.weatherCategory && scored.points) {
     pushFactor(factors, {
       id: `wx-cat-${side}`,
       category: 'Weather',
@@ -406,7 +450,7 @@ function scoreAirportWeather(factors, side, wx, weather) {
     });
   }
   const ceiling = metar.ceilingFt;
-  if (ceiling != null && ceiling < weather.ceilingLowFt) {
+  if (enabled.weatherCeiling && ceiling != null && ceiling < weather.ceilingLowFt) {
     pushFactor(factors, {
       id: `wx-ceil-${side}`,
       category: 'Weather',
@@ -414,7 +458,7 @@ function scoreAirportWeather(factors, side, wx, weather) {
       points: weather.ceilingLowPoints,
       severity: 'critical',
     });
-  } else if (ceiling != null && ceiling < weather.ceilingMedFt) {
+  } else if (enabled.weatherCeiling && ceiling != null && ceiling < weather.ceilingMedFt) {
     pushFactor(factors, {
       id: `wx-ceil-${side}`,
       category: 'Weather',
@@ -424,7 +468,7 @@ function scoreAirportWeather(factors, side, wx, weather) {
     });
   }
   const vis = metar.visibilitySm;
-  if (vis != null && vis < weather.visLowSm) {
+  if (enabled.weatherVisibility && vis != null && vis < weather.visLowSm) {
     pushFactor(factors, {
       id: `wx-vis-${side}`,
       category: 'Weather',
@@ -432,7 +476,7 @@ function scoreAirportWeather(factors, side, wx, weather) {
       points: weather.visLowPoints,
       severity: 'critical',
     });
-  } else if (vis != null && vis < weather.visMedSm) {
+  } else if (enabled.weatherVisibility && vis != null && vis < weather.visMedSm) {
     pushFactor(factors, {
       id: `wx-vis-${side}`,
       category: 'Weather',
@@ -443,7 +487,7 @@ function scoreAirportWeather(factors, side, wx, weather) {
   }
   const gust = metar.windGustKt;
   const wind = metar.windKt;
-  if (gust != null && gust >= weather.gustHighKt) {
+  if (enabled.weatherGust && gust != null && gust >= weather.gustHighKt) {
     pushFactor(factors, {
       id: `wx-gust-${side}`,
       category: 'Weather',
@@ -451,7 +495,7 @@ function scoreAirportWeather(factors, side, wx, weather) {
       points: weather.gustHighPoints,
       severity: 'warn',
     });
-  } else if (gust != null && gust >= weather.gustMedKt) {
+  } else if (enabled.weatherGust && gust != null && gust >= weather.gustMedKt) {
     pushFactor(factors, {
       id: `wx-gust-${side}`,
       category: 'Weather',
@@ -459,7 +503,7 @@ function scoreAirportWeather(factors, side, wx, weather) {
       points: weather.gustMedPoints,
       severity: 'info',
     });
-  } else if (wind != null && wind >= weather.windHighKt) {
+  } else if (enabled.weatherWind && wind != null && wind >= weather.windHighKt) {
     pushFactor(factors, {
       id: `wx-wind-${side}`,
       category: 'Weather',
@@ -481,7 +525,7 @@ function scoreAirportWeather(factors, side, wx, weather) {
     }
   }
   const tafPoints = Math.round(worstPts * weather.tafFactor);
-  if (tafPoints > 0 && worstPts >= (weather.categoryPoints.IFR || 15)) {
+  if (enabled.weatherTaf && tafPoints > 0 && worstPts >= (weather.categoryPoints.IFR || 15)) {
     pushFactor(factors, {
       id: `wx-taf-${side}`,
       category: 'Weather',
@@ -493,14 +537,14 @@ function scoreAirportWeather(factors, side, wx, weather) {
   }
 }
 
-function scoreNotams(factors, side, notams, cfg) {
+function scoreNotams(factors, side, notams, cfg, enabled) {
   if (!cfg.enabled) return;
   const significant = notams?.significantOnly
     || (Array.isArray(notams?.notams) ? notams.notams.filter((n) => n.severity === 'high' || n.severity === 'medium') : []);
   if (!Array.isArray(significant) || !significant.length) return;
   const high = significant.filter((n) => n.severity === 'high').length;
   const medium = significant.filter((n) => n.severity === 'medium').length;
-  if (high > 0) {
+  if (enabled.notamHigh && high > 0) {
     pushFactor(factors, {
       id: `notam-high-${side}`,
       category: 'NOTAM',
@@ -509,7 +553,7 @@ function scoreNotams(factors, side, notams, cfg) {
       severity: 'critical',
     });
   }
-  if (medium > 0) {
+  if (enabled.notamMedium && medium > 0) {
     pushFactor(factors, {
       id: `notam-med-${side}`,
       category: 'NOTAM',
@@ -520,10 +564,10 @@ function scoreNotams(factors, side, notams, cfg) {
   }
 }
 
-function scoreAircraft(factors, aircraftStatus, squawkSummary, cfg) {
+function scoreAircraft(factors, aircraftStatus, squawkSummary, cfg, enabled) {
   if (!cfg.enabled) return;
   const status = aircraftStatus?.status || 'UNKNOWN';
-  if (status === 'AOG') {
+  if (enabled.aircraftAog && status === 'AOG') {
     pushFactor(factors, {
       id: 'ac-aog',
       category: 'Aircraft',
@@ -533,7 +577,7 @@ function scoreAircraft(factors, aircraftStatus, squawkSummary, cfg) {
       severity: 'critical',
       blocker: cfg.aogBlocks,
     });
-  } else if (status === 'RESTRICTED') {
+  } else if (enabled.aircraftRestricted && status === 'RESTRICTED') {
     pushFactor(factors, {
       id: 'ac-restricted',
       category: 'Aircraft',
@@ -546,7 +590,11 @@ function scoreAircraft(factors, aircraftStatus, squawkSummary, cfg) {
   }
   const grounding = squawkSummary?.grounding || 0;
   const open = squawkSummary?.openSquawks || 0;
-  if (grounding > 0 && status !== 'AOG') {
+  if (
+    enabled.aircraftGroundingSquawk
+    && grounding > 0
+    && (status !== 'AOG' || !enabled.aircraftAog)
+  ) {
     pushFactor(factors, {
       id: 'ac-ground-squawk',
       category: 'Aircraft',
@@ -555,7 +603,7 @@ function scoreAircraft(factors, aircraftStatus, squawkSummary, cfg) {
       severity: 'critical',
       blocker: cfg.groundingSquawkBlocks,
     });
-  } else if (open > 0) {
+  } else if (enabled.aircraftOpenSquawk && open > 0) {
     pushFactor(factors, {
       id: 'ac-squawk',
       category: 'Aircraft',
@@ -566,21 +614,24 @@ function scoreAircraft(factors, aircraftStatus, squawkSummary, cfg) {
   }
 }
 
-function scoreCrewMember(factors, role, crew, cfg) {
+function scoreCrewMember(factors, role, crew, cfg, enabled) {
   if (!cfg.enabled) return;
   const isPic = role === 'PIC';
   if (!crew?.name && !crew?.resolved) {
-    pushFactor(factors, {
-      id: `crew-missing-${role}`,
-      category: 'Crew',
-      label: `No ${role} assigned`,
-      points: isPic ? cfg.missingPicPoints : cfg.missingSicPoints,
-      severity: isPic ? 'critical' : 'warn',
-      blocker: isPic ? cfg.missingPicBlocks : cfg.missingSicBlocks,
-    });
+    const counts = isPic ? enabled.crewMissingPic : enabled.crewMissingSic;
+    if (counts) {
+      pushFactor(factors, {
+        id: `crew-missing-${role}`,
+        category: 'Crew',
+        label: `No ${role} assigned`,
+        points: isPic ? cfg.missingPicPoints : cfg.missingSicPoints,
+        severity: isPic ? 'critical' : 'warn',
+        blocker: isPic ? cfg.missingPicBlocks : cfg.missingSicBlocks,
+      });
+    }
     return;
   }
-  if (crew.name && !crew.resolved) {
+  if (enabled.crewUnresolved && crew.name && !crew.resolved) {
     pushFactor(factors, {
       id: `crew-unresolved-${role}`,
       category: 'Crew',
@@ -591,7 +642,7 @@ function scoreCrewMember(factors, role, crew, cfg) {
     });
   }
   const legality = crew.legality;
-  if (legality?.status === 'illegal') {
+  if (enabled.crewDutyIllegal && legality?.status === 'illegal') {
     pushFactor(factors, {
       id: `crew-illegal-${role}`,
       category: 'Crew',
@@ -601,7 +652,7 @@ function scoreCrewMember(factors, role, crew, cfg) {
       severity: 'critical',
       blocker: cfg.dutyIllegalBlocks,
     });
-  } else if (legality?.status === 'warning') {
+  } else if (enabled.crewDutyWarning && legality?.status === 'warning') {
     pushFactor(factors, {
       id: `crew-warn-${role}`,
       category: 'Crew',
@@ -612,7 +663,7 @@ function scoreCrewMember(factors, role, crew, cfg) {
     });
   }
   const currency = crew.currency;
-  if (currency?.expiredCount > 0 || currency?.status === 'expired') {
+  if (enabled.crewCurrencyExpired && (currency?.expiredCount > 0 || currency?.status === 'expired')) {
     pushFactor(factors, {
       id: `crew-currency-exp-${role}`,
       category: 'Crew',
@@ -622,7 +673,7 @@ function scoreCrewMember(factors, role, crew, cfg) {
       severity: 'critical',
       blocker: cfg.currencyExpiredBlocks,
     });
-  } else if (currency?.warningCount > 0 || ['warning', 'critical'].includes(currency?.status)) {
+  } else if (enabled.crewCurrencyWarning && (currency?.warningCount > 0 || ['warning', 'critical'].includes(currency?.status))) {
     pushFactor(factors, {
       id: `crew-currency-warn-${role}`,
       category: 'Crew',
@@ -631,7 +682,7 @@ function scoreCrewMember(factors, role, crew, cfg) {
       severity: 'warn',
     });
   }
-  if (crew.fitForDuty === false) {
+  if (enabled.crewNotFit && crew.fitForDuty === false) {
     pushFactor(factors, {
       id: `crew-fit-${role}`,
       category: 'Crew',
@@ -643,13 +694,13 @@ function scoreCrewMember(factors, role, crew, cfg) {
   }
 }
 
-function scoreOps(factors, trip, tripState, outstanding, cfg) {
+function scoreOps(factors, trip, tripState, outstanding, cfg, enabled) {
   if (!cfg.enabled) return;
   const info = trip?.info || {};
   const category = String(info.category || '').toUpperCase();
   const legType = String(info.legType || '').toUpperCase();
 
-  if (tripState?.opsDisposition === 'hold') {
+  if (enabled.opsHold && tripState?.opsDisposition === 'hold') {
     pushFactor(factors, {
       id: 'ops-hold',
       category: 'Operations',
@@ -661,22 +712,24 @@ function scoreOps(factors, trip, tripState, outstanding, cfg) {
     });
   }
 
-  for (const gap of outstanding || []) {
-    const pts = gap.severity === 'critical'
-      ? cfg.gapCriticalPoints
-      : gap.severity === 'warn'
-        ? cfg.gapWarnPoints
-        : cfg.gapInfoPoints;
-    pushFactor(factors, {
-      id: `ops-${gap.code}`,
-      category: 'Operations',
-      label: gap.label || gap.code,
-      points: pts,
-      severity: gap.severity === 'critical' ? 'warn' : 'info',
-    });
+  if (enabled.opsReadiness) {
+    for (const gap of outstanding || []) {
+      const pts = gap.severity === 'critical'
+        ? cfg.gapCriticalPoints
+        : gap.severity === 'warn'
+          ? cfg.gapWarnPoints
+          : cfg.gapInfoPoints;
+      pushFactor(factors, {
+        id: `ops-${gap.code}`,
+        category: 'Operations',
+        label: gap.label || gap.code,
+        points: pts,
+        severity: gap.severity === 'critical' ? 'warn' : 'info',
+      });
+    }
   }
 
-  if (legType === 'REVENUE' && Number(info.pax || 0) >= cfg.paxThreshold) {
+  if (enabled.opsPax && legType === 'REVENUE' && Number(info.pax || 0) >= cfg.paxThreshold) {
     pushFactor(factors, {
       id: 'ops-pax-high',
       category: 'Operations',
@@ -686,7 +739,7 @@ function scoreOps(factors, trip, tripState, outstanding, cfg) {
     });
   }
 
-  if (!isUsDomesticAirport(info.from) || !isUsDomesticAirport(info.to)) {
+  if (enabled.opsInternational && (!isUsDomesticAirport(info.from) || !isUsDomesticAirport(info.to))) {
     pushFactor(factors, {
       id: 'ops-intl',
       category: 'Operations',
@@ -697,7 +750,7 @@ function scoreOps(factors, trip, tripState, outstanding, cfg) {
     });
   }
 
-  if (inCircadianWindow(trip?.start, cfg)) {
+  if (enabled.opsCircadian && inCircadianWindow(trip?.start, cfg)) {
     pushFactor(factors, {
       id: 'ops-circadian',
       category: 'Operations',
@@ -707,7 +760,7 @@ function scoreOps(factors, trip, tripState, outstanding, cfg) {
     });
   }
 
-  if (category === 'REPO' || category === 'FERRY') {
+  if (enabled.opsRepo && (category === 'REPO' || category === 'FERRY')) {
     pushFactor(factors, {
       id: 'ops-repo',
       category: 'Operations',
@@ -723,7 +776,7 @@ function scoreOps(factors, trip, tripState, outstanding, cfg) {
     if (Number.isFinite(start) && Number.isFinite(end)) {
       const hours = (end - start) / 3600_000;
       const veryLong = hours >= cfg.veryLongBlockHours;
-      if (hours >= cfg.longBlockHours) {
+      if (enabled.opsLongBlock && hours >= cfg.longBlockHours) {
         pushFactor(factors, {
           id: 'ops-long-block',
           category: 'Operations',
@@ -737,7 +790,7 @@ function scoreOps(factors, trip, tripState, outstanding, cfg) {
     /* ignore */
   }
 
-  if (trip?.sameDayLegCount >= cfg.multiLegThreshold) {
+  if (enabled.opsMultiLeg && trip?.sameDayLegCount >= cfg.multiLegThreshold) {
     pushFactor(factors, {
       id: 'ops-multi-leg',
       category: 'Operations',
@@ -803,16 +856,16 @@ export function computeFrat(input = {}) {
   const trip = input.trip || {};
   const info = trip.info || {};
 
-  scoreAirportWeather(factors, 'Departure', input.originWx, config.weather);
-  scoreAirportWeather(factors, 'Arrival', input.destWx, config.weather);
-  scoreNotams(factors, info.from || 'DEP', input.originNotams, config.notam);
-  scoreNotams(factors, info.to || 'ARR', input.destNotams, config.notam);
-  scoreAircraft(factors, input.aircraftStatus, input.squawkSummary, config.aircraft);
-  scoreCrewMember(factors, 'PIC', input.pic || { name: info.pic }, config.crew);
+  scoreAirportWeather(factors, 'Departure', input.originWx, config.weather, config.factors);
+  scoreAirportWeather(factors, 'Arrival', input.destWx, config.weather, config.factors);
+  scoreNotams(factors, info.from || 'DEP', input.originNotams, config.notam, config.factors);
+  scoreNotams(factors, info.to || 'ARR', input.destNotams, config.notam, config.factors);
+  scoreAircraft(factors, input.aircraftStatus, input.squawkSummary, config.aircraft, config.factors);
+  scoreCrewMember(factors, 'PIC', input.pic || { name: info.pic }, config.crew, config.factors);
   if (String(info.legType || '').toUpperCase() === 'REVENUE' || info.sic) {
-    scoreCrewMember(factors, 'SIC', input.sic || { name: info.sic }, config.crew);
+    scoreCrewMember(factors, 'SIC', input.sic || { name: info.sic }, config.crew, config.factors);
   }
-  scoreOps(factors, trip, input.tripState, input.outstanding, config.ops);
+  scoreOps(factors, trip, input.tripState, input.outstanding, config.ops, config.factors);
   scoreChecklist(factors, input.checklist, config.checklist);
 
   const score = factors.reduce((sum, f) => sum + (Number(f.points) || 0), 0);

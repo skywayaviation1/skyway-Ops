@@ -18,6 +18,7 @@ import {
   DEFAULT_FRAT_CONFIG,
   FRAT_CHECKLIST,
   FRAT_CONFIG_SCHEMA,
+  FRAT_FACTOR_OPTIONS,
   computeFrat,
   fratLevels,
   normalizeFratConfig,
@@ -162,6 +163,34 @@ function BooleanField({ label, value, onChange }) {
         style={{ fontFamily: 'JetBrains Mono, monospace' }}
       >
         {value ? 'BLOCKS' : 'SCORES ONLY'}
+      </button>
+    </label>
+  );
+}
+
+function InclusionField({
+  label,
+  value,
+  onChange,
+  onLabel = 'INCLUDED',
+  offLabel = 'IGNORED',
+}) {
+  return (
+    <label className="flex items-center justify-between gap-3 py-1.5">
+      <span className="text-[11px] text-slate-300" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+        {label}
+      </span>
+      <button
+        type="button"
+        onClick={() => onChange(!value)}
+        className={`px-2.5 py-1 text-[10px] tracking-widest border shrink-0 ${
+          value
+            ? 'border-cyan-500/40 text-cyan-300 bg-cyan-500/10'
+            : 'border-slate-700 text-slate-600'
+        }`}
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}
+      >
+        {value ? onLabel : offLabel}
       </button>
     </label>
   );
@@ -335,11 +364,28 @@ export default function FratSettingsPanel({ currentUser, asModal = false, onClos
           {/* Auto-scored groups */}
           {FRAT_CONFIG_SCHEMA.map((group) => (
             <Section key={group.group} title={group.label} description={group.description}>
-              <BooleanField
-                label={`${group.label} factors enabled`}
+              <InclusionField
+                label={`Include all ${group.label.toLowerCase()} scoring`}
                 value={draft[group.group].enabled}
                 onChange={(v) => update(`${group.group}.enabled`, v)}
+                onLabel="CATEGORY ON"
+                offLabel="CATEGORY OFF"
               />
+              <div className="py-2">
+                <div className="mb-1 text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  CHOOSE WHAT COUNTS
+                </div>
+                {FRAT_FACTOR_OPTIONS
+                  .filter((factor) => factor.group === group.group)
+                  .map((factor) => (
+                    <InclusionField
+                      key={factor.id}
+                      label={factor.label}
+                      value={draft.factors[factor.id]}
+                      onChange={(value) => update(`factors.${factor.id}`, value)}
+                    />
+                  ))}
+              </div>
               {group.fields.map((field) => {
                 const path = `${group.group}.${field.key}`;
                 const value = getPath(draft, path);

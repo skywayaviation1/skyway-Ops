@@ -5,6 +5,7 @@ import {
   DEFAULT_FRAT_CONFIG,
   FRAT_CHECKLIST,
   FRAT_CONFIG_SCHEMA,
+  FRAT_FACTOR_OPTIONS,
   computeFrat,
   fratLevelForScore,
   fratSummary,
@@ -167,6 +168,44 @@ test('weights change the score for identical inputs', () => {
   assert.equal(disabled.factors.some((f) => f.category === 'Weather'), false);
 });
 
+test('each automatic FRAT signal can be excluded independently', () => {
+  const input = {
+    ...CLEAN_LEG,
+    originWx: {
+      ok: true,
+      metar: {
+        flightCategory: 'IFR',
+        ceilingFt: 900,
+        visibilitySm: 2,
+        windGustKt: 30,
+      },
+    },
+    checklist: cleanChecklist(),
+  };
+  const baseline = computeFrat(input);
+  assert.ok(baseline.factors.some((factor) => factor.id === 'wx-cat-Departure'));
+  assert.ok(baseline.factors.some((factor) => factor.id === 'wx-ceil-Departure'));
+  assert.ok(baseline.factors.some((factor) => factor.id === 'wx-vis-Departure'));
+  assert.ok(baseline.factors.some((factor) => factor.id === 'wx-gust-Departure'));
+
+  const selected = computeFrat({
+    ...input,
+    config: {
+      factors: {
+        weatherCategory: false,
+        weatherCeiling: false,
+        weatherVisibility: false,
+        weatherGust: true,
+      },
+    },
+  });
+  assert.equal(selected.factors.some((factor) => factor.id === 'wx-cat-Departure'), false);
+  assert.equal(selected.factors.some((factor) => factor.id === 'wx-ceil-Departure'), false);
+  assert.equal(selected.factors.some((factor) => factor.id === 'wx-vis-Departure'), false);
+  assert.ok(selected.factors.some((factor) => factor.id === 'wx-gust-Departure'));
+  assert.ok(selected.score < baseline.score);
+});
+
 test('blocker flags are configurable', () => {
   const input = {
     trip: {
@@ -229,6 +268,14 @@ test('checklist items can be disabled or made optional', () => {
 
 test('settings schema only references real config paths', () => {
   const defaults = normalizeFratConfig(null);
+  assert.equal(
+    Object.keys(defaults.factors).length,
+    FRAT_FACTOR_OPTIONS.length,
+    'every factor option needs a persisted inclusion switch',
+  );
+  for (const factor of FRAT_FACTOR_OPTIONS) {
+    assert.equal(defaults.factors[factor.id], true, `${factor.id} should default included`);
+  }
   for (const group of FRAT_CONFIG_SCHEMA) {
     assert.ok(defaults[group.group], `unknown group ${group.group}`);
     for (const field of group.fields) {
