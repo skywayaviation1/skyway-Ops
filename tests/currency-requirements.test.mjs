@@ -82,6 +82,9 @@ test('currency catalog includes core, conditional, and special-role requirements
     'sim293b_untyped',
     'instrumentCheck297',
     'lineCheck299',
+    'autopilotCheck297g',
+    'routeAirportReview299c',
+    'picTurbineNightAlternative247',
     // Recurrent subjects / Subpart K
     'recurrentTraining351',
     'crmTraining330',
@@ -115,6 +118,24 @@ test('currency catalog includes core, conditional, and special-role requirements
   );
   assert.match(text, /applicability:/, 'conditional requirements need applicability text');
   assert.match(text, /citation:/, 'requirements need regulatory citations');
+});
+
+test('daily alerts use expanded calendar-month currency coverage', async () => {
+  const text = await source('api/currency-alerts.js');
+  for (const key of [
+    'groundOralGeneral293a',
+    'instrumentCheck297',
+    'lineCheck299',
+    'autopilotCheck297g',
+    'recurrentTraining351',
+    'hazmatTraining',
+    'checkPilotObservation339',
+  ]) {
+    assert.match(text, new RegExp(`['"]${key}['"]`), `${key} missing from alert scan`);
+  }
+  assert.match(text, /computeStatus\(item, type\.interval, todayMs, type\)/);
+  assert.doesNotMatch(text, /interval: 180/);
+  assert.doesNotMatch(text, /interval: 365/);
 });
 
 test('currency UI exposes applicability and calendar-month cadence', async () => {

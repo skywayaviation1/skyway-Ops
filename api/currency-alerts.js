@@ -23,6 +23,7 @@
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import { applySkywaySignature, ensureCharterCc, textToHtml } from './_email-signature.js';
+import { computeStatus } from '../src/currency-status.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -46,17 +47,50 @@ function getDb() {
   return _db;
 }
 
-// Currency types — keep in sync with src/firebase-currency.js.
-// Source of truth there; this is a duplicated catalog because Vercel
-// functions can't import from src/.
+// Alertable currency types. Non-expiring qualification/credential items are
+// intentionally omitted. This mirrors the applicability-aware client catalog;
+// calendar-month math is shared from src/currency-status.js.
 const CURRENCY_TYPES = [
-  { key: 'takeoffLanding',       label: '61.57(a) T/O + Landing',  interval: 90,  category: 'FAA' },
-  { key: 'nightCurrency',        label: '61.57(b) Night',          interval: 90,  category: 'FAA' },
-  { key: 'instrumentCurrency',   label: '61.57(c) Instrument',     interval: 180, category: 'FAA' },
-  { key: 'competencyCheck293',   label: '§135.293 Competency',     interval: 365, category: 'PART 135' },
-  { key: 'instrumentCheck297',   label: '§135.297 IPC',            interval: 180, category: 'PART 135' },
-  { key: 'lineCheck299',         label: '§135.299 Line Check',     interval: 365, category: 'PART 135' },
-  { key: 'recurrentTraining351', label: '§135.351 Recurrent',      interval: 180, category: 'TRAINING' },
+  { key: 'takeoffLanding', label: '§135.247 Day T/O + Landing', interval: 90, category: 'FAA RECENCY' },
+  { key: 'nightCurrency', label: '§135.247 Night T/O + Landing', interval: 90, category: 'FAA RECENCY' },
+  { key: 'instrumentCurrency', label: '§135.245(c) SIC Instrument Recency', intervalMonths: 6, category: 'FAA RECENCY' },
+  { key: 'flightReview61_56', label: '§61.56 Flight Review', intervalMonths: 24, category: 'FAA RECENCY' },
+  { key: 'sicQualification61_55', label: '§61.55 SIC Qualification', intervalMonths: 12, graceMonths: 1, category: 'FAA RECENCY' },
+  { key: 'groundOralGeneral293a', label: '§135.293(a) General Knowledge', intervalMonths: 12, graceMonths: 1, category: 'PART 135 GENERAL' },
+  ...[
+    ['groundOral293a_LR60', '§135.293(a) Aircraft Knowledge — LR-60'],
+    ['groundOral293a_CE525', '§135.293(a) Aircraft Knowledge — CE-525'],
+    ['groundOral293a_SF50', '§135.293(a) Aircraft Knowledge — SF-50'],
+    ['groundOral293a_untyped', '§135.293(a) Aircraft Knowledge — Other'],
+    ['sim293b_LR60', '§135.293(b) Competency — LR-60'],
+    ['sim293b_CE525', '§135.293(b) Competency — CE-525'],
+    ['sim293b_SF50', '§135.293(b) Competency — SF-50'],
+    ['sim293b_untyped', '§135.293(b) Competency — Other'],
+    ['competencyCheck293', '§135.293(b) Competency — Legacy'],
+  ].map(([key, label]) => ({
+    key,
+    label,
+    intervalMonths: 12,
+    graceMonths: 1,
+    category: 'AIRCRAFT-SPECIFIC',
+  })),
+  { key: 'instrumentCheck297', label: '§135.297 PIC IPC', intervalMonths: 6, graceMonths: 1, category: 'PART 135 CHECKS' },
+  { key: 'lineCheck299', label: '§135.299 PIC Line Check', intervalMonths: 12, graceMonths: 1, category: 'PART 135 CHECKS' },
+  { key: 'autopilotCheck297g', label: '§135.297(g) Autopilot Check', intervalMonths: 12, graceMonths: 1, category: 'PART 135 CHECKS' },
+  { key: 'routeAirportReview299c', label: '§135.299(c) Route/Airport Review', operatorDefined: true, category: 'PART 135 CHECKS' },
+  { key: 'picTurbineNightAlternative247', label: '§135.247(a)(3) Night Alternative', operatorDefined: true, category: 'PART 135 CHECKS' },
+  { key: 'recurrentTraining351', label: '§§135.343/351 Recurrent', intervalMonths: 12, graceMonths: 1, category: 'TRAINING' },
+  { key: 'crmTraining330', label: '§135.330 CRM', operatorDefined: true, category: 'TRAINING' },
+  { key: 'emergencyTraining', label: '§135.331 Emergency', operatorDefined: true, category: 'TRAINING' },
+  { key: 'windshearIcingTraining', label: 'Windshear / Ground Icing', operatorDefined: true, category: 'TRAINING' },
+  { key: 'hazmatTraining', label: '§135.505 Hazmat', intervalMonths: 24, graceMonths: 1, category: 'TRAINING' },
+  { key: 'checkPilotObservation339', label: '§135.339 Check Pilot Observation', intervalMonths: 24, graceMonths: 1, category: 'TRAINING' },
+  { key: 'checkPilotFstdRecency337', label: '§135.337 Check Pilot FSTD Recency', intervalMonths: 12, graceMonths: 1, category: 'TRAINING' },
+  { key: 'flightInstructorObservation340', label: '§135.340 Instructor Observation', intervalMonths: 24, graceMonths: 1, category: 'TRAINING' },
+  { key: 'flightInstructorFstdRecency338', label: '§135.338 Instructor FSTD Recency', intervalMonths: 12, graceMonths: 1, category: 'TRAINING' },
+  { key: 'rvsmTraining', label: 'RVSM Qualification', operatorDefined: true, category: 'SPECIAL OPS' },
+  { key: 'tfsspTraining', label: 'TFSSP Training', operatorDefined: true, category: 'SPECIAL OPS' },
+  { key: 'dasspTraining', label: 'DASSP Training', operatorDefined: true, category: 'SPECIAL OPS' },
 ];
 
 const THRESHOLDS = { CRITICAL: 14, WARNING: 30, CAUTION: 60 };
@@ -68,13 +102,6 @@ function bucketize(daysUntil) {
   if (daysUntil <= THRESHOLDS.WARNING) return 'warning';
   if (daysUntil <= THRESHOLDS.CAUTION) return 'caution';
   return 'current';
-}
-
-function computeDaysUntil(lastDate, intervalDays, todayMs) {
-  if (!lastDate) return null;
-  const last = new Date(lastDate).getTime();
-  if (!Number.isFinite(last)) return null;
-  return Math.floor((last + intervalDays * 86400000 - todayMs) / 86400000);
 }
 
 function computeMedicalDaysUntil(expirationDate, todayMs) {
@@ -130,13 +157,16 @@ export default async function handler(req, res) {
       // Each FAA + Part 135 + training type
       for (const type of CURRENCY_TYPES) {
         const item = data[type.key];
-        if (!item || !item.lastDate) continue;
-        const daysUntil = computeDaysUntil(item.lastDate, type.interval, todayMs);
-        if (daysUntil == null) continue;
-        const dueDate = new Date(
-          new Date(item.lastDate).getTime() + type.interval * 86400000
-        ).toISOString().slice(0, 10);
-        evaluate(type.key, type.label, type.category, daysUntil, dueDate);
+        if (!item || item.notApplicable === true) continue;
+        const result = computeStatus(item, type.interval, todayMs, type);
+        if (result.daysUntil == null) continue;
+        evaluate(
+          type.key,
+          type.label,
+          type.category,
+          result.daysUntil,
+          result.dueDate,
+        );
       }
 
       // Medical — separate evaluator because it uses explicit expiration
