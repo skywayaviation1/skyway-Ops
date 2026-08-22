@@ -594,16 +594,21 @@ function buildPatchFromParsedRow(parsed) {
     const key = COLUMN_KEYS[i];
     const cell = parsed.cells[i];
     if (!cell) continue;
+    const type = CURRENCY_TYPES.find((candidate) => candidate.key === key);
 
     if (cell.kind === 'date') {
-      updates[key] = { dueDate: cell.dueDate, notes: '' };
+      updates[key] = type?.noExpiration
+        ? { present: true, notes: `Completed/issued ${cell.dueDate} · imported from JetInsight` }
+        : { dueDate: cell.dueDate, notes: '' };
     } else if (cell.kind === 'na') {
       updates[key] = { notApplicable: true };
     } else if (cell.kind === 'never') {
       // For KCM-style items, "Never" means no expiration / badge issued.
       // The schema marks these with noExpiration: true on a per-item basis;
       // we also stamp issuedDate so the UI shows "issued" vs "not issued".
-      updates[key] = { noExpiration: true, issued: true };
+      updates[key] = type?.noExpiration
+        ? { present: true, notes: 'Imported from JetInsight' }
+        : { notes: 'JetInsight reported no expiration' };
     } else if (cell.kind === 'missing') {
       // Don't overwrite — JetInsight has nothing to record. The pilot
       // currency UI will show this item as missing/unknown until admin

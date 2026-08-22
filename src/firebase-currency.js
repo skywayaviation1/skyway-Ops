@@ -26,7 +26,7 @@
 //     instrumentCheck297:    { lastDate: 'YYYY-MM-DD', notes: '' },
 //     lineCheck299:          { lastDate: 'YYYY-MM-DD', notes: '' },
 //
-//     // Recurrent training (§135.351 — 6-mo ground/sim cycle)
+//     // Recurrent training (§§135.343/351 — 12-calendar-month cycle)
 //     recurrentTraining351:  { lastDate: 'YYYY-MM-DD', notes: '' },
 //
 //     // Medical — explicit expirationDate, NOT interval. FAA medical
@@ -48,77 +48,316 @@ import {
   doc, setDoc, collection, onSnapshot,
 } from 'firebase/firestore';
 import { getAirportTimezone } from './airports.js';
+import {
+  computeMedicalStatus,
+  computeStatus,
+  STATUS_THRESHOLDS,
+} from './currency-status.js';
 
-// Currency types displayed in the dashboard. Order here = render order.
-// `interval` is in days. To add a new type: append to this array — the
-// UI loops over CURRENCY_TYPES so nothing else needs to change.
+export { computeMedicalStatus, computeStatus, STATUS_THRESHOLDS };
+
+// Currency / qualification types displayed in the dashboard. Order here =
+// render order. Regulatory checks use calendar-month periods, not rough
+// 180/365-day periods. `graceMonths: 1` reflects the preceding/base/following
+// eligibility window where the cited rule provides it.
+//
+// Applicability is explicit because not every item applies to every Part 135
+// pilot. Admins mark conditional items N/A per pilot rather than the software
+// pretending, for example, that every SIC needs a PIC line check.
 export const CURRENCY_TYPES = [
   {
     key: 'takeoffLanding',
-    label: '61.57(a) Takeoff & Landing',
+    label: '§§61.57(a) / 135.247 Day T/O & Landing',
     abbrev: 'T/O + LDG',
     interval: 90,
-    category: 'FAA',
-    notes: '3 T/O + landings in 90 days (category/class/type)',
+    category: 'FAA RECENCY',
+    applicability: 'PIC carrying passengers; same category/class/type when required',
+    citation: '14 CFR 61.57(a); 135.247(a)(1)',
+    notes: '3 takeoffs and 3 landings as sole manipulator within 90 days',
   },
   {
     key: 'nightCurrency',
-    label: '61.57(b) Night',
+    label: '§§61.57(b) / 135.247 Night T/O & Landing',
     abbrev: 'NIGHT',
     interval: 90,
-    category: 'FAA',
-    notes: '3 night T/O + full-stop landings in 90 days',
+    category: 'FAA RECENCY',
+    applicability: 'PIC carrying passengers at night; §135.247(a)(3) alternatives may apply',
+    citation: '14 CFR 61.57(b); 135.247(a)(2)-(3)',
+    notes: '3 night takeoffs and full-stop landings; track an approved alternative in notes',
   },
   {
     key: 'instrumentCurrency',
-    label: '61.57(c) Instrument',
+    label: '§61.57(c) / §135.245(c) Instrument Recency',
     abbrev: 'INSTRUMENT',
-    interval: 180,
-    category: 'FAA',
-    notes: '6 approaches + holding + intercepting/tracking in 6 months',
+    intervalMonths: 6,
+    category: 'FAA RECENCY',
+    applicability: 'PIC under IFR and SIC under IFR as applicable',
+    citation: '14 CFR 61.57(c); 135.245(c)-(d)',
+    notes: '6 approaches + holding + intercepting/tracking within 6 calendar months',
   },
   {
+    key: 'flightReview61_56',
+    label: '§61.56 Flight Review / Qualifying Check',
+    abbrev: 'FLIGHT REV',
+    intervalMonths: 24,
+    category: 'FAA RECENCY',
+    applicability: 'Any person acting as PIC; a qualifying proficiency/competency check may substitute',
+    citation: '14 CFR 61.56(c)-(d)',
+    notes: '24 calendar months; record the qualifying §135 check in notes if used instead',
+  },
+  {
+    key: 'sicQualification61_55',
+    label: '§61.55 SIC Qualification / Familiarization',
+    abbrev: 'SIC QUAL',
+    intervalMonths: 12,
+    graceMonths: 1,
+    category: 'FAA RECENCY',
+    applicability: 'SIC in aircraft/operations requiring an SIC; per aircraft type',
+    citation: '14 CFR 61.55',
+    notes: '12 calendar months; approved Part 135 training/check may satisfy as applicable',
+  },
+  {
+    key: 'picQualification135_243',
+    label: '§135.243 PIC Qualification',
+    abbrev: 'PIC QUAL',
+    noExpiration: true,
+    category: 'PART 135 GENERAL',
+    applicability: 'PIC; certificate/rating and aeronautical-experience minimums vary by operation',
+    citation: '14 CFR 135.243',
+    notes: 'Qualification basis verified and on file; hours are not a recurrent interval',
+  },
+  {
+    key: 'sicQualification135_245',
+    label: '§135.245 SIC Qualification',
+    abbrev: 'SIC 135',
+    noExpiration: true,
+    category: 'PART 135 GENERAL',
+    applicability: 'SIC; certificate/category/class/instrument qualifications as applicable',
+    citation: '14 CFR 135.245(a)-(b)',
+    notes: 'Qualification basis verified and on file; IFR recency is tracked separately',
+  },
+  {
+    key: 'basicIndoctrination',
+    label: 'Basic Indoctrination',
+    abbrev: 'BASIC INDOC',
+    noExpiration: true,
+    category: 'PART 135 GENERAL',
+    applicability: 'Crewmember under the operator’s FAA-approved training program',
+    citation: '14 CFR 135.323, 135.327, 135.329',
+    notes: 'Initial operator indoctrination; recurrent subjects are tracked separately',
+  },
+  {
+    key: 'groundOralGeneral293a',
+    label: '§135.293(a) Knowledge Test — General',
+    abbrev: '293(a) GEN',
+    intervalMonths: 12,
+    graceMonths: 1,
+    category: 'PART 135 GENERAL',
+    applicability: 'Every Part 135 pilot',
+    citation: '14 CFR 135.293(a), 135.301(a)',
+    notes: 'Written or oral knowledge test within 12 calendar months',
+  },
+  ...[
+    ['groundOral293a_LR60', '§135.293(a)(2)-(3) Aircraft Knowledge — LR-60', '293(a) LR60', 'LR-60'],
+    ['groundOral293a_CE525', '§135.293(a)(2)-(3) Aircraft Knowledge — CE-525', '293(a) 525', 'CE-525'],
+    ['groundOral293a_SF50', '§135.293(a)(2)-(3) Aircraft Knowledge — SF-50', '293(a) SF50', 'SF-50'],
+    ['groundOral293a_untyped', '§135.293(a)(2)-(3) Aircraft Knowledge — Other', '293(a) OTHER', 'assigned aircraft'],
+  ].map(([key, label, abbrev, aircraft]) => ({
+    key,
+    label,
+    abbrev,
+    intervalMonths: 12,
+    graceMonths: 1,
+    category: 'AIRCRAFT-SPECIFIC',
+    applicability: `Pilot assigned to ${aircraft}; mark N/A otherwise`,
+    citation: '14 CFR 135.293(a)(2)-(3), 135.301(a)',
+    notes: 'Aircraft equipment, systems, performance, limitations, and procedures',
+  })),
+  ...[
+    ['sim293b_LR60', '§135.293(b) Competency Check — LR-60', '293(b) LR60', 'LR-60'],
+    ['sim293b_CE525', '§135.293(b) Competency Check — CE-525', '293(b) 525', 'CE-525'],
+    ['sim293b_SF50', '§135.293(b) Competency Check — SF-50', '293(b) SF50', 'SF-50'],
+    ['sim293b_untyped', '§135.293(b) Competency Check — Other', '293(b) OTHER', 'assigned class/type'],
+  ].map(([key, label, abbrev, aircraft]) => ({
+    key,
+    label,
+    abbrev,
+    intervalMonths: 12,
+    graceMonths: 1,
+    category: 'AIRCRAFT-SPECIFIC',
+    applicability: `Pilot assigned to ${aircraft}; mark N/A otherwise`,
+    citation: '14 CFR 135.293(b), 135.301(a)',
+    notes: 'Competency check in the required aircraft class/type',
+  })),
+  {
     key: 'competencyCheck293',
-    label: '§135.293 Competency Check',
-    abbrev: '293 CHECK',
-    interval: 365,
-    category: 'PART 135',
-    notes: 'Annual pilot competency check',
+    label: '§135.293(b) Competency Check — Legacy/General',
+    abbrev: '293 LEGACY',
+    intervalMonths: 12,
+    graceMonths: 1,
+    category: 'AIRCRAFT-SPECIFIC',
+    applicability: 'Use only for existing generic records; prefer the aircraft-specific item',
+    citation: '14 CFR 135.293(b), 135.301(a)',
+    notes: 'Retained so existing competency dates are not hidden',
   },
   {
     key: 'instrumentCheck297',
-    label: '§135.297 Instrument Proficiency',
+    label: '§135.297 PIC Instrument Proficiency Check',
     abbrev: '297 IPC',
-    interval: 180,
-    category: 'PART 135',
-    notes: '6-month instrument proficiency check',
+    intervalMonths: 6,
+    graceMonths: 1,
+    category: 'PART 135 CHECKS',
+    applicability: 'PIC conducting IFR operations; per assigned aircraft rotation rules',
+    citation: '14 CFR 135.297, 135.301(a)',
+    notes: '6-calendar-month PIC instrument proficiency check',
   },
   {
     key: 'lineCheck299',
-    label: '§135.299 Line Check',
+    label: '§135.299 PIC Line Check',
     abbrev: '299 LINE',
-    interval: 365,
-    category: 'PART 135',
-    notes: 'Annual line check',
+    intervalMonths: 12,
+    graceMonths: 1,
+    category: 'PART 135 CHECKS',
+    applicability: 'PIC only',
+    citation: '14 CFR 135.299(a), 135.301(a)',
+    notes: 'At least one route segment with representative takeoffs and landings',
   },
   {
     key: 'recurrentTraining351',
-    label: '§135.351 Recurrent Training',
+    label: '§§135.343 / 135.351 Recurrent Training',
     abbrev: 'RECURRENT',
-    interval: 180,
+    intervalMonths: 12,
+    graceMonths: 1,
     category: 'TRAINING',
-    notes: '6-month recurrent ground/sim',
+    applicability: 'Crewmembers; §135.343 exception for a certificate holder using only one pilot',
+    citation: '14 CFR 135.343, 135.351, 135.323(b)',
+    notes: '12 calendar months — corrects the former 6-month setting',
+  },
+  {
+    key: 'crmTraining330',
+    label: '§135.330 CRM Training',
+    abbrev: 'CRM',
+    intervalMonths: 12,
+    graceMonths: 1,
+    category: 'TRAINING',
+    applicability: 'Flightcrew under the operator’s approved CRM program',
+    citation: '14 CFR 135.330, 135.351(b)(2)',
+    notes: 'Initial and recurrent CRM; normally included in annual recurrent ground training',
+  },
+  {
+    key: 'emergencyTraining',
+    label: '§135.331 Emergency Training',
+    abbrev: 'EMERGENCY',
+    intervalMonths: 12,
+    graceMonths: 1,
+    category: 'TRAINING',
+    applicability: 'Crewmember, as appropriate to aircraft/configuration and operation',
+    citation: '14 CFR 135.331, 135.351(b)(2)',
+    notes: 'Emergency subjects/drills included in recurrent ground training',
+  },
+  {
+    key: 'windshearIcingTraining',
+    label: '§135.351 Windshear / Ground Icing',
+    abbrev: 'WS/ICING',
+    intervalMonths: 12,
+    graceMonths: 1,
+    category: 'TRAINING',
+    applicability: 'As appropriate under the operator’s approved training program',
+    citation: '14 CFR 135.341, 135.345, 135.351(b)(2)',
+    notes: 'Low-altitude windshear and ground-icing recurrent subjects',
+  },
+  {
+    key: 'hazmatTraining',
+    label: '§135.505 Hazardous Materials Training',
+    abbrev: 'HAZMAT',
+    intervalMonths: 24,
+    graceMonths: 1,
+    category: 'TRAINING',
+    applicability: 'Crewmember/person performing or supervising §135.501(a) functions',
+    citation: '14 CFR 135.501, 135.503, 135.505',
+    notes: 'FAA-approved initial/recurrent hazmat program within 24 months',
+  },
+  {
+    key: 'checkPilotObservation339',
+    label: '§135.339 Check Pilot Observation',
+    abbrev: 'CHK OBS',
+    intervalMonths: 24,
+    graceMonths: 1,
+    category: 'TRAINING',
+    applicability: 'Authorized check pilots only',
+    citation: '14 CFR 135.339(a)-(b)',
+    notes: 'Conduct a check under required observation within 24 calendar months',
+  },
+  {
+    key: 'checkPilotFstdRecency337',
+    label: '§135.337(d) Check Pilot FSTD Recency',
+    abbrev: 'CHK FSTD',
+    intervalMonths: 12,
+    graceMonths: 1,
+    category: 'TRAINING',
+    applicability: 'Check pilot performing duties in an FSTD only',
+    citation: '14 CFR 135.337(d)-(e)',
+    notes: 'Two required-crewmember segments or approved line-observation program',
+  },
+  {
+    key: 'flightInstructorObservation340',
+    label: '§135.340 Flight Instructor Observation',
+    abbrev: 'FI OBS',
+    intervalMonths: 24,
+    graceMonths: 1,
+    category: 'TRAINING',
+    applicability: 'Part 135 flight instructors only',
+    citation: '14 CFR 135.340(a)-(b)',
+    notes: 'Conduct instruction under required observation within 24 calendar months',
+  },
+  {
+    key: 'flightInstructorFstdRecency338',
+    label: '§135.338(d) Instructor FSTD Recency',
+    abbrev: 'FI FSTD',
+    intervalMonths: 12,
+    graceMonths: 1,
+    category: 'TRAINING',
+    applicability: 'Flight instructor performing duties in an FSTD only',
+    citation: '14 CFR 135.338(d)-(e)',
+    notes: 'Two required-crewmember segments or approved line-observation program',
+  },
+  {
+    key: 'rvsmTraining',
+    label: 'RVSM Qualification',
+    abbrev: 'RVSM',
+    category: 'SPECIAL OPS',
+    operatorDefined: true,
+    applicability: 'Pilots assigned to RVSM operations per OpSpecs/training program',
+    notes: 'No universal Part 135 recurrence interval; enter operator-program due date',
+  },
+  {
+    key: 'tfsspTraining',
+    label: 'TFSSP Training',
+    abbrev: 'TFSSP',
+    category: 'SPECIAL OPS',
+    operatorDefined: true,
+    applicability: 'Only when required by the operator’s TSA security program',
+    notes: 'Enter the due date required by the approved security program',
+  },
+  {
+    key: 'dasspTraining',
+    label: 'DASSP Training',
+    abbrev: 'DASSP',
+    category: 'SPECIAL OPS',
+    operatorDefined: true,
+    applicability: 'Only for DASSP-covered operations/personnel',
+    notes: 'Enter the due date required by the approved security program',
+  },
+  {
+    key: 'kcmBadge',
+    label: 'Known Crewmember Badge',
+    abbrev: 'KCM',
+    noExpiration: true,
+    category: 'BADGES',
+    applicability: 'Only enrolled crewmembers',
+    notes: 'Administrative credential, not a Part 135 pilot currency rule',
   },
 ];
-
-// Days-out thresholds. Change here to tune the entire dashboard.
-// CRITICAL = the "do something this week" bucket. WARNING = "schedule
-// the check now." CAUTION = "we'll need to look at this soon."
-export const STATUS_THRESHOLDS = {
-  CRITICAL: 14,
-  WARNING: 30,
-  CAUTION: 60,
-};
 
 // Color palette per status. Matches the wear-watch coloring so pilots
 // see consistent visual cues across the app.
@@ -129,77 +368,59 @@ export const STATUS_COLORS = {
   critical: { bg: 'bg-red-500/15',     border: 'border-red-500/30',    text: 'text-red-300',     label: 'CRITICAL' },
   expired:  { bg: 'bg-red-500/30',     border: 'border-red-500/60',    text: 'text-red-200',     label: 'EXPIRED' },
   unknown:  { bg: 'bg-slate-500/15',   border: 'border-slate-500/30',  text: 'text-slate-400',   label: 'NOT SET' },
+  na:       { bg: 'bg-slate-900/20',   border: 'border-slate-800',     text: 'text-slate-600',   label: 'N/A' },
+  noExpiration: { bg: 'bg-cyan-500/10', border: 'border-cyan-500/30', text: 'text-cyan-300', label: 'ON FILE' },
 };
-
-// Compute status for a {lastDate, notes} item plus an interval (days).
-// Returns { status, dueDate (YYYY-MM-DD), daysUntil (signed) }.
-//
-// Negative daysUntil = expired. Positive = days remaining.
-// Sentinel 'unknown' when the lastDate is missing/malformed.
-export function computeStatus(item, intervalDays, todayMs = Date.now()) {
-  if (!item || !item.lastDate) {
-    return { status: 'unknown', dueDate: null, daysUntil: null };
-  }
-  const last = new Date(item.lastDate);
-  if (!Number.isFinite(last.getTime())) {
-    return { status: 'unknown', dueDate: null, daysUntil: null };
-  }
-  const dueDateMs = last.getTime() + intervalDays * 86400000;
-  const daysUntil = Math.floor((dueDateMs - todayMs) / 86400000);
-  return {
-    status: bucketize(daysUntil),
-    dueDate: new Date(dueDateMs).toISOString().slice(0, 10),
-    daysUntil,
-  };
-}
-
-// Medical is special: uses an explicit expirationDate rather than an
-// interval (FAA medical validity periods depend on age + class — easier
-// to store the date that's printed on the certificate).
-export function computeMedicalStatus(med, todayMs = Date.now()) {
-  if (!med || !med.expirationDate) {
-    return { status: 'unknown', dueDate: null, daysUntil: null };
-  }
-  const due = new Date(med.expirationDate);
-  if (!Number.isFinite(due.getTime())) {
-    return { status: 'unknown', dueDate: null, daysUntil: null };
-  }
-  const daysUntil = Math.floor((due.getTime() - todayMs) / 86400000);
-  return {
-    status: bucketize(daysUntil),
-    dueDate: med.expirationDate,
-    daysUntil,
-  };
-}
-
-function bucketize(daysUntil) {
-  if (daysUntil < 0) return 'expired';
-  if (daysUntil <= STATUS_THRESHOLDS.CRITICAL) return 'critical';
-  if (daysUntil <= STATUS_THRESHOLDS.WARNING) return 'warning';
-  if (daysUntil <= STATUS_THRESHOLDS.CAUTION) return 'caution';
-  return 'current';
-}
 
 // Roll up worst-case status across every tracked item for one pilot.
 // Used by the pilot-card "summary" line and by the top-of-screen counts.
 export function rollupPilotStatus(currencyDoc, todayMs = Date.now()) {
   if (!currencyDoc) {
-    return { status: 'unknown', worstDays: null, expiredCount: 0, warningCount: 0 };
+    return {
+      status: 'unknown',
+      worstDays: null,
+      expiredCount: 0,
+      warningCount: 0,
+      unknownCount: CURRENCY_TYPES.length + 1,
+      applicableCount: CURRENCY_TYPES.length + 1,
+    };
   }
   let worstDays = Infinity;
   let worstStatus = 'current';
   let expiredCount = 0;
   let warningCount = 0;
+  let unknownCount = 0;
+  let applicableCount = 0;
+  const statusRank = {
+    expired: 6,
+    critical: 5,
+    warning: 4,
+    caution: 3,
+    unknown: 2,
+    current: 1,
+    noExpiration: 1,
+    na: 0,
+  };
   const fold = (r) => {
+    if (r.status === 'na') return;
+    applicableCount++;
     if (r.status === 'expired') expiredCount++;
     if (['warning', 'critical'].includes(r.status)) warningCount++;
-    if (r.daysUntil != null && r.daysUntil < worstDays) {
+    if (r.status === 'unknown') unknownCount++;
+    if (
+      statusRank[r.status] > statusRank[worstStatus]
+      || (
+        statusRank[r.status] === statusRank[worstStatus]
+        && r.daysUntil != null
+        && r.daysUntil < worstDays
+      )
+    ) {
       worstDays = r.daysUntil;
       worstStatus = r.status;
     }
   };
   for (const type of CURRENCY_TYPES) {
-    fold(computeStatus(currencyDoc[type.key], type.interval, todayMs));
+    fold(computeStatus(currencyDoc[type.key], type.interval, todayMs, type));
   }
   fold(computeMedicalStatus(currencyDoc.medical, todayMs));
   return {
@@ -207,6 +428,8 @@ export function rollupPilotStatus(currencyDoc, todayMs = Date.now()) {
     worstDays: Number.isFinite(worstDays) ? worstDays : null,
     expiredCount,
     warningCount,
+    unknownCount,
+    applicableCount,
   };
 }
 
