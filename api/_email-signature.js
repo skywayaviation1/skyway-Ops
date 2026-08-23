@@ -23,6 +23,8 @@
 
 export const LOGO_URL = 'https://www.skyway.app/skyway-logo.png';
 export const REPLY_TO_CONTACT = 'charters@flyskyway.com';
+/** Lower-cased form, for recipient comparisons. */
+export const CHARTER_INBOX = REPLY_TO_CONTACT.toLowerCase();
 export const REPLY_TO_PHONE = '727-605-5000';
 export const NO_REPLY_NOTICE = 'This is an automated message from Skyway Ops. Please do not reply to this email.';
 

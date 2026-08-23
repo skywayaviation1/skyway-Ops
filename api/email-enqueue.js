@@ -31,8 +31,11 @@
 
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
-import { applySkywaySignature, textToHtml, withCharterCopy } from './_email-signature.js';
+import {
+  CHARTER_INBOX, applySkywaySignature, textToHtml, withCharterCopy,
+} from './_email-signature.js';
 import { explainSendFailure, isPermanentSendFailure } from './_email-delivery.js';
+import { fileCharterInboxCopy } from './_charter-copy.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -176,12 +179,30 @@ export default async function handler(req, res) {
       headers: threadHeaders,
     });
 
+    // The charter inbox is in the operator's own Microsoft 365 tenant, and the
+    // provider sends from a subdomain of that same domain, so Exchange treats
+    // the copy addressed to it as spoofed and filters it before it lands. That
+    // is why brokers receive these notifications and charters@ does not. Write
+    // its copy straight into the mailbox instead, which no filter sits in front
+    // of. Best-effort: the broker's message has already gone out by this point.
+    const charterCopy = finalCc.some((entry) => entry.toLowerCase() === CHARTER_INBOX)
+      || finalTo.some((entry) => entry.toLowerCase() === CHARTER_INBOX)
+        ? await fileCharterInboxCopy({
+          subject: String(subject).slice(0, 200),
+          html: wrappedHtml,
+          to: finalTo,
+          cc: finalCc,
+          from: from || null,
+        })
+        : { ok: false, skipped: 'charter inbox not a recipient' };
+
     // Write the record either way — sent or pending. This gives us a full
     // audit trail of every email that should have gone out, regardless of
     // delivery success.
     const baseRecord = {
       to: finalTo,
       cc: finalCc,
+      charterCopy,
       subject: String(subject).slice(0, 200),
       html: wrappedHtml,
       from: from || null,
@@ -209,6 +230,7 @@ export default async function handler(req, res) {
       });
       console.log('[email-enqueue] SENT inline', id, '→', finalTo.join(','),
         '· cc:', finalCc.join(',') || '-',
+        '· charter copy:', charterCopy.ok ? 'filed' : (charterCopy.skipped || charterCopy.error),
         '· resend id:', sendResult.id, '· source:', source || '-');
       return res.status(200).json({
         ok: true,

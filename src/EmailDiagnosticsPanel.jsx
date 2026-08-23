@@ -201,6 +201,65 @@ export default function EmailDiagnosticsPanel({ currentUser }) {
             <Row label="Last successful send" value={fmtTime(queue.lastSentAt)} />
           </div>
 
+          {/* Charter inbox — its copy is written into the mailbox, not emailed */}
+          {report.charterInbox && (
+            <div className="border border-slate-800 bg-slate-900/40 p-3">
+              <div className="text-[10px] tracking-widest text-slate-500 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                CHARTER INBOX COPY
+              </div>
+              <Row label="Address" value={report.charterInbox.address} />
+              <Row
+                label="Mailbox write"
+                value={report.charterInbox.mailboxWriteConfigured ? 'configured' : 'NOT CONFIGURED'}
+                good={report.charterInbox.mailboxWriteConfigured}
+              />
+              <Row label="Copies filed" value={String(report.charterInbox.copiesFiled)} good={report.charterInbox.copiesFiled > 0 ? true : undefined} />
+              <Row label="Copies failed" value={String(report.charterInbox.copiesFailed)} good={report.charterInbox.copiesFailed === 0} />
+              {report.charterInbox.sameTenantAsSender && (
+                <p className="mt-2 text-[10px] text-amber-200/80" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                  Notifications are sent from a subdomain of this mailbox&apos;s own domain, so its
+                  tenant treats the emailed copy as spoofed and filters it. Copies are written
+                  directly into the mailbox instead.
+                </p>
+              )}
+              {report.charterInbox.lastError && (
+                <p className="mt-1 text-[10px] text-red-300 break-all" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  {report.charterInbox.lastError}
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Per-message outcome straight from the provider */}
+          {report.recentDeliveries?.length > 0 && (
+            <div className="border border-slate-800 bg-slate-900/40 p-3 space-y-1">
+              <div className="text-[10px] tracking-widest text-slate-500 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                PROVIDER DELIVERY OUTCOME
+              </div>
+              {report.recentDeliveries.map((d) => (
+                <div key={d.queueId} className="flex items-start justify-between gap-3">
+                  <span className="text-[11px] text-slate-300 truncate" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                    {d.subject || '(no subject)'}
+                  </span>
+                  <span
+                    className={`shrink-0 text-[10px] ${
+                      d.lastEvent === 'delivered' ? 'text-emerald-300'
+                        : d.lastEvent ? 'text-amber-300' : 'text-slate-500'
+                    }`}
+                    style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                  >
+                    {d.lastEvent || d.error || 'unknown'}
+                  </span>
+                </div>
+              ))}
+              {report.deliveredButUnseenHint && (
+                <p className="pt-1 text-[10px] text-slate-500" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                  {report.deliveredButUnseenHint}
+                </p>
+              )}
+            </div>
+          )}
+
           {/* Failures */}
           {queue.failures?.length > 0 && (
             <div className="border border-slate-800 bg-slate-900/40 p-3 space-y-2">

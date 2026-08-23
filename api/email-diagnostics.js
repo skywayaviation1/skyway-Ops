@@ -15,8 +15,9 @@
 
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
-import { applySkywaySignature, textToHtml } from './_email-signature.js';
+import { REPLY_TO_CONTACT, applySkywaySignature, textToHtml } from './_email-signature.js';
 import { explainSendFailure, isPermanentSendFailure } from './_email-delivery.js';
+import { isSharedMailConfigured } from './_charter-mail.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -138,6 +139,49 @@ async function domainReport() {
   }
 }
 
+/**
+ * Ask the provider what became of individual messages it accepted.
+ *
+ * "Accepted for delivery" and "landed in the mailbox" are different things. When
+ * a recipient reports missing mail that the provider says it delivered, the
+ * filtering is happening at the receiving end, and this is the evidence for that.
+ */
+async function deliveryOutcomes(rows) {
+  if (!process.env.RESEND_API_KEY || rows.length === 0) return [];
+  const results = [];
+  for (const row of rows.slice(0, 8)) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+      const r = await fetch(`https://api.resend.com/emails/${encodeURIComponent(row.resendId)}`, {
+        headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}` },
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      const data = await r.json().catch(() => ({}));
+      results.push({
+        queueId: row.queueId,
+        resendId: row.resendId,
+        subject: row.subject,
+        sentAt: row.sentAt,
+        to: data.to || row.to,
+        cc: data.cc || row.cc,
+        lastEvent: r.ok ? (data.last_event || null) : null,
+        error: r.ok ? null : (data.message || `Provider returned ${r.status}`),
+      });
+    } catch (err) {
+      results.push({
+        queueId: row.queueId,
+        resendId: row.resendId,
+        subject: row.subject,
+        lastEvent: null,
+        error: `Network: ${err.message || String(err)}`,
+      });
+    }
+  }
+  return results;
+}
+
 /** Queue health: counts by status plus the most recent failures with cause. */
 async function queueReport(db) {
   const snap = await db.collection('email-queue')
@@ -147,6 +191,8 @@ async function queueReport(db) {
 
   const counts = { pending: 0, sending: 0, sent: 0, failed: 0, dead: 0, other: 0 };
   const failures = [];
+  const sentWithId = [];
+  const charterCopy = { filed: 0, skipped: 0, failed: 0, lastError: null };
   let lastSentAt = null;
 
   for (const doc of snap.docs) {
@@ -157,6 +203,26 @@ async function queueReport(db) {
 
     if (status === 'sent' && d.sentAt && (!lastSentAt || d.sentAt > lastSentAt)) {
       lastSentAt = d.sentAt;
+    }
+    if (status === 'sent' && d.resendId && sentWithId.length < 8) {
+      sentWithId.push({
+        queueId: doc.id,
+        resendId: d.resendId,
+        subject: d.subject || '',
+        sentAt: d.sentAt || null,
+        to: d.to || [],
+        cc: d.cc || [],
+      });
+    }
+    // How the charter inbox's own copy fared. Its mail is written straight into
+    // the mailbox because tenant filtering drops the emailed copy.
+    if (d.charterCopy) {
+      if (d.charterCopy.ok) charterCopy.filed += 1;
+      else if (d.charterCopy.skipped) charterCopy.skipped += 1;
+      else {
+        charterCopy.failed += 1;
+        charterCopy.lastError = charterCopy.lastError || d.charterCopy.error || null;
+      }
     }
     if ((status === 'failed' || status === 'dead') && failures.length < 10) {
       failures.push({
@@ -176,7 +242,7 @@ async function queueReport(db) {
     }
   }
 
-  return { sampled: snap.size, counts, failures, lastSentAt };
+  return { sampled: snap.size, counts, failures, lastSentAt, charterCopy, sentWithId };
 }
 
 async function sendTest(to) {
@@ -273,6 +339,7 @@ export default async function handler(req, res) {
 
     const [domains, queue] = await Promise.all([domainReport(), queueReport(db)]);
     const config = configReport();
+    const recentDeliveries = await deliveryOutcomes(queue.sentWithId || []);
 
     // Rank the causes an operator can actually act on.
     const problems = [];
@@ -294,6 +361,25 @@ export default async function handler(req, res) {
     if (config.deadLetterAlertRecipients === 0) {
       problems.push('OPS_ALERT_EMAILS is empty, so abandoned emails alert nobody.');
     }
+    if (queue.charterCopy?.failed > 0) {
+      problems.push(
+        `Could not file ${queue.charterCopy.failed} copy(ies) into ${REPLY_TO_CONTACT}: `
+        + `${queue.charterCopy.lastError || 'unknown error'}`,
+      );
+    }
+    if (!isSharedMailConfigured() && queue.counts.sent > 0) {
+      problems.push(
+        `Shared mailbox Graph credentials are not configured, so ${REPLY_TO_CONTACT} can only be `
+        + 'reached by email — which its own tenant filters as spoofed, because notifications are '
+        + `sent from ${config.fromDomain}.`,
+      );
+    }
+    // Provider says delivered but the mailbox disagrees → receiving-side filtering.
+    const delivered = recentDeliveries.filter((d) => d.lastEvent === 'delivered');
+    const rejected = recentDeliveries.filter((d) => ['bounced', 'complained', 'suppressed', 'failed'].includes(d.lastEvent));
+    for (const d of rejected) {
+      problems.push(`The provider reports "${d.lastEvent}" for "${d.subject}" — that address is not accepting mail.`);
+    }
 
     res.status(200).json({
       action: 'status',
@@ -301,6 +387,22 @@ export default async function handler(req, res) {
       config,
       domains,
       queue,
+      recentDeliveries,
+      charterInbox: {
+        address: REPLY_TO_CONTACT,
+        mailboxWriteConfigured: isSharedMailConfigured(),
+        copiesFiled: queue.charterCopy?.filed || 0,
+        copiesFailed: queue.charterCopy?.failed || 0,
+        lastError: queue.charterCopy?.lastError || null,
+        // Same-tenant sender domain is what triggers the filtering.
+        sameTenantAsSender: String(config.fromDomain || '').endsWith(
+          REPLY_TO_CONTACT.split('@')[1],
+        ),
+      },
+      deliveredButUnseenHint: delivered.length > 0
+        ? 'The provider reports these as delivered to the receiving mail server. '
+          + 'Anything missing from an inbox after that is filtering or a rule on the receiving side.'
+        : null,
       problems,
       healthy: problems.length === 0,
     });
