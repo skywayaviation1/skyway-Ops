@@ -46,7 +46,7 @@ export function computeStatus(item, intervalDays, todayMs = Date.now(), type = {
   if (item?.notApplicable === true) {
     return { status: 'na', dueDate: null, daysUntil: null };
   }
-  if (type.noExpiration) {
+  if (type.noExpiration || item?.noExpiration === true) {
     return item?.present === true
       ? { status: 'noExpiration', dueDate: null, daysUntil: null }
       : { status: 'unknown', dueDate: null, daysUntil: null };

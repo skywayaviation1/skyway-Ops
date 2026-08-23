@@ -140,11 +140,11 @@ export const CURRENCY_TYPES = [
     key: 'basicIndoctrination',
     label: 'Basic Indoctrination',
     abbrev: 'BASIC INDOC',
-    noExpiration: true,
+    operatorDefined: true,
     category: 'PART 135 GENERAL',
     applicability: 'Crewmember under the operator’s FAA-approved training program',
     citation: '14 CFR 135.323, 135.327, 135.329',
-    notes: 'Initial operator indoctrination; recurrent subjects are tracked separately',
+    notes: 'Company-specific due date imported from the approved-program report',
   },
   {
     key: 'groundOralGeneral293a',
@@ -380,10 +380,10 @@ export const CURRENCY_TYPES = [
     key: 'kcmBadge',
     label: 'Known Crewmember Badge',
     abbrev: 'KCM',
-    noExpiration: true,
+    operatorDefined: true,
     category: 'BADGES',
     applicability: 'Only enrolled crewmembers',
-    notes: 'Administrative credential, not a Part 135 pilot currency rule',
+    notes: 'Administrative credential; expiration comes from the company report',
   },
 ];
 
