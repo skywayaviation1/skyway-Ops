@@ -31,7 +31,7 @@
 
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
-import { applySkywaySignature, ensureCharterCc, textToHtml } from './_email-signature.js';
+import { applySkywaySignature, textToHtml, withCharterCopy } from './_email-signature.js';
 import { explainSendFailure, isPermanentSendFailure } from './_email-delivery.js';
 
 export const config = { runtime: 'nodejs' };
@@ -108,10 +108,13 @@ export default async function handler(req, res) {
   const validCc = Array.isArray(cc)
     ? cc.filter(e => typeof e === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e.trim()))
     : [];
-  // Auto-CC charters@flyskyway.com on every outgoing email so any broker
-  // replies land in the monitored inbox (despite the do-not-reply notice).
-  // The helper handles the "to is charter@" case internally (no self-CC).
-  const finalCc = ensureCharterCc(validCc, validTo);
+  // Put charters@flyskyway.com on the CC line of every outgoing email so any
+  // broker reply lands in the monitored inbox (despite the do-not-reply
+  // notice). Callers build recipient lists from an ops constant that is this
+  // same address, so this also moves it off the To line — otherwise it is a
+  // direct recipient and never shows as a CC. It stays on To only when it
+  // would otherwise be the sole recipient.
+  const { to: finalTo, cc: finalCc } = withCharterCopy({ to: validTo, cc: validCc });
 
   // Build the final HTML body. Either:
   //   - caller passed html → we wrap it with Skyway header/footer
@@ -165,7 +168,7 @@ export default async function handler(req, res) {
     // 99% of emails take. The dispatcher tapped the status; they want the
     // email out NOW, not in 60 seconds when the queue cron next runs.
     const sendResult = await sendViaResendInline({
-      to: validTo,
+      to: finalTo,
       cc: finalCc,
       subject: String(subject).slice(0, 200),
       html: wrappedHtml,
@@ -177,7 +180,7 @@ export default async function handler(req, res) {
     // audit trail of every email that should have gone out, regardless of
     // delivery success.
     const baseRecord = {
-      to: validTo,
+      to: finalTo,
       cc: finalCc,
       subject: String(subject).slice(0, 200),
       html: wrappedHtml,
@@ -204,7 +207,8 @@ export default async function handler(req, res) {
         nextAttemptAt: null,
         deadAt: null,
       });
-      console.log('[email-enqueue] SENT inline', id, '→', validTo.join(','),
+      console.log('[email-enqueue] SENT inline', id, '→', finalTo.join(','),
+        '· cc:', finalCc.join(',') || '-',
         '· resend id:', sendResult.id, '· source:', source || '-');
       return res.status(200).json({
         ok: true,

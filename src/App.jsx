@@ -332,9 +332,13 @@ function extractTripInfo(event) {
    ============================================================ */
 const DEFAULT_ICAL_URL = 'https://portal.jetinsight.com/schedule/7a32dd47-6a5c-4c9c-b53b-864381bacebf/1243136b-b3ab-4dff-b0cf-edf264e20fbf.ics';
 
-// Hardcoded ops email — always CC'd on broker notifications. Cannot be
-// changed per-user (was previously a settings field, but ops policy is
-// that all status emails go to charters@flyskyway.com regardless of user).
+// Hardcoded ops email — copied on broker notifications. Cannot be changed
+// per-user (was previously a settings field, but ops policy is that all status
+// emails go to charters@flyskyway.com regardless of user).
+//
+// It is passed as a recipient here; the send endpoints move it to the CC line
+// whenever there is a broker to address the message to, so it reads as a copy
+// rather than as the addressee.
 const OPS_EMAIL = 'charters@flyskyway.com';
 
 // All Skyway aircraft registrations. Used for the Malfunction/Incident Report

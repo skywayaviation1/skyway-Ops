@@ -16,7 +16,7 @@
 //   x-internal-secret: <INTERNAL_API_SECRET> (server-to-server)
 
 import admin from 'firebase-admin';
-import { applySkywaySignature, ensureCharterCc, textToHtml } from './_email-signature.js';
+import { applySkywaySignature, textToHtml, withCharterCopy } from './_email-signature.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -113,11 +113,13 @@ export default async function handler(req, res) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
 
-    // Build a branded HTML body from the plain text caller passed us, and
-    // auto-CC charters@flyskyway.com so any reply (despite the do-not-reply
-    // notice in the wrapper) lands in the company's monitored inbox.
+    // Build a branded HTML body from the plain text caller passed us, and put
+    // charters@flyskyway.com on the CC line so any reply (despite the
+    // do-not-reply notice in the wrapper) lands in the company's monitored
+    // inbox. Callers pass an ops constant that is this same address, so it also
+    // has to come off the To line to actually appear as a CC.
     const html = applySkywaySignature(textToHtml(text));
-    const ccList = ensureCharterCc([], validRecipients);
+    const { to: finalTo, cc: ccList } = withCharterCopy({ to: validRecipients });
 
     const upstream = await fetch('https://api.resend.com/emails', {
       method: 'POST',
@@ -127,7 +129,7 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         from: 'Skyway Ops <noreply@send.flyskyway.com>',
-        to: validRecipients,
+        to: finalTo,
         cc: ccList,
         subject: String(subject).slice(0, 200),
         text: String(text).slice(0, 10000),
@@ -147,7 +149,8 @@ export default async function handler(req, res) {
       });
     }
 
-    console.log('[send-email] Sent OK, id:', data.id, 'to:', validRecipients.join(','));
+    console.log('[send-email] Sent OK, id:', data.id,
+      'to:', finalTo.join(','), 'cc:', ccList.join(',') || '-');
     return res.status(200).json({ ok: true, id: data.id });
   } catch (err) {
     console.error('[send-email] Network/timeout error:', err.message);
