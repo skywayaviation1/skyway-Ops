@@ -430,6 +430,7 @@ function createAircraftCandidate({
   next,
   route,
   startMs,
+  planningNowMs,
   rules,
 }) {
   const position = previous?.to || normalize(homeBase);
@@ -440,9 +441,10 @@ function createAircraftCandidate({
   const repoIn = reposition(position, route[0], icaoType, 'reposition-in');
   if (repoIn && !repoIn.ok) return { ok: false, reason: repoIn.reason };
 
-  const readyAfterPrevious = previous
-    ? previous.endMs + rules.turnMinutes * MINUTE_MS
-    : -Infinity;
+  const readyAfterPrevious = Math.max(
+    Number.isFinite(planningNowMs) ? planningNowMs : -Infinity,
+    previous ? previous.endMs + rules.turnMinutes * MINUTE_MS : -Infinity,
+  );
   const earliestByAircraft = repoIn
     ? readyAfterPrevious + (repoIn.blockMinutes + rules.turnMinutes) * MINUTE_MS
     : readyAfterPrevious;
@@ -526,6 +528,7 @@ export function evaluateTailAvailability({
   allTrips,
   route,
   requestedStartMs,
+  planningNowMs = Date.now(),
   crew = [],
   dutyPeriods = [],
   rules = AVAILABILITY_RULES,
@@ -546,6 +549,7 @@ export function evaluateTailAvailability({
       next,
       route,
       startMs: requestedStartMs,
+      planningNowMs,
       rules,
     });
     if (!base.ok) {
@@ -567,6 +571,7 @@ export function evaluateTailAvailability({
         next,
         route,
         startMs: candidateStart,
+        planningNowMs,
         rules,
       });
       if (!candidate.ok) break;
@@ -624,6 +629,7 @@ export function rankTailAvailability({
   allTrips,
   route,
   requestedStartMs,
+  planningNowMs = Date.now(),
   crew,
   dutyPeriods,
   rules = AVAILABILITY_RULES,
@@ -639,6 +645,7 @@ export function rankTailAvailability({
     allTrips,
     route,
     requestedStartMs,
+    planningNowMs,
     crew,
     dutyPeriods,
     rules,

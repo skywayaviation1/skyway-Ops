@@ -139,6 +139,22 @@ test('required repositioning is included before and after the request', () => {
   assert.ok(result.repositionMinutes > 0);
 });
 
+test('a reposition that would need to depart in the past creates a delay', () => {
+  const planningNow = at('2026-09-01T13:00:00Z');
+  const requested = at('2026-09-01T14:00:00Z');
+  const [result] = rankTailAvailability({
+    fleet: fleet({ homeBase: 'TEB' }),
+    allTrips: [],
+    route: ['APF', 'MCO'],
+    requestedStartMs: requested,
+    planningNowMs: planningNow,
+  });
+  assert.equal(result.ok, true);
+  assert.ok(result.delayMinutes > 0);
+  const repo = result.movements.find((movement) => movement.kind === 'reposition-in');
+  assert.ok(repo.startMs >= planningNow, 'reposition must not begin before planning now');
+});
+
 test('multi-leg request includes a 45-minute turn between routing legs', () => {
   const requested = at('2026-09-01T14:00:00Z');
   const [result] = rankTailAvailability({
