@@ -226,6 +226,13 @@ function ResultCard({ result, index, origin }) {
             {warning}
           </div>
         ))}
+        {result.consumedPositioning?.length > 0 && (
+          <div className="mb-2 rounded border border-success-border bg-success-soft p-2 text-[11px] text-success">
+            Request replaces scheduled reposition:{' '}
+            {result.consumedPositioning.map((leg) => leg.label).join(', ')}.
+            The following live leg is used as the next aircraft constraint.
+          </div>
+        )}
 
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           <Stat label="REQUEST FLIGHT" value={formatDuration(result.requestFlightMinutes)} />

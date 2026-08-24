@@ -28,6 +28,9 @@ function trip({
   end,
   pic = '',
   sic = '',
+  category = 'REVENUE',
+  legType = category === 'REVENUE' ? 'REVENUE' : 'REPO',
+  pax = category === 'REVENUE' ? 1 : 0,
 }) {
   return {
     uid: id,
@@ -39,8 +42,9 @@ function trip({
       to,
       pic,
       sic,
-      category: 'REVENUE',
-      legType: 'REVENUE',
+      category,
+      legType,
+      pax,
       isFlight: true,
       isOps: true,
     },
@@ -187,6 +191,80 @@ test('engine advances to a later schedule gap and reports required delay', () =>
   assert.equal(result.ok, true);
   assert.equal(result.status, 'delayed');
   assert.ok(result.delayMinutes > 3 * 60, `delay was only ${result.delayMinutes}m`);
+});
+
+test('a matching live request consumes the scheduled reposition and uses the following leg', () => {
+  const requested = at('2026-09-04T13:45:00Z');
+  const prior = trip({
+    id: 'dab-mynn',
+    tail: 'NTEST',
+    from: 'DAB',
+    to: 'MYNN',
+    start: requested - 4 * HR,
+    end: requested - 2 * HR,
+  });
+  const scheduledRepo = trip({
+    id: 'mynn-hpn-repo',
+    tail: 'NTEST',
+    from: 'MYNN',
+    to: 'HPN',
+    start: requested + 22 * HR,
+    end: requested + 25 * HR,
+    category: 'REPO',
+  });
+  const followingLive = trip({
+    id: 'hpn-grb-live',
+    tail: 'NTEST',
+    from: 'HPN',
+    to: 'GRB',
+    start: requested + 28 * HR,
+    end: requested + 30 * HR,
+  });
+  const [result] = rankTailAvailability({
+    fleet: fleet(),
+    allTrips: [prior, scheduledRepo, followingLive],
+    route: ['MYNN', 'HPN'],
+    requestedStartMs: requested,
+    planningNowMs: requested - 3 * HR,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.startMs, requested);
+  assert.deepEqual(result.consumedPositioning.map((leg) => leg.id), ['mynn-hpn-repo']);
+  assert.equal(result.next.id, 'hpn-grb-live');
+  assert.equal(result.next.from, 'HPN');
+  // The old bug sent the airplane HPN → MYNN just to operate a repo the new
+  // live request had already fulfilled.
+  assert.equal(result.movements.some((movement) => (
+    movement.kind === 'reposition-out'
+    && movement.from === 'HPN'
+    && movement.to === 'MYNN'
+  )), false);
+});
+
+test('a revenue leg over the same route is not consumed', () => {
+  const requested = at('2026-09-04T13:45:00Z');
+  const scheduledRevenue = trip({
+    id: 'mynn-hpn-revenue',
+    tail: 'NTEST',
+    from: 'MYNN',
+    to: 'HPN',
+    start: requested + 5 * HR,
+    end: requested + 8 * HR,
+    category: 'REVENUE',
+  });
+  const [result] = rankTailAvailability({
+    fleet: fleet({ homeBase: 'MYNN' }),
+    allTrips: [scheduledRevenue],
+    route: ['MYNN', 'HPN'],
+    requestedStartMs: requested,
+    planningNowMs: requested - HR,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.consumedPositioning.length, 0);
+  // It cannot replace live revenue; if the first gap is too small, it must
+  // move to a later gap and report a delay.
+  assert.ok(result.delayMinutes > 0);
 });
 
 test('45-minute pre-duty and 30-minute post-duty are included', () => {

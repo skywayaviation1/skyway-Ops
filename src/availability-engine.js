@@ -180,6 +180,14 @@ function normalizeScheduleTrip(trip, tailType) {
     blockMinutes,
     tail: normalize(trip.info.tail),
     crewNames: tripCrewNames(trip),
+    category: String(trip.info.category || '').toUpperCase(),
+    legType: String(trip.info.legType || '').toUpperCase(),
+    pax: Number(trip.info.pax || 0),
+    isPositioning: ['REPO', 'FERRY'].includes(String(trip.info.category || '').toUpperCase())
+      || (
+        String(trip.info.legType || '').toUpperCase() === 'REPO'
+        && Number(trip.info.pax || 0) === 0
+      ),
     label: `${normalize(trip.info.from)} → ${normalize(trip.info.to)}`,
     source: trip,
   };
@@ -290,6 +298,7 @@ export function evaluateCrewFit({
   movements,
   dutyPeriods = [],
   outsideFlying = [],
+  ignoredTripIds = [],
   rules = AVAILABILITY_RULES,
   tailTypeByTail = {},
 }) {
@@ -305,6 +314,7 @@ export function evaluateCrewFit({
 
   const results = [];
   for (const member of selected) {
+    const ignored = new Set(ignoredTripIds);
     const matchingPeriods = (Array.isArray(dutyPeriods) ? dutyPeriods : [])
       .filter((period) => {
         if (member.uid && period?.pilotUid === member.uid) return true;
@@ -320,6 +330,7 @@ export function evaluateCrewFit({
 
     const scheduled = (Array.isArray(allTrips) ? allTrips : [])
       .filter(isOperationalFlight)
+      .filter((trip) => !ignored.has(trip.uid))
       .filter((trip) => tripCrewNames(trip).some((name) => crewNameMatches(name, member.name)))
       .filter((trip) => !recordedTripIds.has(trip.uid))
       .map((trip) => normalizeScheduleTrip(
@@ -449,6 +460,7 @@ function createAircraftCandidate({
   homeBase,
   previous,
   next,
+  consumedPositioning = [],
   route,
   startMs,
   planningNowMs,
@@ -535,7 +547,29 @@ function createAircraftCandidate({
       .reduce((sum, leg) => sum + leg.distanceNm, 0),
     previous,
     next,
+    consumedPositioning,
   };
+}
+
+/**
+ * A requested live leg can replace an already-scheduled reposition over the
+ * same route. In that case the aircraft's next real obligation is the leg
+ * after the repo, at the repo destination; sending it back to the repo origin
+ * would recreate a positioning leg that the request has already fulfilled.
+ */
+function nextConstraintForGap(schedule, gap, route) {
+  const immediate = gap < schedule.length ? schedule[gap] : null;
+  if (
+    immediate?.isPositioning
+    && immediate.from === route[0]
+    && immediate.to === route[route.length - 1]
+  ) {
+    return {
+      next: gap + 1 < schedule.length ? schedule[gap + 1] : null,
+      consumedPositioning: [immediate],
+    };
+  }
+  return { next: immediate, consumedPositioning: [] };
 }
 
 /**
@@ -562,13 +596,14 @@ export function evaluateTailAvailability({
 
   for (let gap = 0; gap <= schedule.length; gap += 1) {
     const previous = gap > 0 ? schedule[gap - 1] : null;
-    const next = gap < schedule.length ? schedule[gap] : null;
+    const { next, consumedPositioning } = nextConstraintForGap(schedule, gap, route);
     const base = createAircraftCandidate({
       tail,
       icaoType,
       homeBase,
       previous,
       next,
+      consumedPositioning,
       route,
       startMs: requestedStartMs,
       planningNowMs,
@@ -591,6 +626,7 @@ export function evaluateTailAvailability({
         homeBase,
         previous,
         next,
+        consumedPositioning,
         route,
         startMs: candidateStart,
         planningNowMs,
@@ -603,6 +639,7 @@ export function evaluateTailAvailability({
         movements: candidate.movements,
         dutyPeriods,
         outsideFlying,
+        ignoredTripIds: consumedPositioning.map((leg) => leg.id),
         rules,
         tailTypeByTail,
       });
