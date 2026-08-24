@@ -294,6 +294,35 @@ test('rolling 10 flight hours in 24 uses interval overlap, not whole-period plac
   assert.match(fit.reasons.join(' '), /rolling 24h exceeds/);
 });
 
+test('outside-operator flying counts toward flight, duty, and rest limits', () => {
+  const start = at('2026-09-02T14:00:00Z');
+  const movement = {
+    id: 'request',
+    kind: 'request',
+    startMs: start,
+    endMs: start + 2 * HR,
+    flightMinutes: 120,
+  };
+  const fit = evaluateCrewFit({
+    crew: [{ uid: 'p1', name: 'Jane Pilot' }],
+    allTrips: [],
+    movements: [movement],
+    dutyPeriods: [],
+    outsideFlying: [{
+      id: 'outside',
+      pilotUid: 'p1',
+      pilotName: 'Jane Pilot',
+      startAt: start - 20 * HR,
+      endAt: start - 10.5 * HR,
+      flightTimeMs: 9.5 * HR,
+      source: 'Other operator',
+    }],
+  });
+  assert.equal(fit.legal, false);
+  assert.ok(fit.members[0].maxRollingFlightMinutes > 600);
+  assert.match(fit.reasons.join(' '), /rolling 24h exceeds/);
+});
+
 test('tails are ranked by delay, then repositioning', () => {
   const requested = at('2026-09-01T14:00:00Z');
   const results = rankTailAvailability({
@@ -318,5 +347,8 @@ test('Availability is a role-gated lazy Flights tab fed by the live schedule', a
   assert.match(app, /children: \['schedule', 'availability', 'ops'/);
   assert.match(app, /section === 'availability'/);
   assert.match(app, /<AvailabilityLazy[\s\S]*?allTrips=\{allTrips\}[\s\S]*?config=\{config\}[\s\S]*?users=\{users\}/);
+  const component = await readFile(path.join(root, 'src/Availability.jsx'), 'utf8');
+  assert.match(component, /subscribeOutsideReportForAllPilots\(3, setOutsideFlying\)/);
+  assert.match(component, /outsideFlying,/);
 });
 

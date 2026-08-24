@@ -15,6 +15,7 @@ import {
 } from './fleet-config.js';
 import {
   subscribeAllOnDuty,
+  subscribeOutsideReportForAllPilots,
   subscribeRecentForAllPilots,
 } from './firebase-duty-v2.js';
 import { formatLocalDate, formatLocalTime } from './airports.js';
@@ -267,13 +268,16 @@ export default function Availability({ allTrips = [], config = {}, users = [] })
   const [error, setError] = useState(null);
   const [recentDuty, setRecentDuty] = useState([]);
   const [activeDuty, setActiveDuty] = useState([]);
+  const [outsideFlying, setOutsideFlying] = useState([]);
 
   useEffect(() => {
     const unsubRecent = subscribeRecentForAllPilots(3, setRecentDuty);
     const unsubActive = subscribeAllOnDuty(setActiveDuty);
+    const unsubOutside = subscribeOutsideReportForAllPilots(3, setOutsideFlying);
     return () => {
       unsubRecent?.();
       unsubActive?.();
+      unsubOutside?.();
     };
   }, []);
 
@@ -310,8 +314,9 @@ export default function Availability({ allTrips = [], config = {}, users = [] })
       requestedStartMs: query.requestedStartMs,
       crew: query.crew,
       dutyPeriods,
+      outsideFlying,
     });
-  }, [query, fleet, allTrips, dutyPeriods]);
+  }, [query, fleet, allTrips, dutyPeriods, outsideFlying]);
 
   function selectedCrew() {
     const build = (uid, role) => {
@@ -453,6 +458,8 @@ export default function Availability({ allTrips = [], config = {}, users = [] })
                   <span className="font-mono text-content">{operationalTripCount(allTrips)} scheduled flight legs</span>
                   {' · '}
                   <span className="font-mono text-content">{dutyPeriods.length} recent/active duty records</span>
+                  {' · '}
+                  <span className="font-mono text-content">{outsideFlying.length} outside-flight records</span>
                 </div>
               </div>
             </div>

@@ -289,6 +289,7 @@ export function evaluateCrewFit({
   allTrips,
   movements,
   dutyPeriods = [],
+  outsideFlying = [],
   rules = AVAILABILITY_RULES,
   tailTypeByTail = {},
 }) {
@@ -311,6 +312,11 @@ export function evaluateCrewFit({
       })
       .filter((period) => period?.confirmStatus !== 'pending' && period?.confirmStatus !== 'declined');
     const recordedTripIds = new Set(matchingPeriods.map((period) => period.tripId).filter(Boolean));
+    const matchingOutside = (Array.isArray(outsideFlying) ? outsideFlying : [])
+      .filter((entry) => {
+        if (member.uid && entry?.pilotUid === member.uid) return true;
+        return crewNameMatches(entry?.pilotName, member.name);
+      });
 
     const scheduled = (Array.isArray(allTrips) ? allTrips : [])
       .filter(isOperationalFlight)
@@ -333,6 +339,15 @@ export function evaluateCrewFit({
           flightMinutes: Number(period.flightTimeMs) / MINUTE_MS,
         }))
         .filter((event) => Number.isFinite(event.startMs) && Number.isFinite(event.endMs)),
+      ...matchingOutside
+        .filter((entry) => Number(entry.flightTimeMs) > 0)
+        .map((entry) => ({
+          id: entry.id || `outside-${entry.startAt}`,
+          startMs: Number(entry.startAt),
+          endMs: Number(entry.endAt),
+          flightMinutes: Number(entry.flightTimeMs) / MINUTE_MS,
+        }))
+        .filter((event) => Number.isFinite(event.startMs) && Number.isFinite(event.endMs)),
       ...movements,
     ];
 
@@ -347,6 +362,12 @@ export function evaluateCrewFit({
         id: period.id || `duty-${period.dutyOnAt}`,
         startMs: Number(period.dutyOnAt),
         endMs: Number(period.dutyOffAt || Date.now()),
+        proposed: false,
+      })).filter((window) => Number.isFinite(window.startMs) && Number.isFinite(window.endMs)),
+      ...matchingOutside.map((entry) => ({
+        id: entry.id || `outside-${entry.startAt}`,
+        startMs: Number(entry.startAt),
+        endMs: Number(entry.endAt),
         proposed: false,
       })).filter((window) => Number.isFinite(window.startMs) && Number.isFinite(window.endMs)),
       {
@@ -531,6 +552,7 @@ export function evaluateTailAvailability({
   planningNowMs = Date.now(),
   crew = [],
   dutyPeriods = [],
+  outsideFlying = [],
   rules = AVAILABILITY_RULES,
   tailTypeByTail = {},
 }) {
@@ -580,6 +602,7 @@ export function evaluateTailAvailability({
         allTrips,
         movements: candidate.movements,
         dutyPeriods,
+        outsideFlying,
         rules,
         tailTypeByTail,
       });
@@ -632,6 +655,7 @@ export function rankTailAvailability({
   planningNowMs = Date.now(),
   crew,
   dutyPeriods,
+  outsideFlying,
   rules = AVAILABILITY_RULES,
 }) {
   const tailTypeByTail = Object.fromEntries((fleet || []).map((aircraft) => [
@@ -648,6 +672,7 @@ export function rankTailAvailability({
     planningNowMs,
     crew,
     dutyPeriods,
+    outsideFlying,
     rules,
     tailTypeByTail,
   }));
