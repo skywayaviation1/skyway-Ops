@@ -17,6 +17,8 @@
 
 import admin from 'firebase-admin';
 import { applySkywaySignature, textToHtml, withCharterCopy } from './_email-signature.js';
+import { explainSendFailure } from './_email-delivery.js';
+import { deliverNotification } from './_email-transport.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -48,10 +50,12 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const apiKey = process.env.RESEND_API_KEY;
-  if (!apiKey) {
-    console.error('[send-email] RESEND_API_KEY missing from env');
-    return res.status(500).json({ error: 'RESEND_API_KEY not configured on server' });
+  // No longer a hard stop: a message addressed only to mailboxes in the
+  // operator's own tenant is delivered by Exchange and needs no provider key.
+  // Anything bound for an outside recipient still fails, with the provider's
+  // own error, further down.
+  if (!process.env.RESEND_API_KEY) {
+    console.warn('[send-email] RESEND_API_KEY missing from env — only tenant mailboxes can be reached');
   }
 
   let body = req.body;
@@ -110,9 +114,6 @@ export default async function handler(req, res) {
   }
 
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
-
     // Build a branded HTML body from the plain text caller passed us, and put
     // charters@flyskyway.com on the CC line so any reply (despite the
     // do-not-reply notice in the wrapper) lands in the company's monitored
@@ -121,37 +122,28 @@ export default async function handler(req, res) {
     const html = applySkywaySignature(textToHtml(text));
     const { to: finalTo, cc: ccList } = withCharterCopy({ to: validRecipients });
 
-    const upstream = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        from: 'Skyway Ops <noreply@send.flyskyway.com>',
-        to: finalTo,
-        cc: ccList,
-        subject: String(subject).slice(0, 200),
-        text: String(text).slice(0, 10000),
-        html,
-      }),
-      signal: controller.signal,
+    // Same routing as the queue path: mailboxes in the operator's own tenant
+    // are delivered by Exchange, because provider mail from a subdomain of that
+    // tenant's domain is filtered as spoofing before it reaches an inbox.
+    const result = await deliverNotification({
+      to: finalTo,
+      cc: ccList,
+      subject: String(subject).slice(0, 200),
+      html,
     });
-    clearTimeout(timeout);
 
-    const data = await upstream.json().catch(() => ({}));
-
-    if (!upstream.ok) {
-      console.error('[send-email] Resend upstream error:', upstream.status, data);
-      return res.status(upstream.status).json({
-        error: data.message || `Resend returned ${upstream.status}`,
-        details: data,
+    if (!result.ok) {
+      console.error('[send-email] delivery failed:', result.error);
+      return res.status(502).json({
+        error: result.error || 'Send failed',
+        explanation: explainSendFailure(result.error),
       });
     }
 
-    console.log('[send-email] Sent OK, id:', data.id,
-      'to:', finalTo.join(','), 'cc:', ccList.join(',') || '-');
-    return res.status(200).json({ ok: true, id: data.id });
+    console.log('[send-email] Sent OK, id:', result.provider?.id || '-',
+      'to:', finalTo.join(','), 'cc:', ccList.join(',') || '-',
+      'tenant mailboxes:', result.internal?.ok ? 'sent by Exchange' : (result.internal?.skipped || '-'));
+    return res.status(200).json({ ok: true, id: result.provider?.id || null });
   } catch (err) {
     console.error('[send-email] Network/timeout error:', err.message);
     return res.status(502).json({ error: `Send failed: ${err.message}` });

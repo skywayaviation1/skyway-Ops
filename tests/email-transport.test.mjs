@@ -168,6 +168,12 @@ test('both the inline send and the retry cron use one routing decision', async (
   // No second provider implementation to drift out of step.
   assert.doesNotMatch(drain, /api\.resend\.com/);
   assert.doesNotMatch(enqueue, /api\.resend\.com/);
+
+  // The legacy direct sender is the fallback the app uses when the queue
+  // endpoint is unreachable, so it cannot keep its own unrouted send.
+  const legacy = await source('api/send-email.js');
+  assert.match(legacy, /deliverNotification\(\{/);
+  assert.doesNotMatch(legacy, /api\.resend\.com/);
 });
 
 test('the provider call cannot hang a request open forever', async () => {
