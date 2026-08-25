@@ -51,11 +51,19 @@ export function scheduledOnlyTails(trips, managedTails) {
 export function normalizeAircraftMeta(value) {
   const source = value && typeof value === 'object' ? value : {};
   const clean = (field, max = 80) => String(source[field] || '').trim().slice(0, max);
+  const money = (field) => {
+    if (source[field] === '' || source[field] == null) return null;
+    const amount = Number(source[field]);
+    if (!Number.isFinite(amount)) return null;
+    return Math.round(Math.min(1_000_000, Math.max(0, amount)) * 100) / 100;
+  };
   return {
     displayName: clean('displayName'),
     icaoType: clean('icaoType', 8).toUpperCase(),
     serialNumber: clean('serialNumber', 40),
     homeBase: clean('homeBase', 8).toUpperCase(),
+    costPerBlockHour: money('costPerBlockHour'),
+    sellPerBlockHour: money('sellPerBlockHour'),
   };
 }
 

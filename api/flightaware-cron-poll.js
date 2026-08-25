@@ -17,9 +17,79 @@
 
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
+import { lookupAirport } from './_airports-data.js';
+import { DEFAULT_MANAGED_TAILS, normalizeFleetTails } from '../src/fleet-config.js';
 
 const FA_API_BASE = 'https://aeroapi.flightaware.com/aeroapi';
-const FLEET_TAILS = ['N20UF', 'N168ZZ', 'N286N', 'N444AM', 'N651TW', 'N551FP', 'N85AH', 'N525CR'];
+export function resolveCronFleetTails(config) {
+  if (config?.configured === true) {
+    return normalizeFleetTails(config.managedTails || []);
+  }
+  return [...DEFAULT_MANAGED_TAILS];
+}
+
+/**
+ * Preserve the last usable coordinate through FlightAware gaps and failures.
+ * The API occasionally returns no completed flight, or a transient error,
+ * which must not make a parked aircraft disappear from every map.
+ */
+export function mergeFlightAwareState(previous, current, polledAt = Date.now()) {
+  const prior = previous && typeof previous === 'object' ? previous : {};
+  const next = current && typeof current === 'object' ? current : {};
+  if (next.error) {
+    return {
+      ...prior,
+      ident: next.ident || prior.ident || '',
+      error: next.error,
+      dataFresh: false,
+      polledAt,
+    };
+  }
+
+  const airbornePosition = next.airborne === true
+    && Number.isFinite(next.latitude) && Number.isFinite(next.longitude);
+  const groundPosition = next.airborne === false
+    && Number.isFinite(next.groundedLat) && Number.isFinite(next.groundedLon);
+  const lastKnown = airbornePosition
+    ? {
+      lastKnownLatitude: next.latitude,
+      lastKnownLongitude: next.longitude,
+      lastKnownAt: polledAt,
+      lastKnownAirport: null,
+    }
+    : groundPosition
+      ? {
+        lastKnownLatitude: next.groundedLat,
+        lastKnownLongitude: next.groundedLon,
+        lastKnownAt: next.groundedSince || polledAt,
+        lastKnownAirport: next.groundedAt || null,
+      }
+      : {
+        lastKnownLatitude: prior.lastKnownLatitude
+          ?? prior.groundedLat ?? prior.latitude ?? null,
+        lastKnownLongitude: prior.lastKnownLongitude
+          ?? prior.groundedLon ?? prior.longitude ?? null,
+        lastKnownAt: prior.lastKnownAt || prior.groundedSince || prior.polledAt || null,
+        lastKnownAirport: prior.lastKnownAirport || prior.groundedAt || null,
+      };
+
+  return {
+    ...prior,
+    ...next,
+    // Never erase a previously known parking location with an empty response.
+    groundedAt: next.groundedAt || (next.airborne === false ? prior.groundedAt : null) || null,
+    groundedLat: Number.isFinite(next.groundedLat)
+      ? next.groundedLat : (next.airborne === false ? prior.groundedLat : null),
+    groundedLon: Number.isFinite(next.groundedLon)
+      ? next.groundedLon : (next.airborne === false ? prior.groundedLon : null),
+    groundedSince: next.groundedSince
+      || (next.airborne === false ? prior.groundedSince : null) || null,
+    ...lastKnown,
+    error: null,
+    dataFresh: true,
+    polledAt,
+  };
+}
 
 let adminApp = null;
 let _db = null;
@@ -153,13 +223,20 @@ async function fetchTailState(ident, apiKey) {
   const lastLanded = completed[0];
   if (lastLanded) {
     const dest = lastLanded.destination || {};
+    const destCode = dest.code_icao || dest.code || dest.code_iata || null;
+    const knownDest = destCode ? lookupAirport(destCode) : null;
+    const origin = lastLanded.origin || {};
+    const originCode = origin.code_icao || origin.code || origin.code_iata || null;
+    const knownOrigin = originCode ? lookupAirport(originCode) : null;
     return {
       ident,
       airborne: false,
       faFlightId: lastLanded.fa_flight_id,
-      origin: lastLanded.origin?.code_icao || lastLanded.origin?.code || null,
-      originTz: lastLanded.origin?.timezone || null,
-      destination: dest.code_icao || dest.code || null,
+      origin: originCode,
+      originLat: knownOrigin?.latitude ?? origin.latitude ?? null,
+      originLon: knownOrigin?.longitude ?? origin.longitude ?? null,
+      originTz: origin.timezone || null,
+      destination: destCode,
       destinationCity: dest.city || null,
       destinationTz: dest.timezone || null,
       actualOff: lastLanded.actual_off || null,
@@ -171,10 +248,13 @@ async function fetchTailState(ident, apiKey) {
       // completed flight — that's where the plane is sitting now.
       // Both fleet board and TRACKING tab use these to draw the
       // parked-aircraft marker on the map.
-      groundedAt: dest.code_icao || dest.code || null,
-      groundedLat: dest.latitude ?? null,
-      groundedLon: dest.longitude ?? null,
+      groundedAt: destCode,
+      groundedLat: knownDest?.latitude ?? dest.latitude ?? null,
+      groundedLon: knownDest?.longitude ?? dest.longitude ?? null,
       groundedSince: lastLanded.actual_on,
+      lastOrigin: originCode,
+      lastOriginLat: knownOrigin?.latitude ?? origin.latitude ?? null,
+      lastOriginLon: knownOrigin?.longitude ?? origin.longitude ?? null,
     };
   }
 
@@ -484,23 +564,28 @@ export default async function handler(req, res) {
       return;
     }
 
+    const fleetSnap = await db.collection('app-config').doc('fleet').get();
+    const fleetTails = resolveCronFleetTails(fleetSnap.exists ? fleetSnap.data() : null);
+    if (fleetTails.length === 0) {
+      res.status(200).json({ ok: true, skipped: 'managed fleet is empty', results: [] });
+      return;
+    }
+
     const results = [];
 
     // Poll each tail in parallel
-    await Promise.all(FLEET_TAILS.map(async (ident) => {
+    await Promise.all(fleetTails.map(async (ident) => {
       try {
-        const current = await fetchTailState(ident, apiKey);
+        const observed = await fetchTailState(ident, apiKey);
 
         // Load previous state from flightaware-state/{tail}
         const stateRef = db.collection('flightaware-state').doc(ident);
         const prevSnap = await stateRef.get();
         const previous = prevSnap.exists ? prevSnap.data() : null;
+        const current = mergeFlightAwareState(previous, observed);
 
         // Always persist current state for next poll
-        await stateRef.set({
-          ...current,
-          polledAt: Date.now(),
-        });
+        await stateRef.set(current);
 
         // OPPORTUNISTIC AIRPORT CACHE
         //
@@ -549,7 +634,7 @@ export default async function handler(req, res) {
         }
 
         // Detect transitions
-        if (previous) {
+        if (previous && !observed.error) {
           // Transition 1: grounded → airborne (wheels up)
           if (previous.airborne === false && current.airborne === true) {
             const eventTimeMs = current.actualOff
@@ -603,7 +688,7 @@ export default async function handler(req, res) {
     }));
 
     console.log('[cron-poll]', JSON.stringify(results));
-    res.status(200).json({ ok: true, polled: FLEET_TAILS.length, results });
+    res.status(200).json({ ok: true, polled: fleetTails.length, results });
   } catch (err) {
     console.error('[cron-poll] fatal:', err);
     res.status(500).json({ error: err.message || 'Server error' });

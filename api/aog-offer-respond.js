@@ -13,6 +13,7 @@
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import { verifyAogToken } from './_aog-token.js';
+import { withCharterCopy } from './_email-signature.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -99,13 +100,18 @@ Coverage Rate: ${(coverage.rate * 100).toFixed(2)}%
 ${isAccept ? `Coverage Cost: ${fmtCurrency(coverage.coverageCost)}\n\nACTION REQUIRED: Add ${fmtCurrency(coverage.coverageCost)} to broker's JetInsight invoice.` : ''}
 Coverage ID: ${coverage.id || ''}`;
 
+  // Ops and charter flight support are configured recipients; the charter
+  // inbox is copied so the accept/decline outcome is on record there too.
+  const { to: notifyTo, cc: notifyCc } = withCharterCopy({ to: allRecipients });
+
   try {
     const r = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { Authorization: `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         from: fromAddr,
-        to: allRecipients,
+        to: notifyTo,
+        cc: notifyCc,
         subject,
         html,
         text,
@@ -116,7 +122,7 @@ Coverage ID: ${coverage.id || ''}`;
       console.error('[aog-offer-respond] notification email failed:', r.status, t.slice(0, 300));
       return { sent: 0, error: `Resend ${r.status}` };
     }
-    return { sent: allRecipients.length };
+    return { sent: notifyTo.length + notifyCc.length };
   } catch (e) {
     console.error('[aog-offer-respond] notification fetch failed:', e.message);
     return { sent: 0, error: e.message };

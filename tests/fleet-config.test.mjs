@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 import test from 'node:test';
 import {
   DEFAULT_MANAGED_TAILS,
@@ -9,6 +11,8 @@ import {
   resolveManagedTails,
   scheduledOnlyTails,
 } from '../src/fleet-config.js';
+
+const root = path.resolve(import.meta.dirname, '..');
 
 test('tail normalization is stable and de-duplicates values', () => {
   assert.equal(normalizeTail(' n20uf '), 'N20UF');
@@ -46,10 +50,18 @@ test('aircraft metadata is admin supplied and never guessed from a tail', () => 
     icaoType: '',
     serialNumber: '',
     homeBase: '',
+    costPerBlockHour: null,
+    sellPerBlockHour: null,
   });
   const config = {
     aircraftByTail: {
-      n20uf: { displayName: 'Verified Model', icaoType: 'c25b', homeBase: 'kteb' },
+      n20uf: {
+        displayName: 'Verified Model',
+        icaoType: 'c25b',
+        homeBase: 'kteb',
+        costPerBlockHour: '2450.55',
+        sellPerBlockHour: 5250,
+      },
     },
   };
   // Stored keys are normalized by the admin endpoint before clients consume it.
@@ -59,8 +71,27 @@ test('aircraft metadata is admin supplied and never guessed from a tail', () => 
     icaoType: 'C25B',
     serialNumber: '',
     homeBase: 'KTEB',
+    costPerBlockHour: 2450.55,
+    sellPerBlockHour: 5250,
   });
   assert.equal(resolveAircraftMeta('N20UF', { aircraftByTail: normalized }).displayName, 'Verified Model');
+});
+
+test('fleet rates are non-negative finite block-hour amounts', () => {
+  const normalized = normalizeAircraftByTail({
+    N20UF: {
+      costPerBlockHour: -10,
+      sellPerBlockHour: 'not a number',
+    },
+    N444AM: {
+      costPerBlockHour: 2_500.129,
+      sellPerBlockHour: 9_999_999,
+    },
+  }, ['N20UF', 'N444AM']);
+  assert.equal(normalized.N20UF.costPerBlockHour, 0);
+  assert.equal(normalized.N20UF.sellPerBlockHour, null);
+  assert.equal(normalized.N444AM.costPerBlockHour, 2500.13);
+  assert.equal(normalized.N444AM.sellPerBlockHour, 1_000_000);
 });
 
 test('metadata for schedule-only tails is excluded from fleet configuration', () => {
@@ -69,4 +100,17 @@ test('metadata for schedule-only tails is excluded from fleet configuration', ()
     NPARTNER: { displayName: 'Vendor' },
   }, ['N20UF']);
   assert.deepEqual(Object.keys(normalized), ['N20UF']);
+});
+
+test('fleet settings expose and persist operating cost and sell rates', async () => {
+  const ui = await readFile(path.join(root, 'src/AdminSettings.jsx'), 'utf8');
+  assert.match(ui, /costPerBlockHour/);
+  assert.match(ui, /sellPerBlockHour/);
+  assert.match(ui, /Operating cost \/ block hour/);
+  assert.match(ui, /Sell rate \/ block hour/);
+
+  const api = await readFile(path.join(root, 'api/admin-settings.js'), 'utf8');
+  assert.match(api, /costPerBlockHour: meta\.costPerBlockHour \?\? null/);
+  assert.match(api, /sellPerBlockHour: meta\.sellPerBlockHour \?\? null/);
+  assert.match(api, /Firestore rejects `undefined`/);
 });

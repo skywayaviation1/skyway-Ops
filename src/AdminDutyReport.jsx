@@ -22,6 +22,7 @@ import {
   Button, Card, EmptyState, MetricTile, PageHeader, Spinner, StatusChip, cx, notify,
 } from './ui.jsx';
 import DutyPairSync from './DutyPairSync.jsx';
+import { brand } from './brand.js';
 
 const MS_HOUR = 3600 * 1000;
 const MS_DAY = 24 * MS_HOUR;
@@ -243,7 +244,7 @@ function esc(value) {
 function printAdminReport({ summaries, periods, outside, issuesById, rangeDays, generatedBy }) {
   const issueCount = new Set(periods.filter(p => (issuesById.get(p.id) || []).length).map(p => p.id)).size;
   const html = `<!doctype html>
-  <html><head><meta charset="utf-8"><title>Skyway Duty Report</title>
+  <html><head><meta charset="utf-8"><title>${esc(brand().name)} Duty Report</title>
   <style>
     @page{size:landscape;margin:12mm}*{box-sizing:border-box}body{font:11px Arial,sans-serif;color:#172033;margin:0}
     h1{font-size:22px;margin:0}h2{font-size:14px;margin:22px 0 7px}.muted{color:#667085}.meta{margin-top:4px}
@@ -251,7 +252,7 @@ function printAdminReport({ summaries, periods, outside, issuesById, rangeDays, 
     .kpi b{display:block;font-size:18px;margin-top:3px}table{width:100%;border-collapse:collapse}th,td{border:1px solid #d0d5dd;padding:5px;text-align:left;vertical-align:top}
     th{background:#f2f4f7;font-size:9px;text-transform:uppercase}.danger{color:#b42318;font-weight:bold}.warn{color:#b54708}.footer{margin-top:18px;border-top:1px solid #d0d5dd;padding-top:8px;font-size:9px;color:#667085}
   </style></head><body>
-  <h1>Skyway Aviation · Administrator Duty Report</h1>
+  <h1>${esc(brand().name)} · Administrator Duty Report</h1>
   <div class="meta muted">${esc(rangeDays)}-day window · Generated ${esc(new Date().toLocaleString())} by ${esc(generatedBy || 'Administrator')}</div>
   <div class="kpis">
     <div class="kpi">Pilots<b>${summaries.length}</b></div>

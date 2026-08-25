@@ -8,8 +8,14 @@
     "build": "vite build",
     "preview": "vite preview",
     "logo:build": "node scripts/build-logo-assets.mjs",
+    "preview:surfaces": "vite --config vite.preview.config.js",
+    "marketing:pdf": "node scripts/prepare-marketing-shots.mjs && node scripts/build-marketing-pdf.mjs",
     "test": "node --test tests/*.test.mjs",
-    "verify:sso": "node scripts/verify-microsoft-sso.mjs"
+    "verify:sso": "node scripts/verify-microsoft-sso.mjs",
+    "marketing:capture": "node scripts/capture-marketing-shots.mjs",
+    "preview:stubs": "node scripts/check-preview-stubs.mjs",
+    "logo:elite": "node scripts/build-elite-logo.mjs",
+    "currency:import-report": "node scripts/import-currency-report.mjs"
   },
   "dependencies": {
     "dompurify": "^3.4.13",
@@ -28,6 +34,7 @@
   "devDependencies": {
     "@vitejs/plugin-react": "4.3.1",
     "autoprefixer": "10.4.19",
+    "playwright": "^1.62.1",
     "pngjs": "^7.0.0",
     "postcss": "8.4.39",
     "tailwindcss": "3.4.4",

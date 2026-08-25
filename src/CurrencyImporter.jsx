@@ -48,6 +48,11 @@
 import React, { useMemo, useState } from 'react';
 import { X, Upload, Check, Loader2, AlertTriangle, Search, ChevronDown, FileText } from 'lucide-react';
 import { savePilotCurrency, CURRENCY_TYPES } from './firebase-currency.js';
+import {
+  buildCurrencyPatch,
+  parseCurrencyReportTable,
+  parseJetInsightReportItems,
+} from './currency-report-parser.js';
 
 /* ═══════════════════════════════════════════════════════════════════
    COLUMN MAP — JetInsight order → currency-schema key
@@ -594,16 +599,21 @@ function buildPatchFromParsedRow(parsed) {
     const key = COLUMN_KEYS[i];
     const cell = parsed.cells[i];
     if (!cell) continue;
+    const type = CURRENCY_TYPES.find((candidate) => candidate.key === key);
 
     if (cell.kind === 'date') {
-      updates[key] = { dueDate: cell.dueDate, notes: '' };
+      updates[key] = type?.noExpiration
+        ? { present: true, notes: `Completed/issued ${cell.dueDate} · imported from JetInsight` }
+        : { dueDate: cell.dueDate, notes: '' };
     } else if (cell.kind === 'na') {
       updates[key] = { notApplicable: true };
     } else if (cell.kind === 'never') {
       // For KCM-style items, "Never" means no expiration / badge issued.
       // The schema marks these with noExpiration: true on a per-item basis;
       // we also stamp issuedDate so the UI shows "issued" vs "not issued".
-      updates[key] = { noExpiration: true, issued: true };
+      updates[key] = type?.noExpiration
+        ? { present: true, notes: 'Imported from JetInsight' }
+        : { notes: 'JetInsight reported no expiration' };
     } else if (cell.kind === 'missing') {
       // Don't overwrite — JetInsight has nothing to record. The pilot
       // currency UI will show this item as missing/unknown until admin
@@ -762,12 +772,16 @@ function PatchSummary({ patch }) {
         if (val.notApplicable) {
           return <div key={key} className="text-[10px] text-slate-500">{label}: <span className="text-slate-600">n/a</span></div>;
         }
+        if (val.missing) {
+          return <div key={key} className="text-[10px] text-amber-300">{label}: <span>Missing</span></div>;
+        }
         if (val.noExpiration) {
-          return <div key={key} className="text-[10px] text-slate-300">{label}: <span className="text-cyan-300">issued</span></div>;
+          return <div key={key} className="text-[10px] text-slate-300">{label}: <span className="text-cyan-300">Never expires</span></div>;
         }
         return (
           <div key={key} className="text-[10px] text-slate-300">
             {label}: <span className="text-cyan-300">{val.dueDate}</span>
+            {val.graceDate && <span className="text-slate-500"> · grace {val.graceDate}</span>}
           </div>
         );
       })}
@@ -807,7 +821,7 @@ export default function CurrencyImporter({ users, currentUserUid, onClose, onImp
         && !parsed.cells.some(c => c.kind === 'date');
       if (looksLikeHeader) continue;
 
-      const patch = buildPatchFromParsedRow(parsed);
+      const patch = buildCurrencyPatch(parsed);
       const match = pickBestMatch(parsed.name, users);
       built.push({
         parsed,
@@ -830,8 +844,7 @@ export default function CurrencyImporter({ users, currentUserUid, onClose, onImp
     setPdfLoading(true);
     try {
       const items = await extractPdfItems(file);
-      const tokens = tokenizeItems(items);
-      const { pilots, warnings } = parsePdfTokens(tokens, users);
+      const { pilots, warnings } = parseJetInsightReportItems(items);
       if (pilots.length === 0) {
         setErr(
           'Couldn\'t extract any pilot rows from this PDF. Either the format ' +
@@ -863,10 +876,7 @@ export default function CurrencyImporter({ users, currentUserUid, onClose, onImp
       return;
     }
     try {
-      const tableRows = parseTable(pasteText);
-      const parsedList = tableRows
-        .map(parsePilotRow)
-        .filter(Boolean);
+      const parsedList = parseCurrencyReportTable(pasteText);
       const built = buildRowsFromParsed(parsedList);
       if (built.length === 0) {
         setErr('No pilot rows recognized. Make sure each line starts with the pilot name and is followed by 24 tab- or pipe-separated cells.');

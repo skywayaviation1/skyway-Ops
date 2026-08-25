@@ -16,6 +16,7 @@ import {
   Users,
 } from 'lucide-react';
 import { Button, Card, EmptyState, IconButton, StatusChip, cx } from './ui.jsx';
+import { brand } from './brand.js';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -349,7 +350,7 @@ export default function TeamsHub({ currentUser }) {
     return (
       <ConnectPanel
         title="Connect Microsoft to use Teams"
-        description={`Sign in once with ${currentUser?.email || 'your @flyskyway.com account'} to use your Teams channels and chats inside Skyway.`}
+        description={`Sign in once with ${currentUser?.email || `your @${brand().domain || 'company'} account`} to use your Teams channels and chats inside ${brand().shortName}.`}
         actionLabel="Continue with Microsoft"
         onAction={connect}
         busy={busy}
@@ -498,7 +499,7 @@ export default function TeamsHub({ currentUser }) {
           <EmptyState
             icon={MessageSquare}
             title="Select a channel or chat"
-            description="Read and reply to Microsoft Teams conversations without leaving Skyway."
+            description={`Read and reply to Microsoft Teams conversations without leaving ${brand().shortName}.`}
             className="h-full"
           />
         ) : (

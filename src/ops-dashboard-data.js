@@ -7,6 +7,7 @@
 // and tested without mounting React or Firestore.
 
 import { computeOutstanding } from './ops-readiness.js';
+import { statusEventAt, statusEventDone } from './trip-status.js';
 
 export const MS_HOUR = 3600_000;
 
@@ -52,6 +53,242 @@ export function legHours(trip) {
   const end = toMillis(trip?.end);
   if (!start || !end || end <= start) return 0;
   return (end - start) / MS_HOUR;
+}
+
+function stateForTrip(tripStates, uid) {
+  if (!tripStates || !uid) return null;
+  return typeof tripStates.get === 'function' ? tripStates.get(uid) || null : tripStates[uid] || null;
+}
+
+function normalizedPerson(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+export function pilotMatchesAssignment(pilotName, assignedName) {
+  const pilot = normalizedPerson(pilotName);
+  const assigned = normalizedPerson(assignedName);
+  if (!pilot.length || !assigned.length) return false;
+  if (pilot.join(' ') === assigned.join(' ')) return true;
+  const overlap = pilot.filter((token) => assigned.includes(token)).length;
+  return overlap >= Math.min(2, pilot.length, assigned.length);
+}
+
+function telemetryMatchesTrip(position, trip) {
+  if (!position || !trip) return false;
+  const sameTail = normalizeTail(position.ident) === normalizeTail(trip.info?.tail);
+  if (!sameTail) return false;
+  const origin = normalizeAirport(position.origin);
+  const destination = normalizeAirport(position.destination || position.groundedAt);
+  const from = normalizeAirport(trip.info?.from);
+  const to = normalizeAirport(trip.info?.to);
+  return (!origin || !from || origin === from) && (!destination || !to || destination === to);
+}
+
+/** Actual airborne time from FlightAware-fired steps, with live telemetry fallback. */
+export function actualFlightMsForTrip(trip, state, position, now = Date.now()) {
+  const statuses = state?.statuses || {};
+  const off = statusEventAt(statuses.wheels_up)
+    || (telemetryMatchesTrip(position, trip) ? toMillis(position.actualOff) : null);
+  if (!off) return 0;
+  const on = statusEventAt(statuses.landed)
+    || (telemetryMatchesTrip(position, trip) ? toMillis(position.actualOn) : null)
+    || (position?.airborne === true && telemetryMatchesTrip(position, trip) ? now : null);
+  if (!on || on <= off) return 0;
+  return on - off;
+}
+
+export function flightPhase(trip, state, position, now = Date.now()) {
+  const statuses = state?.statuses || {};
+  if (state?.completed === true) return 'complete';
+  if (statusEventDone(statuses.landed)) return 'landed';
+  if (position?.airborne === true && telemetryMatchesTrip(position, trip)) return 'airborne';
+  if (statusEventDone(statuses.wheels_up)) {
+    const off = statusEventAt(statuses.wheels_up);
+    return off && now - off <= 12 * MS_HOUR ? 'airborne' : 'landed';
+  }
+  if (
+    statusEventDone(statuses.taxi_dep)
+    || statusEventDone(statuses.aircraft_ready)
+    || statusEventDone(statuses.crew_onsite)
+  ) return 'preflight';
+  const start = toMillis(trip?.start);
+  if (start != null && start < now) return 'delayed';
+  return 'scheduled';
+}
+
+export function buildTodayFlightRows(trips, tripStates, positions, now = Date.now()) {
+  const dayStart = startOfDay(now);
+  const dayEnd = dayStart + 24 * MS_HOUR;
+  return (Array.isArray(trips) ? trips : [])
+    .filter(isFlightLeg)
+    .filter((trip) => {
+      const start = toMillis(trip.start);
+      return start != null && start >= dayStart && start < dayEnd;
+    })
+    .map((trip) => {
+      const tail = normalizeTail(trip.info?.tail);
+      const state = stateForTrip(tripStates, trip.uid);
+      const position = positions?.[tail] || null;
+      return {
+        uid: trip.uid,
+        tail,
+        from: normalizeAirport(trip.info?.from),
+        to: normalizeAirport(trip.info?.to),
+        startAt: toMillis(trip.start),
+        endAt: toMillis(trip.end),
+        pic: trip.info?.pic || '',
+        sic: trip.info?.sic || '',
+        scheduledMs: legHours(trip) * MS_HOUR,
+        actualMs: actualFlightMsForTrip(trip, state, position, now),
+        phase: flightPhase(trip, state, position, now),
+        estimatedOn: telemetryMatchesTrip(position, trip) ? position?.estimatedOn || null : null,
+      };
+    })
+    .sort((a, b) => (a.startAt || 0) - (b.startAt || 0));
+}
+
+export function buildOnDutyRows({
+  dutyPeriods = [],
+  trips = [],
+  tripStates = null,
+  positions = {},
+  now = Date.now(),
+}) {
+  return (Array.isArray(dutyPeriods) ? dutyPeriods : [])
+    .filter((period) => (
+      period?.status === 'on'
+      && period.confirmStatus !== 'pending'
+      && period.confirmStatus !== 'declined'
+      && Number.isFinite(period.dutyOnAt)
+    ))
+    .map((period) => {
+      const dutyEndAt = period.dutyOnAt + 14 * MS_HOUR;
+      const assigned = (Array.isArray(trips) ? trips : [])
+        .filter(isFlightLeg)
+        .filter((trip) => {
+          const start = toMillis(trip.start);
+          if (start == null) return false;
+          const end = toMillis(trip.end) || start;
+          if (end < period.dutyOnAt || start > dutyEndAt) return false;
+          return pilotMatchesAssignment(period.pilotName, trip.info?.pic)
+            || pilotMatchesAssignment(period.pilotName, trip.info?.sic);
+        });
+      const scheduledFlightMs = assigned.reduce(
+        (sum, trip) => sum + legHours(trip) * MS_HOUR,
+        0,
+      );
+      const actualFlightMs = assigned.reduce((sum, trip) => {
+        const tail = normalizeTail(trip.info?.tail);
+        return sum + actualFlightMsForTrip(
+          trip,
+          stateForTrip(tripStates, trip.uid),
+          positions?.[tail],
+          now,
+        );
+      }, 0);
+      return {
+        uid: period.pilotUid,
+        periodId: period.id || null,
+        partnerPeriodId: period.partnerPeriodId || null,
+        name: period.pilotName || 'Unknown pilot',
+        dutyOnAt: period.dutyOnAt,
+        dutyEndAt,
+        remainingMs: Math.max(0, dutyEndAt - now),
+        overLimit: now > dutyEndAt,
+        overByMs: Math.max(0, now - dutyEndAt),
+        tail: normalizeTail(period.tail || assigned[0]?.info?.tail) || null,
+        role: period.role || null,
+        crewType: period.crewType || null,
+        scheduledFlightMs,
+        actualFlightMs,
+        reportedFlightMs: Number(period.flightTimeMs || 0),
+        assignedTrips: assigned.length,
+      };
+    })
+    .sort((a, b) => a.remainingMs - b.remainingMs || a.name.localeCompare(b.name));
+}
+
+const ROLE_ORDER = { PIC: 0, SIC: 1 };
+
+/**
+ * Collapse the on-duty list into crews.
+ *
+ * A two-pilot trip is dispatched as a crew, so listing the captain and the
+ * first officer as unrelated rows makes a controller reconstruct the pairing by
+ * eye. Pilots are grouped when duty records are explicitly paired, or when they
+ * share an aircraft and went on duty within the same window. PIC sorts above
+ * SIC inside a crew, and a single pilot still yields a one-member crew.
+ */
+export function groupOnDutyCrews(rows, { toleranceMs = 90 * 60_000 } = {}) {
+  const byPeriodId = new Map();
+  for (const row of rows || []) {
+    if (row.periodId) byPeriodId.set(row.periodId, row);
+  }
+
+  const crewOf = new Map();
+  const crews = [];
+  const assign = (row, crew) => {
+    crew.members.push(row);
+    crewOf.set(row, crew);
+  };
+
+  for (const row of rows || []) {
+    if (crewOf.has(row)) continue;
+
+    // An explicit pairing is authoritative.
+    const partner = row.partnerPeriodId ? byPeriodId.get(row.partnerPeriodId) : null;
+    if (partner && !crewOf.has(partner)) {
+      const crew = { members: [] };
+      crews.push(crew);
+      assign(row, crew);
+      assign(partner, crew);
+      continue;
+    }
+    if (partner && crewOf.has(partner)) {
+      assign(row, crewOf.get(partner));
+      continue;
+    }
+
+    // Otherwise infer: same aircraft, duty starting close together.
+    const mate = (rows || []).find((other) => (
+      other !== row
+      && !crewOf.has(other)
+      && other.tail
+      && row.tail
+      && other.tail === row.tail
+      && Math.abs((other.dutyOnAt || 0) - (row.dutyOnAt || 0)) <= toleranceMs
+      && other.role !== row.role
+    ));
+    const crew = { members: [] };
+    crews.push(crew);
+    assign(row, crew);
+    if (mate) assign(mate, crew);
+  }
+
+  return crews.map((crew) => {
+    const members = crew.members.slice().sort((a, b) => (
+      (ROLE_ORDER[a.role] ?? 2) - (ROLE_ORDER[b.role] ?? 2)
+      || a.name.localeCompare(b.name)
+    ));
+    const lead = members[0];
+    return {
+      id: members.map((m) => m.periodId || m.uid).join('+'),
+      tail: lead.tail,
+      dutyOnAt: Math.min(...members.map((m) => m.dutyOnAt)),
+      remainingMs: Math.min(...members.map((m) => m.remainingMs)),
+      overLimit: members.some((m) => m.overLimit),
+      overByMs: Math.max(...members.map((m) => m.overByMs || 0)),
+      scheduledFlightMs: Math.max(...members.map((m) => m.scheduledFlightMs || 0)),
+      actualFlightMs: Math.max(...members.map((m) => m.actualFlightMs || 0)),
+      assignedTrips: Math.max(...members.map((m) => m.assignedTrips || 0)),
+      paired: members.length > 1,
+      members,
+    };
+  }).sort((a, b) => a.remainingMs - b.remainingMs || a.members[0].name.localeCompare(b.members[0].name));
 }
 
 /* ── Fleet state ─────────────────────────────────────────────────────────
@@ -460,7 +697,7 @@ export function summarizeFleet(fleetRows, trips, now = Date.now()) {
   return {
     total: fleet.length,
     offFleet: fleetRows.length - fleet.length,
-    airborne: fleetRows.filter((r) => r.state.id === 'AIRBORNE').length,
+    airborne: fleet.filter((r) => r.state.id === 'AIRBORNE').length,
     aog: fleet.filter((r) => r.state.id === 'AOG').length,
     restricted: fleet.filter(
       (r) => r.state.id !== 'AOG' && r.airworthiness.status === 'RESTRICTED',

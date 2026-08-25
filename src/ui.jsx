@@ -18,6 +18,8 @@ import React, {
 } from 'react';
 import { AlertTriangle, ArrowRight, CheckCircle2, Info, Loader2, X, XCircle } from 'lucide-react';
 
+import { brand } from './brand.js';
+
 export function cx(...parts) {
   return parts.filter(Boolean).join(' ');
 }
@@ -317,10 +319,9 @@ export function RouteLine({ from, to, size = 'md', muted = false, className = ''
    every caller. Surfaces that stay dark regardless of theme — the nav header,
    the boot splash — pass surface="dark" and opt out of the swap. */
 
-const WORDMARK_ART = {
-  full:    { light: '/skyway-logo',     dark: '/skyway-logo-reverse' },
-  compact: { light: '/skyway-logo-nav', dark: '/skyway-logo-nav-reverse' },
-};
+// Artwork comes from the active tenant, so a deployment for another operator
+// carries its own wordmark without touching any component.
+const WORDMARK_ART = brand().wordmark;
 
 function readThemeMode() {
   if (typeof document === 'undefined') return 'dark';
@@ -341,7 +342,7 @@ export function useThemeMode() {
 }
 
 /**
- * Skyway wordmark.
+ * The operator's wordmark.
  *
  * @param variant  'full' for the stacked lockup, 'compact' for the nav strip.
  * @param surface  'auto' follows the theme; 'dark' pins the reversed artwork
@@ -351,7 +352,7 @@ export function Wordmark({
   variant = 'full',
   surface = 'auto',
   className = '',
-  alt = 'Skyway Aviation',
+  alt = brand().name,
   ...rest
 }) {
   const theme = useThemeMode();

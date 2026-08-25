@@ -12,6 +12,12 @@ const CharterInboxLazy = lazy(() => import('./CharterInbox.jsx'));
 const UserMailboxLazy = lazy(() => import('./UserMailbox.jsx'));
 const TeamsHubLazy = lazy(() => import('./TeamsHub.jsx'));
 const MailboxSettingsPanelLazy = lazy(() => import('./MailboxSettingsPanel.jsx'));
+const ForeFlightPlanLazy = lazy(() => import('./ForeFlightPlan.jsx'));
+const ForeFlightSettingsPanelLazy = lazy(() => import('./ForeFlightSettingsPanel.jsx'));
+const TripFratLazy = lazy(() => import('./TripFrat.jsx'));
+const FratSettingsPanelLazy = lazy(() => import('./FratSettingsPanel.jsx'));
+const EmailDiagnosticsPanelLazy = lazy(() => import('./EmailDiagnosticsPanel.jsx'));
+const AvailabilityLazy = lazy(() => import('./AvailabilityPlanner.jsx'));
 const TripEmailPanelLazy = lazy(() =>
   import('./CharterInbox.jsx').then((module) => ({ default: module.TripEmailPanel }))
 );
@@ -160,7 +166,9 @@ import {
 import { compareNames } from './name-matching.js';
 import { lookupCoords } from './airport-coords.js';
 import { resolveManagedTails } from './fleet-config.js';
+import { buildFleetMapScene } from './fleet-tracking.js';
 import { DUTY_TRACKER_ENABLED } from './duty-feature.js';
+import { applyBrandAccent, brand } from './brand.js';
 import {
   analyzeFrameReadiness,
   autoCapturePrompt,
@@ -331,9 +339,13 @@ function extractTripInfo(event) {
    ============================================================ */
 const DEFAULT_ICAL_URL = 'https://portal.jetinsight.com/schedule/7a32dd47-6a5c-4c9c-b53b-864381bacebf/1243136b-b3ab-4dff-b0cf-edf264e20fbf.ics';
 
-// Hardcoded ops email — always CC'd on broker notifications. Cannot be
-// changed per-user (was previously a settings field, but ops policy is
-// that all status emails go to charters@flyskyway.com regardless of user).
+// Hardcoded ops email — copied on broker notifications. Cannot be changed
+// per-user (was previously a settings field, but ops policy is that all status
+// emails go to charters@flyskyway.com regardless of user).
+//
+// It is passed as a recipient here; the send endpoints move it to the CC line
+// whenever there is a broker to address the message to, so it reads as a copy
+// rather than as the addressee.
 const OPS_EMAIL = 'charters@flyskyway.com';
 
 // All Skyway aircraft registrations. Used for the Malfunction/Incident Report
@@ -887,7 +899,7 @@ function parseJetInsightTripSheet(rawText) {
     const re = new RegExp(
       `${labelPattern}\\s*:\\s*([\\s\\S]*?)(?=(?:` +
         `Trip notes \\(|Customer notes:|Special items:|Leg \\s*\\d+|Distance:|Client:|Planner:|` +
-        `Skyway Aviation|` +
+        `${brand().name}|` +
         `\\d{3,5}\\s+[A-Z][a-z]+\\s+(?:Blvd|St|Ave|Rd|Way|Dr|Ln|Pkwy)|` +
         `[A-Za-z0-9._-]+@[A-Za-z0-9.-]+\\.(?:com|net|org)|` +
         `\\d{3}[-.\\s]?\\d{3}[-.\\s]?\\d{4}` +
@@ -1470,7 +1482,9 @@ async function sendEmailViaApi({ to, subject, text, source, tripId, statusKey, i
   // Reliable delivery: writes to the email-queue collection. The
   // /api/email-queue-drain cron picks it up within ~60s and delivers via
   // Resend, retrying failures with backoff. Returns a faux Response object
-  // so existing callers that check .ok keep working.
+  // so existing callers that check .ok keep working, where `ok` means the
+  // message actually reached the mail provider — not merely that it was
+  // recorded.
   let idToken = null;
   try {
     const { auth } = await import('./firebase.js');
@@ -1498,15 +1512,14 @@ async function sendEmailViaApi({ to, subject, text, source, tripId, statusKey, i
     });
     if (r.ok) {
       const data = await r.json().catch(() => ({}));
-      if (data.delivery === 'inline') {
-      } else {
-      }
-      // Return a Response-like shim so existing .ok checks pass.
-      // Important: callers that previously did `await r.json()` for a Resend id
-      // will now get a queueId instead. That's fine — none of our existing call
-      // sites use the returned id for anything other than logging.
-      return new Response(JSON.stringify({ ok: true, ...data }), {
-        status: 200,
+      // The endpoint returns 200 for both "handed to the mail provider" and
+      // "provider rejected it, kept for retry". Only the first is a send, so
+      // the shim's `ok` follows `delivered`. Reporting a rejection as success
+      // is what previously let a status show the broker as notified while the
+      // email never left the building.
+      const delivered = data.delivered !== false;
+      return new Response(JSON.stringify({ ...data, ok: delivered }), {
+        status: delivered ? 200 : 502,
         headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -1560,8 +1573,8 @@ function buildStatusEmail(step, trip, brokerEmail) {
   const sigLines = [
     '',
     '',
-    '— Skyway Aviation',
-    'Private Jet & Helicopter Charter Services',
+    `— ${brand().name}`,
+    brand().tagline,
   ];
   if (trip.info.pic || trip.info.sic) {
     // Insert "Your flight crew:" + names ABOVE the company line for a more
@@ -1718,7 +1731,7 @@ function buildStatusEmail(step, trip, brokerEmail) {
         subject: `Landed — ${tail} ${route}`,
         text:
           `${greeting}\n\n` +
-          `${tail} has landed at ${trip.info.to || ''} at ${arrTimeStr}. Thank you for choosing Skyway Aviation. ` +
+          `${tail} has landed at ${trip.info.to || ''} at ${arrTimeStr}. Thank you for choosing ${brand().name}. ` +
           `We look forward to serving you again.` +
           signature,
       };
@@ -3935,7 +3948,7 @@ function DelayPanel({ trip, opsEmail, brokerEmail, currentUser, statuses, setSta
     const greeting = notifyBroker && brokerEmails[0]
       ? `Hi ${greetingFromEmail(brokerEmails[0])},`
       : `Ops,`;
-    const signature = '\n\n— Skyway Aviation\nPrivate Jet & Helicopter Charter Services';
+    const signature = `\n\n— ${brand().name}\n${brand().tagline}`;
 
     const lines = [
       `${greeting}`,
@@ -5186,347 +5199,8 @@ function QuickActionButton({ icon: Icon, label, onClick }) {
 }
 
 /* ============================================================
-   ForeFlight handoff — pre-fill ForeFlight Mobile with trip data
-   so pilots can review and file from the certified app they use.
-   We never touch the FAA filing system directly.
+   Flight Plan tab lives in ForeFlightPlan.jsx (Dispatch API + deep links).
    ============================================================ */
-
-// Default cruise performance per aircraft type (rough)
-const _aircraftDefaults = {
-  // Citation-style jets — Skyway's fleet
-  'C25B': { cruiseKts: 380, burnGph: 180, cruiseFt: 39000 }, // CJ3
-  'C25A': { cruiseKts: 360, burnGph: 165, cruiseFt: 39000 }, // CJ2
-  'C25':  { cruiseKts: 340, burnGph: 150, cruiseFt: 39000 }, // CJ1
-  'C56X': { cruiseKts: 400, burnGph: 230, cruiseFt: 45000 }, // Excel
-  'C680': { cruiseKts: 430, burnGph: 280, cruiseFt: 45000 }, // Sovereign
-  // Helicopter
-  'AS50': { cruiseKts: 130, burnGph: 55,  cruiseFt: 5000 },
-  'EC30': { cruiseKts: 135, burnGph: 60,  cruiseFt: 5000 },
-};
-
-function getAircraftDefaults(aircraftType) {
-  if (!aircraftType) return { cruiseKts: 380, burnGph: 180, cruiseFt: 39000 };
-  const key = String(aircraftType).toUpperCase().replace(/[\s\-]/g, '');
-  // Try exact match first, then prefix
-  if (_aircraftDefaults[key]) return _aircraftDefaults[key];
-  for (const k of Object.keys(_aircraftDefaults)) {
-    if (key.startsWith(k)) return _aircraftDefaults[k];
-  }
-  return { cruiseKts: 380, burnGph: 180, cruiseFt: 39000 };
-}
-
-/**
- * Normalize an airport code to ICAO format that ForeFlight expects.
- * 3-letter US airports get a "K" prefix (APF → KAPF). Already-prefixed
- * codes and non-US codes pass through unchanged.
- */
-function normalizeIcao(code) {
-  if (!code) return '';
-  const c = String(code).toUpperCase().trim();
-  // Already 4-letter ICAO — pass through (KAPF, MYNN, EGLL, etc)
-  if (/^[A-Z0-9]{4}$/.test(c)) return c;
-  // 3-letter US airport — add K prefix (APF → KAPF)
-  if (/^[A-Z]{3}$/.test(c)) return 'K' + c;
-  return c;
-}
-
-/**
- * Build a ForeFlight Mobile URL that opens the route on the Maps view
- * with speed, fuel burn, altitude, tail, and ETD pre-populated.
- *
- * Format (from foreflight.com/support/app-urls):
- *   foreflightmobile://maps/search?q=KAPF+KGON+380kts+180gph+39000ft+N444AM
- *
- * Notes:
- * - 3-letter codes (APF, GON) are auto-prefixed to ICAO (KAPF, KGON) for US airports
- * - ETD is skipped if it's in the past (ForeFlight rejects stale departure times)
- * - The "+" between parts is a space-separator per ForeFlight's URL spec
- */
-function buildForeFlightUrl({ from, to, cruiseKts, burnGph, cruiseFt, tail, etdIso }) {
-  const fromIcao = normalizeIcao(from);
-  const toIcao = normalizeIcao(to);
-  if (!fromIcao || !toIcao) return null;
-  const parts = [fromIcao, toIcao];
-  if (cruiseKts) parts.push(`${cruiseKts}kts`);
-  if (burnGph) parts.push(`${burnGph}gph`);
-  if (cruiseFt) parts.push(`${cruiseFt}ft`);
-  if (tail) parts.push(String(tail).toUpperCase());
-  if (etdIso) {
-    // ForeFlight expects YYYYMMDDTHH:MM:SSZ format. Skip if departure is in the past.
-    try {
-      const d = new Date(etdIso);
-      if (d.getTime() > Date.now()) {
-        const yyyy = d.getUTCFullYear();
-        const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-        const dd = String(d.getUTCDate()).padStart(2, '0');
-        const hh = String(d.getUTCHours()).padStart(2, '0');
-        const mi = String(d.getUTCMinutes()).padStart(2, '0');
-        const ss = String(d.getUTCSeconds()).padStart(2, '0');
-        parts.push(`${yyyy}${mm}${dd}T${hh}:${mi}:${ss}Z`);
-      }
-    } catch (_) { /* skip ETD */ }
-  }
-  // Join with '+' which ForeFlight parses as space-separator. Do NOT
-  // URL-encode the entire query string — the '+' chars are meant to be literal.
-  return `foreflightmobile://maps/search?q=${parts.join('+')}`;
-}
-
-/**
- * Detect whether the user is on iOS (where ForeFlight Mobile lives).
- * On non-iOS, the deep link won't do anything useful.
- */
-function isIosDevice() {
-  if (typeof navigator === 'undefined') return false;
-  const ua = navigator.userAgent || '';
-  return /iPad|iPhone|iPod/.test(ua)
-    || (ua.includes('Mac') && navigator.maxTouchPoints > 1); // iPadOS 13+
-}
-
-function ForeFlightHandoff({ trip, currentUser }) {
-  const from = trip?.info?.from || '';
-  const to = trip?.info?.to || '';
-  const tail = trip?.info?.tail || '';
-  const aircraftType = trip?.info?.aircraftType || trip?.info?.acType || '';
-  const etdIso = trip?.start || '';
-
-  const acDefaults = getAircraftDefaults(aircraftType);
-
-  // Editable plan fields. Default from aircraft type, but pilot can override.
-  const [cruiseKts, setCruiseKts] = useState(acDefaults.cruiseKts);
-  const [burnGph, setBurnGph] = useState(acDefaults.burnGph);
-  const [cruiseFt, setCruiseFt] = useState(acDefaults.cruiseFt);
-  const [alternate, setAlternate] = useState('');
-  const [routeNotes, setRouteNotes] = useState('');
-
-  const url = buildForeFlightUrl({
-    from, to,
-    cruiseKts: cruiseKts || acDefaults.cruiseKts,
-    burnGph: burnGph || acDefaults.burnGph,
-    cruiseFt: cruiseFt || acDefaults.cruiseFt,
-    tail,
-    etdIso,
-  });
-
-  // Fallback URL with just the route — minimal version that's more likely to
-  // work if the full URL with all parameters has issues.
-  const minimalUrl = buildForeFlightUrl({
-    from, to,
-  });
-
-  // Show the normalized ICAO codes so the user can see what's being sent
-  const fromIcao = normalizeIcao(from);
-  const toIcao = normalizeIcao(to);
-  const codesNormalized = (fromIcao !== from?.toUpperCase()) || (toIcao !== to?.toUpperCase());
-
-  // Plain-text summary that the pilot can copy and paste into 1800wxbrief etc.
-  // Uses ICAO order: from/to/alt at top, then route, then remarks
-  const ttSummary = [
-    `AIRCRAFT: ${tail || '—'} ${aircraftType ? `(${aircraftType})` : ''}`,
-    `ROUTE: ${from || '—'} → ${to || '—'}${alternate ? `  ALT: ${alternate}` : ''}`,
-    `CRUISE: ${cruiseFt}ft @ ${cruiseKts}kts, ${burnGph}gph`,
-    etdIso ? `ETD (Z): ${new Date(etdIso).toISOString().replace(/\.\d+Z$/, 'Z')}` : null,
-    trip?.info?.pic ? `PIC: ${trip.info.pic}` : null,
-    trip?.info?.sic ? `SIC: ${trip.info.sic}` : null,
-    `SOULS ON BOARD: ${(trip?.info?.pax || 0) + (trip?.info?.pic ? 1 : 0) + (trip?.info?.sic ? 1 : 0)}`,
-    routeNotes ? `NOTES: ${routeNotes}` : null,
-  ].filter(Boolean).join('\n');
-
-  const [copied, setCopied] = useState(false);
-  function copySummary() {
-    if (!navigator.clipboard) return;
-    navigator.clipboard.writeText(ttSummary).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }).catch(() => {});
-  }
-
-  const onIos = isIosDevice();
-
-  return (
-    <div className="p-4 max-w-3xl space-y-4">
-      {/* Disclaimer */}
-      <div className="border border-amber-500/30 bg-amber-500/5 px-3 py-2 flex items-start gap-2">
-        <AlertCircle className="w-3.5 h-3.5 text-amber-400 mt-0.5 shrink-0" />
-        <div className="text-[11px] text-amber-200/80" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-          <strong className="text-amber-300">Pilot files the actual plan.</strong> This page pre-fills ForeFlight with trip data so you can review the route and file from inside ForeFlight. Skyway Ops does not file directly with the FAA.
-        </div>
-      </div>
-
-      {/* Trip summary card */}
-      <div className="border border-slate-800 bg-slate-900/40 p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>TRIP</span>
-          <span className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{tail || '—'}</span>
-        </div>
-        <div className="flex items-center gap-3 text-lg" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-          <span className="text-slate-100">{from || '—'}</span>
-          <ArrowRight className="w-4 h-4 text-cyan-400" />
-          <span className="text-slate-100">{to || '—'}</span>
-        </div>
-        {etdIso && (
-          <div className="text-[11px] text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            ETD: {new Date(etdIso).toISOString().replace(/\.\d+Z$/, 'Z')}
-          </div>
-        )}
-      </div>
-
-      {/* Editable performance fields */}
-      <div className="border border-slate-800 bg-slate-900/40 p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>PERFORMANCE</span>
-          {aircraftType && (
-            <span className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{aircraftType} defaults</span>
-          )}
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <PlanField label="CRUISE ALT (ft)" value={cruiseFt} onChange={setCruiseFt} type="number" />
-          <PlanField label="CRUISE SPEED (kts)" value={cruiseKts} onChange={setCruiseKts} type="number" />
-          <PlanField label="FUEL BURN (gph)" value={burnGph} onChange={setBurnGph} type="number" />
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <PlanField label="ALTERNATE (optional)" value={alternate} onChange={setAlternate} placeholder="e.g. KJAX" />
-          <PlanField label="ROUTE NOTES (optional)" value={routeNotes} onChange={setRouteNotes} placeholder="e.g. DCT WAYPT DCT" />
-        </div>
-      </div>
-
-      {/* Primary action: open in ForeFlight */}
-      <div className="border border-cyan-500/30 bg-cyan-500/5 p-4 space-y-3">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <div className="text-[10px] tracking-widest text-cyan-400 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>OPEN IN FOREFLIGHT</div>
-            <div className="text-[11px] text-slate-400" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-              Loads the route on the ForeFlight Maps view with speed, fuel, altitude, tail and ETD pre-populated. From there, send to Flights to file.
-            </div>
-          </div>
-        </div>
-        {codesNormalized && (
-          <div className="text-[10px] text-cyan-300/80 bg-cyan-500/5 border border-cyan-500/20 px-2 py-1.5"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            Codes normalized: {from} → <strong>{fromIcao}</strong>, {to} → <strong>{toIcao}</strong>
-          </div>
-        )}
-        {!onIos && (
-          <div className="text-[10px] text-amber-300/80" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            ⚠ This link only works on iOS devices with ForeFlight installed.
-          </div>
-        )}
-        <a
-          href={url || '#'}
-          className={`block w-full text-center py-3 text-sm tracking-widest border transition-colors ${
-            url
-              ? 'bg-cyan-500/10 border-cyan-400 text-cyan-300 hover:bg-cyan-500/20'
-              : 'bg-slate-900 border-slate-800 text-slate-600 cursor-not-allowed pointer-events-none'
-          }`}
-          style={{ fontFamily: 'JetBrains Mono, monospace' }}
-        >
-          OPEN IN FOREFLIGHT →
-        </a>
-        {/* Fallback: minimal URL — try if the full one doesn't load the route */}
-        {minimalUrl && url && minimalUrl !== url && (
-          <details className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            <summary className="cursor-pointer hover:text-slate-300">Route not loading? Try minimal URL</summary>
-            <div className="mt-2 space-y-2">
-              <div className="text-slate-400 text-[10px]">
-                This URL has just the airports — no aircraft data or ETD. Useful if ForeFlight is rejecting the full URL.
-              </div>
-              <a
-                href={minimalUrl}
-                className="block w-full text-center py-2 text-xs tracking-widest border border-slate-700 text-slate-300 hover:bg-slate-800/50"
-                style={{ fontFamily: 'JetBrains Mono, monospace' }}
-              >
-                OPEN ROUTE ONLY →
-              </a>
-              <div className="p-2 bg-slate-950 border border-slate-800 break-all text-slate-500">{minimalUrl}</div>
-            </div>
-          </details>
-        )}
-        {url && (
-          <details className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            <summary className="cursor-pointer hover:text-slate-300">Show full URL</summary>
-            <div className="mt-2 p-2 bg-slate-950 border border-slate-800 break-all">{url}</div>
-          </details>
-        )}
-      </div>
-
-      {/* In-ForeFlight instructions */}
-      <div className="border border-slate-800 bg-slate-900/40 p-4">
-        <div className="flex items-center gap-2 mb-3">
-          <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>NEXT STEPS IN FOREFLIGHT</span>
-        </div>
-        <ol className="space-y-2.5">
-          <li className="flex gap-3 items-start">
-            <span className="shrink-0 inline-flex items-center justify-center w-5 h-5 bg-cyan-500/10 border border-cyan-500/40 text-cyan-300 text-[10px]"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}>1</span>
-            <div className="text-[11px] text-slate-300" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-              Tap <strong className="text-cyan-300">OPEN IN FOREFLIGHT</strong> above. The Maps view will load with your route.
-            </div>
-          </li>
-          <li className="flex gap-3 items-start">
-            <span className="shrink-0 inline-flex items-center justify-center w-5 h-5 bg-cyan-500/10 border border-cyan-500/40 text-cyan-300 text-[10px]"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}>2</span>
-            <div className="text-[11px] text-slate-300" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-              In ForeFlight, tap the <strong className="text-cyan-300">Send To</strong> button (square with up-arrow, bottom-left of the Route Editor).
-            </div>
-          </li>
-          <li className="flex gap-3 items-start">
-            <span className="shrink-0 inline-flex items-center justify-center w-5 h-5 bg-cyan-500/10 border border-cyan-500/40 text-cyan-300 text-[10px]"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}>3</span>
-            <div className="text-[11px] text-slate-300" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-              Select <strong className="text-cyan-300">Flights</strong>. ForeFlight creates a new flight plan record pre-filled with the route, aircraft, and performance.
-            </div>
-          </li>
-          <li className="flex gap-3 items-start">
-            <span className="shrink-0 inline-flex items-center justify-center w-5 h-5 bg-cyan-500/10 border border-cyan-500/40 text-cyan-300 text-[10px]"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}>4</span>
-            <div className="text-[11px] text-slate-300" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-              Complete any remaining required fields (alternate, fuel on board, souls, ICAO equipment), then tap <strong className="text-cyan-300">Proceed to File</strong>.
-            </div>
-          </li>
-        </ol>
-        <div className="mt-3 pt-3 border-t border-slate-800 text-[10px] text-slate-500" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-          Aircraft profile, ICAO equipment codes, and crew contact info come from your personal ForeFlight setup. If a tail isn't recognized, add it as an Aircraft Profile in ForeFlight first.
-        </div>
-      </div>
-
-      {/* Plain-text summary for 1800wxbrief / radio call / etc */}
-      <div className="border border-slate-800 bg-slate-900/40 p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>FLIGHT PLAN SUMMARY</span>
-          <button
-            onClick={copySummary}
-            className="text-[10px] tracking-widest text-cyan-400 hover:text-cyan-300 transition-colors"
-            style={{ fontFamily: 'JetBrains Mono, monospace' }}
-          >
-            {copied ? '✓ COPIED' : 'COPY'}
-          </button>
-        </div>
-        <pre className="text-[11px] text-slate-300 leading-relaxed whitespace-pre-wrap bg-slate-950 border border-slate-800 p-3"
-          style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-{ttSummary}
-        </pre>
-        <div className="text-[10px] text-slate-500" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-          Use this for radio briefings, 1800wxbrief.com manual entry, or pasting into other dispatch tools.
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function PlanField({ label, value, onChange, type = 'text', placeholder }) {
-  return (
-    <label className="block">
-      <span className="block text-[10px] tracking-widest text-slate-500 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{label}</span>
-      <input
-        type={type}
-        value={value}
-        onChange={(e) => onChange(type === 'number' ? Number(e.target.value) || 0 : e.target.value)}
-        placeholder={placeholder}
-        className="w-full px-2 py-1.5 bg-slate-950 border border-slate-800 text-slate-200 text-sm focus:outline-none focus:border-cyan-500/50"
-        style={{ fontFamily: 'JetBrains Mono, monospace' }}
-      />
-    </label>
-  );
-}
 
 /* ============================================================
    Trip detail view
@@ -5535,7 +5209,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   const requestedTripTab = () => {
     if (typeof window === 'undefined') return null;
     const id = window.location.hash.replace(/^#/, '').toLowerCase();
-    return ['status', 'pax', 'sheet', 'notes', 'weather', 'plan', 'lodging', 'chat', 'notify', 'delay'].includes(id)
+    return ['status', 'pax', 'sheet', 'notes', 'weather', 'plan', 'frat', 'lodging', 'chat', 'notify', 'delay'].includes(id)
       ? id
       : null;
   };
@@ -5560,6 +5234,10 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   const [preloadedPax, setPreloadedPax] = useState([]);
   const [tripSheetNotes, setTripSheetNotes] = useState(null);
   const [tripSheetNotesEdited, setTripSheetNotesEdited] = useState({ at: null, byName: null });
+  const [fratState, setFratState] = useState(null);
+  const [opsDisposition, setOpsDisposition] = useState(null);
+  const [opsDispositionReason, setOpsDispositionReason] = useState(null);
+  const [dispatcherUids, setDispatcherUids] = useState([]);
   // FBO state. We seed from trip.info.fromFbo / trip.info.toFbo (parsed
   // from JetInsight iCal at sync time) so a freshly-loaded trip without
   // an explicit trip-state write still shows its FBO. The Firestore
@@ -5794,6 +5472,10 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
           setFromFbo(state.fromFbo || trip.info?.fromFbo || null);
           setToFbo(state.toFbo || trip.info?.toFbo || null);
           setCompleted(state.completed === true);
+          setFratState(state.frat || null);
+          setOpsDisposition(state.opsDisposition || null);
+          setOpsDispositionReason(state.opsDispositionReason || null);
+          setDispatcherUids(Array.isArray(state.dispatcherUids) ? state.dispatcherUids : []);
           setLoading(false);
         });
       } catch (err) {
@@ -6089,6 +5771,15 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       const respData = await r.json().catch(() => ({}));
       if (!r.ok) {
         console.error('[email] Send failed:', r.status, respData.error || '', respData);
+        // The status itself is recorded; only the notification failed. Say so,
+        // because the alternative is a dispatcher believing the broker was
+        // told. `notified` stays false, so the timeline keeps its retry action.
+        notify.error(
+          respData.willRetry
+            ? 'Status saved, but the broker email has not gone out yet — retrying automatically.'
+            : 'Status saved, but the broker email failed to send.',
+          { description: respData.explanation || respData.error || 'Check Settings → Email delivery.' },
+        );
         return;
       }
       // Email sent successfully — mark notified=true now
@@ -6160,7 +5851,10 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       const respData = await r.json().catch(() => ({}));
       if (!r.ok) {
         console.error('[resend] failed:', r.status, respData);
-        notify.error(`Resend failed: ${respData.error || r.status}. Try again or check NOTIFY tab.`);
+        notify.error('Broker email still not sent.', {
+          description: respData.explanation || respData.error
+            || 'Check Settings → Email delivery for the provider error.',
+        });
         return;
       }
       // Success — flip notified=true on the same status object
@@ -6247,7 +5941,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       const fromAirport = (trip.info?.from || pos.origin || '').toUpperCase();
       const greetingName = brokerEmails[0].split('@')[0].split('.')[0];
       const greeting = greetingName ? `Hi ${greetingName.charAt(0).toUpperCase() + greetingName.slice(1)},` : 'Hello,';
-      const signature = '\n\n— Skyway Aviation\nPrivate Jet & Helicopter Charter Services';
+      const signature = `\n\n— ${brand().name}\n${brand().tagline}`;
       const subject = `Updated ETA — ${tailLabel} ${fromAirport}-${dest}`;
       const bodyLines = [
         greeting,
@@ -7194,6 +6888,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
             { id: 'notes', label: 'Notes', icon: BookOpen },
             { id: 'weather', label: 'Weather', icon: Cloud, hidden: !canSeeFlightPlanning },
             { id: 'plan', label: 'Flight plan', icon: Navigation, hidden: !canSeeFlightPlanning },
+            { id: 'frat', label: 'FRAT', icon: Shield, hidden: !canSeeFlightPlanning || !trip.info.isOps, badge: fratState?.score != null ? String(fratState.score) : null },
             // LODGING: crew hotels for this trip. Visible to ops/admin
             // always; visible to crew because crew want to see their own
             // hotel info for the trip. Hidden on non-ops (HOLD/MX/etc)
@@ -7214,7 +6909,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
               id: 'operations',
               label: 'Operations',
               icon: Navigation,
-              children: pick(['sheet', 'weather', 'plan', 'lodging', 'notes', 'notify', 'delay']),
+              children: pick(['sheet', 'weather', 'plan', 'frat', 'lodging', 'notes', 'notify', 'delay']),
             },
             { id: 'chat', label: 'Comms', icon: MessageSquare, children: pick(['chat', 'email']) },
           ].filter(g => g.children.length > 0);
@@ -7437,6 +7132,28 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
               </Card>
 
               <Card>
+                <CardHeader title="FRAT" icon={Shield} />
+                <div className="space-y-2">
+                  {fratState?.score != null ? (
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <div className="font-mono text-lg font-semibold text-content">{fratState.score}</div>
+                        <div className="text-2xs text-content-subtle">{fratState.levelLabel || fratState.level}</div>
+                      </div>
+                      <div className={`text-[10px] tracking-widest font-mono ${fratState.go === false ? 'text-red-300' : 'text-emerald-300'}`}>
+                        {fratState.go === false ? 'NO-GO' : 'SIGNED'}
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-2xs text-content-muted">No signed FRAT yet — open to score this leg.</p>
+                  )}
+                  <Button variant="ghost" size="sm" block onClick={() => setTab('frat')}>
+                    {fratState?.score != null ? 'Open FRAT' : 'Complete FRAT'}
+                  </Button>
+                </div>
+              </Card>
+
+              <Card>
                 <CardHeader title="Crew" icon={Users} />
                 <div className="space-y-3">
                   {[
@@ -7596,8 +7313,31 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
           </div>
         ) : tab === 'weather' ? (
           <TripWeatherSection trip={trip} />
+        ) : tab === 'frat' ? (
+          <Suspense fallback={<div className="p-8 text-center text-slate-500"><Loader2 className="w-5 h-5 animate-spin inline-block mr-2" />Loading FRAT...</div>}>
+            <TripFratLazy
+              trip={trip}
+              currentUser={currentUser}
+              users={users}
+              allTrips={allTrips}
+              tripState={{
+                frat: fratState,
+                tripSheetUrl,
+                fromFbo,
+                toFbo,
+                brokerEmail,
+                passengers,
+                paxOverride,
+                opsDisposition,
+                opsDispositionReason,
+                dispatcherUids,
+              }}
+            />
+          </Suspense>
         ) : tab === 'plan' ? (
-          <ForeFlightHandoff trip={trip} currentUser={currentUser} />
+          <Suspense fallback={<div className="p-8 text-center text-slate-500"><Loader2 className="w-5 h-5 animate-spin inline-block mr-2" />Loading flight plan...</div>}>
+            <ForeFlightPlanLazy trip={trip} currentUser={currentUser} users={users} />
+          </Suspense>
         ) : tab === 'lodging' ? (
           <Suspense fallback={<div className="p-8 text-center text-slate-500"><Loader2 className="w-5 h-5 animate-spin inline-block mr-2" />Loading lodging...</div>}>
             <LodgingLazy trip={trip} currentUser={currentUser} users={users} />
@@ -14743,7 +14483,7 @@ function MyProfileModal({ currentUser, onClose, onSave }) {
                 onChange={(event) => setEmailSignature(event.target.value)}
                 rows={5}
                 maxLength={4000}
-                placeholder={'Your Name\nCharter Sales\nSkyway Aviation'}
+                placeholder={`Your Name\nCharter Sales\n${brand().name}`}
                 className="mt-1 w-full resize-y rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200 outline-none focus:border-cyan-400"
               />
               <span className="mt-1 block text-[11px] text-slate-500">
@@ -16060,6 +15800,18 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
 
           <FlightAwarePanel currentUser={currentUser} allTrips={allTrips} />
 
+          <Suspense fallback={<div className="text-xs text-slate-500 py-2">Loading ForeFlight settings…</div>}>
+            <ForeFlightSettingsPanelLazy currentUser={currentUser} />
+          </Suspense>
+
+          <Suspense fallback={<div className="text-xs text-slate-500 py-2">Loading FRAT scoring…</div>}>
+            <FratSettingsPanelLazy currentUser={currentUser} />
+          </Suspense>
+
+          <Suspense fallback={<div className="text-xs text-slate-500 py-2">Loading email delivery…</div>}>
+            <EmailDiagnosticsPanelLazy currentUser={currentUser} />
+          </Suspense>
+
           <QuickBooksConnectionPanel currentUser={currentUser} />
 
           <Suspense fallback={<div className="text-xs text-slate-500 py-2">Loading mailbox settings…</div>}>
@@ -16381,12 +16133,7 @@ function LegacyLoginScreen({ initialMode = 'login' }) {
       <div className="absolute inset-0 grid-bg-login pointer-events-none" />
       <div className="max-w-md w-full relative">
         <div className="text-center mb-8">
-          <img
-            src="/skyway-logo-reverse.png"
-            srcSet="/skyway-logo-reverse.png 1x, /skyway-logo-reverse@2x.png 2x"
-            alt="Skyway Aviation"
-            className="mx-auto mb-4 h-16 w-auto"
-          />
+          <Wordmark surface="dark" className="mx-auto mb-4 h-16 w-auto" />
           <p className="text-[10px] tracking-[0.3em] text-slate-500 mt-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
             OPS CONSOLE · SECURE LOGIN
           </p>
@@ -22015,6 +21762,7 @@ const NAV_SECTIONS = [
   { id: 'home',      label: 'Home',        icon: Home,          roles: ['crew', 'sales', 'ops', 'maint', 'accounting', 'admin'] },
 
   { id: 'schedule',  label: 'Schedule',    icon: Calendar,      roles: ['crew', 'ops', 'admin'] },
+  { id: 'availability', label: 'Availability', icon: Plane,     roles: ['ops', 'admin'] },
   { id: 'ops',       label: 'Dispatch',    icon: Zap,           roles: ['ops', 'admin'] },
   { id: 'tracking',  label: 'Tracking',    icon: Navigation,    roles: ['ops', 'admin'] },
   { id: 'manifests', label: 'Manifests',   icon: FileText,      roles: ['crew', 'ops', 'admin'] },
@@ -22043,7 +21791,7 @@ const NAV_SECTIONS = [
 
 const NAV_GROUPS = [
   { id: 'home',     label: 'Home',     icon: Home,          children: ['home'] },
-  { id: 'flights',  label: 'Flights',  icon: Plane,         children: ['schedule', 'ops', 'tracking', 'manifests', 'lodging', 'archive'] },
+  { id: 'flights',  label: 'Flights',  icon: Plane,         children: ['schedule', 'availability', 'ops', 'tracking', 'manifests', 'lodging', 'archive'] },
   { id: 'comms',    label: 'Comms',    icon: MessageSquare, children: ['comms'] },
   { id: 'teams',    label: 'Teams',    icon: Users,         children: ['teams'] },
   { id: 'email',    label: 'Email',    icon: Mail,          children: ['mailbox', 'inbox'] },
@@ -23022,46 +22770,33 @@ function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
     if (!fleetTails.includes(selectedTail)) setSelectedTail(fleetTails[0] || null);
   }, [fleetTails, selectedTail]);
 
-  // Poll every tail's FlightAware position. One request for the whole fleet.
+  // The server cron polls the managed fleet and writes one shared Firestore
+  // snapshot. Every tracking screen subscribes to it instead of each browser
+  // spending AeroAPI calls independently.
   useEffect(() => {
     let cancelled = false;
-    let timer = null;
-
-    async function pollAll() {
+    let unsubscribe = () => {};
+    (async () => {
       try {
-        const { auth } = await import('./firebase.js');
-        const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : null;
-        if (!idToken) return;
-        const r = await fetch('/api/flightaware-positions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ idToken, idents: fleetTails }),
-        });
-        if (!r.ok) {
-          console.warn('[tracking] positions endpoint returned', r.status);
-          if (!cancelled) setLoadingFleet(false);
-          return;
-        }
-        const data = await r.json();
-        const positions = Array.isArray(data?.positions) ? data.positions : [];
+        const m = await import('./firebase-data.js');
         if (cancelled) return;
-        const next = {};
-        for (const p of positions) {
-          if (p && p.ident) next[String(p.ident).toUpperCase()] = p;
-        }
-        setTailStates(next);
-        setLastPolledAt(Date.now());
-        setLoadingFleet(false);
+        unsubscribe = m.subscribeFleetPositions((map) => {
+          if (cancelled) return;
+          setTailStates(map || {});
+          const latest = Object.values(map || {}).reduce(
+            (max, item) => Math.max(max, Number(item?.polledAt || 0)),
+            0,
+          );
+          setLastPolledAt(latest || null);
+          setLoadingFleet(false);
+        });
       } catch (e) {
-        console.warn('[tracking] poll failed:', e?.message);
+        console.warn('[tracking] fleet subscription failed:', e?.message);
         if (!cancelled) setLoadingFleet(false);
       }
-    }
-
-    pollAll();
-    timer = setInterval(pollAll, 30000);
-    return () => { cancelled = true; if (timer) clearInterval(timer); };
-  }, [fleetTails]);
+    })();
+    return () => { cancelled = true; unsubscribe(); };
+  }, []);
 
   const selectedState = tailStates[selectedTail];
   const selectedAirborne = selectedState?.airborne === true;
@@ -23084,40 +22819,16 @@ function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
   // Build the map scene. Everything Leaflet-shaped lives in TrackingMap; this
   // is purely a projection of fleet state into that contract.
   const scene = useMemo(() => {
-    const aircraft = [];
+    const fleetScene = buildFleetMapScene({
+      fleetTails,
+      positions: tailStates,
+      trips,
+      aircraftByTail: config?.aircraftByTail || {},
+    });
+    const aircraft = fleetScene.aircraft;
     const airports = [];
     const routes = [];
     let projected = null;
-
-    fleetTails.forEach((tail) => {
-      const s = tailStates[tail];
-      if (!s) return;
-      if (s.airborne === true && Number.isFinite(s.latitude) && Number.isFinite(s.longitude)) {
-        aircraft.push({
-          id: tail,
-          tail,
-          lat: s.latitude,
-          lon: s.longitude,
-          heading: s.heading ?? 0,
-          altitude: s.altitude ?? null,
-          groundspeed: s.groundspeed ?? null,
-          airborne: true,
-          showLabel: tail === selectedTail || fleetTails.length <= 6,
-        });
-      } else if (s.airborne === false) {
-        const g = resolvePos(s.groundedAt, s.groundedLat, s.groundedLon);
-        if (g) {
-          aircraft.push({
-            id: tail,
-            tail,
-            lat: g.lat,
-            lon: g.lon,
-            airborne: false,
-            groundedAt: s.groundedAt || null,
-          });
-        }
-      }
-    });
 
     if (selectedState) {
       const originPos = resolvePos(selectedState.origin, selectedState.originLat, selectedState.originLon);
@@ -23150,15 +22861,22 @@ function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
       }
     }
 
-    return { aircraft, airports, routes, trail: trackPoints.length >= 2 ? trackPoints : null, projected };
-  }, [fleetTails, tailStates, selectedTail, selectedState, selectedAirborne, trackPoints]);
+    return {
+      ...fleetScene,
+      aircraft,
+      airports,
+      routes,
+      trail: trackPoints.length >= 2 ? trackPoints : null,
+      projected,
+    };
+  }, [fleetTails, tailStates, trips, config?.aircraftByTail, selectedTail, selectedState, selectedAirborne, trackPoints]);
 
   // Re-fit on selection change and when a trail first arrives, but not on every
   // 30-second position tick — that would fight the user's own pan and zoom.
   const fitKey = `${selectedTail}:${trackPoints.length >= 2 ? 'trail' : 'no-trail'}:${selectedAirborne ? 'air' : 'gnd'}`;
-  // Frame only the selected aircraft. Parked fleet members stay visible as
-  // context but must not drag the viewport across the country.
-  const focusIds = useMemo(() => [selectedTail], [selectedTail]);
+  // Keep the whole managed fleet in view. Selecting a tail changes detail and
+  // trail emphasis without making every other aircraft disappear off-screen.
+  const focusIds = null;
 
   const [mobileView, setMobileView] = useState('map');
   const [isMobile, setIsMobile] = useState(() => (typeof window === 'undefined' ? false : window.innerWidth < 768));
@@ -23186,6 +22904,10 @@ function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
   }, [mobileView]);
 
   const airborneCount = fleetTails.filter((t) => tailStates[t]?.airborne === true).length;
+  const mapAircraftByTail = useMemo(
+    () => new Map((scene.aircraft || []).map((aircraft) => [aircraft.tail, aircraft])),
+    [scene.aircraft],
+  );
 
   const mapPanel = (
     <TrackingMap
@@ -23224,17 +22946,26 @@ function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
           <Loader2 className="mx-auto mb-1 h-4 w-4 animate-spin" /> Loading positions…
         </div>
       ) : (
-        fleetTails.map((tail) => (
-          <FleetListItem
-            key={tail}
-            tail={tail}
-            state={tailStates[tail]}
-            trips={trips}
-            tripStates={tripStates}
-            isSelected={tail === selectedTail}
-            onClick={() => handleSelectTail(tail)}
-          />
-        ))
+        fleetTails.map((tail) => {
+          const raw = tailStates[tail] || {};
+          const marker = mapAircraftByTail.get(tail);
+          const displayState = marker ? {
+            ...raw,
+            airborne: marker.airborne,
+            groundedAt: raw.groundedAt || marker.groundedAt,
+          } : raw;
+          return (
+            <FleetListItem
+              key={tail}
+              tail={tail}
+              state={displayState}
+              trips={trips}
+              tripStates={tripStates}
+              isSelected={tail === selectedTail}
+              onClick={() => handleSelectTail(tail)}
+            />
+          );
+        })
       )}
     </div>
   );
@@ -25371,7 +25102,7 @@ function ExpensesScreen({ currentUser, currentUserUid, currentUserDisplayName, u
         '',
         `Please reply to this email with the requested info, or log in to https://skyway-ops.vercel.app to update the expense and resubmit.`,
         '',
-        '— Skyway Aviation',
+        `— ${brand().name}`,
       ];
       const r = await sendEmailViaApi({
         to: [recipient, ...(reviewerEmail ? [reviewerEmail] : [])], // CC the reviewer so they have a record
@@ -27921,6 +27652,9 @@ export default function CharterOps() {
   useEffect(() => {
     if (typeof document === 'undefined') return;
     document.documentElement.setAttribute('data-theme', themeMode);
+    // The two themes carry different accent inks, so the tenant's accent is
+    // re-applied on every switch rather than written once at boot.
+    applyBrandAccent(themeMode);
     try { localStorage.setItem('skyway-theme', themeMode); } catch (_) {}
     // Keep iOS status-bar / theme-color in sync with the active palette so
     // the homescreen chrome doesn't flash the wrong color on theme toggle.
@@ -29045,6 +28779,23 @@ export default function CharterOps() {
               onSwitchSection={(id) => setSection(id)}
             />
           )
+        )}
+
+        {/* === AVAILABILITY — insert a requested routing into live schedule === */}
+        {section === 'availability' && (
+          <Suspense
+            fallback={(
+              <div className="flex flex-1 items-center justify-center text-content-muted">
+                <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading availability…
+              </div>
+            )}
+          >
+            <AvailabilityLazy
+              allTrips={allTrips}
+              config={config}
+              users={users}
+            />
+          </Suspense>
         )}
 
         {/* === SCHEDULE SECTION (existing trip view) === */}
