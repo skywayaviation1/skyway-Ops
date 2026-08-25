@@ -466,7 +466,9 @@ function createAircraftCandidate({
   planningNowMs,
   rules,
 }) {
-  const position = previous?.to || normalize(homeBase);
+  // A dropped reposition still tells us where the aircraft is sitting: it could
+  // only have flown that leg from its origin.
+  const position = previous?.to || consumedPositioning[0]?.from || normalize(homeBase);
   if (!position) {
     return { ok: false, reason: 'No prior destination or configured home base' };
   }
@@ -552,24 +554,32 @@ function createAircraftCandidate({
 }
 
 /**
- * A requested live leg can replace an already-scheduled reposition over the
- * same route. In that case the aircraft's next real obligation is the leg
- * after the repo, at the repo destination; sending it back to the repo origin
- * would recreate a positioning leg that the request has already fulfilled.
+ * Split a tail's schedule into the gaps a new request can occupy.
+ *
+ * Scheduled repositioning is a plan, not an obligation: it exists only to move
+ * the aircraft between live legs. A request placed in the same gap changes
+ * where the aircraft starts and ends, so any repo that has not departed yet is
+ * dropped and rebuilt from the previous live leg to the next live leg.
+ * Repositioning that is already airborne or flown stays firm, because it has
+ * really moved the airplane.
  */
-function nextConstraintForGap(schedule, gap, route) {
-  const immediate = gap < schedule.length ? schedule[gap] : null;
-  if (
-    immediate?.isPositioning
-    && immediate.from === route[0]
-    && immediate.to === route[route.length - 1]
-  ) {
-    return {
-      next: gap + 1 < schedule.length ? schedule[gap + 1] : null,
-      consumedPositioning: [immediate],
-    };
+export function planScheduleGaps(schedule, planningNowMs) {
+  const floor = Number.isFinite(planningNowMs) ? planningNowMs : -Infinity;
+  const droppable = (leg) => leg.isPositioning && leg.startMs > floor;
+  const gaps = [];
+  let previous = null;
+  let pending = [];
+  for (const leg of schedule) {
+    if (droppable(leg)) {
+      pending.push(leg);
+      continue;
+    }
+    gaps.push({ previous, next: leg, consumedPositioning: pending });
+    previous = leg;
+    pending = [];
   }
-  return { next: immediate, consumedPositioning: [] };
+  gaps.push({ previous, next: null, consumedPositioning: pending });
+  return gaps;
 }
 
 /**
@@ -594,9 +604,7 @@ export function evaluateTailAvailability({
   const maxStart = requestedStartMs + rules.maxDelayMinutes * MINUTE_MS;
   const nearMisses = [];
 
-  for (let gap = 0; gap <= schedule.length; gap += 1) {
-    const previous = gap > 0 ? schedule[gap - 1] : null;
-    const { next, consumedPositioning } = nextConstraintForGap(schedule, gap, route);
+  for (const { previous, next, consumedPositioning } of planScheduleGaps(schedule, planningNowMs)) {
     const base = createAircraftCandidate({
       tail,
       icaoType,

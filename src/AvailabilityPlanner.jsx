@@ -340,7 +340,9 @@ function PlannedLeg({ proposal, assignment, onAssign }) {
 
               {selected.consumedPositioning?.length > 0 && (
                 <div className="rounded border border-success-border bg-success-soft p-2 text-[10px] text-success">
-                  Replaces scheduled repo: {selected.consumedPositioning.map((leg) => leg.label).join(', ')}.
+                  Scheduled reposition no longer flown:{' '}
+                  {selected.consumedPositioning.map((leg) => `${leg.label} ${zulu(leg.startMs)}`).join(', ')}.
+                  Repositioning below is rebuilt from the previous live leg to the next live leg.
                 </div>
               )}
               {selected.warnings?.map((warning) => (

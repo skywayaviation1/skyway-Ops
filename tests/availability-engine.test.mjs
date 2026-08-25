@@ -195,6 +195,123 @@ test('engine advances to a later schedule gap and reports required delay', () =>
   assert.ok(result.delayMinutes > 3 * 60, `delay was only ${result.delayMinutes}m`);
 });
 
+test('a scheduled repo is dropped and rebuilt between the surrounding live legs', () => {
+  const requested = at('2026-09-04T13:45:00Z');
+  const prior = trip({
+    id: 'dab-mynn',
+    tail: 'NTEST',
+    from: 'DAB',
+    to: 'MYNN',
+    start: requested - 4 * HR,
+    end: requested - 2 * HR,
+  });
+  const scheduledRepo = trip({
+    id: 'mynn-hpn-repo',
+    tail: 'NTEST',
+    from: 'MYNN',
+    to: 'HPN',
+    start: requested + 22 * HR,
+    end: requested + 25 * HR,
+    category: 'REPO',
+  });
+  const followingLive = trip({
+    id: 'hpn-grb-live',
+    tail: 'NTEST',
+    from: 'HPN',
+    to: 'GRB',
+    start: requested + 40 * HR,
+    end: requested + 42 * HR,
+  });
+  const [result] = rankTailAvailability({
+    fleet: fleet(),
+    allTrips: [prior, scheduledRepo, followingLive],
+    route: ['MYNN', 'PBI'],
+    requestedStartMs: requested,
+    planningNowMs: requested - 3 * HR,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.startMs, requested);
+  // The repo is not an obligation: the request replaces it entirely.
+  assert.deepEqual(result.consumedPositioning.map((leg) => leg.id), ['mynn-hpn-repo']);
+  assert.equal(result.next.id, 'hpn-grb-live');
+  assert.equal(result.movements.some((movement) => (
+    movement.kind === 'reposition-out' && movement.from === 'PBI' && movement.to === 'HPN'
+  )), true, 'repositioning must run from the request to the next live leg');
+  assert.equal(result.movements.some((movement) => movement.to === 'MYNN'), false);
+});
+
+test('a reposition already airborne stays firm and positions the aircraft', () => {
+  const requested = at('2026-09-04T13:45:00Z');
+  const flownRepo = trip({
+    id: 'mynn-hpn-repo',
+    tail: 'NTEST',
+    from: 'MYNN',
+    to: 'HPN',
+    start: requested - 4 * HR,
+    end: requested - 2 * HR,
+    category: 'REPO',
+  });
+  const [result] = rankTailAvailability({
+    fleet: fleet({ homeBase: 'APF' }),
+    allTrips: [flownRepo],
+    route: ['HPN', 'TEB'],
+    requestedStartMs: requested,
+    planningNowMs: requested - 3 * HR,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.consumedPositioning.length, 0);
+  assert.equal(result.previous.id, 'mynn-hpn-repo');
+  assert.equal(result.movements.some((movement) => movement.kind === 'reposition-in'), false);
+});
+
+test('every future repo in the gap is dropped, and one supplies the aircraft position', () => {
+  const requested = at('2026-09-04T13:45:00Z');
+  const firstRepo = trip({
+    id: 'apf-mia-repo',
+    tail: 'NTEST',
+    from: 'APF',
+    to: 'MIA',
+    start: requested + 2 * HR,
+    end: requested + 3 * HR,
+    category: 'REPO',
+  });
+  const secondRepo = trip({
+    id: 'mia-teb-repo',
+    tail: 'NTEST',
+    from: 'MIA',
+    to: 'TEB',
+    start: requested + 20 * HR,
+    end: requested + 23 * HR,
+    category: 'FERRY',
+  });
+  const followingLive = trip({
+    id: 'teb-bos-live',
+    tail: 'NTEST',
+    from: 'TEB',
+    to: 'BOS',
+    start: requested + 40 * HR,
+    end: requested + 41 * HR,
+  });
+  const [result] = rankTailAvailability({
+    fleet: fleet({ homeBase: '' }),
+    allTrips: [firstRepo, secondRepo, followingLive],
+    route: ['APF', 'MCO'],
+    requestedStartMs: requested,
+    planningNowMs: requested - HR,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.startMs, requested);
+  assert.deepEqual(
+    result.consumedPositioning.map((leg) => leg.id),
+    ['apf-mia-repo', 'mia-teb-repo'],
+  );
+  assert.equal(result.movements.some((movement) => movement.kind === 'reposition-in'), false);
+  assert.equal(result.movements.some((movement) => (
+    movement.kind === 'reposition-out' && movement.from === 'MCO' && movement.to === 'TEB'
+  )), true);
+});
+
 test('a matching live request consumes the scheduled reposition and uses the following leg', () => {
   const requested = at('2026-09-04T13:45:00Z');
   const prior = trip({
