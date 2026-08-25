@@ -5,9 +5,12 @@ import test from 'node:test';
 
 import {
   airportMatches,
+  deploymentContext,
+  missingCredentialNames,
   normalizeFboCsv,
   normalizeFboRecord,
   parseCsv,
+  publicIFlightPlannerStatus,
   summarizeAirportFbos,
 } from '../api/_iflightplanner.js';
 
@@ -157,7 +160,74 @@ test('airport lookup combines location, weather, NOTAM, FBO, and raw provider da
   assert.match(component, /All provider data/);
   // Failure of the commercial feed must not hide safety/context data from the
   // other sources.
-  assert.match(component, /Location, weather, and NOTAM data are still shown/);
+  assert.match(component, /airport location, weather, and NOTAMs below are live/);
+});
+
+test('a missing credential is reported by name, per deployment', () => {
+  const original = {
+    id: process.env.IFLIGHTPLANNER_CLIENT_ID,
+    secret: process.env.IFLIGHTPLANNER_CLIENT_SECRET,
+    env: process.env.VERCEL_ENV,
+  };
+  try {
+    delete process.env.IFLIGHTPLANNER_CLIENT_ID;
+    process.env.IFLIGHTPLANNER_CLIENT_SECRET = 'present';
+    process.env.VERCEL_ENV = 'preview';
+    assert.deepEqual(missingCredentialNames(), ['IFLIGHTPLANNER_CLIENT_ID']);
+
+    const status = publicIFlightPlannerStatus();
+    assert.equal(status.configured, false);
+    assert.deepEqual(status.missingEnv, ['IFLIGHTPLANNER_CLIENT_ID']);
+    // Naming the environment is what distinguishes "wrong credentials" from
+    // "added to a different environment than the one being viewed".
+    assert.equal(status.deployment.environment, 'preview');
+    assert.equal(deploymentContext().environment, 'preview');
+
+    process.env.IFLIGHTPLANNER_CLIENT_ID = 'present';
+    assert.deepEqual(missingCredentialNames(), []);
+    assert.equal(publicIFlightPlannerStatus().configured, true);
+  } finally {
+    if (original.id === undefined) delete process.env.IFLIGHTPLANNER_CLIENT_ID;
+    else process.env.IFLIGHTPLANNER_CLIENT_ID = original.id;
+    if (original.secret === undefined) delete process.env.IFLIGHTPLANNER_CLIENT_SECRET;
+    else process.env.IFLIGHTPLANNER_CLIENT_SECRET = original.secret;
+    if (original.env === undefined) delete process.env.VERCEL_ENV;
+    else process.env.VERCEL_ENV = original.env;
+  }
+});
+
+test('the status endpoint proves the live provider path without leaking secrets', async () => {
+  const endpoint = await source('api/iflightplanner-status.js');
+  assert.match(endpoint, /profile\.role !== 'admin'/);
+  assert.match(endpoint, /getFboDataset\(\{ force: true \}\)/);
+  assert.match(endpoint, /\? 'authorization' : 'data'/);
+  assert.match(endpoint, /columns: dataset\.headers/);
+  assert.doesNotMatch(endpoint, /process\.env\.IFLIGHTPLANNER_CLIENT_SECRET\b(?!\s*\))/);
+});
+
+test('airport coordinates come from the bundled table, not only the cron cache', async () => {
+  const component = await source('src/AirportFboData.jsx');
+  assert.match(component, /import \{ lookupCoords \} from '\.\/airport-coords\.js'/);
+  assert.match(component, /lookupCoords\(airport\)/);
+  // The server cache is populated by a weekly cron, so it must not be the only
+  // source or every airport reads "Location unavailable" until that runs.
+  assert.match(component, /needLookup\.length === 0/);
+  assert.match(component, /\.\.\.localCoords,/);
+});
+
+test('a provider outage names the missing variables and the serving environment', async () => {
+  const component = await source('src/AirportFboData.jsx');
+  assert.match(component, /providerMissingEnv/);
+  assert.match(component, /providerDeployment/);
+  assert.match(component, /Variables are scoped per environment/);
+  // A zero count must not be presented as a healthy load.
+  assert.match(component, /!report\.providerError && \(/);
+  assert.match(component, /feedUnavailable/);
+  // A failed NOTAM source must not look like "no NOTAMs".
+  assert.match(component, /NOTAM source unavailable/);
+
+  const endpoint = await source('api/iflightplanner-fbos.js');
+  assert.match(endpoint, /missingEnv: error\.missingEnv \|\| status\.missingEnv/);
 });
 
 test('every operational flight exposes automatic origin and destination airport data', async () => {

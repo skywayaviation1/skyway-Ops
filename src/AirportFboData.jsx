@@ -4,6 +4,7 @@ import {
   Fuel, Loader2, MapPin, Navigation, Phone, Radio, Search,
 } from 'lucide-react';
 import { formatLocalDate, formatLocalTime } from './airports.js';
+import { lookupCoords } from './airport-coords.js';
 
 const compactAirport = (value) => String(value || '')
   .trim()
@@ -184,10 +185,16 @@ function AirportSituation({ result }) {
         <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-content-subtle">
           <Radio className="h-3.5 w-3.5" /> Active NOTAMs
         </div>
-        <div className="mt-2 flex items-baseline gap-2">
-          <span className="font-mono text-sm font-semibold text-content">{notams.length}</span>
-          <span className="text-[10px] text-content-muted">{significant.length} operationally significant</span>
-        </div>
+        {result.notams?.error ? (
+          <div className="mt-2 text-[10px] text-warning">
+            NOTAM source unavailable — check separately. ({result.notams.error})
+          </div>
+        ) : (
+          <div className="mt-2 flex items-baseline gap-2">
+            <span className="font-mono text-sm font-semibold text-content">{notams.length}</span>
+            <span className="text-[10px] text-content-muted">{significant.length} operationally significant</span>
+          </div>
+        )}
         {significant.slice(0, 3).map((notam) => (
           <div key={notam.id || notam.text} className="mt-2 border-t border-edge pt-2 text-[9px] text-warning">
             {notam.summary || notam.text}
@@ -211,7 +218,7 @@ function AirportSituation({ result }) {
   );
 }
 
-function AirportResult({ result, gallons, assignedFbo }) {
+function AirportResult({ result, gallons, assignedFbo, feedUnavailable }) {
   const lowest = Object.values(result.lowestByFuel || {});
   return (
     <section className="space-y-3">
@@ -224,7 +231,9 @@ function AirportResult({ result, gallons, assignedFbo }) {
               {result.airportName && <span className="text-xs text-content-muted">{result.airportName}</span>}
             </div>
             <div className="mt-1 text-[10px] text-content-subtle">
-              {result.fbos.length} FBO/fuel provider{result.fbos.length === 1 ? '' : 's'}
+              {feedUnavailable
+                ? 'FBO and fuel feed not reachable from this deployment'
+                : `${result.fbos.length} FBO/fuel provider${result.fbos.length === 1 ? '' : 's'}`}
             </div>
             {assignedFbo && (
               <div className="mt-2 inline-flex rounded border border-accent-border bg-accent-soft px-2 py-1 text-[10px] text-accent">
@@ -256,8 +265,16 @@ function AirportResult({ result, gallons, assignedFbo }) {
       ) : (
         <div className="rounded-xl border border-dashed border-edge p-8 text-center">
           <AlertTriangle className="mx-auto h-6 w-6 text-warning" />
-          <div className="mt-2 text-sm font-semibold text-content">No FBO records found for {result.airport}</div>
-          <div className="mt-1 text-xs text-content-muted">Try the U.S. FAA identifier and ICAO form, such as APF or KAPF.</div>
+          <div className="mt-2 text-sm font-semibold text-content">
+            {feedUnavailable
+              ? `FBO and fuel data not loaded for ${result.airport}`
+              : `No FBO records found for ${result.airport}`}
+          </div>
+          <div className="mt-1 text-xs text-content-muted">
+            {feedUnavailable
+              ? 'The provider feed could not be reached. See the notice above.'
+              : 'Try the U.S. FAA identifier and ICAO form, such as APF or KAPF.'}
+          </div>
         </div>
       )}
     </section>
@@ -276,6 +293,8 @@ export default function AirportFboData({
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [feedCheck, setFeedCheck] = useState(null);
+  const [checkingFeed, setCheckingFeed] = useState(false);
 
   const airports = useMemo(() => (
     airportInput
@@ -309,14 +328,29 @@ export default function AirportFboData({
         { headers, cache: 'no-store' },
       ).then(async (response) => {
         const data = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(data.error || 'FBO and fuel-price lookup failed');
+        if (!response.ok) {
+          const failure = new Error(data.error || 'FBO and fuel-price lookup failed');
+          failure.status = response.status;
+          failure.missingEnv = data.missingEnv || [];
+          failure.deployment = data.deployment || null;
+          throw failure;
+        }
         return data;
       });
-      const coordsPromise = fetch('/api/airport-coords-lookup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ codes: requested }),
-      }).then((response) => response.json()).catch(() => ({ coords: {} }));
+      // The bundled coordinate table answers immediately for the airports the
+      // fleet actually flies. The server cache is only consulted for the rest,
+      // because it is populated by a weekly cron and is empty until that runs.
+      const localCoords = Object.fromEntries(
+        requested.map((airport) => [airport, lookupCoords(airport)]).filter(([, hit]) => hit),
+      );
+      const needLookup = requested.filter((airport) => !localCoords[airport]);
+      const coordsPromise = needLookup.length === 0
+        ? Promise.resolve({ coords: {} })
+        : fetch('/api/airport-coords-lookup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ codes: needLookup }),
+        }).then((response) => response.json()).catch(() => ({ coords: {} }));
       const supportPromise = Promise.all(requested.map(async (airport) => {
         const icao = operationalIcao(airport);
         const [weather, notams] = await Promise.all([
@@ -338,12 +372,18 @@ export default function AirportFboData({
         recordCount: 0,
         fetchedAt: null,
       };
-      const coordinateData = coords.status === 'fulfilled' ? coords.value?.coords || {} : {};
+      const coordinateData = {
+        ...(coords.status === 'fulfilled' ? coords.value?.coords || {} : {}),
+        ...localCoords,
+      };
       const supportData = support.status === 'fulfilled' ? support.value : [];
       const byAirport = new Map(supportData.map((item) => [item.airport, item]));
       setReport({
         ...fboData,
         providerError: fboResult.status === 'rejected' ? fboResult.reason?.message : null,
+        providerStatus: fboResult.status === 'rejected' ? fboResult.reason?.status || null : null,
+        providerMissingEnv: fboResult.status === 'rejected' ? fboResult.reason?.missingEnv || [] : [],
+        providerDeployment: fboResult.status === 'rejected' ? fboResult.reason?.deployment || null : null,
         airports: requested.map((airport, index) => {
           const fboAirport = fboData.airports?.find((item) => item.airport === airport)
             || fboData.airports?.[index]
@@ -373,6 +413,35 @@ export default function AirportFboData({
     load(airports);
   }
 
+  /**
+   * Ask the server whether it can actually reach the provider. Administrators
+   * get a live token + data request; everyone else gets the configuration view,
+   * which is enough to see whether this deployment has the credentials at all.
+   */
+  async function checkFeed() {
+    setCheckingFeed(true);
+    setFeedCheck(null);
+    try {
+      const { auth } = await import('./firebase.js');
+      const idToken = await auth.currentUser?.getIdToken();
+      const live = await fetch('/api/iflightplanner-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken }),
+      });
+      if (live.status === 401 || live.status === 403) {
+        const config = await fetch('/api/iflightplanner-status').then((r) => r.json());
+        setFeedCheck({ ...config, stage: 'configuration' });
+      } else {
+        setFeedCheck(await live.json());
+      }
+    } catch (err) {
+      setFeedCheck({ ok: false, error: err.message || 'Feed check failed' });
+    } finally {
+      setCheckingFeed(false);
+    }
+  }
+
   return (
     <div className={embedded ? 'bg-surface-shell' : 'flex-1 overflow-y-auto bg-surface-shell'}>
       <div className="mx-auto max-w-7xl space-y-4 p-4 md:p-6">
@@ -392,8 +461,44 @@ export default function AirportFboData({
           <div className="rounded border border-edge bg-surface px-3 py-2 text-right">
             <div className="text-[9px] uppercase tracking-wide text-content-subtle">Data source</div>
             <div className="font-mono text-[10px] text-content">iFlightPlanner API v2</div>
+            <button
+              type="button"
+              onClick={checkFeed}
+              disabled={checkingFeed}
+              className="mt-1 inline-flex items-center gap-1 text-[10px] text-accent hover:underline disabled:opacity-60"
+            >
+              {checkingFeed ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle2 className="h-3 w-3" />}
+              Check feed connection
+            </button>
           </div>
         </header>
+
+        {feedCheck && (
+          <div className={`rounded-lg border p-3 text-[11px] ${
+            feedCheck.ok
+              ? 'border-success-border bg-success-soft text-success'
+              : 'border-danger-border bg-danger-soft text-danger'
+          }`}>
+            <div className="font-semibold">
+              {feedCheck.ok
+                ? `Provider reachable · ${Number(feedCheck.recordCount || 0).toLocaleString()} records, ${Number(feedCheck.recordsWithPrices || 0).toLocaleString()} with posted prices`
+                : `Provider not reachable · ${feedCheck.stage || 'unknown'} stage`}
+            </div>
+            {feedCheck.error && <div className="mt-1">{feedCheck.error}</div>}
+            {feedCheck.deployment && (
+              <div className="mt-1 text-content-muted">
+                Serving environment: <span className="font-mono text-content">{feedCheck.deployment.environment}</span>
+                {feedCheck.deployment.branch && (
+                  <> · branch <span className="font-mono text-content">{feedCheck.deployment.branch}</span></>
+                )}
+              </div>
+            )}
+            {feedCheck.missingEnv?.length > 0 && (
+              <div className="mt-1 font-mono text-content">Missing: {feedCheck.missingEnv.join(', ')}</div>
+            )}
+            {feedCheck.hint && <div className="mt-1 text-content-muted">{feedCheck.hint}</div>}
+          </div>
+        )}
 
         <form onSubmit={search} className="rounded-xl border border-edge bg-surface p-4">
           <div className="grid gap-3 lg:grid-cols-[minmax(18rem,1fr)_12rem_auto] lg:items-end">
@@ -445,30 +550,58 @@ export default function AirportFboData({
         )}
 
         {report?.providerError && (
-          <div className="flex items-start gap-2 rounded-lg border border-warning-border bg-warning-soft p-3 text-sm text-warning">
-            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-            FBO/fuel feed unavailable: {report.providerError}. Location, weather, and NOTAM data are still shown.
+          <div className="rounded-lg border border-warning-border bg-warning-soft p-3 text-warning">
+            <div className="flex items-start gap-2 text-sm font-semibold">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              FBO and fuel prices unavailable · airport location, weather, and NOTAMs below are live
+            </div>
+            <p className="mt-2 text-[11px]">{report.providerError}</p>
+            {report.providerMissingEnv?.length > 0 && (
+              <div className="mt-2 rounded border border-warning-border/60 bg-surface-sunken p-2">
+                <div className="text-[9px] font-semibold uppercase tracking-wide text-content-subtle">
+                  Missing on the deployment that served this request
+                </div>
+                <ul className="mt-1 space-y-0.5">
+                  {report.providerMissingEnv.map((name) => (
+                    <li key={name} className="font-mono text-[10px] text-content">{name}</li>
+                  ))}
+                </ul>
+                {report.providerDeployment && (
+                  <div className="mt-1.5 text-[10px] text-content-muted">
+                    Serving environment:{' '}
+                    <span className="font-mono text-content">{report.providerDeployment.environment}</span>
+                    {report.providerDeployment.branch && (
+                      <> · branch <span className="font-mono text-content">{report.providerDeployment.branch}</span></>
+                    )}
+                    . Variables are scoped per environment, so add them to this one and redeploy.
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 
         {report && (
           <>
-            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-success-border bg-success-soft px-3 py-2 text-[10px] text-success">
-              <CheckCircle2 className="h-3.5 w-3.5" />
-              {Number(report.recordCount || 0).toLocaleString()} provider records loaded
-              {report.fetchedAt ? ` · feed refreshed ${fetchedLabel(report.fetchedAt)}` : ''}
-              {gallons > 0 && (
-                <span className="ml-auto inline-flex items-center gap-1 font-mono text-content">
-                  <DollarSign className="h-3 w-3" /> COST FOR {gallons.toLocaleString()} GAL
-                </span>
-              )}
-            </div>
+            {!report.providerError && (
+              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-success-border bg-success-soft px-3 py-2 text-[10px] text-success">
+                <CheckCircle2 className="h-3.5 w-3.5" />
+                {Number(report.recordCount || 0).toLocaleString()} provider records loaded
+                {report.fetchedAt ? ` · feed refreshed ${fetchedLabel(report.fetchedAt)}` : ''}
+                {gallons > 0 && (
+                  <span className="ml-auto inline-flex items-center gap-1 font-mono text-content">
+                    <DollarSign className="h-3 w-3" /> COST FOR {gallons.toLocaleString()} GAL
+                  </span>
+                )}
+              </div>
+            )}
             <div className="space-y-5">
               {report.airports.map((result) => (
                 <AirportResult
                   key={result.airport}
                   result={result}
                   gallons={gallons}
+                  feedUnavailable={Boolean(report.providerError)}
                   assignedFbo={assignedFbos[result.airport] || assignedFbos[operationalIcao(result.airport)]}
                 />
               ))}

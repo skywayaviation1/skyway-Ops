@@ -195,19 +195,48 @@ export function normalizeFboCsv(csv) {
   };
 }
 
+/** Which credential variables this deployment is missing, by name. */
+export function missingCredentialNames() {
+  return [
+    ['IFLIGHTPLANNER_CLIENT_ID', clean(process.env.IFLIGHTPLANNER_CLIENT_ID)],
+    ['IFLIGHTPLANNER_CLIENT_SECRET', clean(process.env.IFLIGHTPLANNER_CLIENT_SECRET)],
+  ].filter(([, value]) => !value).map(([name]) => name);
+}
+
+/**
+ * Which deployment answered the request.
+ *
+ * Environment variables are scoped per environment on most hosts, so a value
+ * present in production is still absent from a branch preview. Naming the
+ * environment and branch is the difference between "the credentials are wrong"
+ * and "you are looking at a deployment they were never added to".
+ */
+export function deploymentContext() {
+  return {
+    environment: clean(process.env.VERCEL_ENV) || 'unknown',
+    branch: clean(process.env.VERCEL_GIT_COMMIT_REF) || null,
+  };
+}
+
 function configuredCredentials() {
-  const clientId = clean(process.env.IFLIGHTPLANNER_CLIENT_ID);
-  const clientSecret = clean(process.env.IFLIGHTPLANNER_CLIENT_SECRET);
-  if (!clientId || !clientSecret) {
+  const missing = missingCredentialNames();
+  if (missing.length > 0) {
+    const { environment, branch } = deploymentContext();
     const error = new Error(
-      'iFlightPlanner is not configured. Set IFLIGHTPLANNER_CLIENT_ID and '
-      + 'IFLIGHTPLANNER_CLIENT_SECRET on the server.',
+      `iFlightPlanner credentials are missing from this deployment (${environment}`
+      + `${branch ? ` · ${branch}` : ''}): ${missing.join(' and ')}. `
+      + 'Add them for this environment and redeploy — values added to another '
+      + 'environment, or added without a redeploy, do not reach this function.',
     );
     error.status = 503;
     error.code = 'iflightplanner_not_configured';
+    error.missingEnv = missing;
     throw error;
   }
-  return { clientId, clientSecret };
+  return {
+    clientId: clean(process.env.IFLIGHTPLANNER_CLIENT_ID),
+    clientSecret: clean(process.env.IFLIGHTPLANNER_CLIENT_SECRET),
+  };
 }
 
 async function fetchWithTimeout(url, options = {}) {
@@ -330,11 +359,11 @@ export function summarizeAirportFbos(records, requestedAirport) {
 }
 
 export function publicIFlightPlannerStatus() {
+  const missingEnv = missingCredentialNames();
   return {
-    configured: Boolean(
-      clean(process.env.IFLIGHTPLANNER_CLIENT_ID)
-      && clean(process.env.IFLIGHTPLANNER_CLIENT_SECRET),
-    ),
+    configured: missingEnv.length === 0,
+    missingEnv,
+    deployment: deploymentContext(),
     source: 'iFlightPlanner',
     endpoint: 'FBO & Fuel Price Data v2',
   };
