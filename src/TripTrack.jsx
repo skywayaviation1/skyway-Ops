@@ -29,6 +29,7 @@ import { formatLocalTime, formatLocalDate } from './airports.js';
 // The same map component and visual language the ops Tracking screen uses, so
 // a broker and a dispatcher are looking at the identical picture of the flight.
 import { Wordmark } from './ui.jsx';
+import { brand } from './brand.js';
 import TrackingMap from './TrackingMap.jsx';
 import { flightCategoryStyle, normalizeTrail, distanceNm } from './tracking-map.js';
 // FAA NOTAM badge — renders silently when no significant NOTAMs are active,
@@ -889,13 +890,13 @@ export default function TripTrackPage({ token }) {
             {state.err === 'link expired after trip completion'
               ? 'This tracking link has expired. The trip has completed.'
               : state.err === 'link revoked' || state.err === 'link rotated'
-              ? 'This tracking link is no longer active. Please contact Skyway for an updated link.'
+              ? `This tracking link is no longer active. Please contact ${brand().shortName} for an updated link.`
               : state.err === 'trip not found'
-              ? 'We could not locate this trip. Please contact Skyway.'
+              ? `We could not locate this trip. Please contact ${brand().shortName}.`
               : 'This tracking link is invalid or has expired.'}
           </p>
           <p className="text-xs text-slate-500 mt-4">
-            Skyway Aviation Services · charters@flyskyway.com · 727-605-5000
+            {brand().legalName} · {brand().contactEmail} · {brand().contactPhone}
           </p>
         </div>
       </div>
@@ -928,7 +929,7 @@ export default function TripTrackPage({ token }) {
                 )}
               </div>
               <div className="text-[10px] text-slate-500 mt-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                SKYWAY AVIATION SERVICES
+                {brand().legalName.toUpperCase()}
                 {trip.aircraftType ? ` · ${trip.aircraftType.toUpperCase()}` : ''}
               </div>
             </div>

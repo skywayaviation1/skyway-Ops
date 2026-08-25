@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { AlertTriangle, Check, Loader2, Mail, PlugZap, Unplug } from 'lucide-react';
 import CharterInbox from './CharterInbox.jsx';
 import { Button, Card, cx } from './ui.jsx';
+import { brand } from './brand.js';
 
 async function statusRequest() {
   const { auth } = await import('./firebase.js');
@@ -57,7 +58,7 @@ export default function UserMailbox({ currentUser }) {
   };
 
   const disconnect = async () => {
-    if (!window.confirm('Disconnect your work mailbox from Skyway? Your mail remains in Microsoft 365.')) return;
+    if (!window.confirm(`Disconnect your work mailbox from ${brand().shortName}? Your mail remains in Microsoft 365.`)) return;
     setBusy(true);
     try {
       const { disconnectUserMailbox } = await import('./firebase-user-mail.js');
@@ -112,7 +113,7 @@ export default function UserMailbox({ currentUser }) {
           </p>
           {!notConfigured && (
             <div className="mt-4 rounded-lg border border-edge bg-surface-sunken p-3 text-left text-2xs leading-relaxed text-content-muted">
-              Your password is never shared with Skyway. Microsoft grants a delegated mailbox token that is encrypted at rest by Firestore and only used by authenticated server APIs. You can also connect from Profile.
+              Your password is never shared with {brand().shortName}. Microsoft grants a delegated mailbox token that is encrypted at rest by Firestore and only used by authenticated server APIs. You can also connect from Profile.
             </div>
           )}
           {(connection.error || connection.setupHint) && (

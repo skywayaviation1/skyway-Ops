@@ -406,7 +406,7 @@ export default function DutyV2({ currentUser, myTrips = [], users = [] }) {
       />
 
       {/* Export your own duty records — CSV or printable PDF. Defaults
-          to last 365 days (Skyway retention). For custom date ranges
+          to last 365 days (company retention). For custom date ranges
           or another pilot's records, use the EXPORT button on the
           ops crew board. */}
       <div className="border-t border-edge pt-3">
