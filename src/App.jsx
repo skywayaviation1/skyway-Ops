@@ -17,6 +17,7 @@ const ForeFlightSettingsPanelLazy = lazy(() => import('./ForeFlightSettingsPanel
 const TripFratLazy = lazy(() => import('./TripFrat.jsx'));
 const FratSettingsPanelLazy = lazy(() => import('./FratSettingsPanel.jsx'));
 const EmailDiagnosticsPanelLazy = lazy(() => import('./EmailDiagnosticsPanel.jsx'));
+const AvailabilityLazy = lazy(() => import('./AvailabilityPlanner.jsx'));
 const TripEmailPanelLazy = lazy(() =>
   import('./CharterInbox.jsx').then((module) => ({ default: module.TripEmailPanel }))
 );
@@ -21761,6 +21762,7 @@ const NAV_SECTIONS = [
   { id: 'home',      label: 'Home',        icon: Home,          roles: ['crew', 'sales', 'ops', 'maint', 'accounting', 'admin'] },
 
   { id: 'schedule',  label: 'Schedule',    icon: Calendar,      roles: ['crew', 'ops', 'admin'] },
+  { id: 'availability', label: 'Availability', icon: Plane,     roles: ['ops', 'admin'] },
   { id: 'ops',       label: 'Dispatch',    icon: Zap,           roles: ['ops', 'admin'] },
   { id: 'tracking',  label: 'Tracking',    icon: Navigation,    roles: ['ops', 'admin'] },
   { id: 'manifests', label: 'Manifests',   icon: FileText,      roles: ['crew', 'ops', 'admin'] },
@@ -21789,7 +21791,7 @@ const NAV_SECTIONS = [
 
 const NAV_GROUPS = [
   { id: 'home',     label: 'Home',     icon: Home,          children: ['home'] },
-  { id: 'flights',  label: 'Flights',  icon: Plane,         children: ['schedule', 'ops', 'tracking', 'manifests', 'lodging', 'archive'] },
+  { id: 'flights',  label: 'Flights',  icon: Plane,         children: ['schedule', 'availability', 'ops', 'tracking', 'manifests', 'lodging', 'archive'] },
   { id: 'comms',    label: 'Comms',    icon: MessageSquare, children: ['comms'] },
   { id: 'teams',    label: 'Teams',    icon: Users,         children: ['teams'] },
   { id: 'email',    label: 'Email',    icon: Mail,          children: ['mailbox', 'inbox'] },
@@ -28777,6 +28779,23 @@ export default function CharterOps() {
               onSwitchSection={(id) => setSection(id)}
             />
           )
+        )}
+
+        {/* === AVAILABILITY — insert a requested routing into live schedule === */}
+        {section === 'availability' && (
+          <Suspense
+            fallback={(
+              <div className="flex flex-1 items-center justify-center text-content-muted">
+                <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading availability…
+              </div>
+            )}
+          >
+            <AvailabilityLazy
+              allTrips={allTrips}
+              config={config}
+              users={users}
+            />
+          </Suspense>
         )}
 
         {/* === SCHEDULE SECTION (existing trip view) === */}
