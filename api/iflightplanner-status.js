@@ -111,6 +111,7 @@ export default async function handler(req, res) {
       code: error.code || null,
       providerMessage: error.providerMessage || null,
       providerHttpStatus: error.httpStatus || null,
+      providerResultStatus: error.providerStatus ?? null,
       requestUrl: error.requestUrl || null,
       // A 403 after a successful token exchange is not something the request
       // can fix: the client is authenticated but the dataset is not enabled for

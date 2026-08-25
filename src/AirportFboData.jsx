@@ -27,6 +27,24 @@ function money(value) {
   }).format(Number(value));
 }
 
+/**
+ * Turn a raw NOTAM-source failure into something a dispatcher can act on.
+ * The upstream endpoint soft-fails and passes the provider's body through, so
+ * without this the panel shows a JSON blob.
+ */
+function notamFailure(error) {
+  const raw = String(error || '');
+  if (/invalid_client|client credentials are invalid/i.test(raw)) {
+    return 'FAA NOTAM credentials are being rejected. An administrator must renew '
+      + 'FAA_NMS_CLIENT_ID and FAA_NMS_CLIENT_SECRET on the server.';
+  }
+  if (/not configured/i.test(raw)) {
+    return 'FAA NOTAM credentials are not configured on this deployment.';
+  }
+  if (/timeout|abort|network/i.test(raw)) return 'The FAA NOTAM service did not respond.';
+  return raw.replace(/\s+/g, ' ').slice(0, 200);
+}
+
 function fetchedLabel(ms) {
   if (!Number.isFinite(Number(ms))) return 'Unknown';
   const date = new Date(Number(ms));
@@ -187,7 +205,8 @@ function AirportSituation({ result }) {
         </div>
         {result.notams?.error ? (
           <div className="mt-2 text-[10px] text-warning">
-            NOTAM source unavailable — check separately. ({result.notams.error})
+            <span className="font-semibold">NOTAMs unavailable — check another source before dispatch.</span>
+            <div className="mt-1 text-content-muted">{notamFailure(result.notams.error)}</div>
           </div>
         ) : (
           <div className="mt-2 flex items-baseline gap-2">

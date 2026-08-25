@@ -6,6 +6,7 @@ import test from 'node:test';
 import {
   airportMatches,
   deploymentContext,
+  describeProviderResult,
   missingCredentialNames,
   normalizeFboCsv,
   normalizeFboRecord,
@@ -227,12 +228,41 @@ test('the API host is configurable so production credentials can be used', () =>
   }
 });
 
+test('the provider result envelope is read for its actual message', () => {
+  // Their envelope puts descriptive text in messages[], not in `status`.
+  assert.equal(
+    describeProviderResult({
+      status: 3,
+      title: 'Not Authorized',
+      messages: [{ type: 'Error', code: 'NO_LICENSE', message: 'Client is not licensed for this data set' }],
+    }),
+    'Not Authorized · Client is not licensed for this data set [NO_LICENSE]',
+  );
+  // A bare status number must never be presented as if it were a message.
+  assert.equal(
+    describeProviderResult({ status: 3 }),
+    'provider returned result status 3 with no message',
+  );
+  assert.equal(describeProviderResult({ message: 'Direct message' }), 'Direct message');
+  assert.equal(describeProviderResult(null, '<html>Gateway</html>'), '<html>Gateway</html>');
+  assert.equal(describeProviderResult({}, ''), 'no response body');
+});
+
+test('a failing NOTAM source is explained in operational terms', async () => {
+  const component = await source('src/AirportFboData.jsx');
+  assert.match(component, /function notamFailure/);
+  assert.match(component, /FAA_NMS_CLIENT_ID and FAA_NMS_CLIENT_SECRET/);
+  // Dispatchers must not read an empty NOTAM panel as a clear airport.
+  assert.match(component, /NOTAMs unavailable — check another source before dispatch/);
+});
+
 test('a forbidden dataset is reported as entitlement, with the provider verbatim', async () => {
   const client = await source('api/_iflightplanner.js');
   // 403 is distinguished from a generic failure so the guidance can differ.
   assert.match(client, /error\.code = response\.status === 403/);
   assert.match(client, /'iflightplanner_forbidden'/);
-  assert.match(client, /error\.providerMessage = String\(providerMessage\)/);
+  assert.match(client, /error\.providerMessage = providerMessage/);
+  assert.match(client, /describeProviderResult\(result, body\)/);
   // The two datasets are licensed separately; fuel prices are still useful.
   assert.match(client, /fuelPriceDataUrl\(\), 'fuel price'/);
 
@@ -276,7 +306,7 @@ test('a provider outage names the missing variables and the serving environment'
   assert.match(component, /!report\.providerError && \(/);
   assert.match(component, /feedUnavailable/);
   // A failed NOTAM source must not look like "no NOTAMs".
-  assert.match(component, /NOTAM source unavailable/);
+  assert.match(component, /NOTAMs unavailable/);
 
   const endpoint = await source('api/iflightplanner-fbos.js');
   assert.match(endpoint, /missingEnv: error\.missingEnv \|\| status\.missingEnv/);

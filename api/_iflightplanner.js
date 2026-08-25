@@ -306,6 +306,45 @@ async function accessToken(force = false) {
 }
 
 /**
+ * Read the provider's own explanation out of their result envelope.
+ *
+ * Every response is an `AviationApiDataResult`: `status` (0 means success),
+ * plus a `title` and a `messages[]` array of `{ type, code, message }` where
+ * the descriptive text actually lives. Reporting only `status` yields a bare
+ * integer like "3", which tells nobody anything.
+ */
+export function describeProviderResult(result, fallbackBody = '') {
+  if (!result || typeof result !== 'object') {
+    return String(fallbackBody || '').trim().slice(0, 300) || 'no response body';
+  }
+  const messages = (Array.isArray(result.messages) ? result.messages : [])
+    .map((entry) => {
+      const code = clean(entry?.code);
+      const text = clean(entry?.message);
+      if (!text && !code) return '';
+      return code && !text.includes(code) ? `${text} [${code}]` : text;
+    })
+    .filter(Boolean);
+
+  const parts = [];
+  const title = clean(result.title);
+  if (title) parts.push(title);
+  parts.push(...messages);
+  if (parts.length === 0) {
+    const direct = clean(result.message) || clean(result.errorMessage) || clean(result.error);
+    if (direct) parts.push(direct);
+  }
+  if (parts.length === 0 && result.status != null) {
+    // Status alone is nearly useless, so say what it is rather than printing a
+    // naked number that reads like a message.
+    parts.push(`provider returned result status ${result.status} with no message`);
+  }
+  return parts.join(' · ').slice(0, 500)
+    || String(fallbackBody || '').trim().slice(0, 300)
+    || 'no response body';
+}
+
+/**
  * Pull one CSV dataset.
  *
  * A 403 here means the client authenticated but is not entitled to this
@@ -331,18 +370,14 @@ async function downloadCsv(url, label, forceToken = false) {
   try { result = JSON.parse(body); } catch { /* non-JSON error page */ }
 
   if (!response.ok || typeof result.data !== 'string') {
-    const providerMessage = result.message
-      || result.errorMessage
-      || result.error
-      || result.status
-      || body.trim().slice(0, 300)
-      || 'no response body';
+    const providerMessage = describeProviderResult(result, body);
     const error = new Error(
       `iFlightPlanner ${label} request failed (${response.status}): ${providerMessage}`,
     );
     error.status = 502;
     error.httpStatus = response.status;
-    error.providerMessage = String(providerMessage);
+    error.providerMessage = providerMessage;
+    error.providerStatus = result?.status ?? null;
     error.requestUrl = url;
     error.code = response.status === 403
       ? 'iflightplanner_forbidden'
