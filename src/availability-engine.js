@@ -724,6 +724,239 @@ export function rankTailAvailability({
   });
 }
 
+function roundMoney(value) {
+  return Math.round((Number(value) || 0) * 100) / 100;
+}
+
+export function priceAvailabilityOption(option, aircraft) {
+  if (!option?.ok) {
+    return {
+      cost: null,
+      sell: null,
+      margin: null,
+      totalBlockMinutes: 0,
+      billableBlockMinutes: 0,
+      missingCostRate: true,
+      missingSellRate: true,
+    };
+  }
+  const totalBlockMinutes = (option.movements || [])
+    .reduce((sum, movement) => sum + Number(movement.blockMinutes || 0), 0);
+  const billableBlockMinutes = (option.movements || [])
+    .filter((movement) => movement.kind === 'request')
+    .reduce((sum, movement) => sum + Number(movement.blockMinutes || 0), 0);
+  const costRate = aircraft?.costPerBlockHour;
+  const sellRate = aircraft?.sellPerBlockHour;
+  const cost = Number.isFinite(costRate)
+    ? roundMoney(costRate * totalBlockMinutes / 60)
+    : null;
+  const sell = Number.isFinite(sellRate)
+    ? roundMoney(sellRate * billableBlockMinutes / 60)
+    : null;
+  return {
+    cost,
+    sell,
+    margin: cost != null && sell != null ? roundMoney(sell - cost) : null,
+    totalBlockMinutes,
+    billableBlockMinutes,
+    repositionBlockMinutes: totalBlockMinutes - billableBlockMinutes,
+    costRate: Number.isFinite(costRate) ? costRate : null,
+    sellRate: Number.isFinite(sellRate) ? sellRate : null,
+    missingCostRate: !Number.isFinite(costRate),
+    missingSellRate: !Number.isFinite(sellRate),
+  };
+}
+
+function virtualTripForLeg(leg, option) {
+  if (!option?.ok) return null;
+  return {
+    uid: `_availability_${leg.id}`,
+    start: new Date(option.startMs),
+    end: new Date(option.requestEndMs),
+    info: {
+      tail: option.tail,
+      from: leg.from,
+      to: leg.to,
+      pax: 1,
+      category: 'REVENUE',
+      legType: 'REVENUE',
+      isFlight: true,
+      isOps: true,
+      pic: '',
+      sic: '',
+    },
+    raw: { availabilityProposal: true },
+  };
+}
+
+function normalizeRequestedLeg(leg, index) {
+  const from = normalize(leg?.from);
+  const to = normalize(leg?.to);
+  const requestedStartMs = Number(leg?.requestedStartMs);
+  return {
+    id: String(leg?.id || `leg-${index + 1}`),
+    index,
+    from,
+    to,
+    requestedStartMs,
+    valid: Boolean(from && to && from !== to && Number.isFinite(requestedStartMs)),
+  };
+}
+
+/**
+ * Recommend and price a multi-leg live itinerary.
+ *
+ * Each requested live leg can use a different tail. Recommendations are first
+ * built chronologically, then recalculated with every selected/recommended
+ * live leg inserted as a provisional schedule entry. That second pass lets an
+ * outbound leg see the selected return (and any scheduled trips between them)
+ * as its real next obligation instead of inventing a reposition that the full
+ * itinerary makes unnecessary.
+ */
+export function planLiveLegAssignments({
+  legs,
+  fleet,
+  allTrips,
+  selectedTypeIds = [],
+  assignments = {},
+  crew = [],
+  dutyPeriods = [],
+  outsideFlying = [],
+  rules = AVAILABILITY_RULES,
+  planningNowMs = Date.now(),
+}) {
+  const requestedLegs = (Array.isArray(legs) ? legs : [])
+    .map(normalizeRequestedLeg)
+    .sort((a, b) => a.requestedStartMs - b.requestedStartMs || a.index - b.index);
+  const typeSet = new Set((selectedTypeIds || []).map((type) => String(type).toUpperCase()));
+  const eligibleFleet = (Array.isArray(fleet) ? fleet : []).filter((aircraft) => {
+    if (typeSet.size === 0) return true;
+    const type = String(aircraft.typeFilterId || aircraft.icaoType || 'UNCONFIGURED').toUpperCase();
+    return typeSet.has(type);
+  });
+  if (!requestedLegs.length || requestedLegs.some((leg) => !leg.valid)) {
+    return {
+      ok: false,
+      legs: [],
+      totals: null,
+      reasons: ['Every live leg needs different origin/destination airports and a valid departure'],
+    };
+  }
+  if (!eligibleFleet.length) {
+    return {
+      ok: false,
+      legs: [],
+      totals: null,
+      reasons: ['No managed aircraft match the selected aircraft types'],
+    };
+  }
+
+  const aircraftByTail = new Map(eligibleFleet.map((aircraft) => [normalize(aircraft.tail), aircraft]));
+  let proposals = [];
+  let provisionalTrips = [];
+
+  // First pass gives every leg a recommendation so all requested legs can be
+  // represented in the schedule for the joint passes below.
+  for (const leg of requestedLegs) {
+    const options = rankTailAvailability({
+      fleet: eligibleFleet,
+      allTrips: [...(allTrips || []), ...provisionalTrips],
+      route: [leg.from, leg.to],
+      requestedStartMs: leg.requestedStartMs,
+      planningNowMs,
+      crew,
+      dutyPeriods,
+      outsideFlying,
+      rules,
+    }).map((option) => ({
+      ...option,
+      pricing: priceAvailabilityOption(option, aircraftByTail.get(normalize(option.tail))),
+    }));
+    const requestedTail = normalize(assignments[leg.id]);
+    const selected = requestedTail
+      ? options.find((option) => normalize(option.tail) === requestedTail)
+      : options.find((option) => option.ok);
+    proposals.push({
+      ...leg,
+      options,
+      recommendedTail: options.find((option) => option.ok)?.tail || null,
+      selectedTail: selected?.tail || requestedTail || null,
+      selected,
+    });
+    const virtual = virtualTripForLeg(leg, selected);
+    if (virtual) provisionalTrips.push(virtual);
+  }
+
+  // Joint passes: each leg sees every other chosen live leg on its selected
+  // tail, including future returns, while its own placeholder is removed.
+  for (let iteration = 0; iteration < 2; iteration += 1) {
+    const allVirtual = proposals.map((proposal) => virtualTripForLeg(proposal, proposal.selected)).filter(Boolean);
+    proposals = proposals.map((proposal) => {
+      const otherVirtual = allVirtual.filter((trip) => trip.uid !== `_availability_${proposal.id}`);
+      const options = rankTailAvailability({
+        fleet: eligibleFleet,
+        allTrips: [...(allTrips || []), ...otherVirtual],
+        route: [proposal.from, proposal.to],
+        requestedStartMs: proposal.requestedStartMs,
+        planningNowMs,
+        crew,
+        dutyPeriods,
+        outsideFlying,
+        rules,
+      }).map((option) => ({
+        ...option,
+        pricing: priceAvailabilityOption(option, aircraftByTail.get(normalize(option.tail))),
+      }));
+      const explicitTail = normalize(assignments[proposal.id]);
+      const preferredTail = explicitTail || normalize(proposal.selectedTail);
+      const selected = preferredTail
+        ? options.find((option) => normalize(option.tail) === preferredTail)
+        : options.find((option) => option.ok);
+      return {
+        ...proposal,
+        options,
+        recommendedTail: options.find((option) => option.ok)?.tail || null,
+        selectedTail: selected?.tail || preferredTail || null,
+        selected,
+      };
+    });
+  }
+
+  const selectedOptions = proposals.map((proposal) => proposal.selected).filter(Boolean);
+  const priced = selectedOptions.filter((option) => option.ok).map((option) => option.pricing);
+  const allLegsFit = proposals.every((proposal) => proposal.selected?.ok);
+  const missingRates = proposals.flatMap((proposal) => {
+    const price = proposal.selected?.pricing;
+    if (!proposal.selected?.ok || !price) return [];
+    const missing = [];
+    if (price.missingCostRate) missing.push(`${proposal.selected.tail} operating cost`);
+    if (price.missingSellRate) missing.push(`${proposal.selected.tail} sell rate`);
+    return missing;
+  });
+  const costKnown = allLegsFit
+    && priced.length === proposals.length
+    && priced.every((price) => price.cost != null);
+  const sellKnown = allLegsFit
+    && priced.length === proposals.length
+    && priced.every((price) => price.sell != null);
+  const cost = costKnown ? roundMoney(priced.reduce((sum, price) => sum + price.cost, 0)) : null;
+  const sell = sellKnown ? roundMoney(priced.reduce((sum, price) => sum + price.sell, 0)) : null;
+  return {
+    ok: allLegsFit,
+    legs: proposals.sort((a, b) => a.index - b.index),
+    eligibleFleet,
+    totals: {
+      cost,
+      sell,
+      margin: cost != null && sell != null ? roundMoney(sell - cost) : null,
+      liveBlockMinutes: priced.reduce((sum, price) => sum + price.billableBlockMinutes, 0),
+      repositionBlockMinutes: priced.reduce((sum, price) => sum + price.repositionBlockMinutes, 0),
+      missingRates: [...new Set(missingRates)],
+    },
+    reasons: allLegsFit ? [] : ['One or more selected tails cannot fit their live leg'],
+  };
+}
+
 export function formatDuration(minutes) {
   const total = Math.max(0, Math.round(Number(minutes) || 0));
   const hours = Math.floor(total / 60);

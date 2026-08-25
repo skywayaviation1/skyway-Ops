@@ -12,7 +12,7 @@ const CharterInboxLazy = lazy(() => import('./CharterInbox.jsx'));
 const UserMailboxLazy = lazy(() => import('./UserMailbox.jsx'));
 const TeamsHubLazy = lazy(() => import('./TeamsHub.jsx'));
 const MailboxSettingsPanelLazy = lazy(() => import('./MailboxSettingsPanel.jsx'));
-const AvailabilityLazy = lazy(() => import('./Availability.jsx'));
+const AvailabilityLazy = lazy(() => import('./AvailabilityPlanner.jsx'));
 const TripEmailPanelLazy = lazy(() =>
   import('./CharterInbox.jsx').then((module) => ({ default: module.TripEmailPanel }))
 );

@@ -10,6 +10,8 @@ import {
   evaluateCrewFit,
   formatDuration,
   parseRouting,
+  planLiveLegAssignments,
+  priceAvailabilityOption,
   rankTailAvailability,
 } from '../src/availability-engine.js';
 
@@ -420,13 +422,173 @@ test('tails are ranked by delay, then repositioning', () => {
 
 test('Availability is a role-gated lazy Flights tab fed by the live schedule', async () => {
   const app = await readFile(path.join(root, 'src/App.jsx'), 'utf8');
-  assert.match(app, /AvailabilityLazy = lazy\(\(\) => import\('\.\/Availability\.jsx'\)\)/);
+  assert.match(app, /AvailabilityLazy = lazy\(\(\) => import\('\.\/AvailabilityPlanner\.jsx'\)\)/);
   assert.match(app, /\{ id: 'availability', label: 'Availability'[\s\S]*?roles: \['ops', 'admin'\]/);
   assert.match(app, /children: \['schedule', 'availability', 'ops'/);
   assert.match(app, /section === 'availability'/);
   assert.match(app, /<AvailabilityLazy[\s\S]*?allTrips=\{allTrips\}[\s\S]*?config=\{config\}[\s\S]*?users=\{users\}/);
-  const component = await readFile(path.join(root, 'src/Availability.jsx'), 'utf8');
+  const component = await readFile(path.join(root, 'src/AvailabilityPlanner.jsx'), 'utf8');
   assert.match(component, /subscribeOutsideReportForAllPilots\(3, setOutsideFlying\)/);
   assert.match(component, /outsideFlying,/);
+});
+
+test('round trip keeps the aircraft at the outstation and sees trips in between', () => {
+  const outbound = at('2026-09-01T14:00:00Z');
+  const returning = at('2026-09-03T18:00:00Z');
+  const inBetweenOut = trip({
+    id: 'teb-bos',
+    tail: 'NTEST',
+    from: 'TEB',
+    to: 'BOS',
+    start: outbound + 24 * HR,
+    end: outbound + 25 * HR,
+  });
+  const inBetweenBack = trip({
+    id: 'bos-teb',
+    tail: 'NTEST',
+    from: 'BOS',
+    to: 'TEB',
+    start: outbound + 29 * HR,
+    end: outbound + 30 * HR,
+  });
+  const plan = planLiveLegAssignments({
+    legs: [
+      { id: 'out', from: 'APF', to: 'TEB', requestedStartMs: outbound },
+      { id: 'back', from: 'TEB', to: 'APF', requestedStartMs: returning },
+    ],
+    fleet: fleet({ costPerBlockHour: 2000, sellPerBlockHour: 5000 }),
+    allTrips: [inBetweenOut, inBetweenBack],
+    assignments: { out: 'NTEST', back: 'NTEST' },
+    planningNowMs: outbound - 2 * HR,
+  });
+  assert.equal(plan.ok, true);
+  assert.equal(plan.legs.length, 2);
+  assert.equal(plan.legs[0].selected.next.id, 'teb-bos');
+  assert.equal(plan.legs[1].selected.previous.id, 'bos-teb');
+  assert.equal(plan.legs[0].selected.movements.some((m) => (
+    m.kind === 'reposition-out' && m.from === 'TEB' && m.to === 'APF'
+  )), false);
+  assert.equal(plan.legs[1].selected.movements.some((m) => m.kind === 'reposition-in'), false);
+});
+
+test('each live leg ranks multiple tails and allows a different selected tail', () => {
+  const start = at('2026-09-01T14:00:00Z');
+  const plan = planLiveLegAssignments({
+    legs: [
+      { id: 'one', from: 'APF', to: 'MCO', requestedStartMs: start },
+      { id: 'two', from: 'MCO', to: 'TEB', requestedStartMs: start + 6 * HR },
+    ],
+    fleet: [
+      { tail: 'N1', icaoType: 'C25B', homeBase: 'APF', costPerBlockHour: 1800, sellPerBlockHour: 4500 },
+      { tail: 'N2', icaoType: 'C25B', homeBase: 'MCO', costPerBlockHour: 2000, sellPerBlockHour: 4800 },
+    ],
+    allTrips: [],
+    assignments: { one: 'N1', two: 'N2' },
+    planningNowMs: start - 3 * HR,
+  });
+  assert.equal(plan.ok, true);
+  assert.equal(plan.legs[0].options.length, 2);
+  assert.equal(plan.legs[1].options.length, 2);
+  assert.equal(plan.legs[0].selected.tail, 'N1');
+  assert.equal(plan.legs[1].selected.tail, 'N2');
+});
+
+test('multiple aircraft types can be checked together', () => {
+  const start = at('2026-09-01T14:00:00Z');
+  const base = {
+    legs: [{ id: 'one', from: 'APF', to: 'TEB', requestedStartMs: start }],
+    fleet: [
+      { tail: 'NCJ', icaoType: 'C25B', typeFilterId: 'C25B', homeBase: 'APF' },
+      { tail: 'NLJ', icaoType: 'LJ60', typeFilterId: 'LJ60', homeBase: 'APF' },
+      { tail: 'NSF', icaoType: 'SF50', typeFilterId: 'SF50', homeBase: 'APF' },
+    ],
+    allTrips: [],
+    planningNowMs: start - HR,
+  };
+  const twoTypes = planLiveLegAssignments({
+    ...base,
+    selectedTypeIds: ['C25B', 'LJ60'],
+  });
+  assert.deepEqual(
+    twoTypes.legs[0].options.map((option) => option.tail).sort(),
+    ['NCJ', 'NLJ'],
+  );
+  const oneType = planLiveLegAssignments({
+    ...base,
+    selectedTypeIds: ['SF50'],
+  });
+  assert.deepEqual(oneType.legs[0].options.map((option) => option.tail), ['NSF']);
+});
+
+test('pricing costs all movement block but sells only live block', () => {
+  const start = at('2026-09-01T14:00:00Z');
+  const [option] = rankTailAvailability({
+    fleet: fleet({ homeBase: 'TEB' }),
+    allTrips: [],
+    route: ['APF', 'MCO'],
+    requestedStartMs: start,
+    planningNowMs: start - 6 * HR,
+  });
+  const pricing = priceAvailabilityOption(option, {
+    costPerBlockHour: 2000,
+    sellPerBlockHour: 5000,
+  });
+  assert.ok(pricing.repositionBlockMinutes > 0);
+  assert.equal(pricing.totalBlockMinutes, pricing.billableBlockMinutes + pricing.repositionBlockMinutes);
+  assert.equal(pricing.cost, Math.round(2000 * pricing.totalBlockMinutes / 60 * 100) / 100);
+  assert.equal(pricing.sell, Math.round(5000 * pricing.billableBlockMinutes / 60 * 100) / 100);
+  assert.equal(pricing.margin, Math.round((pricing.sell - pricing.cost) * 100) / 100);
+});
+
+test('whole-trip price totals selected aircraft per leg and flags missing rates', () => {
+  const start = at('2026-09-01T14:00:00Z');
+  const plan = planLiveLegAssignments({
+    legs: [
+      { id: 'out', from: 'APF', to: 'MCO', requestedStartMs: start },
+      { id: 'back', from: 'MCO', to: 'APF', requestedStartMs: start + 8 * HR },
+    ],
+    fleet: [
+      { tail: 'N1', icaoType: 'C25B', homeBase: 'APF', costPerBlockHour: 2000, sellPerBlockHour: 5000 },
+      { tail: 'N2', icaoType: 'C25B', homeBase: 'MCO', costPerBlockHour: 2500, sellPerBlockHour: 5500 },
+    ],
+    allTrips: [],
+    assignments: { out: 'N1', back: 'N2' },
+    planningNowMs: start - HR,
+  });
+  assert.equal(plan.ok, true);
+  assert.equal(plan.totals.missingRates.length, 0);
+  const sumCost = plan.legs.reduce((sum, leg) => sum + leg.selected.pricing.cost, 0);
+  const sumSell = plan.legs.reduce((sum, leg) => sum + leg.selected.pricing.sell, 0);
+  assert.equal(plan.totals.cost, Math.round(sumCost * 100) / 100);
+  assert.equal(plan.totals.sell, Math.round(sumSell * 100) / 100);
+
+  const missing = planLiveLegAssignments({
+    legs: [{ id: 'one', from: 'APF', to: 'MCO', requestedStartMs: start }],
+    fleet: [{ tail: 'N3', icaoType: 'C25B', homeBase: 'APF' }],
+    allTrips: [],
+    planningNowMs: start - HR,
+  });
+  assert.equal(missing.totals.cost, null);
+  assert.deepEqual(missing.totals.missingRates.sort(), ['N3 operating cost', 'N3 sell rate']);
+});
+
+test('an unfit selected leg never produces a misleading zero-dollar total', () => {
+  const start = at('2026-09-01T14:00:00Z');
+  const plan = planLiveLegAssignments({
+    legs: [{ id: 'one', from: 'UNKNOWN1', to: 'UNKNOWN2', requestedStartMs: start }],
+    fleet: [{
+      tail: 'N1',
+      icaoType: 'C25B',
+      homeBase: 'APF',
+      costPerBlockHour: 2000,
+      sellPerBlockHour: 5000,
+    }],
+    allTrips: [],
+    planningNowMs: start - HR,
+  });
+  assert.equal(plan.ok, false);
+  assert.equal(plan.totals.cost, null);
+  assert.equal(plan.totals.sell, null);
+  assert.equal(plan.totals.margin, null);
 });
 
