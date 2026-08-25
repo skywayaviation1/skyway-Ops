@@ -31,11 +31,9 @@
 
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
-import {
-  CHARTER_INBOX, applySkywaySignature, textToHtml, withCharterCopy,
-} from './_email-signature.js';
+import { applySkywaySignature, textToHtml, withCharterCopy } from './_email-signature.js';
 import { explainSendFailure, isPermanentSendFailure } from './_email-delivery.js';
-import { fileCharterInboxCopy } from './_charter-copy.js';
+import { deliverNotification } from './_email-transport.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -167,10 +165,16 @@ export default async function handler(req, res) {
       ? buildThreadHeaders(threadKey)
       : null;
 
-    // ATTEMPT 1: Send immediately via Resend. This is the fast path that
-    // 99% of emails take. The dispatcher tapped the status; they want the
-    // email out NOW, not in 60 seconds when the queue cron next runs.
-    const sendResult = await sendViaResendInline({
+    // ATTEMPT 1: deliver immediately. This is the fast path that 99% of
+    // emails take. The dispatcher tapped the status; they want the email out
+    // NOW, not in 60 seconds when the queue cron next runs.
+    //
+    // Recipients inside the operator's own Microsoft 365 tenant are handed to
+    // Exchange rather than to the provider: mail sent by the provider comes
+    // from a subdomain of the tenant's own domain, so Exchange treats it as
+    // spoofed and filters it before it reaches an inbox. Everyone else goes out
+    // through the provider as before.
+    const sendResult = await deliverNotification({
       to: finalTo,
       cc: finalCc,
       subject: String(subject).slice(0, 200),
@@ -178,23 +182,7 @@ export default async function handler(req, res) {
       from: from || null,
       headers: threadHeaders,
     });
-
-    // The charter inbox is in the operator's own Microsoft 365 tenant, and the
-    // provider sends from a subdomain of that same domain, so Exchange treats
-    // the copy addressed to it as spoofed and filters it before it lands. That
-    // is why brokers receive these notifications and charters@ does not. Write
-    // its copy straight into the mailbox instead, which no filter sits in front
-    // of. Best-effort: the broker's message has already gone out by this point.
-    const charterCopy = finalCc.some((entry) => entry.toLowerCase() === CHARTER_INBOX)
-      || finalTo.some((entry) => entry.toLowerCase() === CHARTER_INBOX)
-        ? await fileCharterInboxCopy({
-          subject: String(subject).slice(0, 200),
-          html: wrappedHtml,
-          to: finalTo,
-          cc: finalCc,
-          from: from || null,
-        })
-        : { ok: false, skipped: 'charter inbox not a recipient' };
+    const internalDelivery = sendResult.internal;
 
     // Write the record either way — sent or pending. This gives us a full
     // audit trail of every email that should have gone out, regardless of
@@ -202,7 +190,8 @@ export default async function handler(req, res) {
     const baseRecord = {
       to: finalTo,
       cc: finalCc,
-      charterCopy,
+      internalDelivery,
+      internalDelivered: internalDelivery.ok === true,
       subject: String(subject).slice(0, 200),
       html: wrappedHtml,
       from: from || null,
@@ -218,26 +207,27 @@ export default async function handler(req, res) {
     };
 
     if (sendResult.ok) {
-      // FAST PATH: delivered to Resend on the first try.
+      // FAST PATH: every recipient was accepted on the first try.
       await db.collection('email-queue').doc(id).set({
         ...baseRecord,
         status: 'sent',
         sentAt: Date.now(),
-        resendId: sendResult.id || null,
+        resendId: sendResult.provider?.id || null,
         lastError: null,
         nextAttemptAt: null,
         deadAt: null,
       });
       console.log('[email-enqueue] SENT inline', id, '→', finalTo.join(','),
         '· cc:', finalCc.join(',') || '-',
-        '· charter copy:', charterCopy.ok ? 'filed' : (charterCopy.skipped || charterCopy.error),
-        '· resend id:', sendResult.id, '· source:', source || '-');
+        '· tenant mailboxes:', internalDeliveryLabel(internalDelivery),
+        '· resend id:', sendResult.provider?.id || '-', '· source:', source || '-');
       return res.status(200).json({
         ok: true,
         delivered: true,
         queueId: id,
-        resendId: sendResult.id,
-        delivery: 'inline',
+        resendId: sendResult.provider?.id || null,
+        delivery: sendResult.internalOnly ? 'tenant-mailbox' : 'inline',
+        internalDelivery,
         error: null,
       });
     }
@@ -257,6 +247,7 @@ export default async function handler(req, res) {
       deadAt: permanent ? now : null,
     });
     console.warn('[email-enqueue] inline send failed for', id, '· error:', sendResult.error,
+      '· tenant mailboxes:', internalDeliveryLabel(internalDelivery),
       permanent ? '· permanent, not retrying' : '· queued for retry');
 
     // `delivered: false` is the contract the app relies on to keep the status
@@ -350,53 +341,9 @@ function buildThreadHeaders(threadKey) {
   };
 }
 
-// Send via Resend directly, return { ok, id?, error? }
-async function sendViaResendInline({ to, cc, subject, html, from, headers }) {
-  if (!process.env.RESEND_API_KEY) {
-    return { ok: false, error: 'RESEND_API_KEY missing on server' };
-  }
-  const DEFAULT_FROM = process.env.OPS_FROM_EMAIL || 'Skyway Ops <noreply@send.flyskyway.com>';
-  // Reply-To routes user replies to a real Workspace mailbox so the
-  // recipient's mail server doesn't bounce them back ("Domain not
-  // found" on send.flyskyway.com which is outbound-only). Once
-  // OPS_FROM_EMAIL is flipped to an @flyskyway.com address this
-  // becomes redundant but harmless.
-  const DEFAULT_REPLY_TO = process.env.OPS_REPLY_TO || 'charters@flyskyway.com';
-  const body = {
-    from: from || DEFAULT_FROM,
-    reply_to: DEFAULT_REPLY_TO,
-    to: Array.isArray(to) ? to : [to],
-    subject,
-    html,
-  };
-  if (Array.isArray(cc) && cc.length > 0) body.cc = cc;
-  // Threading headers (References, In-Reply-To, Message-ID overrides
-  // for whoever passes them). Resend's API accepts custom headers via
-  // a `headers` field — pass them through verbatim.
-  if (headers && typeof headers === 'object' && Object.keys(headers).length > 0) {
-    body.headers = headers;
-  }
-
-  try {
-    // 8-second timeout so we don't hang the user's request
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
-    const r = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok) {
-      return { ok: false, error: `Resend ${r.status}: ${data.message || data.error || 'unknown'}` };
-    }
-    return { ok: true, id: data.id };
-  } catch (e) {
-    return { ok: false, error: `Network: ${e.message || String(e)}` };
-  }
+// One-line summary of the tenant-mailbox leg, for the server log.
+function internalDeliveryLabel(internal) {
+  if (!internal) return 'not attempted';
+  if (internal.ok) return internal.filedCopy ? 'filed directly in mailbox' : 'sent by Exchange';
+  return internal.skipped || internal.error || 'failed';
 }

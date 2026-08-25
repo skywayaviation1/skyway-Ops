@@ -80,7 +80,9 @@ export default function EmailDiagnosticsPanel({ currentUser }) {
     try {
       const data = await callDiagnostics({ action: 'test', to: testTo.trim() });
       if (data.result?.ok) {
-        setInfo(`Test email accepted by the provider for ${data.to}. If it does not arrive, check spam and the recipient's mail server.`);
+        setInfo(data.result.route === 'tenant-mailbox'
+          ? `Exchange accepted the test for ${data.to}. It was sent inside your tenant, so no spam filter sits in front of it.`
+          : `Test email accepted by the provider for ${data.to}. If it does not arrive, check spam and the recipient's mail server.`);
       } else {
         setError(data.result?.explanation || data.result?.error || 'Test send failed');
       }
@@ -200,6 +202,39 @@ export default function EmailDiagnosticsPanel({ currentUser }) {
             <Row label="Abandoned" value={String(queue.counts.dead)} good={queue.counts.dead === 0} />
             <Row label="Last successful send" value={fmtTime(queue.lastSentAt)} />
           </div>
+
+          {/* Own-tenant mailboxes — Exchange sends these, not the provider */}
+          {report.tenantMail && (
+            <div className="border border-slate-800 bg-slate-900/40 p-3">
+              <div className="text-[10px] tracking-widest text-slate-500 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                YOUR OWN MAILBOXES
+              </div>
+              <Row label="Domain delivered by Exchange" value={report.tenantMail.domain || 'not detected'} />
+              <Row label="Sent as" value={report.tenantMail.sendAsMailbox} />
+              <Row
+                label="Graph credentials"
+                value={report.tenantMail.graphConfigured ? 'configured' : 'NOT CONFIGURED'}
+                good={report.tenantMail.graphConfigured}
+              />
+              <Row label="Sent by Exchange" value={String(report.tenantMail.sentByExchange)} good={report.tenantMail.sentByExchange > 0 ? true : undefined} />
+              <Row label="Filed directly" value={String(report.tenantMail.filedDirectly)} />
+              <Row
+                label="Fell back to provider"
+                value={String(report.tenantMail.fellBackToProvider)}
+                good={report.tenantMail.fellBackToProvider === 0}
+              />
+              <p className="mt-2 text-[10px] text-slate-400" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                Notices for your own mailboxes are handed to Microsoft Exchange instead of the mail
+                provider. Provider mail arrives from a subdomain of your own domain, which Exchange
+                Online Protection treats as spoofing and keeps out of the inbox.
+              </p>
+              {report.tenantMail.lastError && (
+                <p className="mt-1 text-[10px] text-red-300 break-all" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  {report.tenantMail.lastError}
+                </p>
+              )}
+            </div>
+          )}
 
           {/* Charter inbox — its copy is written into the mailbox, not emailed */}
           {report.charterInbox && (

@@ -33,16 +33,22 @@ test('filing a copy never breaks the send it is copying', async () => {
   assert.doesNotMatch(text, /throw new Error/);
 });
 
-test('the notification path files a copy whenever the charter inbox is a recipient', async () => {
-  const text = await source('api/email-enqueue.js');
-  assert.match(text, /fileCharterInboxCopy\(\{/);
-  assert.match(text, /CHARTER_INBOX/);
-  // Recorded on the audit row so the panel can report whether it worked.
-  assert.match(text, /charterCopy,/);
-  // Filed after the real send, so a Graph problem cannot delay the broker.
-  const sendIndex = text.indexOf('sendViaResendInline({');
-  const copyIndex = text.indexOf('fileCharterInboxCopy({');
-  assert.ok(sendIndex > 0 && copyIndex > sendIndex, 'copy must be filed after the send');
+test('the charter inbox is reached without going through inbound mail flow', async () => {
+  const enqueue = await source('api/email-enqueue.js');
+  // The notification path no longer sends to the charter inbox through the
+  // provider at all: the transport hands tenant mailboxes to Exchange, and
+  // falls back to writing the copy in directly.
+  assert.match(enqueue, /deliverNotification\(\{/);
+  assert.match(enqueue, /internalDelivery,/);
+  assert.match(enqueue, /internalDelivered: internalDelivery\.ok === true/);
+
+  const transport = await source('api/_email-transport.js');
+  assert.match(transport, /fileCopy = fileCharterInboxCopy/);
+  assert.match(transport, /CHARTER_INBOX/);
+  // The direct write is the fallback, only after Exchange refuses.
+  const sendIndex = transport.indexOf('await sendInternal({');
+  const copyIndex = transport.indexOf('await fileCopy({');
+  assert.ok(sendIndex > 0 && copyIndex > sendIndex, 'the copy is a fallback, not the first try');
 });
 
 test('diagnostics report the provider outcome and the mailbox copy', async () => {

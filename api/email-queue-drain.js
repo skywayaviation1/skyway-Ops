@@ -39,6 +39,7 @@
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import { isPermanentSendFailure, STALE_SENDING_MS } from './_email-delivery.js';
+import { deliverNotification } from './_email-transport.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -62,8 +63,6 @@ function getDb() {
   return _db;
 }
 
-const RESEND_API_KEY = process.env.RESEND_API_KEY;
-const FROM_DEFAULT = process.env.OPS_FROM_EMAIL || 'Skyway Ops <noreply@send.flyskyway.com>';
 const ADMIN_ALERT_EMAILS = (process.env.OPS_ALERT_EMAILS || '')
   .split(',').map(s => s.trim()).filter(Boolean);
 
@@ -128,36 +127,26 @@ async function collectDueItems(db, now) {
   return { due, scanned, backlog, reclaimed };
 }
 
-// Send via Resend. Returns { ok, id?, error? }.
-async function sendViaResend({ to, cc, subject, html, from }) {
-  if (!RESEND_API_KEY) {
-    return { ok: false, error: 'RESEND_API_KEY missing on server' };
-  }
-  const body = {
-    from: from || FROM_DEFAULT,
-    to: Array.isArray(to) ? to : [to],
-    subject,
-    html,
+// Retry one queued message, routing tenant mailboxes through Exchange and
+// everyone else through the provider — the same split the inline send uses, so
+// a retry cannot deliver by a path the first attempt did not.
+async function retryDelivery(item) {
+  const result = await deliverNotification({
+    to: item.to,
+    cc: item.cc,
+    subject: item.subject,
+    html: item.html,
+    from: item.from,
+    // The tenant leg is not idempotent: it puts real mail in real mailboxes.
+    // Once it has succeeded, later provider retries must leave it alone.
+    skipInternal: item.internalDelivered === true,
+  });
+  return {
+    ok: result.ok,
+    id: result.provider?.id || null,
+    error: result.error,
+    internal: result.internal,
   };
-  if (Array.isArray(cc) && cc.length > 0) body.cc = cc;
-
-  try {
-    const r = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${RESEND_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok) {
-      return { ok: false, error: `Resend ${r.status}: ${data.message || data.error || 'unknown'}` };
-    }
-    return { ok: true, id: data.id };
-  } catch (e) {
-    return { ok: false, error: `Network: ${e.message || String(e)}` };
-  }
 }
 
 // Send admin alert for a dead message (best-effort; we don't queue this one because
@@ -173,7 +162,11 @@ async function alertAdminDeadMessage(queueId, item) {
     <p>Source: ${item.source || 'unknown'}${item.tripId ? ` · trip ${item.tripId}` : ''}</p>
     <p>To retry manually, open the Email Queue admin tab in Skyway Ops.</p>
   `;
-  await sendViaResend({
+  // The alert itself goes through the same routing. Alert recipients are
+  // usually staff in the operator's own tenant, which is precisely the mail
+  // that gets filtered when it arrives from the provider — an undelivered
+  // alert about undelivered mail is the worst possible failure here.
+  await deliverNotification({
     to: ADMIN_ALERT_EMAILS,
     subject: `[Skyway Ops] Email delivery failed — ${item.subject}`,
     html,
@@ -225,13 +218,7 @@ export default async function handler(req, res) {
         continue;
       }
 
-      const send = await sendViaResend({
-        to: item.to,
-        cc: item.cc,
-        subject: item.subject,
-        html: item.html,
-        from: item.from,
-      });
+      const send = await retryDelivery(item);
 
       if (send.ok) {
         await doc.ref.update({
@@ -240,6 +227,8 @@ export default async function handler(req, res) {
           sentAt: Date.now(),
           resendId: send.id || null,
           lastError: null,
+          internalDelivery: send.internal || null,
+          internalDelivered: item.internalDelivered === true || send.internal?.ok === true,
         });
         console.log('[email-queue-drain] SENT', id, '→', (item.to || []).join(','), '· resend id:', send.id);
         results.push({ id, ok: true, resendId: send.id });
@@ -261,6 +250,11 @@ export default async function handler(req, res) {
         lastError: send.error || 'unknown error',
         nextAttemptAt: dead ? null : nextAttemptAt,
         deadAt: dead ? Date.now() : null,
+        // Recorded even on failure: the tenant leg may well have succeeded
+        // while the provider leg is what failed, and the next attempt has to
+        // know not to mail the operator's own team again.
+        internalDelivery: send.internal || null,
+        internalDelivered: item.internalDelivered === true || send.internal?.ok === true,
       });
 
       if (dead) {

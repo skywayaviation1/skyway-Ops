@@ -118,5 +118,6 @@ test('every notification sender copies the charter inbox', async () => {
 test('the retry cron delivers the CC recorded on the queue row', async () => {
   const drain = await source('api/email-queue-drain.js');
   assert.match(drain, /cc: item\.cc/);
-  assert.match(drain, /if \(Array\.isArray\(cc\) && cc\.length > 0\) body\.cc = cc;/);
+  const transport = await source('api/_email-transport.js');
+  assert.match(transport, /if \(ccList\.length > 0\) body\.cc = ccList;/);
 });

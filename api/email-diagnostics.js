@@ -17,7 +17,8 @@ import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import { REPLY_TO_CONTACT, applySkywaySignature, textToHtml } from './_email-signature.js';
 import { explainSendFailure, isPermanentSendFailure } from './_email-delivery.js';
-import { isSharedMailConfigured } from './_charter-mail.js';
+import { isSharedMailConfigured, mailboxUpn } from './_charter-mail.js';
+import { deliverNotification, internalMailDomain, isInternalAddress } from './_email-transport.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -193,6 +194,7 @@ async function queueReport(db) {
   const failures = [];
   const sentWithId = [];
   const charterCopy = { filed: 0, skipped: 0, failed: 0, lastError: null };
+  const tenantMail = { delivered: 0, filed: 0, skipped: 0, failed: 0, lastError: null };
   let lastSentAt = null;
 
   for (const doc of snap.docs) {
@@ -214,8 +216,19 @@ async function queueReport(db) {
         cc: d.cc || [],
       });
     }
-    // How the charter inbox's own copy fared. Its mail is written straight into
-    // the mailbox because tenant filtering drops the emailed copy.
+    // How recipients in the operator's own tenant fared. Their mail is handed
+    // to Exchange rather than to the provider, whose messages the tenant
+    // filters as spoofed.
+    if (d.internalDelivery) {
+      if (d.internalDelivery.ok && d.internalDelivery.filedCopy) tenantMail.filed += 1;
+      else if (d.internalDelivery.ok) tenantMail.delivered += 1;
+      else if (d.internalDelivery.skipped) tenantMail.skipped += 1;
+      else {
+        tenantMail.failed += 1;
+        tenantMail.lastError = tenantMail.lastError || d.internalDelivery.error || null;
+      }
+    }
+    // Rows queued before tenant routing existed recorded only the mailbox write.
     if (d.charterCopy) {
       if (d.charterCopy.ok) charterCopy.filed += 1;
       else if (d.charterCopy.skipped) charterCopy.skipped += 1;
@@ -242,46 +255,38 @@ async function queueReport(db) {
     }
   }
 
-  return { sampled: snap.size, counts, failures, lastSentAt, charterCopy, sentWithId };
+  return { sampled: snap.size, counts, failures, lastSentAt, charterCopy, tenantMail, sentWithId };
 }
 
+/**
+ * Send a real test message down the same path a notification would take.
+ *
+ * Testing through a separate provider-only call was misleading: it proved the
+ * provider accepts mail, which was never the failing part for an address in the
+ * operator's own tenant.
+ */
 async function sendTest(to) {
-  if (!process.env.RESEND_API_KEY) {
-    return { ok: false, error: 'RESEND_API_KEY missing on server' };
-  }
-  const body = {
-    from: String(process.env.OPS_FROM_EMAIL || '').trim() || FROM_DEFAULT,
-    reply_to: String(process.env.OPS_REPLY_TO || '').trim() || 'charters@flyskyway.com',
+  const internal = isInternalAddress(to);
+  const result = await deliverNotification({
     to: [to],
     subject: 'Skyway Ops — email delivery test',
     html: applySkywaySignature(textToHtml(
       'This is a delivery test from Skyway Ops.\n\n'
-      + 'If you received it, notification email is working from the server to your inbox.',
+      + (internal
+        ? 'It was handed to Microsoft Exchange as the charter mailbox, which is how '
+          + 'notifications now reach mailboxes inside your own tenant.'
+        : 'It was sent through the mail provider, which is how notifications reach '
+          + 'recipients outside your organisation.'),
     )),
+  });
+  return {
+    ok: result.ok,
+    route: internal ? 'tenant-mailbox' : 'provider',
+    id: result.provider?.id || null,
+    internal: result.internal,
+    error: result.ok ? null : result.error,
+    explanation: result.ok ? null : explainSendFailure(result.error),
   };
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 12000);
-    const r = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok) {
-      const error = `Resend ${r.status}: ${data.message || data.error || 'unknown'}`;
-      return { ok: false, status: r.status, error, explanation: explainSendFailure(error), details: data };
-    }
-    return { ok: true, id: data.id };
-  } catch (err) {
-    const error = `Network: ${err.message || String(err)}`;
-    return { ok: false, error, explanation: explainSendFailure(error) };
-  }
 }
 
 /** Put a dead/failed row back in line for the next drain tick. */
@@ -339,6 +344,7 @@ export default async function handler(req, res) {
 
     const [domains, queue] = await Promise.all([domainReport(), queueReport(db)]);
     const config = configReport();
+    const internalDomain = internalMailDomain();
     const recentDeliveries = await deliveryOutcomes(queue.sentWithId || []);
 
     // Rank the causes an operator can actually act on.
@@ -367,11 +373,21 @@ export default async function handler(req, res) {
         + `${queue.charterCopy.lastError || 'unknown error'}`,
       );
     }
-    if (!isSharedMailConfigured() && queue.counts.sent > 0) {
+    if (queue.tenantMail?.failed > 0) {
       problems.push(
-        `Shared mailbox Graph credentials are not configured, so ${REPLY_TO_CONTACT} can only be `
-        + 'reached by email — which its own tenant filters as spoofed, because notifications are '
-        + `sent from ${config.fromDomain}.`,
+        `Exchange refused ${queue.tenantMail.failed} message(s) addressed to ${internalDomain} `
+        + `mailboxes, so they fell back to the provider and are subject to tenant filtering: `
+        + `${queue.tenantMail.lastError || 'unknown error'}`,
+      );
+    }
+    const tenantSender = String(config.fromDomain || '').endsWith(internalDomain);
+    if (!isSharedMailConfigured() && tenantSender) {
+      problems.push(
+        `Microsoft Graph mail credentials are not configured, so mail for ${internalDomain} `
+        + `mailboxes goes out through the provider as ${config.fromDomain} — a subdomain of your `
+        + 'own domain, which Exchange Online Protection treats as spoofing and filters out of the '
+        + 'inbox. Set MICROSOFT_MAIL_TENANT_ID, MICROSOFT_MAIL_CLIENT_ID, and '
+        + 'MICROSOFT_MAIL_CLIENT_SECRET (see docs/charter-shared-inbox-setup.md).',
       );
     }
     // Provider says delivered but the mailbox disagrees → receiving-side filtering.
@@ -398,6 +414,17 @@ export default async function handler(req, res) {
         sameTenantAsSender: String(config.fromDomain || '').endsWith(
           REPLY_TO_CONTACT.split('@')[1],
         ),
+      },
+      // Mail for the operator's own mailboxes, which Exchange sends rather than
+      // the provider precisely so tenant filtering cannot reach it.
+      tenantMail: {
+        domain: internalDomain,
+        sendAsMailbox: mailboxUpn(),
+        graphConfigured: isSharedMailConfigured(),
+        sentByExchange: queue.tenantMail?.delivered || 0,
+        filedDirectly: queue.tenantMail?.filed || 0,
+        fellBackToProvider: queue.tenantMail?.failed || 0,
+        lastError: queue.tenantMail?.lastError || null,
       },
       deliveredButUnseenHint: delivered.length > 0
         ? 'The provider reports these as delivered to the receiving mail server. '
