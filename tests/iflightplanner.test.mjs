@@ -127,3 +127,28 @@ test('Airport & Fuel is a role-gated Flights tab with uplift-cost UI', async () 
   assert.match(component, /\/api\/iflightplanner-fbos/);
   assert.match(component, /Confirm price, fees, and availability|report\.disclaimer/);
 });
+
+test('airport lookup combines location, weather, NOTAM, FBO, and raw provider data', async () => {
+  const component = await source('src/AirportFboData.jsx');
+  assert.match(component, /\/api\/airport-coords-lookup/);
+  assert.match(component, /\/api\/airport-weather\?icao=/);
+  assert.match(component, /\/api\/faa-notams\?icao=/);
+  assert.match(component, /Open map/);
+  assert.match(component, /Current weather/);
+  assert.match(component, /Active NOTAMs/);
+  assert.match(component, /All provider data/);
+  // Failure of the commercial feed must not hide safety/context data from the
+  // other sources.
+  assert.match(component, /Location, weather, and NOTAM data are still shown/);
+});
+
+test('every operational flight exposes automatic origin and destination airport data', async () => {
+  const app = await source('src/App.jsx');
+  assert.match(app, /\{ id: 'airports', label: 'Airports', icon: Fuel/);
+  assert.match(app, /children: pick\(\['sheet', 'weather', 'airports', 'plan'/);
+  assert.match(app, /tab === 'airports'/);
+  assert.match(app, /initialAirports=\{\[trip\.info\.from, trip\.info\.to\]\.filter\(Boolean\)\}/);
+  assert.match(app, /autoSearch/);
+  assert.match(app, /assignedFbos=\{\{/);
+  assert.match(app, /Airport, FBO & fuel data/);
+});

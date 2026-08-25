@@ -5210,7 +5210,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   const requestedTripTab = () => {
     if (typeof window === 'undefined') return null;
     const id = window.location.hash.replace(/^#/, '').toLowerCase();
-    return ['status', 'pax', 'sheet', 'notes', 'weather', 'plan', 'frat', 'lodging', 'chat', 'notify', 'delay'].includes(id)
+    return ['status', 'pax', 'sheet', 'notes', 'weather', 'airports', 'plan', 'frat', 'lodging', 'chat', 'notify', 'delay'].includes(id)
       ? id
       : null;
   };
@@ -6888,6 +6888,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
             { id: 'sheet', label: 'Trip sheet', icon: FileText, hidden: !showSheetTab },
             { id: 'notes', label: 'Notes', icon: BookOpen },
             { id: 'weather', label: 'Weather', icon: Cloud, hidden: !canSeeFlightPlanning },
+            { id: 'airports', label: 'Airports', icon: Fuel, hidden: !canSeeFlightPlanning || !trip.info.isFlight },
             { id: 'plan', label: 'Flight plan', icon: Navigation, hidden: !canSeeFlightPlanning },
             { id: 'frat', label: 'FRAT', icon: Shield, hidden: !canSeeFlightPlanning || !trip.info.isOps, badge: fratState?.score != null ? String(fratState.score) : null },
             // LODGING: crew hotels for this trip. Visible to ops/admin
@@ -6910,7 +6911,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
               id: 'operations',
               label: 'Operations',
               icon: Navigation,
-              children: pick(['sheet', 'weather', 'plan', 'frat', 'lodging', 'notes', 'notify', 'delay']),
+              children: pick(['sheet', 'weather', 'airports', 'plan', 'frat', 'lodging', 'notes', 'notify', 'delay']),
             },
             { id: 'chat', label: 'Comms', icon: MessageSquare, children: pick(['chat', 'email']) },
           ].filter(g => g.children.length > 0);
@@ -7130,6 +7131,9 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
                 <Button variant="ghost" size="sm" block className="mt-2" onClick={() => setTab('weather')}>
                   Full weather briefing
                 </Button>
+                <Button variant="ghost" size="sm" block className="mt-1" onClick={() => setTab('airports')}>
+                  Airport, FBO & fuel data
+                </Button>
               </Card>
 
               <Card>
@@ -7314,6 +7318,18 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
           </div>
         ) : tab === 'weather' ? (
           <TripWeatherSection trip={trip} />
+        ) : tab === 'airports' ? (
+          <Suspense fallback={<div className="p-8 text-center text-slate-500"><Loader2 className="mr-2 inline-block h-5 w-5 animate-spin" />Loading airport data...</div>}>
+            <AirportFboDataLazy
+              initialAirports={[trip.info.from, trip.info.to].filter(Boolean)}
+              autoSearch
+              embedded
+              assignedFbos={{
+                [String(trip.info.from || '').toUpperCase()]: fromFbo,
+                [String(trip.info.to || '').toUpperCase()]: toFbo,
+              }}
+            />
+          </Suspense>
         ) : tab === 'frat' ? (
           <Suspense fallback={<div className="p-8 text-center text-slate-500"><Loader2 className="w-5 h-5 animate-spin inline-block mr-2" />Loading FRAT...</div>}>
             <TripFratLazy

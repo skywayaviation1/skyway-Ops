@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  AlertTriangle, Building2, CheckCircle2, DollarSign, ExternalLink,
-  Fuel, Loader2, MapPin, Phone, Search,
+  AlertTriangle, Building2, CheckCircle2, Cloud, DollarSign, ExternalLink,
+  Fuel, Loader2, MapPin, Navigation, Phone, Radio, Search,
 } from 'lucide-react';
 import { formatLocalDate, formatLocalTime } from './airports.js';
 
@@ -10,6 +10,11 @@ const compactAirport = (value) => String(value || '')
   .toUpperCase()
   .replace(/[^A-Z0-9]/g, '')
   .slice(0, 7);
+
+const operationalIcao = (airport) => {
+  const code = compactAirport(airport);
+  return code.length === 3 && /^[A-Z]{3}$/.test(code) ? `K${code}` : code;
+};
 
 function money(value) {
   if (!Number.isFinite(Number(value))) return '—';
@@ -45,6 +50,26 @@ function PriceLine({ fuel, gallons }) {
         <div className="text-[9px] text-content-subtle">{estimated == null ? 'Enter uplift' : `${gallons} gal`}</div>
       </div>
     </div>
+  );
+}
+
+function ProviderFields({ raw }) {
+  const entries = Object.entries(raw || {}).filter(([, value]) => String(value || '').trim());
+  if (!entries.length) return null;
+  return (
+    <details className="mt-3 rounded border border-edge bg-surface-sunken">
+      <summary className="cursor-pointer px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-content-muted">
+        All provider data · {entries.length} fields
+      </summary>
+      <dl className="grid gap-px border-t border-edge bg-edge sm:grid-cols-2">
+        {entries.map(([label, value]) => (
+          <div key={label} className="bg-surface-sunken px-3 py-2">
+            <dt className="text-[9px] uppercase tracking-wide text-content-subtle">{label}</dt>
+            <dd className="mt-0.5 break-words text-[11px] text-content">{String(value)}</dd>
+          </div>
+        ))}
+      </dl>
+    </details>
   );
 }
 
@@ -102,11 +127,91 @@ function FboCard({ fbo, gallons }) {
           <div className="py-3 text-xs text-content-muted">No posted retail fuel price in this feed.</div>
         )}
       </div>
+      <ProviderFields raw={fbo.raw} />
     </article>
   );
 }
 
-function AirportResult({ result, gallons }) {
+function AirportSituation({ result }) {
+  const wx = result.weather?.metar;
+  const notams = result.notams?.notams || [];
+  const significant = result.notams?.significantOnly || [];
+  const coords = result.coordinates;
+  const mapUrl = coords
+    ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${coords.lat},${coords.lng}`)}`
+    : null;
+  return (
+    <div className="grid gap-3 md:grid-cols-3">
+      <div className="rounded-lg border border-edge bg-surface-sunken p-3">
+        <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-content-subtle">
+          <Navigation className="h-3.5 w-3.5" /> Location
+        </div>
+        {coords ? (
+          <>
+            <div className="mt-2 text-xs font-semibold text-content">{coords.name || result.airportName || result.airport}</div>
+            <div className="mt-1 font-mono text-[11px] text-content-muted">
+              {Number(coords.lat).toFixed(5)}, {Number(coords.lng).toFixed(5)}
+            </div>
+            <a className="mt-2 inline-flex items-center gap-1 text-[10px] text-accent hover:underline" href={mapUrl} target="_blank" rel="noreferrer">
+              <ExternalLink className="h-3 w-3" /> Open map
+            </a>
+          </>
+        ) : <div className="mt-2 text-xs text-content-muted">Location unavailable</div>}
+      </div>
+
+      <div className="rounded-lg border border-edge bg-surface-sunken p-3">
+        <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-content-subtle">
+          <Cloud className="h-3.5 w-3.5" /> Current weather
+        </div>
+        {wx ? (
+          <>
+            <div className="mt-2 flex items-center gap-2">
+              <span className="font-mono text-sm font-semibold text-content">{wx.flightCategory || '—'}</span>
+              <span className="text-[10px] text-content-muted">
+                {wx.windDir == null ? 'VRB' : `${wx.windDir}°`} / {wx.windKt ?? 0} kt
+                {wx.windGustKt ? ` G${wx.windGustKt}` : ''}
+              </span>
+            </div>
+            <div className="mt-1 text-[10px] text-content-muted">
+              Visibility {wx.visibilitySm ?? '—'} sm · Ceiling {wx.ceilingFt == null ? 'none reported' : `${wx.ceilingFt} ft`}
+            </div>
+            {wx.rawMetar && <div className="mt-2 break-words font-mono text-[9px] text-content-subtle">{wx.rawMetar}</div>}
+          </>
+        ) : <div className="mt-2 text-xs text-content-muted">No current METAR available</div>}
+      </div>
+
+      <div className="rounded-lg border border-edge bg-surface-sunken p-3">
+        <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-content-subtle">
+          <Radio className="h-3.5 w-3.5" /> Active NOTAMs
+        </div>
+        <div className="mt-2 flex items-baseline gap-2">
+          <span className="font-mono text-sm font-semibold text-content">{notams.length}</span>
+          <span className="text-[10px] text-content-muted">{significant.length} operationally significant</span>
+        </div>
+        {significant.slice(0, 3).map((notam) => (
+          <div key={notam.id || notam.text} className="mt-2 border-t border-edge pt-2 text-[9px] text-warning">
+            {notam.summary || notam.text}
+          </div>
+        ))}
+        {notams.length > significant.length && (
+          <details className="mt-2">
+            <summary className="cursor-pointer text-[10px] text-accent">Show all NOTAMs</summary>
+            <div className="mt-2 max-h-64 space-y-2 overflow-y-auto">
+              {notams.map((notam) => (
+                <div key={notam.id || notam.text} className="rounded border border-edge p-2 text-[9px] text-content-muted">
+                  <span className="mr-1 font-mono text-content">{notam.id}</span>
+                  {notam.text || notam.summary}
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AirportResult({ result, gallons, assignedFbo }) {
   const lowest = Object.values(result.lowestByFuel || {});
   return (
     <section className="space-y-3">
@@ -121,6 +226,11 @@ function AirportResult({ result, gallons }) {
             <div className="mt-1 text-[10px] text-content-subtle">
               {result.fbos.length} FBO/fuel provider{result.fbos.length === 1 ? '' : 's'}
             </div>
+            {assignedFbo && (
+              <div className="mt-2 inline-flex rounded border border-accent-border bg-accent-soft px-2 py-1 text-[10px] text-accent">
+                Assigned on trip: {assignedFbo}
+              </div>
+            )}
           </div>
           {lowest.length > 0 && (
             <div className="flex flex-wrap gap-2">
@@ -134,6 +244,8 @@ function AirportResult({ result, gallons }) {
           )}
         </div>
       </div>
+
+      <AirportSituation result={result} />
 
       {result.fbos.length ? (
         <div className="grid gap-3 lg:grid-cols-2">
@@ -152,8 +264,14 @@ function AirportResult({ result, gallons }) {
   );
 }
 
-export default function AirportFboData() {
-  const [airportInput, setAirportInput] = useState('APF');
+export default function AirportFboData({
+  initialAirports = 'APF',
+  autoSearch = false,
+  embedded = false,
+  assignedFbos = {},
+}) {
+  const initialValue = Array.isArray(initialAirports) ? initialAirports.join(', ') : initialAirports;
+  const [airportInput, setAirportInput] = useState(initialValue || 'APF');
   const [gallonsInput, setGallonsInput] = useState('');
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -169,9 +287,13 @@ export default function AirportFboData() {
   ), [airportInput]);
   const gallons = Math.max(0, Number(gallonsInput) || 0);
 
-  async function search(event) {
-    event.preventDefault();
-    if (!airports.length) {
+  useEffect(() => {
+    const next = Array.isArray(initialAirports) ? initialAirports.join(', ') : initialAirports;
+    if (next) setAirportInput(next);
+  }, [initialAirports]);
+
+  const load = useCallback(async (requested) => {
+    if (!requested.length) {
       setError('Enter at least one airport identifier.');
       return;
     }
@@ -181,35 +303,90 @@ export default function AirportFboData() {
       const { auth } = await import('./firebase.js');
       const idToken = await auth.currentUser?.getIdToken();
       if (!idToken) throw new Error('Your session expired. Sign in again.');
-      const response = await fetch(
-        `/api/iflightplanner-fbos?airports=${encodeURIComponent(airports.join(','))}`,
-        {
-          headers: { Authorization: `Bearer ${idToken}` },
-          cache: 'no-store',
-        },
-      );
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.error || 'FBO and fuel-price lookup failed');
-      setReport(data);
+      const headers = { Authorization: `Bearer ${idToken}` };
+      const fboPromise = fetch(
+        `/api/iflightplanner-fbos?airports=${encodeURIComponent(requested.join(','))}`,
+        { headers, cache: 'no-store' },
+      ).then(async (response) => {
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || 'FBO and fuel-price lookup failed');
+        return data;
+      });
+      const coordsPromise = fetch('/api/airport-coords-lookup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ codes: requested }),
+      }).then((response) => response.json()).catch(() => ({ coords: {} }));
+      const supportPromise = Promise.all(requested.map(async (airport) => {
+        const icao = operationalIcao(airport);
+        const [weather, notams] = await Promise.all([
+          fetch(`/api/airport-weather?icao=${encodeURIComponent(icao)}`, { headers })
+            .then((response) => response.json()).catch(() => null),
+          fetch(`/api/faa-notams?icao=${encodeURIComponent(icao)}`, { headers })
+            .then((response) => response.json()).catch(() => null),
+        ]);
+        return { airport, weather, notams };
+      }));
+
+      const [fboResult, coords, support] = await Promise.allSettled([
+        fboPromise, coordsPromise, supportPromise,
+      ]);
+      const fboData = fboResult.status === 'fulfilled' ? fboResult.value : {
+        airports: requested.map((airport) => ({
+          airport, airportName: '', fbos: [], lowestByFuel: {},
+        })),
+        recordCount: 0,
+        fetchedAt: null,
+      };
+      const coordinateData = coords.status === 'fulfilled' ? coords.value?.coords || {} : {};
+      const supportData = support.status === 'fulfilled' ? support.value : [];
+      const byAirport = new Map(supportData.map((item) => [item.airport, item]));
+      setReport({
+        ...fboData,
+        providerError: fboResult.status === 'rejected' ? fboResult.reason?.message : null,
+        airports: requested.map((airport, index) => {
+          const fboAirport = fboData.airports?.find((item) => item.airport === airport)
+            || fboData.airports?.[index]
+            || { airport, airportName: '', fbos: [], lowestByFuel: {} };
+          return {
+            ...fboAirport,
+            airport,
+            coordinates: coordinateData[airport] || null,
+            weather: byAirport.get(airport)?.weather || null,
+            notams: byAirport.get(airport)?.notams || null,
+          };
+        }),
+      });
     } catch (err) {
-      setError(err.message || 'FBO and fuel-price lookup failed');
+      setError(err.message || 'Airport data lookup failed');
     } finally {
       setLoading(false);
     }
+  }, []);
+
+  useEffect(() => {
+    if (autoSearch && airports.length) load(airports);
+  }, [autoSearch, airports.join(','), load]);
+
+  function search(event) {
+    event.preventDefault();
+    load(airports);
   }
 
   return (
-    <div className="flex-1 overflow-y-auto bg-surface-shell">
+    <div className={embedded ? 'bg-surface-shell' : 'flex-1 overflow-y-auto bg-surface-shell'}>
       <div className="mx-auto max-w-7xl space-y-4 p-4 md:p-6">
         <header className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <div className="flex items-center gap-2">
               <Fuel className="h-5 w-5 text-accent" />
-              <h1 className="text-lg font-semibold text-content">Airport, FBO & Fuel Cost</h1>
+              <h1 className="text-lg font-semibold text-content">
+                {embedded ? 'Flight airport data' : 'Airport, FBO & Fuel Cost'}
+              </h1>
             </div>
             <p className="mt-1 max-w-3xl text-xs text-content-muted">
-              Current posted retail fuel prices and FBO contact data from iFlightPlanner.
-              Compare providers and estimate uplift cost before dispatch or quoting.
+              Airport location, current weather, active NOTAMs, FBO contacts, posted retail fuel
+              prices, and estimated uplift cost.
             </p>
           </div>
           <div className="rounded border border-edge bg-surface px-3 py-2 text-right">
@@ -267,11 +444,19 @@ export default function AirportFboData() {
           </div>
         )}
 
+        {report?.providerError && (
+          <div className="flex items-start gap-2 rounded-lg border border-warning-border bg-warning-soft p-3 text-sm text-warning">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            FBO/fuel feed unavailable: {report.providerError}. Location, weather, and NOTAM data are still shown.
+          </div>
+        )}
+
         {report && (
           <>
             <div className="flex flex-wrap items-center gap-2 rounded-lg border border-success-border bg-success-soft px-3 py-2 text-[10px] text-success">
               <CheckCircle2 className="h-3.5 w-3.5" />
-              {report.recordCount.toLocaleString()} provider records loaded · feed refreshed {fetchedLabel(report.fetchedAt)}
+              {Number(report.recordCount || 0).toLocaleString()} provider records loaded
+              {report.fetchedAt ? ` · feed refreshed ${fetchedLabel(report.fetchedAt)}` : ''}
               {gallons > 0 && (
                 <span className="ml-auto inline-flex items-center gap-1 font-mono text-content">
                   <DollarSign className="h-3 w-3" /> COST FOR {gallons.toLocaleString()} GAL
@@ -280,11 +465,17 @@ export default function AirportFboData() {
             </div>
             <div className="space-y-5">
               {report.airports.map((result) => (
-                <AirportResult key={result.airport} result={result} gallons={gallons} />
+                <AirportResult
+                  key={result.airport}
+                  result={result}
+                  gallons={gallons}
+                  assignedFbo={assignedFbos[result.airport] || assignedFbos[operationalIcao(result.airport)]}
+                />
               ))}
             </div>
             <div className="rounded border border-warning-border bg-warning-soft p-3 text-[10px] text-warning">
-              {report.disclaimer}
+              {report.disclaimer
+                || 'Planning data only. Confirm airport suitability, NOTAMs, fuel price, fees, and availability before dispatch or quoting.'}
             </div>
           </>
         )}
