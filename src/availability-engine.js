@@ -735,14 +735,15 @@ export function priceAvailabilityOption(option, aircraft) {
       sell: null,
       margin: null,
       totalBlockMinutes: 0,
-      billableBlockMinutes: 0,
+      liveBlockMinutes: 0,
+      sellableBlockMinutes: 0,
       missingCostRate: true,
       missingSellRate: true,
     };
   }
   const totalBlockMinutes = (option.movements || [])
     .reduce((sum, movement) => sum + Number(movement.blockMinutes || 0), 0);
-  const billableBlockMinutes = (option.movements || [])
+  const liveBlockMinutes = (option.movements || [])
     .filter((movement) => movement.kind === 'request')
     .reduce((sum, movement) => sum + Number(movement.blockMinutes || 0), 0);
   const costRate = aircraft?.costPerBlockHour;
@@ -750,16 +751,20 @@ export function priceAvailabilityOption(option, aircraft) {
   const cost = Number.isFinite(costRate)
     ? roundMoney(costRate * totalBlockMinutes / 60)
     : null;
+  // Repositioning is sold at the same hourly rate as the live leg, per the
+  // fleet pricing policy. Cost and sell therefore use the same movement block
+  // base; their per-hour rates remain independently configurable.
   const sell = Number.isFinite(sellRate)
-    ? roundMoney(sellRate * billableBlockMinutes / 60)
+    ? roundMoney(sellRate * totalBlockMinutes / 60)
     : null;
   return {
     cost,
     sell,
     margin: cost != null && sell != null ? roundMoney(sell - cost) : null,
     totalBlockMinutes,
-    billableBlockMinutes,
-    repositionBlockMinutes: totalBlockMinutes - billableBlockMinutes,
+    liveBlockMinutes,
+    sellableBlockMinutes: totalBlockMinutes,
+    repositionBlockMinutes: totalBlockMinutes - liveBlockMinutes,
     costRate: Number.isFinite(costRate) ? costRate : null,
     sellRate: Number.isFinite(sellRate) ? sellRate : null,
     missingCostRate: !Number.isFinite(costRate),
@@ -949,7 +954,7 @@ export function planLiveLegAssignments({
       cost,
       sell,
       margin: cost != null && sell != null ? roundMoney(sell - cost) : null,
-      liveBlockMinutes: priced.reduce((sum, price) => sum + price.billableBlockMinutes, 0),
+      liveBlockMinutes: priced.reduce((sum, price) => sum + price.liveBlockMinutes, 0),
       repositionBlockMinutes: priced.reduce((sum, price) => sum + price.repositionBlockMinutes, 0),
       missingRates: [...new Set(missingRates)],
     },

@@ -133,10 +133,10 @@ function FleetAircraftEditor({ tail, value, onChange, onRemove }) {
       </div>
       <div className="mt-2 grid gap-2 sm:grid-cols-2">
         {moneyField('costPerBlockHour', 'Operating cost / block hour', 'e.g. 2400')}
-        {moneyField('sellPerBlockHour', 'Sell rate / live block hour', 'e.g. 5200')}
+        {moneyField('sellPerBlockHour', 'Sell rate / block hour', 'e.g. 5200')}
       </div>
       <p className="mt-2 text-[10px] text-content-subtle">
-        Trip cost includes live and reposition block time. Sell price applies to live requested block time.
+        Trip cost and sell price both include live and reposition block time.
       </p>
     </div>
   );

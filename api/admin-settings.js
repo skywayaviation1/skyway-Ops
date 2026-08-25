@@ -113,8 +113,12 @@ export default async function handler(req, res) {
         icaoType: meta.icaoType || '',
         serialNumber: meta.serialNumber || '',
         homeBase: meta.homeBase || '',
-        costPerBlockHour: meta.costPerBlockHour,
-        sellPerBlockHour: meta.sellPerBlockHour,
+        // A managed tail can legitimately exist before its metadata is
+        // configured. Firestore rejects `undefined` anywhere in a write, so
+        // explicit nulls are required here; the two new rate fields previously
+        // caused the entire settings batch to fail for every unconfigured tail.
+        costPerBlockHour: meta.costPerBlockHour ?? null,
+        sellPerBlockHour: meta.sellPerBlockHour ?? null,
         fleetUpdatedAt: now,
       }, { merge: true });
     }
@@ -144,6 +148,18 @@ export default async function handler(req, res) {
     });
   } catch (err) {
     console.error('[admin-settings]', err);
-    res.status(500).json({ error: 'Could not save administrator settings' });
+    const code = String(err?.code || '');
+    const detail = String(err?.message || '');
+    const actionable = !process.env.FIREBASE_SERVICE_ACCOUNT_JSON
+      ? 'This deployment is missing FIREBASE_SERVICE_ACCOUNT_JSON.'
+      : /undefined.*Firestore value/i.test(detail)
+        ? 'A fleet field was not initialized correctly. Refresh and try again.'
+        : /permission|denied/i.test(`${code} ${detail}`)
+          ? 'The server account cannot write organization settings.'
+          : 'The server could not commit the settings batch.';
+    res.status(500).json({
+      error: `Administrator settings could not be saved. ${actionable}`,
+      code: code || null,
+    });
   }
 }

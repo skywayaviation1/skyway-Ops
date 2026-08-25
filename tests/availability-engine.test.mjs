@@ -520,7 +520,7 @@ test('multiple aircraft types can be checked together', () => {
   assert.deepEqual(oneType.legs[0].options.map((option) => option.tail), ['NSF']);
 });
 
-test('pricing costs all movement block but sells only live block', () => {
+test('pricing costs and sells repositioning at the same basis as live block', () => {
   const start = at('2026-09-01T14:00:00Z');
   const [option] = rankTailAvailability({
     fleet: fleet({ homeBase: 'TEB' }),
@@ -534,9 +534,10 @@ test('pricing costs all movement block but sells only live block', () => {
     sellPerBlockHour: 5000,
   });
   assert.ok(pricing.repositionBlockMinutes > 0);
-  assert.equal(pricing.totalBlockMinutes, pricing.billableBlockMinutes + pricing.repositionBlockMinutes);
+  assert.equal(pricing.totalBlockMinutes, pricing.liveBlockMinutes + pricing.repositionBlockMinutes);
+  assert.equal(pricing.sellableBlockMinutes, pricing.totalBlockMinutes);
   assert.equal(pricing.cost, Math.round(2000 * pricing.totalBlockMinutes / 60 * 100) / 100);
-  assert.equal(pricing.sell, Math.round(5000 * pricing.billableBlockMinutes / 60 * 100) / 100);
+  assert.equal(pricing.sell, Math.round(5000 * pricing.totalBlockMinutes / 60 * 100) / 100);
   assert.equal(pricing.margin, Math.round((pricing.sell - pricing.cost) * 100) / 100);
 });
 

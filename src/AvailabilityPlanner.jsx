@@ -351,7 +351,7 @@ function PlannedLeg({ proposal, assignment, onAssign }) {
 
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 <PriceStat label="Leg cost" value={money(selected.pricing.cost)} sub="Live + reposition block" />
-                <PriceStat label="Leg sell" value={money(selected.pricing.sell)} sub="Live block only" />
+                <PriceStat label="Leg sell" value={money(selected.pricing.sell)} sub="Live + reposition block" />
                 <PriceStat
                   label="Margin"
                   value={money(selected.pricing.margin)}
@@ -608,7 +608,7 @@ export default function AvailabilityPlanner({ allTrips = [], config = {}, users 
               </div>
               <div className="grid grid-cols-2 gap-2 lg:grid-cols-5">
                 <PriceStat label="Operating cost" value={money(plan.totals?.cost)} sub="Live + reposition block" />
-                <PriceStat label="Sell price" value={money(plan.totals?.sell)} sub="Live block only" />
+                <PriceStat label="Sell price" value={money(plan.totals?.sell)} sub="Live + reposition block" />
                 <PriceStat
                   label="Gross margin"
                   value={money(plan.totals?.margin)}
@@ -623,7 +623,7 @@ export default function AvailabilityPlanner({ allTrips = [], config = {}, users 
                 </div>
               )}
               <p className="mt-2 text-[9px] text-content-subtle">
-                Operating cost applies to all live and reposition block. Sell rate applies to requested live block only.
+                Operating cost and sell rate both apply to live and reposition block time.
                 Taxes, fees, crew, handling, deicing, overnight, and third-party charges are not included.
               </p>
             </div>

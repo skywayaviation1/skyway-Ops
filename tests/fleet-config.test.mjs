@@ -107,9 +107,10 @@ test('fleet settings expose and persist operating cost and sell rates', async ()
   assert.match(ui, /costPerBlockHour/);
   assert.match(ui, /sellPerBlockHour/);
   assert.match(ui, /Operating cost \/ block hour/);
-  assert.match(ui, /Sell rate \/ live block hour/);
+  assert.match(ui, /Sell rate \/ block hour/);
 
   const api = await readFile(path.join(root, 'api/admin-settings.js'), 'utf8');
-  assert.match(api, /costPerBlockHour: meta\.costPerBlockHour/);
-  assert.match(api, /sellPerBlockHour: meta\.sellPerBlockHour/);
+  assert.match(api, /costPerBlockHour: meta\.costPerBlockHour \?\? null/);
+  assert.match(api, /sellPerBlockHour: meta\.sellPerBlockHour \?\? null/);
+  assert.match(api, /Firestore rejects `undefined`/);
 });
