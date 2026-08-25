@@ -113,6 +113,8 @@ export default async function handler(req, res) {
         icaoType: meta.icaoType || '',
         serialNumber: meta.serialNumber || '',
         homeBase: meta.homeBase || '',
+        costPerBlockHour: meta.costPerBlockHour,
+        sellPerBlockHour: meta.sellPerBlockHour,
         fleetUpdatedAt: now,
       }, { merge: true });
     }

@@ -69,7 +69,7 @@ function ToggleRow({ icon: Icon, title, description, checked, onChange, disabled
 function FleetAircraftEditor({ tail, value, onChange, onRemove }) {
   const field = (name, placeholder, extra = '') => (
     <input
-      value={value?.[name] || ''}
+      value={value?.[name] ?? ''}
       onChange={(event) => onChange(name, event.target.value)}
       placeholder={placeholder}
       aria-label={`${tail} ${name}`}
@@ -78,6 +78,27 @@ function FleetAircraftEditor({ tail, value, onChange, onRemove }) {
         extra,
       )}
     />
+  );
+  const moneyField = (name, label, placeholder) => (
+    <label>
+      <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-content-subtle">
+        {label}
+      </span>
+      <div className="relative">
+        <span className="absolute left-3 top-1/2 -translate-y-1/2 font-mono text-xs text-content-subtle">$</span>
+        <input
+          type="number"
+          min="0"
+          max="1000000"
+          step="0.01"
+          value={value?.[name] ?? ''}
+          onChange={(event) => onChange(name, event.target.value)}
+          placeholder={placeholder}
+          aria-label={`${tail} ${name}`}
+          className="w-full rounded-lg border border-edge bg-surface py-2 pl-7 pr-3 font-mono text-xs text-content outline-none focus:border-accent"
+        />
+      </div>
+    </label>
   );
   return (
     <div className="border-b border-edge p-3 last:border-b-0">
@@ -110,6 +131,13 @@ function FleetAircraftEditor({ tail, value, onChange, onRemove }) {
         {field('homeBase', 'Home base', 'font-mono uppercase')}
         {field('serialNumber', 'Serial number', 'font-mono')}
       </div>
+      <div className="mt-2 grid gap-2 sm:grid-cols-2">
+        {moneyField('costPerBlockHour', 'Operating cost / block hour', 'e.g. 2400')}
+        {moneyField('sellPerBlockHour', 'Sell rate / live block hour', 'e.g. 5200')}
+      </div>
+      <p className="mt-2 text-[10px] text-content-subtle">
+        Trip cost includes live and reposition block time. Sell price applies to live requested block time.
+      </p>
     </div>
   );
 }
@@ -156,7 +184,14 @@ export default function AdminSettings({
     setFleetTails((current) => normalizeFleetTails([...current, tail]));
     setAircraftByTail((current) => ({
       ...current,
-      [tail]: current[tail] || { displayName: '', icaoType: '', homeBase: '', serialNumber: '' },
+      [tail]: current[tail] || {
+        displayName: '',
+        icaoType: '',
+        homeBase: '',
+        serialNumber: '',
+        costPerBlockHour: null,
+        sellPerBlockHour: null,
+      },
     }));
     setNewTail('');
     setMessage(null);
