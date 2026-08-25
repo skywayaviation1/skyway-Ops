@@ -115,16 +115,16 @@ test('airport summary identifies the cheapest provider per fuel type', () => {
   assert.equal(summary.lowestByFuel['100LL'].price, 6.2);
 });
 
-test('the token request matches the documented form-encoded OAuth 2 contract', async () => {
+test('the token request satisfies both documented media types', async () => {
   const client = await source('api/_iflightplanner.js');
-  // The provider documents Basic client auth with an x-www-form-urlencoded
-  // body. A JSON body can still return a token, but its grant parameters are
-  // never parsed and the data endpoints then refuse it with 403.
-  assert.match(client, /'Content-Type': 'application\/x-www-form-urlencoded'/);
+  // Their written OAuth instructions say x-www-form-urlencoded; their OpenAPI
+  // schema declares the same endpoint as application/json. Trying the form
+  // first and falling back to JSON means neither reading can break auth.
+  assert.match(client, /mediaType: 'application\/x-www-form-urlencoded'/);
+  assert.match(client, /mediaType: 'application\/json'/);
   assert.match(client, /new URLSearchParams\(\{ grant_type: 'client_credentials' \}\)/);
-  assert.match(client, /body: form\.toString\(\)/);
-  assert.doesNotMatch(client, /body: JSON\.stringify\(\{ grant_type/);
-  // Scope is optional and identifies an application instance.
+  assert.match(client, /for \(const attempt of attempts\)/);
+  // Scope belongs only to multi-instance apps.
   assert.match(client, /IFLIGHTPLANNER_SCOPE/);
 });
 
@@ -272,6 +272,8 @@ test('a forbidden dataset is reported as entitlement, with the provider verbatim
   assert.match(endpoint, /IFLIGHTPLANNER_BASE_URL to the production API base/);
   assert.match(endpoint, /IFLIGHTPLANNER_SCOPE/);
   assert.match(endpoint, /providerMessage: error\.providerMessage/);
+  // The endpoint publishes 200 and 401 only, so a 403 is a permission gate.
+  assert.match(endpoint, /FBO & Fuel Price Data" permission/);
 
   const component = await source('src/AirportFboData.jsx');
   assert.match(component, /feedCheck\.resolution\?\.length > 0/);

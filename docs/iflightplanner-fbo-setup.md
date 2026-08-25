@@ -32,11 +32,11 @@ it was ever pasted into a ticket, chat, log, or other durable record. Update
 ## Data flow
 
 1. `api/_iflightplanner.js` sends HTTP Basic client credentials to
-   `<base>/oauth2/token` with an `application/x-www-form-urlencoded` body of
-   `grant_type=client_credentials` (plus `scope` when configured). The media
-   type matters: a JSON body can still return a token, because the Basic header
-   alone identifies the client, but the grant parameters are never parsed and
-   the data endpoints then refuse that token with HTTP 403.
+   `<base>/oauth2/token` with `grant_type=client_credentials` (plus `scope` when
+   configured). iFlightPlanner's written OAuth instructions specify an
+   `application/x-www-form-urlencoded` body while their OpenAPI schema declares
+   the same endpoint as `application/json`, so the form encoding is tried first
+   and JSON is used as a fallback.
 2. The access token is held only in warm server memory until shortly before
    expiry.
 3. The server calls `/api/v2/airports/fbos/data` with the Bearer token.
@@ -83,14 +83,19 @@ failing stage:
 - **Authorization failed** — rotate the client secret, confirm that the Client
   ID and Secret are from the same developer account, and redeploy.
 - **HTTP 403 at the data stage** — the token exchange worked, so the credentials
-  are valid. Either the credentials belong to iFlightPlanner's other
+  are valid. `/airports/fbos/data` publishes only `200` and `401` in the
+  provider schema, so a `403` is a per-client permission gate rather than a
+  malformed request. Ask iFlightPlanner to enable the **FBO & Fuel Price Data**
+  permission for the API client, quoting the provider message shown by the feed
+  check. Their API grants permissions per client — other endpoints in the same
+  schema carry notes such as "requires extended API permissions".
+
+  Rule out two other causes first: the credentials may belong to their other
   environment (set `IFLIGHTPLANNER_BASE_URL` to match the credentials you
-  hold), or FBO & Fuel Price Data is not enabled for that API client. Dataset
-  access is licensed per client, so ask iFlightPlanner to enable it and quote
-  the provider message shown by the feed check. If they issued an application
-  instance value, set `IFLIGHTPLANNER_SCOPE`. When only the fuel-price dataset
-  is licensed, Skyway automatically falls back to it and reports prices without
-  FBO contact details.
+  hold), and `IFLIGHTPLANNER_SCOPE` should be set *only* if they issued an
+  application-instance name — their schema states a single instance should send
+  no scope. When only the fuel-price dataset is licensed, Skyway automatically
+  falls back to it and reports prices without FBO contact details.
 - **No FBO records** — try both FAA and ICAO forms (`APF` and `KAPF`). The
   endpoint checks both automatically, but the provider may not cover that
   airport.

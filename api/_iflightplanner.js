@@ -269,40 +269,70 @@ async function accessToken(force = false) {
   }
   const { clientId, clientSecret } = configuredCredentials();
 
-  // The provider documents this request as HTTP Basic client authentication
-  // with an application/x-www-form-urlencoded body. Sending JSON instead can
-  // still yield a token — the Basic header alone identifies the client — but
-  // the grant parameters never get parsed, and the resulting token is refused
-  // by the data endpoints. Follow the documented form exactly.
-  const form = new URLSearchParams({ grant_type: 'client_credentials' });
+  // The provider's written OAuth instructions specify an
+  // application/x-www-form-urlencoded body, while their OpenAPI schema declares
+  // the same endpoint as application/json. Rather than bet on one, try the
+  // documented form first and fall back to JSON, so neither reading can leave
+  // this unable to authenticate.
+  const basic = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
   const scope = clean(process.env.IFLIGHTPLANNER_SCOPE);
-  if (scope) form.set('scope', scope);
-
-  const response = await fetchWithTimeout(tokenUrl(), {
-    method: 'POST',
-    headers: {
-      Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`,
-      'Content-Type': 'application/x-www-form-urlencoded',
-      Accept: 'application/json',
+  const attempts = [
+    {
+      mediaType: 'application/x-www-form-urlencoded',
+      body: (() => {
+        const form = new URLSearchParams({ grant_type: 'client_credentials' });
+        if (scope) form.set('scope', scope);
+        return form.toString();
+      })(),
     },
-    body: form.toString(),
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || !data.access_token) {
-    const error = new Error(
-      `iFlightPlanner authorization failed (${response.status}): `
-      + `${data.error_description || data.error || 'token not returned'}`,
-    );
-    error.status = 502;
-    error.code = 'iflightplanner_auth_failed';
-    throw error;
+    {
+      mediaType: 'application/json',
+      body: JSON.stringify(scope
+        ? { grant_type: 'client_credentials', scope }
+        : { grant_type: 'client_credentials' }),
+    },
+  ];
+
+  let lastFailure = null;
+  for (const attempt of attempts) {
+    // eslint-disable-next-line no-await-in-loop
+    const response = await fetchWithTimeout(tokenUrl(), {
+      method: 'POST',
+      headers: {
+        Authorization: `Basic ${basic}`,
+        'Content-Type': attempt.mediaType,
+        Accept: 'application/json',
+      },
+      body: attempt.body,
+    });
+    // eslint-disable-next-line no-await-in-loop
+    const data = await response.json().catch(() => ({}));
+    if (response.ok && data.access_token) {
+      tokenCache = {
+        token: data.access_token,
+        expiresAt: Date.now() + Math.max(60, Number(data.expires_in) || 3600) * 1000,
+        scope: data.scope || scope || null,
+        mediaType: attempt.mediaType,
+      };
+      return tokenCache.token;
+    }
+    lastFailure = {
+      status: response.status,
+      message: data.error_description || data.error || 'token not returned',
+    };
   }
-  tokenCache = {
-    token: data.access_token,
-    expiresAt: Date.now() + Math.max(60, Number(data.expires_in) || 3600) * 1000,
-    scope: data.scope || scope || null,
-  };
-  return tokenCache.token;
+
+  const error = new Error(
+    `iFlightPlanner authorization failed (${lastFailure.status}): ${lastFailure.message}`,
+  );
+  error.status = 502;
+  error.code = 'iflightplanner_auth_failed';
+  throw error;
+}
+
+/** Which media type the working token request used, for diagnostics. */
+export function tokenMediaType() {
+  return tokenCache?.mediaType || null;
 }
 
 /**

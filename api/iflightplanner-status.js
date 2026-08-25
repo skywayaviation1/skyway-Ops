@@ -19,6 +19,7 @@ import {
   getFboDataset,
   missingCredentialNames,
   publicIFlightPlannerStatus,
+  tokenMediaType,
 } from './_iflightplanner.js';
 import { getAdminApp, getDb } from './_foreflight.js';
 
@@ -88,6 +89,7 @@ export default async function handler(req, res) {
       ok: true,
       ...publicIFlightPlannerStatus(),
       stage: 'live',
+      tokenMediaType: tokenMediaType(),
       dataset: dataset.dataset,
       note: dataset.note,
       recordCount: dataset.records.length,
@@ -118,13 +120,17 @@ export default async function handler(req, res) {
       // it, or the credentials belong to the provider's other environment.
       resolution: forbidden
         ? [
-          `The token exchange succeeded, so the Client ID and Secret are valid for ${status.apiBase}.`,
-          `This deployment is calling their ${status.environmentKind} host. Their dev and production`
-          + ' environments issue different credentials — if these are production credentials, set'
+          `The token exchange succeeded, so the Client ID and Secret are valid for ${status.apiBase}.`
+          + ' A 403 is not part of the documented contract for this endpoint (it publishes 200 and'
+          + ' 401 only), which points to a per-client permission rather than a request fault.',
+          'Ask iFlightPlanner to enable the "FBO & Fuel Price Data" permission for this API client,'
+          + ' quoting the provider message above. Their API grants permissions per client — other'
+          + ' endpoints in the same schema note requirements like "requires extended API permissions".',
+          `This deployment calls their ${status.environmentKind} host. Their dev and production`
+          + ' environments issue different credentials, so if these are production credentials, set'
           + ' IFLIGHTPLANNER_BASE_URL to the production API base.',
-          'Otherwise ask iFlightPlanner to enable FBO & Fuel Price Data for this API client, quoting'
-          + ' the provider message above. Dataset access is licensed per client.',
-          'If they issued an application instance value, set IFLIGHTPLANNER_SCOPE to it.',
+          'Scope is only needed for multiple application instances; a single instance should send'
+          + ' none. Set IFLIGHTPLANNER_SCOPE only if they issued an instance name.',
         ]
         : null,
     });
