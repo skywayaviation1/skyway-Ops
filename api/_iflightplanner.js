@@ -86,6 +86,13 @@ function first(index, candidates) {
   return '';
 }
 
+function firstMatching(index, patterns) {
+  for (const [header, value] of index.entries()) {
+    if (clean(value) && patterns.some((pattern) => pattern.test(header))) return clean(value);
+  }
+  return '';
+}
+
 function money(value) {
   const normalized = clean(value).replace(/[$,\s]/g, '');
   if (!normalized || !/^-?\d+(?:\.\d+)?$/.test(normalized)) return null;
@@ -106,8 +113,8 @@ function fuelTypeForHeader(header) {
 
 function serviceForHeader(header) {
   const normalized = key(header);
-  if (/selfserve|selfservice|\bss\b/.test(normalized)) return 'Self service';
-  if (/fullserve|fullservice|\bfs\b/.test(normalized)) return 'Full service';
+  if (/selfserve|selfservice|ssprice|pricess|retailss/.test(normalized)) return 'Self service';
+  if (/fullserve|fullservice|fsprice|pricefs|retailfs/.test(normalized)) return 'Full service';
   return 'Retail';
 }
 
@@ -140,9 +147,16 @@ export function normalizeFboRecord(record) {
   const airport = normalizeAirport(first(index, [
     'airporticao', 'icao', 'airportidentifier', 'airportident', 'airportid',
     'airportcode', 'faaid', 'faalid', 'airport',
+  ]) || firstMatching(index, [
+    /^icao(?:id|code)?$/,
+    /^faa(?:lid|id|code)$/,
+    /^airport.*(?:icao|identifier|ident|code|id)$/,
   ]));
   const name = first(index, [
     'fboname', 'businessname', 'companyname', 'locationname', 'vendorname', 'name',
+  ]) || firstMatching(index, [
+    /^(?:fbo|business|company|vendor).*name$/,
+    /^name.*(?:fbo|business|company|vendor)$/,
   ]);
   const fuelPrices = Object.entries(record)
     .filter(([header, value]) => isPriceHeader(header) && money(value) != null)

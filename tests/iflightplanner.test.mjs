@@ -71,6 +71,24 @@ test('CSV normalization retains raw provider columns for forward compatibility',
   assert.equal(result.records[0].raw['New Provider Field'], 'provider-value');
 });
 
+test('normalization tolerates alternate provider header naming', () => {
+  const record = normalizeFboRecord({
+    'Airport Code ICAO': 'KSRQ',
+    'Business Location Name': 'Alternate Header Aviation',
+    'Retail Jet A FS Price': '6.70',
+    'Retail 100LL SS Price': '6.10',
+  });
+  assert.equal(record.airport, 'KSRQ');
+  assert.equal(record.name, 'Alternate Header Aviation');
+  assert.deepEqual(
+    record.fuelPrices.map(({ fuelType, service }) => ({ fuelType, service })),
+    [
+      { fuelType: '100LL', service: 'Self service' },
+      { fuelType: 'Jet A', service: 'Full service' },
+    ],
+  );
+});
+
 test('airport matching tolerates FAA and U.S. ICAO forms', () => {
   const kApf = { airport: 'KAPF' };
   assert.equal(airportMatches(kApf, 'APF'), true);
