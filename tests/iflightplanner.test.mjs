@@ -114,6 +114,19 @@ test('airport summary identifies the cheapest provider per fuel type', () => {
   assert.equal(summary.lowestByFuel['100LL'].price, 6.2);
 });
 
+test('the token request matches the documented form-encoded OAuth 2 contract', async () => {
+  const client = await source('api/_iflightplanner.js');
+  // The provider documents Basic client auth with an x-www-form-urlencoded
+  // body. A JSON body can still return a token, but its grant parameters are
+  // never parsed and the data endpoints then refuse it with 403.
+  assert.match(client, /'Content-Type': 'application\/x-www-form-urlencoded'/);
+  assert.match(client, /new URLSearchParams\(\{ grant_type: 'client_credentials' \}\)/);
+  assert.match(client, /body: form\.toString\(\)/);
+  assert.doesNotMatch(client, /body: JSON\.stringify\(\{ grant_type/);
+  // Scope is optional and identifies an application instance.
+  assert.match(client, /IFLIGHTPLANNER_SCOPE/);
+});
+
 test('OAuth credentials remain server-side and use client credentials with Basic auth', async () => {
   const client = await source('api/_iflightplanner.js');
   assert.match(client, /IFLIGHTPLANNER_CLIENT_ID/);
@@ -196,11 +209,50 @@ test('a missing credential is reported by name, per deployment', () => {
   }
 });
 
+test('the API host is configurable so production credentials can be used', () => {
+  const original = process.env.IFLIGHTPLANNER_BASE_URL;
+  try {
+    delete process.env.IFLIGHTPLANNER_BASE_URL;
+    let status = publicIFlightPlannerStatus();
+    assert.equal(status.apiBase, 'https://dev.iflightplanner.com/api/v2');
+    assert.equal(status.environmentKind, 'development');
+
+    process.env.IFLIGHTPLANNER_BASE_URL = 'https://api.iflightplanner.com/api/v2/';
+    status = publicIFlightPlannerStatus();
+    assert.equal(status.apiBase, 'https://api.iflightplanner.com/api/v2');
+    assert.equal(status.environmentKind, 'production');
+  } finally {
+    if (original === undefined) delete process.env.IFLIGHTPLANNER_BASE_URL;
+    else process.env.IFLIGHTPLANNER_BASE_URL = original;
+  }
+});
+
+test('a forbidden dataset is reported as entitlement, with the provider verbatim', async () => {
+  const client = await source('api/_iflightplanner.js');
+  // 403 is distinguished from a generic failure so the guidance can differ.
+  assert.match(client, /error\.code = response\.status === 403/);
+  assert.match(client, /'iflightplanner_forbidden'/);
+  assert.match(client, /error\.providerMessage = String\(providerMessage\)/);
+  // The two datasets are licensed separately; fuel prices are still useful.
+  assert.match(client, /fuelPriceDataUrl\(\), 'fuel price'/);
+
+  const endpoint = await source('api/iflightplanner-status.js');
+  assert.match(endpoint, /stage = error\.code === 'iflightplanner_auth_failed'/);
+  assert.match(endpoint, /'entitlement'/);
+  assert.match(endpoint, /IFLIGHTPLANNER_BASE_URL to the production API base/);
+  assert.match(endpoint, /IFLIGHTPLANNER_SCOPE/);
+  assert.match(endpoint, /providerMessage: error\.providerMessage/);
+
+  const component = await source('src/AirportFboData.jsx');
+  assert.match(component, /feedCheck\.resolution\?\.length > 0/);
+  assert.match(component, /feedCheck\.apiBase/);
+});
+
 test('the status endpoint proves the live provider path without leaking secrets', async () => {
   const endpoint = await source('api/iflightplanner-status.js');
   assert.match(endpoint, /profile\.role !== 'admin'/);
   assert.match(endpoint, /getFboDataset\(\{ force: true \}\)/);
-  assert.match(endpoint, /\? 'authorization' : 'data'/);
+  assert.match(endpoint, /forbidden \? 'entitlement' : 'data'/);
   assert.match(endpoint, /columns: dataset\.headers/);
   assert.doesNotMatch(endpoint, /process\.env\.IFLIGHTPLANNER_CLIENT_SECRET\b(?!\s*\))/);
 });

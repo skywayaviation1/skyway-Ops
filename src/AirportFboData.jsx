@@ -485,6 +485,18 @@ export default function AirportFboData({
                 : `Provider not reachable · ${feedCheck.stage || 'unknown'} stage`}
             </div>
             {feedCheck.error && <div className="mt-1">{feedCheck.error}</div>}
+            {feedCheck.note && <div className="mt-1 text-content-muted">{feedCheck.note}</div>}
+            {feedCheck.apiBase && (
+              <div className="mt-1 text-content-muted">
+                Calling <span className="font-mono text-content">{feedCheck.apiBase}</span>
+                {feedCheck.environmentKind ? ` · their ${feedCheck.environmentKind} host` : ''}
+              </div>
+            )}
+            {feedCheck.resolution?.length > 0 && (
+              <ol className="mt-2 list-decimal space-y-1 pl-4 text-content-muted">
+                {feedCheck.resolution.map((step) => <li key={step}>{step}</li>)}
+              </ol>
+            )}
             {feedCheck.deployment && (
               <div className="mt-1 text-content-muted">
                 Serving environment: <span className="font-mono text-content">{feedCheck.deployment.environment}</span>

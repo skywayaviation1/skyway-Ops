@@ -88,6 +88,8 @@ export default async function handler(req, res) {
       ok: true,
       ...publicIFlightPlannerStatus(),
       stage: 'live',
+      dataset: dataset.dataset,
+      note: dataset.note,
       recordCount: dataset.records.length,
       recordsWithPrices: withPrices,
       columns: dataset.headers,
@@ -96,12 +98,34 @@ export default async function handler(req, res) {
     });
   } catch (error) {
     console.error('[iflightplanner-status]', error.code || '', error.message);
+    const status = publicIFlightPlannerStatus();
+    const forbidden = error.code === 'iflightplanner_forbidden';
+    const stage = error.code === 'iflightplanner_auth_failed'
+      ? 'authorization'
+      : (forbidden ? 'entitlement' : 'data');
     return res.status(error.status && error.status < 500 ? error.status : 200).json({
       ok: false,
-      ...publicIFlightPlannerStatus(),
-      stage: error.code === 'iflightplanner_auth_failed' ? 'authorization' : 'data',
+      ...status,
+      stage,
       error: error.message || 'iFlightPlanner test failed',
       code: error.code || null,
+      providerMessage: error.providerMessage || null,
+      providerHttpStatus: error.httpStatus || null,
+      requestUrl: error.requestUrl || null,
+      // A 403 after a successful token exchange is not something the request
+      // can fix: the client is authenticated but the dataset is not enabled for
+      // it, or the credentials belong to the provider's other environment.
+      resolution: forbidden
+        ? [
+          `The token exchange succeeded, so the Client ID and Secret are valid for ${status.apiBase}.`,
+          `This deployment is calling their ${status.environmentKind} host. Their dev and production`
+          + ' environments issue different credentials — if these are production credentials, set'
+          + ' IFLIGHTPLANNER_BASE_URL to the production API base.',
+          'Otherwise ask iFlightPlanner to enable FBO & Fuel Price Data for this API client, quoting'
+          + ' the provider message above. Dataset access is licensed per client.',
+          'If they issued an application instance value, set IFLIGHTPLANNER_SCOPE to it.',
+        ]
+        : null,
     });
   }
 }

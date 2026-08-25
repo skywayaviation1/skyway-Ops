@@ -10,11 +10,25 @@
  * columns so a provider schema addition does not require an emergency deploy.
  */
 
-const API_BASE = 'https://dev.iflightplanner.com/api/v2';
-const TOKEN_URL = `${API_BASE}/oauth2/token`;
-const FBO_DATA_URL = `${API_BASE}/airports/fbos/data`;
+const DEFAULT_API_BASE = 'https://dev.iflightplanner.com/api/v2';
 const REQUEST_TIMEOUT_MS = 20_000;
 const DATA_TTL_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Provider base URL.
+ *
+ * iFlightPlanner issues *different* credentials for their dev and production
+ * environments, so a production Client ID used against the dev host is
+ * authenticated but unauthorized. Keeping this configurable means moving to
+ * production credentials is an environment change, not a code change.
+ */
+export function apiBase() {
+  return (clean(process.env.IFLIGHTPLANNER_BASE_URL) || DEFAULT_API_BASE).replace(/\/+$/, '');
+}
+
+const tokenUrl = () => `${apiBase()}/oauth2/token`;
+const fboDataUrl = () => `${apiBase()}/airports/fbos/data`;
+const fuelPriceDataUrl = () => `${apiBase()}/airports/fuel-prices/data`;
 
 let tokenCache = null;
 let dataCache = null;
@@ -254,14 +268,24 @@ async function accessToken(force = false) {
     return tokenCache.token;
   }
   const { clientId, clientSecret } = configuredCredentials();
-  const response = await fetchWithTimeout(TOKEN_URL, {
+
+  // The provider documents this request as HTTP Basic client authentication
+  // with an application/x-www-form-urlencoded body. Sending JSON instead can
+  // still yield a token — the Basic header alone identifies the client — but
+  // the grant parameters never get parsed, and the resulting token is refused
+  // by the data endpoints. Follow the documented form exactly.
+  const form = new URLSearchParams({ grant_type: 'client_credentials' });
+  const scope = clean(process.env.IFLIGHTPLANNER_SCOPE);
+  if (scope) form.set('scope', scope);
+
+  const response = await fetchWithTimeout(tokenUrl(), {
     method: 'POST',
     headers: {
       Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`,
-      'Content-Type': 'application/json',
+      'Content-Type': 'application/x-www-form-urlencoded',
       Accept: 'application/json',
     },
-    body: JSON.stringify({ grant_type: 'client_credentials' }),
+    body: form.toString(),
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data.access_token) {
@@ -276,13 +300,22 @@ async function accessToken(force = false) {
   tokenCache = {
     token: data.access_token,
     expiresAt: Date.now() + Math.max(60, Number(data.expires_in) || 3600) * 1000,
+    scope: data.scope || scope || null,
   };
   return tokenCache.token;
 }
 
-async function downloadFboCsv(forceToken = false) {
+/**
+ * Pull one CSV dataset.
+ *
+ * A 403 here means the client authenticated but is not entitled to this
+ * dataset, which is an account provisioning matter rather than anything the
+ * request can fix. The provider's own words are carried through verbatim so
+ * they can be forwarded to their support without re-running anything.
+ */
+async function downloadCsv(url, label, forceToken = false) {
   const token = await accessToken(forceToken);
-  const response = await fetchWithTimeout(FBO_DATA_URL, {
+  const response = await fetchWithTimeout(url, {
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: 'application/json',
@@ -290,17 +323,53 @@ async function downloadFboCsv(forceToken = false) {
   });
   if (response.status === 401 && !forceToken) {
     tokenCache = null;
-    return downloadFboCsv(true);
+    return downloadCsv(url, label, true);
   }
-  const result = await response.json().catch(() => ({}));
+
+  const body = await response.text();
+  let result = {};
+  try { result = JSON.parse(body); } catch { /* non-JSON error page */ }
+
   if (!response.ok || typeof result.data !== 'string') {
-    const message = result.message || result.errorMessage || result.error || 'FBO data not returned';
-    const error = new Error(`iFlightPlanner FBO request failed (${response.status}): ${message}`);
+    const providerMessage = result.message
+      || result.errorMessage
+      || result.error
+      || result.status
+      || body.trim().slice(0, 300)
+      || 'no response body';
+    const error = new Error(
+      `iFlightPlanner ${label} request failed (${response.status}): ${providerMessage}`,
+    );
     error.status = 502;
-    error.code = 'iflightplanner_data_failed';
+    error.httpStatus = response.status;
+    error.providerMessage = String(providerMessage);
+    error.requestUrl = url;
+    error.code = response.status === 403
+      ? 'iflightplanner_forbidden'
+      : 'iflightplanner_data_failed';
     throw error;
   }
   return result.data;
+}
+
+async function downloadFboCsv() {
+  try {
+    return { csv: await downloadCsv(fboDataUrl(), 'FBO'), dataset: 'fbos' };
+  } catch (error) {
+    if (error.code !== 'iflightplanner_forbidden') throw error;
+    // The two datasets are licensed separately. If only the fuel-price feed is
+    // enabled, prices are still worth having, so try it before giving up.
+    try {
+      return {
+        csv: await downloadCsv(fuelPriceDataUrl(), 'fuel price'),
+        dataset: 'fuel-prices',
+        note: 'The FBO dataset is not enabled for this API client; retail fuel '
+          + 'prices are shown without FBO contact details.',
+      };
+    } catch {
+      throw error;
+    }
+  }
 }
 
 export async function getFboDataset({ force = false } = {}) {
@@ -308,10 +377,12 @@ export async function getFboDataset({ force = false } = {}) {
   if (!force && inFlightData) return inFlightData;
 
   const load = async () => {
-    const csv = await downloadFboCsv();
+    const { csv, dataset, note } = await downloadFboCsv();
     const normalized = normalizeFboCsv(csv);
     dataCache = {
       ...normalized,
+      dataset,
+      note: note || null,
       fetchedAt: Date.now(),
       expiresAt: Date.now() + DATA_TTL_MS,
     };
@@ -360,11 +431,17 @@ export function summarizeAirportFbos(records, requestedAirport) {
 
 export function publicIFlightPlannerStatus() {
   const missingEnv = missingCredentialNames();
+  const base = apiBase();
   return {
     configured: missingEnv.length === 0,
     missingEnv,
     deployment: deploymentContext(),
     source: 'iFlightPlanner',
     endpoint: 'FBO & Fuel Price Data v2',
+    apiBase: base,
+    // Their dev and production environments issue different credentials, so a
+    // host/credential mismatch is a first thing to rule out on a 403.
+    environmentKind: /(^|\/\/)dev\./i.test(base) ? 'development' : 'production',
+    scopeConfigured: Boolean(clean(process.env.IFLIGHTPLANNER_SCOPE)),
   };
 }
