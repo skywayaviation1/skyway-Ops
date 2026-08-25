@@ -572,3 +572,39 @@ export async function publishDefaultTabOrder(area, orderArray) {
     { merge: true }
   );
 }
+
+/* ============================================================
+   FRAT SCORING CONFIG — org-wide weights and thresholds.
+
+   Stored at app-config/frat so every crew member scores a leg the
+   same way, and a change takes effect the next time any FRAT is
+   opened without a deploy.
+   ============================================================ */
+
+export function subscribeFratConfig(onUpdate) {
+  return onSnapshot(doc(db, 'app-config', 'frat'), (snap) => {
+    onUpdate(snap.exists() ? snap.data() : null);
+  }, (err) => {
+    console.warn('[frat-config] listener:', err);
+    onUpdate(null);
+  });
+}
+
+export async function fetchFratConfig() {
+  const snap = await getDoc(doc(db, 'app-config', 'frat'));
+  return snap.exists() ? snap.data() : null;
+}
+
+export async function saveFratConfig(config, editor) {
+  if (!config || typeof config !== 'object') throw new Error('config required');
+  await setDoc(
+    doc(db, 'app-config', 'frat'),
+    {
+      ...config,
+      updatedAt: Date.now(),
+      updatedByUid: editor?.uid || null,
+      updatedByName: editor?.name || editor?.email || null,
+    },
+    { merge: false },
+  );
+}

@@ -14,6 +14,8 @@ const TeamsHubLazy = lazy(() => import('./TeamsHub.jsx'));
 const MailboxSettingsPanelLazy = lazy(() => import('./MailboxSettingsPanel.jsx'));
 const ForeFlightPlanLazy = lazy(() => import('./ForeFlightPlan.jsx'));
 const ForeFlightSettingsPanelLazy = lazy(() => import('./ForeFlightSettingsPanel.jsx'));
+const TripFratLazy = lazy(() => import('./TripFrat.jsx'));
+const FratSettingsPanelLazy = lazy(() => import('./FratSettingsPanel.jsx'));
 const TripEmailPanelLazy = lazy(() =>
   import('./CharterInbox.jsx').then((module) => ({ default: module.TripEmailPanel }))
 );
@@ -5200,7 +5202,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   const requestedTripTab = () => {
     if (typeof window === 'undefined') return null;
     const id = window.location.hash.replace(/^#/, '').toLowerCase();
-    return ['status', 'pax', 'sheet', 'notes', 'weather', 'plan', 'lodging', 'chat', 'notify', 'delay'].includes(id)
+    return ['status', 'pax', 'sheet', 'notes', 'weather', 'plan', 'frat', 'lodging', 'chat', 'notify', 'delay'].includes(id)
       ? id
       : null;
   };
@@ -5225,6 +5227,10 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   const [preloadedPax, setPreloadedPax] = useState([]);
   const [tripSheetNotes, setTripSheetNotes] = useState(null);
   const [tripSheetNotesEdited, setTripSheetNotesEdited] = useState({ at: null, byName: null });
+  const [fratState, setFratState] = useState(null);
+  const [opsDisposition, setOpsDisposition] = useState(null);
+  const [opsDispositionReason, setOpsDispositionReason] = useState(null);
+  const [dispatcherUids, setDispatcherUids] = useState([]);
   // FBO state. We seed from trip.info.fromFbo / trip.info.toFbo (parsed
   // from JetInsight iCal at sync time) so a freshly-loaded trip without
   // an explicit trip-state write still shows its FBO. The Firestore
@@ -5459,6 +5465,10 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
           setFromFbo(state.fromFbo || trip.info?.fromFbo || null);
           setToFbo(state.toFbo || trip.info?.toFbo || null);
           setCompleted(state.completed === true);
+          setFratState(state.frat || null);
+          setOpsDisposition(state.opsDisposition || null);
+          setOpsDispositionReason(state.opsDispositionReason || null);
+          setDispatcherUids(Array.isArray(state.dispatcherUids) ? state.dispatcherUids : []);
           setLoading(false);
         });
       } catch (err) {
@@ -6859,6 +6869,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
             { id: 'notes', label: 'Notes', icon: BookOpen },
             { id: 'weather', label: 'Weather', icon: Cloud, hidden: !canSeeFlightPlanning },
             { id: 'plan', label: 'Flight plan', icon: Navigation, hidden: !canSeeFlightPlanning },
+            { id: 'frat', label: 'FRAT', icon: Shield, hidden: !canSeeFlightPlanning || !trip.info.isOps, badge: fratState?.score != null ? String(fratState.score) : null },
             // LODGING: crew hotels for this trip. Visible to ops/admin
             // always; visible to crew because crew want to see their own
             // hotel info for the trip. Hidden on non-ops (HOLD/MX/etc)
@@ -6879,7 +6890,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
               id: 'operations',
               label: 'Operations',
               icon: Navigation,
-              children: pick(['sheet', 'weather', 'plan', 'lodging', 'notes', 'notify', 'delay']),
+              children: pick(['sheet', 'weather', 'plan', 'frat', 'lodging', 'notes', 'notify', 'delay']),
             },
             { id: 'chat', label: 'Comms', icon: MessageSquare, children: pick(['chat', 'email']) },
           ].filter(g => g.children.length > 0);
@@ -7102,6 +7113,28 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
               </Card>
 
               <Card>
+                <CardHeader title="FRAT" icon={Shield} />
+                <div className="space-y-2">
+                  {fratState?.score != null ? (
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <div className="font-mono text-lg font-semibold text-content">{fratState.score}</div>
+                        <div className="text-2xs text-content-subtle">{fratState.levelLabel || fratState.level}</div>
+                      </div>
+                      <div className={`text-[10px] tracking-widest font-mono ${fratState.go === false ? 'text-red-300' : 'text-emerald-300'}`}>
+                        {fratState.go === false ? 'NO-GO' : 'SIGNED'}
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-2xs text-content-muted">No signed FRAT yet — open to score this leg.</p>
+                  )}
+                  <Button variant="ghost" size="sm" block onClick={() => setTab('frat')}>
+                    {fratState?.score != null ? 'Open FRAT' : 'Complete FRAT'}
+                  </Button>
+                </div>
+              </Card>
+
+              <Card>
                 <CardHeader title="Crew" icon={Users} />
                 <div className="space-y-3">
                   {[
@@ -7261,6 +7294,27 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
           </div>
         ) : tab === 'weather' ? (
           <TripWeatherSection trip={trip} />
+        ) : tab === 'frat' ? (
+          <Suspense fallback={<div className="p-8 text-center text-slate-500"><Loader2 className="w-5 h-5 animate-spin inline-block mr-2" />Loading FRAT...</div>}>
+            <TripFratLazy
+              trip={trip}
+              currentUser={currentUser}
+              users={users}
+              allTrips={allTrips}
+              tripState={{
+                frat: fratState,
+                tripSheetUrl,
+                fromFbo,
+                toFbo,
+                brokerEmail,
+                passengers,
+                paxOverride,
+                opsDisposition,
+                opsDispositionReason,
+                dispatcherUids,
+              }}
+            />
+          </Suspense>
         ) : tab === 'plan' ? (
           <Suspense fallback={<div className="p-8 text-center text-slate-500"><Loader2 className="w-5 h-5 animate-spin inline-block mr-2" />Loading flight plan...</div>}>
             <ForeFlightPlanLazy trip={trip} currentUser={currentUser} users={users} />
@@ -15729,6 +15783,10 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
 
           <Suspense fallback={<div className="text-xs text-slate-500 py-2">Loading ForeFlight settings…</div>}>
             <ForeFlightSettingsPanelLazy currentUser={currentUser} />
+          </Suspense>
+
+          <Suspense fallback={<div className="text-xs text-slate-500 py-2">Loading FRAT scoring…</div>}>
+            <FratSettingsPanelLazy currentUser={currentUser} />
           </Suspense>
 
           <QuickBooksConnectionPanel currentUser={currentUser} />

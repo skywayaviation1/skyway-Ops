@@ -1,14 +1,18 @@
 // src/PilotCurrency.jsx
 //
-// Pilot Currency & Training Dashboard — v2
+// Pilot Currency & Training Dashboard — v3
 //
-// Tracks all 24 items from the JetInsight "Crew checks by crew member"
-// report:
+// Tracks FAA baseline recency plus Part 135 qualifications, testing, training,
+// special-role checks, and operator-specific items. Applicability is shown on
+// every item because PIC-only, SIC-only, IFR-only, aircraft-specific, and
+// check-pilot/instructor requirements must not be presented as universal.
+//
+// The JetInsight import columns remain supported:
 //   - FAA recency (61.57 a/b/c)
 //   - Part 135 general (basic indoc, 293(a) general ground/oral)
 //   - Part 135 aircraft-specific (293(a)(2-3) and 293(b) × 4 type variants)
 //   - Part 135 checks (297, 299)
-//   - Training (emergency, hazmat, recurrent 351)
+//   - Training (CRM, emergency, hazmat, recurrent 343/351)
 //   - Special ops (RVSM, TFSSP, DASSP)
 //   - Badges (KCM — no expiration)
 //   - Medical (separate, uses class + explicit expirationDate)
@@ -47,7 +51,6 @@ import {
   subscribePilotCurrencies,
   subscribeMyPilotCurrency,
   savePilotCurrency,
-  computeAutoTakeoffLanding,
 } from './firebase-currency.js';
 
 // Lazy-loaded bulk importer modal. Only pulled in when admin clicks
@@ -108,23 +111,11 @@ export default function PilotCurrencyScreen({ currentUser, users, allTrips }) {
   }, [currentUser, isAdminOrOps, isCrew]);
 
   const todayMs = Date.now();
-  const currenciesEnriched = useMemo(() => {
-    const out = { ...currenciesByUid };
-    if (Array.isArray(allTrips) && allTrips.length > 0) {
-      for (const u of users) {
-        if (!u?.uid) continue;
-        const existing = out[u.uid] || {};
-        const auto = computeAutoTakeoffLanding(u, allTrips, todayMs);
-        if (auto?.lastDate && (!existing.takeoffLanding?.lastDate || existing.takeoffLanding?.lastDate < auto.lastDate)) {
-          out[u.uid] = {
-            ...existing,
-            takeoffLanding: { ...(existing.takeoffLanding || {}), lastDate: auto.lastDate, auto: true },
-          };
-        }
-      }
-    }
-    return out;
-  }, [currenciesByUid, users, allTrips, todayMs]);
+  // Do not infer §135.247/§61.57 landing currency from schedule assignment:
+  // being listed as PIC/SIC does not prove sole manipulation or that the
+  // takeoff/landing occurred. Currency must come from an actual pilot/training
+  // record or an approved source.
+  const currenciesEnriched = currenciesByUid;
 
   const pilots = useMemo(() => {
     if (isCrew) return users.filter(u => u.uid === currentUser.uid);
@@ -203,6 +194,12 @@ export default function PilotCurrencyScreen({ currentUser, users, allTrips }) {
           <SummaryStat label="EXPIRING" value={summary.warning} tone="orange" onClick={() => setStatusFilter('expiring')} active={statusFilter === 'expiring'} />
           <SummaryStat label="CURRENT" value={summary.current} tone="emerald" onClick={() => setStatusFilter('current')} active={statusFilter === 'current'} />
           <SummaryStat label="NOT SET" value={summary.unknown} tone="slate" onClick={() => setStatusFilter('unknown')} active={statusFilter === 'unknown'} />
+        </div>
+
+        <div className="mt-3 border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-[10px] text-amber-100/70" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+          Requirements are applicability-aware. Mark PIC-only, SIC-only, IFR,
+          aircraft-specific, special-authorization, or operator-program items N/A
+          when they do not apply. The approved training program and OpSpecs remain controlling.
         </div>
 
         <div className="flex items-center gap-2 mt-3">
@@ -436,7 +433,10 @@ function MatrixCell({ result }) {
     );
   }
   return (
-    <div className={`flex flex-col items-center justify-center h-7 ${c.bg} border ${c.border}`} title={`${result.status.toUpperCase()} · due ${result.dueDate || '—'}`}>
+    <div
+      className={`flex flex-col items-center justify-center h-7 ${c.bg} border ${c.border}`}
+      title={`${result.status.toUpperCase()} · due ${result.dueDate || '—'}${result.graceDate ? ` · grace through ${result.graceDate}` : ''}`}
+    >
       <span className={`text-[9px] ${c.text} leading-none`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
         {result.dueDate ? result.dueDate.slice(5).replace('-', '/') : ''}
       </span>
@@ -484,7 +484,7 @@ function CardsView({ pilots, currencies, todayMs, canEdit, onEdit }) {
             </button>
             {isExpanded && (
               <div className="border-t border-slate-800 p-3 space-y-3">
-                <CategoryBlock cat="MEDICAL" rows={[{ type: { key: '__medical__', label: 'FAA / BasicMed Medical' }, result: computeMedicalStatus(doc.medical, todayMs), extra: doc.medical?.class || '' }]} pilotUid={p.uid} canEdit={canEdit} onEdit={onEdit} />
+                <CategoryBlock cat="MEDICAL" rows={[{ type: { key: '__medical__', label: 'FAA Medical Certificate' }, result: computeMedicalStatus(doc.medical, todayMs), extra: doc.medical?.class || '' }]} pilotUid={p.uid} canEdit={canEdit} onEdit={onEdit} />
                 {CATEGORY_ORDER.map(cat => {
                   const types = TYPES_BY_CATEGORY[cat] || [];
                   if (types.length === 0) return null;
@@ -522,6 +522,9 @@ function CategoryBlock({ cat, rows, pilotUid, canEdit, onEdit }) {
               {extra && <div className="text-[9px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>{extra}</div>}
               {result.dueDate && (
                 <div className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>Due {result.dueDate}</div>
+              )}
+              {result.graceDate && (
+                <div className="text-[9px] text-amber-400/70" style={{ fontFamily: 'JetBrains Mono, monospace' }}>Grace through {result.graceDate}</div>
               )}
             </div>
             <StatusPill status={result.status} daysUntil={result.daysUntil} />
@@ -578,7 +581,13 @@ function AgendaView({ pilots, currencies, todayMs, canEdit, onEdit }) {
                       <div className="text-sm text-slate-200">{g.type.label}</div>
                       <div className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
                         {g.items.length} pilot{g.items.length === 1 ? '' : 's'} tracked
-                        {g.type.interval ? ` · ${g.type.interval}-day cadence` : g.type.noExpiration ? ' · no expiration' : ''}
+                        {g.type.interval
+                          ? ` · ${g.type.interval}-day cadence`
+                          : g.type.intervalMonths
+                            ? ` · ${g.type.intervalMonths}-calendar-month cadence`
+                            : g.type.noExpiration
+                              ? ' · no expiration'
+                              : ' · operator-defined due date'}
                       </div>
                     </div>
                     <div className="shrink-0"><ChevronDown className="w-4 h-4 text-slate-500" /></div>
@@ -593,6 +602,9 @@ function AgendaView({ pilots, currencies, todayMs, canEdit, onEdit }) {
                           <div className="text-sm text-slate-100 truncate">{pilot.name || pilot.email}</div>
                           {result.dueDate && (
                             <div className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>Due {result.dueDate}</div>
+                          )}
+                          {result.graceDate && (
+                            <div className="text-[9px] text-amber-400/70" style={{ fontFamily: 'JetBrains Mono, monospace' }}>Grace through {result.graceDate}</div>
                           )}
                         </div>
                         <StatusPill status={result.status} daysUntil={result.daysUntil} />
@@ -648,15 +660,22 @@ function EditCurrencyModal({ pilot, existing, focusKey, onClose, onSave }) {
       const patch = {};
       for (const t of CURRENCY_TYPES) {
         const cur = draft[t.key] || {};
-        const hasData = cur.dueDate || cur.lastDate || cur.graceDate || cur.notes || cur.notApplicable || cur.present;
+        const existingItem = existing?.[t.key];
+        const hasData = existingItem
+          || cur.dueDate
+          || cur.lastDate
+          || cur.graceDate
+          || cur.notes
+          || cur.notApplicable
+          || cur.present;
         if (hasData) {
           patch[t.key] = {
-            ...(cur.dueDate ? { dueDate: cur.dueDate } : {}),
-            ...(cur.lastDate ? { lastDate: cur.lastDate } : {}),
-            ...(cur.graceDate ? { graceDate: cur.graceDate } : {}),
-            ...(cur.notes ? { notes: cur.notes } : {}),
-            ...(cur.notApplicable ? { notApplicable: true } : {}),
-            ...(t.noExpiration && cur.present ? { present: true } : {}),
+            dueDate: cur.dueDate || '',
+            lastDate: cur.lastDate || '',
+            graceDate: cur.graceDate || '',
+            notes: cur.notes || '',
+            notApplicable: cur.notApplicable === true,
+            ...(t.noExpiration ? { present: cur.present === true } : {}),
           };
         }
       }
@@ -700,7 +719,7 @@ function EditCurrencyModal({ pilot, existing, focusKey, onClose, onSave }) {
                   <option value="First">First</option>
                   <option value="Second">Second</option>
                   <option value="Third">Third</option>
-                  <option value="BasicMed">BasicMed</option>
+                  <option value="BasicMed">BasicMed (not valid for Part 135 duty)</option>
                 </select>
               </FieldLabel>
               <FieldLabel label="EXPIRATION (YYYY-MM-DD)">
@@ -709,6 +728,9 @@ function EditCurrencyModal({ pilot, existing, focusKey, onClose, onSave }) {
               <FieldLabel label="NOTES">
                 <input type="text" value={draft.medical.notes} onChange={e => setDraft(d => ({ ...d, medical: { ...d.medical, notes: e.target.value } }))} className="w-full bg-slate-950 border border-slate-700 px-2 py-1.5 text-sm text-slate-100" />
               </FieldLabel>
+            </div>
+            <div className="mt-2 text-[10px] text-amber-300/70">
+              BasicMed does not authorize Part 135 pilot service. Record the FAA medical class and actual expiration used for the assignment.
             </div>
           </CategoryEditBlock>
 
@@ -767,6 +789,16 @@ function ItemEditRow({ type, value, onChange, focused }) {
         <div className="min-w-0">
           <div className="text-xs text-slate-200">{type.label}</div>
           {type.notes && <div className="text-[10px] text-slate-500 italic">{type.notes}</div>}
+            {type.applicability && (
+              <div className="mt-0.5 text-[10px] text-cyan-400/70">
+                Applies: {type.applicability}
+              </div>
+            )}
+            {type.citation && (
+              <div className="text-[9px] text-slate-600" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                {type.citation}
+              </div>
+            )}
         </div>
         <label className="flex items-center gap-1.5 text-[10px] text-slate-500 shrink-0 cursor-pointer">
           <input type="checkbox" checked={value.notApplicable} onChange={e => onChange({ notApplicable: e.target.checked })} className="accent-slate-500" />
