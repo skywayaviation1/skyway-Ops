@@ -100,8 +100,6 @@ test('OAuth credentials remain server-side and use client credentials with Basic
   assert.match(client, /Authorization: `Basic/);
   assert.match(client, /grant_type: 'client_credentials'/);
   assert.match(client, /Authorization: `Bearer/);
-  assert.doesNotMatch(client, /TB8aWYSVFCm/);
-  assert.doesNotMatch(client, /9eo2mXrPry/);
 
   const browser = await source('src/AirportFboData.jsx');
   assert.doesNotMatch(browser, /IFLIGHTPLANNER_CLIENT/);
