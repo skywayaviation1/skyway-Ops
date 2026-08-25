@@ -23,6 +23,8 @@
 
 export const LOGO_URL = 'https://www.skyway.app/skyway-logo.png';
 export const REPLY_TO_CONTACT = 'charters@flyskyway.com';
+/** Lower-cased form, for recipient comparisons. */
+export const CHARTER_INBOX = REPLY_TO_CONTACT.toLowerCase();
 export const REPLY_TO_PHONE = '727-605-5000';
 export const NO_REPLY_NOTICE = 'This is an automated message from Skyway Ops. Please do not reply to this email.';
 
@@ -96,6 +98,64 @@ export function ensureCharterCc(ccList, toList) {
   const hasCharter = list.some((e) => String(e).trim().toLowerCase() === charterLower);
   if (!hasCharter) list.push(REPLY_TO_CONTACT);
   return list;
+}
+
+const norm = (value) => String(value || '').trim();
+const lower = (value) => norm(value).toLowerCase();
+
+/**
+ * Place the charter inbox on the CC line while guaranteeing it still gets a copy.
+ *
+ * Callers that build a recipient list from an ops constant end up with
+ * charters@flyskyway.com in `to`. `ensureCharterCc` then correctly declines to
+ * CC an address that is already a direct recipient, so the CC line came out
+ * empty and the copy arrived as a plain To — which is why the address stopped
+ * appearing as a CC on notification email.
+ *
+ * This moves it to CC when there is at least one other recipient to address the
+ * message to, and leaves it in `to` when it would otherwise be the only one,
+ * because a message with an empty To is not deliverable.
+ *
+ * @param {{to?: string[]|string, cc?: string[]|string}} recipients
+ * @returns {{to: string[], cc: string[]}}
+ */
+export function withCharterCopy({ to, cc } = {}) {
+  const toArray = Array.isArray(to) ? to : (to ? [to] : []);
+  const ccArray = Array.isArray(cc) ? cc : (cc ? [cc] : []);
+  const charterLower = REPLY_TO_CONTACT.toLowerCase();
+
+  // Dedupe case-insensitively, preserving the caller's ordering.
+  const dedupe = (list) => {
+    const seen = new Set();
+    const out = [];
+    for (const entry of list) {
+      const value = norm(entry);
+      if (!value) continue;
+      const key = value.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(value);
+    }
+    return out;
+  };
+
+  const uniqueTo = dedupe(toArray);
+  const others = uniqueTo.filter((entry) => lower(entry) !== charterLower);
+
+  // Nobody but the charter inbox — it has to stay on the To line.
+  if (others.length === 0) {
+    return {
+      to: uniqueTo.length ? uniqueTo : [REPLY_TO_CONTACT],
+      cc: dedupe(ccArray).filter((entry) => lower(entry) !== charterLower),
+    };
+  }
+
+  const finalCc = dedupe([...ccArray, REPLY_TO_CONTACT])
+    // Never CC somebody who is already a direct recipient.
+    .filter((entry) => !others.some((t) => lower(t) === lower(entry))
+      || lower(entry) === charterLower);
+
+  return { to: others, cc: finalCc };
 }
 
 /**

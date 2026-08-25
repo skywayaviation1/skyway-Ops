@@ -16,6 +16,7 @@ const ForeFlightPlanLazy = lazy(() => import('./ForeFlightPlan.jsx'));
 const ForeFlightSettingsPanelLazy = lazy(() => import('./ForeFlightSettingsPanel.jsx'));
 const TripFratLazy = lazy(() => import('./TripFrat.jsx'));
 const FratSettingsPanelLazy = lazy(() => import('./FratSettingsPanel.jsx'));
+const EmailDiagnosticsPanelLazy = lazy(() => import('./EmailDiagnosticsPanel.jsx'));
 const TripEmailPanelLazy = lazy(() =>
   import('./CharterInbox.jsx').then((module) => ({ default: module.TripEmailPanel }))
 );
@@ -337,9 +338,13 @@ function extractTripInfo(event) {
    ============================================================ */
 const DEFAULT_ICAL_URL = 'https://portal.jetinsight.com/schedule/7a32dd47-6a5c-4c9c-b53b-864381bacebf/1243136b-b3ab-4dff-b0cf-edf264e20fbf.ics';
 
-// Hardcoded ops email — always CC'd on broker notifications. Cannot be
-// changed per-user (was previously a settings field, but ops policy is
-// that all status emails go to charters@flyskyway.com regardless of user).
+// Hardcoded ops email — copied on broker notifications. Cannot be changed
+// per-user (was previously a settings field, but ops policy is that all status
+// emails go to charters@flyskyway.com regardless of user).
+//
+// It is passed as a recipient here; the send endpoints move it to the CC line
+// whenever there is a broker to address the message to, so it reads as a copy
+// rather than as the addressee.
 const OPS_EMAIL = 'charters@flyskyway.com';
 
 // All Skyway aircraft registrations. Used for the Malfunction/Incident Report
@@ -1476,7 +1481,9 @@ async function sendEmailViaApi({ to, subject, text, source, tripId, statusKey, i
   // Reliable delivery: writes to the email-queue collection. The
   // /api/email-queue-drain cron picks it up within ~60s and delivers via
   // Resend, retrying failures with backoff. Returns a faux Response object
-  // so existing callers that check .ok keep working.
+  // so existing callers that check .ok keep working, where `ok` means the
+  // message actually reached the mail provider — not merely that it was
+  // recorded.
   let idToken = null;
   try {
     const { auth } = await import('./firebase.js');
@@ -1504,15 +1511,14 @@ async function sendEmailViaApi({ to, subject, text, source, tripId, statusKey, i
     });
     if (r.ok) {
       const data = await r.json().catch(() => ({}));
-      if (data.delivery === 'inline') {
-      } else {
-      }
-      // Return a Response-like shim so existing .ok checks pass.
-      // Important: callers that previously did `await r.json()` for a Resend id
-      // will now get a queueId instead. That's fine — none of our existing call
-      // sites use the returned id for anything other than logging.
-      return new Response(JSON.stringify({ ok: true, ...data }), {
-        status: 200,
+      // The endpoint returns 200 for both "handed to the mail provider" and
+      // "provider rejected it, kept for retry". Only the first is a send, so
+      // the shim's `ok` follows `delivered`. Reporting a rejection as success
+      // is what previously let a status show the broker as notified while the
+      // email never left the building.
+      const delivered = data.delivered !== false;
+      return new Response(JSON.stringify({ ...data, ok: delivered }), {
+        status: delivered ? 200 : 502,
         headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -5764,6 +5770,15 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       const respData = await r.json().catch(() => ({}));
       if (!r.ok) {
         console.error('[email] Send failed:', r.status, respData.error || '', respData);
+        // The status itself is recorded; only the notification failed. Say so,
+        // because the alternative is a dispatcher believing the broker was
+        // told. `notified` stays false, so the timeline keeps its retry action.
+        notify.error(
+          respData.willRetry
+            ? 'Status saved, but the broker email has not gone out yet — retrying automatically.'
+            : 'Status saved, but the broker email failed to send.',
+          { description: respData.explanation || respData.error || 'Check Settings → Email delivery.' },
+        );
         return;
       }
       // Email sent successfully — mark notified=true now
@@ -5835,7 +5850,10 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       const respData = await r.json().catch(() => ({}));
       if (!r.ok) {
         console.error('[resend] failed:', r.status, respData);
-        notify.error(`Resend failed: ${respData.error || r.status}. Try again or check NOTIFY tab.`);
+        notify.error('Broker email still not sent.', {
+          description: respData.explanation || respData.error
+            || 'Check Settings → Email delivery for the provider error.',
+        });
         return;
       }
       // Success — flip notified=true on the same status object
@@ -15787,6 +15805,10 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
 
           <Suspense fallback={<div className="text-xs text-slate-500 py-2">Loading FRAT scoring…</div>}>
             <FratSettingsPanelLazy currentUser={currentUser} />
+          </Suspense>
+
+          <Suspense fallback={<div className="text-xs text-slate-500 py-2">Loading email delivery…</div>}>
+            <EmailDiagnosticsPanelLazy currentUser={currentUser} />
           </Suspense>
 
           <QuickBooksConnectionPanel currentUser={currentUser} />

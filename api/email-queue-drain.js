@@ -38,6 +38,8 @@
 
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
+import { isPermanentSendFailure, STALE_SENDING_MS } from './_email-delivery.js';
+import { deliverNotification } from './_email-transport.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -61,45 +63,90 @@ function getDb() {
   return _db;
 }
 
-const RESEND_API_KEY = process.env.RESEND_API_KEY;
-const FROM_DEFAULT = process.env.OPS_FROM_EMAIL || 'Skyway Ops <noreply@send.flyskyway.com>';
 const ADMIN_ALERT_EMAILS = (process.env.OPS_ALERT_EMAILS || '')
   .split(',').map(s => s.trim()).filter(Boolean);
 
 const MAX_ATTEMPTS_DEFAULT = 5;
-const BATCH_SIZE = 25;                    // max items per cron run
+const BATCH_SIZE = 25;                    // max items delivered per cron run
+const PAGE_SIZE = 100;                    // Firestore reads per page while scanning
+const MAX_PAGES = 20;                     // scan cap: 2000 queue rows per tick
 const BACKOFF_SECONDS = [10, 30, 120, 600, 1800];  // 10s, 30s, 2min, 10min, 30min
 
-// Send via Resend. Returns { ok, id?, error? }.
-async function sendViaResend({ to, cc, subject, html, from }) {
-  if (!RESEND_API_KEY) {
-    return { ok: false, error: 'RESEND_API_KEY missing on server' };
-  }
-  const body = {
-    from: from || FROM_DEFAULT,
-    to: Array.isArray(to) ? to : [to],
-    subject,
-    html,
-  };
-  if (Array.isArray(cc) && cc.length > 0) body.cc = cc;
+/**
+ * Page through queue rows awaiting delivery and return the ones that are due.
+ *
+ * Ordering is by document name, which is also roughly chronological because
+ * queue IDs are `q_<base36 timestamp>_<random>`. That keeps the oldest mail
+ * first without needing a composite index on (status, nextAttemptAt).
+ *
+ * `sending` is included because that flag is an optimistic lock: if a previous
+ * run was cut short after taking the lock but before recording the outcome, the
+ * row would otherwise sit in `sending` forever and never be retried.
+ */
+async function collectDueItems(db, now) {
+  const due = [];
+  let scanned = 0;
+  let backlog = 0;
+  let reclaimed = 0;
+  let cursor = null;
 
-  try {
-    const r = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${RESEND_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok) {
-      return { ok: false, error: `Resend ${r.status}: ${data.message || data.error || 'unknown'}` };
+  for (let page = 0; page < MAX_PAGES; page += 1) {
+    let query = db.collection('email-queue')
+      .where('status', 'in', ['pending', 'failed', 'sending'])
+      .orderBy('__name__')
+      .limit(PAGE_SIZE);
+    if (cursor) query = query.startAfter(cursor);
+
+    const snap = await query.get();
+    if (snap.empty) break;
+
+    for (const doc of snap.docs) {
+      scanned += 1;
+      const data = doc.data();
+
+      if (data.status === 'sending') {
+        const startedAt = data.lastAttemptAt || 0;
+        if (now - startedAt < STALE_SENDING_MS) {
+          backlog += 1;              // another run holds the lock right now
+          continue;
+        }
+        reclaimed += 1;              // abandoned lock — take it over
+      } else if ((data.nextAttemptAt || 0) > now) {
+        backlog += 1;                // still waiting on backoff
+        continue;
+      }
+
+      if (due.length < BATCH_SIZE) due.push(doc);
     }
-    return { ok: true, id: data.id };
-  } catch (e) {
-    return { ok: false, error: `Network: ${e.message || String(e)}` };
+
+    cursor = snap.docs[snap.docs.length - 1];
+    if (snap.size < PAGE_SIZE) break;      // reached the end of the queue
+    if (due.length >= BATCH_SIZE) break;   // enough work for this tick
   }
+
+  return { due, scanned, backlog, reclaimed };
+}
+
+// Retry one queued message, routing tenant mailboxes through Exchange and
+// everyone else through the provider — the same split the inline send uses, so
+// a retry cannot deliver by a path the first attempt did not.
+async function retryDelivery(item) {
+  const result = await deliverNotification({
+    to: item.to,
+    cc: item.cc,
+    subject: item.subject,
+    html: item.html,
+    from: item.from,
+    // The tenant leg is not idempotent: it puts real mail in real mailboxes.
+    // Once it has succeeded, later provider retries must leave it alone.
+    skipInternal: item.internalDelivered === true,
+  });
+  return {
+    ok: result.ok,
+    id: result.provider?.id || null,
+    error: result.error,
+    internal: result.internal,
+  };
 }
 
 // Send admin alert for a dead message (best-effort; we don't queue this one because
@@ -115,7 +162,11 @@ async function alertAdminDeadMessage(queueId, item) {
     <p>Source: ${item.source || 'unknown'}${item.tripId ? ` · trip ${item.tripId}` : ''}</p>
     <p>To retry manually, open the Email Queue admin tab in Skyway Ops.</p>
   `;
-  await sendViaResend({
+  // The alert itself goes through the same routing. Alert recipients are
+  // usually staff in the operator's own tenant, which is precisely the mail
+  // that gets filtered when it arrives from the provider — an undelivered
+  // alert about undelivered mail is the worst possible failure here.
+  await deliverNotification({
     to: ADMIN_ALERT_EMAILS,
     subject: `[Skyway Ops] Email delivery failed — ${item.subject}`,
     html,
@@ -131,32 +182,21 @@ export default async function handler(req, res) {
     const db = getDb();
     const now = Date.now();
 
-    // Simple query — avoid composite index requirement.
-    // Get pending + failed items, filter nextAttemptAt in memory.
-    // For our scale (< few hundred queue items) this is totally fine.
-    const pendingSnap = await db.collection('email-queue')
-      .where('status', 'in', ['pending', 'failed'])
-      .limit(100)
-      .get();
+    // Collect items whose retry time has arrived.
+    //
+    // This pages through the queue instead of reading a single fixed slice.
+    // A single `.limit(100)` with no ordering returns the 100 lowest document
+    // IDs, which are the oldest entries. Once that many not-yet-due failures
+    // sat at the head of the queue, every newer email became invisible to this
+    // cron and never went out. Paging keeps scanning until enough due items are
+    // found, so a backlog can no longer starve new mail.
+    const { due, scanned, backlog, reclaimed } = await collectDueItems(db, now);
 
-    console.log('[email-queue-drain] tick: found', pendingSnap.size, 'pending/failed items');
-
-    if (pendingSnap.empty) {
-      res.status(200).json({ ok: true, processed: 0 });
-      return;
-    }
-
-    // In-memory filter for items whose nextAttemptAt has arrived
-    const due = pendingSnap.docs.filter(doc => {
-      const d = doc.data();
-      const next = d.nextAttemptAt || 0;
-      return next <= now;
-    }).slice(0, BATCH_SIZE);
-
-    console.log('[email-queue-drain] of those,', due.length, 'are due now');
+    console.log('[email-queue-drain] tick: scanned', scanned, 'awaiting delivery ·',
+      due.length, 'due now ·', backlog, 'waiting ·', reclaimed, 'stale locks reclaimed');
 
     if (due.length === 0) {
-      res.status(200).json({ ok: true, processed: 0, totalInQueue: pendingSnap.size });
+      res.status(200).json({ ok: true, processed: 0, scanned, waiting: backlog });
       return;
     }
 
@@ -178,13 +218,7 @@ export default async function handler(req, res) {
         continue;
       }
 
-      const send = await sendViaResend({
-        to: item.to,
-        cc: item.cc,
-        subject: item.subject,
-        html: item.html,
-        from: item.from,
-      });
+      const send = await retryDelivery(item);
 
       if (send.ok) {
         await doc.ref.update({
@@ -193,6 +227,8 @@ export default async function handler(req, res) {
           sentAt: Date.now(),
           resendId: send.id || null,
           lastError: null,
+          internalDelivery: send.internal || null,
+          internalDelivered: item.internalDelivered === true || send.internal?.ok === true,
         });
         console.log('[email-queue-drain] SENT', id, '→', (item.to || []).join(','), '· resend id:', send.id);
         results.push({ id, ok: true, resendId: send.id });
@@ -201,8 +237,10 @@ export default async function handler(req, res) {
 
       console.warn('[email-queue-drain] FAIL', id, '· attempt', attempts, '· error:', send.error);
 
-      // Failed. Decide retry vs dead.
-      const dead = attempts >= maxAttempts;
+      // Failed. Decide retry vs dead. A configuration rejection fails
+      // identically every time, so it goes straight to dead and raises the
+      // admin alert now instead of after five silent retries.
+      const dead = attempts >= maxAttempts || isPermanentSendFailure(send.error);
       const backoffIdx = Math.min(attempts - 1, BACKOFF_SECONDS.length - 1);
       const nextAttemptAt = Date.now() + (BACKOFF_SECONDS[backoffIdx] * 1000);
 
@@ -212,6 +250,11 @@ export default async function handler(req, res) {
         lastError: send.error || 'unknown error',
         nextAttemptAt: dead ? null : nextAttemptAt,
         deadAt: dead ? Date.now() : null,
+        // Recorded even on failure: the tenant leg may well have succeeded
+        // while the provider leg is what failed, and the next attempt has to
+        // know not to mail the operator's own team again.
+        internalDelivery: send.internal || null,
+        internalDelivered: item.internalDelivered === true || send.internal?.ok === true,
       });
 
       if (dead) {

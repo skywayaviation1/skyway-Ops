@@ -66,10 +66,29 @@ New consent and RBAC assignments can take a few minutes to propagate.
 | `MICROSOFT_MAIL_CLIENT_ID` | Dedicated mailbox app Application (client) ID |
 | `MICROSOFT_MAIL_CLIENT_SECRET` | Dedicated mailbox app secret Value |
 | `CHARTER_MAILBOX_UPN` | `charters@flyskyway.com` |
+| `INTERNAL_MAIL_DOMAIN` | Optional. Accepted domain whose mailboxes Exchange should deliver. Defaults to the charter mailbox's domain |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | Existing Firebase Admin service account |
 
 Set them for Production and redeploy. The Graph client uses the client-
 credentials flow with `https://graph.microsoft.com/.default`.
+
+## Notification delivery also depends on this app
+
+Trip notifications are sent by Resend as `noreply@send.flyskyway.com`, a
+subdomain of the operator's own domain. Brokers and passengers receive those
+normally, but Exchange Online Protection treats inbound internet mail claiming
+to be from its own organisation as spoofing, so copies addressed to
+`flyskyway.com` mailboxes are junked, quarantined, or dropped. The symptom is
+that brokers get the notification and the people running the flight do not.
+
+With the variables above configured, `api/_email-transport.js` hands every
+recipient in `INTERNAL_MAIL_DOMAIN` to Exchange (`sendMail` as the charter
+mailbox) and everyone else to Resend. Exchange originates that message inside
+the tenant, so it is authenticated internal mail and no inbound filter applies.
+If Graph is unconfigured or refuses, those recipients fall back to Resend, which
+is the previous behaviour — mail is never dropped to route it more cleanly, but
+it becomes filterable again. Settings → Email delivery reports which path each
+notification took, and its test send uses the same routing.
 
 ### Shared mailbox concurrency
 

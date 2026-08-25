@@ -12,6 +12,7 @@
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import { signAogToken, AOG_TOKEN_TTL_MS } from './_aog-token.js';
+import { withCharterCopy } from './_email-signature.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -152,11 +153,16 @@ Decline: ${declineUrl}
 If accepted, this amount will be added to your JetInsight invoice for this trip.
 Offer expires ${new Date(expiresAt).toLocaleDateString('en-US')}.`;
 
+  // Coverage offers go to a broker, so the charter inbox is copied for the
+  // same reason as every other broker-facing message: replies land somewhere
+  // monitored, and there is a record of what the broker was quoted.
+  const { to: offerTo, cc: offerCc } = withCharterCopy({ to: c.brokerEmail });
+
   try {
     const r = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { Authorization: `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from: fromAddr, to: c.brokerEmail, subject, html, text }),
+      body: JSON.stringify({ from: fromAddr, to: offerTo, cc: offerCc, subject, html, text }),
     });
     if (!r.ok) {
       const t = await r.text();
