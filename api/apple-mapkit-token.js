@@ -6,6 +6,9 @@
  * origin and expires after 15 minutes.
  *
  * Required server environment:
+ *   APPLE_MAPKIT_TOKEN       (preferred: portal-generated MapKit JS token)
+ *
+ * Or, for dynamic signing:
  *   APPLE_MAPKIT_TEAM_ID
  *   APPLE_MAPKIT_KEY_ID
  *   APPLE_MAPKIT_PRIVATE_KEY   (.p8 contents; escaped \\n accepted)
@@ -27,11 +30,52 @@ const base64url = (input) => Buffer.from(input)
   .replace(/\//g, '_');
 
 export function mapKitConfigured() {
-  return Boolean(
+  return Boolean(process.env.APPLE_MAPKIT_TOKEN) || Boolean(
     process.env.APPLE_MAPKIT_TEAM_ID
     && process.env.APPLE_MAPKIT_KEY_ID
     && process.env.APPLE_MAPKIT_PRIVATE_KEY,
   );
+}
+
+export function decodeMapKitToken(token) {
+  try {
+    const parts = String(token || '').trim().split('.');
+    if (parts.length !== 3) return null;
+    return {
+      header: JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8')),
+      payload: JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function hostForOrigin(origin) {
+  const value = String(origin || '').trim().toLowerCase().replace(/\/$/, '');
+  if (!value) return '';
+  try { return new URL(value.includes('://') ? value : `https://${value}`).hostname; }
+  catch { return value.replace(/^https?:\/\//, '').split('/')[0]; }
+}
+
+/**
+ * Apple portal-generated tokens are domain restricted. Reject a token on a
+ * different deployment instead of handing it to MapKit and producing a blank
+ * map with an opaque SDK error.
+ */
+export function tokenAllowsOrigin(token, origin) {
+  const decoded = decodeMapKitToken(token);
+  if (!decoded || decoded.header?.alg !== 'ES256') return false;
+  if (decoded.payload?.scope && decoded.payload.scope !== 'mapkit_js') return false;
+  const allowed = String(decoded.payload?.origin || '')
+    .split(',')
+    .map(hostForOrigin)
+    .filter(Boolean);
+  if (allowed.length === 0) return true;
+  const requested = hostForOrigin(origin);
+  return allowed.some((host) => (
+    requested === host
+    || (host.startsWith('*.') && requested.endsWith(host.slice(1)))
+  ));
 }
 
 export function requestOrigin(req) {
@@ -54,6 +98,7 @@ export function createMapKitToken({ teamId, keyId, privateKey, origin, now = Dat
     iat: issuedAt,
     exp: issuedAt + TOKEN_TTL_SECONDS,
     origin,
+    scope: 'mapkit_js',
   }));
   const signingInput = `${header}.${payload}`;
   const key = createPrivateKey(String(privateKey).replace(/\\n/g, '\n'));
@@ -76,6 +121,7 @@ export default function handler(req, res) {
       configured: false,
       error: 'Apple Maps is not configured; using the standard map.',
       missing: [
+        !process.env.APPLE_MAPKIT_TOKEN ? 'APPLE_MAPKIT_TOKEN (or all three signing variables below)' : null,
         !process.env.APPLE_MAPKIT_TEAM_ID ? 'APPLE_MAPKIT_TEAM_ID' : null,
         !process.env.APPLE_MAPKIT_KEY_ID ? 'APPLE_MAPKIT_KEY_ID' : null,
         !process.env.APPLE_MAPKIT_PRIVATE_KEY ? 'APPLE_MAPKIT_PRIVATE_KEY' : null,
@@ -84,13 +130,48 @@ export default function handler(req, res) {
   }
   try {
     const origin = requestOrigin(req);
+    const suppliedToken = String(process.env.APPLE_MAPKIT_TOKEN || '').trim();
+    if (suppliedToken) {
+      const decoded = decodeMapKitToken(suppliedToken);
+      if (!decoded) {
+        return res.status(500).json({
+          configured: true,
+          error: 'APPLE_MAPKIT_TOKEN is not a valid three-part JWT',
+        });
+      }
+      if (decoded.payload?.scope !== 'mapkit_js') {
+        return res.status(500).json({
+          configured: true,
+          error: 'APPLE_MAPKIT_TOKEN does not have the required mapkit_js scope',
+        });
+      }
+      if (!tokenAllowsOrigin(suppliedToken, origin)) {
+        return res.status(403).json({
+          configured: true,
+          error: `Apple Maps token is not valid for ${hostForOrigin(origin)}. `
+            + `Its allowed domain is ${decoded.payload?.origin || 'not specified'}.`,
+        });
+      }
+      return res.status(200).json({
+        configured: true,
+        token: suppliedToken,
+        source: 'apple-maps-token',
+        allowedOrigin: decoded.payload?.origin || null,
+        expiresAt: decoded.payload?.exp || null,
+      });
+    }
     const token = createMapKitToken({
       teamId: process.env.APPLE_MAPKIT_TEAM_ID,
       keyId: process.env.APPLE_MAPKIT_KEY_ID,
       privateKey: process.env.APPLE_MAPKIT_PRIVATE_KEY,
       origin,
     });
-    return res.status(200).json({ configured: true, token, expiresIn: TOKEN_TTL_SECONDS });
+    return res.status(200).json({
+      configured: true,
+      token,
+      source: 'dynamic-signing',
+      expiresIn: TOKEN_TTL_SECONDS,
+    });
   } catch (error) {
     console.error('[apple-mapkit-token]', error.message);
     return res.status(500).json({ configured: true, error: 'Apple Maps token could not be signed' });
