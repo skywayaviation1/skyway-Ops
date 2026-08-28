@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client';
 import App, { ExternalTechPage } from './App.jsx';
 import { ServiceTechPage } from './ServiceRequests.jsx';
 import TripTrackPage from './TripTrack.jsx';
+import OperatorFlightPortal from './OperatorFlightPortal.jsx';
 import './index.css';
 
 // Chromium's install event is one-shot and can fire while Firebase is still
@@ -105,6 +106,10 @@ const isTripTrackRoute =
   (window.location.pathname.replace(/\/+$/, '') === '/trip-track'
    || window.location.pathname.replace(/\/+$/, '') === '/trip-track.html');
 
+const isOperatorFlightRoute =
+  typeof window !== 'undefined'
+  && window.location.pathname.replace(/\/+$/, '') === '/operator-flight';
+
 /* ============================================================
    PWA SERVICE WORKER REGISTRATION
    ------------------------------------------------------------
@@ -122,7 +127,8 @@ const isTripTrackRoute =
    the "Install" prompt.
    ============================================================ */
 if (typeof window !== 'undefined' && 'serviceWorker' in navigator
-    && !isExternalTechRoute && !isServiceTechRoute && !isTripTrackRoute) {
+    && !isExternalTechRoute && !isServiceTechRoute && !isTripTrackRoute
+    && !isOperatorFlightRoute) {
   // Register after the page has finished loading so we don't compete
   // with initial render for the network.
   window.addEventListener('load', () => {
@@ -169,6 +175,13 @@ if (isExternalTechRoute) {
   rootEl.render(
     <React.StrictMode>
       <TripTrackPage token={params.get('token') || ''} />
+    </React.StrictMode>
+  );
+} else if (isOperatorFlightRoute) {
+  const params = new URLSearchParams(window.location.search);
+  rootEl.render(
+    <React.StrictMode>
+      <OperatorFlightPortal token={params.get('token') || ''} />
     </React.StrictMode>
   );
 } else {

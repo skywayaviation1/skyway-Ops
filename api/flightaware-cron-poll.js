@@ -21,11 +21,52 @@ import { lookupAirport } from './_airports-data.js';
 import { DEFAULT_MANAGED_TAILS, normalizeFleetTails } from '../src/fleet-config.js';
 
 const FA_API_BASE = 'https://aeroapi.flightaware.com/aeroapi';
-export function resolveCronFleetTails(config) {
-  if (config?.configured === true) {
-    return normalizeFleetTails(config.managedTails || []);
-  }
-  return [...DEFAULT_MANAGED_TAILS];
+export function resolveCronFleetTails(config, brokeredTracking = [], now = Date.now()) {
+  const managed = config?.configured === true
+    ? normalizeFleetTails(config.managedTails || [])
+    : [...DEFAULT_MANAGED_TAILS];
+  const temporary = (Array.isArray(brokeredTracking) ? brokeredTracking : [])
+    .filter((entry) => entry?.active === true)
+    .filter((entry) => !entry.expiresAt || Number(entry.expiresAt) > now)
+    .map((entry) => entry.tail);
+  return normalizeFleetTails([...managed, ...temporary]);
+}
+
+/**
+ * Filed/upcoming movements for operator awareness.
+ *
+ * FlightAware does not know whether a flight carries passengers, so these are
+ * never labeled or exposed to a broker as repositioning automatically. The
+ * operating crew can explicitly file a reposition through their scoped portal.
+ */
+export function normalizeFiledFlights(flights, now = Date.now()) {
+  const min = now - 6 * 60 * 60 * 1000;
+  const max = now + 72 * 60 * 60 * 1000;
+  return (Array.isArray(flights) ? flights : [])
+    .filter((flight) => !flight?.actual_on)
+    .map((flight) => {
+      const scheduledOut = flight.scheduled_out || flight.estimated_out || flight.actual_off || null;
+      const outMs = new Date(scheduledOut).getTime();
+      return {
+        id: flight.fa_flight_id || '',
+        origin: flight.origin?.code_icao || flight.origin?.code || flight.origin?.code_iata || '',
+        destination: flight.destination?.code_icao || flight.destination?.code || flight.destination?.code_iata || '',
+        scheduledOut,
+        scheduledIn: flight.scheduled_in || flight.scheduled_on || flight.estimated_in || flight.estimated_on || null,
+        outMs,
+      };
+    })
+    .filter((flight) => (
+      flight.id
+      && flight.origin
+      && flight.destination
+      && Number.isFinite(flight.outMs)
+      && flight.outMs >= min
+      && flight.outMs <= max
+    ))
+    .sort((a, b) => a.outMs - b.outMs)
+    .slice(0, 10)
+    .map(({ outMs, ...flight }) => flight);
 }
 
 /**
@@ -165,6 +206,7 @@ async function fetchTailState(ident, apiKey) {
   }
   const data = await r.json();
   const flights = Array.isArray(data.flights) ? data.flights : [];
+  const filedFlights = normalizeFiledFlights(flights);
 
   // Active flight has actual_off but no actual_on
   const active = flights.find(f => f.actual_off && !f.actual_on);
@@ -213,6 +255,7 @@ async function fetchTailState(ident, apiKey) {
       groundspeed: position?.groundspeed ?? null,
       // Progress + flight phase info
       progressPercent: active.progress_percent ?? null,
+      filedFlights,
     };
   }
 
@@ -255,10 +298,11 @@ async function fetchTailState(ident, apiKey) {
       lastOrigin: originCode,
       lastOriginLat: knownOrigin?.latitude ?? origin.latitude ?? null,
       lastOriginLon: knownOrigin?.longitude ?? origin.longitude ?? null,
+      filedFlights,
     };
   }
 
-  return { ident, airborne: false };
+  return { ident, airborne: false, filedFlights };
 }
 
 // === Find a matching trip-state doc for an event ===
@@ -564,10 +608,17 @@ export default async function handler(req, res) {
       return;
     }
 
-    const fleetSnap = await db.collection('app-config').doc('fleet').get();
-    const fleetTails = resolveCronFleetTails(fleetSnap.exists ? fleetSnap.data() : null);
+    const [fleetSnap, brokeredSnap] = await Promise.all([
+      db.collection('app-config').doc('fleet').get(),
+      db.collection('brokered-tail-tracking').get(),
+    ]);
+    const brokeredTracking = brokeredSnap.docs.map((doc) => doc.data());
+    const fleetTails = resolveCronFleetTails(
+      fleetSnap.exists ? fleetSnap.data() : null,
+      brokeredTracking,
+    );
     if (fleetTails.length === 0) {
-      res.status(200).json({ ok: true, skipped: 'managed fleet is empty', results: [] });
+      res.status(200).json({ ok: true, skipped: 'no managed or active brokered tails', results: [] });
       return;
     }
 
