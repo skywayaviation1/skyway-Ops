@@ -9,8 +9,10 @@ import test from 'node:test';
 
 import {
   createMapKitToken,
+  decodeMapKitToken,
   mapKitConfigured,
   requestOrigin,
+  tokenAllowsOrigin,
 } from '../api/apple-mapkit-token.js';
 
 const root = path.resolve(import.meta.dirname, '..');
@@ -40,6 +42,7 @@ test('MapKit token is an origin-bound, short-lived ES256 JWT', () => {
   const payload = decodePart(payloadPart);
   assert.equal(payload.iss, 'TEAM123');
   assert.equal(payload.origin, 'https://ops.example.com');
+  assert.equal(payload.scope, 'mapkit_js');
   assert.equal(payload.iat, Math.floor(now / 1000));
   assert.equal(payload.exp - payload.iat, 15 * 60);
 
@@ -54,6 +57,31 @@ test('MapKit token is an origin-bound, short-lived ES256 JWT', () => {
     { key: publicKey, dsaEncoding: 'ieee-p1363' },
     signature,
   ), true);
+});
+
+test('portal-generated MapKit token is accepted only on its allowed domain', () => {
+  // Signature contents are irrelevant to this local claim check; Apple still
+  // verifies the real token cryptographically when the SDK uses it.
+  const part = (value) => Buffer.from(JSON.stringify(value)).toString('base64url');
+  const token = `${part({ alg: 'ES256', kid: 'KEY123', typ: 'JWT' })}.`
+    + `${part({ iss: 'TEAM123', iat: 123, origin: 'skyway.app', scope: 'mapkit_js' })}.`
+    + `${Buffer.alloc(64).toString('base64url')}`;
+  const decoded = decodeMapKitToken(token);
+  assert.equal(decoded.payload.scope, 'mapkit_js');
+  assert.equal(decoded.payload.origin, 'skyway.app');
+  assert.equal(tokenAllowsOrigin(token, 'https://skyway.app'), true);
+  assert.equal(tokenAllowsOrigin(token, 'https://preview.skyway.app'), false);
+  assert.equal(tokenAllowsOrigin(token, 'https://not-skyway.app'), false);
+});
+
+test('wrong-scope and malformed static tokens are rejected', () => {
+  const part = (value) => Buffer.from(JSON.stringify(value)).toString('base64url');
+  const wrongScope = `${part({ alg: 'ES256' })}.${part({
+    origin: 'skyway.app',
+    scope: 'maps_server_api',
+  })}.signature`;
+  assert.equal(tokenAllowsOrigin(wrongScope, 'https://skyway.app'), false);
+  assert.equal(decodeMapKitToken('not-a-token'), null);
 });
 
 test('escaped newlines in the deployment private key are accepted', () => {
@@ -89,6 +117,7 @@ test('request origin follows forwarded deployment headers or explicit override',
 
 test('configuration check returns booleans without exposing credential values', () => {
   const original = {
+    token: process.env.APPLE_MAPKIT_TOKEN,
     team: process.env.APPLE_MAPKIT_TEAM_ID,
     key: process.env.APPLE_MAPKIT_KEY_ID,
     privateKey: process.env.APPLE_MAPKIT_PRIVATE_KEY,
@@ -97,7 +126,11 @@ test('configuration check returns booleans without exposing credential values', 
     delete process.env.APPLE_MAPKIT_TEAM_ID;
     delete process.env.APPLE_MAPKIT_KEY_ID;
     delete process.env.APPLE_MAPKIT_PRIVATE_KEY;
+    delete process.env.APPLE_MAPKIT_TOKEN;
     assert.equal(mapKitConfigured(), false);
+    process.env.APPLE_MAPKIT_TOKEN = 'portal-token';
+    assert.equal(mapKitConfigured(), true);
+    delete process.env.APPLE_MAPKIT_TOKEN;
     process.env.APPLE_MAPKIT_TEAM_ID = 'present';
     process.env.APPLE_MAPKIT_KEY_ID = 'present';
     process.env.APPLE_MAPKIT_PRIVATE_KEY = 'present';
@@ -107,6 +140,7 @@ test('configuration check returns booleans without exposing credential values', 
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
     };
+    restore('APPLE_MAPKIT_TOKEN', original.token);
     restore('APPLE_MAPKIT_TEAM_ID', original.team);
     restore('APPLE_MAPKIT_KEY_ID', original.key);
     restore('APPLE_MAPKIT_PRIVATE_KEY', original.privateKey);
@@ -153,5 +187,6 @@ test('MapKit credentials and private key never enter client source', async () =>
   assert.doesNotMatch(clientFiles, /APPLE_MAPKIT_TEAM_ID/);
   assert.doesNotMatch(clientFiles, /APPLE_MAPKIT_KEY_ID/);
   assert.doesNotMatch(clientFiles, /APPLE_MAPKIT_PRIVATE_KEY/);
+  assert.doesNotMatch(clientFiles, /APPLE_MAPKIT_TOKEN/);
 });
 

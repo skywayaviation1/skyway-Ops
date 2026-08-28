@@ -16,8 +16,11 @@ In Certificates, Identifiers & Profiles:
 
 1. Create or select a **Maps ID** for the Skyway web application.
 2. Configure the production domain and any preview domains Apple should allow.
-3. Create a **MapKit JS key** associated with that Maps ID.
-4. Download its `.p8` private key. Apple only permits downloading it once.
+3. Create a **MapKit JS Maps token**, choose a domain restriction, and enter
+   `skyway.app` (plus any other exact domains that need maps).
+4. Copy the generated JWT. Portal-generated domain tokens may intentionally
+   have no `exp` claim when **No Expiration** is selected; the domain restriction
+   prevents use elsewhere.
 
 ## Server environment
 
@@ -26,17 +29,24 @@ Maps, then redeploy:
 
 | Variable | Meaning |
 | --- | --- |
-| `APPLE_MAPKIT_TEAM_ID` | Apple Developer Team ID |
-| `APPLE_MAPKIT_KEY_ID` | MapKit JS key ID |
-| `APPLE_MAPKIT_PRIVATE_KEY` | Complete `.p8` private key. Literal newlines or escaped `\\n` are accepted |
+| `APPLE_MAPKIT_TOKEN` | Preferred. The portal-generated MapKit JS token with `scope: mapkit_js` and an allowed domain matching this deployment |
+| `APPLE_MAPKIT_TEAM_ID` | Alternative dynamic signing: Apple Developer Team ID |
+| `APPLE_MAPKIT_KEY_ID` | Alternative dynamic signing: MapKit key ID |
+| `APPLE_MAPKIT_PRIVATE_KEY` | Alternative dynamic signing: complete `.p8` private key. Literal newlines or escaped `\\n` are accepted |
 | `APPLE_MAPKIT_ORIGIN` | Optional fixed allowed origin, for example `https://ops.example.com`. When omitted, the request's forwarded host/protocol is used |
 
 Never use `VITE_*` for these values. A Vite-prefixed value is compiled into
 public browser JavaScript.
 
-`/api/apple-mapkit-token` signs an ES256 JWT that:
+`/api/apple-mapkit-token` validates the supplied token's ES256 algorithm,
+`mapkit_js` scope, and allowed domain before returning it. A token restricted to
+`skyway.app` will correctly fail on a Vercel preview domain; create a second
+domain-restricted token for preview if Apple Maps is needed there.
 
-- contains only Team ID, Key ID, issue/expiry times, and request origin;
+When using the alternative `.p8` setup, the endpoint signs an ES256 JWT that:
+
+- contains only Team ID, Key ID, `mapkit_js` scope, issue/expiry times, and
+  request origin;
 - is valid for 15 minutes;
 - is restricted to the requesting origin;
 - is delivered to MapKit JS while the `.p8` key remains server-only.
