@@ -5693,6 +5693,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
         from: (trip.info?.from || '').toUpperCase(),
         to: (trip.info?.to || '').toUpperCase(),
         start: trip.start instanceof Date ? trip.start.toISOString() : (trip.start || null),
+        end: trip.end instanceof Date ? trip.end.toISOString() : (trip.end || null),
         legType: trip.info?.legType || 'REVENUE',
       };
       // Merge in trip-sheet fields and preloadedPax unless caller passed them explicitly
@@ -5714,7 +5715,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       console.error('Failed to save trip state:', err);
       notify.error('Failed to save — check your connection');
     }
-  }, [trip.uid, trip.info?.tail, trip.info?.from, trip.info?.to, trip.start, trip.info?.legType, tripSheetUrl, tripSheetPath, tripSheetFilename, tripSheetUploadedAt, tripSheetUploadedBy, preloadedPax, tripSheetNotes, fromFbo, toFbo]);
+  }, [trip.uid, trip.info?.tail, trip.info?.from, trip.info?.to, trip.start, trip.end, trip.info?.legType, tripSheetUrl, tripSheetPath, tripSheetFilename, tripSheetUploadedAt, tripSheetUploadedBy, preloadedPax, tripSheetNotes, fromFbo, toFbo]);
 
   const openMailto = (url) => {
     const a = document.createElement('a');
@@ -28340,6 +28341,7 @@ export default function CharterOps() {
               tail, from,
               to: (t.info?.to || '').toUpperCase(),
               start: startIso,
+              end: t.end instanceof Date ? t.end.toISOString() : (t.end || null),
               legType: t.info?.legType || 'REVENUE',
             });
             ok++;
@@ -28461,8 +28463,8 @@ export default function CharterOps() {
       log('success', `Parsed ${events.length} events → ${newTrips.length} trips`);
       setShowSettings(false);
 
-      // Auto-write tripMeta for active trips (next 48h, plus last 12h
-      // for trips that may have already departed). Without tripMeta, the
+      // Auto-write tripMeta for all future trips, plus the last 12h for trips
+      // that may have already departed. Without tripMeta, the
       // FlightAware cron-poll matcher can't find the trip-state doc and
       // wheels_up / landed status updates silently fail to auto-fire.
       // Previously this required ops to either open each leg in the app
@@ -28478,9 +28480,10 @@ export default function CharterOps() {
   };
 
   /**
-   * Fire the tripMeta backfill for trips in the active window (last 12h
-   * through next 48h). Idempotent: if a trip-state doc already has the
-   * correct tripMeta, the backfill endpoint shallow-merges, no harm done.
+   * Fire the tripMeta sync for all future trips in the loaded schedule (plus
+   * the last 12h). The server compares fields and writes only records whose
+   * route/times actually changed, so widening this beyond the old 48h window
+   * does not turn every schedule refresh into a wall of Firestore writes.
    * Requires the user to be signed in (the backfill endpoint validates
    * idToken). Skips silently if there's no auth.
    */
@@ -28492,14 +28495,13 @@ export default function CharterOps() {
       const idToken = await u.getIdToken();
       const now = Date.now();
       const WINDOW_PAST = 12 * 60 * 60 * 1000;     // 12h ago
-      const WINDOW_FUTURE = 48 * 60 * 60 * 1000;   // 48h ahead
       const trips = (allTripsLocal || [])
         .filter((t) => t?.uid && t?.info?.tail && t?.info?.from && t?.start)
         .filter((t) => {
-          // Only sync trips in the active window. Don't waste writes on
-          // last week's history or trips two weeks out.
+          // Do not sync old history. Keep every future trip because a broker
+          // link may have been sent well before the old 48-hour cutoff.
           const ms = t.start instanceof Date ? t.start.getTime() : new Date(t.start).getTime();
-          return Number.isFinite(ms) && ms > (now - WINDOW_PAST) && ms < (now + WINDOW_FUTURE);
+          return Number.isFinite(ms) && ms > (now - WINDOW_PAST);
         })
         // Only flight legs, not crew-hold blocks
         .filter((t) => t.info.isFlight !== false)
@@ -28509,6 +28511,7 @@ export default function CharterOps() {
           from: t.info.from,
           to: t.info.to || '',
           start: t.start instanceof Date ? t.start.toISOString() : (t.start || null),
+          end: t.end instanceof Date ? t.end.toISOString() : (t.end || null),
           legType: t.info.legType || 'REVENUE',
         }));
       if (trips.length === 0) return;

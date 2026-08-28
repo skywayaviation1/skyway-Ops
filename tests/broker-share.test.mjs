@@ -8,6 +8,7 @@ import {
   passengerDisclosureEligibility,
   previousTailFlight,
 } from '../src/broker-share.js';
+import { mergeSharedLegRoute } from '../api/_trip-public-route.js';
 
 const root = path.resolve(import.meta.dirname, '..');
 const source = (file) => readFile(path.join(root, file), 'utf8');
@@ -170,5 +171,77 @@ test('share-state fetch includes the trip evidence used by privacy rules', async
   assert.match(firebase, /tripSheetData:/);
   assert.match(firebase, /fromFbo: data\.fromFbo/);
   assert.match(firebase, /hasCatering: data\.hasCatering !== false/);
+});
+
+test('an existing broker link overlays changed routing and schedule times', () => {
+  const snapshot = {
+    from: 'APF',
+    to: 'TEB',
+    fromFbo: 'Naples Aviation',
+    toFbo: 'Atlantic TEB',
+    departure: '2026-09-10T15:00:00Z',
+    arrival: '2026-09-10T17:30:00Z',
+    category: 'REVENUE',
+  };
+  const merged = mergeSharedLegRoute(snapshot, {
+    from: 'KAPF',
+    to: 'HPN',
+    start: '2026-09-10T16:00:00Z',
+    end: '2026-09-10T18:45:00Z',
+    legType: 'REVENUE',
+  });
+  assert.equal(merged.from, 'KAPF');
+  assert.equal(merged.to, 'HPN');
+  assert.equal(merged.departure, '2026-09-10T16:00:00Z');
+  assert.equal(merged.arrival, '2026-09-10T18:45:00Z');
+  assert.equal(merged.routeChanged, true);
+  // APF and KAPF are the same airport, so origin FBO stays. The destination
+  // changed from TEB to HPN, so its old FBO must not follow the route.
+  assert.equal(merged.fromFbo, 'Naples Aviation');
+  assert.equal(merged.toFbo, null);
+});
+
+test('unchanged routing preserves the shared FBO while updating times', () => {
+  const merged = mergeSharedLegRoute({
+    from: 'APF',
+    to: 'TEB',
+    fromFbo: 'Naples Aviation',
+    toFbo: 'Atlantic TEB',
+    departure: 'old-start',
+    arrival: 'old-end',
+  }, {
+    from: 'APF',
+    to: 'TEB',
+    start: 'new-start',
+    end: 'new-end',
+  });
+  assert.equal(merged.fromFbo, 'Naples Aviation');
+  assert.equal(merged.toFbo, 'Atlantic TEB');
+  assert.equal(merged.departure, 'new-start');
+  assert.equal(merged.arrival, 'new-end');
+  assert.equal(merged.routeChanged, false);
+});
+
+test('public broker polls read live tripMeta and overlay the route', async () => {
+  const publicApi = await source('api/trip-public.js');
+  assert.match(publicApi, /mergeSharedLegRoute\(leg, liveRouteForLeg\(leg\), data\)/);
+  assert.match(publicApi, /tripMeta: \(sd\.tripMeta/);
+  assert.match(publicApi, /from: sd\.tripMeta\.from/);
+  assert.match(publicApi, /end: sd\.tripMeta\.end/);
+
+  const backfill = await source('api/flightaware-backfill-tripmeta.js');
+  // Ops is who refreshes the live schedule; restricting this endpoint to admin
+  // left route changes stale for the public link.
+  assert.match(backfill, /\['admin', 'ops'\]\.includes\(profile\.role\)/);
+  assert.match(backfill, /end: trip\.end \|\| null/);
+  assert.match(backfill, /const changed = \(/);
+  assert.match(backfill, /unchanged\+\+/);
+
+  const app = await source('src/App.jsx');
+  assert.match(app, /end: t\.end instanceof Date \? t\.end\.toISOString\(\)/);
+  // No future cutoff: already-issued links must update even when dispatch
+  // changes a trip more than 48 hours out.
+  assert.doesNotMatch(app, /const WINDOW_FUTURE = 48/);
+  assert.match(app, /ms > \(now - WINDOW_PAST\)/);
 });
 

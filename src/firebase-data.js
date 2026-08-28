@@ -253,6 +253,7 @@ export async function seedTripMeta(tripUid, meta) {
       from: String(meta.from).toUpperCase(),
       to: String(meta.to || '').toUpperCase(),
       start: meta.start,
+      end: meta.end || null,
       legType: meta.legType || 'REVENUE',
     },
     updatedAt: Date.now(),
