@@ -12,6 +12,10 @@ import {
   normalizeFiledFlights,
   resolveCronFleetTails,
 } from '../api/flightaware-cron-poll.js';
+import {
+  buildOperatorRepositionEmail,
+  buildOperatorStatusEmail,
+} from '../api/operator-flight.js';
 
 const root = path.resolve(import.meta.dirname, '..');
 const source = (file) => readFile(path.join(root, file), 'utf8');
@@ -107,6 +111,9 @@ test('operator-link mint registers temporary ADS-B tracking and revoke disables 
   assert.match(link, /active: false/);
   assert.match(link, /operatorTrackingExpiresAt/);
   assert.match(link, /operatorLinkRevoked/);
+  assert.match(link, /opsEmail: clip\(input\?\.opsEmail/);
+  assert.match(link, /Operating company ops email is invalid/);
+  assert.match(link, /operatorOpsEmail: data\.operatorPortal\?\.opsEmail/);
 });
 
 test('operator portal exposes only scoped operational updates', async () => {
@@ -118,10 +125,52 @@ test('operator portal exposes only scoped operational updates', async () => {
   assert.match(api, /action === 'reposition'/);
   assert.match(api, /runTransaction/);
   assert.match(api, /source: 'external-operator'/);
+  assert.match(api, /data\.operatorPortal\?\.opsEmail/);
+  assert.match(api, /STATUS_CONTENT/);
+  assert.match(api, /Crew Arrival Notification/);
+  assert.match(api, /Aircraft Ready for Passengers/);
+  assert.match(api, /Wheels Up/);
+  assert.match(api, /applySkywaySignature/);
   // No passenger, broker-contact, price, or internal note projection.
   assert.doesNotMatch(api, /preloadedPax:/);
   assert.doesNotMatch(api, /brokerEmail:/);
   assert.doesNotMatch(api, /pricing:/);
+});
+
+test('operator status email matches crew-side route and milestone content', () => {
+  const email = buildOperatorStatusEmail({
+    tail: 'N200BB',
+    from: 'KAPF',
+    to: 'KTEB',
+  }, {
+    statusKey: 'wheels_up',
+    at: Date.parse('2026-09-01T14:00:00Z'),
+    author: 'Captain Test',
+    company: 'Partner Air',
+    note: 'Smooth departure',
+  });
+  assert.equal(email.subject, 'Wheels Up — N200BB KAPF-KTEB');
+  assert.match(email.html, /airborne and en route/);
+  assert.match(email.html, /Captain Test/);
+  assert.match(email.html, /Partner Air/);
+  assert.match(email.html, /Smooth departure/);
+  assert.match(email.html, /skyway-signature-applied/);
+});
+
+test('operator reposition email contains filed route, times, and crew note', () => {
+  const email = buildOperatorRepositionEmail({ tail: 'N200BB' }, {
+    from: 'KHPN',
+    to: 'KAPF',
+    departure: '2026-09-01T14:00:00Z',
+    arrival: '2026-09-01T16:30:00Z',
+    author: 'Captain Test',
+    company: 'Partner Air',
+    note: 'Empty leg',
+  });
+  assert.equal(email.subject, 'Repositioning Filed — N200BB KHPN-KAPF');
+  assert.match(email.html, /KHPN/);
+  assert.match(email.html, /KAPF/);
+  assert.match(email.html, /Empty leg/);
 });
 
 test('operator portal does not mislabel generic FlightAware filings as repositioning', async () => {
@@ -132,12 +181,37 @@ test('operator portal does not mislabel generic FlightAware filings as repositio
   assert.match(portal, /FILE REPOSITION/);
 });
 
+test('operator portal uses a select-review-send milestone workflow', async () => {
+  const portal = await source('src/OperatorFlightPortal.jsx');
+  assert.match(portal, /selectedStatus/);
+  assert.match(portal, /aria-pressed=\{selected\}/);
+  assert.match(portal, /Selected update/);
+  assert.match(portal, /SEND SELECTED UPDATE/);
+  assert.match(portal, /setSelectedStatus\(''\)/);
+  assert.match(portal, /onClick=\{\(\) => setSelectedStatus\(key\)\}/);
+});
+
+test('operator map resolves unknown airports and renders before ADS-B arrives', async () => {
+  const portal = await source('src/OperatorFlightPortal.jsx');
+  assert.match(portal, /\/api\/airport-coords-lookup/);
+  assert.match(portal, /routeCoords/);
+  assert.match(portal, /WAITING FOR FIRST ADS-B POLL/);
+  assert.match(portal, /route shown from schedule/);
+  // TrackingMap's own layers are absolute; without h-full its root collapses
+  // to zero height even though the outer frame is 22rem tall.
+  assert.match(portal, /<TrackingMap\s+className="h-full w-full"/);
+  assert.match(portal, /fitKey=\{`\$\{trip\.tail\}-\$\{trip\.from\}-\$\{trip\.to\}`\}/);
+});
+
 test('brokered trip UI mints and manages a crew link', async () => {
   const component = await source('src/BrokeredOperatorLink.jsx');
   assert.match(component, /\/api\/operator-link/);
   assert.match(component, /CREATE CREW UPDATE LINK & START TRACKING/);
   assert.match(component, /ADS-B polling active/);
   assert.match(component, /REPOSITION/);
+  assert.match(component, /Their operations email/);
+  assert.match(component, /opsEmail: operatorOpsEmail/);
+  assert.match(component, /Skyway Operations and this operator email/);
 
   const app = await source('src/App.jsx');
   assert.match(app, /BrokeredOperatorLinkLazy/);

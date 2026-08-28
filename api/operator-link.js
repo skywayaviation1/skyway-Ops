@@ -45,6 +45,7 @@ async function authorize(idToken) {
 }
 
 const clip = (value, length) => String(value || '').trim().slice(0, length);
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const tail = (value) => clip(value, 16).toUpperCase().replace(/[^A-Z0-9-]/g, '');
 const airport = (value) => clip(value, 8).toUpperCase().replace(/[^A-Z0-9]/g, '');
 const validMs = (value) => {
@@ -73,6 +74,7 @@ function cleanTrip(input) {
     start: input?.start || null,
     end: input?.end || null,
     operatorName: clip(input?.operatorName, 160),
+    opsEmail: clip(input?.opsEmail, 254).toLowerCase(),
     aircraftType: clip(input?.aircraftType, 80),
   };
 }
@@ -91,6 +93,7 @@ function responseFor(req, tripId, data) {
     issuedAt: data.operatorLinkIssuedAt || null,
     expiresAt: data.operatorTrackingExpiresAt || null,
     operatorName: data.operatorPortal?.operatorName || '',
+    operatorOpsEmail: data.operatorPortal?.opsEmail || '',
     updates: Array.isArray(data.operatorUpdates) ? data.operatorUpdates.slice(-30) : [],
     repositioning: Array.isArray(data.operatorRepositioning)
       ? data.operatorRepositioning.slice(-20)
@@ -126,6 +129,9 @@ export default async function handler(req, res) {
       if (!trip.tail || !trip.from || !trip.to || !trip.start) {
         return res.status(400).json({ error: 'Brokered trip needs tail, origin, destination, and departure' });
       }
+      if (trip.opsEmail && !EMAIL_RE.test(trip.opsEmail)) {
+        return res.status(400).json({ error: 'Operating company ops email is invalid' });
+      }
       const issuedAt = Date.now();
       const expiresAt = trackingExpiry(trip);
       const patch = {
@@ -154,6 +160,25 @@ export default async function handler(req, res) {
         updatedBy: caller.uid,
       }, { merge: true });
       return res.status(200).json(responseFor(req, tripId, { ...current, ...patch }));
+    }
+
+    if (action === 'update-contact') {
+      const operatorName = clip(body.operatorName, 160);
+      const opsEmail = clip(body.opsEmail, 254).toLowerCase();
+      if (opsEmail && !EMAIL_RE.test(opsEmail)) {
+        return res.status(400).json({ error: 'Operating company ops email is invalid' });
+      }
+      const operatorPortal = {
+        ...(current.operatorPortal || {}),
+        operatorName,
+        opsEmail,
+      };
+      await ref.set({
+        operatorPortal,
+        operatorLinkUpdatedAt: Date.now(),
+        operatorLinkUpdatedBy: caller.uid,
+      }, { merge: true });
+      return res.status(200).json(responseFor(req, tripId, { ...current, operatorPortal }));
     }
 
     if (action === 'revoke') {

@@ -17,6 +17,7 @@ export function isBrokeredTrip(trip, managedTails = []) {
 
 export default function BrokeredOperatorLink({ trip, currentUser }) {
   const [operatorName, setOperatorName] = useState('');
+  const [operatorOpsEmail, setOperatorOpsEmail] = useState('');
   const [state, setState] = useState(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
@@ -46,6 +47,7 @@ export default function BrokeredOperatorLink({ trip, currentUser }) {
       const data = await call('status');
       setState(data);
       if (data.operatorName) setOperatorName(data.operatorName);
+      if (data.operatorOpsEmail) setOperatorOpsEmail(data.operatorOpsEmail);
     } catch (error) {
       setMessage(error.message);
     }
@@ -70,6 +72,7 @@ export default function BrokeredOperatorLink({ trip, currentUser }) {
           end: dateValue(trip.end),
           aircraftType: trip.info?.aircraftType || trip.info?.tripType,
           operatorName,
+          opsEmail: operatorOpsEmail,
         },
       });
       setState(data);
@@ -91,6 +94,20 @@ export default function BrokeredOperatorLink({ trip, currentUser }) {
       await call('revoke');
       setState((current) => ({ ...(current || {}), active: false, url: null }));
       setMessage('Operator link revoked and temporary tracking disabled.');
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveContact() {
+    setBusy(true);
+    setMessage('');
+    try {
+      const data = await call('update-contact', { operatorName, opsEmail: operatorOpsEmail });
+      setState(data);
+      setMessage('Operator contact saved. The existing crew link is unchanged.');
     } catch (error) {
       setMessage(error.message);
     } finally {
@@ -134,19 +151,38 @@ export default function BrokeredOperatorLink({ trip, currentUser }) {
         </span>
       </div>
 
-      <label className="mt-3 block">
-        <span className="mb-1 block text-[9px] font-semibold uppercase tracking-wide text-content-subtle">
-          Operating company
-        </span>
-        <input
-          value={operatorName}
-          onChange={(event) => setOperatorName(event.target.value)}
-          placeholder="Brokered operator name"
-          maxLength={160}
-          className="w-full rounded border border-edge bg-surface-sunken px-3 py-2 text-xs text-content outline-none focus:border-violet-400"
-          disabled={busy}
-        />
-      </label>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        <label className="block">
+          <span className="mb-1 block text-[9px] font-semibold uppercase tracking-wide text-content-subtle">
+            Operating company
+          </span>
+          <input
+            value={operatorName}
+            onChange={(event) => setOperatorName(event.target.value)}
+            placeholder="Brokered operator name"
+            maxLength={160}
+            className="w-full rounded border border-edge bg-surface-sunken px-3 py-2 text-xs text-content outline-none focus:border-violet-400"
+            disabled={busy}
+          />
+        </label>
+        <label className="block">
+          <span className="mb-1 block text-[9px] font-semibold uppercase tracking-wide text-content-subtle">
+            Their operations email
+          </span>
+          <input
+            type="email"
+            value={operatorOpsEmail}
+            onChange={(event) => setOperatorOpsEmail(event.target.value)}
+            placeholder="ops@operator.com"
+            maxLength={254}
+            className="w-full rounded border border-edge bg-surface-sunken px-3 py-2 text-xs text-content outline-none focus:border-violet-400"
+            disabled={busy}
+          />
+        </label>
+      </div>
+      <p className="mt-1 text-[9px] text-content-subtle">
+        External crew updates are sent to Skyway Operations and this operator email.
+      </p>
 
       {state?.active && state.url ? (
         <>
@@ -195,21 +231,29 @@ export default function BrokeredOperatorLink({ trip, currentUser }) {
               ))}
             </div>
           )}
-          <div className="mt-3 flex gap-2">
+          <div className="mt-3 grid grid-cols-3 gap-2">
+            <button
+              type="button"
+              onClick={saveContact}
+              disabled={busy}
+              className="inline-flex items-center justify-center gap-1.5 rounded border border-cyan-500/40 px-2 py-2 text-[9px] text-cyan-200 hover:bg-cyan-500/10"
+            >
+              <Check className="h-3.5 w-3.5" /> SAVE CONTACT
+            </button>
             <button
               type="button"
               onClick={mint}
               disabled={busy}
-              className="inline-flex flex-1 items-center justify-center gap-1.5 rounded border border-edge px-3 py-2 text-[10px] text-content-muted hover:text-content"
+              className="inline-flex items-center justify-center gap-1.5 rounded border border-edge px-2 py-2 text-[9px] text-content-muted hover:text-content"
             >
               {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-              ROTATE / UPDATE LINK
+              ROTATE LINK
             </button>
             <button
               type="button"
               onClick={revoke}
               disabled={busy}
-              className="inline-flex flex-1 items-center justify-center gap-1.5 rounded border border-danger-border px-3 py-2 text-[10px] text-danger hover:bg-danger-soft"
+              className="inline-flex items-center justify-center gap-1.5 rounded border border-danger-border px-2 py-2 text-[9px] text-danger hover:bg-danger-soft"
             >
               <Unlink className="h-3.5 w-3.5" /> REVOKE
             </button>

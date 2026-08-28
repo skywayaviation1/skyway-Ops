@@ -13,6 +13,7 @@ import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import { verifyOperatorToken } from './_operator-token.js';
 import { deliverNotification } from './_email-transport.js';
+import { applySkywaySignature } from './_email-signature.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -145,17 +146,113 @@ async function publicPayload(loaded) {
   };
 }
 
-async function notifyOps(trip, text) {
+const STATUS_CONTENT = {
+  crew_onsite: {
+    title: 'Crew Arrival Notification',
+    message: 'The operating crew has arrived at the FBO and is preparing the aircraft.',
+    next: 'The next update will be sent when the aircraft is ready.',
+  },
+  aircraft_ready: {
+    title: 'Aircraft Ready for Passengers',
+    message: 'The aircraft is ready for passenger boarding.',
+    next: 'The next update will be sent when the aircraft begins taxiing.',
+  },
+  taxi_dep: {
+    title: 'Aircraft Taxiing for Departure',
+    message: 'The aircraft has begun taxiing for departure.',
+    next: 'The next update will include wheels-up status.',
+  },
+  wheels_up: {
+    title: 'Wheels Up',
+    message: 'The aircraft is airborne and en route to its destination.',
+    next: 'The next update will be sent when the aircraft lands.',
+  },
+  landed: {
+    title: 'Landed',
+    message: 'The aircraft has landed at its destination.',
+    next: 'This flight movement is complete.',
+  },
+};
+
+const escapeHtml = (value) => String(value || '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;');
+
+export function buildOperatorStatusEmail(trip, update) {
+  const content = STATUS_CONTENT[update.statusKey] || {
+    title: 'Flight Update',
+    message: 'The operating crew submitted a flight update.',
+    next: '',
+  };
+  const route = `${trip.from || '—'}-${trip.to || '—'}`;
+  const at = new Date(update.at || Date.now()).toLocaleString('en-US', {
+    timeZone: 'UTC',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZoneName: 'short',
+  });
+  const detailRows = [
+    ['Aircraft', trip.tail],
+    ['Route', `${trip.from || '—'} → ${trip.to || '—'}`],
+    ['Status time', at],
+    ['Reported by', `${update.author}${update.company ? ` · ${update.company}` : ''}`],
+  ];
+  const html = applySkywaySignature(`
+    <p style="margin:0 0 16px;font-size:15px;color:#1f2937;">Hello Operations,</p>
+    <p style="margin:0 0 16px;font-size:14px;color:#1f2937;">${escapeHtml(content.message)}</p>
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 16px;width:100%;max-width:520px;">
+      ${detailRows.map(([label, value]) => `<tr>
+        <td style="padding:5px 14px 5px 0;color:#6b7280;font-size:12px;">${escapeHtml(label)}</td>
+        <td style="padding:5px 0;color:#1f2937;font-size:13px;font-weight:600;">${escapeHtml(value)}</td>
+      </tr>`).join('')}
+    </table>
+    ${update.note ? `<div style="margin:16px 0;padding:12px 14px;background:#f3f4f6;border-left:3px solid #1ec0e9;color:#1f2937;font-size:13px;"><strong>Crew note:</strong> ${escapeHtml(update.note)}</div>` : ''}
+    ${content.next ? `<p style="margin:16px 0 0;font-size:13px;color:#6b7280;">${escapeHtml(content.next)}</p>` : ''}
+  `);
+  return {
+    subject: `${content.title} — ${trip.tail} ${route}`,
+    html,
+  };
+}
+
+export function buildOperatorRepositionEmail(trip, update) {
+  const html = applySkywaySignature(`
+    <p style="margin:0 0 16px;font-size:15px;color:#1f2937;">Hello Operations,</p>
+    <p style="margin:0 0 16px;font-size:14px;color:#1f2937;">
+      The operating crew filed an empty repositioning movement for ${escapeHtml(trip.tail)}.
+    </p>
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 16px;width:100%;max-width:520px;">
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:12px;">Route</td><td style="padding:5px 0;color:#1f2937;font-size:13px;font-weight:600;">${escapeHtml(update.from)} → ${escapeHtml(update.to)}</td></tr>
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:12px;">Departure</td><td style="padding:5px 0;color:#1f2937;font-size:13px;font-weight:600;">${escapeHtml(update.departure)}</td></tr>
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:12px;">Arrival</td><td style="padding:5px 0;color:#1f2937;font-size:13px;font-weight:600;">${escapeHtml(update.arrival || 'Not provided')}</td></tr>
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:12px;">Filed by</td><td style="padding:5px 0;color:#1f2937;font-size:13px;font-weight:600;">${escapeHtml(update.author)}${update.company ? ` · ${escapeHtml(update.company)}` : ''}</td></tr>
+    </table>
+    ${update.note ? `<div style="margin:16px 0;padding:12px 14px;background:#f3f4f6;border-left:3px solid #1ec0e9;color:#1f2937;font-size:13px;"><strong>Crew note:</strong> ${escapeHtml(update.note)}</div>` : ''}
+  `);
+  return {
+    subject: `Repositioning Filed — ${trip.tail} ${update.from}-${update.to}`,
+    html,
+  };
+}
+
+async function notifyOps(data, trip, email) {
   const recipients = String(process.env.OPS_ALERT_EMAILS || 'charters@flyskyway.com')
     .split(/[,;\s]+/)
     .map((value) => value.trim())
     .filter(Boolean);
-  if (!recipients.length) return;
+  const operatorOps = String(data.operatorPortal?.opsEmail || '').trim().toLowerCase();
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(operatorOps)) recipients.push(operatorOps);
+  const uniqueRecipients = [...new Set(recipients.map((value) => value.toLowerCase()))];
+  if (!uniqueRecipients.length) return;
   try {
     await deliverNotification({
-      to: recipients,
-      subject: `[BROKERED OPERATOR] ${trip.tail} ${trip.from}-${trip.to}`,
-      html: `<p>${text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>`,
+      to: uniqueRecipients,
+      subject: email.subject,
+      html: email.html,
     });
   } catch (error) {
     console.warn('[operator-flight] notification failed:', error.message);
@@ -219,7 +316,7 @@ export default async function handler(req, res) {
         }, { merge: true });
       });
       const trip = await publicPayload({ ...loaded, data: { ...loaded.data } });
-      await notifyOps(trip, `${author}${company ? ` (${company})` : ''} reported ${statusKey.replace(/_/g, ' ')}${entry.note ? `: ${entry.note}` : ''}.`);
+      await notifyOps(loaded.data, trip, buildOperatorStatusEmail(trip, entry));
       return res.status(200).json({ ok: true, update: entry });
     }
 
@@ -259,7 +356,7 @@ export default async function handler(req, res) {
         }, { merge: true });
       });
       const trip = await publicPayload({ ...loaded, data: { ...loaded.data } });
-      await notifyOps(trip, `${author}${company ? ` (${company})` : ''} filed repositioning ${from}-${to} for ${entry.departure}.`);
+      await notifyOps(loaded.data, trip, buildOperatorRepositionEmail(trip, entry));
       return res.status(200).json({ ok: true, repositioning: entry });
     }
 
