@@ -21,6 +21,7 @@ import { lookupAirport } from './_airports-data.js';
 import { DEFAULT_MANAGED_TAILS, normalizeFleetTails } from '../src/fleet-config.js';
 
 const FA_API_BASE = 'https://aeroapi.flightaware.com/aeroapi';
+export const MAX_BROKERED_TAILS_PER_POLL = 20;
 export function resolveCronFleetTails(config, brokeredTracking = [], now = Date.now()) {
   const managed = config?.configured === true
     ? normalizeFleetTails(config.managedTails || [])
@@ -28,7 +29,13 @@ export function resolveCronFleetTails(config, brokeredTracking = [], now = Date.
   const temporary = (Array.isArray(brokeredTracking) ? brokeredTracking : [])
     .filter((entry) => entry?.active === true)
     .filter((entry) => !entry.expiresAt || Number(entry.expiresAt) > now)
-    .map((entry) => entry.tail);
+    // Soonest-expiring trips first if more links are active than the cost cap.
+    .sort((a, b) => Number(a.expiresAt || Infinity) - Number(b.expiresAt || Infinity))
+    .map((entry) => entry.tail)
+    .filter((value, index, list) => (
+      list.findIndex((other) => String(other).toUpperCase() === String(value).toUpperCase()) === index
+    ))
+    .slice(0, MAX_BROKERED_TAILS_PER_POLL);
   return normalizeFleetTails([...managed, ...temporary]);
 }
 

@@ -8,6 +8,7 @@ import {
   verifyOperatorToken,
 } from '../api/_operator-token.js';
 import {
+  MAX_BROKERED_TAILS_PER_POLL,
   normalizeFiledFlights,
   resolveCronFleetTails,
 } from '../api/flightaware-cron-poll.js';
@@ -45,6 +46,22 @@ test('active brokered tails join managed fleet polling and expire automatically'
     { tail: 'n100aa', active: true, expiresAt: now + 60_000 },
   ], now);
   assert.deepEqual(tails, ['N100AA', 'N200BB']);
+});
+
+test('temporary brokered polling is capped to control AeroAPI spend', () => {
+  const now = Date.parse('2026-09-01T12:00:00Z');
+  const temporary = Array.from({ length: MAX_BROKERED_TAILS_PER_POLL + 5 }, (_, index) => ({
+    tail: `N${200 + index}BB`,
+    active: true,
+    expiresAt: now + (index + 1) * 60_000,
+  }));
+  const tails = resolveCronFleetTails({
+    configured: true,
+    managedTails: ['N100AA'],
+  }, temporary, now);
+  assert.equal(tails.length, 1 + MAX_BROKERED_TAILS_PER_POLL);
+  assert.equal(tails[0], 'N100AA');
+  assert.equal(tails.at(-1), `N${200 + MAX_BROKERED_TAILS_PER_POLL - 1}BB`);
 });
 
 test('FlightAware filed movements are bounded, sorted, and sanitized', () => {
