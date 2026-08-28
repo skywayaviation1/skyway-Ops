@@ -36,6 +36,24 @@ function db() {
 
 const clip = (value, length) => String(value || '').trim().slice(0, length);
 const airport = (value) => clip(value, 8).toUpperCase().replace(/[^A-Z0-9]/g, '');
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+export function parseNotifyEmails(value) {
+  return String(value || '')
+    .split(/[,;\s]+/)
+    .map((entry) => entry.trim().toLowerCase())
+    .filter((entry) => EMAIL_RE.test(entry));
+}
+
+/** Skyway ops alerts + trip broker-notify list + operator ops email. Never returned to the public portal. */
+export function operatorNotificationRecipients(data, env = process.env) {
+  return [...new Set([
+    ...parseNotifyEmails(env.OPS_ALERT_EMAILS || 'charters@flyskyway.com'),
+    ...parseNotifyEmails(data?.brokerEmail),
+    ...parseNotifyEmails(data?.operatorPortal?.opsEmail),
+  ])];
+}
+
 const ALLOWED_STATUS = new Set([
   'crew_onsite',
   'aircraft_ready',
@@ -242,7 +260,7 @@ export function buildOperatorStatusEmail(trip, update) {
     ['Reported by', `${update.author}${update.company ? ` · ${update.company}` : ''}`],
   ];
   const html = applySkywaySignature(`
-    <p style="margin:0 0 16px;font-size:15px;color:#1f2937;">Hello Operations,</p>
+    <p style="margin:0 0 16px;font-size:15px;color:#1f2937;">Hello,</p>
     <p style="margin:0 0 16px;font-size:14px;color:#1f2937;">${escapeHtml(content.message)}</p>
     <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 16px;width:100%;max-width:520px;">
       ${detailRows.map(([label, value]) => `<tr>
@@ -261,7 +279,7 @@ export function buildOperatorStatusEmail(trip, update) {
 
 export function buildOperatorRepositionEmail(trip, update) {
   const html = applySkywaySignature(`
-    <p style="margin:0 0 16px;font-size:15px;color:#1f2937;">Hello Operations,</p>
+    <p style="margin:0 0 16px;font-size:15px;color:#1f2937;">Hello,</p>
     <p style="margin:0 0 16px;font-size:14px;color:#1f2937;">
       The operating crew filed an empty repositioning movement for ${escapeHtml(trip.tail)}.
     </p>
@@ -281,7 +299,7 @@ export function buildOperatorRepositionEmail(trip, update) {
 
 export function buildPassengerCheckInEmail(trip, update) {
   const html = applySkywaySignature(`
-    <p style="margin:0 0 16px;font-size:15px;color:#1f2937;">Hello Operations,</p>
+    <p style="margin:0 0 16px;font-size:15px;color:#1f2937;">Hello,</p>
     <p style="margin:0 0 16px;font-size:14px;color:#1f2937;">
       The operating crew verified a passenger ID and completed check-in.
     </p>
@@ -300,13 +318,7 @@ export function buildPassengerCheckInEmail(trip, update) {
 }
 
 async function notifyOps(data, trip, email) {
-  const recipients = String(process.env.OPS_ALERT_EMAILS || 'charters@flyskyway.com')
-    .split(/[,;\s]+/)
-    .map((value) => value.trim())
-    .filter(Boolean);
-  const operatorOps = String(data.operatorPortal?.opsEmail || '').trim().toLowerCase();
-  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(operatorOps)) recipients.push(operatorOps);
-  const uniqueRecipients = [...new Set(recipients.map((value) => value.toLowerCase()))];
+  const uniqueRecipients = operatorNotificationRecipients(data);
   if (!uniqueRecipients.length) return;
   try {
     await deliverNotification({

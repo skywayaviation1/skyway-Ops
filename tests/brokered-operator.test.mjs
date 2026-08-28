@@ -16,6 +16,8 @@ import {
   buildPassengerCheckInEmail,
   buildOperatorRepositionEmail,
   buildOperatorStatusEmail,
+  operatorNotificationRecipients,
+  parseNotifyEmails,
 } from '../api/operator-flight.js';
 
 const root = path.resolve(import.meta.dirname, '..');
@@ -126,7 +128,8 @@ test('operator portal exposes only scoped operational updates', async () => {
   assert.match(api, /action === 'reposition'/);
   assert.match(api, /runTransaction/);
   assert.match(api, /source: 'external-operator'/);
-  assert.match(api, /data\.operatorPortal\?\.opsEmail/);
+  assert.match(api, /data\?\.operatorPortal\?\.opsEmail/);
+  assert.match(api, /data\?\.brokerEmail/);
   assert.match(api, /STATUS_CONTENT/);
   assert.match(api, /Crew Arrival Notification/);
   assert.match(api, /Aircraft Ready for Passengers/);
@@ -270,13 +273,40 @@ test('brokered trip UI mints and manages a crew link', async () => {
   assert.match(component, /REPOSITION/);
   assert.match(component, /Their operations email/);
   assert.match(component, /opsEmail: operatorOpsEmail/);
-  assert.match(component, /Skyway Operations and this operator email/);
+  assert.match(component, /Broker Notify/);
+  assert.match(component, /operator ops email/);
 
   const app = await source('src/App.jsx');
   assert.match(app, /BrokeredOperatorLinkLazy/);
   assert.match(app, /isBrokeredFlight/);
   assert.match(app, /!managedTailsForTrip\.includes\(tripTail\)/);
   assert.match(app, /<BrokeredOperatorLinkLazy trip=\{trip\}/);
+  assert.match(app, /brokerEmail=\{brokerEmail\}/);
+});
+
+test('operator updates email broker notify addresses plus operator ops email', () => {
+  assert.deepEqual(
+    parseNotifyEmails('broker@x.com, extra@x.com; ops@y.com not-an-email'),
+    ['broker@x.com', 'extra@x.com', 'ops@y.com'],
+  );
+  const recipients = operatorNotificationRecipients({
+    brokerEmail: 'broker@x.com, extra@x.com',
+    operatorPortal: { opsEmail: 'ops@operator.com' },
+  }, { OPS_ALERT_EMAILS: 'charters@flyskyway.com, ops@flyskyway.com' });
+  assert.deepEqual(recipients, [
+    'charters@flyskyway.com',
+    'ops@flyskyway.com',
+    'broker@x.com',
+    'extra@x.com',
+    'ops@operator.com',
+  ]);
+  const defaults = operatorNotificationRecipients({
+    brokerEmail: 'BROKER@X.COM',
+    operatorPortal: { opsEmail: 'ops@operator.com' },
+  }, {});
+  assert.ok(defaults.includes('charters@flyskyway.com'));
+  assert.ok(defaults.includes('broker@x.com'));
+  assert.ok(defaults.includes('ops@operator.com'));
 });
 
 test('public operator route mounts before authenticated app and skips its service worker', async () => {

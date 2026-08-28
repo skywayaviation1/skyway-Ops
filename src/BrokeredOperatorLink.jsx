@@ -15,7 +15,7 @@ export function isBrokeredTrip(trip, managedTails = []) {
   return !managed.has(tail);
 }
 
-export default function BrokeredOperatorLink({ trip, currentUser }) {
+export default function BrokeredOperatorLink({ trip, currentUser, brokerEmail = '' }) {
   const [operatorName, setOperatorName] = useState('');
   const [operatorOpsEmail, setOperatorOpsEmail] = useState('');
   const [state, setState] = useState(null);
@@ -181,7 +181,9 @@ export default function BrokeredOperatorLink({ trip, currentUser }) {
         </label>
       </div>
       <p className="mt-1 text-[9px] text-content-subtle">
-        External crew updates are sent to Skyway Operations and this operator email.
+        Crew updates email every address in Broker Notify
+        {brokerEmail ? ` (${brokerEmail})` : ''}
+        , Skyway Operations, and this operator ops email.
       </p>
 
       {state?.active && state.url ? (

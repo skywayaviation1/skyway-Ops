@@ -7143,7 +7143,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
 
               {isBrokeredFlight && ['admin', 'ops', 'sales'].includes(currentUser?.role) && (
                 <Suspense fallback={<Card><div className="flex items-center gap-2 text-xs text-content-muted"><Loader2 className="h-4 w-4 animate-spin" />Loading brokered operator link…</div></Card>}>
-                  <BrokeredOperatorLinkLazy trip={trip} currentUser={currentUser} />
+                  <BrokeredOperatorLinkLazy trip={trip} currentUser={currentUser} brokerEmail={brokerEmail} />
                 </Suspense>
               )}
 
