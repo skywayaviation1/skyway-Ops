@@ -5,8 +5,9 @@
  * POST ?action=status                   → operational milestone
  * POST ?action=reposition               → file a repositioning movement
  *
- * No passenger names, broker contacts, pricing, internal notes, or other trips
- * are exposed. Every write is server-timestamped and appended to an audit log.
+ * Only this trip's manifest names/check-in state are exposed. DOB, document
+ * number, ID images, broker contacts, pricing, internal notes, and other trips
+ * are never returned. Every write is server-timestamped and audited.
  */
 
 import admin from 'firebase-admin';
@@ -38,6 +39,8 @@ const airport = (value) => clip(value, 8).toUpperCase().replace(/[^A-Z0-9]/g, ''
 const ALLOWED_STATUS = new Set([
   'crew_onsite',
   'aircraft_ready',
+  'pax_arrived',
+  'pax_boarded',
   'taxi_dep',
   'wheels_up',
   'landed',
@@ -103,6 +106,32 @@ function cleanAdsb(state) {
   };
 }
 
+function passengerRoster(data) {
+  const preloaded = Array.isArray(data.preloadedPax) ? data.preloadedPax : [];
+  const scanned = Array.isArray(data.passengers) ? data.passengers : [];
+  const scanByRef = new Map(
+    scanned.filter((entry) => entry?.preloadedRefId)
+      .map((entry) => [String(entry.preloadedRefId), entry]),
+  );
+  return preloaded.slice(0, 30).map((passenger, index) => {
+    const id = clip(passenger?.id || `manifest-${index + 1}`, 120);
+    const scan = scanByRef.get(id);
+    const name = [
+      clip(passenger?.firstName, 80),
+      clip(passenger?.lastName, 80),
+    ].filter(Boolean).join(' ');
+    const status = passenger?.checkInStatus || scan?.checkInStatus || '';
+    return {
+      id,
+      name,
+      checkedIn: [
+        'matched', 'mismatch', 'manual_override', 'child_verified', 'carried_over',
+      ].includes(status) || Boolean(scan?.verifiedAt),
+      checkedInAt: scan?.verifiedAt || passenger?.verifiedAt || null,
+    };
+  }).filter((passenger) => passenger.name);
+}
+
 async function publicPayload(loaded) {
   const portal = loaded.data.operatorPortal || {};
   const currentTail = loaded.data.tripMeta?.tail || portal.tail || '';
@@ -119,6 +148,7 @@ async function publicPayload(loaded) {
     aircraftType: portal.aircraftType || '',
     operatorName: portal.operatorName || '',
     expiresAt: loaded.data.operatorTrackingExpiresAt || null,
+    passengers: passengerRoster(loaded.data),
     statuses: cleanStatuses(loaded.data.statuses),
     updates: (Array.isArray(loaded.data.operatorUpdates) ? loaded.data.operatorUpdates : [])
       .slice(-30)
@@ -155,6 +185,16 @@ const STATUS_CONTENT = {
   aircraft_ready: {
     title: 'Aircraft Ready for Passengers',
     message: 'The aircraft is ready for passenger boarding.',
+    next: 'The next update will be sent when the aircraft begins taxiing.',
+  },
+  pax_arrived: {
+    title: 'Passengers Arrived',
+    message: 'The passengers have arrived at the FBO.',
+    next: 'The operating crew will verify IDs and send the next update after check-in.',
+  },
+  pax_boarded: {
+    title: 'Passengers Checked In',
+    message: 'Passenger IDs have been verified and the passengers are boarding the aircraft.',
     next: 'The next update will be sent when the aircraft begins taxiing.',
   },
   taxi_dep: {
@@ -239,6 +279,26 @@ export function buildOperatorRepositionEmail(trip, update) {
   };
 }
 
+export function buildPassengerCheckInEmail(trip, update) {
+  const html = applySkywaySignature(`
+    <p style="margin:0 0 16px;font-size:15px;color:#1f2937;">Hello Operations,</p>
+    <p style="margin:0 0 16px;font-size:14px;color:#1f2937;">
+      The operating crew verified a passenger ID and completed check-in.
+    </p>
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 16px;width:100%;max-width:520px;">
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:12px;">Aircraft</td><td style="padding:5px 0;color:#1f2937;font-size:13px;font-weight:600;">${escapeHtml(trip.tail)}</td></tr>
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:12px;">Route</td><td style="padding:5px 0;color:#1f2937;font-size:13px;font-weight:600;">${escapeHtml(trip.from)} → ${escapeHtml(trip.to)}</td></tr>
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:12px;">Passenger</td><td style="padding:5px 0;color:#1f2937;font-size:13px;font-weight:600;">${escapeHtml(update.passengerName)}</td></tr>
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:12px;">Verified by</td><td style="padding:5px 0;color:#1f2937;font-size:13px;font-weight:600;">${escapeHtml(update.author)}${update.company ? ` · ${escapeHtml(update.company)}` : ''}</td></tr>
+      <tr><td style="padding:5px 14px 5px 0;color:#6b7280;font-size:12px;">Result</td><td style="padding:5px 0;color:#1f2937;font-size:13px;font-weight:600;">${update.overridden ? 'Crew override after name mismatch' : 'ID name matched manifest'}</td></tr>
+    </table>
+  `);
+  return {
+    subject: `Passenger Checked In — ${trip.tail} ${trip.from}-${trip.to}`,
+    html,
+  };
+}
+
 async function notifyOps(data, trip, email) {
   const recipients = String(process.env.OPS_ALERT_EMAILS || 'charters@flyskyway.com')
     .split(/[,;\s]+/)
@@ -318,6 +378,108 @@ export default async function handler(req, res) {
       const trip = await publicPayload({ ...loaded, data: { ...loaded.data } });
       await notifyOps(loaded.data, trip, buildOperatorStatusEmail(trip, entry));
       return res.status(200).json({ ok: true, update: entry });
+    }
+
+    if (action === 'check-in') {
+      const passengerId = clip(body.passengerId, 120);
+      const parsed = body.parsed && typeof body.parsed === 'object' ? body.parsed : {};
+      const scannedFirst = clip(parsed.firstName, 80);
+      const scannedLast = clip(parsed.lastName, 80);
+      const scannedName = [scannedFirst, scannedLast].filter(Boolean).join(' ');
+      if (!passengerId || !scannedName) {
+        return res.status(400).json({ error: 'Passenger and parsed ID name required' });
+      }
+      const manifest = Array.isArray(loaded.data.preloadedPax) ? loaded.data.preloadedPax : [];
+      const passenger = manifest.find((entry, index) => (
+        String(entry?.id || `manifest-${index + 1}`) === passengerId
+      ));
+      if (!passenger) return res.status(404).json({ error: 'Passenger is not on this trip manifest' });
+      const expectedName = [
+        clip(passenger.firstName, 80),
+        clip(passenger.lastName, 80),
+      ].filter(Boolean).join(' ');
+      const nameKey = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const expectedParts = expectedName.split(/\s+/).filter(Boolean);
+      const scannedParts = scannedName.split(/\s+/).filter(Boolean);
+      const matched = nameKey(expectedName) === nameKey(scannedName)
+        || (
+          expectedParts.length > 0
+          && scannedParts.length > 0
+          && nameKey(expectedParts[0]) === nameKey(scannedParts[0])
+          && nameKey(expectedParts.at(-1)) === nameKey(scannedParts.at(-1))
+        );
+      if (!matched && body.override !== true) {
+        return res.status(409).json({
+          error: 'ID name does not match the selected manifest passenger',
+          requiresOverride: true,
+          expectedName,
+          scannedName,
+        });
+      }
+      const now = Date.now();
+      const checkIn = {
+        id: `op-pax-${now.toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+        firstName: scannedFirst,
+        lastName: scannedLast,
+        preloadedRefId: passengerId,
+        verifiedAt: now,
+        checkInStatus: matched ? 'matched' : 'manual_override',
+        verifiedBy: author,
+        source: 'external-operator',
+      };
+      await db().runTransaction(async (transaction) => {
+        const snap = await transaction.get(loaded.ref);
+        const current = snap.data() || {};
+        const currentManifest = Array.isArray(current.preloadedPax) ? current.preloadedPax : [];
+        const nextManifest = currentManifest.map((entry, index) => (
+          String(entry?.id || `manifest-${index + 1}`) === passengerId
+            ? {
+              ...entry,
+              checkInStatus: checkIn.checkInStatus,
+              verifiedAt: now,
+              verifiedBy: author,
+            }
+            : entry
+        ));
+        const currentScans = Array.isArray(current.passengers) ? current.passengers : [];
+        const nextScans = [
+          ...currentScans.filter((entry) => String(entry?.preloadedRefId || '') !== passengerId),
+          checkIn,
+        ].slice(-60);
+        const updates = Array.isArray(current.operatorUpdates) ? current.operatorUpdates : [];
+        transaction.set(loaded.ref, {
+          preloadedPax: nextManifest,
+          passengers: nextScans,
+          operatorUpdates: [...updates.slice(-99), {
+            id: checkIn.id,
+            at: now,
+            author,
+            company,
+            statusKey: 'passenger_check_in',
+            note: `${expectedName} checked in`,
+            source: 'external-operator',
+          }],
+          updatedAt: now,
+        }, { merge: true });
+      });
+      const trip = await publicPayload({ ...loaded, data: { ...loaded.data } });
+      await notifyOps(loaded.data, trip, buildPassengerCheckInEmail(trip, {
+        passengerName: expectedName,
+        author,
+        company,
+        overridden: !matched,
+      }));
+      return res.status(200).json({
+        ok: true,
+        passenger: {
+          id: passengerId,
+          name: expectedName,
+          checkedIn: true,
+          checkedInAt: now,
+        },
+        matched,
+        overridden: !matched,
+      });
     }
 
     if (action === 'reposition') {

@@ -139,6 +139,7 @@ export default async function handler(req, res) {
         operatorLinkRevoked: false,
         operatorTrackingExpiresAt: expiresAt,
         operatorPortal: trip,
+        operatorIdScanCount: 0,
         tripMeta: {
           tail: trip.tail,
           from: trip.from,

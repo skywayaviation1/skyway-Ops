@@ -13,6 +13,7 @@ import {
   resolveCronFleetTails,
 } from '../api/flightaware-cron-poll.js';
 import {
+  buildPassengerCheckInEmail,
   buildOperatorRepositionEmail,
   buildOperatorStatusEmail,
 } from '../api/operator-flight.js';
@@ -131,8 +132,7 @@ test('operator portal exposes only scoped operational updates', async () => {
   assert.match(api, /Aircraft Ready for Passengers/);
   assert.match(api, /Wheels Up/);
   assert.match(api, /applySkywaySignature/);
-  // No passenger, broker-contact, price, or internal note projection.
-  assert.doesNotMatch(api, /preloadedPax:/);
+  // No broker-contact, price, internal note, or ID-document projection.
   assert.doesNotMatch(api, /brokerEmail:/);
   assert.doesNotMatch(api, /pricing:/);
 });
@@ -155,6 +155,23 @@ test('operator status email matches crew-side route and milestone content', () =
   assert.match(email.html, /Partner Air/);
   assert.match(email.html, /Smooth departure/);
   assert.match(email.html, /skyway-signature-applied/);
+});
+
+test('passenger check-in email notifies both ops teams without ID data', () => {
+  const email = buildPassengerCheckInEmail({
+    tail: 'N200BB',
+    from: 'KAPF',
+    to: 'KTEB',
+  }, {
+    passengerName: 'Jane Doe',
+    author: 'Captain Test',
+    company: 'Partner Air',
+    overridden: false,
+  });
+  assert.equal(email.subject, 'Passenger Checked In — N200BB KAPF-KTEB');
+  assert.match(email.html, /Jane Doe/);
+  assert.match(email.html, /ID name matched manifest/);
+  assert.doesNotMatch(email.html, /document number|date of birth|DOB/i);
 });
 
 test('operator reposition email contains filed route, times, and crew note', () => {
@@ -189,6 +206,48 @@ test('operator portal uses a select-review-send milestone workflow', async () =>
   assert.match(portal, /SEND SELECTED UPDATE/);
   assert.match(portal, /setSelectedStatus\(''\)/);
   assert.match(portal, /onClick=\{\(\) => setSelectedStatus\(key\)\}/);
+});
+
+test('external crew can report passenger arrival and boarded milestones', async () => {
+  const portal = await source('src/OperatorFlightPortal.jsx');
+  assert.match(portal, /\['pax_arrived', 'Passengers arrived'/);
+  assert.match(portal, /\['pax_boarded', 'Passengers checked in'/);
+  const api = await source('api/operator-flight.js');
+  assert.match(api, /'pax_arrived'/);
+  assert.match(api, /'pax_boarded'/);
+  assert.match(api, /Passengers Arrived/);
+  assert.match(api, /Passengers Checked In/);
+});
+
+test('operator passenger check-in is manifest-scoped and privacy-minimized', async () => {
+  const api = await source('api/operator-flight.js');
+  assert.match(api, /action === 'check-in'/);
+  assert.match(api, /Passenger is not on this trip manifest/);
+  assert.match(api, /requiresOverride: true/);
+  assert.match(api, /checkInStatus: matched \? 'matched' : 'manual_override'/);
+  assert.match(api, /preloadedRefId: passengerId/);
+  assert.doesNotMatch(api, /documentNumber:/);
+  assert.doesNotMatch(api, /dob:/i);
+
+  const portal = await source('src/OperatorFlightPortal.jsx');
+  assert.match(portal, /Passenger ID check-in/);
+  assert.match(portal, /SCAN OR PHOTOGRAPH ID/);
+  assert.match(portal, /CONFIRM CHECK-IN/);
+  assert.match(portal, /capture="environment"/);
+  assert.match(portal, /operatorToken: token/);
+  assert.match(portal, /DOB and document number are not saved/);
+});
+
+test('ID parser accepts a bounded operator link without weakening staff auth', async () => {
+  const parser = await source('api/parse-id.js');
+  assert.match(parser, /verifyOperatorToken\(token\)/);
+  assert.match(parser, /operatorIdScanCount/);
+  assert.match(parser, /count >= 60/);
+  assert.match(parser, /operatorTrackingExpiresAt/);
+  assert.match(parser, /await authorizeOperatorScan\(admin, operatorToken\)/);
+  // The existing Firebase user authorization path remains in place.
+  assert.match(parser, /verifyIdToken\(idToken, true\)/);
+  assert.match(parser, /\['crew', 'ops', 'admin'\]\.includes\(profile\.role\)/);
 });
 
 test('operator map resolves unknown airports and renders before ADS-B arrives', async () => {
