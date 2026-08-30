@@ -11,7 +11,7 @@ Google Maps is the preferred basemap for every Skyway tracking surface:
 Leaflet remains a transparent operational layer above Google Maps for aircraft,
 routes, trails, airport markers, fitting, and weather radar. If Google Maps is
 not configured or rejects the deployment, the app tries Apple MapKit and then
-the existing standard tiles.
+Esri/OpenTopoMap tiles. CARTO tiles are not used.
 
 ## Google Cloud setup
 

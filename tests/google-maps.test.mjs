@@ -79,3 +79,24 @@ test('TV Flight Board prefers Google and retains operational overlays', async ()
   assert.match(board, /RainViewer/);
 });
 
+test('CARTO tiles are removed from map fallbacks', async () => {
+  const shared = await source('src/tracking-map.js');
+  const board = await source('src/FlightBoard.jsx');
+  const tracking = await source('src/TrackingMap.jsx');
+  for (const text of [shared, board, tracking]) {
+    assert.doesNotMatch(text, /basemaps\.cartocdn\.com/);
+    assert.doesNotMatch(text, /carto\.com/i);
+  }
+});
+
+test('Google Maps loads only from map surfaces, not the app shell', async () => {
+  const app = await source('src/App.jsx');
+  const index = await source('index.html');
+  assert.doesNotMatch(app, /loadGoogleMaps|google-maps\.js|maps\.googleapis\.com/);
+  assert.doesNotMatch(index, /maps\.googleapis\.com|GOOGLE_MAPS/);
+  const map = await source('src/TrackingMap.jsx');
+  const board = await source('src/FlightBoard.jsx');
+  assert.match(map, /from '\.\/google-maps\.js'/);
+  assert.match(board, /from '\.\/google-maps\.js'/);
+});
+
