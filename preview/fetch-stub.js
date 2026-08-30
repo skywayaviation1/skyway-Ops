@@ -535,8 +535,57 @@ export function installFetchStub() {
     if (path === '/api/teams') return json(teamsResponse(action));
     if (path === '/api/quickbooks-workspace') return json(quickbooksResponse(action));
     if (path === '/api/quickbooks-status') return json(QBO_CONNECTION);
-    if (path === '/api/faa-notams') return json({ ok: true, notams: [] });
-    if (path.startsWith('/api/airport-weather')) return json({ ok: true, parsed: null });
+    if (path === '/api/fbo-call') {
+      if (action === 'preview') {
+        const purposes = Array.isArray(body.purposes) ? body.purposes : ['departure', 'arrival'];
+        const trip = body.trip || {};
+        const state = body.state || {};
+        const results = purposes.map((purpose) => {
+          const fboName = purpose === 'departure'
+            ? state.fromFbo
+            : state.toFbo;
+          const airport = purpose === 'departure' ? trip.info?.from : trip.info?.to;
+          const phoneDisplay = purpose === 'departure'
+            ? state.tripSheetData?.fromAirportPhone
+            : state.tripSheetData?.toAirportPhone;
+          const phoneE164 = phoneDisplay ? `+1${String(phoneDisplay).replace(/\D/g, '').replace(/^1/, '')}` : '';
+          const blockers = [
+            ...(!state.tripSheetUrl ? ['No trip sheet uploaded'] : []),
+            ...(!fboName ? ['FBO name is missing from the trip sheet'] : []),
+            ...(!phoneE164 ? ['No FBO phone number on the trip sheet'] : []),
+          ];
+          return {
+            purpose,
+            ok: blockers.length === 0,
+            blockers,
+            hash: `hash-${purpose}-${fboName}`,
+            facts: {
+              fboName,
+              airport,
+              phoneE164,
+              phoneDisplay,
+              hours: '',
+              hoursKnown: false,
+              groundTransport: trip.info?.pax > 0,
+              leadPassengerName: trip.info?.pax > 0 ? 'Alexander Whitmore' : null,
+            },
+          };
+        });
+        return json({
+          ok: true,
+          vendor: { ok: true, agent: 'preview' },
+          config: { enabled: true },
+          results,
+        });
+      }
+      if (action === 'list') {
+        return json({ ok: true, vendor: { ok: true }, calls: [] });
+      }
+      if (action === 'arm') {
+        return json({ ok: true, armed: (body.purposes || []).length });
+      }
+      return json({ ok: true });
+    }
 
     return json({ ok: true });
   };

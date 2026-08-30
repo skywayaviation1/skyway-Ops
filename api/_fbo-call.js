@@ -9,7 +9,6 @@ import crypto from 'node:crypto';
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import { applySkywaySignature, textToHtml } from './_email-signature.js';
-import { getFboDataset, summarizeAirportFbos } from './_iflightplanner.js';
 import {
   CALL_STATUSES,
   DEFAULT_ARR_LEAD_MINUTES,
@@ -22,7 +21,6 @@ import {
   assistantSystemPrompt,
   buildSpeakableFacts,
   firstMessage,
-  matchFboRecord,
   materialHash,
   nextRetryAt,
   publicCallSummary,
@@ -142,30 +140,7 @@ export async function writeCallConfig(patch, actor) {
 }
 
 export async function resolveFboFacts(trip, state, purpose) {
-  const airport = purpose === 'arrival' ? trip?.info?.to : trip?.info?.from;
-  const requestedName = purpose === 'arrival'
-    ? (state?.toFbo || trip?.info?.toFbo)
-    : (state?.fromFbo || trip?.info?.fromFbo);
-  let dataset;
-  try {
-    dataset = await getFboDataset();
-  } catch (error) {
-    return {
-      ok: false,
-      blockers: [error.message || 'iFlightPlanner is unavailable'],
-      facts: null,
-      match: { confidence: 'none', reason: error.message },
-    };
-  }
-  const airportSummary = summarizeAirportFbos(dataset.records, airport);
-  const match = matchFboRecord(airportSummary.fbos, requestedName);
-  return buildSpeakableFacts({
-    trip,
-    state,
-    purpose,
-    fbo: match.record,
-    match,
-  });
+  return buildSpeakableFacts({ trip, state, purpose });
 }
 
 function jobPublic(job) {

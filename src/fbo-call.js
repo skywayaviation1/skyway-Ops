@@ -40,11 +40,6 @@ export const CALL_STATUSES = Object.freeze({
 
 const GROUND_RE = /\b(ground\s*trans(?:port(?:ation)?)?|limo(?:usine)?|car\s*service|chauffeur|town\s*car|meet\s*(?:and|&)\s*greet|courtesy\s*(?:car|van)|rental\s*car|uber|lyft|taxi)\b/i;
 
-const STOP_WORDS = new Set([
-  'fbo', 'aviation', 'flight', 'support', 'the', 'of', 'at', 'llc', 'inc',
-  'airport', 'jet', 'center', 'services', 'service', 'air', 'group',
-]);
-
 const clean = (value) => String(value ?? '').trim();
 
 export function toE164(phone) {
@@ -53,86 +48,6 @@ export function toE164(phone) {
   if (digits.length === 10) return `+1${digits}`;
   if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
   if (raw.startsWith('+') && digits.length >= 10 && digits.length <= 15) return `+${digits}`;
-  return '';
-}
-
-export function nameKey(value) {
-  return clean(value).toLowerCase().replace(/[^a-z0-9]/g, '');
-}
-
-function tokens(value) {
-  return clean(value)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ' ')
-    .split(/\s+/)
-    .filter((token) => token.length > 1 && !STOP_WORDS.has(token));
-}
-
-export function matchFboRecord(records, requestedName) {
-  const list = Array.isArray(records) ? records : [];
-  if (list.length === 0) return { record: null, confidence: 'none', reason: 'No iFlightPlanner FBO records for this airport' };
-  if (list.length === 1 && !clean(requestedName)) {
-    return { record: list[0], confidence: 'unique_airport', reason: 'Only one FBO listed at this airport' };
-  }
-  const wanted = clean(requestedName);
-  if (!wanted) {
-    return {
-      record: null,
-      confidence: 'none',
-      reason: 'Trip FBO name is missing and more than one FBO is listed at this airport',
-    };
-  }
-  const wantedKey = nameKey(wanted);
-  const wantedTokens = tokens(wanted);
-
-  const scored = list.map((record) => {
-    const name = clean(record?.name);
-    const key = nameKey(name);
-    const recTokens = tokens(name);
-    let score = 0;
-    if (key && key === wantedKey) score = 100;
-    else if (key && wantedKey && (key.includes(wantedKey) || wantedKey.includes(key))) score = 80;
-    else {
-      const overlap = wantedTokens.filter((token) => recTokens.includes(token));
-      if (wantedTokens.length && overlap.length) {
-        score = Math.round(60 * (overlap.length / wantedTokens.length));
-      }
-    }
-    return { record, score };
-  }).sort((a, b) => b.score - a.score);
-
-  const best = scored[0];
-  const second = scored[1];
-  if (!best || best.score < 40) {
-    return { record: null, confidence: 'none', reason: `No iFlightPlanner match for “${wanted}”` };
-  }
-  if (second && second.score >= best.score - 5 && second.score >= 40) {
-    return {
-      record: null,
-      confidence: 'ambiguous',
-      reason: `“${wanted}” matched more than one FBO at this airport`,
-    };
-  }
-  return {
-    record: best.record,
-    confidence: best.score >= 80 ? 'high' : 'medium',
-    reason: `Matched “${best.record.name}”`,
-  };
-}
-
-export function hoursFromRecord(record) {
-  const raw = record?.raw && typeof record.raw === 'object' ? record.raw : {};
-  const entries = Object.entries({
-    hours: record?.hours,
-    ...raw,
-  });
-  for (const [header, value] of entries) {
-    const key = nameKey(header);
-    if (!/hour|open|close|weekday|weekend|operation/i.test(key)) continue;
-    if (/phone|price|fuel|email|web|address/.test(key)) continue;
-    const text = clean(value);
-    if (text && !/^(n\/a|na|unknown|-)$/i.test(text)) return text;
-  }
   return '';
 }
 
@@ -191,6 +106,8 @@ export function materialFacts(trip = {}, state = {}) {
     end: toIso(trip.end),
     fromFbo: clean(state.fromFbo),
     toFbo: clean(state.toFbo),
+    fromFboPhone: tripSheetDialPhone(state, 'departure'),
+    toFboPhone: tripSheetDialPhone(state, 'arrival'),
     pax: Number.isFinite(Number(state.paxOverride))
       ? Number(state.paxOverride)
       : Number(info.pax || 0),
@@ -198,6 +115,13 @@ export function materialFacts(trip = {}, state = {}) {
     specialItems: clean(state.tripSheetNotes?.specialItems),
     ground: groundTransportRequested(state, info),
   };
+}
+
+export function tripSheetDialPhone(state = {}, purpose) {
+  const sheet = state.tripSheetData && typeof state.tripSheetData === 'object'
+    ? state.tripSheetData
+    : {};
+  return clean(purpose === 'arrival' ? sheet.toAirportPhone : sheet.fromAirportPhone);
 }
 
 export function materialHash(facts) {
@@ -275,8 +199,6 @@ export function buildSpeakableFacts({
   trip = {},
   state = {},
   purpose,
-  fbo,
-  match,
 } = {}) {
   const info = trip.info || {};
   const airport = purpose === 'arrival'
@@ -285,8 +207,8 @@ export function buildSpeakableFacts({
   const requestedName = purpose === 'arrival'
     ? clean(state.toFbo)
     : clean(state.fromFbo);
-  const phone = toE164(fbo?.phone || fbo?.tollFree);
-  const hours = hoursFromRecord(fbo);
+  const phoneDisplay = tripSheetDialPhone(state, purpose);
+  const phone = toE164(phoneDisplay);
   const ground = groundTransportRequested(state, info);
   const lead = ground ? leadPassengerName(state) : '';
   const paxCount = Number.isFinite(Number(state.paxOverride))
@@ -295,13 +217,10 @@ export function buildSpeakableFacts({
   const startMs = toMillis(trip.start);
   const endMs = toMillis(trip.end);
   const blockers = [];
+  if (!clean(state.tripSheetUrl)) blockers.push('No trip sheet uploaded');
   if (!airport) blockers.push('Airport is missing');
   if (!requestedName) blockers.push('FBO name is missing from the trip sheet');
-  if (!fbo) blockers.push(match?.reason || 'FBO could not be verified');
-  if (!phone) blockers.push('No verified FBO phone number in iFlightPlanner');
-  if (!hours) {
-    // Hours unknown is not a dial blocker; the agent must say hours are unverified.
-  }
+  if (!phone) blockers.push('No FBO phone number on the trip sheet');
 
   const facts = {
     callerName: SKYWAY_CALLER_NAME,
@@ -314,14 +233,14 @@ export function buildSpeakableFacts({
     fboName: requestedName,
     fboNameSource: 'trip_sheet',
     requestedFboName: requestedName,
-    matchConfidence: match?.confidence || 'none',
+    matchConfidence: 'trip_sheet',
     phoneE164: phone,
-    phoneDisplay: clean(fbo?.phone || fbo?.tollFree),
-    phoneSource: 'iflightplanner',
-    hours: hours || '',
-    hoursKnown: Boolean(hours),
-    fuelBrand: clean(fbo?.fuelBrand),
-    website: clean(fbo?.website),
+    phoneDisplay,
+    phoneSource: 'trip_sheet',
+    hours: '',
+    hoursKnown: false,
+    fuelBrand: '',
+    website: '',
     startIso: toIso(trip.start),
     endIso: toIso(trip.end),
     paxCount,
@@ -347,7 +266,7 @@ export function buildSpeakableFacts({
 export function assistantSystemPrompt(facts) {
   const hoursLine = facts.hoursKnown
     ? `Published hours (verify, do not invent): ${facts.hours}`
-    : 'Hours are not in the verified dataset. Say that Skyway does not have published hours on file and offer to have operations follow up. Never guess hours.';
+    : 'Hours are not on the uploaded trip sheet. Say that Skyway does not have published hours on file and offer to have operations follow up. Never guess hours.';
   const groundLine = facts.groundTransport
     ? `Ground transportation is requested. You may give the lead passenger name (${facts.leadPassengerName || 'name not on file'}) ONLY when discussing ground transportation. Do not volunteer the name for fuel, hangar, or catering.`
     : 'Do not speak any passenger names.';

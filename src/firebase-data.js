@@ -114,6 +114,11 @@ export function subscribeToTripState(tripId, onUpdate) {
           tripSheetUploadedAt: data.tripSheetUploadedAt || null,
           tripSheetUploadedBy: data.tripSheetUploadedBy || null,
           tripSheetFilename: data.tripSheetFilename || null,
+          tripSheetData: (
+            data.tripSheetData && typeof data.tripSheetData === 'object'
+              ? data.tripSheetData
+              : null
+          ),
           // Pre-loaded passengers parsed from the trip sheet — array of
           // { id, firstName, lastName, dob, weight, gender, primary, scannedPaxId }
           // scannedPaxId points to an entry in passengers[] once crew has scanned.
@@ -135,6 +140,7 @@ export function subscribeToTripState(tripId, onUpdate) {
           hasCatering: true, paxOverride: null,
           tripSheetUrl: null, tripSheetPath: null, tripSheetUploadedAt: null,
           tripSheetUploadedBy: null, tripSheetFilename: null,
+          tripSheetData: null,
           preloadedPax: [],
           tripSheetNotes: null,
           tripSheetNotesEditedAt: null,

@@ -99,8 +99,8 @@ export default function FboCallDesk({ currentUser }) {
         />
         <Card className="mb-4" padded>
           <p className="text-sm leading-relaxed text-content-muted">
-            Calls are never placed from the calendar automatically. Open a trip, review the verified
-            FBO phone from iFlightPlanner, then arm departure and/or arrival. The agent speaks only
+            Calls are never placed from the calendar automatically. Open a trip, review the FBO
+            details parsed from its uploaded trip sheet, then arm departure and/or arrival. The agent speaks only
             those facts and may name the lead passenger only for ground transportation.
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
@@ -134,7 +134,7 @@ export default function FboCallDesk({ currentUser }) {
                       {call.purpose} · {call.phone || 'no phone'} · dial {fmt(call.dialAt)}
                     </p>
                     <p className="mt-1 text-xs text-content-subtle">
-                      {call.hoursKnown ? `Hours on file: ${call.hours}` : 'Hours not in iFlightPlanner — agent will not guess'}
+                      {call.hoursKnown ? `Hours on file: ${call.hours}` : 'Hours not on the trip sheet — agent will not guess'}
                     </p>
                     {call.summary && <p className="mt-2 text-sm text-content">{call.summary}</p>}
                     {call.lastError && <p className="mt-2 text-sm text-danger">{call.lastError}</p>}

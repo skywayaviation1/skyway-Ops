@@ -34,8 +34,6 @@ function payloadFrom(trip, state) {
       pic: trip.info?.pic,
       sic: trip.info?.sic,
       legType: trip.info?.legType,
-      fromFbo: state.fromFbo || trip.info?.fromFbo,
-      toFbo: state.toFbo || trip.info?.toFbo,
     },
   };
 }
@@ -52,6 +50,8 @@ function verificationSignature(row) {
 export default function TripFboCalls({
   trip,
   currentUser,
+  tripSheetUrl,
+  tripSheetData,
   fromFbo,
   toFbo,
   passengers = [],
@@ -69,6 +69,8 @@ export default function TripFboCalls({
   const [verifiedFacts, setVerifiedFacts] = useState({});
 
   const state = {
+    tripSheetUrl,
+    tripSheetData,
     fromFbo,
     toFbo,
     passengers,
@@ -109,7 +111,18 @@ export default function TripFboCalls({
     } catch (err) {
       setError(err.message || 'Could not load FBO call facts');
     }
-  }, [trip?.uid, fromFbo, toFbo, hasCatering, paxOverride, passengers, preloadedPax, tripSheetNotes]);
+  }, [
+    trip?.uid,
+    tripSheetUrl,
+    tripSheetData,
+    fromFbo,
+    toFbo,
+    hasCatering,
+    paxOverride,
+    passengers,
+    preloadedPax,
+    tripSheetNotes,
+  ]);
 
   useEffect(() => { refresh(); }, [refresh]);
   useEffect(() => {
@@ -163,8 +176,8 @@ export default function TripFboCalls({
         <h2 className="text-base font-semibold text-content">FBO calls</h2>
         <p className="mt-1 text-sm leading-relaxed text-content-muted">
           {brand.name} automated ops assistant. Caller ID {brand.contactPhone || SKYWAY_CALLER_ID_DISPLAY}.
-          FBO names come from the uploaded trip sheet. Review each matched dialing phone, verify the
-          details, then arm the call. The agent will not guess hours or passenger names except the lead
+          FBO names and phone numbers come from the uploaded trip sheet. Verify the details, then arm
+          the call. The agent will not guess hours or passenger names except the lead
           passenger for ground transportation.
         </p>
       </div>
@@ -190,8 +203,8 @@ export default function TripFboCalls({
                 <dd className="text-content">{row.facts.fboName || '—'}</dd>
                 <dt className="text-content-subtle">Trip airport</dt>
                 <dd className="font-mono text-content">{row.facts.airport || '—'}</dd>
-                <dt className="text-content-subtle">Dialing phone</dt>
-                <dd className="font-mono text-content">{row.facts.phoneDisplay || 'Not in iFlightPlanner'}</dd>
+                <dt className="text-content-subtle">Trip sheet phone</dt>
+                <dd className="font-mono text-content">{row.facts.phoneDisplay || 'Not on trip sheet'}</dd>
                 <dt className="text-content-subtle">Hours</dt>
                 <dd className="text-content">{row.facts.hoursKnown ? row.facts.hours : 'Not on file — will not be guessed'}</dd>
                 <dt className="text-content-subtle">Ground</dt>
@@ -214,7 +227,7 @@ export default function TripFboCalls({
                   }))}
                 />
                 <span>
-                  I verified the trip-sheet FBO, airport, and iFlightPlanner dialing phone shown above.
+                  I verified the trip-sheet FBO, airport, and phone shown above.
                 </span>
               </label>
             )}
@@ -275,7 +288,7 @@ export default function TripFboCalls({
         </div>
       )}
       {!preview && !error && (
-        <p className="text-sm text-content-muted"><Loader2 className="mr-2 inline h-4 w-4 animate-spin" />Reading trip-sheet FBOs and matching dialing phones…</p>
+        <p className="text-sm text-content-muted"><Loader2 className="mr-2 inline h-4 w-4 animate-spin" />Reading FBO details from the trip sheet…</p>
       )}
     </div>
   );

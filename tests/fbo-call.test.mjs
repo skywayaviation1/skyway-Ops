@@ -11,21 +11,19 @@ import {
   fboCallOutstanding,
   firstMessage,
   groundTransportRequested,
-  hoursFromRecord,
   leadPassengerName,
-  matchFboRecord,
   materialHash,
   resolveDialAt,
   scheduledDialAt,
   shouldQueueUpdate,
   toE164,
+  tripSheetDialPhone,
   unverifiedCallPurposes,
   vendorConfigured,
 } from '../src/fbo-call.js';
 import { computeOutstanding } from '../src/ops-readiness.js';
 import { summarizeWebhook, validVapiSignature } from '../api/fbo-call-webhook.js';
 import { vapiCallPayload } from '../api/_fbo-call.js';
-import { normalizeFboRecord } from '../api/_iflightplanner.js';
 
 const root = path.resolve(import.meta.dirname, '..');
 const source = (file) => readFile(path.join(root, file), 'utf8');
@@ -57,29 +55,18 @@ test('US phone numbers normalize to E.164', () => {
   assert.equal(toE164('not a phone'), '');
 });
 
-test('FBO name matching prefers a unique high-score provider', () => {
-  const records = [
-    { name: 'Signature Flight Support', phone: '201-555-0100' },
-    { name: 'Atlantic Aviation', phone: '201-555-0199' },
-  ];
-  const hit = matchFboRecord(records, 'Signature');
-  assert.equal(hit.record.name, 'Signature Flight Support');
-  assert.equal(hit.confidence, 'high');
-  const miss = matchFboRecord(records, 'Million Air');
-  assert.equal(miss.record, null);
-});
-
 test('lead passenger is omitted unless ground transportation is requested', () => {
   const state = {
     fromFbo: 'Signature Flight Support',
+    tripSheetUrl: 'https://example.test/trip-sheet.pdf',
+    tripSheetData: { fromAirportPhone: '201-555-0100' },
     preloadedPax: [{ firstName: 'Ada', lastName: 'Lovelace', primary: true }],
     tripSheetNotes: { specialItems: 'Limo on arrival' },
   };
   assert.equal(groundTransportRequested(state, {}), true);
   assert.equal(leadPassengerName(state), 'Ada Lovelace');
-  const fbo = { name: 'Signature Flight Support', phone: '201-555-0100' };
   const withGround = buildSpeakableFacts({
-    trip, state, purpose: 'departure', fbo, match: { confidence: 'high' },
+    trip, state, purpose: 'departure',
   });
   assert.equal(withGround.facts.leadPassengerName, 'Ada Lovelace');
   const prompt = assistantSystemPrompt(withGround.facts);
@@ -90,8 +77,6 @@ test('lead passenger is omitted unless ground transportation is requested', () =
     trip,
     state: { ...state, tripSheetNotes: { specialItems: 'Pets in cabin' } },
     purpose: 'departure',
-    fbo,
-    match: { confidence: 'high' },
   });
   assert.equal(noGround.facts.leadPassengerName, '');
   assert.doesNotMatch(assistantSystemPrompt(noGround.facts), /Ada Lovelace/);
@@ -99,37 +84,29 @@ test('lead passenger is omitted unless ground transportation is requested', () =
 });
 
 test('hours unknown is spoken as unverified and does not block a phone-ready call', () => {
-  const fbo = { name: 'Signature Flight Support', phone: '201-555-0100', raw: {} };
   const result = buildSpeakableFacts({
     trip,
-    state: { fromFbo: 'Signature' },
+    state: {
+      fromFbo: 'Signature',
+      tripSheetUrl: 'https://example.test/trip-sheet.pdf',
+      tripSheetData: { fromAirportPhone: '201-555-0100' },
+    },
     purpose: 'departure',
-    fbo,
-    match: { confidence: 'high' },
   });
   assert.equal(result.ok, true);
   assert.equal(result.facts.hoursKnown, false);
-  assert.match(assistantSystemPrompt(result.facts), /Hours are not in the verified dataset/);
-});
-
-test('hours column is read from iFlightPlanner raw fields when present', () => {
-  const record = normalizeFboRecord({
-    ICAO: 'KTEB',
-    'FBO Name': 'Signature',
-    Phone: '201-555-0100',
-    'Hours of Operation': '0600-2200',
-  });
-  assert.equal(record.hours, '0600-2200');
-  assert.equal(hoursFromRecord(record), '0600-2200');
+  assert.match(assistantSystemPrompt(result.facts), /Hours are not on the uploaded trip sheet/);
 });
 
 test('missing phone blocks the call', () => {
   const result = buildSpeakableFacts({
     trip,
-    state: { fromFbo: 'Signature' },
+    state: {
+      fromFbo: 'Signature',
+      tripSheetUrl: 'https://example.test/trip-sheet.pdf',
+      tripSheetData: {},
+    },
     purpose: 'departure',
-    fbo: { name: 'Signature Flight Support' },
-    match: { confidence: 'high' },
   });
   assert.equal(result.ok, false);
   assert.match(result.blockers.join(' '), /phone/i);
@@ -138,14 +115,17 @@ test('missing phone blocks the call', () => {
 test('trip-sheet FBO name stays authoritative and arming requires verification', () => {
   const result = buildSpeakableFacts({
     trip,
-    state: { fromFbo: 'Signature Trip Sheet Name' },
+    state: {
+      fromFbo: 'Signature Trip Sheet Name',
+      tripSheetUrl: 'https://example.test/trip-sheet.pdf',
+      tripSheetData: { fromAirportPhone: '201-555-0100' },
+    },
     purpose: 'departure',
-    fbo: { name: 'Signature Flight Support Database Name', phone: '201-555-0100' },
-    match: { confidence: 'high' },
   });
   assert.equal(result.facts.fboName, 'Signature Trip Sheet Name');
   assert.equal(result.facts.fboNameSource, 'trip_sheet');
-  assert.equal(result.facts.phoneSource, 'iflightplanner');
+  assert.equal(result.facts.phoneSource, 'trip_sheet');
+  assert.equal(result.facts.phoneE164, '+12015550100');
   assert.deepEqual(
     unverifiedCallPurposes(['departure', 'arrival'], ['departure']),
     ['arrival'],
@@ -159,14 +139,26 @@ test('trip-sheet FBO name stays authoritative and arming requires verification',
 test('a calendar FBO fallback cannot replace a missing trip-sheet FBO', () => {
   const result = buildSpeakableFacts({
     trip,
-    state: {},
+    state: {
+      tripSheetUrl: 'https://example.test/trip-sheet.pdf',
+      tripSheetData: { fromAirportPhone: '201-555-0100' },
+    },
     purpose: 'departure',
-    fbo: { name: 'Signature Flight Support', phone: '201-555-0100' },
-    match: { confidence: 'unique_airport' },
   });
   assert.equal(result.ok, false);
   assert.equal(result.facts.fboName, '');
   assert.match(result.blockers.join(' '), /trip sheet/i);
+});
+
+test('departure and arrival dialing phones come only from trip-sheet data', () => {
+  const state = {
+    tripSheetData: {
+      fromAirportPhone: '(201) 555-0100',
+      toAirportPhone: '561-555-0199',
+    },
+  };
+  assert.equal(tripSheetDialPhone(state, 'departure'), '(201) 555-0100');
+  assert.equal(tripSheetDialPhone(state, 'arrival'), '561-555-0199');
 });
 
 test('dial window is two hours before departure and 90 minutes before arrival', () => {
@@ -206,11 +198,11 @@ test('Vapi payload never includes a passenger name without ground transport', ()
     trip,
     state: {
       fromFbo: 'Signature',
+      tripSheetUrl: 'https://example.test/trip-sheet.pdf',
+      tripSheetData: { fromAirportPhone: '201-555-0100' },
       preloadedPax: [{ firstName: 'Secret', lastName: 'Passenger' }],
     },
     purpose: 'departure',
-    fbo: { name: 'Signature', phone: '201-555-0100' },
-    match: { confidence: 'high' },
   }).facts;
   const body = vapiCallPayload({
     id: 'fbo_1',

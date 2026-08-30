@@ -113,8 +113,8 @@ export default function FboCallSettingsPanel({ currentUser }) {
           </div>
           <p className="text-sm leading-relaxed text-content-muted">
             Outbound FBO calls require ops to arm each trip. The agent may speak the lead passenger
-            name only when ground transportation is on the trip. Hours come from iFlightPlanner when
-            that feed includes them; otherwise the agent says hours are not on file.
+            name only when ground transportation is on the trip. FBO details come from the uploaded
+            trip sheet; if hours are absent, the agent says they are not on file.
           </p>
           <label className="flex items-center gap-2 text-sm text-content">
             <input

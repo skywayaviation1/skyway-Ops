@@ -5248,6 +5248,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   const [tripSheetFilename, setTripSheetFilename] = useState(null);
   const [tripSheetUploadedAt, setTripSheetUploadedAt] = useState(null);
   const [tripSheetUploadedBy, setTripSheetUploadedBy] = useState(null);
+  const [tripSheetData, setTripSheetData] = useState(null);
   const [preloadedPax, setPreloadedPax] = useState([]);
   const [tripSheetNotes, setTripSheetNotes] = useState(null);
   const [tripSheetNotesEdited, setTripSheetNotesEdited] = useState({ at: null, byName: null });
@@ -5255,15 +5256,9 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   const [opsDisposition, setOpsDisposition] = useState(null);
   const [opsDispositionReason, setOpsDispositionReason] = useState(null);
   const [dispatcherUids, setDispatcherUids] = useState([]);
-  // FBO state. We seed from trip.info.fromFbo / trip.info.toFbo (parsed
-  // from JetInsight iCal at sync time) so a freshly-loaded trip without
-  // an explicit trip-state write still shows its FBO. The Firestore
-  // subscription below OVERRIDES with whatever trip-state says, but only
-  // when that value is non-null — so an admin who manually clears the
-  // FBO can do so, while an empty trip-state doc doesn't blank out the
-  // iCal-parsed value.
-  const [fromFbo, setFromFbo] = useState(trip.info?.fromFbo || null);
-  const [toFbo, setToFbo] = useState(trip.info?.toFbo || null);
+  // FBO call details come from the uploaded trip sheet in trip-state.
+  const [fromFbo, setFromFbo] = useState(null);
+  const [toFbo, setToFbo] = useState(null);
   const [fboCalls, setFboCalls] = useState([]);
   const [pendingScanPax, setPendingScanPax] = useState(null); // pre-loaded pax being checked in
   const [loading, setLoading] = useState(true);
@@ -5475,20 +5470,15 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
           setTripSheetFilename(state.tripSheetFilename || null);
           setTripSheetUploadedAt(state.tripSheetUploadedAt || null);
           setTripSheetUploadedBy(state.tripSheetUploadedBy || null);
+          setTripSheetData(state.tripSheetData || null);
           setPreloadedPax(Array.isArray(state.preloadedPax) ? state.preloadedPax : []);
           setTripSheetNotes(state.tripSheetNotes || null);
           setTripSheetNotesEdited({
             at: state.tripSheetNotesEditedAt || null,
             byName: state.tripSheetNotesEditedByName || null,
           });
-          // FBO sourcing: state (trip-state doc) wins when set, fall back
-          // to trip.info (iCal-parsed). Same logic as buildPublicTripData
-          // so the broker page and ops UI show the same value. Tradeoff:
-          // if an admin clears an FBO via trip-state (writes null), the
-          // iCal value still shows until the next iCal sync replaces it.
-          // Rare event; preferable to FBOs disappearing for the common case.
-          setFromFbo(state.fromFbo || trip.info?.fromFbo || null);
-          setToFbo(state.toFbo || trip.info?.toFbo || null);
+          setFromFbo(state.fromFbo || null);
+          setToFbo(state.toFbo || null);
           setFboCalls(Array.isArray(state.fboCalls) ? state.fboCalls : []);
           setCompleted(state.completed === true);
           setFratState(state.frat || null);
@@ -7373,6 +7363,8 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
             <TripFboCallsLazy
               trip={trip}
               currentUser={currentUser}
+              tripSheetUrl={tripSheetUrl}
+              tripSheetData={tripSheetData}
               fromFbo={fromFbo}
               toFbo={toFbo}
               passengers={passengers}

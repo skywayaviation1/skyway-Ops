@@ -15,17 +15,17 @@ and attached as the Vapi phone number.
 Ops must **arm each trip**. The calendar never auto-dials. A 15-minute cron
 (`/api/fbo-call-schedule`) only places jobs that were armed.
 
-For now, the uploaded trip sheet is authoritative for the departure and arrival
-FBO names. Skyway matches those names to iFlightPlanner only to obtain a
-dialing phone and published hours. An ops/admin user must explicitly verify the
-trip-sheet FBO, airport, and matched phone for each leg before it can be armed.
-The verification is recorded on the call job.
+The uploaded trip sheet is authoritative for the departure and arrival FBO
+names and phone numbers. iFlightPlanner is not used by the calling workflow. An
+ops/admin user must explicitly verify the trip-sheet FBO, airport, and phone for
+each leg before it can be armed. The verification is recorded on the call job.
+If the uploaded sheet has no dialable phone, the call remains blocked.
 
 ## What the agent may say
 
 - Verified tail, route, FBO name, airport, schedule, passenger **count**
 - Catering / special items from the trip sheet
-- iFlightPlanner phone (and hours only when that feed has an hours column)
+- FBO phone parsed from the uploaded trip sheet
 - **Lead passenger name only when ground transportation is requested**
 
 It must not invent hours, prices, hangar availability, or other passenger names.
@@ -40,7 +40,6 @@ Uncertain or sensitive questions transfer to Skyway operations.
 | `VAPI_ASSISTANT_ID` | Optional pre-built assistant; otherwise Skyway sends an inline assistant |
 | `VAPI_WEBHOOK_SECRET` | HMAC secret for `POST /api/fbo-call-webhook` |
 | `FBO_CALL_OPS_TRANSFER_NUMBER` | Warm-transfer destination (defaults to +17276055000) |
-| `IFLIGHTPLANNER_CLIENT_ID` / `IFLIGHTPLANNER_CLIENT_SECRET` | FBO phone lookup |
 | `INTERNAL_API_SECRET` | Existing server-to-server secret |
 | `CRON_SECRET` | Optional Vercel cron bearer |
 | `OPS_ALERT_EMAILS` | Ops notification recipients |
@@ -55,8 +54,8 @@ In Vapi, set the assistant server URL to:
 1. Administrator enables FBO calling in Organization settings after the env vars
    are deployed.
 2. Open a flight → Operations → **FBO calls**.
-3. Review the trip-sheet FBO and airport, then confirm the matched
-   iFlightPlanner phone. Check the verification box for each call to arm.
+3. Review the trip-sheet FBO, airport, and phone. Check the verification box
+   for each call to arm.
 4. The agent dials about 2 hours before departure and 90 minutes before arrival
    (configurable). Failed attempts retry, then email ops.
 5. Transcripts and structured confirmations stay on the trip. They are **not**
