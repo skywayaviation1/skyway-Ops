@@ -40,6 +40,15 @@ function payloadFrom(trip, state) {
   };
 }
 
+function verificationSignature(row) {
+  if (!row?.ok || !row.facts) return '';
+  return [
+    row.facts.fboName,
+    row.facts.airport,
+    row.facts.phoneE164,
+  ].join('|');
+}
+
 export default function TripFboCalls({
   trip,
   currentUser,
@@ -57,6 +66,7 @@ export default function TripFboCalls({
   const [calls, setCalls] = useState(Array.isArray(fboCalls) ? fboCalls : []);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState('');
+  const [verifiedFacts, setVerifiedFacts] = useState({});
 
   const state = {
     fromFbo,
@@ -135,10 +145,17 @@ export default function TripFboCalls({
   }
 
   const results = preview?.results || [];
-  const materialChanged = results.some((row) => {
-    const match = calls.filter((call) => call.purpose === row.purpose && call.status !== 'cancelled').at(-1);
+  const latestCallFor = (row) => calls
+    .filter((call) => call.purpose === row.purpose && call.status !== 'cancelled')
+    .at(-1);
+  const changedResults = results.filter((row) => {
+    const match = latestCallFor(row);
     return match && row.hash && match.factsHash && match.factsHash !== row.hash;
   });
+  const verifiedPurposes = results
+    .filter((row) => verificationSignature(row) === verifiedFacts[row.purpose])
+    .map((row) => row.purpose);
+  const verifiedChanged = changedResults.every((row) => verifiedPurposes.includes(row.purpose));
 
   return (
     <div className="space-y-4 p-4 sm:p-6 max-w-2xl">
@@ -146,8 +163,9 @@ export default function TripFboCalls({
         <h2 className="text-base font-semibold text-content">FBO calls</h2>
         <p className="mt-1 text-sm leading-relaxed text-content-muted">
           {brand.name} automated ops assistant. Caller ID {brand.contactPhone || SKYWAY_CALLER_ID_DISPLAY}.
-          Ops must arm each trip. The agent will not guess hours or passenger names except the
-          lead passenger for ground transportation.
+          FBO names come from the uploaded trip sheet. Review each matched dialing phone, verify the
+          details, then arm the call. The agent will not guess hours or passenger names except the lead
+          passenger for ground transportation.
         </p>
       </div>
       {error && (
@@ -161,16 +179,18 @@ export default function TripFboCalls({
             <div className="mb-2 flex items-center justify-between gap-2">
               <p className="text-sm font-semibold capitalize text-content">{row.purpose} FBO</p>
               <StatusChip tone={row.ok ? 'success' : 'warning'} size="sm">
-                {row.ok ? 'Ready to arm' : 'Blocked'}
+                {verificationSignature(row) === verifiedFacts[row.purpose]
+                  ? 'Verified'
+                  : (row.ok ? 'Ready to verify' : 'Blocked')}
               </StatusChip>
             </div>
             {row.facts && (
               <dl className="grid grid-cols-[7rem_1fr] gap-x-3 gap-y-1 text-sm">
-                <dt className="text-content-subtle">FBO</dt>
+                <dt className="text-content-subtle">Trip sheet FBO</dt>
                 <dd className="text-content">{row.facts.fboName || '—'}</dd>
-                <dt className="text-content-subtle">Airport</dt>
+                <dt className="text-content-subtle">Trip airport</dt>
                 <dd className="font-mono text-content">{row.facts.airport || '—'}</dd>
-                <dt className="text-content-subtle">Phone</dt>
+                <dt className="text-content-subtle">Dialing phone</dt>
                 <dd className="font-mono text-content">{row.facts.phoneDisplay || 'Not in iFlightPlanner'}</dd>
                 <dt className="text-content-subtle">Hours</dt>
                 <dd className="text-content">{row.facts.hoursKnown ? row.facts.hours : 'Not on file — will not be guessed'}</dd>
@@ -181,6 +201,22 @@ export default function TripFboCalls({
                     : 'Not requested · no passenger names'}
                 </dd>
               </dl>
+            )}
+            {row.ok && canArm && (
+              <label className="mt-3 flex items-start gap-2 rounded-lg border border-edge bg-surface-sunken p-3 text-sm text-content">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={verificationSignature(row) === verifiedFacts[row.purpose]}
+                  onChange={(event) => setVerifiedFacts((current) => ({
+                    ...current,
+                    [row.purpose]: event.target.checked ? verificationSignature(row) : '',
+                  }))}
+                />
+                <span>
+                  I verified the trip-sheet FBO, airport, and iFlightPlanner dialing phone shown above.
+                </span>
+              </label>
             )}
             {!row.ok && (
               <ul className="mt-2 list-disc pl-5 text-sm text-warning">
@@ -196,13 +232,21 @@ export default function TripFboCalls({
             variant="primary"
             icon={Phone}
             loading={busy === 'arm'}
-            onClick={() => run('arm')}
-            disabled={!results.some((row) => row.ok)}
+            onClick={() => run('arm', {
+              purposes: verifiedPurposes,
+              verifiedPurposes,
+            })}
+            disabled={verifiedPurposes.length === 0}
           >
-            Arm FBO calls
+            Arm verified {verifiedPurposes.length === 1 ? 'call' : 'calls'}
           </Button>
-          {materialChanged && (
-            <Button variant="secondary" loading={busy === 'update'} onClick={() => run('update')}>
+          {changedResults.length > 0 && (
+            <Button
+              variant="secondary"
+              loading={busy === 'update'}
+              disabled={!verifiedChanged}
+              onClick={() => run('update', { verifiedPurposes })}
+            >
               Queue update call
             </Button>
           )}
@@ -231,7 +275,7 @@ export default function TripFboCalls({
         </div>
       )}
       {!preview && !error && (
-        <p className="text-sm text-content-muted"><Loader2 className="mr-2 inline h-4 w-4 animate-spin" />Checking iFlightPlanner…</p>
+        <p className="text-sm text-content-muted"><Loader2 className="mr-2 inline h-4 w-4 animate-spin" />Reading trip-sheet FBOs and matching dialing phones…</p>
       )}
     </div>
   );

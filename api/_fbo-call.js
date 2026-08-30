@@ -29,6 +29,7 @@ import {
   resolveDialAt,
   scheduledDialAt,
   toE164,
+  unverifiedCallPurposes,
   vendorConfigured,
 } from '../src/fbo-call.js';
 
@@ -363,7 +364,14 @@ export async function placeVapiCall(job, config, env = process.env) {
   return data;
 }
 
-export async function armCalls({ trip, state, purposes, actor, now = Date.now() }) {
+export async function armCalls({
+  trip,
+  state,
+  purposes,
+  verifiedPurposes,
+  actor,
+  now = Date.now(),
+}) {
   const config = await readCallConfig();
   if (!config.enabled && !vendorConfigured()) {
     const error = new Error('FBO calling is not enabled. Add Vapi credentials and turn it on in Settings.');
@@ -372,6 +380,12 @@ export async function armCalls({ trip, state, purposes, actor, now = Date.now() 
   }
   const wanted = (Array.isArray(purposes) && purposes.length ? purposes : ['departure', 'arrival'])
     .filter((purpose) => purpose === 'departure' || purpose === 'arrival');
+  const unverified = unverifiedCallPurposes(wanted, verifiedPurposes);
+  if (unverified.length) {
+    const error = new Error(`Verify the trip-sheet FBO details before arming: ${unverified.join(', ')}`);
+    error.status = 409;
+    throw error;
+  }
   const created = [];
   const blocked = [];
   for (const purpose of wanted) {
@@ -420,6 +434,9 @@ export async function armCalls({ trip, state, purposes, actor, now = Date.now() 
       armedByUid: actor.uid,
       armedByName: actor.name,
       armedAt: now,
+      fboDetailsVerifiedAt: now,
+      fboDetailsVerifiedByUid: actor.uid,
+      fboDetailsVerifiedByName: actor.name,
       lastError: '',
     };
     await writeJob(job);
@@ -470,10 +487,17 @@ export async function applyVendorStatus(job, patch) {
   return next;
 }
 
-export async function maybeQueueMaterialUpdates(trip, state, now = Date.now()) {
+export async function maybeQueueMaterialUpdates({
+  trip,
+  state,
+  verifiedPurposes,
+  actor,
+  now = Date.now(),
+}) {
   const jobs = await listTripCalls(trip.uid);
   const armedFamily = jobs.filter((job) => job.status !== CALL_STATUSES.cancelled);
   if (armedFamily.length === 0) return [];
+  const verified = new Set(Array.isArray(verifiedPurposes) ? verifiedPurposes : []);
   const created = [];
   for (const purpose of ['departure', 'arrival']) {
     const latest = [...armedFamily].reverse().find((job) => job.purpose === purpose);
@@ -483,6 +507,11 @@ export async function maybeQueueMaterialUpdates(trip, state, now = Date.now()) {
     if (resolved.hash === latest.factsHash) continue;
     if (!['completed', 'needs_followup', 'failed', 'armed', 'scheduled'].includes(latest.status)) continue;
     if (['dialing', 'in_progress'].includes(latest.status)) continue;
+    if (!verified.has(purpose)) {
+      const error = new Error(`Verify the updated trip-sheet FBO details before arming: ${purpose}`);
+      error.status = 409;
+      throw error;
+    }
     const id = newCallId();
     const job = {
       ...latest,
@@ -501,6 +530,11 @@ export async function maybeQueueMaterialUpdates(trip, state, now = Date.now()) {
       attempts: 0,
       lastError: '',
       armedAt: now,
+      armedByUid: actor?.uid || latest.armedByUid || '',
+      armedByName: actor?.name || latest.armedByName || '',
+      fboDetailsVerifiedAt: now,
+      fboDetailsVerifiedByUid: actor?.uid || '',
+      fboDetailsVerifiedByName: actor?.name || '',
       summary: '',
       transcript: '',
       confirmations: null,

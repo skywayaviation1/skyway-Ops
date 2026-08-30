@@ -19,6 +19,7 @@ import {
   scheduledDialAt,
   shouldQueueUpdate,
   toE164,
+  unverifiedCallPurposes,
   vendorConfigured,
 } from '../src/fbo-call.js';
 import { computeOutstanding } from '../src/ops-readiness.js';
@@ -132,6 +133,40 @@ test('missing phone blocks the call', () => {
   });
   assert.equal(result.ok, false);
   assert.match(result.blockers.join(' '), /phone/i);
+});
+
+test('trip-sheet FBO name stays authoritative and arming requires verification', () => {
+  const result = buildSpeakableFacts({
+    trip,
+    state: { fromFbo: 'Signature Trip Sheet Name' },
+    purpose: 'departure',
+    fbo: { name: 'Signature Flight Support Database Name', phone: '201-555-0100' },
+    match: { confidence: 'high' },
+  });
+  assert.equal(result.facts.fboName, 'Signature Trip Sheet Name');
+  assert.equal(result.facts.fboNameSource, 'trip_sheet');
+  assert.equal(result.facts.phoneSource, 'iflightplanner');
+  assert.deepEqual(
+    unverifiedCallPurposes(['departure', 'arrival'], ['departure']),
+    ['arrival'],
+  );
+  assert.deepEqual(
+    unverifiedCallPurposes(['departure'], ['departure']),
+    [],
+  );
+});
+
+test('a calendar FBO fallback cannot replace a missing trip-sheet FBO', () => {
+  const result = buildSpeakableFacts({
+    trip,
+    state: {},
+    purpose: 'departure',
+    fbo: { name: 'Signature Flight Support', phone: '201-555-0100' },
+    match: { confidence: 'unique_airport' },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.facts.fboName, '');
+  assert.match(result.blockers.join(' '), /trip sheet/i);
 });
 
 test('dial window is two hours before departure and 90 minutes before arrival', () => {

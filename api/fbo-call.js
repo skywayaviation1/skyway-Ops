@@ -84,6 +84,7 @@ export default async function handler(req, res) {
         trip: body.trip,
         state: body.state || {},
         purposes: body.purposes,
+        verifiedPurposes: body.verifiedPurposes,
         actor,
       });
       return res.status(200).json({ ok: true, ...result });
@@ -124,7 +125,12 @@ export default async function handler(req, res) {
     if (action === 'update') {
       if (!body.trip?.uid) return res.status(400).json({ error: 'trip.uid is required' });
       const { maybeQueueMaterialUpdates } = await import('./_fbo-call.js');
-      const created = await maybeQueueMaterialUpdates(body.trip, body.state || {});
+      const created = await maybeQueueMaterialUpdates({
+        trip: body.trip,
+        state: body.state || {},
+        verifiedPurposes: body.verifiedPurposes,
+        actor,
+      });
       return res.status(200).json({ ok: true, created });
     }
 

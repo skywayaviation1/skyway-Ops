@@ -15,6 +15,12 @@ and attached as the Vapi phone number.
 Ops must **arm each trip**. The calendar never auto-dials. A 15-minute cron
 (`/api/fbo-call-schedule`) only places jobs that were armed.
 
+For now, the uploaded trip sheet is authoritative for the departure and arrival
+FBO names. Skyway matches those names to iFlightPlanner only to obtain a
+dialing phone and published hours. An ops/admin user must explicitly verify the
+trip-sheet FBO, airport, and matched phone for each leg before it can be armed.
+The verification is recorded on the call job.
+
 ## What the agent may say
 
 - Verified tail, route, FBO name, airport, schedule, passenger **count**
@@ -49,7 +55,8 @@ In Vapi, set the assistant server URL to:
 1. Administrator enables FBO calling in Organization settings after the env vars
    are deployed.
 2. Open a flight → Operations → **FBO calls**.
-3. Confirm the iFlightPlanner match and phone. Arm departure and/or arrival.
+3. Review the trip-sheet FBO and airport, then confirm the matched
+   iFlightPlanner phone. Check the verification box for each call to arm.
 4. The agent dials about 2 hours before departure and 90 minutes before arrival
    (configurable). Failed attempts retry, then email ops.
 5. Transcripts and structured confirmations stay on the trip. They are **not**

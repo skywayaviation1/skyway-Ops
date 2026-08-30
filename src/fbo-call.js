@@ -19,6 +19,12 @@ export const DEFAULT_MAX_ATTEMPTS = 3;
 
 export const CALL_PURPOSES = Object.freeze(['departure', 'arrival']);
 
+export function unverifiedCallPurposes(purposes = [], verifiedPurposes = []) {
+  const verified = new Set(Array.isArray(verifiedPurposes) ? verifiedPurposes : []);
+  return (Array.isArray(purposes) ? purposes : [])
+    .filter((purpose) => CALL_PURPOSES.includes(purpose) && !verified.has(purpose));
+}
+
 export const CALL_STATUSES = Object.freeze({
   preview: 'preview',
   blocked: 'blocked',
@@ -183,8 +189,8 @@ export function materialFacts(trip = {}, state = {}) {
     to: clean(info.to).toUpperCase(),
     start: toIso(trip.start),
     end: toIso(trip.end),
-    fromFbo: clean(state.fromFbo || info.fromFbo),
-    toFbo: clean(state.toFbo || info.toFbo),
+    fromFbo: clean(state.fromFbo),
+    toFbo: clean(state.toFbo),
     pax: Number.isFinite(Number(state.paxOverride))
       ? Number(state.paxOverride)
       : Number(info.pax || 0),
@@ -277,8 +283,8 @@ export function buildSpeakableFacts({
     ? clean(info.to).toUpperCase()
     : clean(info.from).toUpperCase();
   const requestedName = purpose === 'arrival'
-    ? clean(state.toFbo || info.toFbo)
-    : clean(state.fromFbo || info.fromFbo);
+    ? clean(state.toFbo)
+    : clean(state.fromFbo);
   const phone = toE164(fbo?.phone || fbo?.tollFree);
   const hours = hoursFromRecord(fbo);
   const ground = groundTransportRequested(state, info);
@@ -290,7 +296,7 @@ export function buildSpeakableFacts({
   const endMs = toMillis(trip.end);
   const blockers = [];
   if (!airport) blockers.push('Airport is missing');
-  if (!requestedName && match?.confidence !== 'unique_airport') blockers.push('FBO name is missing');
+  if (!requestedName) blockers.push('FBO name is missing from the trip sheet');
   if (!fbo) blockers.push(match?.reason || 'FBO could not be verified');
   if (!phone) blockers.push('No verified FBO phone number in iFlightPlanner');
   if (!hours) {
@@ -305,11 +311,13 @@ export function buildSpeakableFacts({
     airport,
     otherAirport: purpose === 'arrival' ? clean(info.from).toUpperCase() : clean(info.to).toUpperCase(),
     tail: clean(info.tail).toUpperCase(),
-    fboName: clean(fbo?.name || requestedName),
+    fboName: requestedName,
+    fboNameSource: 'trip_sheet',
     requestedFboName: requestedName,
     matchConfidence: match?.confidence || 'none',
     phoneE164: phone,
     phoneDisplay: clean(fbo?.phone || fbo?.tollFree),
+    phoneSource: 'iflightplanner',
     hours: hours || '',
     hoursKnown: Boolean(hours),
     fuelBrand: clean(fbo?.fuelBrand),
