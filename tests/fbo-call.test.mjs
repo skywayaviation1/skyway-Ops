@@ -6,6 +6,7 @@ import test from 'node:test';
 import {
   CALL_STATUSES,
   SKYWAY_CALLER_ID,
+  armDialPlan,
   assistantSystemPrompt,
   buildSpeakableFacts,
   fboCallOutstanding,
@@ -195,6 +196,30 @@ test('departure and arrival follow-up windows are both two hours', () => {
   assert.equal(scheduledDialAt({ purpose: 'arrival', startMs: start, endMs: end }), end - 120 * 60_000);
   const tooLate = resolveDialAt(start - 120 * 60_000, start + 40 * 60_000, start);
   assert.equal(tooLate.ok, false);
+});
+
+test('immediate arrival arming creates now and two-hour follow-up jobs', () => {
+  const now = Date.parse(trip.start) - 6 * 60 * 60_000;
+  const plannedAt = Date.parse(trip.end) - 2 * 60 * 60_000;
+  assert.deepEqual(armDialPlan({
+    purpose: 'arrival',
+    plannedAt,
+    resolvedDialAt: plannedAt,
+    now,
+    dialImmediately: true,
+  }), [
+    { callPhase: 'initial', dialAt: now, dialMode: 'immediate' },
+    { callPhase: 'arrival_reverification', dialAt: plannedAt, dialMode: 'scheduled' },
+  ]);
+  assert.deepEqual(armDialPlan({
+    purpose: 'arrival',
+    plannedAt,
+    resolvedDialAt: plannedAt,
+    now,
+    dialImmediately: false,
+  }), [
+    { callPhase: 'arrival_reverification', dialAt: plannedAt, dialMode: 'scheduled' },
+  ]);
 });
 
 test('active calls expose listen availability without exposing monitor URLs', () => {

@@ -18,6 +18,7 @@ import {
   SKYWAY_CALLER_ID,
   SKYWAY_CALLER_NAME,
   VOICE_VENDOR,
+  armDialPlan,
   assistantSystemPrompt,
   buildSpeakableFacts,
   firstMessage,
@@ -428,22 +429,14 @@ export async function armCalls({
       if (dialAt <= now) immediateJobIds.push(id);
     };
 
-    if (dialImmediately !== false) {
-      await makeJob({ callPhase: 'initial', dialAt: now, dialMode: 'immediate' });
-      if (purpose === 'arrival' && planned > now + 60_000) {
-        await makeJob({
-          callPhase: 'arrival_reverification',
-          dialAt: planned,
-          dialMode: 'scheduled',
-        });
-      }
-    } else {
-      await makeJob({
-        callPhase: purpose === 'arrival' ? 'arrival_reverification' : 'initial',
-        dialAt: when.dialAt,
-        dialMode: 'scheduled',
-      });
-    }
+    const dialPlan = armDialPlan({
+      purpose,
+      plannedAt: planned,
+      resolvedDialAt: when.dialAt,
+      now,
+      dialImmediately,
+    });
+    for (const plannedJob of dialPlan) await makeJob(plannedJob);
   }
   const dialResults = [];
   for (const id of immediateJobIds) {

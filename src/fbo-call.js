@@ -168,6 +168,31 @@ export function resolveDialAt(plannedAt, now, eventMs) {
   return { ok: true, dialAt };
 }
 
+export function armDialPlan({
+  purpose,
+  plannedAt,
+  resolvedDialAt,
+  now,
+  dialImmediately = true,
+} = {}) {
+  if (dialImmediately) {
+    const plan = [{ callPhase: 'initial', dialAt: now, dialMode: 'immediate' }];
+    if (purpose === 'arrival' && plannedAt > now + 60_000) {
+      plan.push({
+        callPhase: 'arrival_reverification',
+        dialAt: plannedAt,
+        dialMode: 'scheduled',
+      });
+    }
+    return plan;
+  }
+  return [{
+    callPhase: purpose === 'arrival' ? 'arrival_reverification' : 'initial',
+    dialAt: resolvedDialAt,
+    dialMode: 'scheduled',
+  }];
+}
+
 export function nextRetryAt(now, retryMinutes = DEFAULT_RETRY_MINUTES) {
   return now + Number(retryMinutes) * 60_000;
 }
