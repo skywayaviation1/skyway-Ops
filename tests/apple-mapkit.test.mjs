@@ -156,7 +156,7 @@ test('MapKit loader uses the official SDK and server token callback', async () =
   assert.doesNotMatch(loader, /APPLE_MAPKIT_PRIVATE_KEY/);
 });
 
-test('shared TrackingMap uses Apple for imagery and Leaflet for operations overlays', async () => {
+test('shared TrackingMap uses Apple as fallback imagery with Leaflet operations overlays', async () => {
   const map = await source('src/TrackingMap.jsx');
   assert.match(map, /loadAppleMapKit\(\)\.catch/);
   assert.match(map, /new apple\.Map/);
@@ -181,7 +181,7 @@ test('all tracking surfaces continue using the shared map component', async () =
   assert.match(dashboard, /TrackingMapLazy/);
 });
 
-test('TV Flight Board uses Apple Maps with Leaflet operational overlays', async () => {
+test('TV Flight Board uses Apple Maps fallback with Leaflet operational overlays', async () => {
   const board = await source('src/FlightBoard.jsx');
   assert.match(board, /loadAppleMapKit\(\)\.catch/);
   assert.match(board, /new apple\.Map/);

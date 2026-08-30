@@ -31,6 +31,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { lookupCoords } from './airport-coords.js';
 import { appleMapType, loadAppleMapKit } from './apple-mapkit.js';
+import {
+  GOOGLE_DARK_STYLES,
+  googleMapType,
+  loadGoogleMaps,
+  onGoogleMapsAuthFailure,
+} from './google-maps.js';
 import { statusEventAt } from './trip-status.js';
 import { Wordmark } from './ui.jsx';
 
@@ -334,8 +340,9 @@ function FlightRow({ trip, state, faPosition, phase }) {
 // ====================================================================
 
 function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
-  // Real US map via Leaflet + CARTO dark tiles. Same pattern as the
-  // existing TrackingScreen so we get consistent rendering. Map shows:
+  // Real US map: Google Maps imagery preferred, Leaflet overlays for
+  // routes/aircraft/radar. Falls back to Apple MapKit, then Esri tiles.
+  // Map shows:
   //   - All airport endpoints as small dots with code labels
   //   - Route lines colored by phase (cyan=airborne, amber=preflight,
   //     slate=pending, emerald=landed, dim=completed)
@@ -346,8 +353,11 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
   // plotted — separate fetch per tail; planned for follow-up.
 
   const containerRef = useRef(null);
+  const googleContainerRef = useRef(null);
   const appleContainerRef = useRef(null);
   const mapRef = useRef(null);
+  const googleMapRef = useRef(null);
+  const googleAuthCleanupRef = useRef(null);
   const appleMapRef = useRef(null);
   const appleErrorHandlerRef = useRef(null);
   const layerRef = useRef(null);
@@ -473,21 +483,24 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
     return () => { cancelled = true; };
   }, [missingCodes.join(',')]);
 
-  // Initialize Apple Maps as the imagery layer and Leaflet as the transparent
-  // operational overlay. If MapKit is not configured or fails at runtime, the
-  // board falls back to the previous Esri/CARTO imagery without losing routes,
-  // aircraft positions, or radar.
+  // Google Maps is the preferred imagery layer. Apple MapKit and then
+  // Esri satellite tiles remain automatic fallbacks (no CARTO). Leaflet
+  // stays transparent above the basemap for routes, aircraft, and radar.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const [L, apple] = await Promise.all([
+        const [L, google] = await Promise.all([
           loadLeaflet(),
-          loadAppleMapKit().catch((appleError) => {
-            console.info('[board] Apple Maps unavailable; using standard basemap:', appleError.message);
+          loadGoogleMaps().catch((googleError) => {
+            console.info('[board] Google Maps unavailable; trying Apple Maps:', googleError.message);
             return null;
           }),
         ]);
+        const firstApple = google ? null : await loadAppleMapKit().catch((appleError) => {
+          console.info('[board] Apple Maps unavailable; using standard basemap:', appleError.message);
+          return null;
+        });
         if (cancelled || !containerRef.current) return;
         // Fit bounds to continental US by default; will adjust based on
         // actual route data below. This is the initial view.
@@ -511,8 +524,8 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
               maxZoom: 12,
               attribution: 'Tiles &copy; Esri',
             }),
-            L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', {
-              maxZoom: 12, subdomains: 'abcd', opacity: 0.8,
+            L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', {
+              maxZoom: 12, opacity: 0.85,
             }),
           ]).addTo(map);
           const tilePane = map.getPane('tilePane');
@@ -520,7 +533,9 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
           setMapProvider('standard');
         };
 
-        if (apple && appleContainerRef.current) {
+        const useAppleBasemap = (apple) => {
+          if (!apple || !appleContainerRef.current || cancelled) return false;
+          appleContainerRef.current.style.display = '';
           const appleMap = new apple.Map(appleContainerRef.current, {
             mapType: appleMapType(apple, 'terrain'),
             showsCompass: apple.FeatureVisibility?.Hidden,
@@ -566,7 +581,39 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
           }
           setTimeout(syncAppleRegion, 0);
           setMapProvider('apple');
-        } else {
+          return true;
+        };
+
+        if (google && googleContainerRef.current) {
+          const googleMap = new google.Map(googleContainerRef.current, {
+            center: { lat: 38, lng: -95 },
+            zoom: 4,
+            mapTypeId: googleMapType('terrain'),
+            styles: GOOGLE_DARK_STYLES,
+            disableDefaultUI: true,
+            clickableIcons: false,
+            gestureHandling: 'none',
+            keyboardShortcuts: false,
+          });
+          googleMapRef.current = googleMap;
+          const syncGoogleRegion = () => {
+            const center = map.getCenter();
+            googleMap.setCenter({ lat: center.lat, lng: center.lng });
+            googleMap.setZoom(Math.round(map.getZoom()));
+          };
+          map.on('move zoom resize', syncGoogleRegion);
+          map.__swGoogleSync = syncGoogleRegion;
+          googleAuthCleanupRef.current = onGoogleMapsAuthFailure(async () => {
+            if (cancelled) return;
+            console.warn('[board] Google Maps authorization failed; trying Apple Maps');
+            googleMapRef.current = null;
+            if (googleContainerRef.current) googleContainerRef.current.style.display = 'none';
+            const apple = await loadAppleMapKit().catch(() => null);
+            if (!useAppleBasemap(apple)) addStandardBasemap();
+          });
+          setTimeout(syncGoogleRegion, 0);
+          setMapProvider('google');
+        } else if (!useAppleBasemap(firstApple)) {
           addStandardBasemap();
         }
         // Layer group for our route/marker overlays so we can clear and
@@ -582,6 +629,9 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
     return () => {
       cancelled = true;
       if (mapRef.current) {
+        if (mapRef.current.__swGoogleSync) {
+          mapRef.current.off('move zoom resize', mapRef.current.__swGoogleSync);
+        }
         if (mapRef.current.__swAppleSync) {
           mapRef.current.off('move zoom resize', mapRef.current.__swAppleSync);
         }
@@ -589,6 +639,12 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
         mapRef.current = null;
         layerRef.current = null;
       }
+      if (googleAuthCleanupRef.current) {
+        googleAuthCleanupRef.current();
+        googleAuthCleanupRef.current = null;
+      }
+      googleMapRef.current = null;
+      if (googleContainerRef.current) googleContainerRef.current.replaceChildren();
       if (appleMapRef.current) {
         try { appleMapRef.current.destroy(); } catch (_) {}
         appleMapRef.current = null;
@@ -860,9 +916,14 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
   return (
     <div className="relative w-full h-full bg-slate-950">
       <div
-        ref={appleContainerRef}
+        ref={googleContainerRef}
         className="absolute inset-0 h-full w-full"
         style={{ background: '#020617' }}
+      />
+      <div
+        ref={appleContainerRef}
+        className="absolute inset-0 h-full w-full"
+        style={{ background: '#020617', display: 'none' }}
       />
       <div
         ref={containerRef}
@@ -893,7 +954,13 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
       </button>
 
       <div className="absolute left-3 top-3 z-[1000] border border-slate-700 bg-slate-900/90 px-2 py-1 font-mono text-[9px] tracking-widest text-slate-400">
-        {mapProvider === 'apple' ? 'APPLE MAPS' : mapProvider === 'standard' ? 'STANDARD MAP FALLBACK' : 'LOADING MAP'}
+        {mapProvider === 'google'
+          ? 'GOOGLE MAPS'
+          : mapProvider === 'apple'
+            ? 'APPLE MAPS FALLBACK'
+            : mapProvider === 'standard'
+              ? 'STANDARD MAP FALLBACK'
+              : 'LOADING MAP'}
       </div>
 
       {/* Legend — matches the actual line styles used on the map. */}

@@ -47,7 +47,8 @@ export function loadLeaflet() {
 }
 
 /* ─── BASEMAPS ───────────────────────────────────────────────────────────────
-   Every option is key-free so the broker page works without a Mapbox token.
+   Key-free Leaflet tile fallbacks used only when Google Maps (preferred) and
+   Apple MapKit are unavailable. No CARTO tiles — dark/satellite use Esri.
    `dim` is applied to the tile pane only, so overlays keep full contrast over
    bright satellite imagery.
    ─────────────────────────────────────────────────────────────────────────── */
@@ -55,13 +56,16 @@ export const BASEMAPS = {
   dark: {
     id: 'dark',
     label: 'Dark',
-    maxZoom: 18,
+    maxZoom: 16,
     dim: null,
     tiles: [
-      { url: 'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', subdomains: 'abcd' },
+      { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', maxNativeZoom: 16 },
     ],
-    labels: { url: 'https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', subdomains: 'abcd', opacity: 0.9 },
-    attribution: '&copy; <a href="https://carto.com">CARTO</a> &copy; OpenStreetMap',
+    labels: {
+      url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}',
+      opacity: 0.9,
+    },
+    attribution: 'Tiles &copy; Esri',
   },
   satellite: {
     id: 'satellite',
@@ -71,8 +75,11 @@ export const BASEMAPS = {
     tiles: [
       { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', maxNativeZoom: 17 },
     ],
-    labels: { url: 'https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', subdomains: 'abcd', opacity: 0.75 },
-    attribution: 'Tiles &copy; Esri &copy; <a href="https://carto.com">CARTO</a>',
+    labels: {
+      url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+      opacity: 0.85,
+    },
+    attribution: 'Tiles &copy; Esri',
   },
   terrain: {
     id: 'terrain',

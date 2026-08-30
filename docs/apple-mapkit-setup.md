@@ -1,14 +1,16 @@
-# Apple Maps for Tracking Maps
+# Apple Maps Fallback for Tracking Maps
 
-Skyway tracking maps use Apple's official MapKit JS renderer for the basemap.
+Skyway tracking maps prefer Google Maps and use Apple's official MapKit JS
+renderer as the first fallback when Google is unavailable.
 Leaflet remains a transparent operational overlay for aircraft markers, flown
 trails, routes, airport labels, weather radar, fitting, and map interaction.
 This preserves the existing tracking features without downloading, extracting,
 or repackaging Apple map tiles.
 
 If Apple Maps is not configured, its token is rejected, or its CDN is
-unavailable, the component automatically falls back to the existing standard
-basemap. Aircraft position and status data are never dependent on Apple.
+unavailable, the component automatically falls back to Esri/OpenTopoMap
+tiles (never CARTO). Aircraft position and status data are never dependent
+on Apple or Google.
 
 ## Apple Developer setup
 
