@@ -173,16 +173,34 @@ test('shared TrackingMap uses Apple for imagery and Leaflet for operations overl
 test('all tracking surfaces continue using the shared map component', async () => {
   const app = await source('src/App.jsx');
   const broker = await source('src/TripTrack.jsx');
+  const operator = await source('src/OperatorFlightPortal.jsx');
   const dashboard = await source('src/OpsDashboard.jsx');
   assert.match(app, /<TrackingMap/);
   assert.match(broker, /<TrackingMap/);
+  assert.match(operator, /<TrackingMap/);
   assert.match(dashboard, /TrackingMapLazy/);
+});
+
+test('TV Flight Board uses Apple Maps with Leaflet operational overlays', async () => {
+  const board = await source('src/FlightBoard.jsx');
+  assert.match(board, /loadAppleMapKit\(\)\.catch/);
+  assert.match(board, /new apple\.Map/);
+  assert.match(board, /appleMapType\(apple, 'terrain'\)/);
+  assert.match(board, /syncAppleRegion/);
+  assert.match(board, /style=\{\{ background: 'transparent' \}\}/);
+  assert.match(board, /APPLE MAPS/);
+  // Keep the existing route, aircraft, and weather layers.
+  assert.match(board, /L\.polyline/);
+  assert.match(board, /L\.marker/);
+  assert.match(board, /RainViewer/);
+  assert.match(board, /Apple Maps runtime error; using standard basemap/);
 });
 
 test('MapKit credentials and private key never enter client source', async () => {
   const clientFiles = [
     await source('src/apple-mapkit.js'),
     await source('src/TrackingMap.jsx'),
+    await source('src/FlightBoard.jsx'),
   ].join('\n');
   assert.doesNotMatch(clientFiles, /APPLE_MAPKIT_TEAM_ID/);
   assert.doesNotMatch(clientFiles, /APPLE_MAPKIT_KEY_ID/);

@@ -59,10 +59,12 @@ MapKit JS may request a replacement token automatically before expiry.
 
 - Operations Tracking;
 - public broker tracking links;
+- the brokered operator crew portal;
 - the operations dashboard fleet map.
 
-Those surfaces switch together. The separate TV Flight Board map has its own
-renderer and is not changed by this integration.
+Those surfaces switch together. The separate TV Flight Board renderer also
+uses Apple Hybrid imagery while retaining its existing route, aircraft, and
+weather-radar overlays.
 
 ## Map choices
 
