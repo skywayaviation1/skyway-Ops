@@ -63,7 +63,7 @@ test('an envelope splits into tenant mailboxes and everyone else', () => {
   assert.deepEqual(split.external, { to: ['broker@jets.com'], cc: ['agent@brokerage.com'] });
 });
 
-test('tenant recipients go to Exchange and are kept off the provider envelope', async () => {
+test('the charter copy is filed directly and kept off the provider envelope', async () => {
   const { calls, deps } = recorder();
   const result = await deliverNotification(
     message(['broker@jets.com'], ['charters@flyskyway.com']),
@@ -72,9 +72,10 @@ test('tenant recipients go to Exchange and are kept off the provider envelope', 
 
   assert.equal(result.ok, true);
   assert.equal(result.internal.ok, true);
-  // Exchange was asked to deliver the charter inbox copy...
-  assert.deepEqual(calls.internal[0].to, ['charters@flyskyway.com']);
-  // ...and it is not on the provider message, which would only be filtered
+  // The mailbox copy bypasses mail flow entirely.
+  assert.equal(calls.filed.length, 1);
+  assert.equal(calls.internal.length, 0);
+  // It is not on the provider message, which would only be filtered
   // and would arrive twice when it was not.
   assert.deepEqual(calls.provider[0].to, ['broker@jets.com']);
   assert.deepEqual(calls.provider[0].cc, []);
@@ -90,10 +91,11 @@ test('a notice addressed only to our own people never touches the provider', asy
   assert.equal(result.ok, true);
   assert.equal(result.internalOnly, true);
   assert.equal(calls.provider.length, 0);
-  assert.deepEqual(calls.internal[0].to, ['charters@flyskyway.com', 'ops@flyskyway.com']);
+  assert.equal(calls.filed.length, 1);
+  assert.deepEqual(calls.internal[0].to, ['ops@flyskyway.com']);
 });
 
-test('when Exchange refuses, the charter inbox copy is filed directly instead', async () => {
+test('the charter inbox is filed even when Exchange is unavailable', async () => {
   const { calls, deps } = recorder({ internalOk: false });
   const result = await deliverNotification(
     message(['broker@jets.com'], ['charters@flyskyway.com']),
@@ -107,13 +109,15 @@ test('when Exchange refuses, the charter inbox copy is filed directly instead', 
   assert.deepEqual(calls.provider[0].to, ['broker@jets.com']);
 });
 
-test('a tenant recipient Exchange cannot reach still goes out through the provider', async () => {
+test('provider acceptance cannot hide a failed tenant delivery', async () => {
   const { calls, deps } = recorder({ internalOk: false, fileOk: false });
   const result = await deliverNotification(message(['ops@flyskyway.com']), deps);
 
-  // Falling back to a filtered path beats not sending the notification at all.
-  assert.equal(result.ok, true);
+  // The provider is attempted as a last chance, but the queue remains failed
+  // because Exchange may filter that copy.
+  assert.equal(result.ok, false);
   assert.deepEqual(calls.provider[0].to, ['ops@flyskyway.com']);
+  assert.equal(result.providerDelivered, true);
 });
 
 test('a retry does not mail our own team a second time', async () => {
@@ -126,6 +130,28 @@ test('a retry does not mail our own team a second time', async () => {
   assert.equal(calls.internal.length, 0);
   assert.deepEqual(calls.provider[0].to, ['broker@jets.com']);
   assert.equal(result.ok, true);
+});
+
+test('a failed charter copy retries without duplicating the broker email', async () => {
+  const { calls, deps } = recorder({ fileOk: false });
+  const first = await deliverNotification(
+    message(['broker@jets.com'], ['charters@flyskyway.com']),
+    deps,
+  );
+  assert.equal(first.ok, false);
+  assert.equal(first.providerDelivered, true);
+
+  calls.provider.length = 0;
+  const retry = await deliverNotification(
+    {
+      ...message(['broker@jets.com'], ['charters@flyskyway.com']),
+      skipProvider: first.providerDelivered,
+    },
+    deps,
+  );
+  assert.equal(retry.ok, false);
+  assert.equal(calls.provider.length, 0);
+  assert.equal(calls.filed.length, 2);
 });
 
 test('a provider rejection is reported even when the tenant leg succeeded', async () => {
@@ -164,7 +190,9 @@ test('both the inline send and the retry cron use one routing decision', async (
   assert.match(drain, /deliverNotification\(\{/);
   // The retry path must know the tenant leg already happened.
   assert.match(drain, /skipInternal: item\.internalDelivered === true/);
+  assert.match(drain, /skipProvider: item\.providerDelivered === true/);
   assert.match(drain, /internalDelivered: item\.internalDelivered === true \|\| send\.internal\?\.ok === true/);
+  assert.match(drain, /providerDelivered: item\.providerDelivered === true \|\| send\.providerDelivered === true/);
   // No second provider implementation to drift out of step.
   assert.doesNotMatch(drain, /api\.resend\.com/);
   assert.doesNotMatch(enqueue, /api\.resend\.com/);

@@ -35,9 +35,8 @@ test('filing a copy never breaks the send it is copying', async () => {
 
 test('the charter inbox is reached without going through inbound mail flow', async () => {
   const enqueue = await source('api/email-enqueue.js');
-  // The notification path no longer sends to the charter inbox through the
-  // provider at all: the transport hands tenant mailboxes to Exchange, and
-  // falls back to writing the copy in directly.
+  // The notification path no longer sends the charter inbox through provider
+  // mail flow. It writes that copy directly into the Inbox.
   assert.match(enqueue, /deliverNotification\(\{/);
   assert.match(enqueue, /internalDelivery,/);
   assert.match(enqueue, /internalDelivered: internalDelivery\.ok === true/);
@@ -45,10 +44,11 @@ test('the charter inbox is reached without going through inbound mail flow', asy
   const transport = await source('api/_email-transport.js');
   assert.match(transport, /fileCopy = fileCharterInboxCopy/);
   assert.match(transport, /CHARTER_INBOX/);
-  // The direct write is the fallback, only after Exchange refuses.
+  // The direct write is the primary path; sendMail is only for other tenant
+  // recipients.
   const sendIndex = transport.indexOf('await sendInternal({');
   const copyIndex = transport.indexOf('await fileCopy({');
-  assert.ok(sendIndex > 0 && copyIndex > sendIndex, 'the copy is a fallback, not the first try');
+  assert.ok(copyIndex > 0 && sendIndex > copyIndex, 'the charter copy must bypass sendMail');
 });
 
 test('diagnostics report the provider outcome and the mailbox copy', async () => {

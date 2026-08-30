@@ -140,12 +140,17 @@ async function retryDelivery(item) {
     // The tenant leg is not idempotent: it puts real mail in real mailboxes.
     // Once it has succeeded, later provider retries must leave it alone.
     skipInternal: item.internalDelivered === true,
+    // Likewise, once the broker/provider leg succeeds, retry only the failed
+    // mailbox leg. This prevents a missing charter copy from duplicating the
+    // notification to the broker on every retry.
+    skipProvider: item.providerDelivered === true,
   });
   return {
     ok: result.ok,
     id: result.provider?.id || null,
     error: result.error,
     internal: result.internal,
+    providerDelivered: result.providerDelivered === true,
   };
 }
 
@@ -229,6 +234,7 @@ export default async function handler(req, res) {
           lastError: null,
           internalDelivery: send.internal || null,
           internalDelivered: item.internalDelivered === true || send.internal?.ok === true,
+          providerDelivered: item.providerDelivered === true || send.providerDelivered === true,
         });
         console.log('[email-queue-drain] SENT', id, '→', (item.to || []).join(','), '· resend id:', send.id);
         results.push({ id, ok: true, resendId: send.id });
@@ -255,6 +261,7 @@ export default async function handler(req, res) {
         // know not to mail the operator's own team again.
         internalDelivery: send.internal || null,
         internalDelivered: item.internalDelivered === true || send.internal?.ok === true,
+        providerDelivered: item.providerDelivered === true || send.providerDelivered === true,
       });
 
       if (dead) {
