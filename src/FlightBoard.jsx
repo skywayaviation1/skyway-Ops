@@ -30,6 +30,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { lookupCoords } from './airport-coords.js';
+import { appleMapType, loadAppleMapKit } from './apple-mapkit.js';
 import { statusEventAt } from './trip-status.js';
 import { Wordmark } from './ui.jsx';
 
@@ -345,11 +346,15 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
   // plotted — separate fetch per tail; planned for follow-up.
 
   const containerRef = useRef(null);
+  const appleContainerRef = useRef(null);
   const mapRef = useRef(null);
+  const appleMapRef = useRef(null);
+  const appleErrorHandlerRef = useRef(null);
   const layerRef = useRef(null);
   const weatherLayerRef = useRef(null);   // holds the current RainViewer tile layer when on
   const [ready, setReady] = useState(false);
   const [err, setErr] = useState(null);
+  const [mapProvider, setMapProvider] = useState('checking');
   // Bumped when async airport-code lookups resolve, so routes that
   // were waiting on coords can be re-rendered. Also used as a memo
   // dependency below so the missing-codes recompute when new dynamic
@@ -468,12 +473,21 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
     return () => { cancelled = true; };
   }, [missingCodes.join(',')]);
 
-  // Initialize the Leaflet map once.
+  // Initialize Apple Maps as the imagery layer and Leaflet as the transparent
+  // operational overlay. If MapKit is not configured or fails at runtime, the
+  // board falls back to the previous Esri/CARTO imagery without losing routes,
+  // aircraft positions, or radar.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const L = await loadLeaflet();
+        const [L, apple] = await Promise.all([
+          loadLeaflet(),
+          loadAppleMapKit().catch((appleError) => {
+            console.info('[board] Apple Maps unavailable; using standard basemap:', appleError.message);
+            return null;
+          }),
+        ]);
         if (cancelled || !containerRef.current) return;
         // Fit bounds to continental US by default; will adjust based on
         // actual route data below. This is the initial view.
@@ -489,24 +503,72 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
           touchZoom: false,
           keyboard: false,
         });
-        // Satellite base + dark labels overlay. ESRI World Imagery gives
-        // real geography (coastlines, cities, terrain) that's readable
-        // from across the room. The CARTO dark_only_labels layer adds
-        // city/state names back on top in a style that doesn't clash
-        // with satellite. Subtly dimmed via CSS filter so the cyan
-        // overlay markers pop against it.
-        L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-          maxZoom: 12,
-          attribution: 'Tiles &copy; Esri',
-        }).addTo(map);
-        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', {
-          maxZoom: 12, subdomains: 'abcd', opacity: 0.8,
-        }).addTo(map);
-        // Apply a subtle dim filter on the tile pane so the satellite
-        // imagery doesn't overwhelm the overlay markers. CSS filter on
-        // the leaflet-tile-pane affects only tiles, not overlays.
-        const tilePane = map.getPane('tilePane');
-        if (tilePane) tilePane.style.filter = 'brightness(0.65) contrast(1.1) saturate(0.85)';
+
+        const addStandardBasemap = () => {
+          if (map.__swStandardBasemap) return;
+          map.__swStandardBasemap = L.layerGroup([
+            L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+              maxZoom: 12,
+              attribution: 'Tiles &copy; Esri',
+            }),
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', {
+              maxZoom: 12, subdomains: 'abcd', opacity: 0.8,
+            }),
+          ]).addTo(map);
+          const tilePane = map.getPane('tilePane');
+          if (tilePane) tilePane.style.filter = 'brightness(0.65) contrast(1.1) saturate(0.85)';
+          setMapProvider('standard');
+        };
+
+        if (apple && appleContainerRef.current) {
+          const appleMap = new apple.Map(appleContainerRef.current, {
+            mapType: appleMapType(apple, 'terrain'),
+            showsCompass: apple.FeatureVisibility?.Hidden,
+            showsMapTypeControl: false,
+            showsZoomControl: false,
+            isRotationEnabled: false,
+            isScrollEnabled: false,
+            isZoomEnabled: false,
+          });
+          appleMapRef.current = appleMap;
+          const syncAppleRegion = () => {
+            try {
+              const center = map.getCenter();
+              const bounds = map.getBounds();
+              const latitudeDelta = Math.max(0.0005, Math.abs(bounds.getNorth() - bounds.getSouth()));
+              let longitudeDelta = Math.abs(bounds.getEast() - bounds.getWest());
+              if (longitudeDelta > 180) longitudeDelta = 360 - longitudeDelta;
+              const region = new apple.CoordinateRegion(
+                new apple.Coordinate(center.lat, center.lng),
+                new apple.CoordinateSpan(latitudeDelta, Math.max(0.0005, longitudeDelta)),
+              );
+              if (typeof appleMap.setRegionAnimated === 'function') {
+                appleMap.setRegionAnimated(region, false);
+              } else {
+                appleMap.region = region;
+              }
+            } catch {
+              // MapKit may still be completing its first layout.
+            }
+          };
+          map.on('move zoom resize', syncAppleRegion);
+          map.__swAppleSync = syncAppleRegion;
+          const fallBackToStandard = (event) => {
+            console.warn('[board] Apple Maps runtime error; using standard basemap', event);
+            try { appleMap.destroy(); } catch { /* already torn down */ }
+            appleMapRef.current = null;
+            if (appleContainerRef.current) appleContainerRef.current.style.display = 'none';
+            addStandardBasemap();
+          };
+          if (typeof apple.addEventListener === 'function') {
+            apple.addEventListener('error', fallBackToStandard);
+            appleErrorHandlerRef.current = fallBackToStandard;
+          }
+          setTimeout(syncAppleRegion, 0);
+          setMapProvider('apple');
+        } else {
+          addStandardBasemap();
+        }
         // Layer group for our route/marker overlays so we can clear and
         // redraw without disturbing the tile layers.
         const layer = L.layerGroup().addTo(map);
@@ -520,9 +582,24 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
     return () => {
       cancelled = true;
       if (mapRef.current) {
+        if (mapRef.current.__swAppleSync) {
+          mapRef.current.off('move zoom resize', mapRef.current.__swAppleSync);
+        }
         try { mapRef.current.remove(); } catch (_) {}
         mapRef.current = null;
         layerRef.current = null;
+      }
+      if (appleMapRef.current) {
+        try { appleMapRef.current.destroy(); } catch (_) {}
+        appleMapRef.current = null;
+      }
+      if (
+        appleErrorHandlerRef.current
+        && window.mapkit
+        && typeof window.mapkit.removeEventListener === 'function'
+      ) {
+        window.mapkit.removeEventListener('error', appleErrorHandlerRef.current);
+        appleErrorHandlerRef.current = null;
       }
     };
   }, []);
@@ -782,7 +859,16 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
 
   return (
     <div className="relative w-full h-full bg-slate-950">
-      <div ref={containerRef} className="w-full h-full" style={{ background: '#020617' }} />
+      <div
+        ref={appleContainerRef}
+        className="absolute inset-0 h-full w-full"
+        style={{ background: '#020617' }}
+      />
+      <div
+        ref={containerRef}
+        className="absolute inset-0 h-full w-full"
+        style={{ background: 'transparent' }}
+      />
       {err && (
         <div className="absolute inset-0 flex items-center justify-center bg-slate-950 text-red-400 text-sm" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
           Map failed to load: {err}
@@ -805,6 +891,10 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
       >
         WX RADAR · {weatherOn ? 'ON' : 'OFF'}
       </button>
+
+      <div className="absolute left-3 top-3 z-[1000] border border-slate-700 bg-slate-900/90 px-2 py-1 font-mono text-[9px] tracking-widest text-slate-400">
+        {mapProvider === 'apple' ? 'APPLE MAPS' : mapProvider === 'standard' ? 'STANDARD MAP FALLBACK' : 'LOADING MAP'}
+      </div>
 
       {/* Legend — matches the actual line styles used on the map. */}
       <div className="absolute bottom-3 left-3 bg-slate-900/90 border border-slate-800 px-3 py-2 text-[11px] tracking-widest z-[1000]" style={{ fontFamily: 'JetBrains Mono, monospace' }}>

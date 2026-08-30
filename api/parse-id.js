@@ -30,6 +30,7 @@
 // Firebase Storage if they want a retained record.
 
 import { getFirestore } from 'firebase-admin/firestore';
+import { verifyOperatorToken } from './_operator-token.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -48,6 +49,51 @@ async function getAdmin() {
   }
   cachedAdmin = admin;
   return cachedAdmin;
+}
+
+async function authorizeOperatorScan(admin, token) {
+  const verified = verifyOperatorToken(token);
+  if (!verified.ok) {
+    const error = new Error('Invalid operator crew link');
+    error.status = 401;
+    throw error;
+  }
+  const database = getFirestore(admin.app(), 'appusers');
+  const ref = database.collection('trip-state').doc(verified.tripId);
+  await database.runTransaction(async (transaction) => {
+    const snap = await transaction.get(ref);
+    if (!snap.exists) {
+      const error = new Error('Trip not found');
+      error.status = 404;
+      throw error;
+    }
+    const data = snap.data() || {};
+    if (
+      data.operatorLinkRevoked === true
+      || !Number.isFinite(data.operatorLinkIssuedAt)
+      || verified.issuedAt < data.operatorLinkIssuedAt
+    ) {
+      const error = new Error('Operator crew link is no longer active');
+      error.status = 403;
+      throw error;
+    }
+    if (data.operatorTrackingExpiresAt && data.operatorTrackingExpiresAt < Date.now()) {
+      const error = new Error('Operator crew link has expired');
+      error.status = 410;
+      throw error;
+    }
+    const count = Number(data.operatorIdScanCount || 0);
+    if (count >= 60) {
+      const error = new Error('ID scan limit reached for this crew link; contact Skyway Operations');
+      error.status = 429;
+      throw error;
+    }
+    transaction.set(ref, {
+      operatorIdScanCount: count + 1,
+      operatorLastIdScanAt: Date.now(),
+    }, { merge: true });
+  });
+  return true;
 }
 
 const SYSTEM_PROMPT = `You extract structured data from government-issued ID documents for a Part 135 charter aviation operator. Your output is used to verify passenger identity against trip manifests.
@@ -93,32 +139,37 @@ export default async function handler(req, res) {
     try { body = JSON.parse(body); }
     catch { return res.status(400).json({ error: 'Invalid JSON body' }); }
   }
-  const { idToken, imageBase64, mediaType } = body || {};
-  if (!idToken || typeof idToken !== 'string') {
-    return res.status(401).json({ error: 'Authentication required' });
-  }
+  const { idToken, operatorToken, imageBase64, mediaType } = body || {};
+  if (
+    (!idToken || typeof idToken !== 'string')
+    && (!operatorToken || typeof operatorToken !== 'string')
+  ) return res.status(401).json({ error: 'Authentication required' });
   try {
     const admin = await getAdmin();
-    const decoded = await admin.auth().verifyIdToken(idToken, true);
-    const profileSnap = await getFirestore(admin.app(), 'appusers')
-      .collection('users')
-      .doc(decoded.uid)
-      .get();
-    const profile = profileSnap.exists ? profileSnap.data() : null;
-    if (
-      !profile
-      || profile.approved !== true
-      || profile.active === false
-      || !['crew', 'ops', 'admin'].includes(profile.role)
-    ) {
-      return res.status(403).json({ error: 'Passenger check-in access required' });
+    if (operatorToken) {
+      await authorizeOperatorScan(admin, operatorToken);
+    } else {
+      const decoded = await admin.auth().verifyIdToken(idToken, true);
+      const profileSnap = await getFirestore(admin.app(), 'appusers')
+        .collection('users')
+        .doc(decoded.uid)
+        .get();
+      const profile = profileSnap.exists ? profileSnap.data() : null;
+      if (
+        !profile
+        || profile.approved !== true
+        || profile.active === false
+        || !['crew', 'ops', 'admin'].includes(profile.role)
+      ) {
+        return res.status(403).json({ error: 'Passenger check-in access required' });
+      }
     }
   } catch (err) {
     if (/FIREBASE_SERVICE_ACCOUNT_JSON/.test(err?.message || '')) {
       console.error('[parse-id] admin init failed:', err.message);
       return res.status(500).json({ error: 'Auth not configured on server' });
     }
-    return res.status(401).json({ error: 'Invalid or expired auth token' });
+    return res.status(err.status || 401).json({ error: err.message || 'Invalid or expired auth token' });
   }
   if (!imageBase64) return res.status(400).json({ error: 'Missing imageBase64' });
 

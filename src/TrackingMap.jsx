@@ -29,6 +29,11 @@ import {
   drawAltitudeTrail, ALTITUDE_LEGEND, altitudeColor, aircraftIcon, airportIcon,
   groundedIcon,
 } from './tracking-map.js';
+import {
+  APPLE_BASEMAP_LABELS,
+  appleMapType,
+  loadAppleMapKit,
+} from './apple-mapkit.js';
 import { cx } from './ui.jsx';
 
 const EMPTY_SCENE = { aircraft: [], airports: [], routes: [], trail: null, projected: null };
@@ -55,8 +60,11 @@ export default function TrackingMap({
   overlay = null,
 }) {
   const containerRef = useRef(null);
+  const appleContainerRef = useRef(null);
   const frameRef = useRef(null);
   const mapRef = useRef(null);
+  const appleMapRef = useRef(null);
+  const appleErrorHandlerRef = useRef(null);
   const overlayGroupRef = useRef(null);
   const radarRef = useRef(null);
 
@@ -68,6 +76,7 @@ export default function TrackingMap({
   const [trailOn, setTrailOn] = useState(true);
   const [fullscreen, setFullscreen] = useState(false);
   const [layersOpen, setLayersOpen] = useState(false);
+  const [mapProvider, setMapProvider] = useState('checking');
 
   const aircraft = Array.isArray(scene.aircraft) ? scene.aircraft : [];
   const airports = Array.isArray(scene.airports) ? scene.airports : [];
@@ -78,7 +87,17 @@ export default function TrackingMap({
     let cancelled = false;
     (async () => {
       try {
-        const L = await loadLeaflet();
+        // Apple Maps is the preferred basemap. Leaflet remains the overlay and
+        // interaction engine for aircraft, trails and weather radar. If MapKit
+        // credentials/CDN/domain authorization are unavailable, the existing
+        // Leaflet basemap is used with no feature loss.
+        const [L, apple] = await Promise.all([
+          loadLeaflet(),
+          loadAppleMapKit().catch((appleError) => {
+            console.info('[tracking-map] Apple Maps unavailable; using standard basemap:', appleError.message);
+            return null;
+          }),
+        ]);
         if (cancelled || !containerRef.current) return;
         const map = L.map(containerRef.current, {
           center: [39, -96],
@@ -86,12 +105,64 @@ export default function TrackingMap({
           minZoom: 2,
           maxZoom: 17,
           zoomControl: false,
-          attributionControl: true,
+          attributionControl: !apple,
           worldCopyJump: false,
         });
         L.control.zoom({ position: 'bottomright' }).addTo(map);
-        map.attributionControl.setPrefix(false);
-        applyBasemap(L, map, basemapDefault);
+        if (map.attributionControl) map.attributionControl.setPrefix(false);
+
+        if (apple && appleContainerRef.current) {
+          const appleMap = new apple.Map(appleContainerRef.current, {
+            mapType: appleMapType(apple, basemapDefault),
+            showsCompass: apple.FeatureVisibility?.Hidden,
+            showsMapTypeControl: false,
+            showsZoomControl: false,
+            isRotationEnabled: false,
+            isScrollEnabled: false,
+            isZoomEnabled: false,
+          });
+          appleMapRef.current = appleMap;
+          const syncAppleRegion = () => {
+            try {
+              const center = map.getCenter();
+              const bounds = map.getBounds();
+              const latitudeDelta = Math.max(0.0005, Math.abs(bounds.getNorth() - bounds.getSouth()));
+              let longitudeDelta = Math.abs(bounds.getEast() - bounds.getWest());
+              if (longitudeDelta > 180) longitudeDelta = 360 - longitudeDelta;
+              longitudeDelta = Math.max(0.0005, longitudeDelta);
+              const region = new apple.CoordinateRegion(
+                new apple.Coordinate(center.lat, center.lng),
+                new apple.CoordinateSpan(latitudeDelta, longitudeDelta),
+              );
+              if (typeof appleMap.setRegionAnimated === 'function') {
+                appleMap.setRegionAnimated(region, false);
+              } else {
+                appleMap.region = region;
+              }
+            } catch {
+              /* MapKit may still be finishing its first layout. */
+            }
+          };
+          map.on('move zoom resize', syncAppleRegion);
+          map.__swAppleSync = syncAppleRegion;
+          const fallBackToStandard = (event) => {
+            console.warn('[tracking-map] Apple Maps runtime error; using standard basemap', event);
+            try { appleMap.destroy(); } catch { /* already torn down */ }
+            appleMapRef.current = null;
+            if (appleContainerRef.current) appleContainerRef.current.style.display = 'none';
+            applyBasemap(L, map, basemapDefault);
+            setMapProvider('standard');
+          };
+          if (typeof apple.addEventListener === 'function') {
+            apple.addEventListener('error', fallBackToStandard);
+            appleErrorHandlerRef.current = fallBackToStandard;
+          }
+          setTimeout(syncAppleRegion, 0);
+          if (!cancelled) setMapProvider('apple');
+        } else {
+          applyBasemap(L, map, basemapDefault);
+          if (!cancelled) setMapProvider('standard');
+        }
         overlayGroupRef.current = L.layerGroup().addTo(map);
         mapRef.current = map;
         if (!cancelled) setReady(true);
@@ -103,9 +174,24 @@ export default function TrackingMap({
       cancelled = true;
       if (radarRef.current) { radarRef.current.destroy(); radarRef.current = null; }
       if (mapRef.current) {
+        if (mapRef.current.__swAppleSync) {
+          mapRef.current.off('move zoom resize', mapRef.current.__swAppleSync);
+        }
         try { mapRef.current.remove(); } catch { /* already torn down */ }
         mapRef.current = null;
         overlayGroupRef.current = null;
+      }
+      if (appleMapRef.current) {
+        try { appleMapRef.current.destroy(); } catch { /* already torn down */ }
+        appleMapRef.current = null;
+      }
+      if (
+        appleErrorHandlerRef.current
+        && window.mapkit
+        && typeof window.mapkit.removeEventListener === 'function'
+      ) {
+        window.mapkit.removeEventListener('error', appleErrorHandlerRef.current);
+        appleErrorHandlerRef.current = null;
       }
     };
     // basemapDefault is an initial value only; switching is handled below.
@@ -115,8 +201,12 @@ export default function TrackingMap({
   /* ─── Basemap switching ────────────────────────────────────────────────── */
   useEffect(() => {
     if (!ready || !mapRef.current) return;
-    applyBasemap(window.L, mapRef.current, basemap);
-  }, [ready, basemap]);
+    if (mapProvider === 'apple' && appleMapRef.current && window.mapkit) {
+      appleMapRef.current.mapType = appleMapType(window.mapkit, basemap);
+    } else if (mapProvider === 'standard') {
+      applyBasemap(window.L, mapRef.current, basemap);
+    }
+  }, [ready, basemap, mapProvider]);
 
   /* ─── Weather radar ───────────────────────────────────────────────────── */
   useEffect(() => {
@@ -303,7 +393,19 @@ export default function TrackingMap({
       )}
       style={fullscreen ? undefined : style}
     >
-      <div ref={containerRef} className="h-full w-full" style={{ background: '#060c16' }} />
+      {/* Official MapKit JS owns the basemap image, including Apple legal
+          attribution. Leaflet is transparent above it and draws operational
+          overlays/interactions; it never requests or repackages Apple tiles. */}
+      <div
+        ref={appleContainerRef}
+        className="absolute inset-0 h-full w-full"
+        style={{ background: '#060c16' }}
+      />
+      <div
+        ref={containerRef}
+        className="absolute inset-0 h-full w-full"
+        style={{ background: 'transparent' }}
+      />
 
       {!ready && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center gap-2 text-2xs text-content-subtle">
@@ -349,10 +451,13 @@ export default function TrackingMap({
                   basemap === id ? 'bg-accent-soft font-semibold text-accent' : 'text-content hover:bg-surface-raised',
                 )}
               >
-                {BASEMAPS[id].label}
+                {mapProvider === 'apple' ? APPLE_BASEMAP_LABELS[id] : BASEMAPS[id].label}
                 {basemap === id && <Check className="h-3.5 w-3.5" />}
               </button>
             ))}
+            <p className="px-2 pb-1 pt-1.5 text-[9px] text-content-subtle">
+              {mapProvider === 'apple' ? 'Basemap by Apple Maps' : 'Standard map fallback'}
+            </p>
             {showTrailToggle && (
               <>
                 <div className="my-1 border-t border-edge" />

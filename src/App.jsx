@@ -18,6 +18,7 @@ const TripFratLazy = lazy(() => import('./TripFrat.jsx'));
 const FratSettingsPanelLazy = lazy(() => import('./FratSettingsPanel.jsx'));
 const EmailDiagnosticsPanelLazy = lazy(() => import('./EmailDiagnosticsPanel.jsx'));
 const AvailabilityLazy = lazy(() => import('./AvailabilityPlanner.jsx'));
+const BrokeredOperatorLinkLazy = lazy(() => import('./BrokeredOperatorLink.jsx'));
 const AirportFboDataLazy = lazy(() => import('./AirportFboData.jsx'));
 const TripEmailPanelLazy = lazy(() =>
   import('./CharterInbox.jsx').then((module) => ({ default: module.TripEmailPanel }))
@@ -5206,7 +5207,7 @@ function QuickActionButton({ icon: Icon, label, onClick }) {
 /* ============================================================
    Trip detail view
    ============================================================ */
-function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], allTrips, opsEmail, onBack, onArchive, tripDetailOrder, onReorderTripDetail }) {
+function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], allTrips, config, opsEmail, onBack, onArchive, tripDetailOrder, onReorderTripDetail }) {
   const requestedTripTab = () => {
     if (typeof window === 'undefined') return null;
     const id = window.location.hash.replace(/^#/, '').toLowerCase();
@@ -5219,6 +5220,14 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   // global StreamPresenceProvider — no per-mount API call needed. Shows
   // as a cyan badge on the COMMS tab whenever the user is not on it.
   const tripChatUnread = useTripUnread(trip?.uid);
+  const managedTailsForTrip = useMemo(() => resolveManagedTails(config), [config]);
+  const tripTail = String(trip.info?.tail || '').trim().toUpperCase();
+  const isBrokeredFlight = Boolean(
+    trip.info?.isFlight
+    && tripTail
+    && !['TBD', 'TBA', 'UNKNOWN'].includes(tripTail)
+    && !managedTailsForTrip.includes(tripTail)
+  );
   const [statuses, setStatuses] = useState({});
   const [passengers, setPassengers] = useState([]);
   const [scanning, setScanning] = useState(false);
@@ -7131,6 +7140,12 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
                   Full weather briefing
                 </Button>
               </Card>
+
+              {isBrokeredFlight && ['admin', 'ops', 'sales'].includes(currentUser?.role) && (
+                <Suspense fallback={<Card><div className="flex items-center gap-2 text-xs text-content-muted"><Loader2 className="h-4 w-4 animate-spin" />Loading brokered operator link…</div></Card>}>
+                  <BrokeredOperatorLinkLazy trip={trip} currentUser={currentUser} brokerEmail={brokerEmail} />
+                </Suspense>
+              )}
 
               <Card>
                 <CardHeader title="FRAT" icon={Shield} />
@@ -28968,6 +28983,7 @@ export default function CharterOps() {
                   currentUserDisplayName={userDisplayName}
                   users={users}
                   allTrips={allTrips}
+                  config={config}
                   opsEmail={OPS_EMAIL}
                   onBack={() => setSelectedId(null)}
                   onArchive={(uid, archived) => archived ? archiveTrip(uid) : unarchiveTrip(uid)}
@@ -29081,6 +29097,7 @@ export default function CharterOps() {
                   currentUserDisplayName={userDisplayName}
                   users={users}
                   allTrips={allTrips}
+                  config={config}
                   opsEmail={OPS_EMAIL}
                   onBack={() => setSelectedId(null)}
                   onArchive={(uid, archived) => archived ? archiveTrip(uid) : unarchiveTrip(uid)}
