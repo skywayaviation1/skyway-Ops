@@ -12,7 +12,7 @@ and attached as the Vapi phone number.
 
 ## Go-live rule
 
-Ops must **arm each trip**. The calendar never auto-dials. A 15-minute cron
+Ops must **arm each trip**. The calendar never auto-dials. A 5-minute cron
 (`/api/fbo-call-schedule`) only places jobs that were armed.
 
 The uploaded trip sheet is authoritative for the departure and arrival FBO
@@ -20,6 +20,8 @@ names and phone numbers. iFlightPlanner is not used by the calling workflow. An
 ops/admin user must explicitly verify the trip-sheet FBO, airport, and phone for
 each leg before it can be armed. The verification is recorded on the call job.
 If the uploaded sheet has no dialable phone, the call remains blocked.
+Ops may replace the parsed phone for a trip; the override is shown, hashed into
+the verified facts, and recorded on the job.
 
 ## What the agent may say
 
@@ -54,13 +56,17 @@ In Vapi, set the assistant server URL to:
 1. Administrator enables FBO calling in Organization settings after the env vars
    are deployed.
 2. Open a flight → Operations → **FBO calls**.
-3. Review the trip-sheet FBO, airport, and phone. Check the verification box
-   for each call to arm.
-4. The agent dials about 2 hours before departure and 90 minutes before arrival
-   (configurable). Failed attempts retry, then email ops.
-5. Transcripts and structured confirmations stay on the trip. They are **not**
+3. Review the trip-sheet FBO, airport, and phone. If needed, enter a replacement
+   phone and select **Use number**, then verify the effective call details.
+4. With **Call immediately when armed** selected (the default), arming places
+   the initial call immediately. An arrival call also creates a fresh
+   re-verification call for two hours before arrival.
+5. Use **Call now** to pull any armed/scheduled job forward. While a call is
+   active, **Listen live** streams Vapi's two-channel PCM audio in the browser.
+   Failed attempts retry, then email ops.
+6. Transcripts and structured confirmations stay on the trip. They are **not**
    copied onto broker public tracking links.
-6. If the trip changes after a completed call, ops can queue an **update** call.
+7. If the trip changes after a completed call, ops can queue an **update** call.
 
 ## Collections
 

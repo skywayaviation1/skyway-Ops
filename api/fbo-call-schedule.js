@@ -6,15 +6,12 @@
  */
 
 import {
-  applyVendorStatus,
+  dialJobNow,
   dueJobs,
-  loadJob,
-  notifyOps,
-  placeVapiCall,
   publicVendorStatus,
   readCallConfig,
 } from './_fbo-call.js';
-import { CALL_STATUSES, DEFAULT_MAX_ATTEMPTS, nextRetryAt, vendorConfigured } from '../src/fbo-call.js';
+import { vendorConfigured } from '../src/fbo-call.js';
 
 export const config = { runtime: 'nodejs', maxDuration: 60 };
 
@@ -60,48 +57,10 @@ export default async function handler(req, res) {
 
     const jobs = await dueJobs(now);
     for (const job of jobs.slice(0, 8)) {
-      const fresh = await loadJob(job.id);
-      if (!fresh) continue;
-      if (['dialing', 'in_progress', 'completed', 'cancelled'].includes(fresh.status)) continue;
-      const attempts = (fresh.attempts || 0) + 1;
       try {
-        await applyVendorStatus(fresh, {
-          status: CALL_STATUSES.dialing,
-          attempts,
-          lastAttemptAt: now,
-        });
-        const placed = await placeVapiCall({ ...fresh, attempts }, settings);
-        await applyVendorStatus(fresh, {
-          status: CALL_STATUSES.dialing,
-          attempts,
-          vendorCallId: placed.id,
-          lastAttemptAt: now,
-          lastError: '',
-        });
-        results.push({ id: fresh.id, ok: true, vendorCallId: placed.id });
+        results.push(await dialJobNow(job.id, { now, force: false }));
       } catch (error) {
-        const max = fresh.maxAttempts || DEFAULT_MAX_ATTEMPTS;
-        const failed = attempts >= max;
-        await applyVendorStatus(fresh, {
-          status: failed ? CALL_STATUSES.failed : 'retry',
-          attempts,
-          lastError: error.message,
-          dialAt: failed ? fresh.dialAt : nextRetryAt(now, settings.retryMinutes),
-        });
-        if (failed) {
-          await notifyOps({
-            tripId: fresh.tripId,
-            source: 'fbo-call-failed',
-            subject: `FBO call failed — ${fresh.fboName || ''} ${fresh.airport || ''}`,
-            text: [
-              `Skyway could not complete the ${fresh.purpose} FBO call.`,
-              `${fresh.fboName} ${fresh.airport} ${fresh.phoneE164}`,
-              `Error: ${error.message}`,
-              'Ops should call the FBO directly.',
-            ].join('\n'),
-          });
-        }
-        results.push({ id: fresh.id, ok: false, error: error.message, failed });
+        results.push({ id: job.id, ok: false, error: error.message });
       }
     }
 

@@ -130,6 +130,11 @@ export function subscribeToTripState(tripId, onUpdate) {
           // FBO names parsed from the trip sheet for THIS leg's two airports.
           fromFbo: data.fromFbo || null,
           toFbo: data.toFbo || null,
+          fboCallDialOverrides: (
+            data.fboCallDialOverrides && typeof data.fboCallDialOverrides === 'object'
+              ? data.fboCallDialOverrides
+              : {}
+          ),
           fboCalls: Array.isArray(data.fboCalls) ? data.fboCalls : [],
         });
       } else {
@@ -147,6 +152,7 @@ export function subscribeToTripState(tripId, onUpdate) {
           tripSheetNotesEditedByName: null,
           fromFbo: null,
           toFbo: null,
+          fboCallDialOverrides: {},
           fboCalls: [],
         });
       }
@@ -207,6 +213,13 @@ export async function saveTripState(tripId, state) {
   if (has('tripSheetNotesEditedByName')) patch.tripSheetNotesEditedByName = state.tripSheetNotesEditedByName || null;
   if (has('fromFbo'))              patch.fromFbo = state.fromFbo || null;
   if (has('toFbo'))                patch.toFbo = state.toFbo || null;
+  if (has('fboCallDialOverrides')) {
+    patch.fboCallDialOverrides = (
+      state.fboCallDialOverrides && typeof state.fboCallDialOverrides === 'object'
+        ? state.fboCallDialOverrides
+        : {}
+    );
+  }
   // tripMeta — route/tail/start info, used by the FlightAware webhook to match
   // incoming events to this trip. See PR 2c.
   if (has('tripMeta'))             patch.tripMeta = state.tripMeta || null;

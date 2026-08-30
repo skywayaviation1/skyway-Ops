@@ -344,6 +344,7 @@ export async function armCalls({
   state,
   purposes,
   verifiedPurposes,
+  dialImmediately = true,
   actor,
   now = Date.now(),
 }) {
@@ -362,6 +363,7 @@ export async function armCalls({
     throw error;
   }
   const created = [];
+  const immediateJobIds = [];
   const blocked = [];
   for (const purpose of wanted) {
     const resolved = await resolveFboFacts(trip, state, purpose);
@@ -377,47 +379,77 @@ export async function armCalls({
       startMs: resolved.facts.startMs,
       endMs: resolved.facts.endMs,
       depLeadMinutes: config.depLeadMinutes,
-      arrLeadMinutes: config.arrLeadMinutes,
+      arrLeadMinutes: DEFAULT_ARR_LEAD_MINUTES,
     });
     const when = resolveDialAt(planned, now, eventMs);
     if (!when.ok) {
       blocked.push({ purpose, blockers: [when.reason] });
       continue;
     }
-    const id = newCallId();
-    const job = {
-      id,
-      tripId: trip.uid,
-      purpose,
-      status: CALL_STATUSES.armed,
-      isUpdate: false,
-      airport: resolved.facts.airport,
-      fboName: resolved.facts.fboName,
-      phoneE164: resolved.facts.phoneE164,
-      phoneDisplay: resolved.facts.phoneDisplay,
-      hours: resolved.facts.hours,
-      facts: resolved.facts,
-      factsHash: resolved.hash,
-      material: resolved.material,
-      dialAt: when.dialAt,
-      attempts: 0,
-      maxAttempts: config.maxAttempts,
-      callerId: SKYWAY_CALLER_ID,
-      callerName: SKYWAY_CALLER_NAME,
-      vendor: VOICE_VENDOR,
-      leadPassengerDisclosed: resolved.facts.groundTransport === true,
-      armedByUid: actor.uid,
-      armedByName: actor.name,
-      armedAt: now,
-      fboDetailsVerifiedAt: now,
-      fboDetailsVerifiedByUid: actor.uid,
-      fboDetailsVerifiedByName: actor.name,
-      lastError: '',
+    const makeJob = async ({ callPhase, dialAt, dialMode }) => {
+      const id = newCallId();
+      const job = {
+        id,
+        tripId: trip.uid,
+        purpose,
+        callPhase,
+        dialMode,
+        status: dialAt > now ? CALL_STATUSES.scheduled : CALL_STATUSES.armed,
+        isUpdate: false,
+        airport: resolved.facts.airport,
+        fboName: resolved.facts.fboName,
+        phoneE164: resolved.facts.phoneE164,
+        phoneDisplay: resolved.facts.phoneDisplay,
+        phoneSource: resolved.facts.phoneSource,
+        phoneOverride: resolved.facts.phoneSource === 'override' ? resolved.facts.phoneDisplay : '',
+        hours: resolved.facts.hours,
+        facts: resolved.facts,
+        factsHash: resolved.hash,
+        material: resolved.material,
+        tripSnapshot: trip,
+        dialAt,
+        scheduledDialAt: planned,
+        attempts: 0,
+        maxAttempts: config.maxAttempts,
+        callerId: SKYWAY_CALLER_ID,
+        callerName: SKYWAY_CALLER_NAME,
+        vendor: VOICE_VENDOR,
+        leadPassengerDisclosed: resolved.facts.groundTransport === true,
+        armedByUid: actor.uid,
+        armedByName: actor.name,
+        armedAt: now,
+        fboDetailsVerifiedAt: now,
+        fboDetailsVerifiedByUid: actor.uid,
+        fboDetailsVerifiedByName: actor.name,
+        lastError: '',
+      };
+      await writeJob(job);
+      created.push(jobPublic(job));
+      if (dialAt <= now) immediateJobIds.push(id);
     };
-    await writeJob(job);
-    created.push(jobPublic(job));
+
+    if (dialImmediately !== false) {
+      await makeJob({ callPhase: 'initial', dialAt: now, dialMode: 'immediate' });
+      if (purpose === 'arrival' && planned > now + 60_000) {
+        await makeJob({
+          callPhase: 'arrival_reverification',
+          dialAt: planned,
+          dialMode: 'scheduled',
+        });
+      }
+    } else {
+      await makeJob({
+        callPhase: purpose === 'arrival' ? 'arrival_reverification' : 'initial',
+        dialAt: when.dialAt,
+        dialMode: 'scheduled',
+      });
+    }
   }
-  return { created, blocked, vendor: publicVendorStatus() };
+  const dialResults = [];
+  for (const id of immediateJobIds) {
+    dialResults.push(await dialJobNow(id, { actor, now, force: true }));
+  }
+  return { created, blocked, dialResults, vendor: publicVendorStatus() };
 }
 
 export async function cancelJob(id, actor) {
@@ -462,6 +494,150 @@ export async function applyVendorStatus(job, patch) {
   return next;
 }
 
+async function refreshFollowUpFacts(job) {
+  if (job.callPhase !== 'arrival_reverification' || !job.tripSnapshot) return job;
+  const stateSnap = await getDb().collection('trip-state').doc(sanitizeKey(job.tripId)).get();
+  const state = stateSnap.exists ? stateSnap.data() : {};
+  const resolved = await resolveFboFacts(job.tripSnapshot, state, job.purpose);
+  if (!resolved.ok) {
+    const error = new Error(`Follow-up call blocked: ${resolved.blockers.join('; ')}`);
+    error.status = 409;
+    throw error;
+  }
+  return {
+    ...job,
+    airport: resolved.facts.airport,
+    fboName: resolved.facts.fboName,
+    phoneE164: resolved.facts.phoneE164,
+    phoneDisplay: resolved.facts.phoneDisplay,
+    phoneSource: resolved.facts.phoneSource,
+    phoneOverride: resolved.facts.phoneSource === 'override' ? resolved.facts.phoneDisplay : '',
+    facts: resolved.facts,
+    factsHash: resolved.hash,
+    material: resolved.material,
+  };
+}
+
+export async function dialJobNow(id, {
+  actor = null,
+  now = Date.now(),
+  force = false,
+} = {}) {
+  const ref = getDb().collection(JOBS).doc(id);
+  const claimed = await getDb().runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) {
+      const error = new Error('Call not found');
+      error.status = 404;
+      throw error;
+    }
+    const job = { id: snap.id, ...snap.data() };
+    if (!['armed', 'scheduled', 'retry'].includes(job.status)) {
+      const error = new Error(`Call cannot be started while ${job.status}`);
+      error.status = 409;
+      throw error;
+    }
+    if (!force && Number(job.dialAt) > now) return null;
+    const attempts = (job.attempts || 0) + 1;
+    tx.update(ref, {
+      status: CALL_STATUSES.dialing,
+      attempts,
+      lastAttemptAt: now,
+      dialNowRequestedAt: force ? now : (job.dialNowRequestedAt || null),
+      dialNowRequestedByUid: force ? (actor?.uid || '') : (job.dialNowRequestedByUid || ''),
+      updatedAt: now,
+    });
+    return {
+      ...job,
+      status: CALL_STATUSES.dialing,
+      attempts,
+      lastAttemptAt: now,
+    };
+  });
+  if (!claimed) return { id, ok: true, skipped: 'not_due' };
+  await mirrorTripCalls(claimed.tripId);
+
+  let job = claimed;
+  try {
+    job = await refreshFollowUpFacts(job);
+    const settings = await readCallConfig();
+    const placed = await placeVapiCall(job, settings);
+    await applyVendorStatus(job, {
+      status: CALL_STATUSES.dialing,
+      attempts: job.attempts,
+      vendorCallId: placed.id,
+      monitorListenUrl: placed.monitor?.listenUrl || '',
+      monitorControlUrl: placed.monitor?.controlUrl || '',
+      monitorUrlsUpdatedAt: placed.monitor?.listenUrl ? now : null,
+      lastAttemptAt: now,
+      lastError: '',
+    });
+    return { id, ok: true, vendorCallId: placed.id };
+  } catch (error) {
+    const settings = await readCallConfig().catch(() => ({
+      retryMinutes: DEFAULT_RETRY_MINUTES,
+    }));
+    const max = job.maxAttempts || DEFAULT_MAX_ATTEMPTS;
+    const failed = (job.attempts || 0) >= max || error.status === 409;
+    await applyVendorStatus(job, {
+      status: failed ? CALL_STATUSES.failed : 'retry',
+      attempts: job.attempts,
+      lastError: error.message,
+      dialAt: failed ? job.dialAt : nextRetryAt(now, settings.retryMinutes),
+    });
+    if (failed) {
+      await notifyOps({
+        tripId: job.tripId,
+        source: 'fbo-call-failed',
+        subject: `FBO call failed — ${job.fboName || ''} ${job.airport || ''}`,
+        text: [
+          `Skyway could not complete the ${job.purpose} FBO call.`,
+          `${job.fboName} ${job.airport} ${job.phoneE164}`,
+          `Error: ${error.message}`,
+          'Ops should call the FBO directly.',
+        ].join('\n'),
+      });
+    }
+    return { id, ok: false, error: error.message, failed };
+  }
+}
+
+export async function getListenCredentials(id, env = process.env) {
+  let job = await loadJob(id);
+  if (!job) {
+    const error = new Error('Call not found');
+    error.status = 404;
+    throw error;
+  }
+  if (!['dialing', 'in_progress'].includes(job.status) || !job.vendorCallId) {
+    const error = new Error('Live listening is available only while the call is active');
+    error.status = 409;
+    throw error;
+  }
+  if (!job.monitorListenUrl) {
+    const response = await fetch(`https://api.vapi.ai/call/${encodeURIComponent(job.vendorCallId)}`, {
+      headers: { Authorization: `Bearer ${env.VAPI_API_KEY}` },
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const error = new Error(data.message || `Vapi call lookup failed (${response.status})`);
+      error.status = 502;
+      throw error;
+    }
+    job = await applyVendorStatus(job, {
+      monitorListenUrl: data.monitor?.listenUrl || '',
+      monitorControlUrl: data.monitor?.controlUrl || '',
+      monitorUrlsUpdatedAt: Date.now(),
+    });
+  }
+  if (!job.monitorListenUrl) {
+    const error = new Error('Vapi did not provide a live listen stream for this call');
+    error.status = 409;
+    throw error;
+  }
+  return { callId: job.id, listenUrl: job.monitorListenUrl };
+}
+
 export async function maybeQueueMaterialUpdates({
   trip,
   state,
@@ -474,6 +650,7 @@ export async function maybeQueueMaterialUpdates({
   if (armedFamily.length === 0) return [];
   const verified = new Set(Array.isArray(verifiedPurposes) ? verifiedPurposes : []);
   const created = [];
+  const createdIds = [];
   for (const purpose of ['departure', 'arrival']) {
     const latest = [...armedFamily].reverse().find((job) => job.purpose === purpose);
     if (!latest) continue;
@@ -493,15 +670,21 @@ export async function maybeQueueMaterialUpdates({
       id,
       status: CALL_STATUSES.armed,
       isUpdate: true,
+      callPhase: 'update',
+      dialMode: 'immediate',
       parentCallId: latest.id,
       facts: resolved.facts,
       factsHash: resolved.hash,
       material: resolved.material,
       phoneE164: resolved.facts.phoneE164,
       phoneDisplay: resolved.facts.phoneDisplay,
+      phoneSource: resolved.facts.phoneSource,
+      phoneOverride: resolved.facts.phoneSource === 'override' ? resolved.facts.phoneDisplay : '',
       hours: resolved.facts.hours,
       fboName: resolved.facts.fboName,
+      tripSnapshot: trip,
       dialAt: now,
+      scheduledDialAt: now,
       attempts: 0,
       lastError: '',
       armedAt: now,
@@ -514,10 +697,14 @@ export async function maybeQueueMaterialUpdates({
       transcript: '',
       confirmations: null,
       vendorCallId: null,
+      monitorListenUrl: '',
+      monitorControlUrl: '',
     };
     await writeJob(job);
     created.push(jobPublic(job));
+    createdIds.push(id);
   }
+  for (const id of createdIds) await dialJobNow(id, { actor, now, force: true });
   if (created.length) {
     await notifyOps({
       tripId: trip.uid,

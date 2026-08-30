@@ -13,7 +13,7 @@ export const VOICE_VENDOR = 'vapi';
 export const VOICE_PSTN = 'twilio';
 
 export const DEFAULT_DEP_LEAD_MINUTES = 120;
-export const DEFAULT_ARR_LEAD_MINUTES = 90;
+export const DEFAULT_ARR_LEAD_MINUTES = 120;
 export const DEFAULT_RETRY_MINUTES = 15;
 export const DEFAULT_MAX_ATTEMPTS = 3;
 
@@ -106,8 +106,8 @@ export function materialFacts(trip = {}, state = {}) {
     end: toIso(trip.end),
     fromFbo: clean(state.fromFbo),
     toFbo: clean(state.toFbo),
-    fromFboPhone: tripSheetDialPhone(state, 'departure'),
-    toFboPhone: tripSheetDialPhone(state, 'arrival'),
+    fromFboPhone: resolveDialPhone(state, 'departure').display,
+    toFboPhone: resolveDialPhone(state, 'arrival').display,
     pax: Number.isFinite(Number(state.paxOverride))
       ? Number(state.paxOverride)
       : Number(info.pax || 0),
@@ -122,6 +122,18 @@ export function tripSheetDialPhone(state = {}, purpose) {
     ? state.tripSheetData
     : {};
   return clean(purpose === 'arrival' ? sheet.toAirportPhone : sheet.fromAirportPhone);
+}
+
+export function resolveDialPhone(state = {}, purpose) {
+  const overrides = state.fboCallDialOverrides && typeof state.fboCallDialOverrides === 'object'
+    ? state.fboCallDialOverrides
+    : {};
+  const override = clean(overrides[purpose]);
+  return {
+    display: override || tripSheetDialPhone(state, purpose),
+    source: override ? 'override' : 'trip_sheet',
+    isOverride: Boolean(override),
+  };
 }
 
 export function materialHash(facts) {
@@ -168,12 +180,15 @@ export function publicCallSummary(call) {
     purpose: call.purpose,
     status: call.status,
     isUpdate: call.isUpdate === true,
+    callPhase: call.callPhase || 'initial',
+    dialMode: call.dialMode || 'scheduled',
     airport: call.airport || '',
     fboName: call.fboName || '',
     phone: call.phoneDisplay || call.phoneE164 || '',
     hours: call.hours || '',
     hoursKnown: Boolean(call.hours),
     dialAt: call.dialAt || null,
+    scheduledDialAt: call.scheduledDialAt || null,
     startedAt: call.startedAt || null,
     endedAt: call.endedAt || null,
     attempts: call.attempts || 0,
@@ -188,6 +203,8 @@ export function publicCallSummary(call) {
     vendor: call.vendor || VOICE_VENDOR,
     callerId: call.callerId || SKYWAY_CALLER_ID,
     callerName: call.callerName || SKYWAY_CALLER_NAME,
+    phoneSource: call.phoneSource || call.facts?.phoneSource || 'trip_sheet',
+    listenAvailable: ['dialing', 'in_progress'].includes(call.status) && Boolean(call.vendorCallId),
   };
 }
 
@@ -207,7 +224,8 @@ export function buildSpeakableFacts({
   const requestedName = purpose === 'arrival'
     ? clean(state.toFbo)
     : clean(state.fromFbo);
-  const phoneDisplay = tripSheetDialPhone(state, purpose);
+  const dialPhone = resolveDialPhone(state, purpose);
+  const phoneDisplay = dialPhone.display;
   const phone = toE164(phoneDisplay);
   const ground = groundTransportRequested(state, info);
   const lead = ground ? leadPassengerName(state) : '';
@@ -220,7 +238,11 @@ export function buildSpeakableFacts({
   if (!clean(state.tripSheetUrl)) blockers.push('No trip sheet uploaded');
   if (!airport) blockers.push('Airport is missing');
   if (!requestedName) blockers.push('FBO name is missing from the trip sheet');
-  if (!phone) blockers.push('No FBO phone number on the trip sheet');
+  if (!phone) {
+    blockers.push(dialPhone.isOverride
+      ? 'The call phone override is not a valid phone number'
+      : 'No FBO phone number on the trip sheet');
+  }
 
   const facts = {
     callerName: SKYWAY_CALLER_NAME,
@@ -236,7 +258,7 @@ export function buildSpeakableFacts({
     matchConfidence: 'trip_sheet',
     phoneE164: phone,
     phoneDisplay,
-    phoneSource: 'trip_sheet',
+    phoneSource: dialPhone.source,
     hours: '',
     hoursKnown: false,
     fuelBrand: '',

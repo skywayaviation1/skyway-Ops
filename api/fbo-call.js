@@ -14,6 +14,8 @@ import {
   authorizeFboCaller,
   armCalls,
   cancelJob,
+  dialJobNow,
+  getListenCredentials,
   listTripCalls,
   loadJob,
   publicVendorStatus,
@@ -85,6 +87,7 @@ export default async function handler(req, res) {
         state: body.state || {},
         purposes: body.purposes,
         verifiedPurposes: body.verifiedPurposes,
+        dialImmediately: body.dialImmediately !== false,
         actor,
       });
       return res.status(200).json({ ok: true, ...result });
@@ -120,6 +123,17 @@ export default async function handler(req, res) {
 
     if (action === 'retry') {
       return res.status(200).json({ ok: true, call: await retryJob(body.callId, actor) });
+    }
+
+    if (action === 'dialNow') {
+      return res.status(200).json({
+        ok: true,
+        result: await dialJobNow(body.callId, { actor, force: true }),
+      });
+    }
+
+    if (action === 'listen') {
+      return res.status(200).json({ ok: true, ...(await getListenCredentials(body.callId)) });
     }
 
     if (action === 'update') {

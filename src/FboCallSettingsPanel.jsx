@@ -19,7 +19,7 @@ export default function FboCallSettingsPanel({ currentUser }) {
   const [form, setForm] = useState({
     enabled: false,
     depLeadMinutes: 120,
-    arrLeadMinutes: 90,
+    arrLeadMinutes: 120,
     retryMinutes: 15,
     maxAttempts: 3,
     opsTransferNumber: SKYWAY_CALLER_ID_DISPLAY,
@@ -42,7 +42,7 @@ export default function FboCallSettingsPanel({ currentUser }) {
       setForm({
         enabled: data.enabled === true,
         depLeadMinutes: data.depLeadMinutes || 120,
-        arrLeadMinutes: data.arrLeadMinutes || 90,
+        arrLeadMinutes: data.arrLeadMinutes || 120,
         retryMinutes: data.retryMinutes || 15,
         maxAttempts: data.maxAttempts || 3,
         opsTransferNumber: data.opsTransferNumber || SKYWAY_CALLER_ID_DISPLAY,
@@ -114,7 +114,7 @@ export default function FboCallSettingsPanel({ currentUser }) {
           <p className="text-sm leading-relaxed text-content-muted">
             Outbound FBO calls require ops to arm each trip. The agent may speak the lead passenger
             name only when ground transportation is on the trip. FBO details come from the uploaded
-            trip sheet; if hours are absent, the agent says they are not on file.
+            trip sheet; arrival re-verification is fixed at two hours before arrival.
           </p>
           <label className="flex items-center gap-2 text-sm text-content">
             <input
@@ -127,7 +127,6 @@ export default function FboCallSettingsPanel({ currentUser }) {
           </label>
           <div className="grid gap-3 sm:grid-cols-2">
             {field('depLeadMinutes', 'Minutes before departure')}
-            {field('arrLeadMinutes', 'Minutes before arrival')}
             {field('retryMinutes', 'Minutes between retries')}
             {field('maxAttempts', 'Maximum attempts')}
             {field('opsTransferNumber', 'Ops warm-transfer number', 'tel')}

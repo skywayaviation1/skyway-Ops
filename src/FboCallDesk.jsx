@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, Loader2, Phone, RefreshCw } from 'lucide-react';
 import { Button, Card, EmptyState, PageHeader, StatusChip } from './ui.jsx';
 import { brand } from './brand.js';
+import FboCallListener from './FboCallListener.jsx';
 import { SKYWAY_CALLER_ID_DISPLAY } from './fbo-call.js';
 
 const TONE = {
@@ -129,6 +130,9 @@ export default function FboCallDesk({ currentUser }) {
                       <p className="font-semibold text-content">{call.fboName || 'FBO'} · {call.airport}</p>
                       <StatusChip tone={TONE[call.status] || 'neutral'} size="sm">{String(call.status || '').replace(/_/g, ' ')}</StatusChip>
                       {call.isUpdate && <StatusChip tone="warning" size="sm">Update</StatusChip>}
+                      {call.callPhase === 'arrival_reverification' && (
+                        <StatusChip tone="info" size="sm">2-hour follow-up</StatusChip>
+                      )}
                     </div>
                     <p className="mt-1 font-mono text-xs text-content-muted">
                       {call.purpose} · {call.phone || 'no phone'} · dial {fmt(call.dialAt)}
@@ -142,14 +146,18 @@ export default function FboCallDesk({ currentUser }) {
                       <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-surface-sunken p-2 text-[11px] text-content-muted">{call.transcript}</pre>
                     )}
                   </div>
-                  {canMutate && ['armed', 'scheduled', 'retry', 'failed', 'needs_followup'].includes(call.status) && (
+                  {canMutate && (
                     <div className="flex gap-2">
                       {['failed', 'needs_followup'].includes(call.status) && (
                         <Button size="sm" variant="secondary" loading={busyId === call.id} onClick={() => act('retry', call.id)}>Retry</Button>
                       )}
                       {['armed', 'scheduled', 'retry'].includes(call.status) && (
-                        <Button size="sm" variant="secondary" loading={busyId === call.id} onClick={() => act('cancel', call.id)}>Cancel</Button>
+                        <>
+                          <Button size="sm" variant="primary" loading={busyId === call.id} onClick={() => act('dialNow', call.id)}>Call now</Button>
+                          <Button size="sm" variant="secondary" loading={busyId === call.id} onClick={() => act('cancel', call.id)}>Cancel</Button>
+                        </>
                       )}
+                      {call.listenAvailable && <FboCallListener callId={call.id} />}
                     </div>
                   )}
                 </div>

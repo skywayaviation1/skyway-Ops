@@ -13,6 +13,8 @@ import {
   groundTransportRequested,
   leadPassengerName,
   materialHash,
+  publicCallSummary,
+  resolveDialPhone,
   resolveDialAt,
   scheduledDialAt,
   shouldQueueUpdate,
@@ -161,13 +163,49 @@ test('departure and arrival dialing phones come only from trip-sheet data', () =
   assert.equal(tripSheetDialPhone(state, 'arrival'), '561-555-0199');
 });
 
-test('dial window is two hours before departure and 90 minutes before arrival', () => {
+test('an operator phone override replaces the sheet number and is hashed', () => {
+  const state = {
+    fromFbo: 'Signature',
+    tripSheetUrl: 'https://example.test/trip-sheet.pdf',
+    tripSheetData: { fromAirportPhone: '201-555-0100' },
+    fboCallDialOverrides: { departure: '727-555-0199' },
+  };
+  assert.deepEqual(resolveDialPhone(state, 'departure'), {
+    display: '727-555-0199',
+    source: 'override',
+    isOverride: true,
+  });
+  const result = buildSpeakableFacts({ trip, state, purpose: 'departure' });
+  assert.equal(result.facts.phoneE164, '+17275550199');
+  assert.equal(result.facts.phoneSource, 'override');
+  assert.notEqual(
+    result.hash,
+    buildSpeakableFacts({
+      trip,
+      state: { ...state, fboCallDialOverrides: {} },
+      purpose: 'departure',
+    }).hash,
+  );
+});
+
+test('departure and arrival follow-up windows are both two hours', () => {
   const start = Date.parse(trip.start);
   const end = Date.parse(trip.end);
   assert.equal(scheduledDialAt({ purpose: 'departure', startMs: start, endMs: end }), start - 120 * 60_000);
-  assert.equal(scheduledDialAt({ purpose: 'arrival', startMs: start, endMs: end }), end - 90 * 60_000);
+  assert.equal(scheduledDialAt({ purpose: 'arrival', startMs: start, endMs: end }), end - 120 * 60_000);
   const tooLate = resolveDialAt(start - 120 * 60_000, start + 40 * 60_000, start);
   assert.equal(tooLate.ok, false);
+});
+
+test('active calls expose listen availability without exposing monitor URLs', () => {
+  const summary = publicCallSummary({
+    id: 'fbo_1',
+    status: 'in_progress',
+    vendorCallId: 'vapi_1',
+    monitorListenUrl: 'wss://private.example/listen',
+  });
+  assert.equal(summary.listenAvailable, true);
+  assert.equal('monitorListenUrl' in summary, false);
 });
 
 test('material trip changes queue an update after a completed call', () => {
@@ -238,19 +276,39 @@ test('webhook HMAC and end-of-call mapping', async () => {
   });
   assert.equal(parsed.nextStatus, CALL_STATUSES.completed);
   assert.equal(parsed.confirmations.fuelConfirmed, true);
+  const active = summarizeWebhook({
+    message: {
+      type: 'status-update',
+      status: 'in-progress',
+      call: {
+        id: 'vapi_1',
+        metadata: { skywayCallId: 'fbo_1' },
+        monitor: { listenUrl: 'wss://vapi.example/listen' },
+      },
+    },
+  });
+  assert.equal(active.nextStatus, CALL_STATUSES.in_progress);
+  assert.equal(active.monitorListenUrl, 'wss://vapi.example/listen');
 });
 
 test('routes, cron, and secrets stay server-side', async () => {
   const app = await source('src/App.jsx');
   const vercel = await source('vercel.json');
   const desk = await source('src/FboCallDesk.jsx');
+  const listener = await source('src/FboCallListener.jsx');
   const helper = await source('api/_fbo-call.js');
+  const schedule = await source('api/fbo-call-schedule.js');
   assert.match(app, /FboCallDeskLazy/);
   assert.match(app, /TripFboCallsLazy/);
   assert.match(app, /id: 'fbo-calls'/);
   assert.match(vercel, /\/api\/fbo-call-schedule/);
   assert.match(desk, /\/api\/fbo-call/);
   assert.match(helper, /VAPI_API_KEY/);
+  assert.match(helper, /monitorListenUrl/);
+  assert.match(helper, /dialJobNow/);
+  assert.match(schedule, /dialJobNow/);
+  assert.match(listener, /WebSocket/);
   assert.doesNotMatch(desk, /VAPI_API_KEY/);
+  assert.doesNotMatch(listener, /VAPI_API_KEY/);
   assert.doesNotMatch(app, /VITE_VAPI/);
 });

@@ -5259,6 +5259,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   // FBO call details come from the uploaded trip sheet in trip-state.
   const [fromFbo, setFromFbo] = useState(null);
   const [toFbo, setToFbo] = useState(null);
+  const [fboCallDialOverrides, setFboCallDialOverrides] = useState({});
   const [fboCalls, setFboCalls] = useState([]);
   const [pendingScanPax, setPendingScanPax] = useState(null); // pre-loaded pax being checked in
   const [loading, setLoading] = useState(true);
@@ -5479,6 +5480,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
           });
           setFromFbo(state.fromFbo || null);
           setToFbo(state.toFbo || null);
+          setFboCallDialOverrides(state.fboCallDialOverrides || {});
           setFboCalls(Array.isArray(state.fboCalls) ? state.fboCalls : []);
           setCompleted(state.completed === true);
           setFratState(state.frat || null);
@@ -7367,6 +7369,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
               tripSheetData={tripSheetData}
               fromFbo={fromFbo}
               toFbo={toFbo}
+              fboCallDialOverrides={fboCallDialOverrides}
               passengers={passengers}
               preloadedPax={preloadedPax}
               hasCatering={hasCatering}

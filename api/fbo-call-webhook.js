@@ -90,6 +90,8 @@ export function summarizeWebhook(payload) {
     endedReason: message.endedReason || message.ended_reason || '',
     vendorCallId: vendorIdFrom(payload),
     skywayCallId: jobIdFrom(payload),
+    monitorListenUrl: message.call?.monitor?.listenUrl || payload.call?.monitor?.listenUrl || '',
+    monitorControlUrl: message.call?.monitor?.controlUrl || payload.call?.monitor?.controlUrl || '',
   };
 }
 
@@ -147,6 +149,11 @@ export default async function handler(req, res) {
   if (parsed.transcript) patch.transcript = parsed.transcript;
   if (parsed.summary) patch.summary = parsed.summary;
   if (parsed.confirmations) patch.confirmations = parsed.confirmations;
+  if (parsed.monitorListenUrl) {
+    patch.monitorListenUrl = parsed.monitorListenUrl;
+    patch.monitorControlUrl = parsed.monitorControlUrl;
+    patch.monitorUrlsUpdatedAt = Date.now();
+  }
   if (parsed.ended) {
     patch.endedAt = Date.now();
     patch.endedReason = parsed.endedReason;

@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, Loader2, Phone } from 'lucide-react';
 import { Button, Card, StatusChip } from './ui.jsx';
 import { brand } from './brand.js';
-import { SKYWAY_CALLER_ID_DISPLAY } from './fbo-call.js';
+import FboCallListener from './FboCallListener.jsx';
+import { SKYWAY_CALLER_ID_DISPLAY, toE164 } from './fbo-call.js';
 
 const TONE = {
   completed: 'success',
@@ -54,6 +55,7 @@ export default function TripFboCalls({
   tripSheetData,
   fromFbo,
   toFbo,
+  fboCallDialOverrides = {},
   passengers = [],
   preloadedPax = [],
   hasCatering,
@@ -67,12 +69,16 @@ export default function TripFboCalls({
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState('');
   const [verifiedFacts, setVerifiedFacts] = useState({});
+  const [phoneOverrides, setPhoneOverrides] = useState(fboCallDialOverrides);
+  const [phoneDrafts, setPhoneDrafts] = useState({});
+  const [dialImmediately, setDialImmediately] = useState(true);
 
   const state = {
     tripSheetUrl,
     tripSheetData,
     fromFbo,
     toFbo,
+    fboCallDialOverrides: phoneOverrides,
     passengers,
     preloadedPax,
     hasCatering,
@@ -122,12 +128,41 @@ export default function TripFboCalls({
     passengers,
     preloadedPax,
     tripSheetNotes,
+    phoneOverrides,
   ]);
 
   useEffect(() => { refresh(); }, [refresh]);
   useEffect(() => {
     if (Array.isArray(fboCalls)) setCalls(fboCalls);
   }, [fboCalls]);
+  useEffect(() => {
+    setPhoneOverrides(fboCallDialOverrides || {});
+    setPhoneDrafts({});
+    setVerifiedFacts({});
+  }, [trip?.uid, fboCallDialOverrides]);
+
+  async function savePhone(purpose, sheetPhone) {
+    const entered = String(phoneDrafts[purpose] ?? phoneOverrides[purpose] ?? sheetPhone ?? '').trim();
+    if (!toE164(entered)) {
+      setError('Enter a valid phone number before saving.');
+      return;
+    }
+    const next = { ...phoneOverrides };
+    if (toE164(entered) === toE164(sheetPhone)) delete next[purpose];
+    else next[purpose] = entered;
+    setBusy(`phone-${purpose}`);
+    setError(null);
+    try {
+      const { saveTripState } = await import('./firebase-data.js');
+      await saveTripState(trip.uid, { fboCallDialOverrides: next });
+      setPhoneOverrides(next);
+      setVerifiedFacts((current) => ({ ...current, [purpose]: '' }));
+    } catch (err) {
+      setError(err.message || 'Could not save the call phone');
+    } finally {
+      setBusy('');
+    }
+  }
 
   async function run(action, extra = {}) {
     if (!canArm) return;
@@ -204,7 +239,12 @@ export default function TripFboCalls({
                 <dt className="text-content-subtle">Trip airport</dt>
                 <dd className="font-mono text-content">{row.facts.airport || '—'}</dd>
                 <dt className="text-content-subtle">Trip sheet phone</dt>
-                <dd className="font-mono text-content">{row.facts.phoneDisplay || 'Not on trip sheet'}</dd>
+                <dd className="font-mono text-content">
+                  {row.facts.phoneDisplay || 'Not on trip sheet'}
+                  {row.facts.phoneSource === 'override' && (
+                    <span className="ml-2 text-[10px] font-semibold uppercase text-warning">changed for calls</span>
+                  )}
+                </dd>
                 <dt className="text-content-subtle">Hours</dt>
                 <dd className="text-content">{row.facts.hoursKnown ? row.facts.hours : 'Not on file — will not be guessed'}</dd>
                 <dt className="text-content-subtle">Ground</dt>
@@ -214,6 +254,40 @@ export default function TripFboCalls({
                     : 'Not requested · no passenger names'}
                 </dd>
               </dl>
+            )}
+            {row.facts && canArm && (
+              <div className="mt-3 rounded-lg border border-edge p-3">
+                <label className="block text-[10px] font-semibold uppercase tracking-wide text-content-subtle">
+                  Phone number for this call
+                </label>
+                <div className="mt-1 flex gap-2">
+                  <input
+                    type="tel"
+                    value={phoneDrafts[row.purpose] ?? row.facts.phoneDisplay ?? ''}
+                    onChange={(event) => setPhoneDrafts((current) => ({
+                      ...current,
+                      [row.purpose]: event.target.value,
+                    }))}
+                    className="min-w-0 flex-1 rounded-lg border border-edge bg-surface px-3 py-2 font-mono text-sm text-content outline-none focus:border-accent"
+                  />
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    loading={busy === `phone-${row.purpose}`}
+                    onClick={() => savePhone(
+                      row.purpose,
+                      row.purpose === 'arrival'
+                        ? tripSheetData?.toAirportPhone
+                        : tripSheetData?.fromAirportPhone,
+                    )}
+                  >
+                    Use number
+                  </Button>
+                </div>
+                <p className="mt-1 text-[11px] text-content-subtle">
+                  Change applies to this trip’s calls. Re-enter the trip-sheet number to restore it.
+                </p>
+              </div>
             )}
             {row.ok && canArm && (
               <label className="mt-3 flex items-start gap-2 rounded-lg border border-edge bg-surface-sunken p-3 text-sm text-content">
@@ -227,7 +301,7 @@ export default function TripFboCalls({
                   }))}
                 />
                 <span>
-                  I verified the trip-sheet FBO, airport, and phone shown above.
+                  I verified the FBO, airport, and call phone shown above.
                 </span>
               </label>
             )}
@@ -240,29 +314,46 @@ export default function TripFboCalls({
         ))}
       </div>
       {canArm && (
-        <div className="flex flex-wrap gap-2">
-          <Button
-            variant="primary"
-            icon={Phone}
-            loading={busy === 'arm'}
-            onClick={() => run('arm', {
-              purposes: verifiedPurposes,
-              verifiedPurposes,
-            })}
-            disabled={verifiedPurposes.length === 0}
-          >
-            Arm verified {verifiedPurposes.length === 1 ? 'call' : 'calls'}
-          </Button>
-          {changedResults.length > 0 && (
+        <div className="space-y-3">
+          <label className="flex items-start gap-2 rounded-lg border border-edge bg-surface p-3 text-sm text-content">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={dialImmediately}
+              onChange={(event) => setDialImmediately(event.target.checked)}
+            />
+            <span>
+              Call immediately when armed
+              <span className="block text-xs text-content-subtle">
+                Arrival calls also get a follow-up two hours before arrival.
+              </span>
+            </span>
+          </label>
+          <div className="flex flex-wrap gap-2">
             <Button
-              variant="secondary"
-              loading={busy === 'update'}
-              disabled={!verifiedChanged}
-              onClick={() => run('update', { verifiedPurposes })}
+              variant="primary"
+              icon={Phone}
+              loading={busy === 'arm'}
+              onClick={() => run('arm', {
+                purposes: verifiedPurposes,
+                verifiedPurposes,
+                dialImmediately,
+              })}
+              disabled={verifiedPurposes.length === 0}
             >
-              Queue update call
+              Arm verified {verifiedPurposes.length === 1 ? 'call' : 'calls'}
             </Button>
-          )}
+            {changedResults.length > 0 && (
+              <Button
+                variant="secondary"
+                loading={busy === 'update'}
+                disabled={!verifiedChanged}
+                onClick={() => run('update', { verifiedPurposes })}
+              >
+                Queue update call
+              </Button>
+            )}
+          </div>
         </div>
       )}
       {calls.length > 0 && (
@@ -273,7 +364,13 @@ export default function TripFboCalls({
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-sm font-semibold capitalize text-content">{call.purpose}</span>
                 <StatusChip tone={TONE[call.status] || 'neutral'} size="sm">{String(call.status || '').replace(/_/g, ' ')}</StatusChip>
+                {call.callPhase === 'arrival_reverification' && (
+                  <StatusChip tone="info" size="sm">2-hour follow-up</StatusChip>
+                )}
               </div>
+              <p className="mt-1 font-mono text-xs text-content-subtle">
+                {call.phone || 'No phone'} · {call.dialMode === 'immediate' ? 'called when armed' : `scheduled ${new Date(call.dialAt).toLocaleString()}`}
+              </p>
               {call.summary && <p className="mt-1 text-sm text-content-muted">{call.summary}</p>}
               {call.confirmations && (
                 <p className="mt-1 text-xs text-content-subtle">
@@ -282,6 +379,21 @@ export default function TripFboCalls({
                     .map(([key, value]) => `${key}: ${value}`)
                     .join(' · ')}
                 </p>
+              )}
+              {canArm && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {['armed', 'scheduled', 'retry'].includes(call.status) && (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      loading={busy === 'dialNow'}
+                      onClick={() => run('dialNow', { callId: call.id })}
+                    >
+                      Call now
+                    </Button>
+                  )}
+                  {call.listenAvailable && <FboCallListener callId={call.id} />}
+                </div>
               )}
             </div>
           ))}

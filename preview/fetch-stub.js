@@ -545,9 +545,10 @@ export function installFetchStub() {
             ? state.fromFbo
             : state.toFbo;
           const airport = purpose === 'departure' ? trip.info?.from : trip.info?.to;
-          const phoneDisplay = purpose === 'departure'
+          const sheetPhone = purpose === 'departure'
             ? state.tripSheetData?.fromAirportPhone
             : state.tripSheetData?.toAirportPhone;
+          const phoneDisplay = state.fboCallDialOverrides?.[purpose] || sheetPhone;
           const phoneE164 = phoneDisplay ? `+1${String(phoneDisplay).replace(/\D/g, '').replace(/^1/, '')}` : '';
           const blockers = [
             ...(!state.tripSheetUrl ? ['No trip sheet uploaded'] : []),
@@ -564,6 +565,7 @@ export function installFetchStub() {
               airport,
               phoneE164,
               phoneDisplay,
+              phoneSource: state.fboCallDialOverrides?.[purpose] ? 'override' : 'trip_sheet',
               hours: '',
               hoursKnown: false,
               groundTransport: trip.info?.pax > 0,
@@ -579,10 +581,48 @@ export function installFetchStub() {
         });
       }
       if (action === 'list') {
-        return json({ ok: true, vendor: { ok: true }, calls: [] });
+        return json({
+          ok: true,
+          vendor: { ok: true },
+          calls: [
+            {
+              id: 'preview-active-call',
+              tripId: body.tripId,
+              purpose: 'departure',
+              callPhase: 'initial',
+              status: 'in_progress',
+              fboName: 'Signature IAD',
+              airport: 'IAD',
+              phone: '301-555-0100',
+              dialMode: 'immediate',
+              dialAt: Date.now() - 60_000,
+              listenAvailable: true,
+            },
+            {
+              id: 'preview-follow-up',
+              tripId: body.tripId,
+              purpose: 'arrival',
+              callPhase: 'arrival_reverification',
+              status: 'scheduled',
+              fboName: 'Atlantic HYA',
+              airport: 'HYA',
+              phone: '561-555-0199',
+              dialMode: 'scheduled',
+              dialAt: Date.now() + 90 * 60_000,
+              listenAvailable: false,
+            },
+          ],
+        });
       }
       if (action === 'arm') {
         return json({ ok: true, armed: (body.purposes || []).length });
+      }
+      if (action === 'dialNow') return json({ ok: true, result: { ok: true } });
+      if (action === 'listen') {
+        return new Response(JSON.stringify({ error: 'Live audio is unavailable in preview mode' }), {
+          status: 409,
+          headers: { 'Content-Type': 'application/json' },
+        });
       }
       return json({ ok: true });
     }
