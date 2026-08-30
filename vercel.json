@@ -23,6 +23,10 @@
     {
       "path": "/api/cleanup-pax-ids",
       "schedule": "30 7 * * *"
+    },
+    {
+      "path": "/api/fbo-call-schedule",
+      "schedule": "*/15 * * * *"
     }
   ],
   "functions": {

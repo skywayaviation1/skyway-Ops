@@ -125,6 +125,7 @@ export function subscribeToTripState(tripId, onUpdate) {
           // FBO names parsed from the trip sheet for THIS leg's two airports.
           fromFbo: data.fromFbo || null,
           toFbo: data.toFbo || null,
+          fboCalls: Array.isArray(data.fboCalls) ? data.fboCalls : [],
         });
       } else {
         // No state yet — emit empty defaults
@@ -140,6 +141,7 @@ export function subscribeToTripState(tripId, onUpdate) {
           tripSheetNotesEditedByName: null,
           fromFbo: null,
           toFbo: null,
+          fboCalls: [],
         });
       }
     },
@@ -426,6 +428,7 @@ export function subscribeAllTripStates(onUpdate) {
           opsLatestNoteByName: data.opsLatestNoteByName || '',
           fromFbo: data.fromFbo || null,
           toFbo: data.toFbo || null,
+          fboCalls: Array.isArray(data.fboCalls) ? data.fboCalls : [],
           hasCatering: data.hasCatering !== false,
           paxOverride: typeof data.paxOverride === 'number' ? data.paxOverride : null,
         });

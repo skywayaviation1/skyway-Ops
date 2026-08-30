@@ -2,6 +2,8 @@
 // the detailed Dispatch board. Nothing here grants a legal release; this is an
 // operational coordination checklist over data already stored on each trip.
 
+import { fboCallOutstanding } from './fbo-call.js';
+
 export const OPS_STATUS_STEPS = Object.freeze([
   { id: 'crew_onsite', label: 'CREW' },
   { id: 'aircraft_ready', label: 'A/C' },
@@ -122,6 +124,7 @@ export function computeOutstanding(trip, state, now = Date.now()) {
       severity: 'critical',
     });
   }
+  out.push(...fboCallOutstanding(trip, s, now));
   return out;
 }
 

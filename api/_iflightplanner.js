@@ -168,6 +168,10 @@ export function normalizeFboRecord(record) {
     state: first(index, ['state', 'statecode']),
     frequency: first(index, ['frequency', 'unicom', 'asrifrequency']),
     fuelBrand: first(index, ['fuelbrand', 'fuelprovider', 'brand']),
+    hours: first(index, [
+      'hours', 'hoursofoperation', 'operatinghours', 'businesshours',
+      'openhours', 'fbohours', 'weekdayhours',
+    ]),
     fuelPrices,
     raw: record,
   };

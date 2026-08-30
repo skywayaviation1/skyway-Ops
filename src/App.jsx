@@ -20,6 +20,9 @@ const EmailDiagnosticsPanelLazy = lazy(() => import('./EmailDiagnosticsPanel.jsx
 const AvailabilityLazy = lazy(() => import('./AvailabilityPlanner.jsx'));
 const BrokeredOperatorLinkLazy = lazy(() => import('./BrokeredOperatorLink.jsx'));
 const AirportFboDataLazy = lazy(() => import('./AirportFboData.jsx'));
+const FboCallDeskLazy = lazy(() => import('./FboCallDesk.jsx'));
+const FboCallSettingsPanelLazy = lazy(() => import('./FboCallSettingsPanel.jsx'));
+const TripFboCallsLazy = lazy(() => import('./TripFboCalls.jsx'));
 const TripEmailPanelLazy = lazy(() =>
   import('./CharterInbox.jsx').then((module) => ({ default: module.TripEmailPanel }))
 );
@@ -140,7 +143,7 @@ import {
   Download, Trash2, Plus, FileText, Zap, Radio, AlertCircle, Upload,
   Check, CheckCheck, UserCheck, Sparkles, Hash, Cloud, Wrench, Hotel, BookOpen, Search,
   Activity, Palette, ShieldCheck, Edit2, Home, CreditCard, Fuel, Building2,
-  MoreHorizontal, LogOut, ChevronRight,
+  MoreHorizontal, LogOut, ChevronRight, Phone,
 } from 'lucide-react';
 // Shared design-system primitives. New UI should compose these rather than
 // re-deriving borders, spacing and tone colors inline.
@@ -5261,6 +5264,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   // iCal-parsed value.
   const [fromFbo, setFromFbo] = useState(trip.info?.fromFbo || null);
   const [toFbo, setToFbo] = useState(trip.info?.toFbo || null);
+  const [fboCalls, setFboCalls] = useState([]);
   const [pendingScanPax, setPendingScanPax] = useState(null); // pre-loaded pax being checked in
   const [loading, setLoading] = useState(true);
   // UPDATE ETA flow: tracks whether we're mid-call so we can disable the button
@@ -5485,6 +5489,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
           // Rare event; preferable to FBOs disappearing for the common case.
           setFromFbo(state.fromFbo || trip.info?.fromFbo || null);
           setToFbo(state.toFbo || trip.info?.toFbo || null);
+          setFboCalls(Array.isArray(state.fboCalls) ? state.fboCalls : []);
           setCompleted(state.completed === true);
           setFratState(state.frat || null);
           setOpsDisposition(state.opsDisposition || null);
@@ -6908,6 +6913,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
             // hotel info for the trip. Hidden on non-ops (HOLD/MX/etc)
             // since they don't have crew lodging in the operational sense.
             { id: 'lodging', label: 'Lodging', icon: Hotel, hidden: !trip.info.isOps },
+            { id: 'fbo-call', label: 'FBO calls', icon: Phone, hidden: !trip.info.isOps || !['crew', 'ops', 'admin'].includes(currentUser?.role) },
             { id: 'chat', label: 'Comms', icon: MessageSquare, unread: tripChatUnread },
             { id: 'email', label: 'Email', icon: Mail, hidden: !['admin', 'sales'].includes(currentUser?.role) },
             { id: 'notify', label: 'Notify', icon: Bell, hidden: !trip.info.isOps },
@@ -6923,7 +6929,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
               id: 'operations',
               label: 'Operations',
               icon: Navigation,
-              children: pick(['sheet', 'weather', 'plan', 'frat', 'lodging', 'notes', 'notify', 'delay']),
+              children: pick(['sheet', 'weather', 'plan', 'frat', 'lodging', 'fbo-call', 'notes', 'notify', 'delay']),
             },
             { id: 'chat', label: 'Comms', icon: MessageSquare, children: pick(['chat', 'email']) },
           ].filter(g => g.children.length > 0);
@@ -7361,6 +7367,21 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
         ) : tab === 'lodging' ? (
           <Suspense fallback={<div className="p-8 text-center text-slate-500"><Loader2 className="w-5 h-5 animate-spin inline-block mr-2" />Loading lodging...</div>}>
             <LodgingLazy trip={trip} currentUser={currentUser} users={users} />
+          </Suspense>
+        ) : tab === 'fbo-call' ? (
+          <Suspense fallback={<div className="p-8 text-center text-slate-500"><Loader2 className="w-5 h-5 animate-spin inline-block mr-2" />Loading FBO calls...</div>}>
+            <TripFboCallsLazy
+              trip={trip}
+              currentUser={currentUser}
+              fromFbo={fromFbo}
+              toFbo={toFbo}
+              passengers={passengers}
+              preloadedPax={preloadedPax}
+              hasCatering={hasCatering}
+              paxOverride={paxOverride}
+              tripSheetNotes={tripSheetNotes}
+              fboCalls={fboCalls}
+            />
           </Suspense>
         ) : tab === 'chat' ? (
           <Suspense fallback={
@@ -15901,6 +15922,10 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
             <ForeFlightSettingsPanelLazy currentUser={currentUser} />
           </Suspense>
 
+          <Suspense fallback={<div className="text-xs text-slate-500 py-2">Loading FBO calling…</div>}>
+            <FboCallSettingsPanelLazy currentUser={currentUser} />
+          </Suspense>
+
           <Suspense fallback={<div className="text-xs text-slate-500 py-2">Loading FRAT scoring…</div>}>
             <FratSettingsPanelLazy currentUser={currentUser} />
           </Suspense>
@@ -21861,6 +21886,7 @@ const NAV_SECTIONS = [
   { id: 'schedule',  label: 'Schedule',    icon: Calendar,      roles: ['crew', 'ops', 'admin'] },
   { id: 'availability', label: 'Availability', icon: Plane,     roles: ['ops', 'admin'] },
   { id: 'airport-data', label: 'Airport & Fuel', icon: Fuel,    roles: ['crew', 'sales', 'ops', 'admin'] },
+  { id: 'fbo-calls', label: 'FBO calls', icon: Phone, roles: ['crew', 'ops', 'admin'] },
   { id: 'ops',       label: 'Dispatch',    icon: Zap,           roles: ['ops', 'admin'] },
   { id: 'tracking',  label: 'Tracking',    icon: Navigation,    roles: ['ops', 'admin'] },
   { id: 'manifests', label: 'Manifests',   icon: FileText,      roles: ['crew', 'ops', 'admin'] },
@@ -21889,7 +21915,7 @@ const NAV_SECTIONS = [
 
 const NAV_GROUPS = [
   { id: 'home',     label: 'Home',     icon: Home,          children: ['home'] },
-  { id: 'flights',  label: 'Flights',  icon: Plane,         children: ['schedule', 'availability', 'airport-data', 'ops', 'tracking', 'manifests', 'lodging', 'archive'] },
+  { id: 'flights',  label: 'Flights',  icon: Plane,         children: ['schedule', 'availability', 'airport-data', 'fbo-calls', 'ops', 'tracking', 'manifests', 'lodging', 'archive'] },
   { id: 'comms',    label: 'Comms',    icon: MessageSquare, children: ['comms'] },
   { id: 'teams',    label: 'Teams',    icon: Users,         children: ['teams'] },
   { id: 'email',    label: 'Email',    icon: Mail,          children: ['mailbox', 'inbox'] },
@@ -28906,6 +28932,18 @@ export default function CharterOps() {
             )}
           >
             <AirportFboDataLazy />
+          </Suspense>
+        )}
+
+        {section === 'fbo-calls' && (
+          <Suspense
+            fallback={(
+              <div className="flex flex-1 items-center justify-center text-content-muted">
+                <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading FBO calls…
+              </div>
+            )}
+          >
+            <FboCallDeskLazy currentUser={currentUser} />
           </Suspense>
         )}
 

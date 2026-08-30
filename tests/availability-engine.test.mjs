@@ -541,7 +541,7 @@ test('Availability is a role-gated lazy Flights tab fed by the live schedule', a
   const app = await readFile(path.join(root, 'src/App.jsx'), 'utf8');
   assert.match(app, /AvailabilityLazy = lazy\(\(\) => import\('\.\/AvailabilityPlanner\.jsx'\)\)/);
   assert.match(app, /\{ id: 'availability', label: 'Availability'[\s\S]*?roles: \['ops', 'admin'\]/);
-  assert.match(app, /children: \['schedule', 'availability', 'airport-data', 'ops'/);
+  assert.match(app, /children: \['schedule', 'availability', 'airport-data', 'fbo-calls', 'ops'/);
   assert.match(app, /section === 'availability'/);
   assert.match(app, /<AvailabilityLazy[\s\S]*?allTrips=\{allTrips\}[\s\S]*?config=\{config\}[\s\S]*?users=\{users\}/);
   const component = await readFile(path.join(root, 'src/AvailabilityPlanner.jsx'), 'utf8');

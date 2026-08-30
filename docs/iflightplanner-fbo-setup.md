@@ -50,7 +50,8 @@ commas. An optional planned uplift in gallons calculates:
 That estimate deliberately excludes taxes, contract pricing, call-out,
 handling, ramp, overnight, and minimum-uplift fees. Posted retail prices can
 change without notice and must be confirmed directly with the FBO before
-dispatch or quoting.
+dispatch or quoting. Operating hours are included when the provider CSV has an
+hours column; otherwise Skyway treats hours as unknown.
 
 ## Troubleshooting
 
