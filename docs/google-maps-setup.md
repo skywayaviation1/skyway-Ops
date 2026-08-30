@@ -1,6 +1,6 @@
 # Google Maps for Tracking Maps
 
-Google Maps is the preferred basemap for every Skyway tracking surface:
+Google Maps is the only basemap for every Skyway tracking surface:
 
 - Operations Tracking;
 - public broker tracking;
@@ -9,9 +9,9 @@ Google Maps is the preferred basemap for every Skyway tracking surface:
 - the TV Flight Board.
 
 Leaflet remains a transparent operational layer above Google Maps for aircraft,
-routes, trails, airport markers, fitting, and weather radar. If Google Maps is
-not configured or rejects the deployment, the app tries Apple MapKit and then
-the existing standard tiles.
+routes, trails, airport markers, fitting, and weather radar. Leaflet does not
+load a basemap. If Google Maps is not configured or rejects the deployment, the
+map displays a configuration error rather than switching providers.
 
 ## Google Cloud setup
 

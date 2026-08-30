@@ -58,24 +58,30 @@ test('Google Maps client loader uses runtime configuration and auth failure hand
   assert.doesNotMatch(loader, /GOOGLE_MAPS_API_KEY/);
 });
 
-test('shared tracking map prefers Google and preserves Apple and tile fallbacks', async () => {
+test('shared tracking map uses Google as its only basemap', async () => {
   const map = await source('src/TrackingMap.jsx');
-  assert.match(map, /loadGoogleMaps\(\)\.catch/);
+  assert.match(map, /loadGoogleMaps\(\)/);
   assert.match(map, /new google\.Map/);
-  assert.match(map, /setMapProvider\('google'\)/);
-  assert.match(map, /loadAppleMapKit\(\)\.catch/);
-  assert.match(map, /applyBasemap/);
-  assert.match(map, /Google Maps authorization failed; trying Apple Maps/);
+  assert.match(map, /Google Maps authorization failed/);
   assert.match(map, /Basemap by Google Maps/);
+  assert.doesNotMatch(map, /Apple|CARTO|Esri|applyBasemap/);
 });
 
-test('TV Flight Board prefers Google and retains operational overlays', async () => {
+test('TV Flight Board uses only Google basemaps and retains operational overlays', async () => {
   const board = await source('src/FlightBoard.jsx');
-  assert.match(board, /loadGoogleMaps\(\)\.catch/);
+  assert.match(board, /loadGoogleMaps\(\)/);
   assert.match(board, /new google\.Map/);
   assert.match(board, /GOOGLE MAPS/);
-  assert.match(board, /Google Maps authorization failed; trying Apple Maps/);
+  assert.match(board, /Google Maps authorization failed/);
   assert.match(board, /L\.polyline/);
   assert.match(board, /RainViewer/);
+  assert.doesNotMatch(board, /Apple|CARTO|Esri|arcgisonline|cartocdn/);
+});
+
+test('tracking toolkit contains overlays but no alternate basemap provider', async () => {
+  const toolkit = await source('src/tracking-map.js');
+  assert.match(toolkit, /createRadarLayer/);
+  assert.match(toolkit, /aircraftIcon/);
+  assert.doesNotMatch(toolkit, /BASEMAPS|applyBasemap|cartocdn|arcgisonline|opentopomap/);
 });
 

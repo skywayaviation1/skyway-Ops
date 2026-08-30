@@ -91,6 +91,7 @@ export const GOOGLE_BASEMAP_LABELS = Object.freeze({
   satellite: 'Google Satellite',
   terrain: 'Google Hybrid',
 });
+export const GOOGLE_BASEMAP_ORDER = Object.freeze(['dark', 'satellite', 'terrain']);
 
 export const GOOGLE_DARK_STYLES = Object.freeze([
   { elementType: 'geometry', stylers: [{ color: '#17202b' }] },

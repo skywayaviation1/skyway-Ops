@@ -30,7 +30,6 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { lookupCoords } from './airport-coords.js';
-import { appleMapType, loadAppleMapKit } from './apple-mapkit.js';
 import {
   GOOGLE_DARK_STYLES,
   googleMapType,
@@ -340,8 +339,7 @@ function FlightRow({ trip, state, faPosition, phase }) {
 // ====================================================================
 
 function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
-  // Real US map via Leaflet + CARTO dark tiles. Same pattern as the
-  // existing TrackingScreen so we get consistent rendering. Map shows:
+  // Google basemap with transparent Leaflet operational overlays. Map shows:
   //   - All airport endpoints as small dots with code labels
   //   - Route lines colored by phase (cyan=airborne, amber=preflight,
   //     slate=pending, emerald=landed, dim=completed)
@@ -353,17 +351,13 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
 
   const containerRef = useRef(null);
   const googleContainerRef = useRef(null);
-  const appleContainerRef = useRef(null);
   const mapRef = useRef(null);
   const googleMapRef = useRef(null);
   const googleAuthCleanupRef = useRef(null);
-  const appleMapRef = useRef(null);
-  const appleErrorHandlerRef = useRef(null);
   const layerRef = useRef(null);
   const weatherLayerRef = useRef(null);   // holds the current RainViewer tile layer when on
   const [ready, setReady] = useState(false);
   const [err, setErr] = useState(null);
-  const [mapProvider, setMapProvider] = useState('checking');
   // Bumped when async airport-code lookups resolve, so routes that
   // were waiting on coords can be re-rendered. Also used as a memo
   // dependency below so the missing-codes recompute when new dynamic
@@ -482,24 +476,16 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
     return () => { cancelled = true; };
   }, [missingCodes.join(',')]);
 
-  // Google Maps is the preferred imagery layer. Apple MapKit and then the
-  // previous Esri/CARTO imagery remain automatic fallbacks. Leaflet stays
-  // transparent above the basemap for routes, aircraft, and weather radar.
+  // Google Maps is the sole imagery layer. Leaflet stays transparent above
+  // the basemap for routes, aircraft, and weather radar.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const [L, google] = await Promise.all([
           loadLeaflet(),
-          loadGoogleMaps().catch((googleError) => {
-            console.info('[board] Google Maps unavailable; trying Apple Maps:', googleError.message);
-            return null;
-          }),
+          loadGoogleMaps(),
         ]);
-        const firstApple = google ? null : await loadAppleMapKit().catch((appleError) => {
-          console.info('[board] Apple Maps unavailable; using standard basemap:', appleError.message);
-          return null;
-        });
         if (cancelled || !containerRef.current) return;
         // Fit bounds to continental US by default; will adjust based on
         // actual route data below. This is the initial view.
@@ -515,75 +501,7 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
           touchZoom: false,
           keyboard: false,
         });
-
-        const addStandardBasemap = () => {
-          if (map.__swStandardBasemap) return;
-          map.__swStandardBasemap = L.layerGroup([
-            L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-              maxZoom: 12,
-              attribution: 'Tiles &copy; Esri',
-            }),
-            L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', {
-              maxZoom: 12, subdomains: 'abcd', opacity: 0.8,
-            }),
-          ]).addTo(map);
-          const tilePane = map.getPane('tilePane');
-          if (tilePane) tilePane.style.filter = 'brightness(0.65) contrast(1.1) saturate(0.85)';
-          setMapProvider('standard');
-        };
-
-        const useAppleBasemap = (apple) => {
-          if (!apple || !appleContainerRef.current || cancelled) return false;
-          appleContainerRef.current.style.display = '';
-          const appleMap = new apple.Map(appleContainerRef.current, {
-            mapType: appleMapType(apple, 'terrain'),
-            showsCompass: apple.FeatureVisibility?.Hidden,
-            showsMapTypeControl: false,
-            showsZoomControl: false,
-            isRotationEnabled: false,
-            isScrollEnabled: false,
-            isZoomEnabled: false,
-          });
-          appleMapRef.current = appleMap;
-          const syncAppleRegion = () => {
-            try {
-              const center = map.getCenter();
-              const bounds = map.getBounds();
-              const latitudeDelta = Math.max(0.0005, Math.abs(bounds.getNorth() - bounds.getSouth()));
-              let longitudeDelta = Math.abs(bounds.getEast() - bounds.getWest());
-              if (longitudeDelta > 180) longitudeDelta = 360 - longitudeDelta;
-              const region = new apple.CoordinateRegion(
-                new apple.Coordinate(center.lat, center.lng),
-                new apple.CoordinateSpan(latitudeDelta, Math.max(0.0005, longitudeDelta)),
-              );
-              if (typeof appleMap.setRegionAnimated === 'function') {
-                appleMap.setRegionAnimated(region, false);
-              } else {
-                appleMap.region = region;
-              }
-            } catch {
-              // MapKit may still be completing its first layout.
-            }
-          };
-          map.on('move zoom resize', syncAppleRegion);
-          map.__swAppleSync = syncAppleRegion;
-          const fallBackToStandard = (event) => {
-            console.warn('[board] Apple Maps runtime error; using standard basemap', event);
-            try { appleMap.destroy(); } catch { /* already torn down */ }
-            appleMapRef.current = null;
-            if (appleContainerRef.current) appleContainerRef.current.style.display = 'none';
-            addStandardBasemap();
-          };
-          if (typeof apple.addEventListener === 'function') {
-            apple.addEventListener('error', fallBackToStandard);
-            appleErrorHandlerRef.current = fallBackToStandard;
-          }
-          setTimeout(syncAppleRegion, 0);
-          setMapProvider('apple');
-          return true;
-        };
-
-        if (google && googleContainerRef.current) {
+        if (googleContainerRef.current) {
           const googleMap = new google.Map(googleContainerRef.current, {
             center: { lat: 38, lng: -95 },
             zoom: 4,
@@ -602,18 +520,13 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
           };
           map.on('move zoom resize', syncGoogleRegion);
           map.__swGoogleSync = syncGoogleRegion;
-          googleAuthCleanupRef.current = onGoogleMapsAuthFailure(async () => {
+          googleAuthCleanupRef.current = onGoogleMapsAuthFailure(() => {
             if (cancelled) return;
-            console.warn('[board] Google Maps authorization failed; trying Apple Maps');
+            console.error('[board] Google Maps authorization failed');
             googleMapRef.current = null;
-            if (googleContainerRef.current) googleContainerRef.current.style.display = 'none';
-            const apple = await loadAppleMapKit().catch(() => null);
-            if (!useAppleBasemap(apple)) addStandardBasemap();
+            setErr('Google Maps authorization failed. Check the API key, billing, API restriction, and website referrer.');
           });
           setTimeout(syncGoogleRegion, 0);
-          setMapProvider('google');
-        } else if (!useAppleBasemap(firstApple)) {
-          addStandardBasemap();
         }
         // Layer group for our route/marker overlays so we can clear and
         // redraw without disturbing the tile layers.
@@ -631,9 +544,6 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
         if (mapRef.current.__swGoogleSync) {
           mapRef.current.off('move zoom resize', mapRef.current.__swGoogleSync);
         }
-        if (mapRef.current.__swAppleSync) {
-          mapRef.current.off('move zoom resize', mapRef.current.__swAppleSync);
-        }
         try { mapRef.current.remove(); } catch (_) {}
         mapRef.current = null;
         layerRef.current = null;
@@ -644,18 +554,6 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
       }
       googleMapRef.current = null;
       if (googleContainerRef.current) googleContainerRef.current.replaceChildren();
-      if (appleMapRef.current) {
-        try { appleMapRef.current.destroy(); } catch (_) {}
-        appleMapRef.current = null;
-      }
-      if (
-        appleErrorHandlerRef.current
-        && window.mapkit
-        && typeof window.mapkit.removeEventListener === 'function'
-      ) {
-        window.mapkit.removeEventListener('error', appleErrorHandlerRef.current);
-        appleErrorHandlerRef.current = null;
-      }
     };
   }, []);
 
@@ -920,11 +818,6 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
         style={{ background: '#020617' }}
       />
       <div
-        ref={appleContainerRef}
-        className="absolute inset-0 h-full w-full"
-        style={{ background: '#020617', display: 'none' }}
-      />
-      <div
         ref={containerRef}
         className="absolute inset-0 h-full w-full"
         style={{ background: 'transparent' }}
@@ -953,13 +846,7 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
       </button>
 
       <div className="absolute left-3 top-3 z-[1000] border border-slate-700 bg-slate-900/90 px-2 py-1 font-mono text-[9px] tracking-widest text-slate-400">
-        {mapProvider === 'google'
-          ? 'GOOGLE MAPS'
-          : mapProvider === 'apple'
-            ? 'APPLE MAPS FALLBACK'
-            : mapProvider === 'standard'
-              ? 'STANDARD MAP FALLBACK'
-              : 'LOADING MAP'}
+        GOOGLE MAPS
       </div>
 
       {/* Legend — matches the actual line styles used on the map. */}
