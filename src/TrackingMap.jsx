@@ -34,6 +34,13 @@ import {
   appleMapType,
   loadAppleMapKit,
 } from './apple-mapkit.js';
+import {
+  GOOGLE_BASEMAP_LABELS,
+  GOOGLE_DARK_STYLES,
+  googleMapType,
+  loadGoogleMaps,
+  onGoogleMapsAuthFailure,
+} from './google-maps.js';
 import { cx } from './ui.jsx';
 
 const EMPTY_SCENE = { aircraft: [], airports: [], routes: [], trail: null, projected: null };
@@ -60,9 +67,12 @@ export default function TrackingMap({
   overlay = null,
 }) {
   const containerRef = useRef(null);
+  const googleContainerRef = useRef(null);
   const appleContainerRef = useRef(null);
   const frameRef = useRef(null);
   const mapRef = useRef(null);
+  const googleMapRef = useRef(null);
+  const googleAuthCleanupRef = useRef(null);
   const appleMapRef = useRef(null);
   const appleErrorHandlerRef = useRef(null);
   const overlayGroupRef = useRef(null);
@@ -87,17 +97,20 @@ export default function TrackingMap({
     let cancelled = false;
     (async () => {
       try {
-        // Apple Maps is the preferred basemap. Leaflet remains the overlay and
-        // interaction engine for aircraft, trails and weather radar. If MapKit
-        // credentials/CDN/domain authorization are unavailable, the existing
-        // Leaflet basemap is used with no feature loss.
-        const [L, apple] = await Promise.all([
+        // Google Maps is preferred. Apple MapKit is the first fallback, then
+        // the standard Leaflet tiles. Leaflet remains the transparent overlay
+        // and interaction engine for aircraft, trails, routes and radar.
+        const [L, google] = await Promise.all([
           loadLeaflet(),
-          loadAppleMapKit().catch((appleError) => {
-            console.info('[tracking-map] Apple Maps unavailable; using standard basemap:', appleError.message);
+          loadGoogleMaps().catch((googleError) => {
+            console.info('[tracking-map] Google Maps unavailable; trying Apple Maps:', googleError.message);
             return null;
           }),
         ]);
+        const firstApple = google ? null : await loadAppleMapKit().catch((appleError) => {
+          console.info('[tracking-map] Apple Maps unavailable; using standard basemap:', appleError.message);
+          return null;
+        });
         if (cancelled || !containerRef.current) return;
         const map = L.map(containerRef.current, {
           center: [39, -96],
@@ -105,13 +118,20 @@ export default function TrackingMap({
           minZoom: 2,
           maxZoom: 17,
           zoomControl: false,
-          attributionControl: !apple,
+          attributionControl: !google && !firstApple,
           worldCopyJump: false,
         });
         L.control.zoom({ position: 'bottomright' }).addTo(map);
         if (map.attributionControl) map.attributionControl.setPrefix(false);
 
-        if (apple && appleContainerRef.current) {
+        const useStandardBasemap = () => {
+          applyBasemap(L, map, basemapDefault);
+          if (!cancelled) setMapProvider('standard');
+        };
+
+        const useAppleBasemap = (apple) => {
+          if (!apple || !appleContainerRef.current || cancelled) return false;
+          appleContainerRef.current.style.display = '';
           const appleMap = new apple.Map(appleContainerRef.current, {
             mapType: appleMapType(apple, basemapDefault),
             showsCompass: apple.FeatureVisibility?.Hidden,
@@ -150,8 +170,7 @@ export default function TrackingMap({
             try { appleMap.destroy(); } catch { /* already torn down */ }
             appleMapRef.current = null;
             if (appleContainerRef.current) appleContainerRef.current.style.display = 'none';
-            applyBasemap(L, map, basemapDefault);
-            setMapProvider('standard');
+            useStandardBasemap();
           };
           if (typeof apple.addEventListener === 'function') {
             apple.addEventListener('error', fallBackToStandard);
@@ -159,9 +178,40 @@ export default function TrackingMap({
           }
           setTimeout(syncAppleRegion, 0);
           if (!cancelled) setMapProvider('apple');
-        } else {
-          applyBasemap(L, map, basemapDefault);
-          if (!cancelled) setMapProvider('standard');
+          return true;
+        };
+
+        if (google && googleContainerRef.current) {
+          const googleMap = new google.Map(googleContainerRef.current, {
+            center: { lat: 39, lng: -96 },
+            zoom: 4,
+            mapTypeId: googleMapType(basemapDefault),
+            styles: basemapDefault === 'dark' ? GOOGLE_DARK_STYLES : null,
+            disableDefaultUI: true,
+            clickableIcons: false,
+            gestureHandling: 'none',
+            keyboardShortcuts: false,
+          });
+          googleMapRef.current = googleMap;
+          const syncGoogleRegion = () => {
+            const center = map.getCenter();
+            googleMap.setCenter({ lat: center.lat, lng: center.lng });
+            googleMap.setZoom(Math.round(map.getZoom()));
+          };
+          map.on('move zoom resize', syncGoogleRegion);
+          map.__swGoogleSync = syncGoogleRegion;
+          googleAuthCleanupRef.current = onGoogleMapsAuthFailure(async () => {
+            if (cancelled) return;
+            console.warn('[tracking-map] Google Maps authorization failed; trying Apple Maps');
+            googleMapRef.current = null;
+            if (googleContainerRef.current) googleContainerRef.current.style.display = 'none';
+            const apple = await loadAppleMapKit().catch(() => null);
+            if (!useAppleBasemap(apple)) useStandardBasemap();
+          });
+          setTimeout(syncGoogleRegion, 0);
+          if (!cancelled) setMapProvider('google');
+        } else if (!useAppleBasemap(firstApple)) {
+          useStandardBasemap();
         }
         overlayGroupRef.current = L.layerGroup().addTo(map);
         mapRef.current = map;
@@ -174,6 +224,9 @@ export default function TrackingMap({
       cancelled = true;
       if (radarRef.current) { radarRef.current.destroy(); radarRef.current = null; }
       if (mapRef.current) {
+        if (mapRef.current.__swGoogleSync) {
+          mapRef.current.off('move zoom resize', mapRef.current.__swGoogleSync);
+        }
         if (mapRef.current.__swAppleSync) {
           mapRef.current.off('move zoom resize', mapRef.current.__swAppleSync);
         }
@@ -181,6 +234,12 @@ export default function TrackingMap({
         mapRef.current = null;
         overlayGroupRef.current = null;
       }
+      if (googleAuthCleanupRef.current) {
+        googleAuthCleanupRef.current();
+        googleAuthCleanupRef.current = null;
+      }
+      googleMapRef.current = null;
+      if (googleContainerRef.current) googleContainerRef.current.replaceChildren();
       if (appleMapRef.current) {
         try { appleMapRef.current.destroy(); } catch { /* already torn down */ }
         appleMapRef.current = null;
@@ -201,7 +260,12 @@ export default function TrackingMap({
   /* ─── Basemap switching ────────────────────────────────────────────────── */
   useEffect(() => {
     if (!ready || !mapRef.current) return;
-    if (mapProvider === 'apple' && appleMapRef.current && window.mapkit) {
+    if (mapProvider === 'google' && googleMapRef.current) {
+      googleMapRef.current.setMapTypeId(googleMapType(basemap));
+      googleMapRef.current.setOptions({
+        styles: basemap === 'dark' ? GOOGLE_DARK_STYLES : null,
+      });
+    } else if (mapProvider === 'apple' && appleMapRef.current && window.mapkit) {
       appleMapRef.current.mapType = appleMapType(window.mapkit, basemap);
     } else if (mapProvider === 'standard') {
       applyBasemap(window.L, mapRef.current, basemap);
@@ -393,13 +457,18 @@ export default function TrackingMap({
       )}
       style={fullscreen ? undefined : style}
     >
-      {/* Official MapKit JS owns the basemap image, including Apple legal
-          attribution. Leaflet is transparent above it and draws operational
-          overlays/interactions; it never requests or repackages Apple tiles. */}
+      {/* Google Maps owns the preferred basemap. MapKit is retained as the
+          first fallback. Leaflet is transparent above either provider and
+          draws operational overlays/interactions. */}
+      <div
+        ref={googleContainerRef}
+        className="absolute inset-0 h-full w-full"
+        style={{ background: '#060c16' }}
+      />
       <div
         ref={appleContainerRef}
         className="absolute inset-0 h-full w-full"
-        style={{ background: '#060c16' }}
+        style={{ background: '#060c16', display: 'none' }}
       />
       <div
         ref={containerRef}
@@ -451,12 +520,20 @@ export default function TrackingMap({
                   basemap === id ? 'bg-accent-soft font-semibold text-accent' : 'text-content hover:bg-surface-raised',
                 )}
               >
-                {mapProvider === 'apple' ? APPLE_BASEMAP_LABELS[id] : BASEMAPS[id].label}
+                {mapProvider === 'google'
+                  ? GOOGLE_BASEMAP_LABELS[id]
+                  : mapProvider === 'apple'
+                    ? APPLE_BASEMAP_LABELS[id]
+                    : BASEMAPS[id].label}
                 {basemap === id && <Check className="h-3.5 w-3.5" />}
               </button>
             ))}
             <p className="px-2 pb-1 pt-1.5 text-[9px] text-content-subtle">
-              {mapProvider === 'apple' ? 'Basemap by Apple Maps' : 'Standard map fallback'}
+              {mapProvider === 'google'
+                ? 'Basemap by Google Maps'
+                : mapProvider === 'apple'
+                  ? 'Apple Maps fallback'
+                  : 'Standard map fallback'}
             </p>
             {showTrailToggle && (
               <>
