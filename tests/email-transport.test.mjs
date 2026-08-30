@@ -109,15 +109,33 @@ test('the charter inbox is filed even when Exchange is unavailable', async () =>
   assert.deepEqual(calls.provider[0].to, ['broker@jets.com']);
 });
 
-test('provider acceptance cannot hide a failed tenant delivery', async () => {
+test('a tenant recipient Exchange cannot reach still goes out through the provider', async () => {
   const { calls, deps } = recorder({ internalOk: false, fileOk: false });
   const result = await deliverNotification(message(['ops@flyskyway.com']), deps);
 
-  // The provider is attempted as a last chance, but the queue remains failed
-  // because Exchange may filter that copy.
-  assert.equal(result.ok, false);
+  // Falling back to a filtered path beats not sending the notification at all.
+  assert.equal(result.ok, true);
   assert.deepEqual(calls.provider[0].to, ['ops@flyskyway.com']);
-  assert.equal(result.providerDelivered, true);
+  // The fallback is still reported, because that copy can be filtered on arrival.
+  assert.equal(result.tenantMailDegraded, true);
+  assert.match(result.tenantMailError, /Graph refused|mailbox write/);
+});
+
+test('a broken Graph credential never reports the broker email as failed', async () => {
+  const { calls, deps } = recorder({ internalOk: false, fileOk: false });
+  const result = await deliverNotification(
+    message(['broker@jets.com'], ['charters@flyskyway.com']),
+    deps,
+  );
+
+  // The dispatcher-facing contract: the broker was notified, so the status
+  // must not claim otherwise or offer a retry that would send it twice.
+  assert.equal(result.ok, true);
+  assert.equal(result.error, null);
+  assert.deepEqual(calls.provider[0].to, ['broker@jets.com']);
+  assert.ok(calls.provider[0].cc.includes('charters@flyskyway.com'));
+  // The charter copy problem is still surfaced for repair.
+  assert.equal(result.tenantMailDegraded, true);
 });
 
 test('a retry does not mail our own team a second time', async () => {
@@ -132,26 +150,33 @@ test('a retry does not mail our own team a second time', async () => {
   assert.equal(result.ok, true);
 });
 
-test('a failed charter copy retries without duplicating the broker email', async () => {
+test('a failed charter copy falls back to the provider instead of being dropped', async () => {
   const { calls, deps } = recorder({ fileOk: false });
-  const first = await deliverNotification(
+  const result = await deliverNotification(
     message(['broker@jets.com'], ['charters@flyskyway.com']),
     deps,
   );
-  assert.equal(first.ok, false);
-  assert.equal(first.providerDelivered, true);
 
-  calls.provider.length = 0;
-  const retry = await deliverNotification(
-    {
-      ...message(['broker@jets.com'], ['charters@flyskyway.com']),
-      skipProvider: first.providerDelivered,
-    },
-    deps,
-  );
-  assert.equal(retry.ok, false);
-  assert.equal(calls.provider.length, 0);
-  assert.equal(calls.filed.length, 2);
+  assert.equal(calls.filed.length, 1);
+  assert.equal(result.ok, true);
+  assert.equal(result.tenantMailDegraded, true);
+  // charters@ is not silently abandoned: it rides along on the provider copy.
+  assert.ok(calls.provider[0].cc.includes('charters@flyskyway.com'));
+});
+
+test('an invalid_client Graph failure is explained in Entra terms', async () => {
+  const { explainGraphTokenFailure, mailCredential } = await import('../api/_charter-mail.js');
+
+  const message = explainGraphTokenFailure('invalid_client');
+  assert.match(message, /MICROSOFT_MAIL_CLIENT_SECRET/);
+  assert.match(message, /Value \(not the Secret ID\)/);
+  assert.match(explainGraphTokenFailure('', 'AADSTS7000215: bad secret'), /AADSTS7000215/);
+
+  // A pasted secret with a trailing newline or wrapping quotes is the most
+  // common cause of invalid_client and must not reach Microsoft that way.
+  process.env.SKYWAY_TEST_SECRET = '"abc123"\n';
+  assert.equal(mailCredential('SKYWAY_TEST_SECRET'), 'abc123');
+  delete process.env.SKYWAY_TEST_SECRET;
 });
 
 test('a provider rejection is reported even when the tenant leg succeeded', async () => {
@@ -190,9 +215,10 @@ test('both the inline send and the retry cron use one routing decision', async (
   assert.match(drain, /deliverNotification\(\{/);
   // The retry path must know the tenant leg already happened.
   assert.match(drain, /skipInternal: item\.internalDelivered === true/);
-  assert.match(drain, /skipProvider: item\.providerDelivered === true/);
   assert.match(drain, /internalDelivered: item\.internalDelivered === true \|\| send\.internal\?\.ok === true/);
-  assert.match(drain, /providerDelivered: item\.providerDelivered === true \|\| send\.providerDelivered === true/);
+  // A degraded tenant leg is recorded, not converted into a delivery failure.
+  assert.match(drain, /tenantMailDegraded/);
+  assert.match(enqueue, /tenantMailDegraded/);
   // No second provider implementation to drift out of step.
   assert.doesNotMatch(drain, /api\.resend\.com/);
   assert.doesNotMatch(enqueue, /api\.resend\.com/);
