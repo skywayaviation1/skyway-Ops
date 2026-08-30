@@ -26,6 +26,7 @@
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import { verifyTripToken } from './_trip-token.js';
+import { mergeSharedLegRoute } from './_trip-public-route.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -125,6 +126,12 @@ function sanitizeTrip(tripId, data, legs, liveLegData = {}) {
     return Array.isArray(leg.pax) ? leg.pax : [];
   };
 
+  const liveRouteForLeg = (leg) => {
+    const live = leg.tripId ? liveLegData[leg.tripId]?.tripMeta : null;
+    if (!live || typeof live !== 'object') return null;
+    return live;
+  };
+
   // If publicTripData has per-leg status, that's the AUTHORITATIVE source —
   // each leg's trip-state doc contributed its own status timeline at share
   // time. We overlay LIVE statuses on top so brokers see post-share-time
@@ -144,30 +151,33 @@ function sanitizeTrip(tripId, data, legs, liveLegData = {}) {
     tripCode: data.tripCode || null,
     tail: (data.publicTripData?.tail) || data.tail || (legs[0] && legs[0].tail) || null,
     aircraftType: (data.publicTripData?.aircraftType) || data.aircraftType || null,
-    legs: legs.map((leg) => ({
-      legNumber: leg.legNumber,
-      from: leg.from || null,
-      to: leg.to || null,
-      fromFbo: leg.fromFbo || data.fromFbo || null,
-      toFbo: leg.toFbo || data.toFbo || null,
-      departure: leg.departure || null,    // ISO
-      arrival: leg.arrival || null,        // ISO
-      category: leg.category || 'REVENUE', // REVENUE/REPO/FERRY
-      pic: leg.picName || null,            // NAME ONLY — no contact info
-      sic: leg.sicName || null,            // NAME ONLY — no contact info
-      // Pax list — LIVE overlay if available, snapshot fallback. showPax
-      // policy from the snapshot is enforced as the last line of defense.
-      pax: paxForLeg(leg),
-      showPax: leg.showPax === true,
-      // Live value wins so catering turned off after sharing disappears from
-      // the broker page without re-sharing.
-      hasCatering: (leg.tripId && typeof liveLegData[leg.tripId]?.hasCatering === 'boolean')
-        ? liveLegData[leg.tripId].hasCatering
-        : leg.hasCatering !== false,
-      // Per-leg status timeline — MERGED snapshot + live. Live wins where
-      // present so brokers see post-share-time events (landed, etc.).
-      status: mergeStatusForLeg(leg.tripId, leg.status),
-    })),
+    legs: legs.map((leg) => {
+      const route = mergeSharedLegRoute(leg, liveRouteForLeg(leg), data);
+      return {
+        legNumber: leg.legNumber,
+        from: route.from,
+        to: route.to,
+        fromFbo: route.fromFbo,
+        toFbo: route.toFbo,
+        departure: route.departure,
+        arrival: route.arrival,
+        category: route.category,
+        pic: leg.picName || null,            // NAME ONLY — no contact info
+        sic: leg.sicName || null,            // NAME ONLY — no contact info
+        // Pax list — LIVE overlay if available, snapshot fallback. showPax
+        // policy from the snapshot is enforced as the last line of defense.
+        pax: paxForLeg(leg),
+        showPax: leg.showPax === true,
+        // Live value wins so catering turned off after sharing disappears from
+        // the broker page without re-sharing.
+        hasCatering: (leg.tripId && typeof liveLegData[leg.tripId]?.hasCatering === 'boolean')
+          ? liveLegData[leg.tripId].hasCatering
+          : leg.hasCatering !== false,
+        // Per-leg status timeline — MERGED snapshot + live. Live wins where
+        // present so brokers see post-share-time events (landed, etc.).
+        status: mergeStatusForLeg(leg.tripId, leg.status),
+      };
+    }),
     statuses: outStatuses,
     completed: data.completed === true,
     completedAt: data.completedAt || null,
@@ -410,11 +420,12 @@ function buildPaxRecordsFromLiveData(preloadedPax, scannedPassengers) {
 }
 
 // Fetch LIVE data from each leg's own trip-state doc. The publicTripData
-// snapshot persisted at share-time is structurally authoritative (which legs
-// exist, route, FBO, crew assignments) but two pieces of data CHANGE during
-// the trip and need to be re-read on every broker poll:
-//   1) statuses — wheels_up, landed, etc. fire after share-time
-//   2) pax check-in — crew scans IDs at the gate after share-time
+// snapshot persisted at share-time is authoritative for which legs are shared
+// and passenger visibility, but three pieces can change and are re-read on
+// every broker poll:
+//   1) routing/times — dispatch may revise origin, destination, or schedule
+//   2) statuses — wheels_up, landed, etc. fire after share-time
+//   3) pax check-in — crew scans IDs at the gate after share-time
 //
 // Without this overlay, after a broker is sent the link mid-day, they'd see
 // "PASSENGERS 0/2 CHECKED IN" forever even after pax verify at the gate. Ops
@@ -424,6 +435,7 @@ function buildPaxRecordsFromLiveData(preloadedPax, scannedPassengers) {
 //   { legTripId: {
 //       statuses: { wheels_up: {at}, landed: {at}, ... },
 //       pax:      [{name, status, checkedInAt, walkUp}, ...],
+//       tripMeta: { from, to, start, end, legType },
 //       showPax:  true|false  (whether broker should see pax for this leg)
 //     }, ... }
 //
@@ -480,6 +492,15 @@ async function fetchLiveLegData(legs) {
       }
 
       out[tid] = {
+        tripMeta: (sd.tripMeta && typeof sd.tripMeta === 'object')
+          ? {
+            from: sd.tripMeta.from || null,
+            to: sd.tripMeta.to || null,
+            start: sd.tripMeta.start || null,
+            end: sd.tripMeta.end || null,
+            legType: sd.tripMeta.legType || null,
+          }
+          : null,
         statuses: liveStatuses,
         pax: livePax,
         // Only a stored boolean overrides the snapshot; a missing field means

@@ -86,8 +86,14 @@ export default async function handler(req, res) {
 
     const db = getDb();
     const userSnap = await db.collection('users').doc(decoded.uid).get();
-    if (!userSnap.exists || userSnap.data()?.role !== 'admin') {
-      res.status(403).json({ error: 'Admin role required' });
+    const profile = userSnap.data() || {};
+    if (
+      !userSnap.exists
+      || !['admin', 'ops'].includes(profile.role)
+      || profile.active === false
+      || profile.approved !== true
+    ) {
+      res.status(403).json({ error: 'Active admin or operations role required' });
       return;
     }
 
@@ -95,6 +101,7 @@ export default async function handler(req, res) {
     let updated = 0;
     let created = 0;
     let skipped = 0;
+    let unchanged = 0;
     const errors = [];
 
     // Process in small batches to avoid hot-looping Firestore
@@ -114,6 +121,7 @@ export default async function handler(req, res) {
             from: String(trip.from).toUpperCase(),
             to: String(trip.to || '').toUpperCase(),
             start: trip.start || null,
+            end: trip.end || null,
             legType: trip.legType || 'REVENUE',
           };
 
@@ -121,12 +129,27 @@ export default async function handler(req, res) {
           const snap = await ref.get();
 
           if (snap.exists) {
-            // Update existing doc — shallow merge, only tripMeta + updatedAt
-            await ref.update({
-              tripMeta,
-              updatedAt: Date.now(),
-            });
-            updated++;
+            const current = snap.data()?.tripMeta || {};
+            const changed = (
+              current.tail !== tripMeta.tail
+              || current.from !== tripMeta.from
+              || current.to !== tripMeta.to
+              || current.start !== tripMeta.start
+              || (current.end || null) !== tripMeta.end
+              || current.legType !== tripMeta.legType
+            );
+            if (changed) {
+              // Update only when schedule routing/times differ. This endpoint
+              // runs after every feed refresh and can cover the entire future
+              // schedule without rewriting unchanged docs.
+              await ref.update({
+                tripMeta,
+                updatedAt: Date.now(),
+              });
+              updated++;
+            } else {
+              unchanged++;
+            }
           } else {
             // Create a minimal doc with just tripMeta so the matcher can find it
             await ref.set({
@@ -146,9 +169,11 @@ export default async function handler(req, res) {
       }));
     }
 
-    console.log('[backfill-tripmeta]', { total: trips.length, updated, created, skipped, errorCount: errors.length });
+    console.log('[backfill-tripmeta]', {
+      total: trips.length, updated, created, unchanged, skipped, errorCount: errors.length,
+    });
 
-    res.status(200).json({ ok: true, updated, created, skipped, errors });
+    res.status(200).json({ ok: true, updated, created, unchanged, skipped, errors });
   } catch (err) {
     console.error('[backfill-tripmeta] error:', err);
     res.status(500).json({ error: err.message || 'Server error' });

@@ -172,6 +172,10 @@ import { buildFleetMapScene } from './fleet-tracking.js';
 import { DUTY_TRACKER_ENABLED } from './duty-feature.js';
 import { applyBrandAccent, brand } from './brand.js';
 import {
+  passengerDisclosureEligibility,
+  previousTailFlight,
+} from './broker-share.js';
+import {
   analyzeFrameReadiness,
   autoCapturePrompt,
   frameDifference,
@@ -5698,6 +5702,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
         from: (trip.info?.from || '').toUpperCase(),
         to: (trip.info?.to || '').toUpperCase(),
         start: trip.start instanceof Date ? trip.start.toISOString() : (trip.start || null),
+        end: trip.end instanceof Date ? trip.end.toISOString() : (trip.end || null),
         legType: trip.info?.legType || 'REVENUE',
       };
       // Merge in trip-sheet fields and preloadedPax unless caller passed them explicitly
@@ -5719,7 +5724,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       console.error('Failed to save trip state:', err);
       notify.error('Failed to save — check your connection');
     }
-  }, [trip.uid, trip.info?.tail, trip.info?.from, trip.info?.to, trip.start, trip.info?.legType, tripSheetUrl, tripSheetPath, tripSheetFilename, tripSheetUploadedAt, tripSheetUploadedBy, preloadedPax, tripSheetNotes, fromFbo, toFbo]);
+  }, [trip.uid, trip.info?.tail, trip.info?.from, trip.info?.to, trip.start, trip.end, trip.info?.legType, tripSheetUrl, tripSheetPath, tripSheetFilename, tripSheetUploadedAt, tripSheetUploadedBy, preloadedPax, tripSheetNotes, fromFbo, toFbo]);
 
   const openMailto = (url) => {
     const a = document.createElement('a');
@@ -7613,9 +7618,9 @@ function findCanonicalCharterLeg(anchor, allTrips) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Same-day candidate legs (the UNIVERSE of legs the share panel can
-// offer to include or exclude). Same tail, ±24h, no HOLD/MX/TRAINING,
-// no same-airport pseudo-flights. Sorted chronologically.
+// Candidate legs the share panel can offer to include or exclude. In addition
+// to the existing charter/reposition chain, this always offers the immediately
+// preceding real flight on the same tail — with no same-day restriction.
 //
 // This is the synchronous twin of the filter inside buildPublicTripData
 // — kept in lock-step. Both must apply the same rules so the panel
@@ -7683,7 +7688,14 @@ function shareCandidateLegs(canonical, allTrips) {
   // ── Rule 1: anchor always included ────────────────────────────────────
   add(anchor, 'anchor');
 
-  // ── Rule 2: positioning REPO chain INTO the anchor's origin ───────────
+  // ── Rule 2: immediately previous real flight on this tail ─────────────
+  // This is context the broker may need to see where the aircraft is coming
+  // from. It is only offered — never selected automatically — and passenger
+  // details are independently hidden unless this is verified as the same
+  // broker's customer group.
+  add(previousTailFlight(anchor, allTrips), 'previous-tail');
+
+  // ── Rule 3: positioning REPO chain INTO the anchor's origin ───────────
   // Walk backwards from anchor while:
   //   (a) the leg is a REPO
   //   (b) its destination chains to the next leg's origin (aircraft actually
@@ -7827,10 +7839,10 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
     async function loadTripStates() {
       setEnriching(true);
       try {
-        // Universe: all same-tail same-schedule legs within ±48h — same
-        // superset shareCandidateLegs and buildPublicTripData look at.
-        // We fetch trip-states for ALL of them, then let the filter
-        // below decide what's actually related.
+        // Universe: all same-tail legs within ±48h, PLUS every synchronous
+        // candidate. The latter includes the immediately previous tail flight
+        // even when it was several days earlier, so its passenger privacy can
+        // be evaluated before the operator shares it.
         const tail = String(canonicalTrip.info?.tail || '').toUpperCase();
         const anchorMs = canonicalTrip.start ? new Date(canonicalTrip.start).getTime() : Date.now();
         const WINDOW = 48 * 3600 * 1000;
@@ -7838,6 +7850,7 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
           const u = String(c || '').toUpperCase().trim();
           return u.length === 4 && u.startsWith('K') ? u.slice(1) : u;
         };
+        const syncUids = new Set(syncCandidateLegs.map((leg) => leg.uid));
         const universe = (allTrips || []).filter(t => {
           if (!t?.info || !t.start) return false;
           if (String(t.info.tail || '').toUpperCase() !== tail) return false;
@@ -7846,7 +7859,8 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
           if (['HOLD', 'MX', 'TRAINING'].includes(rawCat)) return false;
           if (t.info.from && t.info.to && norm(t.info.from) === norm(t.info.to)) return false;
           const ms = new Date(t.start).getTime();
-          return Number.isFinite(ms) && Math.abs(ms - anchorMs) <= WINDOW;
+          return Number.isFinite(ms)
+            && (Math.abs(ms - anchorMs) <= WINDOW || syncUids.has(t.uid));
         });
 
         let fetchTripStateForShare;
@@ -7879,7 +7893,7 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
     // Only need to re-run if the anchor changes — allTrips references
     // are stable within a dialog open.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canonicalTrip.uid]);
+  }, [canonicalTrip.uid, syncCandidateLegs]);
 
   // Combine sync seed + async enrichment into the final candidate list.
   const allCandidateLegs = useMemo(() => {
@@ -7969,6 +7983,36 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
       next.add(canonicalTrip.uid);
       return next;
     });
+  };
+
+  // Passenger visibility is independent from leg visibility. The broker's live
+  // anchor defaults to visible (matching the historic behavior); every added
+  // leg defaults hidden until the operator explicitly enables it. A leg for a
+  // different broker remains locked hidden even if someone clicks the control.
+  const [showPaxByUid, setShowPaxByUid] = useState(
+    () => ({ [canonicalTrip.uid]: true })
+  );
+  useEffect(() => {
+    setShowPaxByUid(prev => (
+      Object.prototype.hasOwnProperty.call(prev, canonicalTrip.uid)
+        ? prev
+        : { ...prev, [canonicalTrip.uid]: true }
+    ));
+  }, [canonicalTrip.uid]);
+
+  const disclosureForLeg = (leg) => passengerDisclosureEligibility({
+    anchor: canonicalTrip,
+    leg,
+    anchorState: tripStatesByUid[canonicalTrip.uid] || {},
+    legState: tripStatesByUid[leg.uid] || {},
+  });
+
+  const setPassengerVisibility = (leg, visible) => {
+    const eligibility = disclosureForLeg(leg);
+    setShowPaxByUid(prev => ({
+      ...prev,
+      [leg.uid]: visible && eligibility.allowed,
+    }));
   };
 
   const [url, setUrl] = useState('');
@@ -8252,8 +8296,18 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
     }
 
     // Renumber legs sequentially as they appear in the final included list.
-    const legs = included.map(({ t, showPax }, i) => {
+    const legs = included.map(({ t }, i) => {
       const state = stateByUid[t.uid] || { preloadedPax: [], passengers: [], statuses: {} };
+      const disclosure = passengerDisclosureEligibility({
+        anchor,
+        leg: t,
+        anchorState: stateByUid[anchor.uid] || {},
+        legState: state,
+      });
+      // The operator must explicitly opt in per leg, and the relationship rule
+      // must independently allow it. An unrelated broker's passengers cannot
+      // be exposed by changing client state.
+      const showPax = disclosure.allowed && showPaxByUid[t.uid] === true;
 
       // Build per-pax records that the broker page can render with
       // individual check-in indicators. Join logic:
@@ -8438,7 +8492,7 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
     // a PDF auto-extract or admin edit while the dialog is open instantly
     // pushes the new FBO to the broker page without needing a reopen.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedUids, liveAnchorFromFbo, liveAnchorToFbo]);
+  }, [selectedUids, showPaxByUid, liveAnchorFromFbo, liveAnchorToFbo]);
 
   const handleCopy = async () => {
     if (!effectiveUrl) return;
@@ -8540,12 +8594,12 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
           </button>
         </div>
 
-        {/* LEGS TO SHARE — unified leg selector. Lists every same-day
-            same-tail leg as a checkbox row. Only the anchor (★) is
+        {/* LEGS TO SHARE — unified leg selector. Lists related same-tail legs
+            plus the immediately previous tail flight. Only the anchor (★) is
             pre-checked; ops explicitly checks any additional legs they
             want to include. The anchor checkbox is disabled — it's the
             leg the URL is keyed to and can never be removed. */}
-        {allCandidateLegs.length > 1 && (
+        {allCandidateLegs.length > 0 && (
           <div className="border-b border-slate-700 bg-slate-900/40 px-4 py-2.5">
             <div className="text-[10px] tracking-widest text-slate-400 mb-1.5"
               style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
@@ -8557,7 +8611,9 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
             <div className="text-[9px] text-slate-500 mb-2"
               style={{ fontFamily: 'JetBrains Mono, monospace' }}>
               Only the anchor (★) is checked by default. Check any
-              additional legs you want the broker to see.
+              additional legs you want the broker to see. Passenger details
+              are controlled separately for every selected leg; another
+              broker&apos;s passengers are always locked hidden.
               {openedFromNonCanonical && (
                 <> The leg you clicked is marked <span className="text-cyan-400">← OPENED FROM</span>.</>
               )}
@@ -8568,7 +8624,9 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
                 const isClickedFrom = leg.uid === trip.uid && !isAnchor;
                 const isChecked = selectedUids.has(leg.uid);
                 const time = leg.start
-                  ? new Date(leg.start).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+                  ? new Date(leg.start).toLocaleString('en-US', {
+                    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+                  })
                   : '';
                 const route = `${leg.info?.from || '—'} → ${leg.info?.to || '—'}`;
                 const broker = leg.info?.broker || '(no broker)';
@@ -8582,54 +8640,78 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
                   'positioning-out': 'DEADHEAD OUT', // deadhead leaving anchor's destination
                   'same-trip-sheet': 'SAME TRIP',    // parsed from the same trip sheet PDF
                   'same-pax':        'SAME PAX',    // pax name overlap with anchor's manifest
+                  'previous-tail':   'PREVIOUS TAIL FLIGHT',
                 })[leg._shareReason] ?? null;
+                const disclosure = disclosureForLeg(leg);
+                const paxVisible = disclosure.allowed && showPaxByUid[leg.uid] === true;
                 return (
-                  <label
-                    key={leg.uid}
-                    className={`flex items-start gap-2 px-2 py-1.5 border ${
-                      isAnchor
-                        ? 'border-amber-500/50 bg-amber-500/5 cursor-default'
-                        : isChecked
-                        ? 'border-cyan-500/50 bg-cyan-500/5 cursor-pointer'
-                        : 'border-slate-800 hover:border-slate-600 cursor-pointer'
-                    }`}
-                    style={{ fontFamily: 'JetBrains Mono, monospace' }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={isChecked}
-                      disabled={isAnchor || busy}
-                      onChange={() => toggleLeg(leg.uid)}
-                      className="mt-0.5 w-3.5 h-3.5 accent-cyan-500 shrink-0 disabled:opacity-50"
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="text-[11px] truncate flex items-center gap-1.5">
-                        {isAnchor && (
-                          <span className="text-amber-300 text-[10px]" title="Anchor leg — always included">★</span>
-                        )}
-                        <span className={isAnchor ? 'text-amber-200' : 'text-slate-200'}>{route}</span>
-                        {time && <span className="text-slate-500">{time}</span>}
-                        {cat && cat !== 'REVENUE' && (
-                          <span className="text-[9px] text-amber-400 tracking-widest">{cat}</span>
-                        )}
-                        {isClickedFrom && (
-                          <span className="text-[9px] text-cyan-400 tracking-widest" title="You opened SHARE from this leg">← OPENED FROM</span>
-                        )}
-                        {reasonLabel && (
-                          <span className="text-[9px] text-slate-500 tracking-widest ml-auto shrink-0" title={
-                            leg._shareReason === 'positioning-in'  ? 'Repo leg — deadhead into your anchor origin' :
-                            leg._shareReason === 'positioning-out' ? 'Repo leg — deadhead out of your anchor destination' :
-                            leg._shareReason === 'same-trip-sheet' ? 'Parsed from the same trip sheet PDF as the anchor — same broker charter' :
-                            leg._shareReason === 'same-pax'        ? 'One or more passenger names match the anchor manifest — same customer group' :
-                            ''
-                          }>{reasonLabel}</span>
-                        )}
+                  <div key={leg.uid} className="border border-slate-800">
+                    <label
+                      className={`flex items-start gap-2 px-2 py-1.5 ${
+                        isAnchor
+                          ? 'bg-amber-500/5 cursor-default'
+                          : isChecked
+                          ? 'bg-cyan-500/5 cursor-pointer'
+                          : 'hover:bg-slate-800/40 cursor-pointer'
+                      }`}
+                      style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isChecked}
+                        disabled={isAnchor || busy}
+                        onChange={() => toggleLeg(leg.uid)}
+                        className="mt-0.5 w-3.5 h-3.5 accent-cyan-500 shrink-0 disabled:opacity-50"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[11px] flex flex-wrap items-center gap-1.5">
+                          {isAnchor && (
+                            <span className="text-amber-300 text-[10px]" title="Anchor leg — always included">★</span>
+                          )}
+                          <span className={isAnchor ? 'text-amber-200' : 'text-slate-200'}>{route}</span>
+                          {time && <span className="text-slate-500">{time}</span>}
+                          {cat && cat !== 'REVENUE' && (
+                            <span className="text-[9px] text-amber-400 tracking-widest">{cat}</span>
+                          )}
+                          {isClickedFrom && (
+                            <span className="text-[9px] text-cyan-400 tracking-widest" title="You opened SHARE from this leg">← OPENED FROM</span>
+                          )}
+                          {reasonLabel && (
+                            <span className="text-[9px] text-slate-500 tracking-widest ml-auto shrink-0" title={
+                              leg._shareReason === 'positioning-in'  ? 'Repo leg — deadhead into your anchor origin' :
+                              leg._shareReason === 'positioning-out' ? 'Repo leg — deadhead out of your anchor destination' :
+                              leg._shareReason === 'same-trip-sheet' ? 'Parsed from the same trip sheet PDF as the anchor — same broker charter' :
+                              leg._shareReason === 'same-pax'        ? 'One or more passenger names match the anchor manifest — same customer group' :
+                              leg._shareReason === 'previous-tail'   ? 'Immediately previous real flight assigned to this tail — no same-day limit' :
+                              ''
+                            }>{reasonLabel}</span>
+                          )}
+                        </div>
+                        <div className="text-[10px] text-slate-500 truncate">
+                          {broker}{pax ? ` · ${pax} pax` : ''}
+                        </div>
                       </div>
-                      <div className="text-[10px] text-slate-500 truncate">
-                        {broker}{pax ? ` · ${pax} pax` : ''}
-                      </div>
+                    </label>
+                    <div className="flex items-center justify-between gap-2 border-t border-slate-800 px-2 py-1.5">
+                      <span className={`text-[9px] ${
+                        disclosure.allowed ? 'text-slate-500' : 'text-amber-400'
+                      }`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                        {disclosure.reason}
+                      </span>
+                      <label className={`flex items-center gap-1.5 text-[9px] tracking-widest ${
+                        disclosure.allowed && isChecked ? 'cursor-pointer text-slate-300' : 'cursor-not-allowed text-slate-600'
+                      }`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                        <input
+                          type="checkbox"
+                          checked={paxVisible}
+                          disabled={!disclosure.allowed || !isChecked || busy}
+                          onChange={(event) => setPassengerVisibility(leg, event.target.checked)}
+                          className="h-3.5 w-3.5 accent-cyan-500 disabled:opacity-40"
+                        />
+                        SHOW PASSENGER DETAILS
+                      </label>
                     </div>
-                  </label>
+                  </div>
                 );
               })}
             </div>
@@ -28274,6 +28356,7 @@ export default function CharterOps() {
               tail, from,
               to: (t.info?.to || '').toUpperCase(),
               start: startIso,
+              end: t.end instanceof Date ? t.end.toISOString() : (t.end || null),
               legType: t.info?.legType || 'REVENUE',
             });
             ok++;
@@ -28395,8 +28478,8 @@ export default function CharterOps() {
       log('success', `Parsed ${events.length} events → ${newTrips.length} trips`);
       setShowSettings(false);
 
-      // Auto-write tripMeta for active trips (next 48h, plus last 12h
-      // for trips that may have already departed). Without tripMeta, the
+      // Auto-write tripMeta for all future trips, plus the last 12h for trips
+      // that may have already departed. Without tripMeta, the
       // FlightAware cron-poll matcher can't find the trip-state doc and
       // wheels_up / landed status updates silently fail to auto-fire.
       // Previously this required ops to either open each leg in the app
@@ -28412,9 +28495,10 @@ export default function CharterOps() {
   };
 
   /**
-   * Fire the tripMeta backfill for trips in the active window (last 12h
-   * through next 48h). Idempotent: if a trip-state doc already has the
-   * correct tripMeta, the backfill endpoint shallow-merges, no harm done.
+   * Fire the tripMeta sync for all future trips in the loaded schedule (plus
+   * the last 12h). The server compares fields and writes only records whose
+   * route/times actually changed, so widening this beyond the old 48h window
+   * does not turn every schedule refresh into a wall of Firestore writes.
    * Requires the user to be signed in (the backfill endpoint validates
    * idToken). Skips silently if there's no auth.
    */
@@ -28426,14 +28510,13 @@ export default function CharterOps() {
       const idToken = await u.getIdToken();
       const now = Date.now();
       const WINDOW_PAST = 12 * 60 * 60 * 1000;     // 12h ago
-      const WINDOW_FUTURE = 48 * 60 * 60 * 1000;   // 48h ahead
       const trips = (allTripsLocal || [])
         .filter((t) => t?.uid && t?.info?.tail && t?.info?.from && t?.start)
         .filter((t) => {
-          // Only sync trips in the active window. Don't waste writes on
-          // last week's history or trips two weeks out.
+          // Do not sync old history. Keep every future trip because a broker
+          // link may have been sent well before the old 48-hour cutoff.
           const ms = t.start instanceof Date ? t.start.getTime() : new Date(t.start).getTime();
-          return Number.isFinite(ms) && ms > (now - WINDOW_PAST) && ms < (now + WINDOW_FUTURE);
+          return Number.isFinite(ms) && ms > (now - WINDOW_PAST);
         })
         // Only flight legs, not crew-hold blocks
         .filter((t) => t.info.isFlight !== false)
@@ -28443,6 +28526,7 @@ export default function CharterOps() {
           from: t.info.from,
           to: t.info.to || '',
           start: t.start instanceof Date ? t.start.toISOString() : (t.start || null),
+          end: t.end instanceof Date ? t.end.toISOString() : (t.end || null),
           legType: t.info.legType || 'REVENUE',
         }));
       if (trips.length === 0) return;
