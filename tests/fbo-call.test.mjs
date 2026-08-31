@@ -19,6 +19,7 @@ import {
   resolveDialAt,
   scheduledDialAt,
   shouldQueueUpdate,
+  spokenTailNumber,
   toE164,
   tripSheetDialPhone,
   unverifiedCallPurposes,
@@ -58,6 +59,12 @@ test('US phone numbers normalize to E.164', () => {
   assert.equal(toE164('(201) 555-0100'), '+12015550100');
   assert.equal(toE164('+1 (813) 859-5943'), '+18138595943');
   assert.equal(toE164('not a phone'), '');
+});
+
+test('tail numbers are spoken with aviation phonetics and individual digits', () => {
+  assert.equal(spokenTailNumber('N444AM'), 'November 4, 4, 4, Alpha Mike');
+  assert.equal(spokenTailNumber('N90-SW'), 'November 9, 0, Sierra Whiskey');
+  assert.equal(spokenTailNumber(''), '');
 });
 
 test('lead passenger is omitted unless ground transportation is requested', () => {
@@ -288,6 +295,8 @@ test('Vapi payload never includes a passenger name without ground transport', ()
     VAPI_PHONE_NUMBER_ID: 'pn_1',
   });
   assert.equal(body.customer.number, '+12015550100');
+  assert.equal(body.assistantOverrides.variableValues.tail, 'November 4, 4, 4, Alpha Mike');
+  assert.equal(body.assistantOverrides.variableValues.tailRegistration, 'N444AM');
   assert.equal(body.assistantOverrides.variableValues.leadPassengerName, '');
   assert.equal(body.assistantOverrides.artifactPlan.recordingEnabled, true);
   assert.match(firstMessage(facts), /Skyway Aviation/);

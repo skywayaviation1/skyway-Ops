@@ -42,6 +42,29 @@ const GROUND_RE = /\b(ground\s*trans(?:port(?:ation)?)?|limo(?:usine)?|car\s*ser
 
 const clean = (value) => String(value ?? '').trim();
 
+const NATO_PHONETIC = Object.freeze({
+  A: 'Alpha', B: 'Bravo', C: 'Charlie', D: 'Delta', E: 'Echo', F: 'Foxtrot',
+  G: 'Golf', H: 'Hotel', I: 'India', J: 'Juliett', K: 'Kilo', L: 'Lima',
+  M: 'Mike', N: 'November', O: 'Oscar', P: 'Papa', Q: 'Quebec', R: 'Romeo',
+  S: 'Sierra', T: 'Tango', U: 'Uniform', V: 'Victor', W: 'Whiskey', X: 'X-ray',
+  Y: 'Yankee', Z: 'Zulu',
+});
+
+export function spokenTailNumber(value) {
+  const characters = clean(value).toUpperCase().replace(/[^A-Z0-9]/g, '').split('');
+  if (!characters.length) return '';
+  const spoken = characters.map((character) => NATO_PHONETIC[character] || character);
+  return spoken.reduce((result, word, index) => {
+    if (index === 0) return word;
+    const previous = characters[index - 1];
+    const current = characters[index];
+    const separator = /[A-Z]/.test(previous) && /[A-Z]/.test(current)
+      ? ' '
+      : (index === 1 && /[A-Z]/.test(previous) && /\d/.test(current) ? ' ' : ', ');
+    return `${result}${separator}${word}`;
+  }, '');
+}
+
 export function toE164(phone) {
   const raw = clean(phone);
   const digits = raw.replace(/\D/g, '');
@@ -281,6 +304,7 @@ export function buildSpeakableFacts({
     airport,
     otherAirport: purpose === 'arrival' ? clean(info.from).toUpperCase() : clean(info.to).toUpperCase(),
     tail: clean(info.tail).toUpperCase(),
+    tailSpoken: spokenTailNumber(info.tail),
     fboName: requestedName,
     fboNameSource: 'trip_sheet',
     requestedFboName: requestedName,
@@ -331,7 +355,8 @@ export function assistantSystemPrompt(facts) {
     'If the person is not the FBO, apologize and end the call.',
     '',
     'Verified trip:',
-    `- Aircraft: ${facts.tail || 'not on file'}`,
+    `- Aircraft registration: ${facts.tail || 'not on file'}`,
+    `- Say the aircraft registration exactly as: ${facts.tailSpoken || 'not on file'}`,
     `- Route: ${facts.purpose === 'arrival' ? `${facts.otherAirport} to ${facts.airport}` : `${facts.airport} to ${facts.otherAirport}`}`,
     `- This call is the ${facts.purpose} FBO: ${facts.fboName} at ${facts.airport}`,
     `- Scheduled ${facts.purpose === 'arrival' ? 'arrival' : 'departure'}: ${facts.purpose === 'arrival' ? facts.endIso : facts.startIso}`,
