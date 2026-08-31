@@ -55,6 +55,11 @@ In Vapi, set the assistant server URL to:
 
 `https://www.skyway.app/api/fbo-call-webhook`
 
+The full aviation operations playbook is in
+[`docs/vapi-fbo-assistant-prompt.md`](./vapi-fbo-assistant-prompt.md). Skyway
+also sends this playbook through `assistantOverrides.model` on every outbound
+call, so a stale saved-assistant prompt cannot replace it.
+
 ## Operator workflow
 
 1. Administrator enables FBO calling in Organization settings after the env vars

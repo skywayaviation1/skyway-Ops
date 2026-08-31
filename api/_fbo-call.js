@@ -248,6 +248,8 @@ export function vapiCallPayload(job, config, env = process.env) {
     callerName: facts.callerName,
     fboName: facts.fboName,
     airport: facts.airport,
+    airportSpoken: facts.airportSpoken,
+    routeSpoken: facts.routeSpoken,
     tail: facts.tailSpoken || facts.tail,
     tailRegistration: facts.tail,
     tailSpoken: facts.tailSpoken,
@@ -273,19 +275,51 @@ export function vapiCallPayload(job, config, env = process.env) {
     voice: { provider: 'openai', voiceId: 'alloy' },
     firstMessageInterruptionsEnabled: false,
     analysisPlan: {
-      summaryPrompt: 'Summarize the FBO call for Skyway operations in 6 short bullets. Include confirmations and anything that needs a human.',
+      summaryPrompt: [
+        'Write a concise Skyway operations report.',
+        'Separate: confirmed movement, confirmed services, unconfirmed or declined items, restrictions, and required human follow-up.',
+        'Never describe an item as confirmed unless the FBO representative explicitly confirmed it.',
+        'Include the representative’s corrections and promised actions.',
+      ].join(' '),
       structuredDataSchema: {
         type: 'object',
         properties: {
-          movementConfirmed: { type: 'boolean' },
-          fuelConfirmed: { type: 'boolean' },
-          hangarConfirmed: { type: 'boolean' },
-          cateringConfirmed: { type: 'boolean' },
-          groundTransportConfirmed: { type: 'boolean' },
-          hoursVerified: { type: 'string' },
-          needsFollowUp: { type: 'boolean' },
-          transferredToOps: { type: 'boolean' },
-          notes: { type: 'string' },
+          movementConfirmed: {
+            type: 'boolean',
+            description: 'True only if the representative explicitly confirmed the movement is on the board; false only after an explicit no.',
+          },
+          fuelConfirmed: {
+            type: 'boolean',
+            description: 'True only if the applicable fuel or handling request was explicitly confirmed.',
+          },
+          hangarConfirmed: {
+            type: 'boolean',
+            description: 'True only if an applicable hangar or overnight request was explicitly confirmed.',
+          },
+          cateringConfirmed: {
+            type: 'boolean',
+            description: 'True only if requested catering was explicitly confirmed.',
+          },
+          groundTransportConfirmed: {
+            type: 'boolean',
+            description: 'True only if requested ground transportation was explicitly confirmed.',
+          },
+          hoursVerified: {
+            type: 'string',
+            description: 'Operating hours or after-hours restrictions exactly as stated by the representative; empty when not discussed.',
+          },
+          needsFollowUp: {
+            type: 'boolean',
+            description: 'True if any applicable detail is missing, uncertain, changed, declined, or requires Skyway authorization.',
+          },
+          transferredToOps: {
+            type: 'boolean',
+            description: 'True only if the live call was transferred to Skyway operations.',
+          },
+          notes: {
+            type: 'string',
+            description: 'Corrections, restrictions, representative promises, unasked or non-applicable items, and open questions.',
+          },
         },
       },
     },
@@ -310,6 +344,9 @@ export function vapiCallPayload(job, config, env = process.env) {
       variableValues,
       firstMessage: assistant.firstMessage,
       artifactPlan: { recordingEnabled: true },
+      // Apply Skyway's aviation playbook even when VAPI_ASSISTANT_ID points to
+      // a saved assistant whose dashboard prompt is stale or generic.
+      model: assistant.model,
     },
     metadata: {
       skywayCallId: job.id,

@@ -82,6 +82,7 @@ test('times are spoken in local military clock', () => {
     purpose: 'departure',
   });
   assert.equal(facts.facts.scheduledLocalDisplay, '1200');
+  assert.equal(facts.facts.routeSpoken, 'Kilo Tango Echo Bravo to Kilo Papa Bravo India');
   assert.match(assistantSystemPrompt(facts.facts), /local military/);
   assert.doesNotMatch(assistantSystemPrompt(facts.facts), /2026-09-01T16:00:00.000Z/);
 });
@@ -109,6 +110,10 @@ test('lead passenger is omitted unless ground transportation is requested', () =
   const prompt = assistantSystemPrompt(withGround.facts);
   assert.match(prompt, /Ada Lovelace/);
   assert.match(prompt, /ONLY when discussing ground transportation/);
+  assert.match(prompt, /# AVIATION WORKING KNOWLEDGE/);
+  assert.match(prompt, /# REQUIRED CALL FLOW/);
+  assert.match(prompt, /Success means explicit confirmation/);
+  assert.match(prompt, /Never upgrade an open item to confirmed/);
 
   const noGround = buildSpeakableFacts({
     trip,
@@ -333,6 +338,10 @@ test('Vapi payload never includes a passenger name without ground transport', ()
   assert.equal(body.assistantOverrides.variableValues.tailRegistration, 'N444AM');
   assert.equal(body.assistantOverrides.variableValues.leadPassengerName, '');
   assert.equal(body.assistantOverrides.artifactPlan.recordingEnabled, true);
+  assert.match(
+    body.assistantOverrides.model.messages[0].content,
+    /automated FBO operations coordinator/,
+  );
   assert.match(firstMessage(facts), /Skyway Aviation/);
   assert.match(firstMessage(facts), /may be recorded for operational accuracy/);
   assert.equal(vendorConfigured({ VAPI_API_KEY: 'k', VAPI_PHONE_NUMBER_ID: 'pn_1' }), true);
