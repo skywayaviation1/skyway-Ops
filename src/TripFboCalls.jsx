@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, Loader2, Phone } from 'lucide-react';
+import { AlertTriangle, Loader2, Phone, RotateCcw, Trash2 } from 'lucide-react';
 import { Button, Card, StatusChip } from './ui.jsx';
 import { brand } from './brand.js';
 import FboCallListener from './FboCallListener.jsx';
 import FboCallReview from './FboCallReview.jsx';
-import { SKYWAY_CALLER_ID_DISPLAY, toE164 } from './fbo-call.js';
+import { SKYWAY_CALLER_ID_DISPLAY, formatLocalMilitaryTime, toE164 } from './fbo-call.js';
 
 const TONE = {
   completed: 'success',
@@ -370,9 +370,12 @@ export default function TripFboCalls({
                 {call.callPhase === 'arrival_reverification' && (
                   <StatusChip tone="info" size="sm">2-hour follow-up</StatusChip>
                 )}
+                {call.callPhase === 'retry' && <StatusChip tone="warning" size="sm">Retry</StatusChip>}
               </div>
               <p className="mt-1 font-mono text-xs text-content-subtle">
-                {call.phone || 'No phone'} · {call.dialMode === 'immediate' ? 'called when armed' : `scheduled ${new Date(call.dialAt).toLocaleString()}`}
+                {call.phone || 'No phone'} · {call.dialMode === 'immediate'
+                  ? 'called when armed'
+                  : `scheduled ${formatLocalMilitaryTime(call.dialAt, call.airport).line || '—'}`}
               </p>
               {call.summary && <p className="mt-1 text-sm text-content-muted">{call.summary}</p>}
               <FboCallReview call={call} canPlayRecording={canArm} />
@@ -389,6 +392,32 @@ export default function TripFboCalls({
                     </Button>
                   )}
                   {call.listenAvailable && <FboCallListener callId={call.id} />}
+                  {['completed', 'failed', 'needs_followup', 'cancelled'].includes(call.status) && (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        icon={RotateCcw}
+                        loading={busy === 'retry'}
+                        onClick={() => run('retry', { callId: call.id })}
+                      >
+                        Retry call
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="danger"
+                        icon={Trash2}
+                        loading={busy === 'delete'}
+                        onClick={() => {
+                          if (window.confirm('Delete this finished FBO call and its Skyway history?')) {
+                            run('delete', { callId: call.id });
+                          }
+                        }}
+                      >
+                        Delete
+                      </Button>
+                    </>
+                  )}
                 </div>
               )}
             </div>

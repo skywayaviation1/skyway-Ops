@@ -14,6 +14,7 @@ import {
   authorizeFboCaller,
   armCalls,
   cancelJob,
+  deleteFinishedJob,
   dialJobNow,
   getListenCredentials,
   getRecordingCredentials,
@@ -124,6 +125,10 @@ export default async function handler(req, res) {
 
     if (action === 'retry') {
       return res.status(200).json({ ok: true, call: await retryJob(body.callId, actor) });
+    }
+
+    if (action === 'delete') {
+      return res.status(200).json({ ok: true, deleted: await deleteFinishedJob(body.callId, actor) });
     }
 
     if (action === 'dialNow') {

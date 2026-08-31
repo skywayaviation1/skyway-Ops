@@ -22,6 +22,7 @@ import {
   assistantSystemPrompt,
   buildSpeakableFacts,
   firstMessage,
+  isFinishedCallStatus,
   materialHash,
   nextRetryAt,
   publicCallSummary,
@@ -529,19 +530,78 @@ export async function cancelJob(id, actor) {
 }
 
 export async function retryJob(id, actor, now = Date.now()) {
+  const original = await loadJob(id);
+  if (!original) {
+    const error = new Error('Call not found');
+    error.status = 404;
+    throw error;
+  }
+  if (!isFinishedCallStatus(original.status)) {
+    const error = new Error(`Call cannot be retried while ${original.status}`);
+    error.status = 409;
+    throw error;
+  }
+  const idForRetry = newCallId();
+  const retry = {
+    ...original,
+    id: idForRetry,
+    status: CALL_STATUSES.armed,
+    isUpdate: true,
+    callPhase: 'retry',
+    dialMode: 'immediate',
+    parentCallId: original.id,
+    dialAt: now,
+    scheduledDialAt: now,
+    attempts: 0,
+    lastAttemptAt: null,
+    lastError: '',
+    armedAt: now,
+    armedByUid: actor.uid,
+    armedByName: actor.name,
+    retriedAt: now,
+    retriedByUid: actor.uid,
+    retriedByName: actor.name,
+    summary: '',
+    transcript: '',
+    confirmations: null,
+    vendorCallId: null,
+    monitorListenUrl: '',
+    monitorControlUrl: '',
+    recordingAvailable: false,
+    startedAt: null,
+    endedAt: null,
+    endedReason: '',
+  };
+  await writeJob(retry);
+  await dialJobNow(idForRetry, { actor, now, force: true });
+  return jobPublic((await loadJob(idForRetry)) || retry);
+}
+
+export async function deleteFinishedJob(id, actor) {
   const job = await loadJob(id);
   if (!job) {
     const error = new Error('Call not found');
     error.status = 404;
     throw error;
   }
-  job.status = 'retry';
-  job.dialAt = now;
-  job.lastError = '';
-  job.retriedByUid = actor.uid;
-  job.retriedByName = actor.name;
-  await writeJob(job);
-  return jobPublic(job);
+  if (!isFinishedCallStatus(job.status)) {
+    const error = new Error('Only finished FBO calls can be deleted');
+    error.status = 409;
+    throw error;
+  }
+  const deletedAt = Date.now();
+  await getDb().collection(EVENTS).doc(`deleted_${sanitizeKey(id)}_${deletedAt}`).set({
+    type: 'call-deleted',
+    callId: id,
+    tripId: job.tripId,
+    status: job.status,
+    deletedAt,
+    deletedByUid: actor.uid,
+    deletedByName: actor.name,
+  });
+  await getDb().collection(JOBS).doc(id).delete();
+  await mirrorTripCalls(job.tripId);
+  return { id, tripId: job.tripId, deletedAt };
 }
 
 export async function applyVendorStatus(job, patch) {

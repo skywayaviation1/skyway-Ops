@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, Loader2, Phone, RefreshCw } from 'lucide-react';
+import { AlertTriangle, Loader2, Phone, RefreshCw, RotateCcw, Trash2 } from 'lucide-react';
 import { Button, Card, EmptyState, PageHeader, StatusChip } from './ui.jsx';
 import { brand } from './brand.js';
 import FboCallListener from './FboCallListener.jsx';
 import FboCallReview from './FboCallReview.jsx';
-import { SKYWAY_CALLER_ID_DISPLAY } from './fbo-call.js';
+import { SKYWAY_CALLER_ID_DISPLAY, formatLocalMilitaryTime } from './fbo-call.js';
 
 const TONE = {
   completed: 'success',
@@ -24,10 +24,10 @@ async function token() {
   return auth.currentUser?.getIdToken();
 }
 
-function fmt(ms) {
+function fmt(ms, airport) {
   if (!ms) return '—';
   try {
-    return new Date(ms).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    return formatLocalMilitaryTime(ms, airport).line || '—';
   } catch {
     return '—';
   }
@@ -144,9 +144,10 @@ export default function FboCallDesk({ currentUser }) {
                       {call.callPhase === 'arrival_reverification' && (
                         <StatusChip tone="info" size="sm">2-hour follow-up</StatusChip>
                       )}
+                      {call.callPhase === 'retry' && <StatusChip tone="warning" size="sm">Retry</StatusChip>}
                     </div>
                     <p className="mt-1 font-mono text-xs text-content-muted">
-                      {call.purpose} · {call.phone || 'no phone'} · {call.scheduledLocalLine || `dial ${fmt(call.dialAt)}`}
+                      {call.purpose} · {call.phone || 'no phone'} · {call.scheduledLocalLine || `dial ${fmt(call.dialAt, call.airport)}`}
                     </p>
                     <p className="mt-1 text-xs text-content-subtle">
                       {call.hoursKnown ? `Hours on file: ${call.hours}` : 'Hours not on the trip sheet — agent will not guess'}
@@ -160,8 +161,23 @@ export default function FboCallDesk({ currentUser }) {
                   </div>
                   {canMutate && (
                     <div className="flex gap-2">
-                      {['failed', 'needs_followup'].includes(call.status) && (
-                        <Button size="sm" variant="secondary" loading={busyId === call.id} onClick={() => act('retry', call.id)}>Retry</Button>
+                      {['completed', 'failed', 'needs_followup', 'cancelled'].includes(call.status) && (
+                        <>
+                          <Button size="sm" variant="secondary" icon={RotateCcw} loading={busyId === call.id} onClick={() => act('retry', call.id)}>Retry call</Button>
+                          <Button
+                            size="sm"
+                            variant="danger"
+                            icon={Trash2}
+                            loading={busyId === call.id}
+                            onClick={() => {
+                              if (window.confirm('Delete this finished FBO call and its Skyway history?')) {
+                                act('delete', call.id);
+                              }
+                            }}
+                          >
+                            Delete
+                          </Button>
+                        </>
                       )}
                       {['armed', 'scheduled', 'retry'].includes(call.status) && (
                         <>

@@ -6,6 +6,8 @@
  * Skyway ops may arm a dial.
  */
 
+import { getAirportTimezone } from './airports.js';
+
 export const SKYWAY_CALLER_NAME = 'Skyway Aviation';
 export const SKYWAY_CALLER_ID = '+18138595943';
 export const SKYWAY_CALLER_ID_DISPLAY = '+1 (813) 859-5943';
@@ -38,7 +40,9 @@ export const CALL_STATUSES = Object.freeze({
   needs_followup: 'needs_followup',
 });
 
-import { getAirportTimezone } from './airports.js';
+export function isFinishedCallStatus(status) {
+  return ['completed', 'failed', 'needs_followup', 'cancelled'].includes(status);
+}
 
 const GROUND_RE = /\b(ground\s*trans(?:port(?:ation)?)?|limo(?:usine)?|car\s*service|chauffeur|town\s*car|meet\s*(?:and|&)\s*greet|courtesy\s*(?:car|van)|rental\s*car|uber|lyft|taxi)\b/i;
 
@@ -101,7 +105,7 @@ export function formatLocalMilitaryTime(value, airportCode) {
   const spoken = speakMilitaryClock(hour, minute);
   const zone = part('timeZoneName') || (timeZone === 'UTC' ? 'UTC' : '');
   const dateLine = `${part('day')} ${String(part('month') || '').toUpperCase()} ${part('year')}`.trim();
-  const localLabel = zone && zone !== 'UTC' ? `local ${zone}` : 'local';
+  const localLabel = zone ? `local ${zone}` : 'local';
   return {
     display,
     spoken,
@@ -360,6 +364,7 @@ export function buildSpeakableFacts({
   const blockers = [];
   if (!clean(state.tripSheetUrl)) blockers.push('No trip sheet uploaded');
   if (!airport) blockers.push('Airport is missing');
+  if (airport && !getAirportTimezone(airport)) blockers.push('Airport local timezone is missing');
   if (!requestedName) blockers.push('FBO name is missing from the trip sheet');
   if (!phone) {
     blockers.push(dialPhone.isOverride

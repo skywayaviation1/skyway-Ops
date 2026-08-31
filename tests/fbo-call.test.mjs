@@ -12,6 +12,7 @@ import {
   fboCallOutstanding,
   firstMessage,
   groundTransportRequested,
+  isFinishedCallStatus,
   leadPassengerName,
   materialHash,
   publicCallSummary,
@@ -282,6 +283,15 @@ test('material trip changes queue an update after a completed call', () => {
   assert.equal(shouldQueueUpdate(first, second, 'dialing'), false);
 });
 
+test('only finished calls can be retried or deleted', () => {
+  for (const status of ['completed', 'failed', 'needs_followup', 'cancelled']) {
+    assert.equal(isFinishedCallStatus(status), true);
+  }
+  for (const status of ['armed', 'scheduled', 'dialing', 'in_progress']) {
+    assert.equal(isFinishedCallStatus(status), false);
+  }
+});
+
 test('readiness flags unarmed FBO calls on imminent revenue legs', () => {
   const now = Date.parse(trip.start) - 90 * 60_000;
   const items = fboCallOutstanding(trip, {}, now);
@@ -425,6 +435,8 @@ test('routes, cron, and secrets stay server-side', async () => {
   assert.match(helper, /vapiEnvValue\(env, 'apiKey'\)/);
   assert.match(helper, /monitorListenUrl/);
   assert.match(helper, /dialJobNow/);
+  assert.match(helper, /deleteFinishedJob/);
+  assert.match(helper, /parentCallId: original.id/);
   assert.match(schedule, /dialJobNow/);
   assert.match(listener, /WebSocket/);
   assert.match(review, /FBO confirmation checklist/);
