@@ -185,6 +185,106 @@ export function normalizeTrail(input) {
   return out;
 }
 
+function airportCodesMatch(a, b) {
+  const left = String(a || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const right = String(b || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (!left || !right) return false;
+  if (left === right) return true;
+  return (left.length === 4 && left.startsWith('K') && left.slice(1) === right)
+    || (right.length === 4 && right.startsWith('K') && right.slice(1) === left);
+}
+
+function finitePoint(lat, lon) {
+  const latitude = Number(lat);
+  const longitude = Number(lon);
+  return Number.isFinite(latitude) && Number.isFinite(longitude)
+    ? { lat: latitude, lon: longitude }
+    : null;
+}
+
+/**
+ * Builds the public broker map's filed-route layer independently from the
+ * FlightAware breadcrumb trail. Endpoint coordinates prefer the bundled
+ * airport database, then FlightAware's whitelisted origin/destination
+ * coordinates for the active flight.
+ */
+export function buildBrokerRouteScene({
+  legs = [],
+  lookupCoords,
+  position = null,
+  trail = [],
+  phaseForLeg,
+  phaseColors = {},
+} = {}) {
+  const airports = new Map();
+  const routes = [];
+  let projected = null;
+  const normalizedTrail = normalizeTrail(trail);
+
+  const resolveEndpoint = (code, role) => {
+    const bundled = typeof lookupCoords === 'function' ? lookupCoords(code) : null;
+    const bundledPoint = finitePoint(bundled?.lat, bundled?.lng ?? bundled?.lon);
+    if (bundledPoint) return bundledPoint;
+    const expected = role === 'origin' ? position?.origin : position?.destination;
+    if (!airportCodesMatch(code, expected)) return null;
+    return role === 'origin'
+      ? finitePoint(position?.originLat, position?.originLon)
+      : finitePoint(position?.destinationLat, position?.destinationLon);
+  };
+
+  for (const leg of Array.isArray(legs) ? legs : []) {
+    const from = resolveEndpoint(leg.from, 'origin');
+    const to = resolveEndpoint(leg.to, 'destination');
+    const phase = typeof phaseForLeg === 'function' ? phaseForLeg(leg) : 'pending';
+    const fromCode = String(leg.from || '').toUpperCase();
+    const toCode = String(leg.to || '').toUpperCase();
+
+    if (from && !airports.has(fromCode)) {
+      airports.set(fromCode, {
+        code: leg.from, lat: from.lat, lon: from.lon, tone: 'origin', small: true,
+      });
+    }
+    if (to) {
+      airports.set(toCode, {
+        code: leg.to,
+        lat: to.lat,
+        lon: to.lon,
+        tone: phase === 'landed' || phase === 'completed' ? 'neutral' : 'destination',
+        small: true,
+      });
+    }
+
+    // The filed route remains visible for every phase, including while the
+    // actual breadcrumb trail is drawing. It is intentionally dashed so the
+    // broker can distinguish planned routing from the flown path.
+    if (from && to) {
+      routes.push({
+        points: [[from.lat, from.lon], [to.lat, to.lon]],
+        color: phaseColors[phase] || phaseColors.pending || '#3FA9CC',
+        weight: phase === 'airborne' ? 3.5 : 3,
+        opacity: phase === 'landed' || phase === 'completed' ? 0.72 : 0.95,
+        dashed: true,
+        casing: true,
+        kind: 'filed',
+      });
+    }
+
+    if (phase === 'airborne' && to) {
+      const havePosition = position?.airborne === true
+        && Number.isFinite(position.latitude)
+        && Number.isFinite(position.longitude);
+      if (normalizedTrail.length >= 2) {
+        const last = normalizedTrail[normalizedTrail.length - 1];
+        projected = [[last.lat, last.lon], [to.lat, to.lon]];
+      } else if (havePosition) {
+        projected = [[position.latitude, position.longitude], [to.lat, to.lon]];
+      }
+    }
+  }
+
+  return { airports: Array.from(airports.values()), routes, projected };
+}
+
 /**
  * Draws the flown path as altitude-coloured segments into `group`.
  * Returns the `[lat, lon]` points so callers can include the trail when

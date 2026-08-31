@@ -222,6 +222,16 @@ export default function TrackingMap({
 
     routes.forEach((r) => {
       if (!Array.isArray(r?.points) || r.points.length < 2) return;
+      if (r.casing) {
+        L.polyline(r.points, {
+          color: '#020617',
+          weight: (r.weight ?? 2.5) + 4,
+          opacity: 0.82,
+          dashArray: r.dashed ? '7 7' : undefined,
+          lineCap: 'round',
+          lineJoin: 'round',
+        }).addTo(group);
+      }
       L.polyline(r.points, {
         color: r.color || '#64748b',
         weight: r.weight ?? 2.5,
@@ -238,7 +248,11 @@ export default function TrackingMap({
 
     if (Array.isArray(scene.projected) && scene.projected.length >= 2) {
       L.polyline(scene.projected, {
-        color: '#3FA9CC', weight: 2.5, opacity: 0.5,
+        color: '#020617', weight: 6, opacity: 0.8,
+        dashArray: '6 8', lineCap: 'round', lineJoin: 'round',
+      }).addTo(group);
+      L.polyline(scene.projected, {
+        color: '#67e8f9', weight: 3, opacity: 0.95,
         dashArray: '6 8', lineCap: 'round', lineJoin: 'round',
       }).addTo(group);
     }
@@ -301,6 +315,9 @@ export default function TrackingMap({
     routes.forEach((r) => {
       if (Array.isArray(r?.points)) r.points.forEach((p) => pts.push(p));
     });
+    if (Array.isArray(scene.projected)) {
+      scene.projected.forEach((p) => pts.push(p));
+    }
     // The flown trail is the whole point of the view — include every sample so
     // a path that bows well off the direct route stays fully on screen.
     if (scene.trail) {
