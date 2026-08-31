@@ -3,6 +3,7 @@ import { AlertTriangle, Loader2, Phone } from 'lucide-react';
 import { Button, Card, StatusChip } from './ui.jsx';
 import { brand } from './brand.js';
 import FboCallListener from './FboCallListener.jsx';
+import FboCallReview from './FboCallReview.jsx';
 import { SKYWAY_CALLER_ID_DISPLAY, toE164 } from './fbo-call.js';
 
 const TONE = {
@@ -372,14 +373,7 @@ export default function TripFboCalls({
                 {call.phone || 'No phone'} · {call.dialMode === 'immediate' ? 'called when armed' : `scheduled ${new Date(call.dialAt).toLocaleString()}`}
               </p>
               {call.summary && <p className="mt-1 text-sm text-content-muted">{call.summary}</p>}
-              {call.confirmations && (
-                <p className="mt-1 text-xs text-content-subtle">
-                  {Object.entries(call.confirmations)
-                    .filter(([, value]) => value === true || typeof value === 'string')
-                    .map(([key, value]) => `${key}: ${value}`)
-                    .join(' · ')}
-                </p>
-              )}
+              <FboCallReview call={call} canPlayRecording={canArm} />
               {canArm && (
                 <div className="mt-2 flex flex-wrap gap-2">
                   {['armed', 'scheduled', 'retry'].includes(call.status) && (

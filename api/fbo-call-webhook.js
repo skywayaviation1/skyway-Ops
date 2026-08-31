@@ -60,6 +60,17 @@ function transcriptFrom(payload) {
   return '';
 }
 
+function recordingFrom(payload) {
+  const report = payload?.message || payload;
+  const artifact = report.artifact || report.call?.artifact || payload?.call?.artifact || {};
+  const recording = artifact.recording || {};
+  return recording.monoUrl
+    || recording.stereoUrl
+    || artifact.recordingUrl
+    || artifact.stereoRecordingUrl
+    || '';
+}
+
 export function summarizeWebhook(payload) {
   const message = payload?.message || payload;
   const type = message.type || payload.type || '';
@@ -90,6 +101,7 @@ export function summarizeWebhook(payload) {
     endedReason: message.endedReason || message.ended_reason || '',
     vendorCallId: vendorIdFrom(payload),
     skywayCallId: jobIdFrom(payload),
+    recordingAvailable: Boolean(recordingFrom(payload)),
     monitorListenUrl: message.call?.monitor?.listenUrl || payload.call?.monitor?.listenUrl || '',
     monitorControlUrl: message.call?.monitor?.controlUrl || payload.call?.monitor?.controlUrl || '',
   };
@@ -149,6 +161,7 @@ export default async function handler(req, res) {
   if (parsed.transcript) patch.transcript = parsed.transcript;
   if (parsed.summary) patch.summary = parsed.summary;
   if (parsed.confirmations) patch.confirmations = parsed.confirmations;
+  if (parsed.recordingAvailable) patch.recordingAvailable = true;
   if (parsed.monitorListenUrl) {
     patch.monitorListenUrl = parsed.monitorListenUrl;
     patch.monitorControlUrl = parsed.monitorControlUrl;

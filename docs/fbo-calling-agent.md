@@ -64,9 +64,12 @@ In Vapi, set the assistant server URL to:
 5. Use **Call now** to pull any armed/scheduled job forward. While a call is
    active, **Listen live** streams Vapi's two-channel PCM audio in the browser.
    Failed attempts retry, then email ops.
-6. Transcripts and structured confirmations stay on the trip. They are **not**
+6. Completed calls show an FBO confirmation checklist for movement, fuel,
+   hangar, catering, ground transportation, and hours. Ops/admin can request a
+   fresh, short-lived private playback link for the recorded call.
+7. Transcripts, checklists, and recordings stay on the trip. They are **not**
    copied onto broker public tracking links.
-7. If the trip changes after a completed call, ops can queue an **update** call.
+8. If the trip changes after a completed call, ops can queue an **update** call.
 
 ## “Vapi keys missing” when the variables are set in Vercel
 

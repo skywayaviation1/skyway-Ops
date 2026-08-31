@@ -230,6 +230,10 @@ export function publicCallSummary(call) {
     callerName: call.callerName || SKYWAY_CALLER_NAME,
     phoneSource: call.phoneSource || call.facts?.phoneSource || 'trip_sheet',
     listenAvailable: ['dialing', 'in_progress'].includes(call.status) && Boolean(call.vendorCallId),
+    recordingAvailable: Boolean(
+      call.recordingAvailable
+      || (call.vendorCallId && ['completed', 'failed', 'needs_followup'].includes(call.status)),
+    ),
   };
 }
 
@@ -321,6 +325,7 @@ export function assistantSystemPrompt(facts) {
     `You are an automated operations assistant for ${facts.callerName}.`,
     `Caller ID on this call is ${facts.callerName}, ${facts.callerIdDisplay}.`,
     'Introduce yourself as a Skyway Aviation automated ops assistant. You are not a pilot and not a passenger.',
+    'At the start of the call, state that the call may be recorded for operational accuracy.',
     'Speak only the verified trip and service facts below. If a question is not covered, say you will transfer to Skyway operations.',
     'Never invent FBOs, times, fuel prices, hangar availability, or passenger details.',
     'If the person is not the FBO, apologize and end the call.',
@@ -352,7 +357,7 @@ export function assistantSystemPrompt(facts) {
 }
 
 export function firstMessage(facts) {
-  return `Hello, this is an automated operations assistant calling from ${facts.callerName} regarding a charter flight. Is this ${facts.fboName} at ${facts.airport}?`;
+  return `Hello, this is an automated operations assistant calling from ${facts.callerName} regarding a charter flight. This call may be recorded for operational accuracy. Is this ${facts.fboName} at ${facts.airport}?`;
 }
 
 export function dueForDial(job, now) {

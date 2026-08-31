@@ -3,6 +3,7 @@ import { AlertTriangle, Loader2, Phone, RefreshCw } from 'lucide-react';
 import { Button, Card, EmptyState, PageHeader, StatusChip } from './ui.jsx';
 import { brand } from './brand.js';
 import FboCallListener from './FboCallListener.jsx';
+import FboCallReview from './FboCallReview.jsx';
 import { SKYWAY_CALLER_ID_DISPLAY } from './fbo-call.js';
 
 const TONE = {
@@ -155,6 +156,7 @@ export default function FboCallDesk({ currentUser }) {
                     {call.transcript && (
                       <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-surface-sunken p-2 text-[11px] text-content-muted">{call.transcript}</pre>
                     )}
+                    <FboCallReview call={call} canPlayRecording={canMutate} />
                   </div>
                   {canMutate && (
                     <div className="flex gap-2">

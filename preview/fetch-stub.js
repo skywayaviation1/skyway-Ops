@@ -611,6 +611,31 @@ export function installFetchStub() {
               dialAt: Date.now() + 90 * 60_000,
               listenAvailable: false,
             },
+            {
+              id: 'preview-completed-call',
+              tripId: body.tripId,
+              purpose: 'arrival',
+              callPhase: 'initial',
+              status: 'completed',
+              fboName: 'Atlantic HYA',
+              airport: 'HYA',
+              phone: '561-555-0199',
+              dialMode: 'immediate',
+              dialAt: Date.now() - 20 * 60_000,
+              summary: 'Movement is on the board. Fuel and catering are confirmed.',
+              confirmations: {
+                movementConfirmed: true,
+                fuelConfirmed: true,
+                hangarConfirmed: false,
+                cateringConfirmed: true,
+                groundTransportConfirmed: true,
+                hoursVerified: '24 hours',
+                needsFollowUp: false,
+                notes: 'Driver will meet the lead passenger inside the lobby.',
+              },
+              recordingAvailable: true,
+              listenAvailable: false,
+            },
           ],
         });
       }
@@ -620,6 +645,12 @@ export function installFetchStub() {
       if (action === 'dialNow') return json({ ok: true, result: { ok: true } });
       if (action === 'listen') {
         return new Response(JSON.stringify({ error: 'Live audio is unavailable in preview mode' }), {
+          status: 409,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (action === 'recording') {
+        return new Response(JSON.stringify({ error: 'Recordings are unavailable in preview mode' }), {
           status: 409,
           headers: { 'Content-Type': 'application/json' },
         });

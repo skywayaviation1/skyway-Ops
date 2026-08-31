@@ -258,6 +258,7 @@ export function vapiCallPayload(job, config, env = process.env) {
   };
   const assistant = {
     firstMessage: firstMessage(facts),
+    artifactPlan: { recordingEnabled: true },
     model: {
       provider: 'openai',
       model: 'gpt-4o',
@@ -303,6 +304,7 @@ export function vapiCallPayload(job, config, env = process.env) {
     assistantOverrides: {
       variableValues,
       firstMessage: assistant.firstMessage,
+      artifactPlan: { recordingEnabled: true },
     },
     metadata: {
       skywayCallId: job.id,
@@ -686,6 +688,47 @@ export async function getListenCredentials(id, env = process.env) {
     throw error;
   }
   return { callId: job.id, listenUrl: job.monitorListenUrl };
+}
+
+export async function getRecordingCredentials(id, env = process.env) {
+  const job = await loadJob(id);
+  if (!job) {
+    const error = new Error('Call not found');
+    error.status = 404;
+    throw error;
+  }
+  if (!job.vendorCallId || !['completed', 'failed', 'needs_followup'].includes(job.status)) {
+    const error = new Error('The call recording is available after the call ends');
+    error.status = 409;
+    throw error;
+  }
+  const apiKey = vapiEnvValue(env, 'apiKey');
+  if (!apiKey) {
+    const error = new Error('VAPI_API_KEY is missing on this deployment');
+    error.status = 503;
+    throw error;
+  }
+  const response = await fetch(
+    `https://api.vapi.ai/call/${encodeURIComponent(job.vendorCallId)}/mono-recording`,
+    {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      redirect: 'manual',
+    },
+  );
+  const location = response.headers.get('location');
+  if (response.status >= 300 && response.status < 400 && location) {
+    return { callId: job.id, recordingUrl: location };
+  }
+  const data = await response.json().catch(() => ({}));
+  const recordingUrl = data.url || data.recordingUrl || data.monoUrl || '';
+  if (!response.ok || !recordingUrl) {
+    const error = new Error(
+      data.message || data.error || `Vapi recording is not ready (${response.status})`,
+    );
+    error.status = response.status === 404 ? 409 : 502;
+    throw error;
+  }
+  return { callId: job.id, recordingUrl };
 }
 
 export async function maybeQueueMaterialUpdates({

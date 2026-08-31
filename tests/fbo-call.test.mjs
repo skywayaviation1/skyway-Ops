@@ -233,6 +233,14 @@ test('active calls expose listen availability without exposing monitor URLs', ()
   });
   assert.equal(summary.listenAvailable, true);
   assert.equal('monitorListenUrl' in summary, false);
+  const completed = publicCallSummary({
+    id: 'fbo_2',
+    status: 'completed',
+    vendorCallId: 'vapi_2',
+    recordingUrl: 'https://private.example/recording.wav',
+  });
+  assert.equal(completed.recordingAvailable, true);
+  assert.equal('recordingUrl' in completed, false);
 });
 
 test('material trip changes queue an update after a completed call', () => {
@@ -281,7 +289,9 @@ test('Vapi payload never includes a passenger name without ground transport', ()
   });
   assert.equal(body.customer.number, '+12015550100');
   assert.equal(body.assistantOverrides.variableValues.leadPassengerName, '');
+  assert.equal(body.assistantOverrides.artifactPlan.recordingEnabled, true);
   assert.match(firstMessage(facts), /Skyway Aviation/);
+  assert.match(firstMessage(facts), /may be recorded for operational accuracy/);
   assert.equal(vendorConfigured({ VAPI_API_KEY: 'k', VAPI_PHONE_NUMBER_ID: 'pn_1' }), true);
 });
 
@@ -341,12 +351,15 @@ test('webhook HMAC and end-of-call mapping', async () => {
       type: 'end-of-call-report',
       status: 'ended',
       transcript: 'Hello',
+      artifact: { recording: { monoUrl: 'https://private.example/call.wav' } },
       analysis: { summary: 'Fuel confirmed', structuredData: { fuelConfirmed: true, needsFollowUp: false } },
       call: { id: 'vapi_1', metadata: { skywayCallId: 'fbo_1' } },
     },
   });
   assert.equal(parsed.nextStatus, CALL_STATUSES.completed);
   assert.equal(parsed.confirmations.fuelConfirmed, true);
+  assert.equal(parsed.recordingAvailable, true);
+  assert.equal('recordingUrl' in parsed, false);
   const active = summarizeWebhook({
     message: {
       type: 'status-update',
@@ -367,6 +380,7 @@ test('routes, cron, and secrets stay server-side', async () => {
   const vercel = await source('vercel.json');
   const desk = await source('src/FboCallDesk.jsx');
   const listener = await source('src/FboCallListener.jsx');
+  const review = await source('src/FboCallReview.jsx');
   const helper = await source('api/_fbo-call.js');
   const schedule = await source('api/fbo-call-schedule.js');
   assert.match(app, /FboCallDeskLazy/);
@@ -380,6 +394,8 @@ test('routes, cron, and secrets stay server-side', async () => {
   assert.match(helper, /dialJobNow/);
   assert.match(schedule, /dialJobNow/);
   assert.match(listener, /WebSocket/);
+  assert.match(review, /FBO confirmation checklist/);
+  assert.match(review, /action: 'recording'/);
   assert.doesNotMatch(desk, /VAPI_API_KEY/);
   assert.doesNotMatch(listener, /VAPI_API_KEY/);
   assert.doesNotMatch(app, /VITE_VAPI/);
