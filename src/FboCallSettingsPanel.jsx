@@ -96,7 +96,7 @@ export default function FboCallSettingsPanel({ currentUser }) {
     <Card>
       <CardHeader
         title="FBO calling agent"
-        subtitle={`${brand.name} caller ID ${brand.contactPhone || SKYWAY_CALLER_ID_DISPLAY}. Vapi + Twilio.`}
+        subtitle={`${brand.name} caller ID ${SKYWAY_CALLER_ID_DISPLAY}. Vapi + Twilio.`}
         icon={Phone}
       />
       {loading ? (
@@ -105,12 +105,42 @@ export default function FboCallSettingsPanel({ currentUser }) {
         <div className="space-y-3">
           <div className="flex flex-wrap gap-2">
             <StatusChip tone={status?.configured ? 'success' : 'warning'} size="sm">
-              {status?.configured ? 'Vapi configured' : 'Vapi keys missing'}
+              {status?.configured
+                ? (status?.phoneNumberLookup === 'automatic_by_number' ? 'Vapi key detected' : 'Vapi configured')
+                : 'Vapi keys missing'}
             </StatusChip>
             <StatusChip tone={form.enabled ? 'success' : 'neutral'} size="sm">
               {form.enabled ? 'Enabled' : 'Disabled'}
             </StatusChip>
+            {status?.configured && (
+              <StatusChip tone={status?.hasWebhookSecret ? 'success' : 'warning'} size="sm">
+                {status?.hasWebhookSecret ? 'Webhook secret set' : 'VAPI_WEBHOOK_SECRET missing'}
+              </StatusChip>
+            )}
+            {status?.configured && status?.phoneNumberLookup === 'automatic_by_number' && (
+              <StatusChip tone="info" size="sm">
+                Finding +1 (813) 859-5943 in Vapi automatically
+              </StatusChip>
+            )}
           </div>
+          {!status?.configured && (
+            <div className="rounded-lg border border-warning/40 bg-warning/5 p-3 text-sm text-content">
+              <p className="font-semibold">
+                This deployment cannot see {(status?.missing || []).join(' or ') || 'the Vapi keys'}.
+              </p>
+              <p className="mt-1 text-content-muted">
+                Skyway reads these on the server at request time, so a value added in Vercel applies
+                only to deployments created after it was saved. In Vercel, confirm the variable is on
+                the <strong>Production</strong> environment for this project, then redeploy. Check for
+                a stray leading or trailing space in the name.
+              </p>
+            </div>
+          )}
+          {(status?.warnings || []).map((warning) => (
+            <p key={warning} className="flex items-start gap-2 text-sm text-warning">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />{warning}
+            </p>
+          ))}
           <p className="text-sm leading-relaxed text-content-muted">
             Outbound FBO calls require ops to arm each trip. The agent may speak the lead passenger
             name only when ground transportation is on the trip. FBO details come from the uploaded

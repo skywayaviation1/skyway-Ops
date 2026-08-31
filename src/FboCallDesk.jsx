@@ -93,7 +93,7 @@ export default function FboCallDesk({ currentUser }) {
       <div className="mx-auto max-w-5xl">
         <PageHeader
           title="FBO calls"
-          subtitle={`${brand.name} automated ops assistant · caller ID ${brand.contactPhone || SKYWAY_CALLER_ID_DISPLAY}`}
+          subtitle={`${brand.name} automated ops assistant · caller ID ${SKYWAY_CALLER_ID_DISPLAY}`}
           actions={(
             <Button variant="secondary" icon={RefreshCw} onClick={load}>Refresh</Button>
           )}
@@ -106,10 +106,20 @@ export default function FboCallDesk({ currentUser }) {
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
                 <StatusChip tone={vendor?.configured ? 'success' : 'warning'} size="sm">
-                  {vendor?.configured ? 'Vapi ready' : 'Voice vendor keys missing on server'}
+                  {vendor?.configured
+                    ? (vendor?.phoneNumberLookup === 'automatic_by_number'
+                      ? 'Vapi key detected · phone auto lookup'
+                      : 'Vapi ready')
+                    : `Missing on this deployment: ${(vendor?.missing || []).join(', ') || 'Vapi keys'}`}
                 </StatusChip>
             <StatusChip tone="neutral" size="sm">Twilio PSTN</StatusChip>
           </div>
+          {vendor && !vendor.configured && (
+            <p className="mt-2 text-sm text-content-muted">
+              Add the variable in Vercel on the Production environment, then redeploy — server
+              variables only reach deployments created after they are saved.
+            </p>
+          )}
         </Card>
         {error && (
           <p className="mb-3 flex items-start gap-2 text-sm text-danger">

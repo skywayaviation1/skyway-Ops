@@ -7,8 +7,8 @@
  */
 
 export const SKYWAY_CALLER_NAME = 'Skyway Aviation';
-export const SKYWAY_CALLER_ID = '+17276055000';
-export const SKYWAY_CALLER_ID_DISPLAY = '1-727-605-5000';
+export const SKYWAY_CALLER_ID = '+18138595943';
+export const SKYWAY_CALLER_ID_DISPLAY = '+1 (813) 859-5943';
 export const VOICE_VENDOR = 'vapi';
 export const VOICE_PSTN = 'twilio';
 
@@ -402,6 +402,60 @@ export function fboCallOutstanding(trip, state, now = Date.now()) {
   return items;
 }
 
+/**
+ * Names Skyway accepts for each Vapi credential. The canonical name is first;
+ * the rest are names operators commonly use because that is how Vapi's own
+ * dashboard labels the value.
+ */
+const VAPI_ENV_NAMES = Object.freeze({
+  apiKey: ['VAPI_API_KEY', 'VAPI_PRIVATE_KEY', 'VAPI_KEY', 'VAPI_TOKEN'],
+  phoneNumberId: ['VAPI_PHONE_NUMBER_ID', 'VAPI_PHONE_ID'],
+  phoneNumber: ['VAPI_PHONE_NUMBER'],
+  assistantId: ['VAPI_ASSISTANT_ID'],
+  webhookSecret: ['VAPI_WEBHOOK_SECRET'],
+});
+
+/**
+ * Values pasted into the Vercel dashboard routinely arrive wrapped in quotes or
+ * with a trailing newline. Vapi rejects those as an invalid key, which reads as
+ * a missing-configuration problem.
+ */
+function envValue(env, name) {
+  return String(env?.[name] ?? '')
+    .trim()
+    .replace(/^['"]|['"]$/g, '')
+    .trim();
+}
+
+export function vapiEnvValue(env = {}, field) {
+  for (const name of VAPI_ENV_NAMES[field] || []) {
+    const value = envValue(env, name);
+    if (value) return value;
+  }
+  return '';
+}
+
+export function vendorEnvDiagnostics(env = {}) {
+  const apiKey = vapiEnvValue(env, 'apiKey');
+  const phoneNumberId = vapiEnvValue(env, 'phoneNumberId');
+  const phoneNumber = vapiEnvValue(env, 'phoneNumber');
+  const missing = [];
+  if (!apiKey) missing.push('VAPI_API_KEY');
+  const warnings = Object.keys(env || {})
+    .filter((name) => name.startsWith('VITE_VAPI'))
+    .map((name) => `${name} is exposed to browsers. Rename it to ${name.replace(/^VITE_/, '')}.`);
+  return {
+    hasApiKey: Boolean(apiKey),
+    hasPhoneNumber: Boolean(phoneNumberId || phoneNumber),
+    phoneNumberLookup: !phoneNumberId && !phoneNumber ? 'automatic_by_number' : 'environment',
+    callerNumber: SKYWAY_CALLER_ID,
+    hasAssistant: Boolean(vapiEnvValue(env, 'assistantId')),
+    hasWebhookSecret: Boolean(vapiEnvValue(env, 'webhookSecret')),
+    missing,
+    warnings,
+  };
+}
+
 export function vendorConfigured(env = {}) {
-  return Boolean(clean(env.VAPI_API_KEY) && (clean(env.VAPI_PHONE_NUMBER_ID) || clean(env.VAPI_PHONE_NUMBER)));
+  return vendorEnvDiagnostics(env).missing.length === 0;
 }

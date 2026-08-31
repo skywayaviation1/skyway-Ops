@@ -6,8 +6,8 @@ verified facts, arming, webhooks, transcripts, and ops notifications.
 
 This is the recommended vendor pairing for Skyway: Vapi has outbound assistants,
 function calling, transcripts, structured end-of-call data, and warm transfer.
-Twilio lets the public caller ID be **Skyway Aviation, 1-727-605-5000**
-(`+17276055000`) after that number is imported or hosted on the Twilio account
+Twilio lets the public caller ID be **Skyway Aviation, +1 (813) 859-5943**
+(`+18138595943`) after that number is imported or hosted on the Twilio account
 and attached as the Vapi phone number.
 
 ## Go-live rule
@@ -37,11 +37,11 @@ Uncertain or sensitive questions transfer to Skyway operations.
 
 | Variable | Purpose |
 | --- | --- |
-| `VAPI_API_KEY` | Vapi private key |
-| `VAPI_PHONE_NUMBER_ID` | Vapi ID of the Twilio number that shows +1-727-605-5000 |
+| `VAPI_API_KEY` | Vapi private key (`VAPI_PRIVATE_KEY`, `VAPI_KEY`, and `VAPI_TOKEN` also accepted) |
+| `VAPI_PHONE_NUMBER_ID` | Optional Vapi record ID for +1 (813) 859-5943 (`VAPI_PHONE_ID` also accepted); when absent or set to the telephone number, Skyway finds the record by number |
 | `VAPI_ASSISTANT_ID` | Optional pre-built assistant; otherwise Skyway sends an inline assistant |
 | `VAPI_WEBHOOK_SECRET` | HMAC secret for `POST /api/fbo-call-webhook` |
-| `FBO_CALL_OPS_TRANSFER_NUMBER` | Warm-transfer destination (defaults to +17276055000) |
+| `FBO_CALL_OPS_TRANSFER_NUMBER` | Warm-transfer destination (defaults to +18138595943) |
 | `INTERNAL_API_SECRET` | Existing server-to-server secret |
 | `CRON_SECRET` | Optional Vercel cron bearer |
 | `OPS_ALERT_EMAILS` | Ops notification recipients |
@@ -67,6 +67,33 @@ In Vapi, set the assistant server URL to:
 6. Transcripts and structured confirmations stay on the trip. They are **not**
    copied onto broker public tracking links.
 7. If the trip changes after a completed call, ops can queue an **update** call.
+
+## “Vapi keys missing” when the variables are set in Vercel
+
+Skyway reads these variables on the server on every request, so the chip in
+Settings reports what **the running deployment** can see. When it says a key is
+missing, Organization settings names the exact variable. Work through these in
+order:
+
+1. **Redeploy.** Vercel injects environment variables at build time, so a value
+   saved after the last deploy is not in the running deployment. Redeploy the
+   Production deployment after saving.
+2. **Check the environment.** The variable must be enabled for **Production**,
+   not only Preview or Development.
+3. **Check the name.** A leading or trailing space in the variable name creates a
+   different variable. Skyway also accepts Vapi's own labels
+   (`VAPI_PRIVATE_KEY`, `VAPI_PHONE_ID`).
+4. **`VITE_` prefix.** `VITE_*` variables are compiled into the browser bundle
+   and are never read as server credentials. Settings flags this, and the key
+   must be rotated because a published bundle exposed it.
+
+Wrapping quotes and trailing newlines are stripped when the value is read, so a
+value pasted as `"key"` still authenticates.
+
+`VAPI_PHONE_NUMBER_ID` is Vapi's record ID, not the printed telephone number.
+For Skyway's +1 (813) 859-5943 number it is optional: with a valid API key,
+Skyway lists the organization's Vapi phone records and selects that number
+automatically. The number must already be imported from Twilio into Vapi.
 
 ## Collections
 

@@ -12,7 +12,7 @@ import {
   notifyOps,
   recordEvent,
 } from './_fbo-call.js';
-import { CALL_STATUSES } from '../src/fbo-call.js';
+import { CALL_STATUSES, vapiEnvValue } from '../src/fbo-call.js';
 
 export const config = {
   runtime: 'nodejs',
@@ -101,7 +101,7 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' });
 
   const raw = await rawBody(req);
-  const secret = String(process.env.VAPI_WEBHOOK_SECRET || '').trim();
+  const secret = vapiEnvValue(process.env, 'webhookSecret');
   const signature = req.headers['x-vapi-signature'] || req.headers['x-vapi-signature-256'];
   if (!secret) {
     return res.status(503).json({ error: 'VAPI_WEBHOOK_SECRET is not configured' });

@@ -210,7 +210,7 @@ export default function TripFboCalls({
       <div>
         <h2 className="text-base font-semibold text-content">FBO calls</h2>
         <p className="mt-1 text-sm leading-relaxed text-content-muted">
-          {brand.name} automated ops assistant. Caller ID {brand.contactPhone || SKYWAY_CALLER_ID_DISPLAY}.
+          {brand.name} automated ops assistant. Caller ID {SKYWAY_CALLER_ID_DISPLAY}.
           FBO names and phone numbers come from the uploaded trip sheet. Verify the details, then arm
           the call. The agent will not guess hours or passenger names except the lead
           passenger for ground transportation.

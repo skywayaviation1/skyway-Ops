@@ -22,11 +22,13 @@ import {
   toE164,
   tripSheetDialPhone,
   unverifiedCallPurposes,
+  vapiEnvValue,
   vendorConfigured,
+  vendorEnvDiagnostics,
 } from '../src/fbo-call.js';
 import { computeOutstanding } from '../src/ops-readiness.js';
 import { summarizeWebhook, validVapiSignature } from '../api/fbo-call-webhook.js';
-import { vapiCallPayload } from '../api/_fbo-call.js';
+import { resolveVapiPhoneNumberId, vapiCallPayload } from '../api/_fbo-call.js';
 
 const root = path.resolve(import.meta.dirname, '..');
 const source = (file) => readFile(path.join(root, file), 'utf8');
@@ -48,13 +50,13 @@ const trip = {
   },
 };
 
-test('caller ID is Skyway Aviation +1-727-605-5000', () => {
-  assert.equal(SKYWAY_CALLER_ID, '+17276055000');
+test('caller ID is Skyway Aviation +1-813-859-5943', () => {
+  assert.equal(SKYWAY_CALLER_ID, '+18138595943');
 });
 
 test('US phone numbers normalize to E.164', () => {
   assert.equal(toE164('(201) 555-0100'), '+12015550100');
-  assert.equal(toE164('1-727-605-5000'), '+17276055000');
+  assert.equal(toE164('+1 (813) 859-5943'), '+18138595943');
   assert.equal(toE164('not a phone'), '');
 });
 
@@ -283,6 +285,50 @@ test('Vapi payload never includes a passenger name without ground transport', ()
   assert.equal(vendorConfigured({ VAPI_API_KEY: 'k', VAPI_PHONE_NUMBER_ID: 'pn_1' }), true);
 });
 
+test('Vapi credentials survive pasted quotes, newlines, and Vapi own key naming', () => {
+  assert.equal(vapiEnvValue({ VAPI_API_KEY: '"key-123"\n' }, 'apiKey'), 'key-123');
+  assert.equal(vapiEnvValue({ VAPI_PRIVATE_KEY: ' key-456 ' }, 'apiKey'), 'key-456');
+  assert.equal(vapiEnvValue({ VAPI_PHONE_ID: "'pn_1'" }, 'phoneNumberId'), 'pn_1');
+  assert.equal(vendorConfigured({ VAPI_API_KEY: '"k"\n', VAPI_PHONE_NUMBER_ID: '"pn_1"' }), true);
+  const body = vapiCallPayload(
+    { id: 'fbo_1', tripId: 'leg-1', purpose: 'departure', phoneE164: '+12015550100', facts: {} },
+    { opsTransferNumber: SKYWAY_CALLER_ID },
+    { VAPI_PHONE_NUMBER_ID: '"pn_1"\n' },
+  );
+  assert.equal(body.phoneNumberId, 'pn_1');
+});
+
+test('an unconfigured deployment names the variable it cannot see', () => {
+  const diagnostics = vendorEnvDiagnostics({ VAPI_API_KEY: 'k' });
+  assert.deepEqual(diagnostics.missing, []);
+  assert.equal(diagnostics.hasApiKey, true);
+  assert.equal(diagnostics.hasPhoneNumber, false);
+  assert.equal(diagnostics.phoneNumberLookup, 'automatic_by_number');
+  assert.deepEqual(vendorEnvDiagnostics({}).missing, ['VAPI_API_KEY']);
+  const warned = vendorEnvDiagnostics({ VITE_VAPI_API_KEY: 'k', VAPI_PHONE_NUMBER_ID: 'pn_1' });
+  assert.match(warned.warnings.join(' '), /exposed to browsers/);
+  assert.deepEqual(warned.missing, ['VAPI_API_KEY']);
+});
+
+test('Skyway caller number resolves to its Vapi phone record ID', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    assert.match(String(url), /api\.vapi\.ai\/phone-number/);
+    assert.equal(options.headers.Authorization, 'Bearer key-1');
+    return new Response(JSON.stringify([
+      { id: 'phone-record-1', number: '+18138595943' },
+    ]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    assert.equal(await resolveVapiPhoneNumberId({
+      VAPI_API_KEY: 'key-1',
+      VAPI_PHONE_NUMBER_ID: '+1 (813) 859-5943',
+    }), 'phone-record-1');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('webhook HMAC and end-of-call mapping', async () => {
   const raw = Buffer.from('{"ok":true}');
   const secret = 'hook-secret';
@@ -328,7 +374,8 @@ test('routes, cron, and secrets stay server-side', async () => {
   assert.match(app, /id: 'fbo-calls'/);
   assert.match(vercel, /\/api\/fbo-call-schedule/);
   assert.match(desk, /\/api\/fbo-call/);
-  assert.match(helper, /VAPI_API_KEY/);
+  assert.match(await source('src/fbo-call.js'), /VAPI_API_KEY/);
+  assert.match(helper, /vapiEnvValue\(env, 'apiKey'\)/);
   assert.match(helper, /monitorListenUrl/);
   assert.match(helper, /dialJobNow/);
   assert.match(schedule, /dialJobNow/);

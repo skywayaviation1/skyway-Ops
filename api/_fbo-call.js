@@ -29,7 +29,9 @@ import {
   scheduledDialAt,
   toE164,
   unverifiedCallPurposes,
+  vapiEnvValue,
   vendorConfigured,
+  vendorEnvDiagnostics,
 } from '../src/fbo-call.js';
 
 const CONFIG_PATH = ['app-config', 'fbo-call'];
@@ -38,6 +40,7 @@ const EVENTS = 'fbo-call-events';
 
 let app = null;
 let db = null;
+let vapiPhoneCache = null;
 
 export function getAdminApp() {
   if (app) return app;
@@ -110,14 +113,14 @@ export function defaultConfig() {
 }
 
 export function publicVendorStatus(env = process.env) {
+  const diagnostics = vendorEnvDiagnostics(env);
   return {
     vendor: VOICE_VENDOR,
     pstn: 'twilio',
     callerId: SKYWAY_CALLER_ID,
     callerName: SKYWAY_CALLER_NAME,
-    configured: vendorConfigured(env),
-    hasAssistant: Boolean(String(env.VAPI_ASSISTANT_ID || '').trim()),
-    hasWebhookSecret: Boolean(String(env.VAPI_WEBHOOK_SECRET || '').trim()),
+    configured: diagnostics.missing.length === 0,
+    ...diagnostics,
   };
 }
 
@@ -307,28 +310,82 @@ export function vapiCallPayload(job, config, env = process.env) {
       purpose: job.purpose,
     },
   };
-  const assistantId = String(env.VAPI_ASSISTANT_ID || '').trim();
+  const assistantId = vapiEnvValue(env, 'assistantId');
   if (assistantId) body.assistantId = assistantId;
   else body.assistant = assistant;
-  const phoneNumberId = String(env.VAPI_PHONE_NUMBER_ID || '').trim();
+  const phoneNumberId = vapiEnvValue(env, 'phoneNumberId');
+  const phoneNumber = vapiEnvValue(env, 'phoneNumber');
   if (phoneNumberId) body.phoneNumberId = phoneNumberId;
-  else if (env.VAPI_PHONE_NUMBER) body.phoneNumber = { twilioPhoneNumber: env.VAPI_PHONE_NUMBER };
+  else if (phoneNumber) body.phoneNumber = { twilioPhoneNumber: phoneNumber };
   return body;
 }
 
-export async function placeVapiCall(job, config, env = process.env) {
-  if (!vendorConfigured(env)) {
-    const error = new Error('Vapi is not configured. Set VAPI_API_KEY and VAPI_PHONE_NUMBER_ID.');
+export async function resolveVapiPhoneNumberId(env = process.env) {
+  const configuredId = vapiEnvValue(env, 'phoneNumberId');
+  const configuredNumber = vapiEnvValue(env, 'phoneNumber');
+  const targetNumber = toE164(configuredNumber || SKYWAY_CALLER_ID);
+  // A phone number is occasionally pasted into VAPI_PHONE_NUMBER_ID. Treat it
+  // as the lookup target instead of sending it to Vapi as an invalid UUID.
+  if (configuredId && !toE164(configuredId)) return configuredId;
+  const lookupNumber = toE164(configuredId) || targetNumber;
+  if (
+    vapiPhoneCache?.id
+    && vapiPhoneCache.number === lookupNumber
+    && vapiPhoneCache.expiresAt > Date.now()
+  ) {
+    return vapiPhoneCache.id;
+  }
+  const apiKey = vapiEnvValue(env, 'apiKey');
+  if (!apiKey) {
+    const error = new Error('VAPI_API_KEY is missing on this deployment.');
     error.status = 503;
     throw error;
   }
+  const response = await fetch('https://api.vapi.ai/phone-number?limit=100', {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
+  const records = await response.json().catch(() => []);
+  if (!response.ok) {
+    const error = new Error(
+      records?.message || records?.error || `Vapi phone-number lookup failed (${response.status})`,
+    );
+    error.status = 502;
+    throw error;
+  }
+  const match = (Array.isArray(records) ? records : records?.results || [])
+    .find((record) => toE164(record?.number) === lookupNumber);
+  if (!match?.id) {
+    const error = new Error(
+      `Vapi does not have ${lookupNumber || SKYWAY_CALLER_ID} attached as a phone number. Import the Twilio number in Vapi or set VAPI_PHONE_NUMBER_ID to its Vapi record ID.`,
+    );
+    error.status = 503;
+    throw error;
+  }
+  vapiPhoneCache = { id: match.id, number: lookupNumber, expiresAt: Date.now() + 5 * 60_000 };
+  return match.id;
+}
+
+export async function placeVapiCall(job, config, env = process.env) {
+  const diagnostics = vendorEnvDiagnostics(env);
+  if (diagnostics.missing.length) {
+    const error = new Error(
+      `Vapi is not configured on this deployment. Set ${diagnostics.missing.join(' and ')} in Vercel, then redeploy.`,
+    );
+    error.status = 503;
+    throw error;
+  }
+  const phoneNumberId = await resolveVapiPhoneNumberId(env);
   const response = await fetch('https://api.vapi.ai/call', {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${env.VAPI_API_KEY}`,
+      Authorization: `Bearer ${vapiEnvValue(env, 'apiKey')}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify(vapiCallPayload(job, config, env)),
+    body: JSON.stringify(vapiCallPayload(job, config, {
+      ...env,
+      VAPI_PHONE_NUMBER_ID: phoneNumberId,
+      VAPI_PHONE_NUMBER: '',
+    })),
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data.id) {
@@ -609,7 +666,7 @@ export async function getListenCredentials(id, env = process.env) {
   }
   if (!job.monitorListenUrl) {
     const response = await fetch(`https://api.vapi.ai/call/${encodeURIComponent(job.vendorCallId)}`, {
-      headers: { Authorization: `Bearer ${env.VAPI_API_KEY}` },
+      headers: { Authorization: `Bearer ${vapiEnvValue(env, 'apiKey')}` },
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
