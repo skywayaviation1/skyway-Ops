@@ -257,6 +257,8 @@ export function vapiCallPayload(job, config, env = process.env) {
     leadPassengerName: facts.groundTransport ? (facts.leadPassengerName || '') : '',
     hours: facts.hoursKnown ? facts.hours : 'not on file',
     specialItems: facts.specialItems || 'none on file',
+    scheduledTime: facts.scheduledLocalDisplay || '',
+    scheduledTimeSpoken: facts.scheduledLocalSpokenLine || facts.scheduledLocalSpoken || '',
   };
   const assistant = {
     firstMessage: firstMessage(facts),

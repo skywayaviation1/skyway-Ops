@@ -20,6 +20,8 @@ import {
   scheduledDialAt,
   shouldQueueUpdate,
   spokenTailNumber,
+  speakMilitaryClock,
+  formatLocalMilitaryTime,
   toE164,
   tripSheetDialPhone,
   unverifiedCallPurposes,
@@ -59,6 +61,28 @@ test('US phone numbers normalize to E.164', () => {
   assert.equal(toE164('(201) 555-0100'), '+12015550100');
   assert.equal(toE164('+1 (813) 859-5943'), '+18138595943');
   assert.equal(toE164('not a phone'), '');
+});
+
+test('times are spoken in local military clock', () => {
+  assert.equal(speakMilitaryClock(16, 30), 'sixteen thirty');
+  assert.equal(speakMilitaryClock(9, 5), 'zero nine zero five');
+  assert.equal(speakMilitaryClock(12, 0), 'twelve hundred');
+  const local = formatLocalMilitaryTime('2026-09-01T16:00:00.000Z', 'KTEB');
+  assert.equal(local.display, '1200');
+  assert.equal(local.spoken, 'twelve hundred');
+  assert.match(local.line, /1200 local/);
+  const facts = buildSpeakableFacts({
+    trip,
+    state: {
+      fromFbo: 'Signature',
+      tripSheetUrl: 'https://example.test/trip-sheet.pdf',
+      tripSheetData: { fromAirportPhone: '201-555-0100' },
+    },
+    purpose: 'departure',
+  });
+  assert.equal(facts.facts.scheduledLocalDisplay, '1200');
+  assert.match(assistantSystemPrompt(facts.facts), /local military/);
+  assert.doesNotMatch(assistantSystemPrompt(facts.facts), /2026-09-01T16:00:00.000Z/);
 });
 
 test('tail numbers are spoken with aviation phonetics and individual digits', () => {

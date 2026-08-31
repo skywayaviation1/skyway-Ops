@@ -28,6 +28,8 @@ the verified facts, and recorded on the job.
 - Verified tail, route, FBO name, airport, schedule, passenger **count**
 - Tail numbers in aviation phonetics with each digit spoken separately
   (`N444AM` → “November 4, 4, 4, Alpha Mike”)
+- Times in **local military (24-hour)** clock at the FBO airport
+  (`1630 local EDT`, never AM/PM)
 - Catering / special items from the trip sheet
 - FBO phone parsed from the uploaded trip sheet
 - **Lead passenger name only when ground transportation is requested**

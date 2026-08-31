@@ -38,9 +38,79 @@ export const CALL_STATUSES = Object.freeze({
   needs_followup: 'needs_followup',
 });
 
+import { getAirportTimezone } from './airports.js';
+
 const GROUND_RE = /\b(ground\s*trans(?:port(?:ation)?)?|limo(?:usine)?|car\s*service|chauffeur|town\s*car|meet\s*(?:and|&)\s*greet|courtesy\s*(?:car|van)|rental\s*car|uber|lyft|taxi)\b/i;
 
 const clean = (value) => String(value ?? '').trim();
+
+const SMALL_NUMBERS = [
+  'zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine',
+  'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen',
+  'seventeen', 'eighteen', 'nineteen',
+];
+const TENS_NUMBERS = ['', '', 'twenty', 'thirty', 'forty', 'fifty'];
+
+function speakNumber(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return '';
+  if (n < 20) return SMALL_NUMBERS[n];
+  const tens = Math.floor(n / 10);
+  const ones = n % 10;
+  return ones ? `${TENS_NUMBERS[tens]} ${SMALL_NUMBERS[ones]}` : TENS_NUMBERS[tens];
+}
+
+export function speakMilitaryClock(hours, minutes) {
+  const hour = Number(hours);
+  const minute = Number(minutes);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return '';
+  const hourPart = hour === 0
+    ? 'zero'
+    : (hour < 10 ? `zero ${SMALL_NUMBERS[hour]}` : speakNumber(hour));
+  if (minute === 0) return `${hourPart} hundred`;
+  if (minute < 10) return `${hourPart} zero ${SMALL_NUMBERS[minute]}`;
+  return `${hourPart} ${speakNumber(minute)}`;
+}
+
+export function formatLocalMilitaryTime(value, airportCode) {
+  const ms = value instanceof Date
+    ? value.getTime()
+    : (value == null || value === '' ? NaN : new Date(value).getTime());
+  if (!Number.isFinite(ms)) {
+    return { display: '', spoken: '', zone: '', date: '', line: '', spokenLine: '' };
+  }
+  const date = new Date(ms);
+  const timeZone = getAirportTimezone(airportCode) || 'UTC';
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    timeZoneName: 'short',
+  }).formatToParts(date);
+  const part = (type) => parts.find((entry) => entry.type === type)?.value || '';
+  let hour = Number(part('hour'));
+  const minute = Number(part('minute'));
+  if (hour === 24) hour = 0;
+  const hh = String(hour).padStart(2, '0');
+  const mm = String(minute).padStart(2, '0');
+  const display = `${hh}${mm}`;
+  const spoken = speakMilitaryClock(hour, minute);
+  const zone = part('timeZoneName') || (timeZone === 'UTC' ? 'UTC' : '');
+  const dateLine = `${part('day')} ${String(part('month') || '').toUpperCase()} ${part('year')}`.trim();
+  const localLabel = zone && zone !== 'UTC' ? `local ${zone}` : 'local';
+  return {
+    display,
+    spoken,
+    zone,
+    date: dateLine,
+    line: [dateLine, `at ${display} ${localLabel}`].filter(Boolean).join(' '),
+    spokenLine: [dateLine, `at ${spoken} ${localLabel}`].filter(Boolean).join(' '),
+  };
+}
 
 const NATO_PHONETIC = Object.freeze({
   A: 'Alpha', B: 'Bravo', C: 'Charlie', D: 'Delta', E: 'Echo', F: 'Foxtrot',
@@ -252,6 +322,7 @@ export function publicCallSummary(call) {
     callerId: call.callerId || SKYWAY_CALLER_ID,
     callerName: call.callerName || SKYWAY_CALLER_NAME,
     phoneSource: call.phoneSource || call.facts?.phoneSource || 'trip_sheet',
+    scheduledLocalLine: call.scheduledLocalLine || call.facts?.scheduledLocalLine || '',
     listenAvailable: ['dialing', 'in_progress'].includes(call.status) && Boolean(call.vendorCallId),
     recordingAvailable: Boolean(
       call.recordingAvailable
@@ -296,6 +367,10 @@ export function buildSpeakableFacts({
       : 'No FBO phone number on the trip sheet');
   }
 
+  const startLocal = formatLocalMilitaryTime(trip.start, purpose === 'arrival' ? airport : clean(info.from).toUpperCase());
+  const endLocal = formatLocalMilitaryTime(trip.end, purpose === 'arrival' ? airport : clean(info.to).toUpperCase());
+  const scheduledLocal = purpose === 'arrival' ? endLocal : startLocal;
+
   const facts = {
     callerName: SKYWAY_CALLER_NAME,
     callerId: SKYWAY_CALLER_ID,
@@ -318,6 +393,13 @@ export function buildSpeakableFacts({
     website: '',
     startIso: toIso(trip.start),
     endIso: toIso(trip.end),
+    scheduledLocalDisplay: scheduledLocal.display,
+    scheduledLocalSpoken: scheduledLocal.spoken,
+    scheduledLocalZone: scheduledLocal.zone,
+    scheduledLocalLine: scheduledLocal.line,
+    scheduledLocalSpokenLine: scheduledLocal.spokenLine,
+    startLocalLine: startLocal.line,
+    endLocalLine: endLocal.line,
     paxCount,
     hasCatering: cateringRequested(state, info),
     specialItems: clean(state.tripSheetNotes?.specialItems),
@@ -352,6 +434,7 @@ export function assistantSystemPrompt(facts) {
     'At the start of the call, state that the call may be recorded for operational accuracy.',
     'Speak only the verified trip and service facts below. If a question is not covered, say you will transfer to Skyway operations.',
     'Never invent FBOs, times, fuel prices, hangar availability, or passenger details.',
+    'Always speak times in local military (24-hour) time. Never say AM, PM, or Zulu unless the FBO asks for a conversion, and even then give local military first.',
     'If the person is not the FBO, apologize and end the call.',
     '',
     'Verified trip:',
@@ -359,7 +442,8 @@ export function assistantSystemPrompt(facts) {
     `- Say the aircraft registration exactly as: ${facts.tailSpoken || 'not on file'}`,
     `- Route: ${facts.purpose === 'arrival' ? `${facts.otherAirport} to ${facts.airport}` : `${facts.airport} to ${facts.otherAirport}`}`,
     `- This call is the ${facts.purpose} FBO: ${facts.fboName} at ${facts.airport}`,
-    `- Scheduled ${facts.purpose === 'arrival' ? 'arrival' : 'departure'}: ${facts.purpose === 'arrival' ? facts.endIso : facts.startIso}`,
+    `- Scheduled ${facts.purpose === 'arrival' ? 'arrival' : 'departure'}: ${facts.scheduledLocalLine || 'not on file'}`,
+    `- Say that time exactly as: ${facts.scheduledLocalSpokenLine || 'not on file'}`,
     `- Passenger count: ${facts.paxCount}`,
     `- Catering requested: ${facts.hasCatering ? 'yes' : 'no'}`,
     `- Special items: ${facts.specialItems || 'none on file'}`,

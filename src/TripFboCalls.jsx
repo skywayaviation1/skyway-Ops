@@ -246,6 +246,8 @@ export default function TripFboCalls({
                     <span className="ml-2 text-[10px] font-semibold uppercase text-warning">changed for calls</span>
                   )}
                 </dd>
+                <dt className="text-content-subtle">Scheduled</dt>
+                <dd className="font-mono text-content">{row.facts.scheduledLocalLine || '—'}</dd>
                 <dt className="text-content-subtle">Hours</dt>
                 <dd className="text-content">{row.facts.hoursKnown ? row.facts.hours : 'Not on file — will not be guessed'}</dd>
                 <dt className="text-content-subtle">Ground</dt>

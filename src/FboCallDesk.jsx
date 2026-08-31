@@ -146,7 +146,7 @@ export default function FboCallDesk({ currentUser }) {
                       )}
                     </div>
                     <p className="mt-1 font-mono text-xs text-content-muted">
-                      {call.purpose} · {call.phone || 'no phone'} · dial {fmt(call.dialAt)}
+                      {call.purpose} · {call.phone || 'no phone'} · {call.scheduledLocalLine || `dial ${fmt(call.dialAt)}`}
                     </p>
                     <p className="mt-1 text-xs text-content-subtle">
                       {call.hoursKnown ? `Hours on file: ${call.hours}` : 'Hours not on the trip sheet — agent will not guess'}
