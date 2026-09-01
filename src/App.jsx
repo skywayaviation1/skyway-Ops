@@ -21881,7 +21881,7 @@ const NAV_SECTIONS = [
   { id: 'schedule',  label: 'Schedule',    icon: Calendar,      roles: ['crew', 'ops', 'admin'] },
   { id: 'availability', label: 'Availability', icon: Plane,     roles: ['ops', 'admin'] },
   { id: 'airport-data', label: 'Airport & Fuel', icon: Fuel,    roles: ['crew', 'sales', 'ops', 'admin'] },
-  { id: 'fbo-calls', label: 'FBO calls', icon: Phone, roles: ['crew', 'ops', 'admin'] },
+  { id: 'fbo-calls', label: 'AI voice calls', icon: Phone, roles: ['crew', 'ops', 'admin'] },
   { id: 'ops',       label: 'Dispatch',    icon: Zap,           roles: ['ops', 'admin'] },
   { id: 'tracking',  label: 'Tracking',    icon: Navigation,    roles: ['ops', 'admin'] },
   { id: 'manifests', label: 'Manifests',   icon: FileText,      roles: ['crew', 'ops', 'admin'] },

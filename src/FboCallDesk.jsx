@@ -4,6 +4,7 @@ import { Button, Card, EmptyState, PageHeader, StatusChip } from './ui.jsx';
 import { brand } from './brand.js';
 import FboCallListener from './FboCallListener.jsx';
 import FboCallReview from './FboCallReview.jsx';
+import VoiceTaskCalls from './VoiceTaskCalls.jsx';
 import { SKYWAY_CALLER_ID_DISPLAY, formatLocalMilitaryTime } from './fbo-call.js';
 
 const TONE = {
@@ -93,13 +94,16 @@ export default function FboCallDesk({ currentUser }) {
     <div className="flex-1 overflow-y-auto scroll-area bg-surface-sunken p-4 md:p-6">
       <div className="mx-auto max-w-5xl">
         <PageHeader
-          title="FBO calls"
-          subtitle={`${brand.name} automated ops assistant · caller ID ${SKYWAY_CALLER_ID_DISPLAY}`}
+          title="AI voice calls"
+          subtitle={`${brand.name} one-off tasks and FBO operations · caller ID ${SKYWAY_CALLER_ID_DISPLAY}`}
           actions={(
             <Button variant="secondary" icon={RefreshCw} onClick={load}>Refresh</Button>
           )}
         />
         <Card className="mb-4" padded>
+          <p className="text-[10px] font-semibold uppercase tracking-widest text-content-subtle">
+            Trip FBO calls
+          </p>
           <p className="text-sm leading-relaxed text-content-muted">
             Calls are never placed from the calendar automatically. Open a trip, review the FBO
             details parsed from its uploaded trip sheet, then arm departure and/or arrival. The agent speaks only
@@ -122,6 +126,7 @@ export default function FboCallDesk({ currentUser }) {
             </p>
           )}
         </Card>
+        <VoiceTaskCalls currentUser={currentUser} />
         {error && (
           <p className="mb-3 flex items-start gap-2 text-sm text-danger">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />{error}

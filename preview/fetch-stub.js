@@ -41,6 +41,28 @@ const brokerContact = (customer, person) => ({
 const HOUR = 3600_000;
 const MIN = 60_000;
 const now = () => Date.now();
+const PREVIEW_VOICE_TASKS = [{
+  id: 'vtask_preview_1',
+  status: 'completed',
+  phone: '+1 (305) 555-0142',
+  task: 'Confirm the hotel has two crew rooms held for tonight and collect the confirmation number.',
+  createdAt: Date.now() - 35 * 60_000,
+  createdByName: 'Jordan Ellis',
+  summary: 'The hotel confirmed two crew rooms. Confirmation SKY-4821; cancellation is 1800 local.',
+  transcript: [
+    'assistant: Hello, this is an automated operations assistant calling from Skyway Aviation.',
+    'contact: Yes, I can help with the crew rooms.',
+    'assistant: Can you confirm two crew rooms are held for tonight?',
+    'contact: Yes. The confirmation number is SKY-4821.',
+  ].join('\n'),
+  outcome: {
+    taskCompleted: true,
+    outcomeSummary: 'Two crew rooms confirmed under SKY-4821.',
+    needsFollowUp: false,
+    transferredToOps: false,
+    notes: 'Cancellation deadline is 1800 local.',
+  },
+}];
 
 const iso = (msAgo) => new Date(now() - msAgo).toISOString();
 
@@ -535,6 +557,33 @@ export function installFetchStub() {
     if (path === '/api/teams') return json(teamsResponse(action));
     if (path === '/api/quickbooks-workspace') return json(quickbooksResponse(action));
     if (path === '/api/quickbooks-status') return json(QBO_CONNECTION);
+    if (path === '/api/voice-task-call') {
+      if (action === 'list') {
+        return json({
+          ok: true,
+          vendor: { configured: true },
+          calls: PREVIEW_VOICE_TASKS,
+        });
+      }
+      if (action === 'create') {
+        const call = {
+          id: `vtask_preview_${Date.now()}`,
+          status: 'dialing',
+          phone: body.phone,
+          task: body.task,
+          createdAt: Date.now(),
+          createdByName: 'Preview Operator',
+        };
+        PREVIEW_VOICE_TASKS.unshift(call);
+        return json({ ok: true, vendor: { configured: true }, call });
+      }
+      if (action === 'get') {
+        return json({
+          ok: true,
+          call: PREVIEW_VOICE_TASKS.find((call) => call.id === body.callId) || null,
+        });
+      }
+    }
     if (path === '/api/fbo-call') {
       if (action === 'preview') {
         const purposes = Array.isArray(body.purposes) ? body.purposes : ['departure', 'arrival'];

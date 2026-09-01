@@ -350,6 +350,7 @@ export function vapiCallPayload(job, config, env = process.env) {
     },
     metadata: {
       skywayCallId: job.id,
+      skywayJobKind: 'fbo_call',
       tripId: job.tripId,
       purpose: job.purpose,
     },
@@ -409,7 +410,7 @@ export async function resolveVapiPhoneNumberId(env = process.env) {
   return match.id;
 }
 
-export async function placeVapiCall(job, config, env = process.env) {
+export async function placeVapiPayload(payload, env = process.env) {
   const diagnostics = vendorEnvDiagnostics(env);
   if (diagnostics.missing.length) {
     const error = new Error(
@@ -419,17 +420,15 @@ export async function placeVapiCall(job, config, env = process.env) {
     throw error;
   }
   const phoneNumberId = await resolveVapiPhoneNumberId(env);
+  const body = { ...payload, phoneNumberId };
+  delete body.phoneNumber;
   const response = await fetch('https://api.vapi.ai/call', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${vapiEnvValue(env, 'apiKey')}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify(vapiCallPayload(job, config, {
-      ...env,
-      VAPI_PHONE_NUMBER_ID: phoneNumberId,
-      VAPI_PHONE_NUMBER: '',
-    })),
+    body: JSON.stringify(body),
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data.id) {
@@ -439,6 +438,10 @@ export async function placeVapiCall(job, config, env = process.env) {
     throw error;
   }
   return data;
+}
+
+export async function placeVapiCall(job, config, env = process.env) {
+  return placeVapiPayload(vapiCallPayload(job, config, env), env);
 }
 
 export async function armCalls({

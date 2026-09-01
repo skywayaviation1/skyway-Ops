@@ -12,6 +12,12 @@ import {
   notifyOps,
   recordEvent,
 } from './_fbo-call.js';
+import {
+  applyVoiceTaskStatus,
+  findVoiceTaskByVendorId,
+  loadVoiceTask,
+  recordVoiceTaskEvent,
+} from './_voice-task-call.js';
 import { CALL_STATUSES, vapiEnvValue } from '../src/fbo-call.js';
 
 export const config = {
@@ -43,6 +49,13 @@ function jobIdFrom(payload) {
 
 function vendorIdFrom(payload) {
   return payload?.call?.id || payload?.message?.call?.id || payload?.id || '';
+}
+
+export function jobKindFrom(payload) {
+  return payload?.call?.metadata?.skywayJobKind
+    || payload?.message?.call?.metadata?.skywayJobKind
+    || payload?.metadata?.skywayJobKind
+    || 'fbo_call';
 }
 
 function transcriptFrom(payload) {
@@ -136,15 +149,22 @@ export default async function handler(req, res) {
     || Date.now(),
   ) + ':' + String(payload.message?.type || payload.type || 'event');
 
-  const first = await recordEvent(eventKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 200), {
+  const jobKind = jobKindFrom(payload);
+  const record = jobKind === 'voice_task' ? recordVoiceTaskEvent : recordEvent;
+  const first = await record(eventKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 200), {
     type: payload.message?.type || payload.type,
     vendorCallId: vendorIdFrom(payload),
+    jobKind,
   });
   if (!first) return res.status(200).json({ ok: true, duplicate: true });
 
   const parsed = summarizeWebhook(payload);
-  let job = parsed.skywayCallId ? await loadJob(parsed.skywayCallId) : null;
-  if (!job && parsed.vendorCallId) {
+  let job = parsed.skywayCallId
+    ? await (jobKind === 'voice_task' ? loadVoiceTask : loadJob)(parsed.skywayCallId)
+    : null;
+  if (!job && parsed.vendorCallId && jobKind === 'voice_task') {
+    job = await findVoiceTaskByVendorId(parsed.vendorCallId);
+  } else if (!job && parsed.vendorCallId) {
     const { getDb } = await import('./_fbo-call.js');
     const snap = await getDb().collection('fbo-call-jobs')
       .where('vendorCallId', '==', parsed.vendorCallId)
@@ -160,7 +180,10 @@ export default async function handler(req, res) {
   if (parsed.nextStatus) patch.status = parsed.nextStatus;
   if (parsed.transcript) patch.transcript = parsed.transcript;
   if (parsed.summary) patch.summary = parsed.summary;
-  if (parsed.confirmations) patch.confirmations = parsed.confirmations;
+  if (parsed.confirmations) {
+    if (jobKind === 'voice_task') patch.outcome = parsed.confirmations;
+    else patch.confirmations = parsed.confirmations;
+  }
   if (parsed.recordingAvailable) patch.recordingAvailable = true;
   if (parsed.monitorListenUrl) {
     patch.monitorListenUrl = parsed.monitorListenUrl;
@@ -172,21 +195,36 @@ export default async function handler(req, res) {
     patch.endedReason = parsed.endedReason;
   }
   if (parsed.nextStatus === CALL_STATUSES.in_progress) patch.startedAt = job.startedAt || Date.now();
-  await applyVendorStatus(job, patch);
+  if (jobKind === 'voice_task') await applyVoiceTaskStatus(job, patch);
+  else await applyVendorStatus(job, patch);
 
   if (parsed.ended) {
     const subjectStatus = parsed.failed ? 'failed' : (parsed.nextStatus === CALL_STATUSES.needs_followup ? 'needs follow-up' : 'completed');
-    await notifyOps({
-      tripId: job.tripId,
-      source: 'fbo-call-complete',
-      subject: `FBO call ${subjectStatus} — ${job.fboName || ''} ${job.airport || ''}`,
-      text: [
-        `${job.purpose} call to ${job.fboName} at ${job.airport} ${subjectStatus}.`,
-        parsed.summary || 'No summary returned.',
-        parsed.endedReason ? `Vendor reason: ${parsed.endedReason}` : '',
-        'Open Skyway Ops → FBO calls for the transcript.',
-      ].filter(Boolean).join('\n'),
-    });
+    if (jobKind === 'voice_task') {
+      await notifyOps({
+        source: 'voice-task-call-complete',
+        subject: `AI voice task ${subjectStatus} — ${job.phoneDisplay || job.phoneE164}`,
+        text: [
+          `Task: ${job.task}`,
+          `Status: ${subjectStatus}`,
+          parsed.summary || 'No summary returned.',
+          parsed.endedReason ? `Vendor reason: ${parsed.endedReason}` : '',
+          'Open Skyway Ops → FBO calls → One-off voice tasks for the transcript and text log.',
+        ].filter(Boolean).join('\n'),
+      });
+    } else {
+      await notifyOps({
+        tripId: job.tripId,
+        source: 'fbo-call-complete',
+        subject: `FBO call ${subjectStatus} — ${job.fboName || ''} ${job.airport || ''}`,
+        text: [
+          `${job.purpose} call to ${job.fboName} at ${job.airport} ${subjectStatus}.`,
+          parsed.summary || 'No summary returned.',
+          parsed.endedReason ? `Vendor reason: ${parsed.endedReason}` : '',
+          'Open Skyway Ops → FBO calls for the transcript.',
+        ].filter(Boolean).join('\n'),
+      });
+    }
   }
 
   return res.status(200).json({ ok: true, callId: job.id, status: patch.status || job.status });
