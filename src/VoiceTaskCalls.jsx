@@ -1,13 +1,20 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  Activity,
   AlertTriangle,
   CheckCircle2,
   Download,
+  History,
   Loader2,
+  Plus,
   PhoneCall,
   RefreshCw,
+  RotateCcw,
+  Trash2,
 } from 'lucide-react';
 import { Button, Card, StatusChip } from './ui.jsx';
+import FboCallListener from './FboCallListener.jsx';
+import VoiceTaskRecording from './VoiceTaskRecording.jsx';
 import { formatVoiceTaskLog } from './voice-task-call.js';
 
 const TONE = {
@@ -58,6 +65,8 @@ export default function VoiceTaskCalls({ currentUser }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const [view, setView] = useState('new');
+  const [busyCallId, setBusyCallId] = useState('');
 
   const load = useCallback(async ({ quiet = false } = {}) => {
     if (!allowed) return;
@@ -81,7 +90,10 @@ export default function VoiceTaskCalls({ currentUser }) {
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
-    if (!calls.some((call) => ['dialing', 'in_progress'].includes(call.status))) return undefined;
+    if (!calls.some((call) => (
+      ['dialing', 'in_progress'].includes(call.status)
+      || (!['dialing', 'in_progress'].includes(call.status) && call.transcriptStatus === 'pending')
+    ))) return undefined;
     const timer = setInterval(() => load({ quiet: true }), 8000);
     return () => clearInterval(timer);
   }, [calls, load]);
@@ -108,6 +120,7 @@ export default function VoiceTaskCalls({ currentUser }) {
       setPhone('');
       setTask('');
       setMessage('Call placed. Skyway will log the outcome and transcript below.');
+      setView('active');
     } catch (err) {
       setError(err.message || 'The voice task call could not be placed');
     } finally {
@@ -116,10 +129,58 @@ export default function VoiceTaskCalls({ currentUser }) {
     }
   }
 
+  async function act(action, call) {
+    if (!call?.id || busyCallId) return;
+    if (
+      action === 'delete'
+      && !window.confirm('Delete this finished AI voice call and its Skyway log?')
+    ) return;
+    setBusyCallId(call.id);
+    setError('');
+    setMessage('');
+    try {
+      const response = await fetch('/api/voice-task-call', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          idToken: await token(),
+          action,
+          callId: call.id,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `${action} failed`);
+      if (action === 'retry') {
+        setMessage('Retry call placed with the same number and task.');
+        setView('active');
+      } else if (action === 'delete') {
+        setMessage('Finished call deleted. Its deletion audit event was retained.');
+      } else if (action === 'refreshArtifacts') {
+        setMessage(data.call?.transcript
+          ? 'Transcript and recording status refreshed from Vapi.'
+          : 'Vapi has not finished the transcript yet. Try again shortly.');
+      }
+      await load({ quiet: true });
+    } catch (err) {
+      setError(err.message || `${action} failed`);
+    } finally {
+      setBusyCallId('');
+    }
+  }
+
   const sorted = useMemo(
     () => [...calls].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)),
     [calls],
   );
+  const activeCalls = useMemo(
+    () => sorted.filter((call) => ['dialing', 'in_progress'].includes(call.status)),
+    [sorted],
+  );
+  const historyCalls = useMemo(
+    () => sorted.filter((call) => !['dialing', 'in_progress'].includes(call.status)),
+    [sorted],
+  );
+  const visibleCalls = view === 'active' ? activeCalls : historyCalls;
 
   if (!allowed) return null;
 
@@ -128,7 +189,7 @@ export default function VoiceTaskCalls({ currentUser }) {
       <Card padded>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <p className="text-base font-semibold text-content">One-off AI voice task</p>
+            <p className="text-base font-semibold text-content">AI Voicebot control center</p>
             <p className="mt-1 max-w-2xl text-sm text-content-muted">
               Enter a number and a precise business task. The call starts immediately and its
               response, outcome, and transcript are saved as a downloadable text log.
@@ -144,6 +205,31 @@ export default function VoiceTaskCalls({ currentUser }) {
           </div>
         </div>
 
+        <div className="mt-4 grid grid-cols-3 gap-2 rounded-xl border border-edge bg-surface-sunken p-1.5">
+          <button
+            type="button"
+            onClick={() => setView('new')}
+            className={`flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold ${view === 'new' ? 'bg-accent text-white' : 'text-content-muted hover:bg-surface'}`}
+          >
+            <Plus className="h-4 w-4" /> New call
+          </button>
+          <button
+            type="button"
+            onClick={() => setView('active')}
+            className={`flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold ${view === 'active' ? 'bg-accent text-white' : 'text-content-muted hover:bg-surface'}`}
+          >
+            <Activity className="h-4 w-4" /> Active ({activeCalls.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setView('history')}
+            className={`flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold ${view === 'history' ? 'bg-accent text-white' : 'text-content-muted hover:bg-surface'}`}
+          >
+            <History className="h-4 w-4" /> History ({historyCalls.length})
+          </button>
+        </div>
+
+        {view === 'new' && (
         <form className="mt-4 grid gap-3" onSubmit={submit}>
           <label className="block">
             <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-content-subtle">
@@ -182,6 +268,7 @@ export default function VoiceTaskCalls({ currentUser }) {
             </p>
           </div>
         </form>
+        )}
 
         {error && (
           <p className="mt-3 flex items-start gap-2 text-sm text-danger">
@@ -195,16 +282,16 @@ export default function VoiceTaskCalls({ currentUser }) {
         )}
       </Card>
 
-      {loading ? (
+      {view !== 'new' && (loading ? (
         <p className="text-sm text-content-muted">
           <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />Loading voice task logs…
         </p>
-      ) : sorted.length > 0 && (
+      ) : visibleCalls.length > 0 ? (
         <div className="space-y-2">
           <p className="text-[10px] font-semibold uppercase tracking-widest text-content-subtle">
-            Voice task logs
+            {view === 'active' ? 'Active voice calls' : 'Call history and logs'}
           </p>
-          {sorted.map((call) => (
+          {visibleCalls.map((call) => (
             <Card key={call.id} padded>
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0 flex-1">
@@ -238,20 +325,83 @@ export default function VoiceTaskCalls({ currentUser }) {
                       </pre>
                     </details>
                   )}
+                  {!call.transcript && !['dialing', 'in_progress'].includes(call.status) && (
+                    <div className="mt-3 rounded-lg border border-warning/40 bg-warning/5 p-3">
+                      <p className="flex items-start gap-2 text-sm text-warning">
+                        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                        {call.transcriptStatus === 'pending'
+                          ? 'Transcript pending from Vapi.'
+                          : 'No transcript was returned for this call.'}
+                      </p>
+                      <Button
+                        className="mt-2"
+                        size="sm"
+                        variant="secondary"
+                        icon={RefreshCw}
+                        loading={busyCallId === call.id}
+                        onClick={() => act('refreshArtifacts', call)}
+                      >
+                        Refresh transcript
+                      </Button>
+                    </div>
+                  )}
+                  {call.listenAvailable && (
+                    <div className="mt-3">
+                      <FboCallListener callId={call.id} apiPath="/api/voice-task-call" />
+                    </div>
+                  )}
+                  {call.recordingAvailable && !['dialing', 'in_progress'].includes(call.status) && (
+                    <div className="mt-3 border-t border-edge pt-3">
+                      <p className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-content-subtle">
+                        Recorded call
+                      </p>
+                      <VoiceTaskRecording callId={call.id} />
+                    </div>
+                  )}
                 </div>
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  icon={Download}
-                  onClick={() => downloadLog(call)}
-                >
-                  Download .txt
-                </Button>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    icon={Download}
+                    onClick={() => downloadLog(call)}
+                  >
+                    Download .txt
+                  </Button>
+                  {!['dialing', 'in_progress'].includes(call.status) && (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        icon={RotateCcw}
+                        loading={busyCallId === call.id}
+                        onClick={() => act('retry', call)}
+                      >
+                        Retry
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="danger"
+                        icon={Trash2}
+                        loading={busyCallId === call.id}
+                        onClick={() => act('delete', call)}
+                      >
+                        Delete
+                      </Button>
+                    </>
+                  )}
+                </div>
               </div>
             </Card>
           ))}
         </div>
-      )}
+      ) : (
+        <Card padded>
+          <p className="text-sm text-content-muted">
+            {view === 'active' ? 'No voice calls are active.' : 'No finished voice calls yet.'}
+          </p>
+        </Card>
+      ))}
     </section>
   );
 }

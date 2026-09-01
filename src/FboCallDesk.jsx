@@ -100,6 +100,7 @@ export default function FboCallDesk({ currentUser }) {
             <Button variant="secondary" icon={RefreshCw} onClick={load}>Refresh</Button>
           )}
         />
+        <VoiceTaskCalls currentUser={currentUser} />
         <Card className="mb-4" padded>
           <p className="text-[10px] font-semibold uppercase tracking-widest text-content-subtle">
             Trip FBO calls
@@ -126,7 +127,6 @@ export default function FboCallDesk({ currentUser }) {
             </p>
           )}
         </Card>
-        <VoiceTaskCalls currentUser={currentUser} />
         {error && (
           <p className="mb-3 flex items-start gap-2 text-sm text-danger">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />{error}

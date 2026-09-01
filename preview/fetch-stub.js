@@ -55,6 +55,9 @@ const PREVIEW_VOICE_TASKS = [{
     'assistant: Can you confirm two crew rooms are held for tonight?',
     'contact: Yes. The confirmation number is SKY-4821.',
   ].join('\n'),
+  transcriptStatus: 'complete',
+  recordingAvailable: true,
+  recordingStatus: 'ready',
   outcome: {
     taskCompleted: true,
     outcomeSummary: 'Two crew rooms confirmed under SKY-4821.',
@@ -62,6 +65,17 @@ const PREVIEW_VOICE_TASKS = [{
     transferredToOps: false,
     notes: 'Cancellation deadline is 1800 local.',
   },
+}, {
+  id: 'vtask_preview_active',
+  status: 'in_progress',
+  phone: '+1 (813) 555-0188',
+  task: 'Confirm the catering delivery is en route and request its estimated arrival time.',
+  createdAt: Date.now() - 4 * 60_000,
+  createdByName: 'Jordan Ellis',
+  transcript: 'assistant: Can you confirm the catering delivery is en route?',
+  transcriptStatus: 'partial',
+  listenAvailable: true,
+  recordingAvailable: false,
 }];
 
 const iso = (msAgo) => new Date(now() - msAgo).toISOString();
@@ -581,6 +595,40 @@ export function installFetchStub() {
         return json({
           ok: true,
           call: PREVIEW_VOICE_TASKS.find((call) => call.id === body.callId) || null,
+        });
+      }
+      if (action === 'refreshArtifacts') {
+        return json({
+          ok: true,
+          call: PREVIEW_VOICE_TASKS.find((call) => call.id === body.callId) || null,
+        });
+      }
+      if (action === 'retry') {
+        const original = PREVIEW_VOICE_TASKS.find((call) => call.id === body.callId);
+        const call = {
+          ...original,
+          id: `vtask_preview_retry_${Date.now()}`,
+          status: 'dialing',
+          parentCallId: original?.id,
+          createdAt: Date.now(),
+          transcript: '',
+          transcriptStatus: 'pending',
+          outcome: null,
+          summary: '',
+          recordingAvailable: false,
+        };
+        PREVIEW_VOICE_TASKS.unshift(call);
+        return json({ ok: true, call });
+      }
+      if (action === 'delete') {
+        const index = PREVIEW_VOICE_TASKS.findIndex((call) => call.id === body.callId);
+        if (index >= 0) PREVIEW_VOICE_TASKS.splice(index, 1);
+        return json({ ok: true, deleted: { id: body.callId } });
+      }
+      if (action === 'listen' || action === 'recording') {
+        return new Response(JSON.stringify({ error: 'Media is unavailable in preview mode' }), {
+          status: 409,
+          headers: { 'Content-Type': 'application/json' },
         });
       }
     }

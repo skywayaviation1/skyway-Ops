@@ -3,6 +3,7 @@ import {
   getDb,
   placeVapiPayload,
   readCallConfig,
+  vapiAssistantReliability,
 } from './_fbo-call.js';
 import {
   publicVoiceTaskSummary,
@@ -14,8 +15,16 @@ import {
   CALL_STATUSES,
   SKYWAY_CALLER_ID,
   SKYWAY_CALLER_NAME,
+  isFinishedCallStatus,
   toE164,
+  vapiEnvValue,
 } from '../src/fbo-call.js';
+import {
+  extractVapiAnalysis,
+  extractVapiRecording,
+  extractVapiTranscript,
+  mergeTranscript,
+} from '../src/vapi-call-artifacts.js';
 
 const JOBS = 'voice-task-calls';
 const EVENTS = 'voice-task-call-events';
@@ -24,8 +33,9 @@ function newVoiceTaskId() {
   return `vtask_${Date.now().toString(36)}_${crypto.randomBytes(4).toString('hex')}`;
 }
 
-export function voiceTaskVapiPayload(job, config = {}) {
+export function voiceTaskVapiPayload(job, config = {}, env = process.env) {
   const transfer = toE164(config.opsTransferNumber) || SKYWAY_CALLER_ID;
+  const reliability = vapiAssistantReliability(env);
   const systemPrompt = voiceTaskSystemPrompt(job.task);
   const model = {
     provider: 'openai',
@@ -45,9 +55,9 @@ export function voiceTaskVapiPayload(job, config = {}) {
   return {
     customer: { number: job.phoneE164, name: 'Operations contact' },
     assistant: {
+      ...reliability,
       firstMessage,
       firstMessageInterruptionsEnabled: false,
-      artifactPlan: { recordingEnabled: true },
       model,
       voice: { provider: 'openai', voiceId: 'alloy' },
       analysisPlan: {
@@ -85,7 +95,11 @@ export function voiceTaskVapiPayload(job, config = {}) {
     },
     assistantOverrides: {
       firstMessage,
-      artifactPlan: { recordingEnabled: true },
+      artifactPlan: reliability.artifactPlan,
+      server: reliability.server,
+      serverMessages: reliability.serverMessages,
+      transcriber: reliability.transcriber,
+      monitorPlan: reliability.monitorPlan,
       model,
       variableValues: {
         callerName: SKYWAY_CALLER_NAME,
@@ -134,14 +148,51 @@ export async function listVoiceTasks(limit = 50) {
     .orderBy('createdAt', 'desc')
     .limit(safeLimit)
     .get();
-  return snap.docs.map((doc) => publicVoiceTaskSummary({ id: doc.id, ...doc.data() }));
+  const jobs = snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+  const dueForRecovery = jobs
+    .filter((job) => (
+      isFinishedCallStatus(job.status)
+      && !job.transcript
+      && job.vendorCallId
+      && Number(job.artifactBackfillAt || 0) <= Date.now()
+      && (job.artifactBackfillAttempts || 0) < 5
+    ))
+    .slice(0, 3);
+  for (const job of dueForRecovery) {
+    try {
+      const recovered = await refreshVoiceTaskArtifacts(job.id);
+      const index = jobs.findIndex((candidate) => candidate.id === job.id);
+      if (index >= 0) jobs[index] = { ...jobs[index], ...recovered };
+    } catch {
+      await applyVoiceTaskStatus(job, {
+        artifactBackfillAttempts: (job.artifactBackfillAttempts || 0) + 1,
+        artifactBackfillAt: Date.now() + 60_000,
+      }).catch(() => {});
+      // The manual Refresh transcript action remains available; list should
+      // still succeed when Vapi artifacts are temporarily unavailable.
+    }
+  }
+  return jobs.map(publicVoiceTaskSummary);
 }
 
-export async function createVoiceTask({ phone, task, actor, now = Date.now() }) {
+export async function createVoiceTask({
+  phone,
+  task,
+  actor,
+  parentCallId = '',
+  now = Date.now(),
+}) {
   const input = validateVoiceTaskInput({ phone, task });
   if (!input.ok) {
     const error = new Error(input.blockers.join('. '));
     error.status = 400;
+    throw error;
+  }
+  if (!vapiEnvValue(process.env, 'webhookSecret')) {
+    const error = new Error(
+      'VAPI_WEBHOOK_SECRET is required before placing voice tasks so transcripts and recordings can be logged.',
+    );
+    error.status = 503;
     throw error;
   }
   const id = newVoiceTaskId();
@@ -152,6 +203,7 @@ export async function createVoiceTask({ phone, task, actor, now = Date.now() }) 
     phoneDisplay: input.phoneDisplay,
     task: input.task,
     taskHash: crypto.createHash('sha256').update(input.task).digest('hex'),
+    parentCallId: parentCallId || null,
     status: CALL_STATUSES.dialing,
     dialAt: now,
     dialMode: 'immediate',
@@ -167,6 +219,8 @@ export async function createVoiceTask({ phone, task, actor, now = Date.now() }) 
     transcript: '',
     summary: '',
     outcome: null,
+    transcriptStatus: 'pending',
+    recordingStatus: 'pending',
     lastError: '',
     updatedAt: now,
   };
@@ -190,5 +244,160 @@ export async function createVoiceTask({ phone, task, actor, now = Date.now() }) 
     });
     throw error;
   }
+}
+
+export async function refreshVoiceTaskArtifacts(id, env = process.env) {
+  const job = await loadVoiceTask(id);
+  if (!job) {
+    const error = new Error('Voice task call not found');
+    error.status = 404;
+    throw error;
+  }
+  if (!job.vendorCallId) {
+    const error = new Error('Vapi call ID is not available yet');
+    error.status = 409;
+    throw error;
+  }
+  const apiKey = vapiEnvValue(env, 'apiKey');
+  if (!apiKey) {
+    const error = new Error('VAPI_API_KEY is missing on this deployment');
+    error.status = 503;
+    throw error;
+  }
+  const response = await fetch(`https://api.vapi.ai/call/${encodeURIComponent(job.vendorCallId)}`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(data.message || `Vapi artifact lookup failed (${response.status})`);
+    error.status = 502;
+    throw error;
+  }
+  const transcript = extractVapiTranscript(data);
+  const analysis = extractVapiAnalysis(data);
+  const outcome = analysis.structuredData || analysis.structured || job.outcome || null;
+  const summary = analysis.summary || data.summary || job.summary || '';
+  const recordingReady = Boolean(extractVapiRecording(data));
+  const next = await applyVoiceTaskStatus(job, {
+    transcript: mergeTranscript(job.transcript, transcript),
+    transcriptStatus: transcript ? 'complete' : (job.transcript ? 'complete' : 'pending'),
+    transcriptUpdatedAt: transcript ? Date.now() : (job.transcriptUpdatedAt || null),
+    summary,
+    outcome,
+    recordingAvailable: recordingReady || job.recordingAvailable === true,
+    recordingStatus: recordingReady ? 'ready' : (job.recordingStatus || 'pending'),
+    artifactBackfillAttempts: (job.artifactBackfillAttempts || 0) + 1,
+    artifactBackfillAt: transcript ? null : Date.now() + 60_000,
+  });
+  return publicVoiceTaskSummary(next);
+}
+
+export async function getVoiceTaskListenCredentials(id, env = process.env) {
+  let job = await loadVoiceTask(id);
+  if (!job) {
+    const error = new Error('Voice task call not found');
+    error.status = 404;
+    throw error;
+  }
+  if (!['dialing', 'in_progress'].includes(job.status) || !job.vendorCallId) {
+    const error = new Error('Live listening is available only while the call is active');
+    error.status = 409;
+    throw error;
+  }
+  if (!job.monitorListenUrl) {
+    const response = await fetch(`https://api.vapi.ai/call/${encodeURIComponent(job.vendorCallId)}`, {
+      headers: { Authorization: `Bearer ${vapiEnvValue(env, 'apiKey')}` },
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.monitor?.listenUrl) {
+      const error = new Error(data.message || 'Vapi did not provide a live listen stream');
+      error.status = 409;
+      throw error;
+    }
+    job = await applyVoiceTaskStatus(job, {
+      monitorListenUrl: data.monitor.listenUrl,
+      monitorControlUrl: data.monitor.controlUrl || '',
+    });
+  }
+  return { callId: job.id, listenUrl: job.monitorListenUrl };
+}
+
+export async function getVoiceTaskRecordingCredentials(id, env = process.env) {
+  const job = await loadVoiceTask(id);
+  if (!job) {
+    const error = new Error('Voice task call not found');
+    error.status = 404;
+    throw error;
+  }
+  if (!job.vendorCallId || !isFinishedCallStatus(job.status)) {
+    const error = new Error('The call recording is available after the call ends');
+    error.status = 409;
+    throw error;
+  }
+  const response = await fetch(
+    `https://api.vapi.ai/call/${encodeURIComponent(job.vendorCallId)}/mono-recording`,
+    {
+      headers: { Authorization: `Bearer ${vapiEnvValue(env, 'apiKey')}` },
+      redirect: 'manual',
+    },
+  );
+  const location = response.headers.get('location');
+  if (response.status >= 300 && response.status < 400 && location) {
+    return { callId: job.id, recordingUrl: location };
+  }
+  const data = await response.json().catch(() => ({}));
+  const recordingUrl = data.url || data.recordingUrl || data.monoUrl || '';
+  if (!response.ok || !recordingUrl) {
+    const error = new Error(data.message || data.error || 'Vapi recording is not ready');
+    error.status = response.status === 404 ? 409 : 502;
+    throw error;
+  }
+  return { callId: job.id, recordingUrl };
+}
+
+export async function retryVoiceTask(id, actor) {
+  const original = await loadVoiceTask(id);
+  if (!original) {
+    const error = new Error('Voice task call not found');
+    error.status = 404;
+    throw error;
+  }
+  if (!isFinishedCallStatus(original.status)) {
+    const error = new Error('Only finished voice task calls can be retried');
+    error.status = 409;
+    throw error;
+  }
+  return createVoiceTask({
+    phone: original.phoneE164,
+    task: original.task,
+    actor,
+    parentCallId: original.id,
+  });
+}
+
+export async function deleteVoiceTask(id, actor) {
+  const job = await loadVoiceTask(id);
+  if (!job) {
+    const error = new Error('Voice task call not found');
+    error.status = 404;
+    throw error;
+  }
+  if (!isFinishedCallStatus(job.status)) {
+    const error = new Error('Only finished voice task calls can be deleted');
+    error.status = 409;
+    throw error;
+  }
+  const deletedAt = Date.now();
+  await getDb().collection(EVENTS).doc(`deleted_${id}_${deletedAt}`).set({
+    type: 'call-deleted',
+    callId: id,
+    status: job.status,
+    taskHash: job.taskHash,
+    deletedAt,
+    deletedByUid: actor.uid,
+    deletedByName: actor.name,
+  });
+  await getDb().collection(JOBS).doc(id).delete();
+  return { id, deletedAt };
 }
 

@@ -19,6 +19,13 @@ import {
   recordVoiceTaskEvent,
 } from './_voice-task-call.js';
 import { CALL_STATUSES, vapiEnvValue } from '../src/fbo-call.js';
+import {
+  extractVapiAnalysis,
+  extractVapiRecording,
+  extractVapiTranscript,
+  mergeTranscript,
+  transcriptEventSegment,
+} from '../src/vapi-call-artifacts.js';
 
 export const config = {
   runtime: 'nodejs',
@@ -40,6 +47,23 @@ export function validVapiSignature(body, signature, secret) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+function safeSecretEqual(actual, expected) {
+  const a = Buffer.from(String(actual || ''), 'utf8');
+  const b = Buffer.from(String(expected || ''), 'utf8');
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+export function validVapiRequest(body, headers = {}, secret = '') {
+  const signature = headers['x-vapi-signature']
+    || headers['x-vapi-signature-256']
+    || headers['x-signature'];
+  if (validVapiSignature(body, signature, secret)) return true;
+  const authorization = String(headers.authorization || '');
+  const bearer = authorization.replace(/^Bearer\s+/i, '');
+  const token = headers['x-vapi-secret'] || bearer;
+  return Boolean(token && secret && safeSecretEqual(token, secret));
+}
+
 function jobIdFrom(payload) {
   return payload?.call?.metadata?.skywayCallId
     || payload?.message?.call?.metadata?.skywayCallId
@@ -58,41 +82,17 @@ export function jobKindFrom(payload) {
     || 'fbo_call';
 }
 
-function transcriptFrom(payload) {
-  const report = payload?.message || payload;
-  if (typeof report.transcript === 'string' && report.transcript.trim()) return report.transcript.trim();
-  const stereo = report.artifact?.transcript;
-  if (typeof stereo === 'string') return stereo;
-  const messages = report.artifact?.messages || report.messages;
-  if (Array.isArray(messages)) {
-    return messages
-      .filter((row) => row?.role && row?.message)
-      .map((row) => `${row.role}: ${row.message}`)
-      .join('\n');
-  }
-  return '';
-}
-
-function recordingFrom(payload) {
-  const report = payload?.message || payload;
-  const artifact = report.artifact || report.call?.artifact || payload?.call?.artifact || {};
-  const recording = artifact.recording || {};
-  return recording.monoUrl
-    || recording.stereoUrl
-    || artifact.recordingUrl
-    || artifact.stereoRecordingUrl
-    || '';
-}
-
 export function summarizeWebhook(payload) {
   const message = payload?.message || payload;
   const type = message.type || payload.type || '';
   const status = String(message.status || message.call?.status || '').toLowerCase();
-  const analysis = message.analysis || message.artifact?.analysis || {};
+  const analysis = extractVapiAnalysis(payload);
   const structured = analysis.structuredData || analysis.structured || null;
   const ended = type === 'end-of-call-report' || status === 'ended';
   const failed = ended && /no-answer|busy|failed|error/i.test(String(message.endedReason || message.ended_reason || ''));
   const transferred = Boolean(structured?.transferredToOps) || /transfer/i.test(type);
+  const segment = transcriptEventSegment(payload);
+  const isTranscriptEvent = /^transcript(?:\[|$)/i.test(String(type));
   let nextStatus = null;
   if (status === 'ringing' || status === 'queued') nextStatus = CALL_STATUSES.dialing;
   if (status === 'in-progress' || status === 'in_progress') nextStatus = CALL_STATUSES.in_progress;
@@ -108,13 +108,14 @@ export function summarizeWebhook(payload) {
     ended,
     failed,
     transferred,
-    transcript: transcriptFrom(payload),
+    transcript: isTranscriptEvent ? segment : extractVapiTranscript(payload),
+    transcriptSegment: segment,
     summary: analysis.summary || message.summary || '',
     confirmations: structured,
     endedReason: message.endedReason || message.ended_reason || '',
     vendorCallId: vendorIdFrom(payload),
     skywayCallId: jobIdFrom(payload),
-    recordingAvailable: Boolean(recordingFrom(payload)),
+    recordingAvailable: Boolean(extractVapiRecording(payload)),
     monitorListenUrl: message.call?.monitor?.listenUrl || payload.call?.monitor?.listenUrl || '',
     monitorControlUrl: message.call?.monitor?.controlUrl || payload.call?.monitor?.controlUrl || '',
   };
@@ -127,11 +128,10 @@ export default async function handler(req, res) {
 
   const raw = await rawBody(req);
   const secret = vapiEnvValue(process.env, 'webhookSecret');
-  const signature = req.headers['x-vapi-signature'] || req.headers['x-vapi-signature-256'];
   if (!secret) {
     return res.status(503).json({ error: 'VAPI_WEBHOOK_SECRET is not configured' });
   }
-  if (!validVapiSignature(raw, signature, secret)) {
+  if (!validVapiRequest(raw, req.headers, secret)) {
     return res.status(401).json({ error: 'Invalid webhook signature' });
   }
 
@@ -147,7 +147,8 @@ export default async function handler(req, res) {
     || payload.call?.id
     || payload.message?.call?.id
     || Date.now(),
-  ) + ':' + String(payload.message?.type || payload.type || 'event');
+  ) + ':' + String(payload.message?.type || payload.type || 'event')
+    + ':' + crypto.createHash('sha256').update(raw).digest('hex').slice(0, 16);
 
   const jobKind = jobKindFrom(payload);
   const record = jobKind === 'voice_task' ? recordVoiceTaskEvent : recordEvent;
@@ -178,13 +179,26 @@ export default async function handler(req, res) {
     vendorCallId: parsed.vendorCallId || job.vendorCallId,
   };
   if (parsed.nextStatus) patch.status = parsed.nextStatus;
-  if (parsed.transcript) patch.transcript = parsed.transcript;
+  const incomingTranscript = parsed.transcriptSegment || parsed.transcript;
+  if (incomingTranscript) {
+    patch.transcript = mergeTranscript(job.transcript, incomingTranscript);
+    patch.transcriptStatus = parsed.ended ? 'complete' : 'partial';
+    patch.transcriptUpdatedAt = Date.now();
+  } else if (parsed.ended && !job.transcript) {
+    patch.transcriptStatus = 'pending';
+    patch.artifactBackfillAt = Date.now() + 30_000;
+  }
   if (parsed.summary) patch.summary = parsed.summary;
   if (parsed.confirmations) {
     if (jobKind === 'voice_task') patch.outcome = parsed.confirmations;
     else patch.confirmations = parsed.confirmations;
   }
-  if (parsed.recordingAvailable) patch.recordingAvailable = true;
+  if (parsed.recordingAvailable) {
+    patch.recordingAvailable = true;
+    patch.recordingStatus = 'ready';
+  } else if (parsed.ended && !job.recordingAvailable) {
+    patch.recordingStatus = 'pending';
+  }
   if (parsed.monitorListenUrl) {
     patch.monitorListenUrl = parsed.monitorListenUrl;
     patch.monitorControlUrl = parsed.monitorControlUrl;

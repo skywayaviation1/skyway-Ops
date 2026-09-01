@@ -125,6 +125,57 @@ export function publicVendorStatus(env = process.env) {
   };
 }
 
+export function vapiAssistantReliability(env = process.env) {
+  const secret = vapiEnvValue(env, 'webhookSecret');
+  const server = {
+    url: String(env.VAPI_WEBHOOK_URL || 'https://www.skyway.app/api/fbo-call-webhook').trim(),
+    timeoutSeconds: 20,
+    backoffPlan: {
+      type: 'exponential',
+      maxRetries: 4,
+      baseDelaySeconds: 2,
+    },
+  };
+  if (secret) server.headers = { 'X-Vapi-Secret': secret };
+  return {
+    server,
+    serverMessages: [
+      'status-update',
+      'transcript',
+      'conversation-update',
+      'end-of-call-report',
+      'hang',
+      'tool-calls',
+    ],
+    transcriber: {
+      provider: 'deepgram',
+      model: 'nova-2',
+      language: 'en',
+      smartFormat: true,
+      keywords: [
+        'Skyway Aviation',
+        'FBO',
+        'tail number',
+        'flight operations',
+        'confirmation number',
+      ],
+    },
+    artifactPlan: {
+      recordingEnabled: true,
+      fullMessageHistoryEnabled: true,
+      transcriptPlan: {
+        enabled: true,
+        assistantName: 'Skyway assistant',
+        userName: 'Contact',
+      },
+    },
+    monitorPlan: {
+      listenEnabled: true,
+      controlEnabled: true,
+    },
+  };
+}
+
 export async function readCallConfig() {
   const snap = await getDb().doc(CONFIG_PATH.join('/')).get();
   const stored = snap.exists ? snap.data() : {};
@@ -243,6 +294,7 @@ export async function notifyOps({ subject, text, tripId, source }) {
 
 export function vapiCallPayload(job, config, env = process.env) {
   const facts = job.facts || {};
+  const reliability = vapiAssistantReliability(env);
   const transfer = toE164(config.opsTransferNumber) || SKYWAY_CALLER_ID;
   const variableValues = {
     callerName: facts.callerName,
@@ -264,8 +316,8 @@ export function vapiCallPayload(job, config, env = process.env) {
     scheduledTimeSpoken: facts.scheduledLocalSpokenLine || facts.scheduledLocalSpoken || '',
   };
   const assistant = {
+    ...reliability,
     firstMessage: firstMessage(facts),
-    artifactPlan: { recordingEnabled: true },
     model: {
       provider: 'openai',
       model: 'gpt-4o',
@@ -343,7 +395,11 @@ export function vapiCallPayload(job, config, env = process.env) {
     assistantOverrides: {
       variableValues,
       firstMessage: assistant.firstMessage,
-      artifactPlan: { recordingEnabled: true },
+      artifactPlan: reliability.artifactPlan,
+      server: reliability.server,
+      serverMessages: reliability.serverMessages,
+      transcriber: reliability.transcriber,
+      monitorPlan: reliability.monitorPlan,
       // Apply Skyway's aviation playbook even when VAPI_ASSISTANT_ID points to
       // a saved assistant whose dashboard prompt is stale or generic.
       model: assistant.model,

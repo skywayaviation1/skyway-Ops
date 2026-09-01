@@ -1,7 +1,14 @@
 # One-off AI voice task calls
 
-Ops and administrators can open **Flights → AI voice calls** and create a
-one-off business call without attaching it to a trip.
+Ops and administrators can open **Flights → AI voice calls** to use the
+AI Voicebot control center without attaching a call to a trip.
+
+## Menu
+
+- **New call** — destination number, scoped task, immediate call action
+- **Active** — dialing/in-progress calls, partial transcript, live listen
+- **History** — outcome, transcript recovery, recording playback, `.txt` log,
+  retry, and delete
 
 ## Workflow
 
@@ -14,6 +21,35 @@ one-off business call without attaching it to a trip.
    structured task outcome, summary, and exact transcript.
 6. Select **Download .txt** to save a text log containing the assigned task,
    completion result, follow-up requirement, notes, and transcript.
+
+## Transcription and recording reliability
+
+Every one-off call explicitly configures:
+
+- Deepgram Nova-2 English transcription with Skyway/aviation keyword hints
+- transcript, conversation-update, status-update, and end-of-call-report
+  server messages
+- the Skyway webhook URL and authenticated `X-Vapi-Secret` header
+- full message history and transcript artifacts
+- mono call recording and live monitoring
+- exponential webhook delivery retries
+
+Final transcript events are accumulated while the call is active. The full
+end-of-call artifact replaces or extends that partial log. If Vapi ends a call
+before artifacts are ready, the job remains marked **Transcript pending** and
+Skyway automatically retries artifact retrieval. Ops can also select
+**Refresh transcript** to query Vapi immediately.
+
+Recording playback requests a fresh short-lived authenticated URL from Vapi;
+recording URLs and Vapi call IDs are never exposed in stored public summaries.
+
+## History actions
+
+- **Download .txt** preserves the assigned task and all returned responses.
+- **Retry** starts a new call with the same number and task and links it to the
+  original.
+- **Delete** is available only for finished calls and retains a deletion audit
+  event. Active calls cannot be deleted.
 
 One-off jobs are stored in `voice-task-calls`. They are deliberately separate
 from `fbo-call-jobs`: they do not affect trip readiness, FBO scheduling, the

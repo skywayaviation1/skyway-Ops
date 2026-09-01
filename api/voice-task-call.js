@@ -7,8 +7,13 @@
 import { authorizeFboCaller, publicVendorStatus } from './_fbo-call.js';
 import {
   createVoiceTask,
+  deleteVoiceTask,
+  getVoiceTaskListenCredentials,
+  getVoiceTaskRecordingCredentials,
   listVoiceTasks,
   loadVoiceTask,
+  refreshVoiceTaskArtifacts,
+  retryVoiceTask,
 } from './_voice-task-call.js';
 import { publicVoiceTaskSummary } from '../src/voice-task-call.js';
 
@@ -56,6 +61,36 @@ export default async function handler(req, res) {
       const call = await loadVoiceTask(body.callId);
       if (!call) return res.status(404).json({ error: 'Voice task call not found' });
       return res.status(200).json({ ok: true, call: publicVoiceTaskSummary(call) });
+    }
+    if (action === 'refreshArtifacts') {
+      return res.status(200).json({
+        ok: true,
+        call: await refreshVoiceTaskArtifacts(body.callId),
+      });
+    }
+    if (action === 'listen') {
+      return res.status(200).json({
+        ok: true,
+        ...(await getVoiceTaskListenCredentials(body.callId)),
+      });
+    }
+    if (action === 'recording') {
+      return res.status(200).json({
+        ok: true,
+        ...(await getVoiceTaskRecordingCredentials(body.callId)),
+      });
+    }
+    if (action === 'retry') {
+      return res.status(200).json({
+        ok: true,
+        call: await retryVoiceTask(body.callId, actor),
+      });
+    }
+    if (action === 'delete') {
+      return res.status(200).json({
+        ok: true,
+        deleted: await deleteVoiceTask(body.callId, actor),
+      });
     }
     return res.status(400).json({ error: `Unknown action: ${action}` });
   } catch (error) {

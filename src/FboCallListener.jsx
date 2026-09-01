@@ -7,7 +7,11 @@ async function idToken() {
   return auth.currentUser?.getIdToken();
 }
 
-export default function FboCallListener({ callId, size = 'sm' }) {
+export default function FboCallListener({
+  callId,
+  size = 'sm',
+  apiPath = '/api/fbo-call',
+}) {
   const socketRef = useRef(null);
   const audioRef = useRef(null);
   const nextPlayAtRef = useRef(0);
@@ -58,7 +62,7 @@ export default function FboCallListener({ callId, size = 'sm' }) {
     setError('');
     manuallyStoppedRef.current = false;
     try {
-      const response = await fetch('/api/fbo-call', {
+      const response = await fetch(apiPath, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ idToken: await idToken(), action: 'listen', callId }),
