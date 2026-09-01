@@ -36,6 +36,7 @@ function payloadFrom(trip, state) {
       pic: trip.info?.pic,
       sic: trip.info?.sic,
       legType: trip.info?.legType,
+      aircraftType: trip.info?.aircraftType,
     },
   };
 }
@@ -213,8 +214,7 @@ export default function TripFboCalls({
         <p className="mt-1 text-sm leading-relaxed text-content-muted">
           {brand.name} automated ops assistant. Caller ID {SKYWAY_CALLER_ID_DISPLAY}.
           FBO names and phone numbers come from the uploaded trip sheet. Verify the details, then arm
-          the call. The agent will not guess hours or passenger names except the lead
-          passenger for ground transportation.
+          the call. Peter will not guess hours, passenger names, or operational details.
         </p>
       </div>
       {error && (
@@ -253,7 +253,7 @@ export default function TripFboCalls({
                 <dt className="text-content-subtle">Ground</dt>
                 <dd className="text-content">
                   {row.facts.groundTransport
-                    ? `Requested · lead passenger ${row.facts.leadPassengerName || 'not on file'}`
+                    ? 'Requested · no passenger names disclosed'
                     : 'Not requested · no passenger names'}
                 </dd>
               </dl>

@@ -315,11 +315,27 @@ export function vapiCallPayload(job, config, env = process.env) {
     paxCount: String(facts.paxCount ?? ''),
     hasCatering: facts.hasCatering ? 'yes' : 'no',
     groundTransport: facts.groundTransport ? 'yes' : 'no',
-    leadPassengerName: facts.groundTransport ? (facts.leadPassengerName || '') : '',
+    leadPassengerName: '',
     hours: facts.hoursKnown ? facts.hours : 'not on file',
     specialItems: facts.specialItems || 'none on file',
     scheduledTime: facts.scheduledLocalDisplay || '',
     scheduledTimeSpoken: facts.scheduledLocalSpokenLine || facts.scheduledLocalSpoken || '',
+    // Snake-case aliases support the saved Vapi prompt supplied by operations.
+    tail_number: facts.tailSpoken || facts.tail || 'not confirmed',
+    tail_number_written: facts.tail || 'not confirmed',
+    aircraft_type: facts.aircraftType || 'not confirmed',
+    arrival_date: facts.arrivalDateLocal || 'not confirmed',
+    arrival_time_local: facts.arrivalTimeSpoken
+      ? `${facts.arrivalTimeSpoken} local`
+      : 'not confirmed',
+    arriving_pax_count: String(facts.arrivingPaxCount ?? 'not confirmed'),
+    departure_date: facts.departureDateLocal || 'not confirmed',
+    departure_time_local: facts.departureTimeSpoken
+      ? `${facts.departureTimeSpoken} local`
+      : 'not confirmed',
+    departing_pax_count: String(facts.departingPaxCount ?? 'not confirmed'),
+    parking_request: facts.parkingRequest || 'not confirmed',
+    special_instructions: facts.specialInstructions || 'none confirmed',
   };
   const assistant = {
     ...reliability,
@@ -344,7 +360,23 @@ export function vapiCallPayload(job, config, env = process.env) {
         properties: {
           movementConfirmed: {
             type: 'boolean',
-            description: 'True only if the representative explicitly confirmed the movement is on the board; false only after an explicit no.',
+            description: 'True only if the FBO explicitly confirmed it has the trip notification.',
+          },
+          arrivalTimeConfirmed: {
+            type: 'boolean',
+            description: 'True only if the FBO explicitly confirmed the supplied arrival local time.',
+          },
+          departureTimeConfirmed: {
+            type: 'boolean',
+            description: 'True only if the FBO explicitly confirmed the supplied departure local time.',
+          },
+          arrivingPaxConfirmed: {
+            type: 'boolean',
+            description: 'True only if the FBO explicitly confirmed the arriving passenger count.',
+          },
+          departingPaxConfirmed: {
+            type: 'boolean',
+            description: 'True only if the FBO explicitly confirmed the departing passenger count.',
           },
           fuelConfirmed: {
             type: 'boolean',
@@ -376,7 +408,7 @@ export function vapiCallPayload(job, config, env = process.env) {
           },
           notes: {
             type: 'string',
-            description: 'Corrections, restrictions, representative promises, unasked or non-applicable items, and open questions.',
+            description: 'Differences supplied by the FBO, corrections, restrictions, representative promises, and open questions.',
           },
         },
       },

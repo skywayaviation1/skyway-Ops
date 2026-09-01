@@ -32,9 +32,9 @@ the verified facts, and recorded on the job.
   (`1630 local EDT`, never AM/PM)
 - Catering / special items from the trip sheet
 - FBO phone parsed from the uploaded trip sheet
-- **Lead passenger name only when ground transportation is requested**
+- **No passenger names**
 
-It must not invent hours, prices, hangar availability, or other passenger names.
+It must not invent hours, prices, hangar availability, or passenger names.
 Uncertain or sensitive questions transfer to Skyway operations.
 
 ## Environment (server only — never `VITE_*`)
@@ -55,9 +55,9 @@ In Vapi, set the assistant server URL to:
 
 `https://www.skyway.app/api/fbo-call-webhook`
 
-The full aviation operations playbook is in
+Peter's concise Logistics Specialist prompt is in
 [`docs/vapi-fbo-assistant-prompt.md`](./vapi-fbo-assistant-prompt.md). Skyway
-also sends this playbook through `assistantOverrides.model` on every outbound
+also sends this prompt through `assistantOverrides.model` on every outbound
 call, so a stale saved-assistant prompt cannot replace it.
 
 ## Operator workflow

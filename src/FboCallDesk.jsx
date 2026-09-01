@@ -108,7 +108,7 @@ export default function FboCallDesk({ currentUser }) {
           <p className="text-sm leading-relaxed text-content-muted">
             Calls are never placed from the calendar automatically. Open a trip, review the FBO
             details parsed from its uploaded trip sheet, then arm departure and/or arrival. The agent speaks only
-            those facts and may name the lead passenger only for ground transportation.
+            those facts and never provides passenger names or makes operational decisions.
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
                 <StatusChip tone={vendor?.configured ? 'success' : 'warning'} size="sm">

@@ -142,9 +142,9 @@ export default function FboCallSettingsPanel({ currentUser }) {
             </p>
           ))}
           <p className="text-sm leading-relaxed text-content-muted">
-            Outbound FBO calls require ops to arm each trip. The agent may speak the lead passenger
-            name only when ground transportation is on the trip. FBO details come from the uploaded
-            trip sheet; arrival re-verification is fixed at two hours before arrival.
+            Outbound FBO calls require ops to arm each trip. Peter does not provide passenger names
+            or make operational decisions. FBO details come from the uploaded trip sheet; arrival
+            re-verification is fixed at two hours before arrival.
           </p>
           <label className="flex items-center gap-2 text-sm text-content">
             <input

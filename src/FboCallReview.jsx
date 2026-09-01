@@ -11,7 +11,11 @@ import {
 import { Button } from './ui.jsx';
 
 const CHECKS = [
-  ['movementConfirmed', 'Movement on board'],
+  ['movementConfirmed', 'Trip notification'],
+  ['arrivalTimeConfirmed', 'Arrival time'],
+  ['departureTimeConfirmed', 'Departure time'],
+  ['arrivingPaxConfirmed', 'Arriving passenger count'],
+  ['departingPaxConfirmed', 'Departing passenger count'],
   ['fuelConfirmed', 'Fuel / handling'],
   ['hangarConfirmed', 'Hangar / overnight'],
   ['cateringConfirmed', 'Catering'],

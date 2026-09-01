@@ -48,6 +48,7 @@ const trip = {
     pax: 3,
     pic: 'Hagberg',
     sic: 'Woods',
+    aircraftType: 'Gulfstream G450',
     fromFbo: 'Signature Flight Support',
     toFbo: 'Atlantic Aviation',
     legType: 'REVENUE',
@@ -108,12 +109,13 @@ test('lead passenger is omitted unless ground transportation is requested', () =
   });
   assert.equal(withGround.facts.leadPassengerName, 'Ada Lovelace');
   const prompt = assistantSystemPrompt(withGround.facts);
-  assert.match(prompt, /Ada Lovelace/);
-  assert.match(prompt, /ONLY when discussing ground transportation/);
-  assert.match(prompt, /# AVIATION WORKING KNOWLEDGE/);
-  assert.match(prompt, /# REQUIRED CALL FLOW/);
-  assert.match(prompt, /Success means explicit confirmation/);
-  assert.match(prompt, /Never upgrade an open item to confirmed/);
+  assert.doesNotMatch(prompt, /Ada Lovelace/);
+  assert.match(prompt, /Your name is Peter/);
+  assert.match(prompt, /Logistics Specialist with Skyway Aviation/);
+  assert.match(prompt, /# CALL FLOW/);
+  assert.match(prompt, /Can you confirm you have the trip notification/);
+  assert.match(prompt, /I don’t have that confirmed on my trip details/);
+  assert.match(prompt, /Do not guess, provide passenger names/);
 
   const noGround = buildSpeakableFacts({
     trip,
@@ -122,7 +124,7 @@ test('lead passenger is omitted unless ground transportation is requested', () =
   });
   assert.equal(noGround.facts.leadPassengerName, '');
   assert.doesNotMatch(assistantSystemPrompt(noGround.facts), /Ada Lovelace/);
-  assert.match(assistantSystemPrompt(noGround.facts), /Do not speak any passenger names/);
+  assert.match(assistantSystemPrompt(noGround.facts), /Do not guess, provide passenger names/);
 });
 
 test('hours unknown is spoken as unverified and does not block a phone-ready call', () => {
@@ -137,7 +139,7 @@ test('hours unknown is spoken as unverified and does not block a phone-ready cal
   });
   assert.equal(result.ok, true);
   assert.equal(result.facts.hoursKnown, false);
-  assert.match(assistantSystemPrompt(result.facts), /Hours are not on the uploaded trip sheet/);
+  assert.match(assistantSystemPrompt(result.facts), /I don’t have that confirmed on my trip details/);
 });
 
 test('missing phone blocks the call', () => {
@@ -336,11 +338,25 @@ test('Vapi payload never includes a passenger name without ground transport', ()
   assert.equal(body.customer.number, '+12015550100');
   assert.equal(body.assistantOverrides.variableValues.tail, 'November 4, 4, 4, Alpha Mike');
   assert.equal(body.assistantOverrides.variableValues.tailRegistration, 'N444AM');
+  assert.equal(body.assistantOverrides.variableValues.tail_number, 'November 4, 4, 4, Alpha Mike');
+  assert.equal(body.assistantOverrides.variableValues.aircraft_type, 'Gulfstream G450');
+  assert.equal(body.assistantOverrides.variableValues.arrival_time_local, 'fourteen thirty local');
+  assert.equal(body.assistantOverrides.variableValues.departure_time_local, 'twelve hundred local');
+  assert.equal(body.assistantOverrides.variableValues.arriving_pax_count, '3');
+  assert.equal(body.assistantOverrides.variableValues.departing_pax_count, '3');
   assert.equal(body.assistantOverrides.variableValues.leadPassengerName, '');
   assert.equal(body.assistantOverrides.artifactPlan.recordingEnabled, true);
+  assert.equal(
+    body.assistant.analysisPlan.structuredDataSchema.properties.arrivalTimeConfirmed.type,
+    'boolean',
+  );
+  assert.equal(
+    body.assistant.analysisPlan.structuredDataSchema.properties.departingPaxConfirmed.type,
+    'boolean',
+  );
   assert.match(
     body.assistantOverrides.model.messages[0].content,
-    /automated FBO operations coordinator/,
+    /Your name is Peter/,
   );
   assert.match(firstMessage(facts), /Skyway Aviation/);
   assert.match(firstMessage(facts), /may be recorded for operational accuracy/);
