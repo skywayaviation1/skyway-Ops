@@ -1,8 +1,8 @@
 # Vapi FBO assistant prompt — Peter
 
-Skyway sends this prompt dynamically through `assistantOverrides.model` on
-every FBO call. The following template may also be pasted into the saved Vapi
-assistant. Keep the double-brace variables unchanged.
+The prompt and voice live in Vapi. Skyway does not send prompt text, so paste
+this template into the assistant in `VAPI_ASSISTANT_ID` and edit it there. Keep
+the double-brace variables unchanged; Skyway supplies them on every call.
 
 > Recording note: Skyway records these calls and therefore keeps one brief
 > recording notice in the first message. Peter does not discuss the calling

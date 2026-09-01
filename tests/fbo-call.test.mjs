@@ -7,10 +7,8 @@ import {
   CALL_STATUSES,
   SKYWAY_CALLER_ID,
   armDialPlan,
-  assistantSystemPrompt,
   buildSpeakableFacts,
   fboCallOutstanding,
-  firstMessage,
   groundTransportRequested,
   isFinishedCallStatus,
   leadPassengerName,
@@ -84,8 +82,7 @@ test('times are spoken in local military clock', () => {
   });
   assert.equal(facts.facts.scheduledLocalDisplay, '1200');
   assert.equal(facts.facts.routeSpoken, 'Kilo Tango Echo Bravo to Kilo Papa Bravo India');
-  assert.match(assistantSystemPrompt(facts.facts), /local military/);
-  assert.doesNotMatch(assistantSystemPrompt(facts.facts), /2026-09-01T16:00:00.000Z/);
+  assert.equal(facts.facts.departureTimeSpoken, 'twelve hundred');
 });
 
 test('tail numbers are spoken with aviation phonetics and individual digits', () => {
@@ -108,23 +105,18 @@ test('lead passenger is omitted unless ground transportation is requested', () =
     trip, state, purpose: 'departure',
   });
   assert.equal(withGround.facts.leadPassengerName, 'Ada Lovelace');
-  const prompt = assistantSystemPrompt(withGround.facts);
-  assert.doesNotMatch(prompt, /Ada Lovelace/);
-  assert.match(prompt, /Your name is Peter/);
-  assert.match(prompt, /Logistics Specialist with Skyway Aviation/);
-  assert.match(prompt, /# CALL FLOW/);
-  assert.match(prompt, /Can you confirm you have the trip notification/);
-  assert.match(prompt, /I don’t have that confirmed on my trip details/);
-  assert.match(prompt, /Do not guess, provide passenger names/);
 
-  const noGround = buildSpeakableFacts({
-    trip,
-    state: { ...state, tripSheetNotes: { specialItems: 'Pets in cabin' } },
+  // No passenger identity may reach Vapi, whatever the Dashboard prompt says.
+  const body = vapiCallPayload({
+    id: 'fbo_1',
+    tripId: 'leg-1',
     purpose: 'departure',
+    phoneE164: '+12015550100',
+    facts: withGround.facts,
+  }, { opsTransferNumber: SKYWAY_CALLER_ID }, {
+    VAPI_ASSISTANT_ID: 'asst_1',
   });
-  assert.equal(noGround.facts.leadPassengerName, '');
-  assert.doesNotMatch(assistantSystemPrompt(noGround.facts), /Ada Lovelace/);
-  assert.match(assistantSystemPrompt(noGround.facts), /Do not guess, provide passenger names/);
+  assert.doesNotMatch(JSON.stringify(body), /Ada Lovelace/);
 });
 
 test('hours unknown is spoken as unverified and does not block a phone-ready call', () => {
@@ -139,7 +131,6 @@ test('hours unknown is spoken as unverified and does not block a phone-ready cal
   });
   assert.equal(result.ok, true);
   assert.equal(result.facts.hoursKnown, false);
-  assert.match(assistantSystemPrompt(result.facts), /I don’t have that confirmed on my trip details/);
 });
 
 test('missing phone blocks the call', () => {
@@ -314,7 +305,7 @@ test('readiness flags unarmed FBO calls on imminent revenue legs', () => {
   assert.equal(gaps.some((item) => item.code === 'fbo-call-unarmed'), true);
 });
 
-test('Vapi payload never includes a passenger name without ground transport', () => {
+test('Vapi owns the prompt and voice while Skyway supplies trip variables', () => {
   const facts = buildSpeakableFacts({
     trip,
     state: {
@@ -333,72 +324,51 @@ test('Vapi payload never includes a passenger name without ground transport', ()
     facts,
   }, { opsTransferNumber: SKYWAY_CALLER_ID }, {
     VAPI_ASSISTANT_ID: 'asst_1',
-    VAPI_PROMPT_SOURCE: 'skyway',
     VAPI_PHONE_NUMBER_ID: 'pn_1',
+    VAPI_WEBHOOK_SECRET: 'hook',
   });
+
+  // Vapi owns the conversation: Skyway sends no prompt, voice, or first message.
+  assert.equal(body.assistantId, 'asst_1');
+  assert.equal('assistant' in body, false);
+  assert.equal('model' in body.assistantOverrides, false);
+  assert.equal('voice' in body.assistantOverrides, false);
+  assert.equal('firstMessage' in body.assistantOverrides, false);
+  assert.equal('analysisPlan' in body.assistantOverrides, false);
+  // Transcription is a logging concern, so Skyway keeps it deterministic.
+  assert.equal(body.assistantOverrides.transcriber.model, 'nova-2-phonecall');
+
+  // Skyway still owns trip variables and delivery.
   assert.equal(body.customer.number, '+12015550100');
-  assert.equal(body.assistantOverrides.variableValues.tail, 'November 4, 4, 4, Alpha Mike');
-  assert.equal(body.assistantOverrides.variableValues.tailRegistration, 'N444AM');
   assert.equal(body.assistantOverrides.variableValues.tail_number, 'November 4, 4, 4, Alpha Mike');
   assert.equal(body.assistantOverrides.variableValues.aircraft_type, 'Gulfstream G450');
   assert.equal(body.assistantOverrides.variableValues.arrival_time_local, 'fourteen thirty local');
   assert.equal(body.assistantOverrides.variableValues.departure_time_local, 'twelve hundred local');
   assert.equal(body.assistantOverrides.variableValues.arriving_pax_count, '3');
   assert.equal(body.assistantOverrides.variableValues.departing_pax_count, '3');
-  assert.equal(body.assistantOverrides.variableValues.leadPassengerName, '');
+  assert.equal(body.assistantOverrides.variableValues.ops_transfer_number, SKYWAY_CALLER_ID);
   assert.equal(body.assistantOverrides.artifactPlan.recordingEnabled, true);
-  assert.equal(
-    body.assistantOverrides.analysisPlan.structuredDataSchema.properties.arrivalTimeConfirmed.type,
-    'boolean',
-  );
-  assert.equal(
-    body.assistantOverrides.analysisPlan.structuredDataSchema.properties.departingPaxConfirmed.type,
-    'boolean',
-  );
-  assert.match(
-    body.assistantOverrides.model.messages[0].content,
-    /Your name is Peter/,
-  );
-  assert.match(firstMessage(facts), /Skyway Aviation/);
-  assert.match(firstMessage(facts), /may be recorded for operational accuracy/);
-  assert.equal(vendorConfigured({ VAPI_API_KEY: 'k', VAPI_PHONE_NUMBER_ID: 'pn_1' }), true);
+  assert.match(body.assistantOverrides.server.url, /fbo-call-webhook/);
+  assert.equal(body.assistantOverrides.serverMessages.includes('transcript'), true);
+  assert.doesNotMatch(JSON.stringify(body), /Secret Passenger/);
 });
 
-test('a saved Vapi assistant keeps its Dashboard prompt, voice, and analysis', () => {
-  const job = {
-    id: 'fbo_1',
-    tripId: 'leg-1',
-    purpose: 'departure',
-    phoneE164: '+12015550100',
-    facts: { tail: 'N444AM', tailSpoken: 'November 4, 4, 4, Alpha Mike' },
-  };
-  const dashboard = vapiCallPayload(job, { opsTransferNumber: SKYWAY_CALLER_ID }, {
-    VAPI_ASSISTANT_ID: 'asst_dashboard',
-    VAPI_WEBHOOK_SECRET: 'hook',
-  });
-  assert.equal(dashboard.assistantId, 'asst_dashboard');
-  assert.equal('assistant' in dashboard, false);
-  assert.equal('model' in dashboard.assistantOverrides, false);
-  assert.equal('voice' in dashboard.assistantOverrides, false);
-  assert.equal('firstMessage' in dashboard.assistantOverrides, false);
-  assert.equal('transcriber' in dashboard.assistantOverrides, false);
-  assert.equal('analysisPlan' in dashboard.assistantOverrides, false);
-  // Delivery stays Skyway's regardless of who owns the conversation.
-  assert.equal(dashboard.assistantOverrides.artifactPlan.recordingEnabled, true);
-  assert.match(dashboard.assistantOverrides.server.url, /fbo-call-webhook/);
-  assert.equal(dashboard.assistantOverrides.serverMessages.includes('transcript'), true);
-  assert.equal(dashboard.assistantOverrides.variableValues.tail_number, 'November 4, 4, 4, Alpha Mike');
-
-  const forced = vapiCallPayload(job, { opsTransferNumber: SKYWAY_CALLER_ID }, {
-    VAPI_ASSISTANT_ID: 'asst_dashboard',
-    VAPI_PROMPT_SOURCE: 'skyway',
-    VAPI_WEBHOOK_SECRET: 'hook',
-  });
-  assert.match(forced.assistantOverrides.model.messages[0].content, /Your name is Peter/);
-  assert.equal(forced.assistantOverrides.voice.provider, 'openai');
+test('a call without a Vapi assistant fails instead of using Skyway text', () => {
+  assert.throws(
+    () => vapiCallPayload(
+      { id: 'fbo_1', tripId: 'leg-1', purpose: 'departure', phoneE164: '+12015550100', facts: {} },
+      { opsTransferNumber: SKYWAY_CALLER_ID },
+      { VAPI_API_KEY: 'k' },
+    ),
+    /VAPI_ASSISTANT_ID/,
+  );
+  assert.deepEqual(
+    vendorEnvDiagnostics({ VAPI_API_KEY: 'k' }).missing,
+    ['VAPI_ASSISTANT_ID'],
+  );
   assert.equal(
-    forced.assistantOverrides.analysisPlan.structuredDataSchema.properties.arrivalTimeConfirmed.type,
-    'boolean',
+    vendorConfigured({ VAPI_API_KEY: 'k', VAPI_ASSISTANT_ID: 'asst_1' }),
+    true,
   );
 });
 
@@ -406,23 +376,31 @@ test('Vapi credentials survive pasted quotes, newlines, and Vapi own key naming'
   assert.equal(vapiEnvValue({ VAPI_API_KEY: '"key-123"\n' }, 'apiKey'), 'key-123');
   assert.equal(vapiEnvValue({ VAPI_PRIVATE_KEY: ' key-456 ' }, 'apiKey'), 'key-456');
   assert.equal(vapiEnvValue({ VAPI_PHONE_ID: "'pn_1'" }, 'phoneNumberId'), 'pn_1');
-  assert.equal(vendorConfigured({ VAPI_API_KEY: '"k"\n', VAPI_PHONE_NUMBER_ID: '"pn_1"' }), true);
+  assert.equal(
+    vendorConfigured({ VAPI_API_KEY: '"k"\n', VAPI_ASSISTANT_ID: 'a', VAPI_PHONE_NUMBER_ID: '"pn_1"' }),
+    true,
+  );
   const body = vapiCallPayload(
     { id: 'fbo_1', tripId: 'leg-1', purpose: 'departure', phoneE164: '+12015550100', facts: {} },
     { opsTransferNumber: SKYWAY_CALLER_ID },
-    { VAPI_PHONE_NUMBER_ID: '"pn_1"\n' },
+    { VAPI_ASSISTANT_ID: '"asst_1"\n', VAPI_PHONE_NUMBER_ID: '"pn_1"\n' },
   );
   assert.equal(body.phoneNumberId, 'pn_1');
+  assert.equal(body.assistantId, 'asst_1');
 });
 
 test('an unconfigured deployment names the variable it cannot see', () => {
-  const diagnostics = vendorEnvDiagnostics({ VAPI_API_KEY: 'k' });
+  const diagnostics = vendorEnvDiagnostics({ VAPI_API_KEY: 'k', VAPI_ASSISTANT_ID: 'a' });
   assert.deepEqual(diagnostics.missing, []);
   assert.equal(diagnostics.hasApiKey, true);
   assert.equal(diagnostics.hasPhoneNumber, false);
   assert.equal(diagnostics.phoneNumberLookup, 'automatic_by_number');
-  assert.deepEqual(vendorEnvDiagnostics({}).missing, ['VAPI_API_KEY']);
-  const warned = vendorEnvDiagnostics({ VITE_VAPI_API_KEY: 'k', VAPI_PHONE_NUMBER_ID: 'pn_1' });
+  assert.deepEqual(vendorEnvDiagnostics({}).missing, ['VAPI_API_KEY', 'VAPI_ASSISTANT_ID']);
+  const warned = vendorEnvDiagnostics({
+    VITE_VAPI_API_KEY: 'k',
+    VAPI_PHONE_NUMBER_ID: 'pn_1',
+    VAPI_ASSISTANT_ID: 'a',
+  });
   assert.match(warned.warnings.join(' '), /exposed to browsers/);
   assert.deepEqual(warned.missing, ['VAPI_API_KEY']);
 });

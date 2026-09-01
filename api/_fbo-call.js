@@ -19,9 +19,7 @@ import {
   SKYWAY_CALLER_NAME,
   VOICE_VENDOR,
   armDialPlan,
-  assistantSystemPrompt,
   buildSpeakableFacts,
-  firstMessage,
   isFinishedCallStatus,
   materialHash,
   nextRetryAt,
@@ -128,17 +126,26 @@ export function publicVendorStatus(env = process.env) {
 }
 
 /**
- * Who owns the conversation itself.
- *
- * When a saved assistant is configured, its Vapi Dashboard prompt, first
- * message, voice, transcriber, and analysis are used as-is so edits made in
- * Vapi take effect immediately. Set VAPI_PROMPT_SOURCE=skyway to force
- * Skyway's built-in Peter prompt and ops checklist schema instead.
+ * The Vapi assistant owns the prompt, first message, voice, and transcriber.
+ * Skyway never sends conversation content, so edits made in the Vapi Dashboard
+ * apply to the very next call.
  */
-export function vapiPromptSource(env = process.env) {
-  const requested = String(env.VAPI_PROMPT_SOURCE || '').trim().toLowerCase();
-  if (requested === 'skyway' || requested === 'dashboard') return requested;
-  return vapiEnvValue(env, 'assistantId') ? 'dashboard' : 'skyway';
+export function requireVapiAssistantId(env = process.env, { voiceTask = false } = {}) {
+  const taskAssistant = String(env.VAPI_VOICE_TASK_ASSISTANT_ID || '')
+    .trim()
+    .replace(/^['"]|['"]$/g, '')
+    .trim();
+  const assistantId = (voiceTask && taskAssistant) || vapiEnvValue(env, 'assistantId');
+  if (!assistantId) {
+    const error = new Error(
+      voiceTask
+        ? 'Set VAPI_VOICE_TASK_ASSISTANT_ID or VAPI_ASSISTANT_ID in Vercel, then redeploy. The prompt and voice come from that Vapi assistant.'
+        : 'Set VAPI_ASSISTANT_ID in Vercel, then redeploy. The prompt and voice come from that Vapi assistant.',
+    );
+    error.status = 503;
+    throw error;
+  }
+  return assistantId;
 }
 
 export function vapiAssistantReliability(env = process.env) {
@@ -351,107 +358,24 @@ export function vapiCallPayload(job, config, env = process.env) {
     departing_pax_count: String(facts.departingPaxCount ?? 'not confirmed'),
     parking_request: facts.parkingRequest || 'not confirmed',
     special_instructions: facts.specialInstructions || 'none confirmed',
+    // Available to a transfer tool configured on the Vapi assistant.
+    ops_transfer_number: transfer,
   };
-  const assistant = {
-    ...reliability,
-    firstMessage: firstMessage(facts),
-    model: {
-      provider: 'openai',
-      model: 'gpt-4o',
-      messages: [{ role: 'system', content: assistantSystemPrompt(facts) }],
-      temperature: 0.2,
-    },
-    voice: { provider: 'openai', voiceId: 'alloy' },
-    firstMessageInterruptionsEnabled: false,
-    analysisPlan: {
-      summaryPrompt: [
-        'Write a concise Skyway operations report.',
-        'Separate: confirmed movement, confirmed services, unconfirmed or declined items, restrictions, and required human follow-up.',
-        'Never describe an item as confirmed unless the FBO representative explicitly confirmed it.',
-        'Include the representative’s corrections and promised actions.',
-      ].join(' '),
-      structuredDataSchema: {
-        type: 'object',
-        properties: {
-          movementConfirmed: {
-            type: 'boolean',
-            description: 'True only if the FBO explicitly confirmed it has the trip notification.',
-          },
-          arrivalTimeConfirmed: {
-            type: 'boolean',
-            description: 'True only if the FBO explicitly confirmed the supplied arrival local time.',
-          },
-          departureTimeConfirmed: {
-            type: 'boolean',
-            description: 'True only if the FBO explicitly confirmed the supplied departure local time.',
-          },
-          arrivingPaxConfirmed: {
-            type: 'boolean',
-            description: 'True only if the FBO explicitly confirmed the arriving passenger count.',
-          },
-          departingPaxConfirmed: {
-            type: 'boolean',
-            description: 'True only if the FBO explicitly confirmed the departing passenger count.',
-          },
-          fuelConfirmed: {
-            type: 'boolean',
-            description: 'True only if the applicable fuel or handling request was explicitly confirmed.',
-          },
-          hangarConfirmed: {
-            type: 'boolean',
-            description: 'True only if an applicable hangar or overnight request was explicitly confirmed.',
-          },
-          cateringConfirmed: {
-            type: 'boolean',
-            description: 'True only if requested catering was explicitly confirmed.',
-          },
-          groundTransportConfirmed: {
-            type: 'boolean',
-            description: 'True only if requested ground transportation was explicitly confirmed.',
-          },
-          hoursVerified: {
-            type: 'string',
-            description: 'Operating hours or after-hours restrictions exactly as stated by the representative; empty when not discussed.',
-          },
-          needsFollowUp: {
-            type: 'boolean',
-            description: 'True if any applicable detail is missing, uncertain, changed, declined, or requires Skyway authorization.',
-          },
-          transferredToOps: {
-            type: 'boolean',
-            description: 'True only if the live call was transferred to Skyway operations.',
-          },
-          notes: {
-            type: 'string',
-            description: 'Differences supplied by the FBO, corrections, restrictions, representative promises, and open questions.',
-          },
-        },
-      },
-    },
-  };
-  if (transfer) {
-    assistant.model.tools = [{
-      type: 'transferCall',
-      destinations: [{
-        type: 'number',
-        number: transfer,
-        message: 'Please hold while I connect you to Skyway Aviation operations.',
-      }],
-    }];
-  }
   const customer = {
     number: job.phoneE164,
     name: facts.fboName || 'FBO',
   };
-  const assistantId = vapiEnvValue(env, 'assistantId');
-  const promptSource = vapiPromptSource(env);
   const body = {
+    // The prompt, first message, voice, and transcriber all come from this
+    // Vapi assistant. Skyway sends trip variables and delivery settings only.
+    assistantId: requireVapiAssistantId(env),
     customer,
     assistantOverrides: {
       variableValues,
-      // Skyway always owns delivery so transcripts, recordings, and live
-      // listening reach the app regardless of who owns the conversation.
+      // Delivery stays Skyway's so transcripts, recordings, and live listening
+      // always reach the app. Transcription is logging, not the conversation.
       artifactPlan: reliability.artifactPlan,
+      transcriber: reliability.transcriber,
       server: reliability.server,
       serverMessages: reliability.serverMessages,
       monitorPlan: reliability.monitorPlan,
@@ -463,17 +387,6 @@ export function vapiCallPayload(job, config, env = process.env) {
       purpose: job.purpose,
     },
   };
-  if (promptSource === 'skyway') {
-    Object.assign(body.assistantOverrides, {
-      firstMessage: assistant.firstMessage,
-      model: assistant.model,
-      voice: assistant.voice,
-      transcriber: reliability.transcriber,
-      analysisPlan: assistant.analysisPlan,
-    });
-  }
-  if (assistantId) body.assistantId = assistantId;
-  else body.assistant = assistant;
   const phoneNumberId = vapiEnvValue(env, 'phoneNumberId');
   const phoneNumber = vapiEnvValue(env, 'phoneNumber');
   if (phoneNumberId) body.phoneNumberId = phoneNumberId;

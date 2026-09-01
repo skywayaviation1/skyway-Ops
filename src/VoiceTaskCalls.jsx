@@ -264,7 +264,8 @@ export default function VoiceTaskCalls({ currentUser }) {
               Call now and complete task
             </Button>
             <p className="text-xs text-content-subtle">
-              The bot identifies itself, discloses recording, and will not authorize charges.
+              The prompt and voice come from Vapi. That assistant’s prompt must include the
+              <code className="mx-1">{'{{task}}'}</code> variable so it receives this task.
             </p>
           </div>
         </form>

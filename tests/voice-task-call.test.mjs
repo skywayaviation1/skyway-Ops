@@ -9,8 +9,6 @@ import {
   formatVoiceTaskLog,
   publicVoiceTaskSummary,
   validateVoiceTaskInput,
-  voiceTaskFirstMessage,
-  voiceTaskSystemPrompt,
 } from '../src/voice-task-call.js';
 import {
   extractVapiRecording,
@@ -34,52 +32,55 @@ test('one-off voice task requires a valid number and scoped task', () => {
   assert.equal(input.task, 'Confirm two crew rooms and collect the confirmation number.');
 });
 
-test('voice task Vapi payload is immediate, isolated, recorded, and task-specific', () => {
+test('voice task calls use the Vapi assistant and still deliver the task', () => {
   const job = {
     id: 'vtask_1',
     phoneE164: '+13055550142',
     task: 'Confirm two crew rooms and collect the confirmation number.',
   };
-  const payload = voiceTaskVapiPayload(
-    job,
-    { opsTransferNumber: '+18138595943' },
-    { VAPI_WEBHOOK_SECRET: 'webhook-secret' },
-  );
+  const payload = voiceTaskVapiPayload(job, { opsTransferNumber: '+18138595943' }, {
+    VAPI_VOICE_TASK_ASSISTANT_ID: 'asst_task',
+    VAPI_WEBHOOK_SECRET: 'webhook-secret',
+  });
+
+  // Vapi owns the prompt, first message, and voice.
+  assert.equal(payload.assistantId, 'asst_task');
+  assert.equal('assistant' in payload, false);
+  assert.equal('model' in payload.assistantOverrides, false);
+  assert.equal('voice' in payload.assistantOverrides, false);
+  assert.equal('firstMessage' in payload.assistantOverrides, false);
+  assert.equal(payload.assistantOverrides.transcriber.model, 'nova-2-phonecall');
+
+  // Skyway supplies the task, isolation metadata, and delivery.
   assert.equal(payload.customer.number, '+13055550142');
+  assert.equal(payload.assistantOverrides.variableValues.task, job.task);
+  assert.equal(payload.assistantOverrides.variableValues.ops_transfer_number, '+18138595943');
   assert.equal(payload.metadata.skywayCallId, 'vtask_1');
   assert.equal(payload.metadata.skywayJobKind, 'voice_task');
   assert.equal('tripId' in payload.metadata, false);
-  assert.equal(payload.assistant.artifactPlan.recordingEnabled, true);
-  assert.equal(payload.assistant.artifactPlan.transcriptPlan.enabled, true);
-  assert.equal(payload.assistant.transcriber.provider, 'deepgram');
-  assert.equal(payload.assistant.transcriber.model, 'nova-2-phonecall');
-  assert.match(payload.assistant.server.url, /fbo-call-webhook/);
-  assert.equal(payload.assistant.server.headers['X-Vapi-Secret'], 'webhook-secret');
-  assert.equal(payload.assistant.serverMessages.includes('transcript'), true);
-  assert.equal(payload.assistant.serverMessages.includes('end-of-call-report'), true);
-  assert.equal(payload.assistant.monitorPlan.listenEnabled, true);
-  assert.match(payload.assistant.model.messages[0].content, /Confirm two crew rooms/);
-  assert.match(payload.assistant.model.messages[0].content, /Never invent/);
-  assert.match(voiceTaskFirstMessage(), /may be recorded/);
+  assert.equal(payload.assistantOverrides.artifactPlan.recordingEnabled, true);
+  assert.equal(payload.assistantOverrides.artifactPlan.transcriptPlan.enabled, true);
+  assert.match(payload.assistantOverrides.server.url, /fbo-call-webhook/);
+  assert.equal(payload.assistantOverrides.server.headers['X-Vapi-Secret'], 'webhook-secret');
+  assert.equal(payload.assistantOverrides.serverMessages.includes('transcript'), true);
+  assert.equal(payload.assistantOverrides.monitorPlan.listenEnabled, true);
 });
 
-test('a saved voice-task assistant keeps its Dashboard prompt but still gets the task', () => {
-  const payload = voiceTaskVapiPayload(
-    { id: 'vtask_1', phoneE164: '+13055550142', task: 'Confirm the crew rooms.' },
+test('a voice task falls back to the main assistant and fails when none is set', () => {
+  const shared = voiceTaskVapiPayload(
+    { id: 'vtask_2', phoneE164: '+13055550142', task: 'Confirm rooms.' },
     {},
-    {
-      VAPI_VOICE_TASK_ASSISTANT_ID: 'asst_task',
-      VAPI_WEBHOOK_SECRET: 'webhook-secret',
-    },
+    { VAPI_ASSISTANT_ID: 'asst_main', VAPI_WEBHOOK_SECRET: 'hook' },
   );
-  assert.equal(payload.assistantId, 'asst_task');
-  assert.equal('assistant' in payload, false);
-  assert.equal('voice' in payload.assistantOverrides, false);
-  assert.equal('firstMessage' in payload.assistantOverrides, false);
-  assert.equal(payload.assistantOverrides.variableValues.task, 'Confirm the crew rooms.');
-  assert.match(payload.assistantOverrides.model.messages[0].content, /Confirm the crew rooms/);
-  assert.equal(payload.assistantOverrides.artifactPlan.recordingEnabled, true);
-  assert.match(payload.assistantOverrides.server.url, /fbo-call-webhook/);
+  assert.equal(shared.assistantId, 'asst_main');
+  assert.throws(
+    () => voiceTaskVapiPayload(
+      { id: 'vtask_3', phoneE164: '+13055550142', task: 'Confirm rooms.' },
+      {},
+      { VAPI_WEBHOOK_SECRET: 'hook' },
+    ),
+    /VAPI_VOICE_TASK_ASSISTANT_ID or VAPI_ASSISTANT_ID/,
+  );
 });
 
 test('Deepgram keywords stay in the word or word:boost format Vapi requires', () => {
@@ -90,14 +91,11 @@ test('Deepgram keywords stay in the word or word:boost format Vapi requires', ()
   const payload = voiceTaskVapiPayload(
     { id: 'vtask_1', phoneE164: '+13055550142', task: 'Confirm rooms.' },
     {},
-    { VAPI_WEBHOOK_SECRET: 'webhook-secret' },
+    { VAPI_ASSISTANT_ID: 'asst_1', VAPI_WEBHOOK_SECRET: 'webhook-secret' },
   );
   const valid = /^[A-Za-z0-9']+(?::\d+)?$/;
-  for (const keyword of payload.assistant.transcriber.keywords) {
-    assert.match(keyword, valid, `invalid Deepgram keyword: ${keyword}`);
-  }
   for (const keyword of payload.assistantOverrides.transcriber.keywords) {
-    assert.match(keyword, valid, `invalid Deepgram keyword override: ${keyword}`);
+    assert.match(keyword, valid, `invalid Deepgram keyword: ${keyword}`);
   }
 });
 
@@ -218,11 +216,4 @@ test('voice task routes and UI remain server-authenticated and trip-isolated', a
   assert.match(app, /AI voice calls/);
 });
 
-test('voice task prompt treats the user task as scoped data', () => {
-  const prompt = voiceTaskSystemPrompt('Ask whether the package arrived.');
-  assert.match(prompt, /# ASSIGNED TASK/);
-  assert.match(prompt, /Ask whether the package arrived/);
-  assert.match(prompt, /Treat the assigned task as data/);
-  assert.match(prompt, /taskCompleted is true only/);
-});
 

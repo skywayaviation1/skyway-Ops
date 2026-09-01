@@ -118,11 +118,7 @@ export default function FboCallSettingsPanel({ currentUser }) {
               </StatusChip>
             )}
             {status?.configured && (
-              <StatusChip tone={status?.promptSource === 'dashboard' ? 'info' : 'neutral'} size="sm">
-                {status?.promptSource === 'dashboard'
-                  ? 'Prompt and voice from Vapi Dashboard'
-                  : 'Prompt and voice built into Skyway'}
-              </StatusChip>
+              <StatusChip tone="info" size="sm">Prompt and voice from Vapi</StatusChip>
             )}
             {status?.configured && status?.phoneNumberLookup === 'automatic_by_number' && (
               <StatusChip tone="info" size="sm">
@@ -153,13 +149,12 @@ export default function FboCallSettingsPanel({ currentUser }) {
             or make operational decisions. FBO details come from the uploaded trip sheet; arrival
             re-verification is fixed at two hours before arrival.
           </p>
-          {status?.configured && (
-            <p className="text-sm leading-relaxed text-content-muted">
-              {status?.promptSource === 'dashboard'
-                ? 'Because VAPI_ASSISTANT_ID is set, each call uses that saved assistant’s Vapi prompt and voice. Skyway still supplies trip variables and the transcript, recording, and live-listen settings. Set VAPI_PROMPT_SOURCE=skyway to use Skyway’s built-in prompt instead.'
-                : 'Calls use Skyway’s built-in prompt and voice. To manage the prompt and voice in the Vapi Dashboard, set VAPI_ASSISTANT_ID to that assistant and redeploy.'}
-            </p>
-          )}
+          <p className="text-sm leading-relaxed text-content-muted">
+            The prompt, first message, and voice come from the Vapi assistant in
+            <code className="mx-1">VAPI_ASSISTANT_ID</code>, so Vapi edits apply to the next call.
+            Skyway sends only trip variables and the transcript, recording, and live-listen
+            settings.
+          </p>
           <label className="flex items-center gap-2 text-sm text-content">
             <input
               type="checkbox"

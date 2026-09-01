@@ -3,13 +3,12 @@ import {
   getDb,
   placeVapiPayload,
   readCallConfig,
+  requireVapiAssistantId,
   vapiAssistantReliability,
 } from './_fbo-call.js';
 import {
   publicVoiceTaskSummary,
   validateVoiceTaskInput,
-  voiceTaskFirstMessage,
-  voiceTaskSystemPrompt,
 } from '../src/voice-task-call.js';
 import {
   CALL_STATUSES,
@@ -36,78 +35,21 @@ function newVoiceTaskId() {
 export function voiceTaskVapiPayload(job, config = {}, env = process.env) {
   const transfer = toE164(config.opsTransferNumber) || SKYWAY_CALLER_ID;
   const reliability = vapiAssistantReliability(env);
-  const savedAssistantId = String(env.VAPI_VOICE_TASK_ASSISTANT_ID || '')
-    .trim()
-    .replace(/^['"]|['"]$/g, '')
-    .trim();
-  const systemPrompt = voiceTaskSystemPrompt(job.task);
-  const model = {
-    provider: 'openai',
-    model: 'gpt-4o',
-    messages: [{ role: 'system', content: systemPrompt }],
-    temperature: 0.2,
-    tools: [{
-      type: 'transferCall',
-      destinations: [{
-        type: 'number',
-        number: transfer,
-        message: 'Please hold while I connect you to Skyway Aviation operations.',
-      }],
-    }],
-  };
-  const firstMessage = voiceTaskFirstMessage();
-  const payload = {
+  return {
+    // The prompt, first message, and voice come from this Vapi assistant.
+    assistantId: requireVapiAssistantId(env, { voiceTask: true }),
     customer: { number: job.phoneE164, name: 'Operations contact' },
-    assistant: {
-      ...reliability,
-      firstMessage,
-      firstMessageInterruptionsEnabled: false,
-      model,
-      voice: { provider: 'openai', voiceId: 'alloy' },
-      analysisPlan: {
-        summaryPrompt: [
-          'Report the assigned task, explicitly completed items, open items, corrections,',
-          'reference numbers, restrictions, promised actions, and required Skyway follow-up.',
-          'Never label an item complete without explicit confirmation.',
-        ].join(' '),
-        structuredDataSchema: {
-          type: 'object',
-          properties: {
-            taskCompleted: {
-              type: 'boolean',
-              description: 'True only if the assigned task was explicitly completed or confirmed.',
-            },
-            outcomeSummary: {
-              type: 'string',
-              description: 'Concise factual report separating completed and open items.',
-            },
-            needsFollowUp: {
-              type: 'boolean',
-              description: 'True if anything is uncertain, refused, changed, or needs human authorization.',
-            },
-            transferredToOps: {
-              type: 'boolean',
-              description: 'True only if the live call transferred to Skyway operations.',
-            },
-            notes: {
-              type: 'string',
-              description: 'Corrections, reference numbers, restrictions, promises, and open questions.',
-            },
-          },
-        },
-      },
-    },
     assistantOverrides: {
-      firstMessage,
+      // Delivery only: transcripts, recordings, and live listening.
       artifactPlan: reliability.artifactPlan,
+      transcriber: reliability.transcriber,
       server: reliability.server,
       serverMessages: reliability.serverMessages,
-      transcriber: reliability.transcriber,
       monitorPlan: reliability.monitorPlan,
-      model,
       variableValues: {
         callerName: SKYWAY_CALLER_NAME,
         task: job.task,
+        ops_transfer_number: transfer,
       },
     },
     metadata: {
@@ -115,27 +57,6 @@ export function voiceTaskVapiPayload(job, config = {}, env = process.env) {
       skywayJobKind: 'voice_task',
     },
   };
-  if (savedAssistantId) {
-    // A saved assistant owns its Dashboard prompt and voice. The task text is
-    // still injected so a Dashboard prompt using {{task}} receives the work,
-    // and it is appended as a system message so the task can never be lost.
-    payload.assistantId = savedAssistantId;
-    delete payload.assistant;
-    payload.assistantOverrides = {
-      artifactPlan: reliability.artifactPlan,
-      server: reliability.server,
-      serverMessages: reliability.serverMessages,
-      monitorPlan: reliability.monitorPlan,
-      variableValues: { callerName: SKYWAY_CALLER_NAME, task: job.task },
-      model: {
-        messages: [{
-          role: 'system',
-          content: `Assigned task for this call:\n${job.task}`,
-        }],
-      },
-    };
-  }
-  return payload;
 }
 
 export async function loadVoiceTask(id) {
