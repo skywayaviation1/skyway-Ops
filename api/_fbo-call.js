@@ -34,6 +34,7 @@ import {
   vendorConfigured,
   vendorEnvDiagnostics,
 } from '../src/fbo-call.js';
+import { normalizeTranscriberKeywords } from '../src/vapi-call-artifacts.js';
 
 const CONFIG_PATH = ['app-config', 'fbo-call'];
 const JOBS = 'fbo-call-jobs';
@@ -149,16 +150,21 @@ export function vapiAssistantReliability(env = process.env) {
     ],
     transcriber: {
       provider: 'deepgram',
-      model: 'nova-2',
+      // Telephony-tuned model: every Skyway voice call is a PSTN call.
+      model: 'nova-2-phonecall',
       language: 'en',
       smartFormat: true,
-      keywords: [
-        'Skyway Aviation',
-        'FBO',
-        'tail number',
-        'flight operations',
-        'confirmation number',
-      ],
+      // Deepgram rejects multi-word keywords, so these stay single tokens.
+      keywords: normalizeTranscriberKeywords([
+        'Skyway:2',
+        'Aviation',
+        'FBO:2',
+        'tail',
+        'registration',
+        'hangar',
+        'catering',
+        'confirmation',
+      ]),
     },
     artifactPlan: {
       recordingEnabled: true,

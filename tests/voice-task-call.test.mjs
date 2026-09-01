@@ -16,6 +16,7 @@ import {
   extractVapiRecording,
   extractVapiTranscript,
   mergeTranscript,
+  normalizeTranscriberKeywords,
   transcriptEventSegment,
 } from '../src/vapi-call-artifacts.js';
 
@@ -51,7 +52,7 @@ test('voice task Vapi payload is immediate, isolated, recorded, and task-specifi
   assert.equal(payload.assistant.artifactPlan.recordingEnabled, true);
   assert.equal(payload.assistant.artifactPlan.transcriptPlan.enabled, true);
   assert.equal(payload.assistant.transcriber.provider, 'deepgram');
-  assert.equal(payload.assistant.transcriber.model, 'nova-2');
+  assert.equal(payload.assistant.transcriber.model, 'nova-2-phonecall');
   assert.match(payload.assistant.server.url, /fbo-call-webhook/);
   assert.equal(payload.assistant.server.headers['X-Vapi-Secret'], 'webhook-secret');
   assert.equal(payload.assistant.serverMessages.includes('transcript'), true);
@@ -60,6 +61,25 @@ test('voice task Vapi payload is immediate, isolated, recorded, and task-specifi
   assert.match(payload.assistant.model.messages[0].content, /Confirm two crew rooms/);
   assert.match(payload.assistant.model.messages[0].content, /Never invent/);
   assert.match(voiceTaskFirstMessage(), /may be recorded/);
+});
+
+test('Deepgram keywords stay in the word or word:boost format Vapi requires', () => {
+  assert.deepEqual(
+    normalizeTranscriberKeywords(['Skyway Aviation:2', 'FBO', 'tail number', '  ', 'FBO']),
+    ['Skyway:2', 'Aviation:2', 'FBO', 'tail', 'number'],
+  );
+  const payload = voiceTaskVapiPayload(
+    { id: 'vtask_1', phoneE164: '+13055550142', task: 'Confirm rooms.' },
+    {},
+    { VAPI_WEBHOOK_SECRET: 'webhook-secret' },
+  );
+  const valid = /^[A-Za-z0-9']+(?::\d+)?$/;
+  for (const keyword of payload.assistant.transcriber.keywords) {
+    assert.match(keyword, valid, `invalid Deepgram keyword: ${keyword}`);
+  }
+  for (const keyword of payload.assistantOverrides.transcriber.keywords) {
+    assert.match(keyword, valid, `invalid Deepgram keyword override: ${keyword}`);
+  }
 });
 
 test('Vapi artifacts parse all current transcript and recording shapes', () => {
