@@ -41,6 +41,42 @@ const brokerContact = (customer, person) => ({
 const HOUR = 3600_000;
 const MIN = 60_000;
 const now = () => Date.now();
+const PREVIEW_VOICE_TASKS = [{
+  id: 'vtask_preview_1',
+  status: 'completed',
+  phone: '+1 (305) 555-0142',
+  task: 'Confirm the hotel has two crew rooms held for tonight and collect the confirmation number.',
+  createdAt: Date.now() - 35 * 60_000,
+  createdByName: 'Jordan Ellis',
+  summary: 'The hotel confirmed two crew rooms. Confirmation SKY-4821; cancellation is 1800 local.',
+  transcript: [
+    'assistant: Hello, this is an automated operations assistant calling from Skyway Aviation.',
+    'contact: Yes, I can help with the crew rooms.',
+    'assistant: Can you confirm two crew rooms are held for tonight?',
+    'contact: Yes. The confirmation number is SKY-4821.',
+  ].join('\n'),
+  transcriptStatus: 'complete',
+  recordingAvailable: true,
+  recordingStatus: 'ready',
+  outcome: {
+    taskCompleted: true,
+    outcomeSummary: 'Two crew rooms confirmed under SKY-4821.',
+    needsFollowUp: false,
+    transferredToOps: false,
+    notes: 'Cancellation deadline is 1800 local.',
+  },
+}, {
+  id: 'vtask_preview_active',
+  status: 'in_progress',
+  phone: '+1 (813) 555-0188',
+  task: 'Confirm the catering delivery is en route and request its estimated arrival time.',
+  createdAt: Date.now() - 4 * 60_000,
+  createdByName: 'Jordan Ellis',
+  transcript: 'assistant: Can you confirm the catering delivery is en route?',
+  transcriptStatus: 'partial',
+  listenAvailable: true,
+  recordingAvailable: false,
+}];
 
 const iso = (msAgo) => new Date(now() - msAgo).toISOString();
 
@@ -535,8 +571,198 @@ export function installFetchStub() {
     if (path === '/api/teams') return json(teamsResponse(action));
     if (path === '/api/quickbooks-workspace') return json(quickbooksResponse(action));
     if (path === '/api/quickbooks-status') return json(QBO_CONNECTION);
-    if (path === '/api/faa-notams') return json({ ok: true, notams: [] });
-    if (path.startsWith('/api/airport-weather')) return json({ ok: true, parsed: null });
+    if (path === '/api/voice-task-call') {
+      if (action === 'list') {
+        return json({
+          ok: true,
+          vendor: { configured: true },
+          calls: PREVIEW_VOICE_TASKS,
+        });
+      }
+      if (action === 'create') {
+        const call = {
+          id: `vtask_preview_${Date.now()}`,
+          status: 'dialing',
+          phone: body.phone,
+          task: body.task,
+          createdAt: Date.now(),
+          createdByName: 'Preview Operator',
+        };
+        PREVIEW_VOICE_TASKS.unshift(call);
+        return json({ ok: true, vendor: { configured: true }, call });
+      }
+      if (action === 'get') {
+        return json({
+          ok: true,
+          call: PREVIEW_VOICE_TASKS.find((call) => call.id === body.callId) || null,
+        });
+      }
+      if (action === 'refreshArtifacts') {
+        return json({
+          ok: true,
+          call: PREVIEW_VOICE_TASKS.find((call) => call.id === body.callId) || null,
+        });
+      }
+      if (action === 'retry') {
+        const original = PREVIEW_VOICE_TASKS.find((call) => call.id === body.callId);
+        const call = {
+          ...original,
+          id: `vtask_preview_retry_${Date.now()}`,
+          status: 'dialing',
+          parentCallId: original?.id,
+          createdAt: Date.now(),
+          transcript: '',
+          transcriptStatus: 'pending',
+          outcome: null,
+          summary: '',
+          recordingAvailable: false,
+        };
+        PREVIEW_VOICE_TASKS.unshift(call);
+        return json({ ok: true, call });
+      }
+      if (action === 'delete') {
+        const index = PREVIEW_VOICE_TASKS.findIndex((call) => call.id === body.callId);
+        if (index >= 0) PREVIEW_VOICE_TASKS.splice(index, 1);
+        return json({ ok: true, deleted: { id: body.callId } });
+      }
+      if (action === 'clearHistory') {
+        const before = PREVIEW_VOICE_TASKS.length;
+        for (let index = PREVIEW_VOICE_TASKS.length - 1; index >= 0; index -= 1) {
+          if (!['dialing', 'in_progress'].includes(PREVIEW_VOICE_TASKS[index].status)) {
+            PREVIEW_VOICE_TASKS.splice(index, 1);
+          }
+        }
+        return json({ ok: true, deleted: before - PREVIEW_VOICE_TASKS.length });
+      }
+      if (action === 'listen' || action === 'recording') {
+        return new Response(JSON.stringify({ error: 'Media is unavailable in preview mode' }), {
+          status: 409,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+    }
+    if (path === '/api/fbo-call') {
+      if (action === 'preview') {
+        const purposes = Array.isArray(body.purposes) ? body.purposes : ['departure', 'arrival'];
+        const trip = body.trip || {};
+        const state = body.state || {};
+        const results = purposes.map((purpose) => {
+          const fboName = purpose === 'departure'
+            ? state.fromFbo
+            : state.toFbo;
+          const airport = purpose === 'departure' ? trip.info?.from : trip.info?.to;
+          const sheetPhone = purpose === 'departure'
+            ? state.tripSheetData?.fromAirportPhone
+            : state.tripSheetData?.toAirportPhone;
+          const phoneDisplay = state.fboCallDialOverrides?.[purpose] || sheetPhone;
+          const phoneE164 = phoneDisplay ? `+1${String(phoneDisplay).replace(/\D/g, '').replace(/^1/, '')}` : '';
+          const blockers = [
+            ...(!state.tripSheetUrl ? ['No trip sheet uploaded'] : []),
+            ...(!fboName ? ['FBO name is missing from the trip sheet'] : []),
+            ...(!phoneE164 ? ['No FBO phone number on the trip sheet'] : []),
+          ];
+          return {
+            purpose,
+            ok: blockers.length === 0,
+            blockers,
+            hash: `hash-${purpose}-${fboName}`,
+            facts: {
+              fboName,
+              airport,
+              phoneE164,
+              phoneDisplay,
+              phoneSource: state.fboCallDialOverrides?.[purpose] ? 'override' : 'trip_sheet',
+              hours: '',
+              hoursKnown: false,
+              groundTransport: trip.info?.pax > 0,
+              leadPassengerName: trip.info?.pax > 0 ? 'Alexander Whitmore' : null,
+            },
+          };
+        });
+        return json({
+          ok: true,
+          vendor: { ok: true, agent: 'preview' },
+          config: { enabled: true },
+          results,
+        });
+      }
+      if (action === 'list') {
+        return json({
+          ok: true,
+          vendor: { ok: true },
+          calls: [
+            {
+              id: 'preview-active-call',
+              tripId: body.tripId,
+              purpose: 'departure',
+              callPhase: 'initial',
+              status: 'in_progress',
+              fboName: 'Signature IAD',
+              airport: 'IAD',
+              phone: '301-555-0100',
+              dialMode: 'immediate',
+              dialAt: Date.now() - 60_000,
+              listenAvailable: true,
+            },
+            {
+              id: 'preview-follow-up',
+              tripId: body.tripId,
+              purpose: 'arrival',
+              callPhase: 'arrival_reverification',
+              status: 'scheduled',
+              fboName: 'Atlantic HYA',
+              airport: 'HYA',
+              phone: '561-555-0199',
+              dialMode: 'scheduled',
+              dialAt: Date.now() + 90 * 60_000,
+              listenAvailable: false,
+            },
+            {
+              id: 'preview-completed-call',
+              tripId: body.tripId,
+              purpose: 'arrival',
+              callPhase: 'initial',
+              status: 'completed',
+              fboName: 'Atlantic HYA',
+              airport: 'HYA',
+              phone: '561-555-0199',
+              dialMode: 'immediate',
+              dialAt: Date.now() - 20 * 60_000,
+              summary: 'Movement is on the board. Fuel and catering are confirmed.',
+              confirmations: {
+                movementConfirmed: true,
+                fuelConfirmed: true,
+                hangarConfirmed: false,
+                cateringConfirmed: true,
+                groundTransportConfirmed: true,
+                hoursVerified: '24 hours',
+                needsFollowUp: false,
+                notes: 'Driver will meet the lead passenger inside the lobby.',
+              },
+              recordingAvailable: true,
+              listenAvailable: false,
+            },
+          ],
+        });
+      }
+      if (action === 'arm') {
+        return json({ ok: true, armed: (body.purposes || []).length });
+      }
+      if (action === 'dialNow') return json({ ok: true, result: { ok: true } });
+      if (action === 'listen') {
+        return new Response(JSON.stringify({ error: 'Live audio is unavailable in preview mode' }), {
+          status: 409,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (action === 'recording') {
+        return new Response(JSON.stringify({ error: 'Recordings are unavailable in preview mode' }), {
+          status: 409,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return json({ ok: true });
+    }
 
     return json({ ok: true });
   };

@@ -269,6 +269,12 @@ export function tripStates(now = Date.now()) {
       wheels_up: step(now - 74 * MIN, air.pic),
     },
     completed: false, archived: false, hasCatering: true,
+    tripSheetUrl: 'https://example.test/trip-sheet.pdf',
+    tripSheetFilename: 'SKY-2408-trip-sheet.pdf',
+    tripSheetData: {
+      fromAirportPhone: '201-555-0100',
+      toAirportPhone: '561-555-0199',
+    },
     fromFbo: `Signature ${air.from}`, toFbo: `Atlantic ${air.to}`,
     dispatcherUids: ['ops-1'],
   }));

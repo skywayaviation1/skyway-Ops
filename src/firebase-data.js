@@ -50,7 +50,8 @@ export async function fetchPreloadedPax(tripId) {
  * One-shot fetch combining preloadedPax + statuses + scanned passengers
  * for a trip. Used by SHARE WITH BROKER to grab everything needed for
  * the broker snapshot in a single read per leg.
- *   { preloadedPax: [], passengers: [], statuses: {} }
+ *   { preloadedPax: [], passengers: [], statuses: {}, tripSheetData,
+ *     fromFbo, toFbo, hasCatering }
  * Empty arrays/object if the doc doesn't exist or fields are missing.
  */
 export async function fetchTripStateForShare(tripId) {
@@ -64,6 +65,16 @@ export async function fetchTripStateForShare(tripId) {
       preloadedPax: Array.isArray(data.preloadedPax) ? data.preloadedPax : [],
       passengers: Array.isArray(data.passengers) ? data.passengers : [],
       statuses: (data.statuses && typeof data.statuses === 'object') ? data.statuses : {},
+      // The broker-share selector uses the trip code to prove two legs came
+      // from the same trip sheet before passenger details can be enabled.
+      tripSheetData: (
+        data.tripSheetData && typeof data.tripSheetData === 'object'
+          ? data.tripSheetData
+          : null
+      ),
+      fromFbo: data.fromFbo || null,
+      toFbo: data.toFbo || null,
+      hasCatering: data.hasCatering !== false,
     };
   } catch (err) {
     console.error('[firebase-data] fetchTripStateForShare failed:', tripId, err);
@@ -103,6 +114,11 @@ export function subscribeToTripState(tripId, onUpdate) {
           tripSheetUploadedAt: data.tripSheetUploadedAt || null,
           tripSheetUploadedBy: data.tripSheetUploadedBy || null,
           tripSheetFilename: data.tripSheetFilename || null,
+          tripSheetData: (
+            data.tripSheetData && typeof data.tripSheetData === 'object'
+              ? data.tripSheetData
+              : null
+          ),
           // Pre-loaded passengers parsed from the trip sheet — array of
           // { id, firstName, lastName, dob, weight, gender, primary, scannedPaxId }
           // scannedPaxId points to an entry in passengers[] once crew has scanned.
@@ -114,6 +130,12 @@ export function subscribeToTripState(tripId, onUpdate) {
           // FBO names parsed from the trip sheet for THIS leg's two airports.
           fromFbo: data.fromFbo || null,
           toFbo: data.toFbo || null,
+          fboCallDialOverrides: (
+            data.fboCallDialOverrides && typeof data.fboCallDialOverrides === 'object'
+              ? data.fboCallDialOverrides
+              : {}
+          ),
+          fboCalls: Array.isArray(data.fboCalls) ? data.fboCalls : [],
         });
       } else {
         // No state yet — emit empty defaults
@@ -123,12 +145,15 @@ export function subscribeToTripState(tripId, onUpdate) {
           hasCatering: true, paxOverride: null,
           tripSheetUrl: null, tripSheetPath: null, tripSheetUploadedAt: null,
           tripSheetUploadedBy: null, tripSheetFilename: null,
+          tripSheetData: null,
           preloadedPax: [],
           tripSheetNotes: null,
           tripSheetNotesEditedAt: null,
           tripSheetNotesEditedByName: null,
           fromFbo: null,
           toFbo: null,
+          fboCallDialOverrides: {},
+          fboCalls: [],
         });
       }
     },
@@ -188,6 +213,13 @@ export async function saveTripState(tripId, state) {
   if (has('tripSheetNotesEditedByName')) patch.tripSheetNotesEditedByName = state.tripSheetNotesEditedByName || null;
   if (has('fromFbo'))              patch.fromFbo = state.fromFbo || null;
   if (has('toFbo'))                patch.toFbo = state.toFbo || null;
+  if (has('fboCallDialOverrides')) {
+    patch.fboCallDialOverrides = (
+      state.fboCallDialOverrides && typeof state.fboCallDialOverrides === 'object'
+        ? state.fboCallDialOverrides
+        : {}
+    );
+  }
   // tripMeta — route/tail/start info, used by the FlightAware webhook to match
   // incoming events to this trip. See PR 2c.
   if (has('tripMeta'))             patch.tripMeta = state.tripMeta || null;
@@ -415,6 +447,7 @@ export function subscribeAllTripStates(onUpdate) {
           opsLatestNoteByName: data.opsLatestNoteByName || '',
           fromFbo: data.fromFbo || null,
           toFbo: data.toFbo || null,
+          fboCalls: Array.isArray(data.fboCalls) ? data.fboCalls : [],
           hasCatering: data.hasCatering !== false,
           paxOverride: typeof data.paxOverride === 'number' ? data.paxOverride : null,
         });

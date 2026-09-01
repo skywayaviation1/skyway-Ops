@@ -20,6 +20,9 @@ const EmailDiagnosticsPanelLazy = lazy(() => import('./EmailDiagnosticsPanel.jsx
 const AvailabilityLazy = lazy(() => import('./AvailabilityPlanner.jsx'));
 const BrokeredOperatorLinkLazy = lazy(() => import('./BrokeredOperatorLink.jsx'));
 const AirportFboDataLazy = lazy(() => import('./AirportFboData.jsx'));
+const FboCallDeskLazy = lazy(() => import('./FboCallDesk.jsx'));
+const FboCallSettingsPanelLazy = lazy(() => import('./FboCallSettingsPanel.jsx'));
+const TripFboCallsLazy = lazy(() => import('./TripFboCalls.jsx'));
 const TripEmailPanelLazy = lazy(() =>
   import('./CharterInbox.jsx').then((module) => ({ default: module.TripEmailPanel }))
 );
@@ -140,7 +143,7 @@ import {
   Download, Trash2, Plus, FileText, Zap, Radio, AlertCircle, Upload,
   Check, CheckCheck, UserCheck, Sparkles, Hash, Cloud, Wrench, Hotel, BookOpen, Search,
   Activity, Palette, ShieldCheck, Edit2, Home, CreditCard, Fuel, Building2,
-  MoreHorizontal, LogOut, ChevronRight,
+  MoreHorizontal, LogOut, ChevronRight, Phone,
 } from 'lucide-react';
 // Shared design-system primitives. New UI should compose these rather than
 // re-deriving borders, spacing and tone colors inline.
@@ -171,6 +174,10 @@ import { resolveManagedTails } from './fleet-config.js';
 import { buildFleetMapScene } from './fleet-tracking.js';
 import { DUTY_TRACKER_ENABLED } from './duty-feature.js';
 import { applyBrandAccent, brand } from './brand.js';
+import {
+  passengerDisclosureEligibility,
+  previousTailFlight,
+} from './broker-share.js';
 import {
   analyzeFrameReadiness,
   autoCapturePrompt,
@@ -5241,6 +5248,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   const [tripSheetFilename, setTripSheetFilename] = useState(null);
   const [tripSheetUploadedAt, setTripSheetUploadedAt] = useState(null);
   const [tripSheetUploadedBy, setTripSheetUploadedBy] = useState(null);
+  const [tripSheetData, setTripSheetData] = useState(null);
   const [preloadedPax, setPreloadedPax] = useState([]);
   const [tripSheetNotes, setTripSheetNotes] = useState(null);
   const [tripSheetNotesEdited, setTripSheetNotesEdited] = useState({ at: null, byName: null });
@@ -5248,15 +5256,11 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   const [opsDisposition, setOpsDisposition] = useState(null);
   const [opsDispositionReason, setOpsDispositionReason] = useState(null);
   const [dispatcherUids, setDispatcherUids] = useState([]);
-  // FBO state. We seed from trip.info.fromFbo / trip.info.toFbo (parsed
-  // from JetInsight iCal at sync time) so a freshly-loaded trip without
-  // an explicit trip-state write still shows its FBO. The Firestore
-  // subscription below OVERRIDES with whatever trip-state says, but only
-  // when that value is non-null — so an admin who manually clears the
-  // FBO can do so, while an empty trip-state doc doesn't blank out the
-  // iCal-parsed value.
-  const [fromFbo, setFromFbo] = useState(trip.info?.fromFbo || null);
-  const [toFbo, setToFbo] = useState(trip.info?.toFbo || null);
+  // FBO call details come from the uploaded trip sheet in trip-state.
+  const [fromFbo, setFromFbo] = useState(null);
+  const [toFbo, setToFbo] = useState(null);
+  const [fboCallDialOverrides, setFboCallDialOverrides] = useState({});
+  const [fboCalls, setFboCalls] = useState([]);
   const [pendingScanPax, setPendingScanPax] = useState(null); // pre-loaded pax being checked in
   const [loading, setLoading] = useState(true);
   // UPDATE ETA flow: tracks whether we're mid-call so we can disable the button
@@ -5467,20 +5471,17 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
           setTripSheetFilename(state.tripSheetFilename || null);
           setTripSheetUploadedAt(state.tripSheetUploadedAt || null);
           setTripSheetUploadedBy(state.tripSheetUploadedBy || null);
+          setTripSheetData(state.tripSheetData || null);
           setPreloadedPax(Array.isArray(state.preloadedPax) ? state.preloadedPax : []);
           setTripSheetNotes(state.tripSheetNotes || null);
           setTripSheetNotesEdited({
             at: state.tripSheetNotesEditedAt || null,
             byName: state.tripSheetNotesEditedByName || null,
           });
-          // FBO sourcing: state (trip-state doc) wins when set, fall back
-          // to trip.info (iCal-parsed). Same logic as buildPublicTripData
-          // so the broker page and ops UI show the same value. Tradeoff:
-          // if an admin clears an FBO via trip-state (writes null), the
-          // iCal value still shows until the next iCal sync replaces it.
-          // Rare event; preferable to FBOs disappearing for the common case.
-          setFromFbo(state.fromFbo || trip.info?.fromFbo || null);
-          setToFbo(state.toFbo || trip.info?.toFbo || null);
+          setFromFbo(state.fromFbo || null);
+          setToFbo(state.toFbo || null);
+          setFboCallDialOverrides(state.fboCallDialOverrides || {});
+          setFboCalls(Array.isArray(state.fboCalls) ? state.fboCalls : []);
           setCompleted(state.completed === true);
           setFratState(state.frat || null);
           setOpsDisposition(state.opsDisposition || null);
@@ -6904,6 +6905,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
             // hotel info for the trip. Hidden on non-ops (HOLD/MX/etc)
             // since they don't have crew lodging in the operational sense.
             { id: 'lodging', label: 'Lodging', icon: Hotel, hidden: !trip.info.isOps },
+            { id: 'fbo-call', label: 'FBO calls', icon: Phone, hidden: !trip.info.isOps || !['crew', 'ops', 'admin'].includes(currentUser?.role) },
             { id: 'chat', label: 'Comms', icon: MessageSquare, unread: tripChatUnread },
             { id: 'email', label: 'Email', icon: Mail, hidden: !['admin', 'sales'].includes(currentUser?.role) },
             { id: 'notify', label: 'Notify', icon: Bell, hidden: !trip.info.isOps },
@@ -6919,7 +6921,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
               id: 'operations',
               label: 'Operations',
               icon: Navigation,
-              children: pick(['sheet', 'weather', 'plan', 'frat', 'lodging', 'notes', 'notify', 'delay']),
+              children: pick(['sheet', 'weather', 'plan', 'frat', 'lodging', 'fbo-call', 'notes', 'notify', 'delay']),
             },
             { id: 'chat', label: 'Comms', icon: MessageSquare, children: pick(['chat', 'email']) },
           ].filter(g => g.children.length > 0);
@@ -7358,6 +7360,24 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
           <Suspense fallback={<div className="p-8 text-center text-slate-500"><Loader2 className="w-5 h-5 animate-spin inline-block mr-2" />Loading lodging...</div>}>
             <LodgingLazy trip={trip} currentUser={currentUser} users={users} />
           </Suspense>
+        ) : tab === 'fbo-call' ? (
+          <Suspense fallback={<div className="p-8 text-center text-slate-500"><Loader2 className="w-5 h-5 animate-spin inline-block mr-2" />Loading FBO calls...</div>}>
+            <TripFboCallsLazy
+              trip={trip}
+              currentUser={currentUser}
+              tripSheetUrl={tripSheetUrl}
+              tripSheetData={tripSheetData}
+              fromFbo={fromFbo}
+              toFbo={toFbo}
+              fboCallDialOverrides={fboCallDialOverrides}
+              passengers={passengers}
+              preloadedPax={preloadedPax}
+              hasCatering={hasCatering}
+              paxOverride={paxOverride}
+              tripSheetNotes={tripSheetNotes}
+              fboCalls={fboCalls}
+            />
+          </Suspense>
         ) : tab === 'chat' ? (
           <Suspense fallback={
             <div className="p-8 flex items-center justify-center text-slate-500">
@@ -7613,9 +7633,9 @@ function findCanonicalCharterLeg(anchor, allTrips) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Same-day candidate legs (the UNIVERSE of legs the share panel can
-// offer to include or exclude). Same tail, ±24h, no HOLD/MX/TRAINING,
-// no same-airport pseudo-flights. Sorted chronologically.
+// Candidate legs the share panel can offer to include or exclude. In addition
+// to the existing charter/reposition chain, this always offers the immediately
+// preceding real flight on the same tail — with no same-day restriction.
 //
 // This is the synchronous twin of the filter inside buildPublicTripData
 // — kept in lock-step. Both must apply the same rules so the panel
@@ -7683,7 +7703,14 @@ function shareCandidateLegs(canonical, allTrips) {
   // ── Rule 1: anchor always included ────────────────────────────────────
   add(anchor, 'anchor');
 
-  // ── Rule 2: positioning REPO chain INTO the anchor's origin ───────────
+  // ── Rule 2: immediately previous real flight on this tail ─────────────
+  // This is context the broker may need to see where the aircraft is coming
+  // from. It is only offered — never selected automatically — and passenger
+  // details are independently hidden unless this is verified as the same
+  // broker's customer group.
+  add(previousTailFlight(anchor, allTrips), 'previous-tail');
+
+  // ── Rule 3: positioning REPO chain INTO the anchor's origin ───────────
   // Walk backwards from anchor while:
   //   (a) the leg is a REPO
   //   (b) its destination chains to the next leg's origin (aircraft actually
@@ -7827,10 +7854,10 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
     async function loadTripStates() {
       setEnriching(true);
       try {
-        // Universe: all same-tail same-schedule legs within ±48h — same
-        // superset shareCandidateLegs and buildPublicTripData look at.
-        // We fetch trip-states for ALL of them, then let the filter
-        // below decide what's actually related.
+        // Universe: all same-tail legs within ±48h, PLUS every synchronous
+        // candidate. The latter includes the immediately previous tail flight
+        // even when it was several days earlier, so its passenger privacy can
+        // be evaluated before the operator shares it.
         const tail = String(canonicalTrip.info?.tail || '').toUpperCase();
         const anchorMs = canonicalTrip.start ? new Date(canonicalTrip.start).getTime() : Date.now();
         const WINDOW = 48 * 3600 * 1000;
@@ -7838,6 +7865,7 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
           const u = String(c || '').toUpperCase().trim();
           return u.length === 4 && u.startsWith('K') ? u.slice(1) : u;
         };
+        const syncUids = new Set(syncCandidateLegs.map((leg) => leg.uid));
         const universe = (allTrips || []).filter(t => {
           if (!t?.info || !t.start) return false;
           if (String(t.info.tail || '').toUpperCase() !== tail) return false;
@@ -7846,7 +7874,8 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
           if (['HOLD', 'MX', 'TRAINING'].includes(rawCat)) return false;
           if (t.info.from && t.info.to && norm(t.info.from) === norm(t.info.to)) return false;
           const ms = new Date(t.start).getTime();
-          return Number.isFinite(ms) && Math.abs(ms - anchorMs) <= WINDOW;
+          return Number.isFinite(ms)
+            && (Math.abs(ms - anchorMs) <= WINDOW || syncUids.has(t.uid));
         });
 
         let fetchTripStateForShare;
@@ -7879,7 +7908,7 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
     // Only need to re-run if the anchor changes — allTrips references
     // are stable within a dialog open.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canonicalTrip.uid]);
+  }, [canonicalTrip.uid, syncCandidateLegs]);
 
   // Combine sync seed + async enrichment into the final candidate list.
   const allCandidateLegs = useMemo(() => {
@@ -7969,6 +7998,36 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
       next.add(canonicalTrip.uid);
       return next;
     });
+  };
+
+  // Passenger visibility is independent from leg visibility. The broker's live
+  // anchor defaults to visible (matching the historic behavior); every added
+  // leg defaults hidden until the operator explicitly enables it. A leg for a
+  // different broker remains locked hidden even if someone clicks the control.
+  const [showPaxByUid, setShowPaxByUid] = useState(
+    () => ({ [canonicalTrip.uid]: true })
+  );
+  useEffect(() => {
+    setShowPaxByUid(prev => (
+      Object.prototype.hasOwnProperty.call(prev, canonicalTrip.uid)
+        ? prev
+        : { ...prev, [canonicalTrip.uid]: true }
+    ));
+  }, [canonicalTrip.uid]);
+
+  const disclosureForLeg = (leg) => passengerDisclosureEligibility({
+    anchor: canonicalTrip,
+    leg,
+    anchorState: tripStatesByUid[canonicalTrip.uid] || {},
+    legState: tripStatesByUid[leg.uid] || {},
+  });
+
+  const setPassengerVisibility = (leg, visible) => {
+    const eligibility = disclosureForLeg(leg);
+    setShowPaxByUid(prev => ({
+      ...prev,
+      [leg.uid]: visible && eligibility.allowed,
+    }));
   };
 
   const [url, setUrl] = useState('');
@@ -8252,8 +8311,18 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
     }
 
     // Renumber legs sequentially as they appear in the final included list.
-    const legs = included.map(({ t, showPax }, i) => {
+    const legs = included.map(({ t }, i) => {
       const state = stateByUid[t.uid] || { preloadedPax: [], passengers: [], statuses: {} };
+      const disclosure = passengerDisclosureEligibility({
+        anchor,
+        leg: t,
+        anchorState: stateByUid[anchor.uid] || {},
+        legState: state,
+      });
+      // The operator must explicitly opt in per leg, and the relationship rule
+      // must independently allow it. An unrelated broker's passengers cannot
+      // be exposed by changing client state.
+      const showPax = disclosure.allowed && showPaxByUid[t.uid] === true;
 
       // Build per-pax records that the broker page can render with
       // individual check-in indicators. Join logic:
@@ -8438,7 +8507,7 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
     // a PDF auto-extract or admin edit while the dialog is open instantly
     // pushes the new FBO to the broker page without needing a reopen.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedUids, liveAnchorFromFbo, liveAnchorToFbo]);
+  }, [selectedUids, showPaxByUid, liveAnchorFromFbo, liveAnchorToFbo]);
 
   const handleCopy = async () => {
     if (!effectiveUrl) return;
@@ -8540,12 +8609,12 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
           </button>
         </div>
 
-        {/* LEGS TO SHARE — unified leg selector. Lists every same-day
-            same-tail leg as a checkbox row. Only the anchor (★) is
+        {/* LEGS TO SHARE — unified leg selector. Lists related same-tail legs
+            plus the immediately previous tail flight. Only the anchor (★) is
             pre-checked; ops explicitly checks any additional legs they
             want to include. The anchor checkbox is disabled — it's the
             leg the URL is keyed to and can never be removed. */}
-        {allCandidateLegs.length > 1 && (
+        {allCandidateLegs.length > 0 && (
           <div className="border-b border-slate-700 bg-slate-900/40 px-4 py-2.5">
             <div className="text-[10px] tracking-widest text-slate-400 mb-1.5"
               style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
@@ -8557,7 +8626,9 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
             <div className="text-[9px] text-slate-500 mb-2"
               style={{ fontFamily: 'JetBrains Mono, monospace' }}>
               Only the anchor (★) is checked by default. Check any
-              additional legs you want the broker to see.
+              additional legs you want the broker to see. Passenger details
+              are controlled separately for every selected leg; another
+              broker&apos;s passengers are always locked hidden.
               {openedFromNonCanonical && (
                 <> The leg you clicked is marked <span className="text-cyan-400">← OPENED FROM</span>.</>
               )}
@@ -8568,7 +8639,9 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
                 const isClickedFrom = leg.uid === trip.uid && !isAnchor;
                 const isChecked = selectedUids.has(leg.uid);
                 const time = leg.start
-                  ? new Date(leg.start).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+                  ? new Date(leg.start).toLocaleString('en-US', {
+                    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+                  })
                   : '';
                 const route = `${leg.info?.from || '—'} → ${leg.info?.to || '—'}`;
                 const broker = leg.info?.broker || '(no broker)';
@@ -8582,54 +8655,78 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
                   'positioning-out': 'DEADHEAD OUT', // deadhead leaving anchor's destination
                   'same-trip-sheet': 'SAME TRIP',    // parsed from the same trip sheet PDF
                   'same-pax':        'SAME PAX',    // pax name overlap with anchor's manifest
+                  'previous-tail':   'PREVIOUS TAIL FLIGHT',
                 })[leg._shareReason] ?? null;
+                const disclosure = disclosureForLeg(leg);
+                const paxVisible = disclosure.allowed && showPaxByUid[leg.uid] === true;
                 return (
-                  <label
-                    key={leg.uid}
-                    className={`flex items-start gap-2 px-2 py-1.5 border ${
-                      isAnchor
-                        ? 'border-amber-500/50 bg-amber-500/5 cursor-default'
-                        : isChecked
-                        ? 'border-cyan-500/50 bg-cyan-500/5 cursor-pointer'
-                        : 'border-slate-800 hover:border-slate-600 cursor-pointer'
-                    }`}
-                    style={{ fontFamily: 'JetBrains Mono, monospace' }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={isChecked}
-                      disabled={isAnchor || busy}
-                      onChange={() => toggleLeg(leg.uid)}
-                      className="mt-0.5 w-3.5 h-3.5 accent-cyan-500 shrink-0 disabled:opacity-50"
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="text-[11px] truncate flex items-center gap-1.5">
-                        {isAnchor && (
-                          <span className="text-amber-300 text-[10px]" title="Anchor leg — always included">★</span>
-                        )}
-                        <span className={isAnchor ? 'text-amber-200' : 'text-slate-200'}>{route}</span>
-                        {time && <span className="text-slate-500">{time}</span>}
-                        {cat && cat !== 'REVENUE' && (
-                          <span className="text-[9px] text-amber-400 tracking-widest">{cat}</span>
-                        )}
-                        {isClickedFrom && (
-                          <span className="text-[9px] text-cyan-400 tracking-widest" title="You opened SHARE from this leg">← OPENED FROM</span>
-                        )}
-                        {reasonLabel && (
-                          <span className="text-[9px] text-slate-500 tracking-widest ml-auto shrink-0" title={
-                            leg._shareReason === 'positioning-in'  ? 'Repo leg — deadhead into your anchor origin' :
-                            leg._shareReason === 'positioning-out' ? 'Repo leg — deadhead out of your anchor destination' :
-                            leg._shareReason === 'same-trip-sheet' ? 'Parsed from the same trip sheet PDF as the anchor — same broker charter' :
-                            leg._shareReason === 'same-pax'        ? 'One or more passenger names match the anchor manifest — same customer group' :
-                            ''
-                          }>{reasonLabel}</span>
-                        )}
+                  <div key={leg.uid} className="border border-slate-800">
+                    <label
+                      className={`flex items-start gap-2 px-2 py-1.5 ${
+                        isAnchor
+                          ? 'bg-amber-500/5 cursor-default'
+                          : isChecked
+                          ? 'bg-cyan-500/5 cursor-pointer'
+                          : 'hover:bg-slate-800/40 cursor-pointer'
+                      }`}
+                      style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isChecked}
+                        disabled={isAnchor || busy}
+                        onChange={() => toggleLeg(leg.uid)}
+                        className="mt-0.5 w-3.5 h-3.5 accent-cyan-500 shrink-0 disabled:opacity-50"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[11px] flex flex-wrap items-center gap-1.5">
+                          {isAnchor && (
+                            <span className="text-amber-300 text-[10px]" title="Anchor leg — always included">★</span>
+                          )}
+                          <span className={isAnchor ? 'text-amber-200' : 'text-slate-200'}>{route}</span>
+                          {time && <span className="text-slate-500">{time}</span>}
+                          {cat && cat !== 'REVENUE' && (
+                            <span className="text-[9px] text-amber-400 tracking-widest">{cat}</span>
+                          )}
+                          {isClickedFrom && (
+                            <span className="text-[9px] text-cyan-400 tracking-widest" title="You opened SHARE from this leg">← OPENED FROM</span>
+                          )}
+                          {reasonLabel && (
+                            <span className="text-[9px] text-slate-500 tracking-widest ml-auto shrink-0" title={
+                              leg._shareReason === 'positioning-in'  ? 'Repo leg — deadhead into your anchor origin' :
+                              leg._shareReason === 'positioning-out' ? 'Repo leg — deadhead out of your anchor destination' :
+                              leg._shareReason === 'same-trip-sheet' ? 'Parsed from the same trip sheet PDF as the anchor — same broker charter' :
+                              leg._shareReason === 'same-pax'        ? 'One or more passenger names match the anchor manifest — same customer group' :
+                              leg._shareReason === 'previous-tail'   ? 'Immediately previous real flight assigned to this tail — no same-day limit' :
+                              ''
+                            }>{reasonLabel}</span>
+                          )}
+                        </div>
+                        <div className="text-[10px] text-slate-500 truncate">
+                          {broker}{pax ? ` · ${pax} pax` : ''}
+                        </div>
                       </div>
-                      <div className="text-[10px] text-slate-500 truncate">
-                        {broker}{pax ? ` · ${pax} pax` : ''}
-                      </div>
+                    </label>
+                    <div className="flex items-center justify-between gap-2 border-t border-slate-800 px-2 py-1.5">
+                      <span className={`text-[9px] ${
+                        disclosure.allowed ? 'text-slate-500' : 'text-amber-400'
+                      }`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                        {disclosure.reason}
+                      </span>
+                      <label className={`flex items-center gap-1.5 text-[9px] tracking-widest ${
+                        disclosure.allowed && isChecked ? 'cursor-pointer text-slate-300' : 'cursor-not-allowed text-slate-600'
+                      }`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                        <input
+                          type="checkbox"
+                          checked={paxVisible}
+                          disabled={!disclosure.allowed || !isChecked || busy}
+                          onChange={(event) => setPassengerVisibility(leg, event.target.checked)}
+                          className="h-3.5 w-3.5 accent-cyan-500 disabled:opacity-40"
+                        />
+                        SHOW PASSENGER DETAILS
+                      </label>
                     </div>
-                  </label>
+                  </div>
                 );
               })}
             </div>
@@ -15820,6 +15917,10 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
             <ForeFlightSettingsPanelLazy currentUser={currentUser} />
           </Suspense>
 
+          <Suspense fallback={<div className="text-xs text-slate-500 py-2">Loading FBO calling…</div>}>
+            <FboCallSettingsPanelLazy currentUser={currentUser} />
+          </Suspense>
+
           <Suspense fallback={<div className="text-xs text-slate-500 py-2">Loading FRAT scoring…</div>}>
             <FratSettingsPanelLazy currentUser={currentUser} />
           </Suspense>
@@ -21780,6 +21881,7 @@ const NAV_SECTIONS = [
   { id: 'schedule',  label: 'Schedule',    icon: Calendar,      roles: ['crew', 'ops', 'admin'] },
   { id: 'availability', label: 'Availability', icon: Plane,     roles: ['ops', 'admin'] },
   { id: 'airport-data', label: 'Airport & Fuel', icon: Fuel,    roles: ['crew', 'sales', 'ops', 'admin'] },
+  { id: 'fbo-calls', label: 'AI voice calls', icon: Phone, roles: ['crew', 'ops', 'admin'] },
   { id: 'ops',       label: 'Dispatch',    icon: Zap,           roles: ['ops', 'admin'] },
   { id: 'tracking',  label: 'Tracking',    icon: Navigation,    roles: ['ops', 'admin'] },
   { id: 'manifests', label: 'Manifests',   icon: FileText,      roles: ['crew', 'ops', 'admin'] },
@@ -21808,7 +21910,7 @@ const NAV_SECTIONS = [
 
 const NAV_GROUPS = [
   { id: 'home',     label: 'Home',     icon: Home,          children: ['home'] },
-  { id: 'flights',  label: 'Flights',  icon: Plane,         children: ['schedule', 'availability', 'airport-data', 'ops', 'tracking', 'manifests', 'lodging', 'archive'] },
+  { id: 'flights',  label: 'Flights',  icon: Plane,         children: ['schedule', 'availability', 'airport-data', 'fbo-calls', 'ops', 'tracking', 'manifests', 'lodging', 'archive'] },
   { id: 'comms',    label: 'Comms',    icon: MessageSquare, children: ['comms'] },
   { id: 'teams',    label: 'Teams',    icon: Users,         children: ['teams'] },
   { id: 'email',    label: 'Email',    icon: Mail,          children: ['mailbox', 'inbox'] },
@@ -28825,6 +28927,18 @@ export default function CharterOps() {
             )}
           >
             <AirportFboDataLazy />
+          </Suspense>
+        )}
+
+        {section === 'fbo-calls' && (
+          <Suspense
+            fallback={(
+              <div className="flex flex-1 items-center justify-center text-content-muted">
+                <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading FBO calls…
+              </div>
+            )}
+          >
+            <FboCallDeskLazy currentUser={currentUser} />
           </Suspense>
         )}
 

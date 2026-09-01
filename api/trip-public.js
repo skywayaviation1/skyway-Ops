@@ -207,6 +207,10 @@ async function fetchPosition(tail) {
     const snap = await db().collection('flightaware-state').doc(safeTail).get();
     if (!snap.exists) return null;
     const pos = snap.data() || {};
+    const finite = (value) => {
+      const number = Number(value);
+      return Number.isFinite(number) ? number : null;
+    };
     // Whitelist what we return to the broker. The Firestore doc may have
     // many fields (polledAt, raw FA payload bits, etc.); brokers only need
     // these.
@@ -220,6 +224,10 @@ async function fetchPosition(tail) {
       groundspeed: Number.isFinite(pos.groundspeed) ? pos.groundspeed : null,
       origin: pos.origin || null,
       destination: pos.destination || null,
+      originLat: finite(pos.originLat),
+      originLon: finite(pos.originLon),
+      destinationLat: finite(pos.destinationLat),
+      destinationLon: finite(pos.destinationLon),
       destinationCity: pos.destinationCity || null,
       estimatedOn: pos.estimatedOn || null,
       actualOff: pos.actualOff || null,

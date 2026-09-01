@@ -31,7 +31,12 @@ import { formatLocalTime, formatLocalDate } from './airports.js';
 import { Wordmark } from './ui.jsx';
 import { brand } from './brand.js';
 import TrackingMap from './TrackingMap.jsx';
-import { flightCategoryStyle, normalizeTrail, distanceNm } from './tracking-map.js';
+import {
+  buildBrokerRouteScene,
+  distanceNm,
+  flightCategoryStyle,
+  normalizeTrail,
+} from './tracking-map.js';
 // FAA NOTAM badge — renders silently when no significant NOTAMs are active,
 // shows a colored badge with click-to-expand panel when there are. We pass
 // no getIdToken since the broker page is anonymous; the endpoint accepts
@@ -428,57 +433,13 @@ function BrokerFlightMap({ position, legs, trail, trailLive, tail }) {
   const scene = useMemo(() => {
     if (!coordsFn) return { aircraft: [], airports: [], routes: [], trail: null, projected: null };
 
-    const airports = new Map();
-    const routes = [];
-    let projected = null;
-
-    (legs || []).forEach((leg) => {
-      const from = coordsFn(leg.from);
-      const to = coordsFn(leg.to);
-      if (!from || !to) return;
-      const phase = legPhase(leg);
-
-      if (!airports.has(String(leg.from).toUpperCase())) {
-        airports.set(String(leg.from).toUpperCase(), {
-          code: leg.from, lat: from.lat, lon: from.lng, tone: 'origin', small: true,
-        });
-      }
-      airports.set(String(leg.to).toUpperCase(), {
-        code: leg.to, lat: to.lat, lon: to.lng,
-        tone: phase === 'landed' ? 'neutral' : 'destination', small: true,
-      });
-
-      // For the airborne leg the flown trail carries the actual path, so the
-      // planned line would only duplicate it. We draw the remainder instead.
-      if (phase === 'airborne') {
-        const havePos = position?.airborne === true
-          && Number.isFinite(position.latitude) && Number.isFinite(position.longitude);
-        if (normalizedTrail.length >= 2) {
-          const last = normalizedTrail[normalizedTrail.length - 1];
-          projected = [[last.lat, last.lon], [to.lat, to.lng]];
-        } else if (havePos) {
-          routes.push({
-            points: [[from.lat, from.lng], [position.latitude, position.longitude]],
-            color: BROKER_PHASE_COLORS.airborne, weight: 3.5, opacity: 0.95,
-          });
-          projected = [[position.latitude, position.longitude], [to.lat, to.lng]];
-        } else {
-          routes.push({
-            points: [[from.lat, from.lng], [to.lat, to.lng]],
-            color: BROKER_PHASE_COLORS.airborne, weight: 3, opacity: 0.8, dashed: true,
-          });
-        }
-        return;
-      }
-
-      const landed = phase === 'landed' || phase === 'completed';
-      routes.push({
-        points: [[from.lat, from.lng], [to.lat, to.lng]],
-        color: BROKER_PHASE_COLORS[phase] || BROKER_PHASE_COLORS.pending,
-        weight: landed ? 2 : 2.5,
-        opacity: landed ? 0.5 : 0.85,
-        dashed: phase === 'pending' || phase === 'preflight',
-      });
+    const routeScene = buildBrokerRouteScene({
+      legs,
+      lookupCoords: coordsFn,
+      position,
+      trail: normalizedTrail,
+      phaseForLeg: legPhase,
+      phaseColors: BROKER_PHASE_COLORS,
     });
 
     const aircraft = [];
@@ -498,10 +459,10 @@ function BrokerFlightMap({ position, legs, trail, trailLive, tail }) {
 
     return {
       aircraft,
-      airports: Array.from(airports.values()),
-      routes,
+      airports: routeScene.airports,
+      routes: routeScene.routes,
       trail: normalizedTrail.length >= 2 ? normalizedTrail : null,
-      projected,
+      projected: routeScene.projected,
     };
   }, [coordsFn, legs, position, normalizedTrail, tail, coordsTick]);
 
@@ -528,16 +489,23 @@ function BrokerFlightMap({ position, legs, trail, trailLive, tail }) {
         basemapDefault="satellite"
         className="w-full"
         style={{ height: 'clamp(320px, 52vh, 560px)' }}
-        overlay={normalizedTrail.length >= 2 ? (
+        overlay={(
           <div className="pointer-events-none rounded-lg border border-slate-700 bg-slate-950/85 px-2.5 py-2 backdrop-blur">
             <div className="text-[9px] uppercase tracking-wider text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              {trailLive ? 'Flight trail · live' : 'Flight trail · flown'}
+              Map overlay
             </div>
-            <div className="mt-0.5 text-[11px] text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              {normalizedTrail.length} points{flownNm ? ` · ${flownNm} nm` : ''}
+            <div className="mt-1 flex items-center gap-2 text-[11px] text-cyan-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              <span className="inline-block w-7 border-t-2 border-dashed border-cyan-300" />
+              Filed route
             </div>
+            {normalizedTrail.length >= 2 && (
+              <div className="mt-1 text-[11px] text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                <span className="mr-2 inline-block h-1 w-7 rounded bg-gradient-to-r from-cyan-400 via-amber-300 to-fuchsia-400" />
+                {trailLive ? 'Live flown track' : 'Flown track'} · {normalizedTrail.length} points{flownNm ? ` · ${flownNm} nm` : ''}
+              </div>
+            )}
           </div>
-        ) : null}
+        )}
       />
     </section>
   );

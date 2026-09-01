@@ -46,95 +46,6 @@ export function loadLeaflet() {
   return leafletPromise;
 }
 
-/* ─── BASEMAPS ───────────────────────────────────────────────────────────────
-   Every option is key-free so the broker page works without a Mapbox token.
-   `dim` is applied to the tile pane only, so overlays keep full contrast over
-   bright satellite imagery.
-   ─────────────────────────────────────────────────────────────────────────── */
-export const BASEMAPS = {
-  dark: {
-    id: 'dark',
-    label: 'Dark',
-    maxZoom: 18,
-    dim: null,
-    tiles: [
-      { url: 'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', subdomains: 'abcd' },
-    ],
-    labels: { url: 'https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', subdomains: 'abcd', opacity: 0.9 },
-    attribution: '&copy; <a href="https://carto.com">CARTO</a> &copy; OpenStreetMap',
-  },
-  satellite: {
-    id: 'satellite',
-    label: 'Satellite',
-    maxZoom: 17,
-    dim: 'brightness(0.68) contrast(1.08) saturate(0.9)',
-    tiles: [
-      { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', maxNativeZoom: 17 },
-    ],
-    labels: { url: 'https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', subdomains: 'abcd', opacity: 0.75 },
-    attribution: 'Tiles &copy; Esri &copy; <a href="https://carto.com">CARTO</a>',
-  },
-  terrain: {
-    id: 'terrain',
-    label: 'Terrain',
-    maxZoom: 17,
-    dim: 'brightness(0.72) saturate(0.85)',
-    tiles: [
-      { url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', subdomains: 'abc', maxNativeZoom: 16 },
-    ],
-    labels: null,
-    attribution: '&copy; <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)',
-  },
-};
-
-export const BASEMAP_ORDER = ['dark', 'satellite', 'terrain'];
-
-/**
- * Swaps the active basemap. Tile layers are tracked on the map instance so
- * repeated calls never leak layers, and label tiles are pinned above the
- * overlay pane so airport names stay readable through a flight trail.
- */
-export function applyBasemap(L, map, basemapId) {
-  const spec = BASEMAPS[basemapId] || BASEMAPS.dark;
-
-  if (!map.__swBasemapLayers) map.__swBasemapLayers = [];
-  map.__swBasemapLayers.forEach((layer) => {
-    try { map.removeLayer(layer); } catch { /* already gone */ }
-  });
-  map.__swBasemapLayers = [];
-
-  if (!map.getPane('swLabels')) {
-    const pane = map.createPane('swLabels');
-    pane.style.zIndex = 450;
-    pane.style.pointerEvents = 'none';
-  }
-
-  spec.tiles.forEach((t) => {
-    const layer = L.tileLayer(t.url, {
-      maxZoom: spec.maxZoom,
-      maxNativeZoom: t.maxNativeZoom,
-      subdomains: t.subdomains || 'abc',
-      attribution: spec.attribution,
-    }).addTo(map);
-    map.__swBasemapLayers.push(layer);
-  });
-
-  if (spec.labels) {
-    const labels = L.tileLayer(spec.labels.url, {
-      maxZoom: spec.maxZoom,
-      subdomains: spec.labels.subdomains || 'abc',
-      opacity: spec.labels.opacity ?? 0.85,
-      pane: 'swLabels',
-    }).addTo(map);
-    map.__swBasemapLayers.push(labels);
-  }
-
-  const tilePane = map.getPane('tilePane');
-  if (tilePane) tilePane.style.filter = spec.dim || '';
-
-  return spec;
-}
-
 /* ─── WEATHER RADAR ──────────────────────────────────────────────────────────
    RainViewer publishes a free index of recent composite radar frames. We show
    the most recent *observed* frame (never a nowcast) so what ops sees on the
@@ -272,6 +183,106 @@ export function normalizeTrail(input) {
     out.push({ lat, lon, altitude: alt, time: raw.time ?? null, groundspeed: raw.groundspeed_kt ?? null });
   }
   return out;
+}
+
+function airportCodesMatch(a, b) {
+  const left = String(a || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const right = String(b || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (!left || !right) return false;
+  if (left === right) return true;
+  return (left.length === 4 && left.startsWith('K') && left.slice(1) === right)
+    || (right.length === 4 && right.startsWith('K') && right.slice(1) === left);
+}
+
+function finitePoint(lat, lon) {
+  const latitude = Number(lat);
+  const longitude = Number(lon);
+  return Number.isFinite(latitude) && Number.isFinite(longitude)
+    ? { lat: latitude, lon: longitude }
+    : null;
+}
+
+/**
+ * Builds the public broker map's filed-route layer independently from the
+ * FlightAware breadcrumb trail. Endpoint coordinates prefer the bundled
+ * airport database, then FlightAware's whitelisted origin/destination
+ * coordinates for the active flight.
+ */
+export function buildBrokerRouteScene({
+  legs = [],
+  lookupCoords,
+  position = null,
+  trail = [],
+  phaseForLeg,
+  phaseColors = {},
+} = {}) {
+  const airports = new Map();
+  const routes = [];
+  let projected = null;
+  const normalizedTrail = normalizeTrail(trail);
+
+  const resolveEndpoint = (code, role) => {
+    const bundled = typeof lookupCoords === 'function' ? lookupCoords(code) : null;
+    const bundledPoint = finitePoint(bundled?.lat, bundled?.lng ?? bundled?.lon);
+    if (bundledPoint) return bundledPoint;
+    const expected = role === 'origin' ? position?.origin : position?.destination;
+    if (!airportCodesMatch(code, expected)) return null;
+    return role === 'origin'
+      ? finitePoint(position?.originLat, position?.originLon)
+      : finitePoint(position?.destinationLat, position?.destinationLon);
+  };
+
+  for (const leg of Array.isArray(legs) ? legs : []) {
+    const from = resolveEndpoint(leg.from, 'origin');
+    const to = resolveEndpoint(leg.to, 'destination');
+    const phase = typeof phaseForLeg === 'function' ? phaseForLeg(leg) : 'pending';
+    const fromCode = String(leg.from || '').toUpperCase();
+    const toCode = String(leg.to || '').toUpperCase();
+
+    if (from && !airports.has(fromCode)) {
+      airports.set(fromCode, {
+        code: leg.from, lat: from.lat, lon: from.lon, tone: 'origin', small: true,
+      });
+    }
+    if (to) {
+      airports.set(toCode, {
+        code: leg.to,
+        lat: to.lat,
+        lon: to.lon,
+        tone: phase === 'landed' || phase === 'completed' ? 'neutral' : 'destination',
+        small: true,
+      });
+    }
+
+    // The filed route remains visible for every phase, including while the
+    // actual breadcrumb trail is drawing. It is intentionally dashed so the
+    // broker can distinguish planned routing from the flown path.
+    if (from && to) {
+      routes.push({
+        points: [[from.lat, from.lon], [to.lat, to.lon]],
+        color: phaseColors[phase] || phaseColors.pending || '#3FA9CC',
+        weight: phase === 'airborne' ? 3.5 : 3,
+        opacity: phase === 'landed' || phase === 'completed' ? 0.72 : 0.95,
+        dashed: true,
+        casing: true,
+        kind: 'filed',
+      });
+    }
+
+    if (phase === 'airborne' && to) {
+      const havePosition = position?.airborne === true
+        && Number.isFinite(position.latitude)
+        && Number.isFinite(position.longitude);
+      if (normalizedTrail.length >= 2) {
+        const last = normalizedTrail[normalizedTrail.length - 1];
+        projected = [[last.lat, last.lon], [to.lat, to.lon]];
+      } else if (havePosition) {
+        projected = [[position.latitude, position.longitude], [to.lat, to.lon]];
+      }
+    }
+  }
+
+  return { airports: Array.from(airports.values()), routes, projected };
 }
 
 /**

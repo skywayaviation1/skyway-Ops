@@ -22,7 +22,7 @@
 import React, { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import {
   Activity, AlertTriangle, ArrowRight, CalendarDays, ChevronRight, Clock,
-  ClipboardList, Gauge, Hotel, MessageSquare, Navigation, Plane,
+  ClipboardList, Gauge, Hotel, MessageSquare, Navigation, Phone, Plane,
   Settings, ShieldAlert, Users, Wrench,
 } from 'lucide-react';
 import { Card, EmptyState, Spinner, StatusChip, cx } from './ui.jsx';
@@ -871,6 +871,13 @@ export default function OpsDashboard({
               detail={`${illegalCrew} illegal · ${crewWarnings} approaching limits`}
               tone={illegalCrew ? 'danger' : crewWarnings ? 'warning' : 'success'}
               onClick={() => onSwitchSection?.('duty')}
+            />
+            <ModuleCard
+              icon={Phone}
+              title="FBO calls"
+              value="ARM"
+              detail="Ops-armed FBO assistant · caller ID from organization settings"
+              onClick={() => onSwitchSection?.('fbo-calls')}
             />
             <ModuleCard
               icon={Hotel}

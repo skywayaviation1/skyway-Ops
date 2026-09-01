@@ -192,6 +192,8 @@ export default async function handler(req, res) {
       cc: finalCc,
       internalDelivery,
       internalDelivered: internalDelivery.ok === true,
+      tenantMailDegraded: sendResult.tenantMailDegraded === true,
+      tenantMailError: sendResult.tenantMailError || null,
       subject: String(subject).slice(0, 200),
       html: wrappedHtml,
       from: from || null,

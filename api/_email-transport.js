@@ -201,36 +201,59 @@ export async function deliverNotification({
   const { internal, external } = splitTenantRecipients({ to, cc }, domain);
   const hasInternal = internal.to.length > 0 || internal.cc.length > 0;
 
-  let internalResult = { ok: false, skipped: 'no tenant recipients', delivered: [] };
+  let internalResult = { ok: true, skipped: 'no tenant recipients', delivered: [] };
   if (hasInternal && skipInternal) {
     internalResult = { ok: true, skipped: 'already delivered on an earlier attempt', delivered: [] };
   } else if (hasInternal) {
-    internalResult = await sendInternal({
-      subject,
-      html,
-      to: internal.to.length ? internal.to : internal.cc,
-      cc: internal.to.length ? internal.cc : [],
-      externalTo: external.to,
-      externalCc: external.cc,
-    });
+    const allInternal = [...internal.to, ...internal.cc];
+    const charterAddressed = allInternal.some((entry) => lower(entry) === CHARTER_INBOX);
+    const otherTo = internal.to.filter((entry) => lower(entry) !== CHARTER_INBOX);
+    const otherCc = internal.cc.filter((entry) => lower(entry) !== CHARTER_INBOX);
+    const delivered = [];
+    let charterCopy = null;
+    let exchange = null;
 
-    // Exchange refused. The charter mailbox at least can be written into
-    // directly, which no filter and no send permission sits in front of.
-    if (!internalResult.ok) {
-      const charterAddressed = [...internal.to, ...internal.cc].some((e) => lower(e) === CHARTER_INBOX);
-      if (charterAddressed) {
-        const filed = await fileCopy({
-          subject, html, to: list(to), cc: list(cc), from,
-        });
-        if (filed.ok) {
-          internalResult = {
-            ...internalResult,
-            filedCopy: true,
-            delivered: [CHARTER_INBOX],
-          };
-        }
-      }
+    // A sendMail request from charters@ to itself can return 202 while Exchange
+    // transport rules still suppress the message. A direct Inbox write has no
+    // mail-flow hop, so it is the primary path for the charter copy, not merely
+    // an error fallback.
+    if (charterAddressed) {
+      charterCopy = await fileCopy({
+        subject, html, to: list(to), cc: list(cc), from,
+      });
+      if (charterCopy.ok) delivered.push(CHARTER_INBOX);
     }
+
+    if (otherTo.length > 0 || otherCc.length > 0) {
+      exchange = await sendInternal({
+        subject,
+        html,
+        to: otherTo.length ? otherTo : otherCc,
+        cc: otherTo.length ? otherCc : [],
+        externalTo: external.to,
+        externalCc: external.cc,
+      });
+      delivered.push(...(exchange.delivered || []));
+    }
+
+    const covered = new Set(delivered.map(lower));
+    const missing = allInternal.filter((entry) => !covered.has(lower(entry)));
+    internalResult = {
+      ok: missing.length === 0,
+      delivered: [...covered],
+      filedCopy: charterCopy?.ok === true,
+      charterCopy,
+      exchange,
+      missing,
+      error: [
+        charterCopy && !charterCopy.ok
+          ? (charterCopy.error || charterCopy.skipped || 'charter Inbox write failed')
+          : '',
+        exchange && !exchange.ok
+          ? (exchange.error || exchange.skipped || 'Exchange send failed')
+          : '',
+      ].filter(Boolean).join('; ') || null,
+    };
   }
 
   // Anyone Exchange did not take still has to go out through the provider,
@@ -240,12 +263,19 @@ export async function deliverNotification({
   const providerTo = [...external.to, ...(skipInternal ? [] : undelivered(internal.to))];
   const providerCc = [...external.cc, ...(skipInternal ? [] : undelivered(internal.cc))];
 
+  // Exchange could not take a tenant mailbox, so it is going out over the
+  // provider instead and may be filtered on arrival. The notification itself is
+  // still delivered, so this is reported for repair rather than raised as a
+  // send failure — see the ok contract below.
+  const tenantMailDegraded = hasInternal && !skipInternal && !internalResult.ok;
+
   if (providerTo.length === 0 && providerCc.length === 0) {
     return {
       ok: internalResult.ok,
       error: internalResult.ok ? null : (internalResult.error || internalResult.skipped || null),
       internal: internalResult,
       provider: { ok: false, skipped: 'every recipient delivered inside the tenant' },
+      tenantMailDegraded,
       internalOnly: true,
     };
   }
@@ -262,11 +292,22 @@ export async function deliverNotification({
     headers,
   });
 
+  // `ok` answers one question: was every recipient accepted by some path? A
+  // tenant mailbox Exchange refused is added to the provider envelope above, so
+  // provider acceptance covers it. Failing the whole send on a refused Graph
+  // call would tell a dispatcher the broker was not notified when the broker's
+  // copy went out, and would retry a message that was already delivered.
   return {
     ok: providerResult.ok,
     error: providerResult.ok ? null : (providerResult.error || 'unknown error'),
     internal: internalResult,
     provider: providerResult,
+    tenantMailDegraded,
+    // Named separately so the queue row and the diagnostics panel can surface a
+    // broken Graph credential without dressing it up as a delivery failure.
+    tenantMailError: tenantMailDegraded
+      ? (internalResult.error || 'tenant mailbox delivery unavailable')
+      : null,
     internalOnly: false,
   };
 }

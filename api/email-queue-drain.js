@@ -146,6 +146,8 @@ async function retryDelivery(item) {
     id: result.provider?.id || null,
     error: result.error,
     internal: result.internal,
+    tenantMailDegraded: result.tenantMailDegraded === true,
+    tenantMailError: result.tenantMailError || null,
   };
 }
 
@@ -229,6 +231,8 @@ export default async function handler(req, res) {
           lastError: null,
           internalDelivery: send.internal || null,
           internalDelivered: item.internalDelivered === true || send.internal?.ok === true,
+          tenantMailDegraded: send.tenantMailDegraded === true,
+          tenantMailError: send.tenantMailError || null,
         });
         console.log('[email-queue-drain] SENT', id, '→', (item.to || []).join(','), '· resend id:', send.id);
         results.push({ id, ok: true, resendId: send.id });
@@ -255,6 +259,8 @@ export default async function handler(req, res) {
         // know not to mail the operator's own team again.
         internalDelivery: send.internal || null,
         internalDelivered: item.internalDelivered === true || send.internal?.ok === true,
+        tenantMailDegraded: send.tenantMailDegraded === true,
+        tenantMailError: send.tenantMailError || null,
       });
 
       if (dead) {

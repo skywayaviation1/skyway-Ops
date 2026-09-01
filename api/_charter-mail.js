@@ -52,11 +52,26 @@ export function mailboxUpn() {
   return String(process.env.CHARTER_MAILBOX_UPN || 'charters@flyskyway.com').trim().toLowerCase();
 }
 
+/**
+ * Read a Graph credential from the environment.
+ *
+ * Secrets pasted from the Vercel UI or a password manager routinely arrive with
+ * a trailing newline or wrapping quotes. Microsoft rejects those as
+ * `invalid_client`, which reads as a permissions problem and sends operators
+ * hunting through Entra for a fault that is purely cosmetic.
+ */
+export function mailCredential(name) {
+  return String(process.env[name] || '')
+    .trim()
+    .replace(/^['"]|['"]$/g, '')
+    .trim();
+}
+
 export function isSharedMailConfigured() {
   return Boolean(
-    process.env.MICROSOFT_MAIL_TENANT_ID
-    && process.env.MICROSOFT_MAIL_CLIENT_ID
-    && process.env.MICROSOFT_MAIL_CLIENT_SECRET,
+    mailCredential('MICROSOFT_MAIL_TENANT_ID')
+    && mailCredential('MICROSOFT_MAIL_CLIENT_ID')
+    && mailCredential('MICROSOFT_MAIL_CLIENT_SECRET'),
   );
 }
 
@@ -95,13 +110,43 @@ export async function authorizeMailboxCaller(idToken, roles = ['admin', 'sales']
   };
 }
 
+/**
+ * Name what an administrator has to change, in the vocabulary of the Entra UI.
+ *
+ * `invalid_client` is ambiguous on its own: it covers a wrong secret, an
+ * expired secret, and the very common mistake of copying the Secret **ID**
+ * instead of the secret **Value**.
+ */
+export function explainGraphTokenFailure(error, description = '') {
+  const detail = String(description || '');
+  if (error === 'invalid_client') {
+    return 'Microsoft rejected the mailbox app secret. In Entra open the shared-mailbox app '
+      + '(the one matching MICROSOFT_MAIL_CLIENT_ID) → Certificates & secrets → New client secret, '
+      + 'copy the Value (not the Secret ID), set MICROSOFT_MAIL_CLIENT_SECRET in Vercel, and '
+      + 'redeploy. An expired secret fails the same way.';
+  }
+  if (error === 'unauthorized_client' || error === 'invalid_request') {
+    return 'The mailbox app is not allowed to request an application token. Confirm '
+      + 'MICROSOFT_MAIL_CLIENT_ID and MICROSOFT_MAIL_TENANT_ID belong to the same registration.';
+  }
+  if (/AADSTS7000215/.test(detail)) {
+    return 'Microsoft reported an invalid client secret (AADSTS7000215). Replace '
+      + 'MICROSOFT_MAIL_CLIENT_SECRET with a newly generated secret Value.';
+  }
+  if (/AADSTS700016|application with identifier/i.test(detail)) {
+    return 'That client ID does not exist in this tenant. Check MICROSOFT_MAIL_CLIENT_ID and '
+      + 'MICROSOFT_MAIL_TENANT_ID.';
+  }
+  return detail.slice(0, 240) || 'See docs/charter-shared-inbox-setup.md.';
+}
+
 async function graphToken(force = false) {
   if (!force && tokenCache?.token && tokenCache.expiresAt > Date.now() + 5 * 60 * 1000) {
     return tokenCache.token;
   }
-  const tenant = process.env.MICROSOFT_MAIL_TENANT_ID;
-  const clientId = process.env.MICROSOFT_MAIL_CLIENT_ID;
-  const clientSecret = process.env.MICROSOFT_MAIL_CLIENT_SECRET;
+  const tenant = mailCredential('MICROSOFT_MAIL_TENANT_ID');
+  const clientId = mailCredential('MICROSOFT_MAIL_CLIENT_ID');
+  const clientSecret = mailCredential('MICROSOFT_MAIL_CLIENT_SECRET');
   if (!tenant || !clientId || !clientSecret) {
     const error = new Error(
       'Shared mailbox Graph credentials are not configured. An administrator must set MICROSOFT_MAIL_TENANT_ID, MICROSOFT_MAIL_CLIENT_ID, and MICROSOFT_MAIL_CLIENT_SECRET on the server (see Settings → Mailboxes).',
@@ -125,9 +170,19 @@ async function graphToken(force = false) {
   );
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data.access_token) {
-    console.error('[charter-mail] token failure', response.status, data);
-    const error = new Error(`Microsoft Graph authorization failed (${data.error || response.status})`);
+    console.error('[charter-mail] token failure', response.status, {
+      error: data.error,
+      error_description: data.error_description,
+      clientId,
+      tenant,
+      secretLength: clientSecret.length,
+    });
+    const error = new Error(
+      `Microsoft Graph authorization failed (${data.error || response.status}). `
+      + explainGraphTokenFailure(data.error, data.error_description),
+    );
     error.status = 502;
+    error.code = data.error || 'graph_token_failed';
     throw error;
   }
   tokenCache = {

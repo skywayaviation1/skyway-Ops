@@ -1,0 +1,87 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+import test from 'node:test';
+
+import googleMapsConfigHandler from '../api/google-maps-config.js';
+
+const root = path.resolve(import.meta.dirname, '..');
+const source = (file) => readFile(path.join(root, file), 'utf8');
+
+function responseCapture() {
+  return {
+    statusCode: 200,
+    headers: {},
+    body: null,
+    setHeader(name, value) { this.headers[name] = value; },
+    status(code) { this.statusCode = code; return this; },
+    json(value) { this.body = value; return this; },
+  };
+}
+
+test('Google Maps config endpoint reports missing key without a fake success', () => {
+  const original = process.env.GOOGLE_MAPS_API_KEY;
+  try {
+    delete process.env.GOOGLE_MAPS_API_KEY;
+    const res = responseCapture();
+    googleMapsConfigHandler({ method: 'GET' }, res);
+    assert.equal(res.statusCode, 503);
+    assert.equal(res.body.configured, false);
+    assert.deepEqual(res.body.missing, ['GOOGLE_MAPS_API_KEY']);
+  } finally {
+    if (original === undefined) delete process.env.GOOGLE_MAPS_API_KEY;
+    else process.env.GOOGLE_MAPS_API_KEY = original;
+  }
+});
+
+test('Google Maps config endpoint returns deployment browser key without caching', () => {
+  const original = process.env.GOOGLE_MAPS_API_KEY;
+  try {
+    process.env.GOOGLE_MAPS_API_KEY = 'restricted-browser-key';
+    const res = responseCapture();
+    googleMapsConfigHandler({ method: 'GET' }, res);
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual(res.body, { configured: true, key: 'restricted-browser-key' });
+    assert.equal(res.headers['Cache-Control'], 'private, no-store');
+  } finally {
+    if (original === undefined) delete process.env.GOOGLE_MAPS_API_KEY;
+    else process.env.GOOGLE_MAPS_API_KEY = original;
+  }
+});
+
+test('Google Maps client loader uses runtime configuration and auth failure handling', async () => {
+  const loader = await source('src/google-maps.js');
+  assert.match(loader, /\/api\/google-maps-config/);
+  assert.match(loader, /maps\.googleapis\.com\/maps\/api\/js/);
+  assert.match(loader, /gm_authFailure/);
+  assert.match(loader, /onGoogleMapsAuthFailure/);
+  assert.doesNotMatch(loader, /GOOGLE_MAPS_API_KEY/);
+});
+
+test('shared tracking map uses Google as its only basemap', async () => {
+  const map = await source('src/TrackingMap.jsx');
+  assert.match(map, /loadGoogleMaps\(\)/);
+  assert.match(map, /new google\.Map/);
+  assert.match(map, /Google Maps authorization failed/);
+  assert.match(map, /Basemap by Google Maps/);
+  assert.doesNotMatch(map, /Apple|CARTO|Esri|applyBasemap/);
+});
+
+test('TV Flight Board uses only Google basemaps and retains operational overlays', async () => {
+  const board = await source('src/FlightBoard.jsx');
+  assert.match(board, /loadGoogleMaps\(\)/);
+  assert.match(board, /new google\.Map/);
+  assert.match(board, /GOOGLE MAPS/);
+  assert.match(board, /Google Maps authorization failed/);
+  assert.match(board, /L\.polyline/);
+  assert.match(board, /RainViewer/);
+  assert.doesNotMatch(board, /Apple|CARTO|Esri|arcgisonline|cartocdn/);
+});
+
+test('tracking toolkit contains overlays but no alternate basemap provider', async () => {
+  const toolkit = await source('src/tracking-map.js');
+  assert.match(toolkit, /createRadarLayer/);
+  assert.match(toolkit, /aircraftIcon/);
+  assert.doesNotMatch(toolkit, /BASEMAPS|applyBasemap|cartocdn|arcgisonline|opentopomap/);
+});
+
