@@ -347,11 +347,11 @@ test('Vapi payload never includes a passenger name without ground transport', ()
   assert.equal(body.assistantOverrides.variableValues.leadPassengerName, '');
   assert.equal(body.assistantOverrides.artifactPlan.recordingEnabled, true);
   assert.equal(
-    body.assistant.analysisPlan.structuredDataSchema.properties.arrivalTimeConfirmed.type,
+    body.assistantOverrides.analysisPlan.structuredDataSchema.properties.arrivalTimeConfirmed.type,
     'boolean',
   );
   assert.equal(
-    body.assistant.analysisPlan.structuredDataSchema.properties.departingPaxConfirmed.type,
+    body.assistantOverrides.analysisPlan.structuredDataSchema.properties.departingPaxConfirmed.type,
     'boolean',
   );
   assert.match(

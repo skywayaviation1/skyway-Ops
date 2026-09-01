@@ -434,6 +434,7 @@ export function vapiCallPayload(job, config, env = process.env) {
       variableValues,
       firstMessage: assistant.firstMessage,
       artifactPlan: reliability.artifactPlan,
+      analysisPlan: assistant.analysisPlan,
       server: reliability.server,
       serverMessages: reliability.serverMessages,
       transcriber: reliability.transcriber,
