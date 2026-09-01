@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { AlertTriangle, Play, RotateCcw } from 'lucide-react';
 import { Button } from './ui.jsx';
+import { postJson } from './api-json.js';
 
 async function idToken() {
   const { auth } = await import('./firebase.js');
@@ -16,19 +17,12 @@ export default function VoiceTaskRecording({ callId }) {
     setLoading(true);
     setError('');
     try {
-      const response = await fetch('/api/voice-task-call', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          idToken: await idToken(),
-          action: 'recording',
-          callId,
-        }),
+      const data = await postJson('/api/voice-task-call', {
+        idToken: await idToken(),
+        action: 'recording',
+        callId,
       });
-      const data = await response.json();
-      if (!response.ok || !data.recordingUrl) {
-        throw new Error(data.error || 'Recording is not ready');
-      }
+      if (!data.recordingUrl) throw new Error('Recording is not ready');
       setUrl(data.recordingUrl);
     } catch (err) {
       setError(err.message || 'Could not load the recording');

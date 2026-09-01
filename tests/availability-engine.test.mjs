@@ -15,10 +15,26 @@ import {
   rankTailAvailability,
 } from '../src/availability-engine.js';
 
-const at = (iso) => new Date(iso).getTime();
 const date = (ms) => new Date(ms);
 const MIN = 60_000;
 const HR = 60 * MIN;
+const WEEK = 7 * 24 * HR;
+
+/**
+ * Fixture clock. The scenarios below are written against a 2026-09-01 baseline,
+ * and the engine clamps a requested departure that is already in the past. Once
+ * the real clock reached that baseline the expectations drifted, so shift the
+ * whole fixture calendar forward in whole weeks — preserving weekday and every
+ * relative offset — until it stays comfortably in the future.
+ */
+const FIXTURE_SHIFT = (() => {
+  const baseline = new Date('2026-09-01T00:00:00Z').getTime();
+  const earliest = Date.now() + 30 * 24 * HR;
+  if (baseline >= earliest) return 0;
+  return Math.ceil((earliest - baseline) / WEEK) * WEEK;
+})();
+
+const at = (iso) => new Date(iso).getTime() + FIXTURE_SHIFT;
 const root = path.resolve(import.meta.dirname, '..');
 
 function trip({

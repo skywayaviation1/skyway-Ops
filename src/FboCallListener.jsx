@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Headphones, Square } from 'lucide-react';
 import { Button } from './ui.jsx';
+import { postJson } from './api-json.js';
 
 async function idToken() {
   const { auth } = await import('./firebase.js');
@@ -62,13 +63,12 @@ export default function FboCallListener({
     setError('');
     manuallyStoppedRef.current = false;
     try {
-      const response = await fetch(apiPath, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ idToken: await idToken(), action: 'listen', callId }),
+      const data = await postJson(apiPath, {
+        idToken: await idToken(),
+        action: 'listen',
+        callId,
       });
-      const data = await response.json();
-      if (!response.ok || !data.listenUrl) throw new Error(data.error || 'Live stream unavailable');
+      if (!data.listenUrl) throw new Error('Live stream unavailable');
 
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
       if (!AudioContextClass) throw new Error('This browser cannot play the live call stream');

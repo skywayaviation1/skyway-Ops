@@ -15,6 +15,7 @@ import {
 import { Button, Card, StatusChip } from './ui.jsx';
 import FboCallListener from './FboCallListener.jsx';
 import VoiceTaskRecording from './VoiceTaskRecording.jsx';
+import { postJson } from './api-json.js';
 import { formatVoiceTaskLog } from './voice-task-call.js';
 
 const TONE = {
@@ -72,13 +73,10 @@ export default function VoiceTaskCalls({ currentUser }) {
     if (!allowed) return;
     if (!quiet) setLoading(true);
     try {
-      const response = await fetch('/api/voice-task-call', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ idToken: await token(), action: 'list' }),
+      const data = await postJson('/api/voice-task-call', {
+        idToken: await token(),
+        action: 'list',
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Could not load voice tasks');
       setCalls(Array.isArray(data.calls) ? data.calls : []);
       setVendor(data.vendor || null);
     } catch (err) {
@@ -105,18 +103,12 @@ export default function VoiceTaskCalls({ currentUser }) {
     setError('');
     setMessage('');
     try {
-      const response = await fetch('/api/voice-task-call', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          idToken: await token(),
-          action: 'create',
-          phone,
-          task,
-        }),
+      await postJson('/api/voice-task-call', {
+        idToken: await token(),
+        action: 'create',
+        phone,
+        task,
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'The voice task call could not be placed');
       setPhone('');
       setTask('');
       setMessage('Call placed. Skyway will log the outcome and transcript below.');
@@ -139,17 +131,11 @@ export default function VoiceTaskCalls({ currentUser }) {
     setError('');
     setMessage('');
     try {
-      const response = await fetch('/api/voice-task-call', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          idToken: await token(),
-          action,
-          callId: call.id,
-        }),
+      const data = await postJson('/api/voice-task-call', {
+        idToken: await token(),
+        action,
+        callId: call.id,
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || `${action} failed`);
       if (action === 'retry') {
         setMessage('Retry call placed with the same number and task.');
         setView('active');
@@ -197,7 +183,9 @@ export default function VoiceTaskCalls({ currentUser }) {
           </div>
           <div className="flex gap-2">
             <StatusChip tone={vendor?.configured ? 'success' : 'warning'} size="sm">
-              {vendor?.configured ? 'Vapi ready' : 'Vapi unavailable'}
+              {vendor?.configured
+                ? 'Vapi ready'
+                : `Missing on this deployment: ${(vendor?.missing || []).join(', ') || 'Vapi keys'}`}
             </StatusChip>
             <Button size="sm" variant="secondary" icon={RefreshCw} onClick={() => load()}>
               Refresh
@@ -271,6 +259,13 @@ export default function VoiceTaskCalls({ currentUser }) {
         </form>
         )}
 
+        {vendor && !vendor.configured && (
+          <p className="mt-3 text-sm text-content-muted">
+            Add {(vendor.missing || []).join(' and ') || 'the Vapi variables'} in Vercel on the
+            Production environment, then redeploy. Server variables only reach deployments created
+            after they are saved.
+          </p>
+        )}
         {error && (
           <p className="mt-3 flex items-start gap-2 text-sm text-danger">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />{error}
