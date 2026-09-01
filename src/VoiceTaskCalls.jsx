@@ -140,7 +140,7 @@ export default function VoiceTaskCalls({ currentUser }) {
         setMessage('Retry call placed with the same number and task.');
         setView('active');
       } else if (action === 'delete') {
-        setMessage('Finished call deleted. Its deletion audit event was retained.');
+        setMessage('Finished call and its stored event records permanently deleted.');
       } else if (action === 'refreshArtifacts') {
         setMessage(data.call?.transcript
           ? 'Transcript and recording status refreshed from Vapi.'
@@ -149,6 +149,27 @@ export default function VoiceTaskCalls({ currentUser }) {
       await load({ quiet: true });
     } catch (err) {
       setError(err.message || `${action} failed`);
+    } finally {
+      setBusyCallId('');
+    }
+  }
+
+  async function clearHistory() {
+    if (busyCallId || historyCalls.length === 0) return;
+    if (!window.confirm(
+      `Permanently delete all ${historyCalls.length} finished voice calls, transcripts, and stored event records?`,
+    )) return;
+    setBusyCallId('all');
+    setError('');
+    try {
+      const data = await postJson('/api/voice-task-call', {
+        idToken: await token(),
+        action: 'clearHistory',
+      });
+      setMessage(`${data.deleted || 0} previous calls permanently deleted.`);
+      await load({ quiet: true });
+    } catch (err) {
+      setError(err.message || 'Could not delete call history');
     } finally {
       setBusyCallId('');
     }
@@ -184,7 +205,7 @@ export default function VoiceTaskCalls({ currentUser }) {
           <div className="flex gap-2">
             <StatusChip tone={vendor?.configured ? 'success' : 'warning'} size="sm">
               {vendor?.configured
-                ? 'Vapi ready'
+                ? (vendor?.hasAssistant ? 'Vapi ready' : 'Vapi connected · phone assistant')
                 : `Missing on this deployment: ${(vendor?.missing || []).join(', ') || 'Vapi keys'}`}
             </StatusChip>
             <Button size="sm" variant="secondary" icon={RefreshCw} onClick={() => load()}>
@@ -284,9 +305,22 @@ export default function VoiceTaskCalls({ currentUser }) {
         </p>
       ) : visibleCalls.length > 0 ? (
         <div className="space-y-2">
-          <p className="text-[10px] font-semibold uppercase tracking-widest text-content-subtle">
-            {view === 'active' ? 'Active voice calls' : 'Call history and logs'}
-          </p>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-[10px] font-semibold uppercase tracking-widest text-content-subtle">
+              {view === 'active' ? 'Active voice calls' : 'Call history and logs'}
+            </p>
+            {view === 'history' && (
+              <Button
+                size="sm"
+                variant="danger"
+                icon={Trash2}
+                loading={busyCallId === 'all'}
+                onClick={clearHistory}
+              >
+                Delete all previous calls
+              </Button>
+            )}
+          </div>
           {visibleCalls.map((call) => (
             <Card key={call.id} padded>
               <div className="flex flex-wrap items-start justify-between gap-3">

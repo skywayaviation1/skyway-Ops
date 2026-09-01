@@ -32,7 +32,6 @@ import {
   vendorConfigured,
   vendorEnvDiagnostics,
 } from '../src/fbo-call.js';
-import { normalizeTranscriberKeywords } from '../src/vapi-call-artifacts.js';
 
 const CONFIG_PATH = ['app-config', 'fbo-call'];
 const JOBS = 'fbo-call-jobs';
@@ -120,87 +119,7 @@ export function publicVendorStatus(env = process.env) {
     callerId: SKYWAY_CALLER_ID,
     callerName: SKYWAY_CALLER_NAME,
     configured: diagnostics.missing.length === 0,
-    promptSource: vapiPromptSource(env),
     ...diagnostics,
-  };
-}
-
-/**
- * The Vapi assistant owns the prompt, first message, voice, and transcriber.
- * Skyway never sends conversation content, so edits made in the Vapi Dashboard
- * apply to the very next call.
- */
-export function requireVapiAssistantId(env = process.env, { voiceTask = false } = {}) {
-  const taskAssistant = String(env.VAPI_VOICE_TASK_ASSISTANT_ID || '')
-    .trim()
-    .replace(/^['"]|['"]$/g, '')
-    .trim();
-  const assistantId = (voiceTask && taskAssistant) || vapiEnvValue(env, 'assistantId');
-  if (!assistantId) {
-    const error = new Error(
-      voiceTask
-        ? 'Set VAPI_VOICE_TASK_ASSISTANT_ID or VAPI_ASSISTANT_ID in Vercel, then redeploy. The prompt and voice come from that Vapi assistant.'
-        : 'Set VAPI_ASSISTANT_ID in Vercel, then redeploy. The prompt and voice come from that Vapi assistant.',
-    );
-    error.status = 503;
-    throw error;
-  }
-  return assistantId;
-}
-
-export function vapiAssistantReliability(env = process.env) {
-  const secret = vapiEnvValue(env, 'webhookSecret');
-  const server = {
-    url: String(env.VAPI_WEBHOOK_URL || 'https://www.skyway.app/api/fbo-call-webhook').trim(),
-    timeoutSeconds: 20,
-    backoffPlan: {
-      type: 'exponential',
-      maxRetries: 4,
-      baseDelaySeconds: 2,
-    },
-  };
-  if (secret) server.headers = { 'X-Vapi-Secret': secret };
-  return {
-    server,
-    serverMessages: [
-      'status-update',
-      'transcript',
-      'conversation-update',
-      'end-of-call-report',
-      'hang',
-      'tool-calls',
-    ],
-    transcriber: {
-      provider: 'deepgram',
-      // Telephony-tuned model: every Skyway voice call is a PSTN call.
-      model: 'nova-2-phonecall',
-      language: 'en',
-      smartFormat: true,
-      // Deepgram rejects multi-word keywords, so these stay single tokens.
-      keywords: normalizeTranscriberKeywords([
-        'Skyway:2',
-        'Aviation',
-        'FBO:2',
-        'tail',
-        'registration',
-        'hangar',
-        'catering',
-        'confirmation',
-      ]),
-    },
-    artifactPlan: {
-      recordingEnabled: true,
-      fullMessageHistoryEnabled: true,
-      transcriptPlan: {
-        enabled: true,
-        assistantName: 'Skyway assistant',
-        userName: 'Contact',
-      },
-    },
-    monitorPlan: {
-      listenEnabled: true,
-      controlEnabled: true,
-    },
   };
 }
 
@@ -322,7 +241,6 @@ export async function notifyOps({ subject, text, tripId, source }) {
 
 export function vapiCallPayload(job, config, env = process.env) {
   const facts = job.facts || {};
-  const reliability = vapiAssistantReliability(env);
   const transfer = toE164(config.opsTransferNumber) || SKYWAY_CALLER_ID;
   const variableValues = {
     callerName: facts.callerName,
@@ -366,20 +284,8 @@ export function vapiCallPayload(job, config, env = process.env) {
     name: facts.fboName || 'FBO',
   };
   const body = {
-    // The prompt, first message, voice, and transcriber all come from this
-    // Vapi assistant. Skyway sends trip variables and delivery settings only.
-    assistantId: requireVapiAssistantId(env),
     customer,
-    assistantOverrides: {
-      variableValues,
-      // Delivery stays Skyway's so transcripts, recordings, and live listening
-      // always reach the app. Transcription is logging, not the conversation.
-      artifactPlan: reliability.artifactPlan,
-      transcriber: reliability.transcriber,
-      server: reliability.server,
-      serverMessages: reliability.serverMessages,
-      monitorPlan: reliability.monitorPlan,
-    },
+    assistantOverrides: { variableValues },
     metadata: {
       skywayCallId: job.id,
       skywayJobKind: 'fbo_call',
@@ -387,6 +293,8 @@ export function vapiCallPayload(job, config, env = process.env) {
       purpose: job.purpose,
     },
   };
+  const assistantId = vapiEnvValue(env, 'assistantId');
+  if (assistantId) body.assistantId = assistantId;
   const phoneNumberId = vapiEnvValue(env, 'phoneNumberId');
   const phoneNumber = vapiEnvValue(env, 'phoneNumber');
   if (phoneNumberId) body.phoneNumberId = phoneNumberId;
@@ -435,8 +343,60 @@ export async function resolveVapiPhoneNumberId(env = process.env) {
     error.status = 503;
     throw error;
   }
-  vapiPhoneCache = { id: match.id, number: lookupNumber, expiresAt: Date.now() + 5 * 60_000 };
+  vapiPhoneCache = {
+    id: match.id,
+    number: lookupNumber,
+    assistantId: match.assistantId || '',
+    expiresAt: Date.now() + 5 * 60_000,
+  };
   return match.id;
+}
+
+export async function resolveVapiAssistantId(env, phoneNumberId, { voiceTask = false } = {}) {
+  const taskAssistant = String(env.VAPI_VOICE_TASK_ASSISTANT_ID || '')
+    .trim()
+    .replace(/^['"]|['"]$/g, '')
+    .trim();
+  const configured = (voiceTask && taskAssistant) || vapiEnvValue(env, 'assistantId');
+  if (configured) return configured;
+  if (vapiPhoneCache?.id === phoneNumberId && vapiPhoneCache.assistantId) {
+    return vapiPhoneCache.assistantId;
+  }
+
+  const apiKey = vapiEnvValue(env, 'apiKey');
+  const phoneResponse = await fetch(
+    `https://api.vapi.ai/phone-number/${encodeURIComponent(phoneNumberId)}`,
+    { headers: { Authorization: `Bearer ${apiKey}` } },
+  );
+  const phone = await phoneResponse.json().catch(() => ({}));
+  if (phoneResponse.ok && phone.assistantId) {
+    vapiPhoneCache = {
+      id: phoneNumberId,
+      number: toE164(phone.number) || SKYWAY_CALLER_ID,
+      assistantId: phone.assistantId,
+      expiresAt: Date.now() + 5 * 60_000,
+    };
+    return phone.assistantId;
+  }
+
+  // A Vapi organization with one assistant is unambiguous. This keeps initial
+  // setup to the API key + imported number while refusing to guess when more
+  // than one assistant exists.
+  const assistantsResponse = await fetch('https://api.vapi.ai/assistant?limit=2', {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
+  const assistantsBody = await assistantsResponse.json().catch(() => []);
+  const assistants = Array.isArray(assistantsBody)
+    ? assistantsBody
+    : (assistantsBody.results || []);
+  if (assistantsResponse.ok && assistants.length === 1 && assistants[0]?.id) {
+    return assistants[0].id;
+  }
+  const error = new Error(
+    'No Vapi assistant is assigned to the Skyway phone number. Assign the assistant to +1 (813) 859-5943 in Vapi, or set VAPI_ASSISTANT_ID in Vercel.',
+  );
+  error.status = 503;
+  throw error;
 }
 
 export async function placeVapiPayload(payload, env = process.env) {
@@ -450,6 +410,11 @@ export async function placeVapiPayload(payload, env = process.env) {
   }
   const phoneNumberId = await resolveVapiPhoneNumberId(env);
   const body = { ...payload, phoneNumberId };
+  if (!body.assistantId) {
+    body.assistantId = await resolveVapiAssistantId(env, phoneNumberId, {
+      voiceTask: body.metadata?.skywayJobKind === 'voice_task',
+    });
+  }
   delete body.phoneNumber;
   const response = await fetch('https://api.vapi.ai/call', {
     method: 'POST',
@@ -646,7 +611,7 @@ export async function retryJob(id, actor, now = Date.now()) {
   return jobPublic((await loadJob(idForRetry)) || retry);
 }
 
-export async function deleteFinishedJob(id, actor) {
+export async function deleteFinishedJob(id) {
   const job = await loadJob(id);
   if (!job) {
     const error = new Error('Call not found');
@@ -659,16 +624,11 @@ export async function deleteFinishedJob(id, actor) {
     throw error;
   }
   const deletedAt = Date.now();
-  await getDb().collection(EVENTS).doc(`deleted_${sanitizeKey(id)}_${deletedAt}`).set({
-    type: 'call-deleted',
-    callId: id,
-    tripId: job.tripId,
-    status: job.status,
-    deletedAt,
-    deletedByUid: actor.uid,
-    deletedByName: actor.name,
-  });
-  await getDb().collection(JOBS).doc(id).delete();
+  const eventSnap = await getDb().collection(EVENTS).where('callId', '==', id).get();
+  const batch = getDb().batch();
+  batch.delete(getDb().collection(JOBS).doc(id));
+  eventSnap.docs.forEach((doc) => batch.delete(doc.ref));
+  await batch.commit();
   await mirrorTripCalls(job.tripId);
   return { id, tripId: job.tripId, deletedAt };
 }

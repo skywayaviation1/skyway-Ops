@@ -535,11 +535,8 @@ export function vendorEnvDiagnostics(env = {}) {
   const apiKey = vapiEnvValue(env, 'apiKey');
   const phoneNumberId = vapiEnvValue(env, 'phoneNumberId');
   const phoneNumber = vapiEnvValue(env, 'phoneNumber');
-  const assistantId = vapiEnvValue(env, 'assistantId');
   const missing = [];
   if (!apiKey) missing.push('VAPI_API_KEY');
-  // The prompt and voice live in Vapi, so a saved assistant is required.
-  if (!assistantId) missing.push('VAPI_ASSISTANT_ID');
   const warnings = Object.keys(env || {})
     .filter((name) => name.startsWith('VITE_VAPI'))
     .map((name) => `${name} is exposed to browsers. Rename it to ${name.replace(/^VITE_/, '')}.`);
@@ -549,6 +546,7 @@ export function vendorEnvDiagnostics(env = {}) {
     phoneNumberLookup: !phoneNumberId && !phoneNumber ? 'automatic_by_number' : 'environment',
     callerNumber: SKYWAY_CALLER_ID,
     hasAssistant: Boolean(vapiEnvValue(env, 'assistantId')),
+    assistantLookup: vapiEnvValue(env, 'assistantId') ? 'environment' : 'vapi_phone',
     hasWebhookSecret: Boolean(vapiEnvValue(env, 'webhookSecret')),
     missing,
     warnings,

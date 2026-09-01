@@ -7,6 +7,7 @@
 import { authorizeFboCaller, publicVendorStatus } from './_fbo-call.js';
 import {
   createVoiceTask,
+  clearVoiceTaskHistory,
   deleteVoiceTask,
   getVoiceTaskListenCredentials,
   getVoiceTaskRecordingCredentials,
@@ -89,7 +90,13 @@ export default async function handler(req, res) {
     if (action === 'delete') {
       return res.status(200).json({
         ok: true,
-        deleted: await deleteVoiceTask(body.callId, actor),
+        deleted: await deleteVoiceTask(body.callId),
+      });
+    }
+    if (action === 'clearHistory') {
+      return res.status(200).json({
+        ok: true,
+        ...(await clearVoiceTaskHistory()),
       });
     }
     return res.status(400).json({ error: `Unknown action: ${action}` });

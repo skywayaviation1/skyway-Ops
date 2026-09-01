@@ -155,6 +155,7 @@ export default async function handler(req, res) {
   const first = await record(eventKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 200), {
     type: payload.message?.type || payload.type,
     vendorCallId: vendorIdFrom(payload),
+    callId: jobIdFrom(payload),
     jobKind,
   });
   if (!first) return res.status(200).json({ ok: true, duplicate: true });

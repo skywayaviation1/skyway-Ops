@@ -128,7 +128,7 @@ export default async function handler(req, res) {
     }
 
     if (action === 'delete') {
-      return res.status(200).json({ ok: true, deleted: await deleteFinishedJob(body.callId, actor) });
+      return res.status(200).json({ ok: true, deleted: await deleteFinishedJob(body.callId) });
     }
 
     if (action === 'dialNow') {

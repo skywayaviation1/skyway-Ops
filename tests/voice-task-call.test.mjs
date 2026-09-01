@@ -14,7 +14,6 @@ import {
   extractVapiRecording,
   extractVapiTranscript,
   mergeTranscript,
-  normalizeTranscriberKeywords,
   transcriptEventSegment,
 } from '../src/vapi-call-artifacts.js';
 
@@ -49,54 +48,31 @@ test('voice task calls use the Vapi assistant and still deliver the task', () =>
   assert.equal('model' in payload.assistantOverrides, false);
   assert.equal('voice' in payload.assistantOverrides, false);
   assert.equal('firstMessage' in payload.assistantOverrides, false);
-  assert.equal(payload.assistantOverrides.transcriber.model, 'nova-2-phonecall');
+  assert.deepEqual(Object.keys(payload.assistantOverrides), ['variableValues']);
 
-  // Skyway supplies the task, isolation metadata, and delivery.
+  // Skyway supplies only the task variables and isolation metadata.
   assert.equal(payload.customer.number, '+13055550142');
   assert.equal(payload.assistantOverrides.variableValues.task, job.task);
   assert.equal(payload.assistantOverrides.variableValues.ops_transfer_number, '+18138595943');
   assert.equal(payload.metadata.skywayCallId, 'vtask_1');
   assert.equal(payload.metadata.skywayJobKind, 'voice_task');
   assert.equal('tripId' in payload.metadata, false);
-  assert.equal(payload.assistantOverrides.artifactPlan.recordingEnabled, true);
-  assert.equal(payload.assistantOverrides.artifactPlan.transcriptPlan.enabled, true);
-  assert.match(payload.assistantOverrides.server.url, /fbo-call-webhook/);
-  assert.equal(payload.assistantOverrides.server.headers['X-Vapi-Secret'], 'webhook-secret');
-  assert.equal(payload.assistantOverrides.serverMessages.includes('transcript'), true);
-  assert.equal(payload.assistantOverrides.monitorPlan.listenEnabled, true);
 });
 
-test('a voice task falls back to the main assistant and fails when none is set', () => {
+test('a voice task falls back to the main assistant or Vapi phone assignment', () => {
   const shared = voiceTaskVapiPayload(
     { id: 'vtask_2', phoneE164: '+13055550142', task: 'Confirm rooms.' },
     {},
     { VAPI_ASSISTANT_ID: 'asst_main', VAPI_WEBHOOK_SECRET: 'hook' },
   );
   assert.equal(shared.assistantId, 'asst_main');
-  assert.throws(
-    () => voiceTaskVapiPayload(
-      { id: 'vtask_3', phoneE164: '+13055550142', task: 'Confirm rooms.' },
-      {},
-      { VAPI_WEBHOOK_SECRET: 'hook' },
-    ),
-    /VAPI_VOICE_TASK_ASSISTANT_ID or VAPI_ASSISTANT_ID/,
-  );
-});
-
-test('Deepgram keywords stay in the word or word:boost format Vapi requires', () => {
-  assert.deepEqual(
-    normalizeTranscriberKeywords(['Skyway Aviation:2', 'FBO', 'tail number', '  ', 'FBO']),
-    ['Skyway:2', 'Aviation:2', 'FBO', 'tail', 'number'],
-  );
-  const payload = voiceTaskVapiPayload(
-    { id: 'vtask_1', phoneE164: '+13055550142', task: 'Confirm rooms.' },
+  const assignedByPhone = voiceTaskVapiPayload(
+    { id: 'vtask_3', phoneE164: '+13055550142', task: 'Confirm rooms.' },
     {},
-    { VAPI_ASSISTANT_ID: 'asst_1', VAPI_WEBHOOK_SECRET: 'webhook-secret' },
+    {},
   );
-  const valid = /^[A-Za-z0-9']+(?::\d+)?$/;
-  for (const keyword of payload.assistantOverrides.transcriber.keywords) {
-    assert.match(keyword, valid, `invalid Deepgram keyword: ${keyword}`);
-  }
+  assert.equal('assistantId' in assignedByPhone, false);
+  assert.equal(assignedByPhone.assistantOverrides.variableValues.task, 'Confirm rooms.');
 });
 
 test('Vapi artifacts parse all current transcript and recording shapes', () => {
@@ -201,6 +177,8 @@ test('voice task routes and UI remain server-authenticated and trip-isolated', a
   assert.match(helper, /parentCallId: original\.id/);
   assert.match(helper, /export async function deleteVoiceTask/);
   assert.match(helper, /Only finished voice task calls can be deleted/);
+  assert.match(helper, /export async function clearVoiceTaskHistory/);
+  assert.doesNotMatch(helper, /type: 'call-deleted'/);
   assert.match(helper, /refreshVoiceTaskArtifacts/);
   assert.match(ui, /Download \.txt/);
   assert.match(ui, /AI Voicebot control center/);
@@ -211,6 +189,8 @@ test('voice task routes and UI remain server-authenticated and trip-isolated', a
   assert.match(api, /action === 'refreshArtifacts'/);
   assert.match(api, /action === 'recording'/);
   assert.match(api, /action === 'delete'/);
+  assert.match(api, /action === 'clearHistory'/);
+  assert.match(ui, /Delete all previous calls/);
   assert.match(ui, /\/api\/voice-task-call/);
   assert.doesNotMatch(ui, /VAPI_API_KEY/);
   assert.match(app, /AI voice calls/);

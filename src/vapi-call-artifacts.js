@@ -1,30 +1,5 @@
 const clean = (value) => String(value ?? '').trim();
 
-/**
- * Deepgram accepts only `word` or `word:boost` keywords. Multi-word phrases are
- * rejected outright, which fails the whole call, so split phrases into tokens
- * and carry the phrase's boost onto each one.
- */
-export function normalizeTranscriberKeywords(keywords) {
-  const seen = new Set();
-  const out = [];
-  for (const entry of Array.isArray(keywords) ? keywords : []) {
-    const raw = clean(entry);
-    if (!raw) continue;
-    const [phrase, boost] = raw.split(':');
-    const suffix = /^\d+$/.test(clean(boost)) ? `:${clean(boost)}` : '';
-    for (const token of clean(phrase).split(/\s+/)) {
-      const word = token.replace(/[^A-Za-z0-9']/g, '');
-      if (!word) continue;
-      const value = `${word}${suffix}`;
-      if (seen.has(value.toLowerCase())) continue;
-      seen.add(value.toLowerCase());
-      out.push(value);
-    }
-  }
-  return out;
-}
-
 function contentText(content) {
   if (typeof content === 'string') return clean(content);
   if (!Array.isArray(content)) return '';

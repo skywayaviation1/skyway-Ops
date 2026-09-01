@@ -24,15 +24,18 @@ AI Voicebot control center without attaching a call to a trip.
 
 ## Transcription and recording reliability
 
-Every one-off call explicitly configures:
+Configure these directly on the Vapi assistant:
 
-- Deepgram Nova-2 English transcription with Skyway/aviation keyword hints
+- the prompt, first message, voice, and transcriber
 - transcript, conversation-update, status-update, and end-of-call-report
   server messages
-- the Skyway webhook URL and authenticated `X-Vapi-Secret` header
+- the Skyway webhook URL
 - full message history and transcript artifacts
 - mono call recording and live monitoring
-- exponential webhook delivery retries
+
+Skyway sends no assistant settings; it sends only `{{task}}`, caller metadata,
+and the destination. If a webhook is not configured, Skyway still polls Vapi's
+call endpoint to recover status and finished artifacts.
 
 Final transcript events are accumulated while the call is active. The full
 end-of-call artifact replaces or extends that partial log. If Vapi ends a call
@@ -48,8 +51,9 @@ recording URLs and Vapi call IDs are never exposed in stored public summaries.
 - **Download .txt** preserves the assigned task and all returned responses.
 - **Retry** starts a new call with the same number and task and links it to the
   original.
-- **Delete** is available only for finished calls and retains a deletion audit
-  event. Active calls cannot be deleted.
+- **Delete** permanently removes a finished call and its linked event records.
+  **Delete all previous calls** permanently clears finished history. Active
+  calls are preserved.
 
 One-off jobs are stored in `voice-task-calls`. They are deliberately separate
 from `fbo-call-jobs`: they do not affect trip readiness, FBO scheduling, the

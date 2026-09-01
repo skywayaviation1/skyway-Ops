@@ -30,7 +30,11 @@ import {
 } from '../src/fbo-call.js';
 import { computeOutstanding } from '../src/ops-readiness.js';
 import { summarizeWebhook, validVapiSignature } from '../api/fbo-call-webhook.js';
-import { resolveVapiPhoneNumberId, vapiCallPayload } from '../api/_fbo-call.js';
+import {
+  resolveVapiAssistantId,
+  resolveVapiPhoneNumberId,
+  vapiCallPayload,
+} from '../api/_fbo-call.js';
 
 const root = path.resolve(import.meta.dirname, '..');
 const source = (file) => readFile(path.join(root, file), 'utf8');
@@ -334,11 +338,10 @@ test('Vapi owns the prompt and voice while Skyway supplies trip variables', () =
   assert.equal('model' in body.assistantOverrides, false);
   assert.equal('voice' in body.assistantOverrides, false);
   assert.equal('firstMessage' in body.assistantOverrides, false);
+  assert.equal('transcriber' in body.assistantOverrides, false);
   assert.equal('analysisPlan' in body.assistantOverrides, false);
-  // Transcription is a logging concern, so Skyway keeps it deterministic.
-  assert.equal(body.assistantOverrides.transcriber.model, 'nova-2-phonecall');
 
-  // Skyway still owns trip variables and delivery.
+  // Skyway supplies variables and metadata only.
   assert.equal(body.customer.number, '+12015550100');
   assert.equal(body.assistantOverrides.variableValues.tail_number, 'November 4, 4, 4, Alpha Mike');
   assert.equal(body.assistantOverrides.variableValues.aircraft_type, 'Gulfstream G450');
@@ -347,29 +350,22 @@ test('Vapi owns the prompt and voice while Skyway supplies trip variables', () =
   assert.equal(body.assistantOverrides.variableValues.arriving_pax_count, '3');
   assert.equal(body.assistantOverrides.variableValues.departing_pax_count, '3');
   assert.equal(body.assistantOverrides.variableValues.ops_transfer_number, SKYWAY_CALLER_ID);
-  assert.equal(body.assistantOverrides.artifactPlan.recordingEnabled, true);
-  assert.match(body.assistantOverrides.server.url, /fbo-call-webhook/);
-  assert.equal(body.assistantOverrides.serverMessages.includes('transcript'), true);
+  assert.deepEqual(Object.keys(body.assistantOverrides), ['variableValues']);
   assert.doesNotMatch(JSON.stringify(body), /Secret Passenger/);
 });
 
-test('a call without a Vapi assistant fails instead of using Skyway text', () => {
-  assert.throws(
-    () => vapiCallPayload(
-      { id: 'fbo_1', tripId: 'leg-1', purpose: 'departure', phoneE164: '+12015550100', facts: {} },
-      { opsTransferNumber: SKYWAY_CALLER_ID },
-      { VAPI_API_KEY: 'k' },
-    ),
-    /VAPI_ASSISTANT_ID/,
+test('a call without an env assistant defers to the assistant assigned in Vapi', () => {
+  const body = vapiCallPayload(
+    { id: 'fbo_1', tripId: 'leg-1', purpose: 'departure', phoneE164: '+12015550100', facts: {} },
+    { opsTransferNumber: SKYWAY_CALLER_ID },
+    { VAPI_API_KEY: 'k' },
   );
+  assert.equal('assistantId' in body, false);
   assert.deepEqual(
     vendorEnvDiagnostics({ VAPI_API_KEY: 'k' }).missing,
-    ['VAPI_ASSISTANT_ID'],
+    [],
   );
-  assert.equal(
-    vendorConfigured({ VAPI_API_KEY: 'k', VAPI_ASSISTANT_ID: 'asst_1' }),
-    true,
-  );
+  assert.equal(vendorConfigured({ VAPI_API_KEY: 'k' }), true);
 });
 
 test('Vapi credentials survive pasted quotes, newlines, and Vapi own key naming', () => {
@@ -395,7 +391,7 @@ test('an unconfigured deployment names the variable it cannot see', () => {
   assert.equal(diagnostics.hasApiKey, true);
   assert.equal(diagnostics.hasPhoneNumber, false);
   assert.equal(diagnostics.phoneNumberLookup, 'automatic_by_number');
-  assert.deepEqual(vendorEnvDiagnostics({}).missing, ['VAPI_API_KEY', 'VAPI_ASSISTANT_ID']);
+  assert.deepEqual(vendorEnvDiagnostics({}).missing, ['VAPI_API_KEY']);
   const warned = vendorEnvDiagnostics({
     VITE_VAPI_API_KEY: 'k',
     VAPI_PHONE_NUMBER_ID: 'pn_1',
@@ -419,6 +415,27 @@ test('Skyway caller number resolves to its Vapi phone record ID', async () => {
       VAPI_API_KEY: 'key-1',
       VAPI_PHONE_NUMBER_ID: '+1 (813) 859-5943',
     }), 'phone-record-1');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Vapi phone assignment resolves the assistant without another env variable', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    assert.match(String(url), /api\.vapi\.ai\/phone-number\/phone-record-1/);
+    assert.equal(options.headers.Authorization, 'Bearer key-1');
+    return new Response(JSON.stringify({
+      id: 'phone-record-1',
+      number: '+18138595943',
+      assistantId: 'asst_from_vapi_phone',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    assert.equal(await resolveVapiAssistantId(
+      { VAPI_API_KEY: 'key-1' },
+      'phone-record-1',
+    ), 'asst_from_vapi_phone');
   } finally {
     globalThis.fetch = originalFetch;
   }

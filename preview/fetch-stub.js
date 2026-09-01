@@ -625,6 +625,15 @@ export function installFetchStub() {
         if (index >= 0) PREVIEW_VOICE_TASKS.splice(index, 1);
         return json({ ok: true, deleted: { id: body.callId } });
       }
+      if (action === 'clearHistory') {
+        const before = PREVIEW_VOICE_TASKS.length;
+        for (let index = PREVIEW_VOICE_TASKS.length - 1; index >= 0; index -= 1) {
+          if (!['dialing', 'in_progress'].includes(PREVIEW_VOICE_TASKS[index].status)) {
+            PREVIEW_VOICE_TASKS.splice(index, 1);
+          }
+        }
+        return json({ ok: true, deleted: before - PREVIEW_VOICE_TASKS.length });
+      }
       if (action === 'listen' || action === 'recording') {
         return new Response(JSON.stringify({ error: 'Media is unavailable in preview mode' }), {
           status: 409,

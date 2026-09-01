@@ -120,6 +120,9 @@ export default function FboCallSettingsPanel({ currentUser }) {
             {status?.configured && (
               <StatusChip tone="info" size="sm">Prompt and voice from Vapi</StatusChip>
             )}
+            {status?.configured && !status?.hasAssistant && (
+              <StatusChip tone="info" size="sm">Using assistant assigned to Vapi phone</StatusChip>
+            )}
             {status?.configured && status?.phoneNumberLookup === 'automatic_by_number' && (
               <StatusChip tone="info" size="sm">
                 Finding +1 (813) 859-5943 in Vapi automatically
@@ -150,10 +153,11 @@ export default function FboCallSettingsPanel({ currentUser }) {
             re-verification is fixed at two hours before arrival.
           </p>
           <p className="text-sm leading-relaxed text-content-muted">
-            The prompt, first message, and voice come from the Vapi assistant in
-            <code className="mx-1">VAPI_ASSISTANT_ID</code>, so Vapi edits apply to the next call.
-            Skyway sends only trip variables and the transcript, recording, and live-listen
-            settings.
+            The prompt, first message, and voice come from the assistant assigned to the Skyway
+            phone in Vapi, or <code className="mx-1">VAPI_ASSISTANT_ID</code> when set, so Vapi
+            edits apply to the next call.
+            Skyway sends only trip variables and call metadata. Configure transcription,
+            recording, and live listening on that Vapi assistant.
           </p>
           <label className="flex items-center gap-2 text-sm text-content">
             <input

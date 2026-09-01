@@ -58,16 +58,19 @@ In Vapi, set the assistant server URL to:
 ## The prompt and voice live in Vapi
 
 Skyway never sends prompt text, a first message, or a voice. Every call uses
-the assistant in `VAPI_ASSISTANT_ID`, so edits made in the Vapi Dashboard apply
-to the next call. A call fails with a clear configuration error when that
-variable is missing.
+the assistant assigned to the imported Skyway phone number in Vapi, or the
+assistant in `VAPI_ASSISTANT_ID` when explicitly set. Vapi Dashboard edits
+apply to the next call.
 
 Skyway sends only:
 
 - trip variables for the prompt
-- delivery settings: webhook URL and events, recording, transcript artifacts,
-  and live monitoring
 - call metadata used to match webhooks back to the trip
+
+Configure transcription, recording, the prompt, first message, voice, analysis,
+and server events directly on the Vapi assistant. To return logs to Skyway, set
+the Vapi assistant's server URL to
+`https://www.skyway.app/api/fbo-call-webhook`.
 
 Keep these variables in the Vapi prompt: `{{tail_number}}`,
 `{{aircraft_type}}`, `{{arrival_date}}`, `{{arrival_time_local}}`,
@@ -84,8 +87,9 @@ fields on the Vapi assistant's analysis: `movementConfirmed`,
 `needsFollowUp`, `transferredToOps`, and `notes`.
 
 One-off voice tasks use `VAPI_VOICE_TASK_ASSISTANT_ID` when set, otherwise
-`VAPI_ASSISTANT_ID`. That assistant's prompt must include `{{task}}` so the
-entered task reaches the agent.
+`VAPI_ASSISTANT_ID`, then the assistant assigned to the phone number. That
+assistant's prompt must include `{{task}}` so the entered task reaches the
+agent.
 
 A reference prompt for Peter, the Logistics Specialist persona, is in
 [`docs/vapi-fbo-assistant-prompt.md`](./vapi-fbo-assistant-prompt.md). Paste it
@@ -109,7 +113,8 @@ into the Vapi assistant and edit it there; Skyway does not send it.
    fresh, short-lived private playback link for the recorded call.
 7. **Retry call** creates a new immediate call linked to the finished original,
    preserving its checklist, transcript, and recording. **Delete** removes only
-   finished call history; active and scheduled calls cannot be deleted.
+   finished call history and linked events permanently; active and scheduled
+   calls cannot be deleted.
 8. Transcripts, checklists, and recordings stay on the trip. They are **not**
    copied onto broker public tracking links.
 9. If the trip changes after a completed call, ops can queue an **update** call.

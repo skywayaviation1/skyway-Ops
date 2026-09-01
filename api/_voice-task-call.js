@@ -3,8 +3,6 @@ import {
   getDb,
   placeVapiPayload,
   readCallConfig,
-  requireVapiAssistantId,
-  vapiAssistantReliability,
 } from './_fbo-call.js';
 import {
   publicVoiceTaskSummary,
@@ -34,29 +32,25 @@ function newVoiceTaskId() {
 
 export function voiceTaskVapiPayload(job, config = {}, env = process.env) {
   const transfer = toE164(config.opsTransferNumber) || SKYWAY_CALLER_ID;
-  const reliability = vapiAssistantReliability(env);
-  return {
-    // The prompt, first message, and voice come from this Vapi assistant.
-    assistantId: requireVapiAssistantId(env, { voiceTask: true }),
+  const payload = {
     customer: { number: job.phoneE164, name: 'Operations contact' },
-    assistantOverrides: {
-      // Delivery only: transcripts, recordings, and live listening.
-      artifactPlan: reliability.artifactPlan,
-      transcriber: reliability.transcriber,
-      server: reliability.server,
-      serverMessages: reliability.serverMessages,
-      monitorPlan: reliability.monitorPlan,
-      variableValues: {
-        callerName: SKYWAY_CALLER_NAME,
-        task: job.task,
-        ops_transfer_number: transfer,
-      },
-    },
+    assistantOverrides: { variableValues: {
+      callerName: SKYWAY_CALLER_NAME,
+      task: job.task,
+      ops_transfer_number: transfer,
+    } },
     metadata: {
       skywayCallId: job.id,
       skywayJobKind: 'voice_task',
     },
   };
+  const taskAssistant = String(env.VAPI_VOICE_TASK_ASSISTANT_ID || '')
+    .trim()
+    .replace(/^['"]|['"]$/g, '')
+    .trim();
+  const assistantId = taskAssistant || vapiEnvValue(env, 'assistantId');
+  if (assistantId) payload.assistantId = assistantId;
+  return payload;
 }
 
 export async function loadVoiceTask(id) {
@@ -97,11 +91,15 @@ export async function listVoiceTasks(limit = 50) {
   const jobs = snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
   const dueForRecovery = jobs
     .filter((job) => (
-      isFinishedCallStatus(job.status)
-      && !job.transcript
-      && job.vendorCallId
-      && Number(job.artifactBackfillAt || 0) <= Date.now()
-      && (job.artifactBackfillAttempts || 0) < 5
+      job.vendorCallId
+      && (
+        (['dialing', 'in_progress'].includes(job.status)
+          && Number(job.vendorSyncAt || 0) <= Date.now())
+        || (isFinishedCallStatus(job.status)
+          && !job.transcript
+          && Number(job.artifactBackfillAt || 0) <= Date.now()
+          && (job.artifactBackfillAttempts || 0) < 5)
+      )
     ))
     .slice(0, 3);
   for (const job of dueForRecovery) {
@@ -132,13 +130,6 @@ export async function createVoiceTask({
   if (!input.ok) {
     const error = new Error(input.blockers.join('. '));
     error.status = 400;
-    throw error;
-  }
-  if (!vapiEnvValue(process.env, 'webhookSecret')) {
-    const error = new Error(
-      'VAPI_WEBHOOK_SECRET is required before placing voice tasks so transcripts and recordings can be logged.',
-    );
-    error.status = 503;
     throw error;
   }
   const id = newVoiceTaskId();
@@ -179,6 +170,7 @@ export async function createVoiceTask({
       monitorListenUrl: placed.monitor?.listenUrl || '',
       monitorControlUrl: placed.monitor?.controlUrl || '',
       monitorUrlsUpdatedAt: placed.monitor?.listenUrl ? now : null,
+      vendorSyncAt: now + 5_000,
       lastError: '',
     });
     return publicVoiceTaskSummary(next);
@@ -224,7 +216,20 @@ export async function refreshVoiceTaskArtifacts(id, env = process.env) {
   const outcome = analysis.structuredData || analysis.structured || job.outcome || null;
   const summary = analysis.summary || data.summary || job.summary || '';
   const recordingReady = Boolean(extractVapiRecording(data));
+  const vendorStatus = String(data.status || '').toLowerCase();
+  const ended = vendorStatus === 'ended';
+  const endedReason = data.endedReason || data.ended_reason || job.endedReason || '';
+  const failed = ended && /no-answer|busy|failed|error/i.test(String(endedReason));
+  const status = ended
+    ? (failed ? CALL_STATUSES.failed : (outcome?.needsFollowUp ? CALL_STATUSES.needs_followup : CALL_STATUSES.completed))
+    : (vendorStatus === 'in-progress' || vendorStatus === 'in_progress'
+      ? CALL_STATUSES.in_progress
+      : job.status);
   const next = await applyVoiceTaskStatus(job, {
+    status,
+    startedAt: status === CALL_STATUSES.in_progress ? (job.startedAt || Date.now()) : job.startedAt,
+    endedAt: ended ? (job.endedAt || Date.now()) : job.endedAt,
+    endedReason,
     transcript: mergeTranscript(job.transcript, transcript),
     transcriptStatus: transcript ? 'complete' : (job.transcript ? 'complete' : 'pending'),
     transcriptUpdatedAt: transcript ? Date.now() : (job.transcriptUpdatedAt || null),
@@ -234,6 +239,7 @@ export async function refreshVoiceTaskArtifacts(id, env = process.env) {
     recordingStatus: recordingReady ? 'ready' : (job.recordingStatus || 'pending'),
     artifactBackfillAttempts: (job.artifactBackfillAttempts || 0) + 1,
     artifactBackfillAt: transcript ? null : Date.now() + 60_000,
+    vendorSyncAt: ended ? null : Date.now() + 8_000,
   });
   return publicVoiceTaskSummary(next);
 }
@@ -321,7 +327,15 @@ export async function retryVoiceTask(id, actor) {
   });
 }
 
-export async function deleteVoiceTask(id, actor) {
+async function deleteRefs(refs) {
+  for (let index = 0; index < refs.length; index += 400) {
+    const batch = getDb().batch();
+    refs.slice(index, index + 400).forEach((ref) => batch.delete(ref));
+    await batch.commit();
+  }
+}
+
+export async function deleteVoiceTask(id) {
   const job = await loadVoiceTask(id);
   if (!job) {
     const error = new Error('Voice task call not found');
@@ -333,17 +347,25 @@ export async function deleteVoiceTask(id, actor) {
     error.status = 409;
     throw error;
   }
-  const deletedAt = Date.now();
-  await getDb().collection(EVENTS).doc(`deleted_${id}_${deletedAt}`).set({
-    type: 'call-deleted',
-    callId: id,
-    status: job.status,
-    taskHash: job.taskHash,
-    deletedAt,
-    deletedByUid: actor.uid,
-    deletedByName: actor.name,
-  });
-  await getDb().collection(JOBS).doc(id).delete();
-  return { id, deletedAt };
+  const eventSnap = await getDb().collection(EVENTS).where('callId', '==', id).get();
+  await deleteRefs([
+    getDb().collection(JOBS).doc(id),
+    ...eventSnap.docs.map((doc) => doc.ref),
+  ]);
+  return { id, deletedAt: Date.now() };
+}
+
+export async function clearVoiceTaskHistory() {
+  const jobsSnap = await getDb().collection(JOBS).get();
+  const jobs = jobsSnap.docs.map((doc) => ({ ref: doc.ref, ...doc.data() }));
+  const finished = jobs.filter((job) => isFinishedCallStatus(job.status));
+  const finishedIds = new Set(finished.map((job) => job.id));
+  const eventSnap = await getDb().collection(EVENTS).get();
+  const noActiveCalls = finished.length === jobs.length;
+  const eventRefs = eventSnap.docs
+    .filter((doc) => noActiveCalls || finishedIds.has(doc.data()?.callId))
+    .map((doc) => doc.ref);
+  await deleteRefs([...finished.map((job) => job.ref), ...eventRefs]);
+  return { deleted: finished.length };
 }
 
