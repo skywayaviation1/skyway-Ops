@@ -117,6 +117,13 @@ export default function FboCallSettingsPanel({ currentUser }) {
                 {status?.hasWebhookSecret ? 'Webhook secret set' : 'VAPI_WEBHOOK_SECRET missing'}
               </StatusChip>
             )}
+            {status?.configured && (
+              <StatusChip tone={status?.promptSource === 'dashboard' ? 'info' : 'neutral'} size="sm">
+                {status?.promptSource === 'dashboard'
+                  ? 'Prompt and voice from Vapi Dashboard'
+                  : 'Prompt and voice built into Skyway'}
+              </StatusChip>
+            )}
             {status?.configured && status?.phoneNumberLookup === 'automatic_by_number' && (
               <StatusChip tone="info" size="sm">
                 Finding +1 (813) 859-5943 in Vapi automatically
@@ -146,6 +153,13 @@ export default function FboCallSettingsPanel({ currentUser }) {
             or make operational decisions. FBO details come from the uploaded trip sheet; arrival
             re-verification is fixed at two hours before arrival.
           </p>
+          {status?.configured && (
+            <p className="text-sm leading-relaxed text-content-muted">
+              {status?.promptSource === 'dashboard'
+                ? 'Because VAPI_ASSISTANT_ID is set, each call uses that saved assistant’s Vapi prompt and voice. Skyway still supplies trip variables and the transcript, recording, and live-listen settings. Set VAPI_PROMPT_SOURCE=skyway to use Skyway’s built-in prompt instead.'
+                : 'Calls use Skyway’s built-in prompt and voice. To manage the prompt and voice in the Vapi Dashboard, set VAPI_ASSISTANT_ID to that assistant and redeploy.'}
+            </p>
+          )}
           <label className="flex items-center gap-2 text-sm text-content">
             <input
               type="checkbox"

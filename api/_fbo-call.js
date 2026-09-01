@@ -122,8 +122,23 @@ export function publicVendorStatus(env = process.env) {
     callerId: SKYWAY_CALLER_ID,
     callerName: SKYWAY_CALLER_NAME,
     configured: diagnostics.missing.length === 0,
+    promptSource: vapiPromptSource(env),
     ...diagnostics,
   };
+}
+
+/**
+ * Who owns the conversation itself.
+ *
+ * When a saved assistant is configured, its Vapi Dashboard prompt, first
+ * message, voice, transcriber, and analysis are used as-is so edits made in
+ * Vapi take effect immediately. Set VAPI_PROMPT_SOURCE=skyway to force
+ * Skyway's built-in Peter prompt and ops checklist schema instead.
+ */
+export function vapiPromptSource(env = process.env) {
+  const requested = String(env.VAPI_PROMPT_SOURCE || '').trim().toLowerCase();
+  if (requested === 'skyway' || requested === 'dashboard') return requested;
+  return vapiEnvValue(env, 'assistantId') ? 'dashboard' : 'skyway';
 }
 
 export function vapiAssistantReliability(env = process.env) {
@@ -428,20 +443,18 @@ export function vapiCallPayload(job, config, env = process.env) {
     number: job.phoneE164,
     name: facts.fboName || 'FBO',
   };
+  const assistantId = vapiEnvValue(env, 'assistantId');
+  const promptSource = vapiPromptSource(env);
   const body = {
     customer,
     assistantOverrides: {
       variableValues,
-      firstMessage: assistant.firstMessage,
+      // Skyway always owns delivery so transcripts, recordings, and live
+      // listening reach the app regardless of who owns the conversation.
       artifactPlan: reliability.artifactPlan,
-      analysisPlan: assistant.analysisPlan,
       server: reliability.server,
       serverMessages: reliability.serverMessages,
-      transcriber: reliability.transcriber,
       monitorPlan: reliability.monitorPlan,
-      // Apply Skyway's aviation playbook even when VAPI_ASSISTANT_ID points to
-      // a saved assistant whose dashboard prompt is stale or generic.
-      model: assistant.model,
     },
     metadata: {
       skywayCallId: job.id,
@@ -450,7 +463,15 @@ export function vapiCallPayload(job, config, env = process.env) {
       purpose: job.purpose,
     },
   };
-  const assistantId = vapiEnvValue(env, 'assistantId');
+  if (promptSource === 'skyway') {
+    Object.assign(body.assistantOverrides, {
+      firstMessage: assistant.firstMessage,
+      model: assistant.model,
+      voice: assistant.voice,
+      transcriber: reliability.transcriber,
+      analysisPlan: assistant.analysisPlan,
+    });
+  }
   if (assistantId) body.assistantId = assistantId;
   else body.assistant = assistant;
   const phoneNumberId = vapiEnvValue(env, 'phoneNumberId');

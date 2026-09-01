@@ -333,6 +333,7 @@ test('Vapi payload never includes a passenger name without ground transport', ()
     facts,
   }, { opsTransferNumber: SKYWAY_CALLER_ID }, {
     VAPI_ASSISTANT_ID: 'asst_1',
+    VAPI_PROMPT_SOURCE: 'skyway',
     VAPI_PHONE_NUMBER_ID: 'pn_1',
   });
   assert.equal(body.customer.number, '+12015550100');
@@ -361,6 +362,44 @@ test('Vapi payload never includes a passenger name without ground transport', ()
   assert.match(firstMessage(facts), /Skyway Aviation/);
   assert.match(firstMessage(facts), /may be recorded for operational accuracy/);
   assert.equal(vendorConfigured({ VAPI_API_KEY: 'k', VAPI_PHONE_NUMBER_ID: 'pn_1' }), true);
+});
+
+test('a saved Vapi assistant keeps its Dashboard prompt, voice, and analysis', () => {
+  const job = {
+    id: 'fbo_1',
+    tripId: 'leg-1',
+    purpose: 'departure',
+    phoneE164: '+12015550100',
+    facts: { tail: 'N444AM', tailSpoken: 'November 4, 4, 4, Alpha Mike' },
+  };
+  const dashboard = vapiCallPayload(job, { opsTransferNumber: SKYWAY_CALLER_ID }, {
+    VAPI_ASSISTANT_ID: 'asst_dashboard',
+    VAPI_WEBHOOK_SECRET: 'hook',
+  });
+  assert.equal(dashboard.assistantId, 'asst_dashboard');
+  assert.equal('assistant' in dashboard, false);
+  assert.equal('model' in dashboard.assistantOverrides, false);
+  assert.equal('voice' in dashboard.assistantOverrides, false);
+  assert.equal('firstMessage' in dashboard.assistantOverrides, false);
+  assert.equal('transcriber' in dashboard.assistantOverrides, false);
+  assert.equal('analysisPlan' in dashboard.assistantOverrides, false);
+  // Delivery stays Skyway's regardless of who owns the conversation.
+  assert.equal(dashboard.assistantOverrides.artifactPlan.recordingEnabled, true);
+  assert.match(dashboard.assistantOverrides.server.url, /fbo-call-webhook/);
+  assert.equal(dashboard.assistantOverrides.serverMessages.includes('transcript'), true);
+  assert.equal(dashboard.assistantOverrides.variableValues.tail_number, 'November 4, 4, 4, Alpha Mike');
+
+  const forced = vapiCallPayload(job, { opsTransferNumber: SKYWAY_CALLER_ID }, {
+    VAPI_ASSISTANT_ID: 'asst_dashboard',
+    VAPI_PROMPT_SOURCE: 'skyway',
+    VAPI_WEBHOOK_SECRET: 'hook',
+  });
+  assert.match(forced.assistantOverrides.model.messages[0].content, /Your name is Peter/);
+  assert.equal(forced.assistantOverrides.voice.provider, 'openai');
+  assert.equal(
+    forced.assistantOverrides.analysisPlan.structuredDataSchema.properties.arrivalTimeConfirmed.type,
+    'boolean',
+  );
 });
 
 test('Vapi credentials survive pasted quotes, newlines, and Vapi own key naming', () => {

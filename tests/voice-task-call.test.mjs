@@ -63,6 +63,25 @@ test('voice task Vapi payload is immediate, isolated, recorded, and task-specifi
   assert.match(voiceTaskFirstMessage(), /may be recorded/);
 });
 
+test('a saved voice-task assistant keeps its Dashboard prompt but still gets the task', () => {
+  const payload = voiceTaskVapiPayload(
+    { id: 'vtask_1', phoneE164: '+13055550142', task: 'Confirm the crew rooms.' },
+    {},
+    {
+      VAPI_VOICE_TASK_ASSISTANT_ID: 'asst_task',
+      VAPI_WEBHOOK_SECRET: 'webhook-secret',
+    },
+  );
+  assert.equal(payload.assistantId, 'asst_task');
+  assert.equal('assistant' in payload, false);
+  assert.equal('voice' in payload.assistantOverrides, false);
+  assert.equal('firstMessage' in payload.assistantOverrides, false);
+  assert.equal(payload.assistantOverrides.variableValues.task, 'Confirm the crew rooms.');
+  assert.match(payload.assistantOverrides.model.messages[0].content, /Confirm the crew rooms/);
+  assert.equal(payload.assistantOverrides.artifactPlan.recordingEnabled, true);
+  assert.match(payload.assistantOverrides.server.url, /fbo-call-webhook/);
+});
+
 test('Deepgram keywords stay in the word or word:boost format Vapi requires', () => {
   assert.deepEqual(
     normalizeTranscriberKeywords(['Skyway Aviation:2', 'FBO', 'tail number', '  ', 'FBO']),

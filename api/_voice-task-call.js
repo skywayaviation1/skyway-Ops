@@ -36,6 +36,10 @@ function newVoiceTaskId() {
 export function voiceTaskVapiPayload(job, config = {}, env = process.env) {
   const transfer = toE164(config.opsTransferNumber) || SKYWAY_CALLER_ID;
   const reliability = vapiAssistantReliability(env);
+  const savedAssistantId = String(env.VAPI_VOICE_TASK_ASSISTANT_ID || '')
+    .trim()
+    .replace(/^['"]|['"]$/g, '')
+    .trim();
   const systemPrompt = voiceTaskSystemPrompt(job.task);
   const model = {
     provider: 'openai',
@@ -52,7 +56,7 @@ export function voiceTaskVapiPayload(job, config = {}, env = process.env) {
     }],
   };
   const firstMessage = voiceTaskFirstMessage();
-  return {
+  const payload = {
     customer: { number: job.phoneE164, name: 'Operations contact' },
     assistant: {
       ...reliability,
@@ -111,6 +115,27 @@ export function voiceTaskVapiPayload(job, config = {}, env = process.env) {
       skywayJobKind: 'voice_task',
     },
   };
+  if (savedAssistantId) {
+    // A saved assistant owns its Dashboard prompt and voice. The task text is
+    // still injected so a Dashboard prompt using {{task}} receives the work,
+    // and it is appended as a system message so the task can never be lost.
+    payload.assistantId = savedAssistantId;
+    delete payload.assistant;
+    payload.assistantOverrides = {
+      artifactPlan: reliability.artifactPlan,
+      server: reliability.server,
+      serverMessages: reliability.serverMessages,
+      monitorPlan: reliability.monitorPlan,
+      variableValues: { callerName: SKYWAY_CALLER_NAME, task: job.task },
+      model: {
+        messages: [{
+          role: 'system',
+          content: `Assigned task for this call:\n${job.task}`,
+        }],
+      },
+    };
+  }
+  return payload;
 }
 
 export async function loadVoiceTask(id) {

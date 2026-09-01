@@ -55,6 +55,32 @@ In Vapi, set the assistant server URL to:
 
 `https://www.skyway.app/api/fbo-call-webhook`
 
+## Who owns the prompt and voice
+
+| `VAPI_ASSISTANT_ID` | `VAPI_PROMPT_SOURCE` | Result |
+| --- | --- | --- |
+| set | unset or `dashboard` | The saved assistant's Vapi Dashboard prompt, first message, voice, transcriber, and analysis are used. Edits in Vapi apply to the next call. |
+| set | `skyway` | Skyway's built-in Peter prompt, voice, and ops checklist override the Dashboard. |
+| unset | any | Skyway sends a complete inline assistant. Dashboard edits have no effect because no saved assistant is used. |
+
+Organization settings shows which source is active.
+
+Skyway always overrides delivery settings — webhook URL and events, recording,
+transcript artifacts, and live monitoring — so transcripts, recordings, and
+listen-live keep working no matter who owns the conversation.
+
+If the Dashboard owns the prompt, keep these trip variables in it:
+`{{tail_number}}`, `{{aircraft_type}}`, `{{arrival_date}}`,
+`{{arrival_time_local}}`, `{{arriving_pax_count}}`, `{{departure_date}}`,
+`{{departure_time_local}}`, `{{departing_pax_count}}`, `{{parking_request}}`,
+and `{{special_instructions}}`. To keep the ops confirmation checklist
+populated, define the same structured-output field names in the Dashboard
+analysis plan, or set `VAPI_PROMPT_SOURCE=skyway`.
+
+One-off voice tasks use `VAPI_VOICE_TASK_ASSISTANT_ID` when you want a saved
+assistant for them. The entered task is still supplied as `{{task}}` and
+appended as a system message so the task cannot be lost.
+
 Peter's concise Logistics Specialist prompt is in
 [`docs/vapi-fbo-assistant-prompt.md`](./vapi-fbo-assistant-prompt.md). Skyway
 also sends this prompt through `assistantOverrides.model` on every outbound
