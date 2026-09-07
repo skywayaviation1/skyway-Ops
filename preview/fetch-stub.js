@@ -530,6 +530,43 @@ export function installFetchStub() {
     }
 
     if (path === '/api/trip-public') return json(brokerPayload());
+    if (path === '/api/super-admin') {
+      if (action === 'get') {
+        return json({ ok: true, navigation: null, superAdmin: true, owner: true });
+      }
+      if (action === 'saveNavigation') {
+        return json({ ok: true, navigation: body.navigation });
+      }
+      if (action === 'grantSuperAdmin') {
+        return json({ ok: true, uid: body.uid, superAdmin: body.enabled === true });
+      }
+    }
+    if (path === '/api/audit-events') {
+      if (action === 'query') {
+        return json({
+          ok: true,
+          events: [
+            {
+              id: 'audit-preview-1',
+              timestamp: Date.now() - 5 * 60_000,
+              actorName: 'Operations User',
+              actorEmail: 'ops@flyskyway.com',
+              section: 'schedule',
+              summary: 'Shared trip with broker',
+            },
+            {
+              id: 'audit-preview-2',
+              timestamp: Date.now() - 12 * 60_000,
+              actorName: 'Crew User',
+              actorEmail: 'crew@flyskyway.com',
+              section: 'manifests',
+              summary: 'Submitted passenger manifest',
+            },
+          ],
+        });
+      }
+      return json({ ok: true, id: 'audit-preview-new' });
+    }
     if (path === '/api/user-mail') return json(mailResponse(action, true));
     if (path === '/api/charter-mail') return json(mailResponse(action, false));
     if (path === '/api/teams') return json(teamsResponse(action));
