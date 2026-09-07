@@ -39,7 +39,7 @@ const TENANTS = {
       { uid: 'pilot-andre', name: 'Andre Cole', first: 'Andre', role: 'crew' },
     ],
     staff: [
-      { uid: 'admin-1', name: 'Jim Skyway', first: 'Jim', role: 'admin', title: 'Director of Operations' },
+      { uid: 'admin-1', name: 'Jake Cambria', first: 'Jake', role: 'admin', title: 'Director of Operations' },
       { uid: 'ops-1', name: 'Jordan Vance', first: 'Jordan', role: 'ops', title: 'Operations Controller' },
       { uid: 'sales-1', name: 'Rosa Delgado', first: 'Rosa', role: 'sales', title: 'Charter Sales' },
       { uid: 'maint-1', name: 'Nina Park', first: 'Nina', role: 'maint', title: 'Director of Maintenance' },
