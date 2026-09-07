@@ -19,6 +19,7 @@ const FratSettingsPanelLazy = lazy(() => import('./FratSettingsPanel.jsx'));
 const EmailDiagnosticsPanelLazy = lazy(() => import('./EmailDiagnosticsPanel.jsx'));
 const AvailabilityLazy = lazy(() => import('./AvailabilityPlanner.jsx'));
 const AirportFboDataLazy = lazy(() => import('./AirportFboData.jsx'));
+const SuperAdminPanelLazy = lazy(() => import('./SuperAdminPanel.jsx'));
 const TripEmailPanelLazy = lazy(() =>
   import('./CharterInbox.jsx').then((module) => ({ default: module.TripEmailPanel }))
 );
@@ -130,6 +131,9 @@ const AdminDutyReportLazy = lazy(() => import('./AdminDutyReport.jsx'));
 const AogTabLazy = lazy(() => import('./AogTab.jsx'));
 import AppTimezoneSwitch from './AppTimezoneSwitch.jsx';
 import { todayInAppTz } from './app-timezone.js';
+import { autoSelectedShareUids, relatedBrokerLegs } from './broker-leg-grouping.js';
+import AppAuditTracker from './AppAuditTracker.jsx';
+import { isSuperAdmin, useRemoteNavigation } from './navigation-config.js';
 import { createPortal } from 'react-dom';
 import {
   Plane, Calendar, MessageSquare, Users, Bell, MapPin,
@@ -6213,6 +6217,34 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   const updateBroker = async (email) => {
     setBrokerEmail(email);
     await persist({ statuses, passengers, brokerEmail: email, autoNotify, completed, hasCatering, paxOverride });
+    try {
+      const { fetchTripStateForShare, saveTripState } = await import('./firebase-data.js');
+      const tail = String(trip.info?.tail || '').toUpperCase();
+      const sameTailTrips = (allTrips || []).filter(
+        (candidate) => String(candidate?.info?.tail || '').toUpperCase() === tail,
+      );
+      const entries = await Promise.all(sameTailTrips.map(async (candidate) => ([
+        candidate.uid,
+        await fetchTripStateForShare(candidate.uid),
+      ])));
+      const statesByUid = Object.fromEntries(entries);
+      statesByUid[trip.uid] = {
+        ...(statesByUid[trip.uid] || {}),
+        brokerEmail: email,
+        tripSheetData,
+      };
+      const related = relatedBrokerLegs({
+        sourceTrip: trip,
+        allTrips: sameTailTrips,
+        statesByUid,
+      });
+      await Promise.all(related
+        .filter((candidate) => candidate.uid !== trip.uid)
+        .map((candidate) => saveTripState(candidate.uid, { brokerEmail: email })));
+    } catch (error) {
+      console.error('[broker-email] related leg propagation failed:', error);
+      notify.error('Broker saved on this leg, but related-leg assignment needs retry');
+    }
   };
   const updateAutoNotify = async (val) => {
     setAutoNotify(val);
@@ -7960,6 +7992,15 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
   const [selectedUids, setSelectedUids] = useState(
     () => new Set([canonicalTrip.uid])
   );
+  const didAutoSelectRelated = useRef(false);
+  useEffect(() => {
+    if (didAutoSelectRelated.current || enriching) return;
+    if (Object.keys(tripStatesByUid).length === 0) return;
+    const automatic = autoSelectedShareUids(allCandidateLegs);
+    automatic.add(canonicalTrip.uid);
+    setSelectedUids(automatic);
+    didAutoSelectRelated.current = true;
+  }, [allCandidateLegs, canonicalTrip.uid, enriching, tripStatesByUid]);
   const toggleLeg = (uid) => {
     if (uid === canonicalTrip.uid) return; // anchor can't be unchecked
     setSelectedUids(prev => {
@@ -9059,11 +9100,19 @@ function TripSheetPanel({
       const { url, path } = await uploadTripSheet(matchPreview.file, tripGroupId);
 
       // For each leg with a matched trip, attach the PDF + preloaded pax
-      const { attachTripSheetToLeg } = await import('./firebase-data.js');
+      const {
+        attachTripSheetToLeg,
+        fetchTripStateForShare,
+        saveTripState,
+      } = await import('./firebase-data.js');
+      const attachedUids = new Set();
       for (const m of matchPreview.matches) {
         if (m.candidates.length === 0) continue;
-        // If multiple candidates, take the first (most recent). Could prompt later.
-        const matched = m.candidates[0];
+        // A full sheet can contain repeated airport pairs. Consume each
+        // schedule candidate once so two parsed legs never attach to one UID.
+        const matched = m.candidates.find((candidate) => !attachedUids.has(candidate.uid))
+          || m.candidates[0];
+        attachedUids.add(matched.uid);
         const preloadedPax = m.leg.pax.map((p, i) => ({
           id: `pre-${matched.uid}-${i}`,
           firstName: p.firstName,
@@ -9131,6 +9180,59 @@ function TripSheetPanel({
           toFbo: m.leg.toFbo || null,
           tripSheetData,
         });
+      }
+
+      // Reconcile every same-tail schedule leg already tagged with this trip
+      // number, then propagate the broker from any live leg to the complete
+      // trip-number group and each live leg's positioning-in chain.
+      const sameTail = (allTrips || []).filter((candidate) => (
+        String(candidate?.info?.tail || '').toUpperCase()
+        === String(matchPreview.tail || '').toUpperCase()
+      ));
+      const stateEntries = await Promise.all(sameTail.map(async (candidate) => ([
+        candidate.uid,
+        await fetchTripStateForShare(candidate.uid),
+      ])));
+      const statesByUid = Object.fromEntries(stateEntries);
+      const tripCode = String(matchPreview.tripCode || '').trim().toUpperCase();
+      const tagged = sameTail.filter((candidate) => (
+        String(statesByUid[candidate.uid]?.tripSheetData?.tripCode || '').trim().toUpperCase()
+        === tripCode
+      ));
+      for (const candidate of tagged) {
+        if (attachedUids.has(candidate.uid)) continue;
+        const existing = statesByUid[candidate.uid] || {};
+        await attachTripSheetToLeg({
+          tripUid: candidate.uid,
+          tripSheetUrl: url,
+          tripSheetPath: path,
+          tripSheetFilename: matchPreview.file.name,
+          uploadedBy: currentUserUid || currentUser.name,
+          preloadedPax: existing.preloadedPax || [],
+          tripSheetNotes: existing.tripSheetNotes || matchPreview.notes || null,
+          fromFbo: existing.fromFbo || null,
+          toFbo: existing.toFbo || null,
+          tripCode,
+          tripSheetData: {
+            ...(existing.tripSheetData || {}),
+            tripCode,
+            parsedAt: Date.now(),
+          },
+        });
+      }
+      const broker = tagged
+        .map((candidate) => statesByUid[candidate.uid]?.brokerEmail)
+        .find(Boolean);
+      if (broker && tagged.length) {
+        const related = relatedBrokerLegs({
+          sourceTrip: tagged.find((candidate) => !String(candidate.info?.legType || '').toUpperCase().includes('REPO'))
+            || tagged[0],
+          allTrips: sameTail,
+          statesByUid,
+        });
+        await Promise.all(related.map((candidate) => (
+          saveTripState(candidate.uid, { brokerEmail: broker })
+        )));
       }
 
       setMatchPreview(null);
@@ -21805,6 +21907,7 @@ const NAV_SECTIONS = [
   { id: 'wallet',    label: 'Wallet',      icon: CreditCard,    roles: ['crew', 'sales', 'ops', 'accounting', 'admin'] },
   { id: 'users',     label: 'Users',       icon: Users,         roles: ['ops', 'admin'] },
   { id: 'settings',  label: 'Settings',    icon: SettingsIcon,  roles: ['admin'] },
+  { id: 'super-admin', label: 'Super admin', icon: Shield,       roles: [] },
 ];
 
 const NAV_GROUPS = [
@@ -21816,7 +21919,7 @@ const NAV_GROUPS = [
   { id: 'crew',     label: 'Crew',     icon: Users,         children: ['duty', 'currency', 'wear', 'reports', 'expenses'] },
   { id: 'aircraft', label: 'Aircraft', icon: Wrench,        children: ['maint', 'aog'] },
   // Labelled "Finance" for roles without user administration.
-  { id: 'admin',    label: 'Admin',    icon: Building2,     altLabel: 'Finance', children: ['accounting', 'wallet', 'users', 'settings'] },
+  { id: 'admin',    label: 'Admin',    icon: Building2,     altLabel: 'Finance', children: ['accounting', 'wallet', 'users', 'settings', 'super-admin'] },
 ];
 
 if (import.meta.env?.DEV) {
@@ -21827,43 +21930,51 @@ if (import.meta.env?.DEV) {
   }
 }
 
-const SECTION_TO_GROUP = NAV_GROUPS.reduce((acc, g) => {
-  g.children.forEach((id) => { acc[id] = g.id; });
-  return acc;
-}, {});
-
-function groupIdForSection(sectionId) {
-  return SECTION_TO_GROUP[sectionId] || 'home';
-}
-
 /** Leaf sections this user may open, in canonical order. */
 function useAllowedSections(currentUser) {
+  const navigation = useRemoteNavigation(currentUser);
   // The Duty oversight screen also opens while an admin is impersonating a
   // crew member; impersonation is admin-only, so the flag is a safe signal.
   const isAdminContext = currentUser?.role === 'admin' || currentUser?._impersonating === true;
-  return useMemo(() => NAV_SECTIONS.filter(s =>
-    s.roles.includes(currentUser?.role) || (s.id === 'duty' && isAdminContext)
-  ), [currentUser?.role, isAdminContext]);
+  return useMemo(() => NAV_SECTIONS
+    .map((section) => ({
+      ...section,
+      label: navigation?.sections?.[section.id]?.label || section.label,
+      roles: navigation?.sections?.[section.id]?.roles || section.roles,
+    }))
+    .filter((section) => (
+      section.roles.includes(currentUser?.role)
+      || (section.id === 'duty' && isAdminContext)
+      || (section.id === 'super-admin' && isSuperAdmin(currentUser))
+    )), [currentUser, isAdminContext, navigation]);
 }
 
 /** Groups with their role-filtered children; groups with nothing left drop out. */
 function useNavGroups(currentUser) {
   const allowed = useAllowedSections(currentUser);
+  const navigation = useRemoteNavigation(currentUser);
   return useMemo(() => {
     const byId = new Map(allowed.map(s => [s.id, s]));
-    return NAV_GROUPS
+    const groupConfig = (Array.isArray(navigation?.groups) ? navigation.groups : NAV_GROUPS)
+      .map((group) => ({ ...group, children: [...group.children] }));
+    if (byId.has('super-admin') && !groupConfig.some((group) => group.children.includes('super-admin'))) {
+      const adminGroup = groupConfig.find((group) => group.id === 'admin');
+      if (adminGroup) adminGroup.children.push('super-admin');
+    }
+    const iconById = new Map(NAV_GROUPS.map((group) => [group.id, group.icon]));
+    return groupConfig
       .map((g) => {
         const children = g.children.map(id => byId.get(id)).filter(Boolean);
         const label = (g.altLabel && !children.some(c => c.id === 'users')) ? g.altLabel : g.label;
-        return { ...g, label, children };
+        return { ...g, icon: iconById.get(g.id) || Building2, label, children };
       })
       .filter(g => g.children.length > 0);
-  }, [allowed]);
+  }, [allowed, navigation]);
 }
 
 function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, syncStatus, now, tripCount, onOpenSettings, onOpenProfile, themeMode, onToggleTheme, topNavOrder, onReorderTopNav }) {
   const groups = useNavGroups(currentUser);
-  const activeGroupId = groupIdForSection(currentSection);
+  const activeGroupId = groups.find((group) => group.children.some((child) => child.id === currentSection))?.id || 'home';
   const activeGroup = groups.find(g => g.id === activeGroupId) || groups[0];
   const subTabs = activeGroup?.children || [];
 
@@ -22105,7 +22216,7 @@ function UnreadBadge({ count, className = '' }) {
    ============================================================ */
 function MobileNav({ currentSection, setCurrentSection, currentUser, onOpenSettings, onToggleTheme, themeMode, onLogout }) {
   const groups = useNavGroups(currentUser);
-  const activeGroupId = groupIdForSection(currentSection);
+  const activeGroupId = groups.find((group) => group.children.some((child) => child.id === currentSection))?.id || 'home';
   const { totalUnread: commsUnread } = useStreamPresence();
   const [sheetOpen, setSheetOpen] = useState(false);
 
@@ -28679,6 +28790,7 @@ export default function CharterOps() {
         getIdToken={getFirebaseIdToken}
       >
       <div className="h-full min-h-0 flex flex-col">
+        <AppAuditTracker currentUser={currentUser} currentSection={section} />
         {/* iOS install banner — dismissible, shown only on iOS Safari
             when the app isn't already installed. Surfaces the Share →
             Add to Home Screen flow because iOS Safari has no built-in
@@ -29420,6 +29532,30 @@ export default function CharterOps() {
               allTrips={allTrips}
               trackingEnabled={trackingEnabled}
               onOpenAdvanced={() => setShowSettings(true)}
+            />
+          </Suspense>
+        )}
+
+        {section === 'super-admin' && isSuperAdmin(currentUser) && (
+          <Suspense fallback={
+            <div className="flex flex-1 items-center justify-center text-content-muted">
+              <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading super admin…
+            </div>
+          }>
+            <SuperAdminPanelLazy
+              currentUser={currentUser}
+              users={users}
+              defaults={{
+                version: 1,
+                sections: Object.fromEntries(NAV_SECTIONS
+                  .filter((item) => item.id !== 'super-admin')
+                  .map((item) => [item.id, { label: item.label, roles: item.roles }])),
+                groups: NAV_GROUPS.map((group) => ({
+                  id: group.id,
+                  label: group.label,
+                  children: group.children.filter((id) => id !== 'super-admin'),
+                })),
+              }}
             />
           </Suspense>
         )}
