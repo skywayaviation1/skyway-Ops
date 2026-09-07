@@ -200,16 +200,20 @@ export default function SuperAdminPanel({ currentUser, users = [], defaults }) {
                     <p className="text-sm font-semibold text-content">{user.name || user.email}</p>
                     <p className="text-xs text-content-subtle">{user.email} · {user.role}</p>
                   </div>
-                  <Button
-                    size="sm"
-                    variant={user.superAdmin ? 'danger' : 'secondary'}
-                    icon={Shield}
-                    disabled={!owner}
-                    loading={busy === `user-${user.uid}`}
-                    onClick={() => setSuperAdmin(user, !user.superAdmin)}
-                  >
-                    {user.superAdmin ? 'Revoke super admin' : 'Grant super admin'}
-                  </Button>
+                  {String(user.email || '').toLowerCase() === 'jake@flyskyway.com' ? (
+                    <StatusChip tone="success" size="sm">Permanent owner</StatusChip>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant={user.superAdmin ? 'danger' : 'secondary'}
+                      icon={Shield}
+                      disabled={!owner}
+                      loading={busy === `user-${user.uid}`}
+                      onClick={() => setSuperAdmin(user, !user.superAdmin)}
+                    >
+                      {user.superAdmin ? 'Revoke super admin' : 'Grant super admin'}
+                    </Button>
+                  )}
                 </div>
               ))}
             </div>

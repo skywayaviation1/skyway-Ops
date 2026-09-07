@@ -75,6 +75,9 @@ export default async function handler(req, res) {
       const target = await targetRef.get();
       if (!target.exists) return res.status(404).json({ error: 'User not found' });
       const enabled = body.enabled === true;
+      if (isJakeOwner(target.data() || {}) && !enabled) {
+        return res.status(409).json({ error: 'Jake Cambria is the permanent super owner' });
+      }
       await targetRef.set({
         superAdmin: enabled,
         superAdminUpdatedAt: Date.now(),

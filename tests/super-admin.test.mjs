@@ -46,6 +46,7 @@ test('only Jake can query all-user audit and assign super admins', async () => {
   assert.match(superApi, /action === 'grantSuperAdmin'/);
   assert.match(superApi, /authorizeJake\(body\.idToken\)/);
   assert.match(superApi, /superAdmin: enabled/);
+  assert.match(superApi, /Jake Cambria is the permanent super owner/);
 });
 
 test('super admins can group tabs and preserve role defaults until publishing', async () => {
@@ -57,6 +58,7 @@ test('super admins can group tabs and preserve role defaults until publishing', 
   assert.match(panel, /Move each item to a group/);
   assert.match(panel, /Publish access/);
   assert.match(panel, /ROLES\.map/);
+  assert.match(panel, /Permanent owner/);
   assert.match(nav, /navigation \|\| null/);
 });
 
