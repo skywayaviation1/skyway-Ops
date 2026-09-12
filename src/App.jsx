@@ -20,6 +20,7 @@ const EmailDiagnosticsPanelLazy = lazy(() => import('./EmailDiagnosticsPanel.jsx
 const AvailabilityLazy = lazy(() => import('./AvailabilityPlanner.jsx'));
 const BrokeredOperatorLinkLazy = lazy(() => import('./BrokeredOperatorLink.jsx'));
 const AirportFboDataLazy = lazy(() => import('./AirportFboData.jsx'));
+const SuperAdminPanelLazy = lazy(() => import('./SuperAdminPanel.jsx'));
 const TripEmailPanelLazy = lazy(() =>
   import('./CharterInbox.jsx').then((module) => ({ default: module.TripEmailPanel }))
 );
@@ -131,6 +132,9 @@ const AdminDutyReportLazy = lazy(() => import('./AdminDutyReport.jsx'));
 const AogTabLazy = lazy(() => import('./AogTab.jsx'));
 import AppTimezoneSwitch from './AppTimezoneSwitch.jsx';
 import { todayInAppTz } from './app-timezone.js';
+import { autoSelectedShareUids, relatedBrokerLegs } from './broker-leg-grouping.js';
+import AppAuditTracker from './AppAuditTracker.jsx';
+import { isSuperAdmin, useRemoteNavigation } from './navigation-config.js';
 import { createPortal } from 'react-dom';
 import {
   Plane, Calendar, MessageSquare, Users, Bell, MapPin,
@@ -5211,7 +5215,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   const requestedTripTab = () => {
     if (typeof window === 'undefined') return null;
     const id = window.location.hash.replace(/^#/, '').toLowerCase();
-    return ['status', 'pax', 'sheet', 'notes', 'weather', 'plan', 'frat', 'lodging', 'chat', 'notify', 'delay'].includes(id)
+    return ['status', 'pax', 'sheet', 'notes', 'weather', 'airports', 'plan', 'frat', 'lodging', 'chat', 'notify', 'delay'].includes(id)
       ? id
       : null;
   };
@@ -5257,6 +5261,8 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   // iCal-parsed value.
   const [fromFbo, setFromFbo] = useState(trip.info?.fromFbo || null);
   const [toFbo, setToFbo] = useState(trip.info?.toFbo || null);
+  const [wearCadenceState, setWearCadenceState] = useState(null);
+  const [wearBadgeState, setWearBadgeState] = useState(null);
   const [pendingScanPax, setPendingScanPax] = useState(null); // pre-loaded pax being checked in
   const [loading, setLoading] = useState(true);
   // UPDATE ETA flow: tracks whether we're mid-call so we can disable the button
@@ -5496,6 +5502,22 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
     return () => { if (unsub) unsub(); };
   }, [trip.uid, trip.info.broker]);
 
+  useEffect(() => {
+    let unsubscribe = null;
+    (async () => {
+      try {
+        const { subscribeWearTailState } = await import('./firebase-wear.js');
+        unsubscribe = subscribeWearTailState(
+          String(trip.info?.tail || '').toUpperCase(),
+          setWearCadenceState,
+        );
+      } catch (error) {
+        console.warn('[wear] cadence subscription failed:', error?.message || error);
+      }
+    })();
+    return () => unsubscribe?.();
+  }, [trip.info?.tail]);
+
   // ── PAX CARRY-OVER ────────────────────────────────────────────────────────
   // On multi-leg trips (fuel stop, same-day round trip), skip the ID re-scan
   // for passengers already verified on the immediately preceding leg.
@@ -5699,6 +5721,8 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
         to: (trip.info?.to || '').toUpperCase(),
         start: trip.start instanceof Date ? trip.start.toISOString() : (trip.start || null),
         legType: trip.info?.legType || 'REVENUE',
+        pic: trip.info?.pic || '',
+        sic: trip.info?.sic || '',
       };
       // Merge in trip-sheet fields and preloadedPax unless caller passed them explicitly
       const merged = {
@@ -5719,7 +5743,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       console.error('Failed to save trip state:', err);
       notify.error('Failed to save — check your connection');
     }
-  }, [trip.uid, trip.info?.tail, trip.info?.from, trip.info?.to, trip.start, trip.info?.legType, tripSheetUrl, tripSheetPath, tripSheetFilename, tripSheetUploadedAt, tripSheetUploadedBy, preloadedPax, tripSheetNotes, fromFbo, toFbo]);
+  }, [trip.uid, trip.info?.tail, trip.info?.from, trip.info?.to, trip.info?.pic, trip.info?.sic, trip.start, trip.info?.legType, tripSheetUrl, tripSheetPath, tripSheetFilename, tripSheetUploadedAt, tripSheetUploadedBy, preloadedPax, tripSheetNotes, fromFbo, toFbo]);
 
   const openMailto = (url) => {
     const a = document.createElement('a');
@@ -5741,6 +5765,34 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
     const nextStatuses = { ...statuses, [step.id]: newStatus };
     setStatuses(nextStatuses);
     await persist({ statuses: nextStatuses, passengers, brokerEmail, autoNotify, completed, hasCatering, paxOverride });
+
+    if (step.id === 'landed') {
+      try {
+        const nextLeg = (allTrips || [])
+          .filter((candidate) => (
+            String(candidate?.info?.tail || '').toUpperCase()
+              === String(trip.info?.tail || '').toUpperCase()
+            && new Date(candidate.start || 0).getTime() > Date.now()
+          ))
+          .sort((a, b) => new Date(a.start) - new Date(b.start))[0];
+        const { auth } = await import('./firebase.js');
+        await fetch('/api/wear-cadence', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            idToken: await auth.currentUser?.getIdToken(),
+            action: 'landing',
+            tripUid: trip.uid,
+            tail: trip.info?.tail,
+            landedAtMs: newStatus.timestamp,
+            pic: nextLeg?.info?.pic || trip.info?.pic || '',
+            sic: nextLeg?.info?.sic || trip.info?.sic || '',
+          }),
+        });
+      } catch (error) {
+        console.warn('[wear] manual landing cadence update failed:', error?.message || error);
+      }
+    }
 
     // Parse broker email field — supports comma-separated list of recipients
     // (e.g. "broker@x.com, ops@flightsupport.com")
@@ -5980,6 +6032,25 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   };
 
   const handleStatusTrigger = async (step) => {
+    // Wear cadence is advisory only. A due check never blocks taxi or
+    // wheels up — the crew gets a reminder with a one-tap way into the
+    // check and the departure step is logged either way.
+    if (
+      (wearCadenceState?.due === true || wearBadgeState?.due === true)
+      && ['taxi_dep', 'wheels_up'].includes(step.id)
+    ) {
+      notify.warning('Wear check due — not blocking departure', {
+        description: `${trip.info?.tail || 'Aircraft'} has ${wearCadenceState?.landingsSinceSession || wearBadgeState?.landingsSince || 10} landings since its last completed wear check. Complete it when able.`,
+        duration: 9000,
+        action: {
+          label: 'Open wear check',
+          onClick: () => {
+            setWearModalType('standard');
+            setWearModalOpen(true);
+          },
+        },
+      });
+    }
     let gpsCoords = null;
     if (step.requiresGPS) {
       try {
@@ -6222,6 +6293,34 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   const updateBroker = async (email) => {
     setBrokerEmail(email);
     await persist({ statuses, passengers, brokerEmail: email, autoNotify, completed, hasCatering, paxOverride });
+    try {
+      const { fetchTripStateForShare, saveTripState } = await import('./firebase-data.js');
+      const tail = String(trip.info?.tail || '').toUpperCase();
+      const sameTailTrips = (allTrips || []).filter(
+        (candidate) => String(candidate?.info?.tail || '').toUpperCase() === tail,
+      );
+      const entries = await Promise.all(sameTailTrips.map(async (candidate) => ([
+        candidate.uid,
+        await fetchTripStateForShare(candidate.uid),
+      ])));
+      const statesByUid = Object.fromEntries(entries);
+      statesByUid[trip.uid] = {
+        ...(statesByUid[trip.uid] || {}),
+        brokerEmail: email,
+        tripSheetData,
+      };
+      const related = relatedBrokerLegs({
+        sourceTrip: trip,
+        allTrips: sameTailTrips,
+        statesByUid,
+      });
+      await Promise.all(related
+        .filter((candidate) => candidate.uid !== trip.uid)
+        .map((candidate) => saveTripState(candidate.uid, { brokerEmail: email })));
+    } catch (error) {
+      console.error('[broker-email] related leg propagation failed:', error);
+      notify.error('Broker saved on this leg, but related-leg assignment needs retry');
+    }
   };
   const updateAutoNotify = async (val) => {
     setAutoNotify(val);
@@ -6466,6 +6565,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
                 currentUser={currentUser}
                 tripId={trip.uid}
                 legId={trip.uid}
+                onDueChange={setWearBadgeState}
                 onOpenModal={({ inspectionType }) => {
                   setWearModalType(inspectionType);
                   setWearModalOpen(true);
@@ -6752,6 +6852,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
               currentUser={currentUser}
               tripId={trip.uid}
               legId={trip.uid}
+              onDueChange={setWearBadgeState}
               onOpenModal={({ inspectionType }) => {
                 setWearModalType(inspectionType);
                 setWearModalOpen(true);
@@ -6897,6 +6998,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
             { id: 'sheet', label: 'Trip sheet', icon: FileText, hidden: !showSheetTab },
             { id: 'notes', label: 'Notes', icon: BookOpen },
             { id: 'weather', label: 'Weather', icon: Cloud, hidden: !canSeeFlightPlanning },
+            { id: 'airports', label: 'Airports', icon: Fuel, hidden: !canSeeFlightPlanning || !trip.info.isFlight },
             { id: 'plan', label: 'Flight plan', icon: Navigation, hidden: !canSeeFlightPlanning },
             { id: 'frat', label: 'FRAT', icon: Shield, hidden: !canSeeFlightPlanning || !trip.info.isOps, badge: fratState?.score != null ? String(fratState.score) : null },
             // LODGING: crew hotels for this trip. Visible to ops/admin
@@ -6919,7 +7021,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
               id: 'operations',
               label: 'Operations',
               icon: Navigation,
-              children: pick(['sheet', 'weather', 'plan', 'frat', 'lodging', 'notes', 'notify', 'delay']),
+              children: pick(['sheet', 'weather', 'airports', 'plan', 'frat', 'lodging', 'notes', 'notify', 'delay']),
             },
             { id: 'chat', label: 'Comms', icon: MessageSquare, children: pick(['chat', 'email']) },
           ].filter(g => g.children.length > 0);
@@ -7139,6 +7241,9 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
                 <Button variant="ghost" size="sm" block className="mt-2" onClick={() => setTab('weather')}>
                   Full weather briefing
                 </Button>
+                <Button variant="ghost" size="sm" block className="mt-1" onClick={() => setTab('airports')}>
+                  Airport, FBO & fuel data
+                </Button>
               </Card>
 
               {isBrokeredFlight && ['admin', 'ops', 'sales'].includes(currentUser?.role) && (
@@ -7329,6 +7434,18 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
           </div>
         ) : tab === 'weather' ? (
           <TripWeatherSection trip={trip} />
+        ) : tab === 'airports' ? (
+          <Suspense fallback={<div className="p-8 text-center text-slate-500"><Loader2 className="mr-2 inline-block h-5 w-5 animate-spin" />Loading airport data...</div>}>
+            <AirportFboDataLazy
+              initialAirports={[trip.info.from, trip.info.to].filter(Boolean)}
+              autoSearch
+              embedded
+              assignedFbos={{
+                [String(trip.info.from || '').toUpperCase()]: fromFbo,
+                [String(trip.info.to || '').toUpperCase()]: toFbo,
+              }}
+            />
+          </Suspense>
         ) : tab === 'frat' ? (
           <Suspense fallback={<div className="p-8 text-center text-slate-500"><Loader2 className="w-5 h-5 animate-spin inline-block mr-2" />Loading FRAT...</div>}>
             <TripFratLazy
@@ -7959,6 +8076,15 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
   const [selectedUids, setSelectedUids] = useState(
     () => new Set([canonicalTrip.uid])
   );
+  const didAutoSelectRelated = useRef(false);
+  useEffect(() => {
+    if (didAutoSelectRelated.current || enriching) return;
+    if (Object.keys(tripStatesByUid).length === 0) return;
+    const automatic = autoSelectedShareUids(allCandidateLegs);
+    automatic.add(canonicalTrip.uid);
+    setSelectedUids(automatic);
+    didAutoSelectRelated.current = true;
+  }, [allCandidateLegs, canonicalTrip.uid, enriching, tripStatesByUid]);
   const toggleLeg = (uid) => {
     if (uid === canonicalTrip.uid) return; // anchor can't be unchecked
     setSelectedUids(prev => {
@@ -9058,11 +9184,19 @@ function TripSheetPanel({
       const { url, path } = await uploadTripSheet(matchPreview.file, tripGroupId);
 
       // For each leg with a matched trip, attach the PDF + preloaded pax
-      const { attachTripSheetToLeg } = await import('./firebase-data.js');
+      const {
+        attachTripSheetToLeg,
+        fetchTripStateForShare,
+        saveTripState,
+      } = await import('./firebase-data.js');
+      const attachedUids = new Set();
       for (const m of matchPreview.matches) {
         if (m.candidates.length === 0) continue;
-        // If multiple candidates, take the first (most recent). Could prompt later.
-        const matched = m.candidates[0];
+        // A full sheet can contain repeated airport pairs. Consume each
+        // schedule candidate once so two parsed legs never attach to one UID.
+        const matched = m.candidates.find((candidate) => !attachedUids.has(candidate.uid))
+          || m.candidates[0];
+        attachedUids.add(matched.uid);
         const preloadedPax = m.leg.pax.map((p, i) => ({
           id: `pre-${matched.uid}-${i}`,
           firstName: p.firstName,
@@ -9130,6 +9264,59 @@ function TripSheetPanel({
           toFbo: m.leg.toFbo || null,
           tripSheetData,
         });
+      }
+
+      // Reconcile every same-tail schedule leg already tagged with this trip
+      // number, then propagate the broker from any live leg to the complete
+      // trip-number group and each live leg's positioning-in chain.
+      const sameTail = (allTrips || []).filter((candidate) => (
+        String(candidate?.info?.tail || '').toUpperCase()
+        === String(matchPreview.tail || '').toUpperCase()
+      ));
+      const stateEntries = await Promise.all(sameTail.map(async (candidate) => ([
+        candidate.uid,
+        await fetchTripStateForShare(candidate.uid),
+      ])));
+      const statesByUid = Object.fromEntries(stateEntries);
+      const tripCode = String(matchPreview.tripCode || '').trim().toUpperCase();
+      const tagged = sameTail.filter((candidate) => (
+        String(statesByUid[candidate.uid]?.tripSheetData?.tripCode || '').trim().toUpperCase()
+        === tripCode
+      ));
+      for (const candidate of tagged) {
+        if (attachedUids.has(candidate.uid)) continue;
+        const existing = statesByUid[candidate.uid] || {};
+        await attachTripSheetToLeg({
+          tripUid: candidate.uid,
+          tripSheetUrl: url,
+          tripSheetPath: path,
+          tripSheetFilename: matchPreview.file.name,
+          uploadedBy: currentUserUid || currentUser.name,
+          preloadedPax: existing.preloadedPax || [],
+          tripSheetNotes: existing.tripSheetNotes || matchPreview.notes || null,
+          fromFbo: existing.fromFbo || null,
+          toFbo: existing.toFbo || null,
+          tripCode,
+          tripSheetData: {
+            ...(existing.tripSheetData || {}),
+            tripCode,
+            parsedAt: Date.now(),
+          },
+        });
+      }
+      const broker = tagged
+        .map((candidate) => statesByUid[candidate.uid]?.brokerEmail)
+        .find(Boolean);
+      if (broker && tagged.length) {
+        const related = relatedBrokerLegs({
+          sourceTrip: tagged.find((candidate) => !String(candidate.info?.legType || '').toUpperCase().includes('REPO'))
+            || tagged[0],
+          allTrips: sameTail,
+          statesByUid,
+        });
+        await Promise.all(related.map((candidate) => (
+          saveTripState(candidate.uid, { brokerEmail: broker })
+        )));
       }
 
       setMatchPreview(null);
@@ -14829,6 +15016,8 @@ function FlightAwarePanel({ currentUser, allTrips }) {
           to: t.info.to || '',
           start: t.start instanceof Date ? t.start.toISOString() : (t.start || null),
           legType: t.info.legType || 'REVENUE',
+          pic: t.info.pic || '',
+          sic: t.info.sic || '',
         }));
 
       if (trips.length === 0) {
@@ -21804,6 +21993,7 @@ const NAV_SECTIONS = [
   { id: 'wallet',    label: 'Wallet',      icon: CreditCard,    roles: ['crew', 'sales', 'ops', 'accounting', 'admin'] },
   { id: 'users',     label: 'Users',       icon: Users,         roles: ['ops', 'admin'] },
   { id: 'settings',  label: 'Settings',    icon: SettingsIcon,  roles: ['admin'] },
+  { id: 'super-admin', label: 'Super admin', icon: Shield,       roles: [] },
 ];
 
 const NAV_GROUPS = [
@@ -21815,7 +22005,7 @@ const NAV_GROUPS = [
   { id: 'crew',     label: 'Crew',     icon: Users,         children: ['duty', 'currency', 'wear', 'reports', 'expenses'] },
   { id: 'aircraft', label: 'Aircraft', icon: Wrench,        children: ['maint', 'aog'] },
   // Labelled "Finance" for roles without user administration.
-  { id: 'admin',    label: 'Admin',    icon: Building2,     altLabel: 'Finance', children: ['accounting', 'wallet', 'users', 'settings'] },
+  { id: 'admin',    label: 'Admin',    icon: Building2,     altLabel: 'Finance', children: ['accounting', 'wallet', 'users', 'settings', 'super-admin'] },
 ];
 
 if (import.meta.env?.DEV) {
@@ -21826,43 +22016,51 @@ if (import.meta.env?.DEV) {
   }
 }
 
-const SECTION_TO_GROUP = NAV_GROUPS.reduce((acc, g) => {
-  g.children.forEach((id) => { acc[id] = g.id; });
-  return acc;
-}, {});
-
-function groupIdForSection(sectionId) {
-  return SECTION_TO_GROUP[sectionId] || 'home';
-}
-
 /** Leaf sections this user may open, in canonical order. */
 function useAllowedSections(currentUser) {
+  const navigation = useRemoteNavigation(currentUser);
   // The Duty oversight screen also opens while an admin is impersonating a
   // crew member; impersonation is admin-only, so the flag is a safe signal.
   const isAdminContext = currentUser?.role === 'admin' || currentUser?._impersonating === true;
-  return useMemo(() => NAV_SECTIONS.filter(s =>
-    s.roles.includes(currentUser?.role) || (s.id === 'duty' && isAdminContext)
-  ), [currentUser?.role, isAdminContext]);
+  return useMemo(() => NAV_SECTIONS
+    .map((section) => ({
+      ...section,
+      label: navigation?.sections?.[section.id]?.label || section.label,
+      roles: navigation?.sections?.[section.id]?.roles || section.roles,
+    }))
+    .filter((section) => (
+      section.roles.includes(currentUser?.role)
+      || (section.id === 'duty' && isAdminContext)
+      || (section.id === 'super-admin' && isSuperAdmin(currentUser))
+    )), [currentUser, isAdminContext, navigation]);
 }
 
 /** Groups with their role-filtered children; groups with nothing left drop out. */
 function useNavGroups(currentUser) {
   const allowed = useAllowedSections(currentUser);
+  const navigation = useRemoteNavigation(currentUser);
   return useMemo(() => {
     const byId = new Map(allowed.map(s => [s.id, s]));
-    return NAV_GROUPS
+    const groupConfig = (Array.isArray(navigation?.groups) ? navigation.groups : NAV_GROUPS)
+      .map((group) => ({ ...group, children: [...group.children] }));
+    if (byId.has('super-admin') && !groupConfig.some((group) => group.children.includes('super-admin'))) {
+      const adminGroup = groupConfig.find((group) => group.id === 'admin');
+      if (adminGroup) adminGroup.children.push('super-admin');
+    }
+    const iconById = new Map(NAV_GROUPS.map((group) => [group.id, group.icon]));
+    return groupConfig
       .map((g) => {
         const children = g.children.map(id => byId.get(id)).filter(Boolean);
         const label = (g.altLabel && !children.some(c => c.id === 'users')) ? g.altLabel : g.label;
-        return { ...g, label, children };
+        return { ...g, icon: iconById.get(g.id) || Building2, label, children };
       })
       .filter(g => g.children.length > 0);
-  }, [allowed]);
+  }, [allowed, navigation]);
 }
 
 function TopNav({ currentSection, setCurrentSection, currentUser, onLogout, syncStatus, now, tripCount, onOpenSettings, onOpenProfile, themeMode, onToggleTheme, topNavOrder, onReorderTopNav }) {
   const groups = useNavGroups(currentUser);
-  const activeGroupId = groupIdForSection(currentSection);
+  const activeGroupId = groups.find((group) => group.children.some((child) => child.id === currentSection))?.id || 'home';
   const activeGroup = groups.find(g => g.id === activeGroupId) || groups[0];
   const subTabs = activeGroup?.children || [];
 
@@ -22104,7 +22302,7 @@ function UnreadBadge({ count, className = '' }) {
    ============================================================ */
 function MobileNav({ currentSection, setCurrentSection, currentUser, onOpenSettings, onToggleTheme, themeMode, onLogout }) {
   const groups = useNavGroups(currentUser);
-  const activeGroupId = groupIdForSection(currentSection);
+  const activeGroupId = groups.find((group) => group.children.some((child) => child.id === currentSection))?.id || 'home';
   const { totalUnread: commsUnread } = useStreamPresence();
   const [sheetOpen, setSheetOpen] = useState(false);
 
@@ -28275,6 +28473,8 @@ export default function CharterOps() {
               to: (t.info?.to || '').toUpperCase(),
               start: startIso,
               legType: t.info?.legType || 'REVENUE',
+              pic: t.info?.pic || '',
+              sic: t.info?.sic || '',
             });
             ok++;
           } catch (err) {
@@ -28678,6 +28878,7 @@ export default function CharterOps() {
         getIdToken={getFirebaseIdToken}
       >
       <div className="h-full min-h-0 flex flex-col">
+        <AppAuditTracker currentUser={currentUser} currentSection={section} />
         {/* iOS install banner — dismissible, shown only on iOS Safari
             when the app isn't already installed. Surfaces the Share →
             Add to Home Screen flow because iOS Safari has no built-in
@@ -29421,6 +29622,30 @@ export default function CharterOps() {
               allTrips={allTrips}
               trackingEnabled={trackingEnabled}
               onOpenAdvanced={() => setShowSettings(true)}
+            />
+          </Suspense>
+        )}
+
+        {section === 'super-admin' && isSuperAdmin(currentUser) && (
+          <Suspense fallback={
+            <div className="flex flex-1 items-center justify-center text-content-muted">
+              <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading super admin…
+            </div>
+          }>
+            <SuperAdminPanelLazy
+              currentUser={currentUser}
+              users={users}
+              defaults={{
+                version: 1,
+                sections: Object.fromEntries(NAV_SECTIONS
+                  .filter((item) => item.id !== 'super-admin')
+                  .map((item) => [item.id, { label: item.label, roles: item.roles }])),
+                groups: NAV_GROUPS.map((group) => ({
+                  id: group.id,
+                  label: group.label,
+                  children: group.children.filter((id) => id !== 'super-admin'),
+                })),
+              }}
             />
           </Suspense>
         )}

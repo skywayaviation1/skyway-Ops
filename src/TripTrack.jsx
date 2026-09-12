@@ -449,24 +449,23 @@ function BrokerFlightMap({ position, legs, trail, trailLive, tail }) {
       });
 
       // For the airborne leg the flown trail carries the actual path, so the
-      // planned line would only duplicate it. We draw the remainder instead.
+      // filed route stays visible beside it so every shared leg remains on the
+      // broker map. The flown trail is a separate, thicker overlay.
       if (phase === 'airborne') {
+        routes.push({
+          points: [[from.lat, from.lng], [to.lat, to.lng]],
+          color: BROKER_PHASE_COLORS.airborne,
+          weight: 3,
+          opacity: 0.9,
+          dashed: true,
+        });
         const havePos = position?.airborne === true
           && Number.isFinite(position.latitude) && Number.isFinite(position.longitude);
         if (normalizedTrail.length >= 2) {
           const last = normalizedTrail[normalizedTrail.length - 1];
           projected = [[last.lat, last.lon], [to.lat, to.lng]];
         } else if (havePos) {
-          routes.push({
-            points: [[from.lat, from.lng], [position.latitude, position.longitude]],
-            color: BROKER_PHASE_COLORS.airborne, weight: 3.5, opacity: 0.95,
-          });
           projected = [[position.latitude, position.longitude], [to.lat, to.lng]];
-        } else {
-          routes.push({
-            points: [[from.lat, from.lng], [to.lat, to.lng]],
-            color: BROKER_PHASE_COLORS.airborne, weight: 3, opacity: 0.8, dashed: true,
-          });
         }
         return;
       }
@@ -532,6 +531,10 @@ function BrokerFlightMap({ position, legs, trail, trailLive, tail }) {
           <div className="pointer-events-none rounded-lg border border-slate-700 bg-slate-950/85 px-2.5 py-2 backdrop-blur">
             <div className="text-[9px] uppercase tracking-wider text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
               {trailLive ? 'Flight trail · live' : 'Flight trail · flown'}
+            </div>
+            <div className="mt-1 flex items-center gap-2 text-[10px] text-cyan-200">
+              <span className="inline-block w-6 border-t-2 border-dashed border-cyan-300" />
+              Filed routes for all shared legs
             </div>
             <div className="mt-0.5 text-[11px] text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
               {normalizedTrail.length} points{flownNm ? ` · ${flownNm} nm` : ''}
