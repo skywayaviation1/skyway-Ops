@@ -18,6 +18,7 @@
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import { lookupAirport } from './_airports-data.js';
+import { recordWearLanding } from './_wear-cadence.js';
 import { DEFAULT_MANAGED_TAILS, normalizeFleetTails } from '../src/fleet-config.js';
 
 const FA_API_BASE = 'https://aeroapi.flightaware.com/aeroapi';
@@ -674,6 +675,18 @@ export default async function handler(req, res) {
                 eventState: current,
                 eventType: 'on',
               });
+              if (result.fired) {
+                await recordWearLanding({
+                  tripUid: match.uid,
+                  tail: ident,
+                  landedAtMs: eventTimeMs,
+                  pic: match.data?.tripMeta?.pic || '',
+                  sic: match.data?.tripMeta?.sic || '',
+                  source: 'flightaware-cron',
+                }).catch((error) => {
+                  console.error('[wear] landing cadence failed:', error.message);
+                });
+              }
               results.push({ tail: ident, event: 'landed', tripUid: match.uid, ...result });
             } else {
               results.push({ tail: ident, event: 'landed', match: 'none' });

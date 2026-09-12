@@ -5252,6 +5252,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   // iCal-parsed value.
   const [fromFbo, setFromFbo] = useState(trip.info?.fromFbo || null);
   const [toFbo, setToFbo] = useState(trip.info?.toFbo || null);
+  const [wearCadenceState, setWearCadenceState] = useState(null);
   const [pendingScanPax, setPendingScanPax] = useState(null); // pre-loaded pax being checked in
   const [loading, setLoading] = useState(true);
   // UPDATE ETA flow: tracks whether we're mid-call so we can disable the button
@@ -5491,6 +5492,22 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
     return () => { if (unsub) unsub(); };
   }, [trip.uid, trip.info.broker]);
 
+  useEffect(() => {
+    let unsubscribe = null;
+    (async () => {
+      try {
+        const { subscribeWearTailState } = await import('./firebase-wear.js');
+        unsubscribe = subscribeWearTailState(
+          String(trip.info?.tail || '').toUpperCase(),
+          setWearCadenceState,
+        );
+      } catch (error) {
+        console.warn('[wear] cadence subscription failed:', error?.message || error);
+      }
+    })();
+    return () => unsubscribe?.();
+  }, [trip.info?.tail]);
+
   // ── PAX CARRY-OVER ────────────────────────────────────────────────────────
   // On multi-leg trips (fuel stop, same-day round trip), skip the ID re-scan
   // for passengers already verified on the immediately preceding leg.
@@ -5694,6 +5711,8 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
         to: (trip.info?.to || '').toUpperCase(),
         start: trip.start instanceof Date ? trip.start.toISOString() : (trip.start || null),
         legType: trip.info?.legType || 'REVENUE',
+        pic: trip.info?.pic || '',
+        sic: trip.info?.sic || '',
       };
       // Merge in trip-sheet fields and preloadedPax unless caller passed them explicitly
       const merged = {
@@ -5714,7 +5733,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       console.error('Failed to save trip state:', err);
       notify.error('Failed to save — check your connection');
     }
-  }, [trip.uid, trip.info?.tail, trip.info?.from, trip.info?.to, trip.start, trip.info?.legType, tripSheetUrl, tripSheetPath, tripSheetFilename, tripSheetUploadedAt, tripSheetUploadedBy, preloadedPax, tripSheetNotes, fromFbo, toFbo]);
+  }, [trip.uid, trip.info?.tail, trip.info?.from, trip.info?.to, trip.info?.pic, trip.info?.sic, trip.start, trip.info?.legType, tripSheetUrl, tripSheetPath, tripSheetFilename, tripSheetUploadedAt, tripSheetUploadedBy, preloadedPax, tripSheetNotes, fromFbo, toFbo]);
 
   const openMailto = (url) => {
     const a = document.createElement('a');
@@ -5736,6 +5755,34 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
     const nextStatuses = { ...statuses, [step.id]: newStatus };
     setStatuses(nextStatuses);
     await persist({ statuses: nextStatuses, passengers, brokerEmail, autoNotify, completed, hasCatering, paxOverride });
+
+    if (step.id === 'landed') {
+      try {
+        const nextLeg = (allTrips || [])
+          .filter((candidate) => (
+            String(candidate?.info?.tail || '').toUpperCase()
+              === String(trip.info?.tail || '').toUpperCase()
+            && new Date(candidate.start || 0).getTime() > Date.now()
+          ))
+          .sort((a, b) => new Date(a.start) - new Date(b.start))[0];
+        const { auth } = await import('./firebase.js');
+        await fetch('/api/wear-cadence', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            idToken: await auth.currentUser?.getIdToken(),
+            action: 'landing',
+            tripUid: trip.uid,
+            tail: trip.info?.tail,
+            landedAtMs: newStatus.timestamp,
+            pic: nextLeg?.info?.pic || trip.info?.pic || '',
+            sic: nextLeg?.info?.sic || trip.info?.sic || '',
+          }),
+        });
+      } catch (error) {
+        console.warn('[wear] manual landing cadence update failed:', error?.message || error);
+      }
+    }
 
     // Parse broker email field — supports comma-separated list of recipients
     // (e.g. "broker@x.com, ops@flightsupport.com")
@@ -5975,6 +6022,17 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   };
 
   const handleStatusTrigger = async (step) => {
+    if (
+      wearCadenceState?.due === true
+      && ['taxi_dep', 'wheels_up'].includes(step.id)
+    ) {
+      notify.error('Wear check required before departure', {
+        description: `${trip.info?.tail || 'Aircraft'} has ${wearCadenceState.landingsSinceSession || 10} landings since its last completed wear check.`,
+      });
+      setWearModalType('standard');
+      setWearModalOpen(true);
+      return;
+    }
     let gpsCoords = null;
     if (step.requiresGPS) {
       try {
@@ -14932,6 +14990,8 @@ function FlightAwarePanel({ currentUser, allTrips }) {
           to: t.info.to || '',
           start: t.start instanceof Date ? t.start.toISOString() : (t.start || null),
           legType: t.info.legType || 'REVENUE',
+          pic: t.info.pic || '',
+          sic: t.info.sic || '',
         }));
 
       if (trips.length === 0) {
@@ -28387,6 +28447,8 @@ export default function CharterOps() {
               to: (t.info?.to || '').toUpperCase(),
               start: startIso,
               legType: t.info?.legType || 'REVENUE',
+              pic: t.info?.pic || '',
+              sic: t.info?.sic || '',
             });
             ok++;
           } catch (err) {
