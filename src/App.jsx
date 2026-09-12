@@ -5253,6 +5253,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   const [fromFbo, setFromFbo] = useState(trip.info?.fromFbo || null);
   const [toFbo, setToFbo] = useState(trip.info?.toFbo || null);
   const [wearCadenceState, setWearCadenceState] = useState(null);
+  const [wearBadgeState, setWearBadgeState] = useState(null);
   const [pendingScanPax, setPendingScanPax] = useState(null); // pre-loaded pax being checked in
   const [loading, setLoading] = useState(true);
   // UPDATE ETA flow: tracks whether we're mid-call so we can disable the button
@@ -6023,11 +6024,11 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
 
   const handleStatusTrigger = async (step) => {
     if (
-      wearCadenceState?.due === true
+      (wearCadenceState?.due === true || wearBadgeState?.due === true)
       && ['taxi_dep', 'wheels_up'].includes(step.id)
     ) {
       notify.error('Wear check required before departure', {
-        description: `${trip.info?.tail || 'Aircraft'} has ${wearCadenceState.landingsSinceSession || 10} landings since its last completed wear check.`,
+        description: `${trip.info?.tail || 'Aircraft'} has ${wearCadenceState?.landingsSinceSession || wearBadgeState?.landingsSince || 10} landings since its last completed wear check.`,
       });
       setWearModalType('standard');
       setWearModalOpen(true);
@@ -6547,6 +6548,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
                 currentUser={currentUser}
                 tripId={trip.uid}
                 legId={trip.uid}
+                onDueChange={setWearBadgeState}
                 onOpenModal={({ inspectionType }) => {
                   setWearModalType(inspectionType);
                   setWearModalOpen(true);
@@ -6833,6 +6835,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
               currentUser={currentUser}
               tripId={trip.uid}
               legId={trip.uid}
+              onDueChange={setWearBadgeState}
               onOpenModal={({ inspectionType }) => {
                 setWearModalType(inspectionType);
                 setWearModalOpen(true);

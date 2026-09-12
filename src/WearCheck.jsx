@@ -144,6 +144,7 @@ export function WearCheckBadge({
   tripId,
   legId,
   onOpenModal,
+  onDueChange,
 }) {
   const [latestSession, setLatestSession] = useState(null);
   const [sessionLoaded, setSessionLoaded] = useState(false);
@@ -171,12 +172,17 @@ export function WearCheckBadge({
     return computeLandingsSinceCheck(allTrips, tail, latestSession?.completedAtMs || 0);
   }, [allTrips, tail, latestSession, tailState]);
 
+  const isDue = sessionLoaded && landingsSince >= LANDINGS_PER_CHECK;
+  const isApproaching = landingsSince >= (LANDINGS_PER_CHECK - 2) && !isDue;
+
+  useEffect(() => {
+    onDueChange?.(sessionLoaded ? { due: isDue, landingsSince } : null);
+    return () => onDueChange?.(null);
+  }, [isDue, landingsSince, onDueChange, sessionLoaded]);
+
   // Avoid flashing the "DUE" red badge for half a second while the
   // session subscription is loading on first render.
   if (!sessionLoaded) return null;
-
-  const isDue = landingsSince >= LANDINGS_PER_CHECK;
-  const isApproaching = landingsSince >= (LANDINGS_PER_CHECK - 2) && !isDue;
 
   // Compose label + visual based on state
   let label, kind, titleAttr;

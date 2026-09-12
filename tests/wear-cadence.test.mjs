@@ -55,6 +55,8 @@ test('all landing writers feed the cadence and departure is gated while due', as
   assert.match(app, /action: 'landing'/);
   assert.match(app, /\['taxi_dep', 'wheels_up'\]/);
   assert.match(app, /Wear check required before departure/);
+  assert.match(app, /wearBadgeState\?\.due === true/);
+  assert.match(app, /onDueChange=\{setWearBadgeState\}/);
   assert.match(webhook, /recordWearLanding/);
   assert.match(webhook, /source: 'flightaware-webhook'/);
   assert.match(cron, /recordWearLanding/);
