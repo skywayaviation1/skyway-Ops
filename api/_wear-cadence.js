@@ -76,7 +76,7 @@ async function pushWearDue(database, tail, users, count, nextTripId) {
     tokens: [...new Set(tokens)],
     notification: {
       title: `${tail} · WEAR CHECK DUE`,
-      body: `${count} landings since the last completed wear check. Complete it before the next departure.`,
+      body: `${count} landings since the last completed wear check. Complete it as soon as able — departures are never blocked.`,
     },
     data: {
       type: 'wear-check-due',
@@ -115,13 +115,17 @@ export async function recordWearLanding({
   const landings = landingCountSinceSession(trips, completedAtMs, { tripUid, landedAtMs });
   const due = landings.count >= WEAR_LANDINGS_PER_CHECK;
   const cycleId = session?.id || 'no-session';
+  // A due check never blocks a departure, so the reminder repeats on every
+  // landing past the threshold. Keying on the landing count keeps duplicate
+  // reports of the same landing (manual + FlightAware) to a single push.
+  const notifyKey = `${cycleId}:${landings.count}`;
   const ref = database.collection('wear-tail-state').doc(tail);
   const transactionResult = await database.runTransaction(async (tx) => {
     const snap = await tx.get(ref);
     const prior = snap.exists ? snap.data() : {};
     const notify = due
-      && prior.pushNotifiedForCycle !== cycleId
-      && prior.pushPendingForCycle !== cycleId;
+      && prior.pushNotifiedForCycle !== notifyKey
+      && prior.pushPendingForCycle !== notifyKey;
     tx.set(ref, {
       tail,
       lastSessionId: session?.id || null,
@@ -131,7 +135,7 @@ export async function recordWearLanding({
       due,
       dueSinceMs: due ? (prior.dueSinceMs || Number(landedAtMs)) : null,
       lastCountedLanding: { tripUid, landedAtMs: Number(landedAtMs), source },
-      pushPendingForCycle: notify ? cycleId : (prior.pushPendingForCycle || null),
+      pushPendingForCycle: notify ? notifyKey : (prior.pushPendingForCycle || null),
       updatedAtMs: Date.now(),
     }, { merge: true });
     return { notify };
@@ -146,7 +150,7 @@ export async function recordWearLanding({
         .sort((a, b) => new Date(a.tripMeta.start) - new Date(b.tripMeta.start))[0];
       push = await pushWearDue(database, tail, crew, landings.count, upcoming?.id);
       await ref.set({
-        pushNotifiedForCycle: push.sent > 0 ? cycleId : null,
+        pushNotifiedForCycle: push.sent > 0 ? notifyKey : null,
         pushPendingForCycle: null,
         pushLastResult: push,
         pushLastAttemptAtMs: Date.now(),

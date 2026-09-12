@@ -37,26 +37,45 @@ test('manual and FlightAware reports for one trip remain idempotent', () => {
   assert.deepEqual(result.tripIds, ['trip-10']);
 });
 
-test('10th landing atomically marks due and pushes assigned crew once', async () => {
+test('10th landing atomically marks due and repeats the crew push each landing', async () => {
   const cadence = await source('api/_wear-cadence.js');
   assert.match(cadence, /landings\.count >= WEAR_LANDINGS_PER_CHECK/);
   assert.match(cadence, /database\.runTransaction/);
-  assert.match(cadence, /pushNotifiedForCycle !== cycleId/);
+  // Keyed on the landing count, not just the cycle, so every landing past
+  // the threshold reminds the crew again while duplicates stay deduped.
+  assert.match(cadence, /const notifyKey = `\$\{cycleId\}:\$\{landings\.count\}`/);
+  assert.match(cadence, /pushNotifiedForCycle !== notifyKey/);
+  assert.match(cadence, /pushPendingForCycle !== notifyKey/);
   assert.match(cadence, /sendEachForMulticast/);
   assert.match(cadence, /WEAR CHECK DUE/);
-  assert.match(cadence, /Complete it before the next departure/);
+  assert.match(cadence, /departures are never blocked/);
   assert.match(cadence, /Urgency: 'high'/);
 });
 
-test('all landing writers feed the cadence and departure is gated while due', async () => {
+test('all landing writers feed the cadence and a due check never blocks departure', async () => {
   const app = await source('src/App.jsx');
   const webhook = await source('api/flightaware-webhook.js');
   const cron = await source('api/flightaware-cron-poll.js');
   assert.match(app, /action: 'landing'/);
   assert.match(app, /\['taxi_dep', 'wheels_up'\]/);
-  assert.match(app, /Wear check required before departure/);
   assert.match(app, /wearBadgeState\?\.due === true/);
   assert.match(app, /onDueChange=\{setWearBadgeState\}/);
+  assert.doesNotMatch(app, /Wear check required before departure/);
+
+  const trigger = app.slice(
+    app.indexOf('const handleStatusTrigger'),
+    app.indexOf('const handleStatusUntrigger'),
+  );
+  assert.ok(trigger.length > 0);
+  const dueBranch = trigger.slice(
+    trigger.indexOf("wearCadenceState?.due === true"),
+    trigger.indexOf('let gpsCoords'),
+  );
+  assert.match(dueBranch, /notify\.warning\('Wear check due — not blocking departure'/);
+  assert.match(dueBranch, /Open wear check/);
+  assert.doesNotMatch(dueBranch, /\breturn\b/);
+  assert.match(trigger, /await updateStatus\(step, gpsCoords, autoNotify\)/);
+
   assert.match(webhook, /recordWearLanding/);
   assert.match(webhook, /source: 'flightaware-webhook'/);
   assert.match(cron, /recordWearLanding/);

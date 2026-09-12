@@ -6023,16 +6023,24 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   };
 
   const handleStatusTrigger = async (step) => {
+    // Wear cadence is advisory only. A due check never blocks taxi or
+    // wheels up — the crew gets a reminder with a one-tap way into the
+    // check and the departure step is logged either way.
     if (
       (wearCadenceState?.due === true || wearBadgeState?.due === true)
       && ['taxi_dep', 'wheels_up'].includes(step.id)
     ) {
-      notify.error('Wear check required before departure', {
-        description: `${trip.info?.tail || 'Aircraft'} has ${wearCadenceState?.landingsSinceSession || wearBadgeState?.landingsSince || 10} landings since its last completed wear check.`,
+      notify.warning('Wear check due — not blocking departure', {
+        description: `${trip.info?.tail || 'Aircraft'} has ${wearCadenceState?.landingsSinceSession || wearBadgeState?.landingsSince || 10} landings since its last completed wear check. Complete it when able.`,
+        duration: 9000,
+        action: {
+          label: 'Open wear check',
+          onClick: () => {
+            setWearModalType('standard');
+            setWearModalOpen(true);
+          },
+        },
       });
-      setWearModalType('standard');
-      setWearModalOpen(true);
-      return;
     }
     let gpsCoords = null;
     if (step.requiresGPS) {
