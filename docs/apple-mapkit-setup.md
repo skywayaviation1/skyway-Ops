@@ -7,8 +7,10 @@ This preserves the existing tracking features without downloading, extracting,
 or repackaging Apple map tiles.
 
 If Apple Maps is not configured, its token is rejected, or its CDN is
-unavailable, the component automatically falls back to the existing standard
-basemap. Aircraft position and status data are never dependent on Apple.
+unavailable, the component tries Google Maps when `GOOGLE_MAPS_API_KEY` is
+set (see `docs/google-maps-setup.md`), then clean Esri / OpenTopoMap tiles.
+CARTO tiles are never used. Aircraft position and status data are never
+dependent on Apple or Google.
 
 ## Apple Developer setup
 
@@ -68,11 +70,10 @@ weather-radar overlays.
 
 ## Map choices
 
-The existing layer menu maps to:
-
-- **Apple Standard**
-- **Apple Satellite**
-- **Apple Hybrid**
+The existing layer menu maps to Apple Standard / Satellite / Hybrid when
+MapKit is active. If Apple is unavailable and Google Maps is configured,
+the same three slots become Google Roadmap / Satellite / Hybrid. The last
+resort tile fallback is Esri Dark / Esri Satellite / OpenTopoMap.
 
 Weather radar and flight trails continue to render above all three.
 

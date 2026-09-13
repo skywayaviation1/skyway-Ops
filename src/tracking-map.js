@@ -47,7 +47,9 @@ export function loadLeaflet() {
 }
 
 /* ─── BASEMAPS ───────────────────────────────────────────────────────────────
-   Every option is key-free so the broker page works without a Mapbox token.
+   Key-free Leaflet fallbacks used only when Apple MapKit (preferred) and
+   Google Maps are unavailable. No CARTO tiles — they now watermark
+   "API KEY REQUIRED". Dark and satellite use Esri; terrain uses OpenTopoMap.
    `dim` is applied to the tile pane only, so overlays keep full contrast over
    bright satellite imagery.
    ─────────────────────────────────────────────────────────────────────────── */
@@ -55,13 +57,16 @@ export const BASEMAPS = {
   dark: {
     id: 'dark',
     label: 'Dark',
-    maxZoom: 18,
-    dim: null,
+    maxZoom: 16,
+    dim: 'brightness(0.62) contrast(1.12)',
     tiles: [
-      { url: 'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', subdomains: 'abcd' },
+      { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', maxNativeZoom: 16 },
     ],
-    labels: { url: 'https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', subdomains: 'abcd', opacity: 0.9 },
-    attribution: '&copy; <a href="https://carto.com">CARTO</a> &copy; OpenStreetMap',
+    labels: {
+      url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}',
+      opacity: 0.92,
+    },
+    attribution: 'Tiles &copy; Esri',
   },
   satellite: {
     id: 'satellite',
@@ -71,8 +76,11 @@ export const BASEMAPS = {
     tiles: [
       { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', maxNativeZoom: 17 },
     ],
-    labels: { url: 'https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', subdomains: 'abcd', opacity: 0.75 },
-    attribution: 'Tiles &copy; Esri &copy; <a href="https://carto.com">CARTO</a>',
+    labels: {
+      url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+      opacity: 0.85,
+    },
+    attribution: 'Tiles &copy; Esri',
   },
   terrain: {
     id: 'terrain',
@@ -341,18 +349,24 @@ export function aircraftIcon(L, {
   groundspeed = null,
   selected = false,
   showLabel = true,
+  muted = false,
 } = {}) {
-  const size = selected ? 34 : 26;
-  const color = selected ? '#3FA9CC' : '#8FCADF';
+  const size = selected ? 38 : muted ? 22 : 28;
+  const color = selected ? '#5FD4F0' : muted ? '#6B8A96' : '#8FCADF';
   const glow = selected
-    ? 'filter: drop-shadow(0 0 6px rgba(34,211,238,0.85));'
-    : 'filter: drop-shadow(0 0 3px rgba(14,165,233,0.5));';
+    ? 'filter: drop-shadow(0 0 8px rgba(63,169,204,0.95));'
+    : muted
+      ? 'filter: drop-shadow(0 0 2px rgba(14,165,233,0.25));'
+      : 'filter: drop-shadow(0 0 4px rgba(14,165,233,0.55));';
+  const ring = selected
+    ? `<span style="position:absolute; inset:-6px; border-radius:50%; border:1.5px solid rgba(63,169,204,0.85); box-shadow:0 0 12px rgba(63,169,204,0.45);"></span>`
+    : `<span style="position:absolute; inset:-4px; border-radius:50%; border:1px solid rgba(63,169,204,0.28);"></span>`;
 
   const readout = [formatAltitude(altitude), formatSpeed(groundspeed)].filter(Boolean).join(' · ');
   const label = showLabel ? `
     <div style="position:absolute; left:${size + 6}px; top:50%; transform:translateY(-50%); pointer-events:none; white-space:nowrap;">
-      <div style="background:rgba(2,6,23,0.9); border:1px solid ${selected ? 'rgba(34,211,238,0.6)' : 'rgba(125,211,252,0.35)'}; border-radius:4px; padding:2px 6px;">
-        <div style="font-family:'JetBrains Mono',monospace; font-size:11px; font-weight:700; line-height:1.2; color:${selected ? '#a5f3fc' : '#bae6fd'};">${tail || ''}</div>
+      <div style="background:rgba(6,12,22,0.92); border:1px solid ${selected ? 'rgba(63,169,204,0.7)' : 'rgba(125,211,252,0.28)'}; border-radius:5px; padding:2px 7px;">
+        <div style="font-family:'JetBrains Mono',monospace; font-size:11px; font-weight:700; line-height:1.2; color:${selected ? '#c5f4ff' : '#bae6fd'};">${tail || ''}</div>
         ${readout ? `<div style="font-family:'JetBrains Mono',monospace; font-size:9px; line-height:1.3; color:#67e8f9;">${readout}</div>` : ''}
       </div>
     </div>` : '';
@@ -363,7 +377,8 @@ export function aircraftIcon(L, {
     iconAnchor: [size / 2, size / 2],
     html: `
       <div style="position:relative; width:${size}px; height:${size}px; cursor:pointer;">
-        <svg width="${size}" height="${size}" viewBox="0 0 24 24" style="transform:rotate(${heading}deg); transform-origin:center; ${glow}">
+        ${ring}
+        <svg width="${size}" height="${size}" viewBox="0 0 24 24" style="position:relative; transform:rotate(${heading}deg); transform-origin:center; ${glow}">
           <path d="${PLANE_PATH}" fill="${color}" stroke="#082f49" stroke-width="0.6"/>
         </svg>
         ${label}
@@ -393,20 +408,27 @@ export function airportIcon(L, { code, tone = 'neutral', small = false } = {}) {
   });
 }
 
-/** Small parked-aircraft dot, used for the rest of the fleet. */
-export function groundedIcon(L, { tail, at, selected = false } = {}) {
-  const dot = selected ? 13 : 9;
-  const border = selected ? '2px solid #94a3b8' : '1.5px solid #475569';
+/** Parked aircraft: muted silhouette so airborne vs grounded is obvious. */
+export function groundedIcon(L, { tail, at, selected = false, muted = false } = {}) {
+  const size = selected ? 22 : muted ? 14 : 16;
+  const fill = selected ? '#cbd5e1' : muted ? '#475569' : '#94a3b8';
+  const ring = selected
+    ? 'box-shadow:0 0 0 2px rgba(148,163,184,0.55);'
+    : 'box-shadow:0 0 0 1px rgba(15,23,42,0.9);';
   return L.divIcon({
     className: '',
-    iconSize: [dot, dot],
-    iconAnchor: [dot / 2, dot / 2],
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2],
     html: `
-      <div style="position:relative; cursor:pointer;">
-        <div style="width:${dot}px; height:${dot}px; border-radius:50%; background:#1e293b; border:${border};"></div>
-        <div style="position:absolute; left:${dot + 5}px; top:50%; transform:translateY(-50%); display:flex; gap:4px; align-items:center; pointer-events:none; white-space:nowrap;">
-          <span style="font-family:'JetBrains Mono',monospace; font-size:9px; font-weight:${selected ? 700 : 500}; color:${selected ? '#cbd5e1' : '#64748b'}; background:rgba(2,6,23,0.8); padding:1px 5px; border-radius:3px;">${tail || ''}</span>
-          ${at ? `<span style="font-family:'JetBrains Mono',monospace; font-size:8px; color:#64748b; background:rgba(2,6,23,0.65); padding:1px 5px; border-radius:3px;">${at}</span>` : ''}
+      <div style="position:relative; width:${size}px; height:${size}px; cursor:pointer;">
+        <div style="width:${size}px; height:${size}px; border-radius:50%; background:${selected ? '#1e293b' : '#0f172a'}; border:1.5px solid ${selected ? '#94a3b8' : '#334155'}; ${ring} display:flex; align-items:center; justify-content:center;">
+          <svg width="${Math.round(size * 0.72)}" height="${Math.round(size * 0.72)}" viewBox="0 0 24 24">
+            <path d="${PLANE_PATH}" fill="${fill}"/>
+          </svg>
+        </div>
+        <div style="position:absolute; left:${size + 6}px; top:50%; transform:translateY(-50%); display:flex; gap:4px; align-items:center; pointer-events:none; white-space:nowrap;">
+          <span style="font-family:'JetBrains Mono',monospace; font-size:9px; font-weight:${selected ? 700 : 500}; color:${selected ? '#e2e8f0' : '#94a3b8'}; background:rgba(6,12,22,0.88); padding:1px 5px; border-radius:3px;">${tail || ''}</span>
+          ${at ? `<span style="font-family:'JetBrains Mono',monospace; font-size:8px; color:#64748b; background:rgba(6,12,22,0.7); padding:1px 5px; border-radius:3px;">${at}</span>` : ''}
         </div>
       </div>`,
   });
