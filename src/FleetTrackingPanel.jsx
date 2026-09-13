@@ -68,6 +68,14 @@ export default function FleetTrackingPanel({
     setSelectedTail(next?.tail || null);
   }, [managedRows, selectedTail, unlocated]);
 
+  useEffect(() => {
+    if (mobileTab !== 'map' || typeof window === 'undefined') return undefined;
+    const id = window.setTimeout(() => {
+      window.dispatchEvent(new CustomEvent('skyway-map-invalidate'));
+    }, 40);
+    return () => window.clearTimeout(id);
+  }, [mobileTab]);
+
   const selectedRow = managedRows.find((row) => row.tail === selectedTail) || null;
   const selectedTelemetry = selectedTail ? positions[selectedTail] || null : null;
   const selectedAirborne = selectedTelemetry?.airborne === true

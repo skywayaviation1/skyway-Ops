@@ -58,7 +58,7 @@ export const BASEMAPS = {
     id: 'dark',
     label: 'Dark',
     maxZoom: 16,
-    dim: null,
+    dim: 'brightness(0.62) contrast(1.12)',
     tiles: [
       { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', maxNativeZoom: 16 },
     ],

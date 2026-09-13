@@ -162,6 +162,7 @@ test('home fleet tracking panel lists tails and focuses a selected aircraft', as
   assert.match(source, /Select an aircraft to see live flight detail/);
   assert.match(source, /Loading live positions/);
   assert.match(source, /xl:w-\[23\.5rem\]/);
+  assert.match(source, /skyway-map-invalidate/);
 });
 
 test('duty board groups a two-pilot crew with PIC above SIC', () => {
