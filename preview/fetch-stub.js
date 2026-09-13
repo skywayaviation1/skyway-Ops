@@ -421,6 +421,33 @@ function brokerTrip() {
   };
 }
 
+function sampleTrackLog(ident) {
+  const tail = String(ident || '').toUpperCase();
+  const airborne = SCHEDULE.find((leg) => {
+    const start = BASE + leg.startH * HOUR;
+    const end = BASE + leg.endH * HOUR;
+    const nowMs = Date.now();
+    return leg.tail === tail && nowMs >= start && nowMs <= end;
+  });
+  const fromCode = airborne?.from || TENANT.fleet.find((a) => a.tail === tail)?.home || TENANT.base;
+  const toCode = airborne?.to || fromCode;
+  const from = AIRPORT_COORDS[fromCode] || AIRPORT_COORDS[TENANT.base];
+  const to = AIRPORT_COORDS[toCode] || from;
+  const progress = airborne ? 0.62 : 1;
+  const steps = airborne ? [0, 0.12, 0.26, 0.4, 0.52, progress] : [0, 0.4, 1];
+  return {
+    ok: true,
+    ident: tail,
+    points: steps.map((t) => ({
+      lat: from[0] + (to[0] - from[0]) * t,
+      lon: from[1] + (to[1] - from[1]) * t,
+      altitude_ft: t < 0.1 ? 1800 : t < 0.25 ? 18000 : 41000,
+      groundspeed_kt: t < 0.1 ? 190 : 440,
+      time: Date.now() - Math.round((1 - t) * 70) * MIN,
+    })),
+  };
+}
+
 function brokerPayload() {
   const from = AIRPORT_COORDS[LEAD.from];
   const to = AIRPORT_COORDS[LEAD.to];
@@ -537,6 +564,25 @@ export function installFetchStub() {
     if (path === '/api/quickbooks-status') return json(QBO_CONNECTION);
     if (path === '/api/faa-notams') return json({ ok: true, notams: [] });
     if (path.startsWith('/api/airport-weather')) return json({ ok: true, parsed: null });
+    if (path === '/api/apple-mapkit-token') {
+      return new Response(JSON.stringify({
+        error: 'Apple Maps is not configured in preview',
+        missing: ['APPLE_MAPKIT_TOKEN'],
+      }), { status: 503, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (path === '/api/google-maps-config') {
+      return new Response(JSON.stringify({
+        configured: false,
+        error: 'Google Maps is not configured in preview',
+        missing: ['GOOGLE_MAPS_API_KEY'],
+      }), { status: 503, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (path.startsWith('/api/flightaware-track-log')) {
+      const ident = (() => {
+        try { return new URL(url, window.location.origin).searchParams.get('ident'); } catch { return ''; }
+      })();
+      return json(sampleTrackLog(ident));
+    }
 
     return json({ ok: true });
   };

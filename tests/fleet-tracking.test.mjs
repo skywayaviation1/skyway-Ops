@@ -2,8 +2,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   buildFleetMapScene,
+  buildSelectedFlightOverlay,
+  formatLastUpdate,
+  resolveAirportPoint,
   resolveFleetMapPosition,
   scheduleLocationForTail,
+  withSelectedFlightScene,
 } from '../src/fleet-tracking.js';
 import {
   mergeFlightAwareState,
@@ -132,6 +136,69 @@ test('FlightAware merge preserves last known position during API gaps', () => {
   assert.equal(failed.groundedAt, 'KHYA');
   assert.equal(failed.dataFresh, false);
   assert.equal(failed.error, 'FA 503');
+});
+
+test('selected airborne overlay adds origin, destination, trail and projected remainder', () => {
+  const overlay = buildSelectedFlightOverlay({
+    telemetry: {
+      airborne: true,
+      latitude: 40.1,
+      longitude: -74.2,
+      origin: 'IAD',
+      destination: 'HYA',
+    },
+    trackPoints: [
+      { lat: 38.95, lon: -77.45, altitude: 1200 },
+      { lat: 40.1, lon: -74.2, altitude: 28000 },
+    ],
+  });
+  assert.equal(overlay.airports.length, 2);
+  assert.equal(overlay.airports[0].tone, 'origin');
+  assert.equal(overlay.airports[1].tone, 'destination');
+  assert.ok(overlay.trail);
+  assert.deepEqual(overlay.projected[0], [40.1, -74.2]);
+  assert.equal(overlay.routes.length, 0, 'trail replaces the origin-to-aircraft stub');
+});
+
+test('selected overlay without a trail draws the flown stub route', () => {
+  const overlay = buildSelectedFlightOverlay({
+    telemetry: {
+      airborne: true,
+      latitude: 40.1,
+      longitude: -74.2,
+      origin: 'IAD',
+      destination: 'HYA',
+    },
+    trackPoints: [],
+  });
+  assert.equal(overlay.trail, null);
+  assert.equal(overlay.routes.length, 1);
+});
+
+test('airport resolver prefers the curated table over API coordinates', () => {
+  const iad = resolveAirportPoint('IAD', 1, 2);
+  assert.ok(iad);
+  assert.notEqual(iad.lat, 1);
+});
+
+test('scene helper keeps airborne labels and the selected grounded tail', () => {
+  const scene = withSelectedFlightScene({
+    aircraft: [
+      { id: 'N444AM', airborne: true, showLabel: true },
+      { id: 'N286N', airborne: false, showLabel: true },
+      { id: 'N651TW', airborne: false, showLabel: true },
+    ],
+  }, { airports: [{ code: 'IAD' }], routes: [], trail: null, projected: null }, { selectedTail: 'N286N' });
+  assert.equal(scene.aircraft.find((item) => item.id === 'N444AM').showLabel, true);
+  assert.equal(scene.aircraft.find((item) => item.id === 'N286N').showLabel, true);
+  assert.equal(scene.aircraft.find((item) => item.id === 'N651TW').showLabel, false);
+  assert.equal(scene.airports[0].code, 'IAD');
+});
+
+test('last-update copy stays readable for live telemetry', () => {
+  assert.equal(formatLastUpdate(NOW - 10_000, NOW), 'just now');
+  assert.equal(formatLastUpdate(NOW - 5 * 60_000, NOW), '5m ago');
+  assert.equal(formatLastUpdate(null, NOW), null);
 });
 
 test('a landing updates the persistent last-known point', () => {
