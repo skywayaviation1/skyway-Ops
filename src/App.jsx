@@ -5747,8 +5747,42 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   };
 
   const updateStatus = async (step, gpsCoords, sendNotif) => {
+    const clickedAt = Date.now();
+    let resolvedTime = {
+      timestamp: clickedAt,
+      timestampSource: 'manual',
+      faFlightId: null,
+    };
+    if (['taxi_dep', 'wheels_up', 'landed'].includes(step.id)) {
+      try {
+        const [{ auth }, { resolveManualStatusTimestamp }] = await Promise.all([
+          import('./firebase.js'),
+          import('./flightaware-manual-status.js'),
+        ]);
+        resolvedTime = await resolveManualStatusTimestamp({
+          stepId: step.id,
+          trip,
+          idToken: await auth.currentUser?.getIdToken(),
+          clickedAt,
+        });
+        if (resolvedTime.timestampSource === 'flightaware') {
+          notify.info('Using FlightAware actual event time', {
+            description: 'The timeline and notification use the aircraft-reported time, not the time clicked.',
+          });
+        } else {
+          notify.warning('FlightAware actual time unavailable', {
+            description: 'The status will use the current time. Verify that FlightAware has access to this aircraft.',
+          });
+        }
+      } catch (error) {
+        console.warn('[manual status] FlightAware time lookup failed:', error?.message || error);
+      }
+    }
     const newStatus = {
-      timestamp: Date.now(),
+      timestamp: resolvedTime.timestamp,
+      recordedAt: clickedAt,
+      timestampSource: resolvedTime.timestampSource,
+      faFlightId: resolvedTime.faFlightId,
       coords: gpsCoords || null,
       author: currentUserDisplayName || (currentUser?.name || 'Unknown'),
       notified: false, // set to true only after email actually sends
@@ -5804,7 +5838,11 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
     }
 
     // Use first broker email for the "Hi [Name]" greeting
-    const emailContent = buildStatusEmail(step, trip, brokerEmails[0] || '');
+    const emailContent = buildStatusEmail(
+      { ...step, timestamp: newStatus.timestamp },
+      trip,
+      brokerEmails[0] || '',
+    );
     if (!emailContent) {
       console.warn('[email] No email template for step:', step.id, '· legType:', trip.info?.legType);
       return;
@@ -5888,7 +5926,11 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       notify.error('No recipients configured. Add a broker email on the NOTIFY tab first.');
       return;
     }
-    const emailContent = buildStatusEmail(step, trip, brokerEmails[0] || '');
+    const emailContent = buildStatusEmail(
+      { ...step, timestamp: existing.timestamp },
+      trip,
+      brokerEmails[0] || '',
+    );
     if (!emailContent) {
       notify.error(`No email template available for "${step.label}" on this leg type.`);
       return;

@@ -20,6 +20,10 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { lookupAirport } from './_airports-data.js';
 import { recordWearLanding } from './_wear-cadence.js';
 import { DEFAULT_MANAGED_TAILS, normalizeFleetTails } from '../src/fleet-config.js';
+import {
+  normalizeAircraftIdent,
+  observedFlightMilestones,
+} from '../src/flightaware-event-utils.js';
 
 const FA_API_BASE = 'https://aeroapi.flightaware.com/aeroapi';
 export function resolveCronFleetTails(config) {
@@ -167,8 +171,10 @@ async function fetchTailState(ident, apiKey) {
   const data = await r.json();
   const flights = Array.isArray(data.flights) ? data.flights : [];
 
-  // Active flight has actual_off but no actual_on
-  const active = flights.find(f => f.actual_off && !f.actual_on);
+  // An in-progress flight starts at OUT, before it is airborne. Looking only
+  // for actual_off skipped the entire taxi phase and made the cron unable to
+  // repair a missed OUT webhook.
+  const active = flights.find(f => (f.actual_out || f.actual_off) && !f.actual_on);
   if (active) {
     // Fetch the latest position for richer data
     let position = null;
@@ -188,7 +194,7 @@ async function fetchTailState(ident, apiKey) {
     }
     return {
       ident,
-      airborne: true,
+      airborne: !!active.actual_off,
       faFlightId: active.fa_flight_id,
       origin: active.origin?.code_icao || active.origin?.code || null,
       originLat: active.origin?.latitude ?? null,
@@ -199,6 +205,7 @@ async function fetchTailState(ident, apiKey) {
       destinationLon: active.destination?.longitude ?? null,
       destinationCity: active.destination?.city || null,
       destinationTz: active.destination?.timezone || null,
+      actualOut: active.actual_out || null,
       actualOff: active.actual_off,
       actualOn: null,
       estimatedOn: active.estimated_on || null,
@@ -240,6 +247,7 @@ async function fetchTailState(ident, apiKey) {
       destination: destCode,
       destinationCity: dest.city || null,
       destinationTz: dest.timezone || null,
+      actualOut: lastLanded.actual_out || null,
       actualOff: lastLanded.actual_off || null,
       actualOn: lastLanded.actual_on,
       estimatedOn: null,
@@ -298,7 +306,7 @@ async function findMatchingTrip(db, ident, originCode, eventTimeMs, stepId) {
     const meta = data.tripMeta;
     if (!meta || !meta.tail || !meta.from || !meta.start) continue;
 
-    if (String(meta.tail).toUpperCase() !== ident.toUpperCase()) continue;
+    if (normalizeAircraftIdent(meta.tail) !== normalizeAircraftIdent(ident)) continue;
     tailMatchCount++;
 
     if (originCode && !airportsMatch(meta.from, originCode)) {
@@ -395,10 +403,20 @@ async function sendEmail(host, to, subject, text, meta) {
   }
 }
 
-function buildBrokerEmail({ tail, eventType, originCode, destCode, originTz, destTz, estimatedOn, actualOff, actualOn, scheduledArrivalIso }) {
+function buildBrokerEmail({ tail, eventType, originCode, destCode, originTz, destTz, estimatedOn, actualOut, actualOff, actualOn, scheduledArrivalIso }) {
   const signature = '\n\n— Skyway Aviation\nPrivate Jet & Helicopter Charter Services';
   let subject, body;
-  if (eventType === 'wheels_up') {
+  if (eventType === 'taxi_dep') {
+    subject = `Taxiing for Departure — ${tail} ${originCode || ''}-${destCode || ''}`;
+    body = [
+      'Hello,',
+      '',
+      `${tail} has begun taxiing for departure from ${originCode || 'origin'}.`,
+      `Taxi began: ${fmtTime(actualOut, originTz)}`,
+      '',
+      'We will notify you when the flight is wheels up.',
+    ].join('\n') + signature;
+  } else if (eventType === 'wheels_up') {
     subject = `Wheels Up — ${tail} ${originCode || ''}-${destCode || ''}`;
     const lines = [
       'Hello,',
@@ -440,11 +458,6 @@ function buildBrokerEmail({ tail, eventType, originCode, destCode, originTz, des
 async function fireStatus({ db, host, tripUid, tripState, stepId, eventTimeMs, eventState, eventType }) {
   const existingStatuses = tripState.statuses || {};
   const autoFiredEvents = tripState.autoFiredEvents || {};
-
-  // Idempotent: if this step was auto-fired before, skip
-  if (autoFiredEvents[stepId]) {
-    return { skipped: 'already-auto-fired' };
-  }
 
   const existingStatus = existingStatuses[stepId];
   const alreadyFired = !!existingStatus;
@@ -503,21 +516,29 @@ async function fireStatus({ db, host, tripUid, tripState, stepId, eventTimeMs, e
     originTz: eventState.originTz,
     destTz: eventState.destinationTz,
     estimatedOn: eventState.estimatedOn,
+    actualOut: eventState.actualOut,
     actualOff: eventState.actualOff,
     actualOn: eventState.actualOn,
     scheduledArrivalIso: eventState.scheduledIn || eventState.scheduledOn,
   });
   const sent = await sendEmail(host, brokerEmails, subject, body);
 
-  // Recovery: mark the manual status notified=true so the App.jsx
-  // "EMAIL FAILED" pill clears and the next poll skips this step.
-  if (sent && isRecovery) {
+  // Persist successful delivery for both newly auto-fired and recovered
+  // statuses. Without this, a failed first attempt could never recover
+  // because autoFiredEvents caused every later poll to return early.
+  if (sent) {
     try {
       const recoveredStatus = {
-        ...existingStatus,
+        ...(existingStatus || {
+          timestamp: eventTimeMs,
+          author: 'FlightAware Tracking',
+          coords: null,
+          autoFired: true,
+          eventType,
+        }),
         notified: true,
         notifiedAt: Date.now(),
-        notifiedBy: 'fa-cron-recovery',
+        notifiedBy: isRecovery ? 'fa-cron-recovery' : 'fa-cron',
       };
       await db.collection('trip-state').doc(tripUid).update({
         [`statuses.${stepId}`]: recoveredStatus,
@@ -634,66 +655,54 @@ export default async function handler(req, res) {
           await Promise.allSettled(airportWrites);
         }
 
-        // Detect transitions
-        if (previous && !observed.error) {
-          // Transition 1: grounded → airborne (wheels up)
-          if (previous.airborne === false && current.airborne === true) {
-            const eventTimeMs = current.actualOff
-              ? new Date(current.actualOff).getTime()
-              : Date.now();
-            const match = await findMatchingTrip(db, ident, current.origin, eventTimeMs, 'wheels_up');
-            if (match) {
-              const result = await fireStatus({
-                db, host,
-                tripUid: match.uid,
-                tripState: match.data,
-                stepId: 'wheels_up',
-                eventTimeMs,
-                eventState: current,
-                eventType: 'off',
-              });
-              results.push({ tail: ident, event: 'wheels_up', tripUid: match.uid, ...result });
-            } else {
-              results.push({ tail: ident, event: 'wheels_up', match: 'none' });
+        // Reconcile facts, not only state transitions. A cron deployment,
+        // transient API failure, or first poll can miss the exact
+        // grounded↔airborne edge. AeroAPI's actual_out/off/on timestamps are
+        // durable, and fireStatus is idempotent, so every poll can safely
+        // repair a missed taxi, wheels-up, landing, or email delivery.
+        if (!observed.error) {
+          for (const milestone of observedFlightMilestones(observed)) {
+            const match = await findMatchingTrip(
+              db,
+              ident,
+              observed.origin,
+              milestone.eventTimeMs,
+              milestone.stepId,
+            );
+            if (!match) {
+              results.push({ tail: ident, event: milestone.stepId, match: 'none' });
+              continue;
             }
-          }
-
-          // Transition 2: airborne → grounded (landed)
-          // We look at whether the faFlightId changed AND current shows actualOn
-          else if (previous.airborne === true && current.airborne === false && current.actualOn) {
-            const eventTimeMs = new Date(current.actualOn).getTime();
-            // For landed, match by the trip's origin (which is current.origin
-            // since we're looking at the flight that just landed)
-            const match = await findMatchingTrip(db, ident, current.origin, eventTimeMs, 'landed');
-            if (match) {
-              const result = await fireStatus({
-                db, host,
+            const result = await fireStatus({
+              db,
+              host,
+              tripUid: match.uid,
+              tripState: match.data,
+              stepId: milestone.stepId,
+              eventTimeMs: milestone.eventTimeMs,
+              eventState: observed,
+              eventType: milestone.eventType,
+            });
+            if (milestone.stepId === 'landed' && result.fired) {
+              await recordWearLanding({
                 tripUid: match.uid,
-                tripState: match.data,
-                stepId: 'landed',
-                eventTimeMs,
-                eventState: current,
-                eventType: 'on',
+                tail: ident,
+                landedAtMs: milestone.eventTimeMs,
+                pic: match.data?.tripMeta?.pic || '',
+                sic: match.data?.tripMeta?.sic || '',
+                source: 'flightaware-cron',
+              }).catch((error) => {
+                console.error('[wear] landing cadence failed:', error.message);
               });
-              if (result.fired) {
-                await recordWearLanding({
-                  tripUid: match.uid,
-                  tail: ident,
-                  landedAtMs: eventTimeMs,
-                  pic: match.data?.tripMeta?.pic || '',
-                  sic: match.data?.tripMeta?.sic || '',
-                  source: 'flightaware-cron',
-                }).catch((error) => {
-                  console.error('[wear] landing cadence failed:', error.message);
-                });
-              }
-              results.push({ tail: ident, event: 'landed', tripUid: match.uid, ...result });
-            } else {
-              results.push({ tail: ident, event: 'landed', match: 'none' });
             }
+            results.push({
+              tail: ident,
+              event: milestone.stepId,
+              tripUid: match.uid,
+              ...result,
+            });
           }
         }
-        // First poll for this tail — just record state, no transitions to detect
       } catch (err) {
         console.error(`[cron-poll] error for ${ident}:`, err.message);
         results.push({ tail: ident, error: err.message });

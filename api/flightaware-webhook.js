@@ -24,6 +24,13 @@
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import { recordWearLanding } from './_wear-cadence.js';
+import {
+  aircraftIdentFromFlight,
+  airportCode,
+  eventTimestamp,
+  flightAwareEventCode,
+  normalizeAircraftIdent,
+} from '../src/flightaware-event-utils.js';
 
 let adminApp = null;
 let _db = null;
@@ -158,7 +165,7 @@ async function findMatchingTrip(db, ident, originCode, eventTimeMs, stepId) {
     const meta = data.tripMeta;
     if (!meta || !meta.tail || !meta.from || !meta.start) continue;
 
-    if (String(meta.tail).toUpperCase() !== ident.toUpperCase()) continue;
+    if (normalizeAircraftIdent(meta.tail) !== normalizeAircraftIdent(ident)) continue;
     tailMatchCount++;
 
     if (originCode && !airportsMatch(meta.from, originCode)) {
@@ -422,19 +429,17 @@ export default async function handler(req, res) {
 
     // === 3. Extract key fields ===
     const flight = body.flight || {};
-    const ident = (flight.ident || flight.registration || '').toUpperCase();
-    const eventType = body.event || body['@type'] || 'unknown';
+    // AeroAPI alert payloads use `event_code`, not `event`. Filed operator
+    // idents can also differ from the actual tail, so registration must win
+    // for matching (for example, an operator callsign flying N286N).
+    const ident = aircraftIdentFromFlight(flight);
+    const providerIdent = String(flight.ident || '').toUpperCase();
+    const eventType = flightAwareEventCode(body) || 'unknown';
     const faFlightId = flight.fa_flight_id || null;
     const diverted = !!flight.diverted;
 
-    const originCode = flight.origin?.code_icao
-                    || flight.origin?.code
-                    || flight.origin?.code_iata
-                    || null;
-    const destCode = flight.destination?.code_icao
-                  || flight.destination?.code
-                  || flight.destination?.code_iata
-                  || null;
+    const originCode = airportCode(flight.origin);
+    const destCode = airportCode(flight.destination);
     // FlightAware returns IANA timezone strings like 'America/New_York' on
     // origin and destination objects. We pass these through to fmtTime so
     // broker emails show "10:30 PM EDT" (local airport time) instead of
@@ -455,7 +460,10 @@ export default async function handler(req, res) {
     const scheduledIn = flight.scheduled_in || null;
     const scheduledOn = flight.scheduled_on || null;
 
-    const eventTimeIso = actualOff || actualOn || actualOut || actualIn
+    // Pick the timestamp for this event. Landing payloads also contain the
+    // earlier off time; taking the first non-empty timestamp recorded the
+    // departure time as touchdown and could miss the intended trip.
+    const eventTimeIso = eventTimestamp(flight, eventType)
                       || estimatedOn || estimatedIn || null;
     const eventTimeMs = eventTimeIso ? new Date(eventTimeIso).getTime() : Date.now();
 
@@ -466,6 +474,7 @@ export default async function handler(req, res) {
       receivedAt: admin.firestore.FieldValue.serverTimestamp(),
       eventType,
       ident,
+      providerIdent,
       faFlightId,
       originCode,
       destCode,
@@ -525,17 +534,11 @@ export default async function handler(req, res) {
     const existingStatus = existingStatuses[stepId];
     const alreadyFired = !!existingStatus;
 
-    // Idempotent: if we've already auto-fired this step, skip (webhook retry)
     const autoFiredEvents = tripState.autoFiredEvents || {};
-    if (autoFiredEvents[stepId]) {
-      console.log(`[fa-webhook] step ${stepId} already auto-fired for ${tripUid} — skipping`);
-      await eventRef.update({ processed: true });
-      res.status(200).json({ received: true, eventId: eventRef.id, action: 'duplicate' });
-      return;
-    }
 
     // === 9. Fire status (only if not manually set) ===
     let firedAuto = false;
+    let statusForDelivery = existingStatus || null;
     if (!alreadyFired) {
       const newStatus = {
         timestamp: eventTimeMs,
@@ -560,6 +563,7 @@ export default async function handler(req, res) {
       }
 
       await db.collection('trip-state').doc(tripUid).update(tripUpdate);
+      statusForDelivery = newStatus;
       firedAuto = true;
       console.log(`[fa-webhook] auto-fired ${stepId} for ${tripUid}`);
       if (stepId === 'landed') {
@@ -618,16 +622,16 @@ export default async function handler(req, res) {
         });
         console.log(`[fa-webhook] broker email ${emailSent ? 'sent' : 'failed'} → ${brokerEmail} ${isRecovery ? '(RECOVERY)' : ''}`);
 
-        // If recovery succeeded, mark the manual status as notified so the
-        // App.jsx "EMAIL FAILED" pill clears and we don't try recovering
-        // again on the next webhook event for this step.
-        if (emailSent && isRecovery) {
+        // Record successful delivery for both new automatic statuses and
+        // recovered statuses. Duplicate webhook deliveries can then skip,
+        // while an initial queue failure remains recoverable.
+        if (emailSent && statusForDelivery) {
           try {
             const recoveredStatus = {
-              ...existingStatus,
+              ...statusForDelivery,
               notified: true,
               notifiedAt: Date.now(),
-              notifiedBy: 'fa-webhook-recovery',
+              notifiedBy: isRecovery ? 'fa-webhook-recovery' : 'fa-webhook',
             };
             await db.collection('trip-state').doc(tripUid).update({
               [`statuses.${stepId}`]: recoveredStatus,
