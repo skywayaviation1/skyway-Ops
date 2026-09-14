@@ -4,6 +4,12 @@ Skyway Ops is a Progressive Web App. Apple does not provide a normal App Store
 download dialog for this type of application; installation is built into
 Safari.
 
+A native Capacitor iOS/Android foundation also lives in this repository
+(`com.flyskyway.ops`). It is not a store release yet. See
+`docs/mobile-app-store.md` for Xcode/Play setup, Firebase platform files, and
+TestFlight steps. Until that ships, employees should keep using the PWA path
+below.
+
 ## Pilot / employee steps
 
 1. Open the stable Skyway production URL in **Safari**.

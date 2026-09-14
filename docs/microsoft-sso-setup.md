@@ -80,7 +80,9 @@ lives solely in the Firebase console.
    time, so setting one without redeploying changes nothing.
 
 8. **Service account.** `FIREBASE_SERVICE_ACCOUNT_JSON` must be available to
-   `/api/auth-profile-bootstrap`, which provisions profiles server-side.
+   `/api/auth-profile-bootstrap`, which provisions profiles server-side, and
+   to `/api/mobile-auth-token`, which exchanges a native Microsoft Firebase
+   session for the web custom token used by the Capacitor app.
 
 9. **Firestore rules** for the named `appusers` database:
    - deny client creation of `/users/{uid}` profiles;
@@ -200,3 +202,15 @@ a Firestore profile by email if an Auth UID somehow changed.
 There is nothing to bulk-merge ahead of time: Microsoft's directory subject
 (`oid`) is only known when that person signs in. The first successful
 Microsoft login for each legacy email performs the merge.
+
+## Native Capacitor app
+
+The bundled iOS/Android app (`com.flyskyway.ops`) does not use
+`signInWithRedirect` inside the WebView. `@capacitor-firebase/authentication`
+runs the native Microsoft flow, then `/api/mobile-auth-token` mints a custom
+token for the same Firebase uid. The Entra **Web** redirect URI above is still
+required because Firebase's Microsoft provider redeems the code server-side.
+
+iOS also needs the Firebase `REVERSED_CLIENT_ID` URL scheme. The Xcode project
+injects that at build time from the ignored `GoogleService-Info.plist`. See
+`docs/mobile-app-store.md`.

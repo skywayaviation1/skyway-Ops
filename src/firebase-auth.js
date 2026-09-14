@@ -30,6 +30,7 @@ import {
   microsoftAuthMethod,
   resolveMicrosoftTenant,
 } from './auth-environment.js';
+import { isNativeApp } from './mobile-runtime.js';
 
 const COMPANY_DOMAIN = 'flyskyway.com';
 
@@ -102,6 +103,16 @@ async function isDevelopmentBypassUser(user) {
   try {
     const result = await user.getIdTokenResult();
     return result.claims?.devAuthBypass === true;
+  } catch {
+    return false;
+  }
+}
+
+async function isNativeMicrosoftUser(user) {
+  if (!user) return false;
+  try {
+    const result = await user.getIdTokenResult();
+    return result.claims?.nativeMicrosoft === true;
   } catch {
     return false;
   }
@@ -221,7 +232,17 @@ export function watchAuth(onChange) {
     }
     const emails = verifiedEmails(user);
     const companyEmail = companyEmailFor(user);
-    if (!devBypass && (!isMicrosoftUser(user) || (emails.length > 0 && !companyEmail))) {
+    const nativeMicrosoft = await isNativeMicrosoftUser(user);
+    if (!devBypass && emails.length > 0 && !companyEmail) {
+      setDiag('identity-policy', new Error('Unauthorized identity'), {
+        emails,
+        providers: user.providerData?.map(p => p.providerId) || [],
+      });
+      await fbSignOut(auth).catch(() => {});
+      onChange({ state: 'signed-out', authError: 'auth/company-account-required' });
+      return;
+    }
+    if (!devBypass && !nativeMicrosoft && !isMicrosoftUser(user)) {
       setDiag('identity-policy', new Error('Unauthorized identity'), {
         emails,
         providers: user.providerData?.map(p => p.providerId) || [],
@@ -415,6 +436,36 @@ async function mergeExistingAccountWithMicrosoft(err) {
 }
 
 export async function signInWithMicrosoft() {
+  if (isNativeApp()) {
+    const { FirebaseAuthentication } = await import('@capacitor-firebase/authentication');
+    await FirebaseAuthentication.signInWithMicrosoft({
+      scopes: ['openid', 'profile', 'email'],
+      customParameters: [
+        { key: 'prompt', value: 'select_account' },
+        { key: 'domain_hint', value: COMPANY_DOMAIN },
+        { key: 'tenant', value: microsoftTenant() },
+      ],
+    });
+
+    const { token: nativeIdToken } = await FirebaseAuthentication.getIdToken({
+      forceRefresh: true,
+    });
+    const response = await fetch('/api/mobile-auth-token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      cache: 'no-store',
+      body: JSON.stringify({ idToken: nativeIdToken }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.token) {
+      await FirebaseAuthentication.signOut().catch(() => {});
+      const err = new Error(data.error || 'Could not complete mobile sign-in');
+      if (data.code) err.code = data.code;
+      throw err;
+    }
+    return signInWithCustomToken(auth, data.token);
+  }
+
   const method = microsoftAuthMethod({ authDomain: AUTH_DOMAIN });
   if (method === 'popup') {
     try {
@@ -499,6 +550,7 @@ async function completeMicrosoftRedirectOnce() {
 /** Safe to call from app boot and StrictMode replays; Firebase consumes a
  * redirect result once, so every caller shares the same completion promise. */
 export function completeMicrosoftRedirect() {
+  if (isNativeApp()) return Promise.resolve(null);
   if (!redirectCompletionPromise) {
     redirectCompletionPromise = completeMicrosoftRedirectOnce();
   }
@@ -506,6 +558,10 @@ export function completeMicrosoftRedirect() {
 }
 
 export async function signOut() {
+  if (isNativeApp()) {
+    const { FirebaseAuthentication } = await import('@capacitor-firebase/authentication');
+    await FirebaseAuthentication.signOut().catch(() => {});
+  }
   await fbSignOut(auth);
 }
 
