@@ -17,6 +17,36 @@ const ADMIN_ROLES = new Set(['admin']);
 let app;
 let db;
 
+export function buildDutyTimePatch(record, {
+  dutyOnAt,
+  dutyOffAt,
+  over14,
+  verification,
+  now,
+  actorName,
+  note,
+}) {
+  const findingApprovals = { ...(record.findingApprovals || {}) };
+  if (!over14) delete findingApprovals.OVER_14;
+  return {
+    dutyOnAt,
+    dutyOffAt,
+    status: dutyOffAt == null ? 'on' : 'off',
+    over14,
+    ...verification,
+    findingApprovals,
+    updatedAt: now,
+    adminEdits: [...(Array.isArray(record.adminEdits) ? record.adminEdits : []), {
+      by: actorName,
+      at: now,
+      field: 'dutyTimes',
+      from: { dutyOnAt: record.dutyOnAt, dutyOffAt: record.dutyOffAt, status: record.status },
+      to: { dutyOnAt, dutyOffAt, status: dutyOffAt == null ? 'on' : 'off' },
+      note: note || (over14 ? 'Admin verified duty exceeded 14 hours' : 'Admin corrected duty times'),
+    }],
+  };
+}
+
 function getAdmin() {
   if (app) return app;
   const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
@@ -90,21 +120,14 @@ async function updateTimes(database, periodId, body, actor) {
       if (conflict) throw new Error(`${pilotUid} already has another open duty period`);
     }
   }
-  const makePatch = (record) => ({
+  const makePatch = (record) => buildDutyTimePatch(record, {
     dutyOnAt,
     dutyOffAt,
-    status: dutyOffAt == null ? 'on' : 'off',
     over14,
-    ...verification,
-    updatedAt: now,
-    adminEdits: [...(Array.isArray(record.adminEdits) ? record.adminEdits : []), {
-      by: actor.name,
-      at: now,
-      field: 'dutyTimes',
-      from: { dutyOnAt: record.dutyOnAt, dutyOffAt: record.dutyOffAt, status: record.status },
-      to: { dutyOnAt, dutyOffAt, status: dutyOffAt == null ? 'on' : 'off' },
-      note: body.note || (over14 ? 'Admin verified duty exceeded 14 hours' : 'Admin corrected duty times'),
-    }],
+    verification,
+    now,
+    actorName: actor.name,
+    note: body.note,
   });
 
   const batch = database.batch();

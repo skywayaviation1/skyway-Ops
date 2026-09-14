@@ -601,19 +601,51 @@ export const LANDINGS_PER_CHECK = 10;
 export async function saveWearCheckSession({
   tail, byUid, byName, inspectionCount, inspectionType,
 }) {
-  const id = `session-${tail}-${Date.now()}`;
+  const completedAtMs = Date.now();
+  const id = `session-${tail}-${completedAtMs}`;
   await setDoc(doc(db, 'wear-check-sessions', id), {
     id,
     tail,
     aircraftType: configForTail(tail).type,
     completedAt: serverTimestamp(),
-    completedAtMs: Date.now(),
+    completedAtMs,
     completedBy: byUid || null,
     completedByName: byName || null,
     inspectionCount: inspectionCount || 0,
     inspectionType: inspectionType || 'standard',
   });
+  try {
+    const { auth } = await import('./firebase.js');
+    const idToken = await auth.currentUser?.getIdToken();
+    if (idToken) {
+      await fetch('/api/wear-cadence', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          idToken,
+          action: 'session-complete',
+          tail,
+          sessionId: id,
+          completedAtMs,
+        }),
+      });
+    }
+  } catch (error) {
+    // The next landing reconciles against wear-check-sessions server-side, so
+    // a temporary reset-call failure cannot lose cadence correctness.
+    console.warn('[wear] cadence reset will reconcile on next landing:', error?.message || error);
+  }
   return id;
+}
+
+export function subscribeWearTailState(tail, cb) {
+  if (!tail) {
+    cb(null);
+    return () => {};
+  }
+  return onSnapshot(doc(db, 'wear-tail-state', tail), (snap) => {
+    cb(snap.exists() ? { id: snap.id, ...snap.data() } : null);
+  });
 }
 
 // Live subscription to the most recent completed session for a tail.

@@ -22,6 +22,7 @@ import {
   Button, Card, EmptyState, MetricTile, PageHeader, Spinner, StatusChip, cx, notify,
 } from './ui.jsx';
 import DutyPairSync from './DutyPairSync.jsx';
+import TzAwareDateTimeInput from './TzAwareInput.jsx';
 import { brand } from './brand.js';
 
 const MS_HOUR = 3600 * 1000;
@@ -810,22 +811,10 @@ async function runAdminDutyAction(payload) {
   return result;
 }
 
-function toLocalInput(ms) {
-  if (!Number.isFinite(ms)) return '';
-  const date = new Date(ms);
-  const offset = date.getTimezoneOffset() * 60000;
-  return new Date(ms - offset).toISOString().slice(0, 16);
-}
-
-function fromLocalInput(value) {
-  const ms = new Date(value).getTime();
-  return Number.isFinite(ms) ? ms : null;
-}
-
 function DutyRecordDrawer({ period, issues, approvedIssues = [], partner, onClose }) {
   const [editing, setEditing] = useState(false);
-  const [dutyOn, setDutyOn] = useState(() => toLocalInput(period.dutyOnAt));
-  const [dutyOff, setDutyOff] = useState(() => toLocalInput(period.dutyOffAt));
+  const [dutyOn, setDutyOn] = useState(() => period.dutyOnAt ?? null);
+  const [dutyOff, setDutyOff] = useState(() => period.dutyOffAt ?? null);
   const [editNote, setEditNote] = useState('');
   const [verifyOver14, setVerifyOver14] = useState(false);
   const [approvalNotes, setApprovalNotes] = useState({});
@@ -834,14 +823,15 @@ function DutyRecordDrawer({ period, issues, approvedIssues = [], partner, onClos
 
   useEffect(() => {
     if (editing) return;
-    setDutyOn(toLocalInput(period.dutyOnAt));
-    setDutyOff(toLocalInput(period.dutyOffAt));
+    setDutyOn(period.dutyOnAt ?? null);
+    setDutyOff(period.dutyOffAt ?? null);
   }, [period.dutyOnAt, period.dutyOffAt, editing]);
 
-  const onMs = fromLocalInput(dutyOn);
-  const offMs = dutyOff ? fromLocalInput(dutyOff) : null;
+  const onMs = Number.isFinite(dutyOn) ? dutyOn : null;
+  const offMs = Number.isFinite(dutyOff) ? dutyOff : null;
   const editedDuration = onMs != null ? (offMs ?? Date.now()) - onMs : 0;
   const editedOver14 = editedDuration > 14 * MS_HOUR;
+  const storedDuration = durationMs(period);
 
   const saveTimes = async () => {
     if (onMs == null || (offMs != null && offMs <= onMs)) {
@@ -968,22 +958,39 @@ function DutyRecordDrawer({ period, issues, approvedIssues = [], partner, onClos
               <div className="mt-3 grid gap-3 sm:grid-cols-2">
                 <label>
                   <span className="mb-1 block text-[10px] uppercase tracking-wider text-content-subtle">Duty on</span>
-                  <input
-                    type="datetime-local"
+                  <TzAwareDateTimeInput
                     value={dutyOn}
-                    onChange={(event) => setDutyOn(event.target.value)}
-                    className="h-10 w-full rounded-lg border border-edge bg-surface px-3 text-sm text-content"
+                    onChange={setDutyOn}
+                    compact
                   />
                 </label>
                 <label>
                   <span className="mb-1 block text-[10px] uppercase tracking-wider text-content-subtle">Duty off (blank = open)</span>
-                  <input
-                    type="datetime-local"
+                  <TzAwareDateTimeInput
                     value={dutyOff}
-                    onChange={(event) => setDutyOff(event.target.value)}
-                    className="h-10 w-full rounded-lg border border-edge bg-surface px-3 text-sm text-content"
+                    onChange={setDutyOff}
+                    compact
                   />
                 </label>
+              </div>
+              <div className="mt-3 grid gap-2 rounded-lg border border-edge bg-surface-sunken p-3 text-xs sm:grid-cols-2">
+                <div>
+                  <span className="text-content-subtle">Currently saved duty</span>
+                  <strong className="ml-2 text-content">{fmtHours(storedDuration)}</strong>
+                </div>
+                <div>
+                  <span className="text-content-subtle">After-save preview</span>
+                  <strong className={cx('ml-2', editedOver14 ? 'text-danger' : 'text-success')}>
+                    {onMs == null || editedDuration < 0 ? 'Invalid' : fmtHours(editedDuration)}
+                  </strong>
+                </div>
+                <p className="sm:col-span-2 text-content-muted">
+                  Outstanding findings reflect the currently saved timestamps until you select
+                  <strong className="mx-1">Save duty times</strong>.
+                  {storedDuration > 14 * MS_HOUR && !editedOver14
+                    ? ' This correction will clear the OVER_14 finding after Firestore refreshes.'
+                    : ''}
+                </p>
               </div>
               <label className="mt-3 block">
                 <span className="mb-1 block text-[10px] uppercase tracking-wider text-content-subtle">Correction note</span>

@@ -115,6 +115,8 @@ export default async function handler(req, res) {
             to: String(trip.to || '').toUpperCase(),
             start: trip.start || null,
             legType: trip.legType || 'REVENUE',
+            pic: trip.pic || '',
+            sic: trip.sic || '',
           };
 
           const ref = db.collection('trip-state').doc(trip.uid);

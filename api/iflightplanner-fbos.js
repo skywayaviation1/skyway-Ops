@@ -85,10 +85,14 @@ export default async function handler(req, res) {
     });
   } catch (error) {
     console.error('[iflightplanner-fbos]', error.code || '', error.message);
+    const status = publicIFlightPlannerStatus();
     return res.status(error.status || 500).json({
       error: error.message || 'iFlightPlanner lookup failed',
       code: error.code || null,
-      ...publicIFlightPlannerStatus(),
+      ...status,
+      // Named explicitly so the client can tell "never configured here" from
+      // "configured but the provider rejected us".
+      missingEnv: error.missingEnv || status.missingEnv,
     });
   }
 }

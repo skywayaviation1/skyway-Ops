@@ -23,6 +23,7 @@
 
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
+import { recordWearLanding } from './_wear-cadence.js';
 
 let adminApp = null;
 let _db = null;
@@ -561,6 +562,18 @@ export default async function handler(req, res) {
       await db.collection('trip-state').doc(tripUid).update(tripUpdate);
       firedAuto = true;
       console.log(`[fa-webhook] auto-fired ${stepId} for ${tripUid}`);
+      if (stepId === 'landed') {
+        await recordWearLanding({
+          tripUid,
+          tail: ident,
+          landedAtMs: eventTimeMs,
+          pic: tripState?.tripMeta?.pic || '',
+          sic: tripState?.tripMeta?.sic || '',
+          source: 'flightaware-webhook',
+        }).catch((error) => {
+          console.error('[wear] landing cadence failed:', error.message);
+        });
+      }
     } else {
       console.log(`[fa-webhook] ${stepId} already manually fired for ${tripUid}`);
     }
