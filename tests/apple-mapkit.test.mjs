@@ -159,15 +159,15 @@ test('MapKit loader uses the official SDK and server token callback', async () =
 test('shared TrackingMap uses Apple for imagery and Leaflet for operations overlays', async () => {
   const map = await source('src/TrackingMap.jsx');
   assert.match(map, /loadAppleMapKit\(\)\.catch/);
-  assert.match(map, /new apple\.Map/);
-  assert.match(map, /appleMapType\(apple, basemapDefault\)/);
+  assert.match(map, /new kit\.Map/);
+  assert.match(map, /appleMapType\(kit, basemapDefault\)/);
   assert.match(map, /syncAppleRegion/);
   assert.match(map, /style=\{\{ background: 'transparent' \}\}/);
   // Existing operational layers remain: no aircraft/trail/radar regression.
   assert.match(map, /createRadarLayer/);
   assert.match(map, /drawAltitudeTrail/);
   assert.match(map, /aircraftIcon/);
-  assert.match(map, /Apple Maps runtime error; using standard basemap/);
+  assert.match(map, /Apple Maps runtime error; trying next basemap/);
 });
 
 test('all tracking surfaces continue using the shared map component', async () => {
@@ -178,7 +178,7 @@ test('all tracking surfaces continue using the shared map component', async () =
   assert.match(app, /<TrackingMap/);
   assert.match(broker, /<TrackingMap/);
   assert.match(operator, /<TrackingMap/);
-  assert.match(dashboard, /TrackingMapLazy/);
+  assert.match(dashboard, /FleetTrackingPanel/);
 });
 
 test('TV Flight Board uses Apple Maps with Leaflet operational overlays', async () => {

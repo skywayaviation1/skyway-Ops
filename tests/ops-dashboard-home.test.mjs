@@ -148,6 +148,21 @@ test('admin dashboard renders requested top-to-bottom surfaces', async () => {
   assert.match(source, /mode="shared"/);
   assert.match(source, /Crew currently on duty/);
   assert.match(source, /FlightAware airborne/);
+  assert.match(source, /FleetTrackingPanel/);
+});
+
+test('home fleet tracking panel lists tails and focuses a selected aircraft', async () => {
+  const source = await readFile(path.join(root, 'src/FleetTrackingPanel.jsx'), 'utf8');
+  assert.match(source, /TrackingMapLazy/);
+  assert.match(source, /onSelectAircraft=\{handleSelect\}/);
+  assert.match(source, /focusIds/);
+  assert.match(source, /useFullFlightTrack/);
+  assert.match(source, /buildSelectedFlightOverlay/);
+  assert.match(source, /No known position/);
+  assert.match(source, /Select an aircraft to see live flight detail/);
+  assert.match(source, /Loading live positions/);
+  assert.match(source, /xl:w-\[23\.5rem\]/);
+  assert.match(source, /skyway-map-invalidate/);
 });
 
 test('duty board groups a two-pilot crew with PIC above SIC', () => {

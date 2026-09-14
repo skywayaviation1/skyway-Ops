@@ -131,6 +131,99 @@ export function resolveFleetMapPosition({
   return null;
 }
 
+/** Airport code first, then any coordinates FlightAware already supplied. */
+export function resolveAirportPoint(code, apiLat, apiLon) {
+  const hit = airportPoint(code);
+  if (hit) return hit;
+  return finitePoint(apiLat, apiLon);
+}
+
+export function formatLastUpdate(value, now = Date.now()) {
+  const ms = toMs(value);
+  if (ms == null) return null;
+  const delta = now - ms;
+  if (delta < 45_000) return 'just now';
+  if (delta < 3600_000) return `${Math.max(1, Math.round(delta / 60_000))}m ago`;
+  if (delta < 86400_000) return `${Math.max(1, Math.round(delta / 3600_000))}h ago`;
+  return new Date(ms).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+/**
+ * Origin/destination pins, remainder path, and altitude trail for the
+ * selected tail. Shared by the home dashboard and any other fleet map that
+ * already has a `buildFleetMapScene` result.
+ */
+export function buildSelectedFlightOverlay({ telemetry = null, trackPoints = [] } = {}) {
+  const airports = [];
+  const routes = [];
+  let projected = null;
+  const trail = Array.isArray(trackPoints) && trackPoints.length >= 2 ? trackPoints : null;
+  const p = telemetry || {};
+  const airborne = p.airborne === true;
+
+  if (airborne) {
+    const originPos = resolveAirportPoint(p.origin, p.originLat, p.originLon);
+    const destPos = resolveAirportPoint(p.destination, p.destinationLat, p.destinationLon);
+    if (originPos) airports.push({ code: p.origin, lat: originPos.lat, lon: originPos.lon, tone: 'origin' });
+    if (destPos) airports.push({ code: p.destination, lat: destPos.lat, lon: destPos.lon, tone: 'destination' });
+    const live = finitePoint(p.latitude, p.longitude);
+    if (live && destPos) projected = [[live.lat, live.lon], [destPos.lat, destPos.lon]];
+    if (live && originPos && !trail) {
+      routes.push({
+        points: [[originPos.lat, originPos.lon], [live.lat, live.lon]],
+        color: '#3FA9CC',
+        weight: 3,
+        opacity: 0.8,
+      });
+    }
+  } else {
+    const grounded = resolveAirportPoint(p.groundedAt, p.groundedLat, p.groundedLon);
+    const lastOrigin = resolveAirportPoint(p.lastOrigin, p.lastOriginLat, p.lastOriginLon);
+    if (grounded) {
+      airports.push({
+        code: p.groundedAt,
+        lat: grounded.lat,
+        lon: grounded.lon,
+        tone: 'destination',
+      });
+    }
+    if (lastOrigin) {
+      airports.push({
+        code: p.lastOrigin,
+        lat: lastOrigin.lat,
+        lon: lastOrigin.lon,
+        tone: 'origin',
+        small: true,
+      });
+    }
+    if (grounded && lastOrigin && !trail) {
+      routes.push({
+        points: [[lastOrigin.lat, lastOrigin.lon], [grounded.lat, grounded.lon]],
+        color: '#10b981',
+        weight: 2.5,
+        opacity: 0.6,
+      });
+    }
+  }
+
+  return { airports, routes, trail, projected };
+}
+
+export function withSelectedFlightScene(scene, overlay, { selectedTail = null } = {}) {
+  const aircraft = (scene?.aircraft || []).map((item) => ({
+    ...item,
+    showLabel: item.airborne === true || item.id === selectedTail,
+  }));
+  return {
+    ...scene,
+    aircraft,
+    airports: overlay?.airports || [],
+    routes: overlay?.routes || [],
+    trail: overlay?.trail || null,
+    projected: overlay?.projected || null,
+  };
+}
+
 export function buildFleetMapScene({
   fleetTails = [],
   positions = {},

@@ -29,13 +29,13 @@ import { Card, EmptyState, Spinner, StatusChip, cx } from './ui.jsx';
 import {
   buildExceptions, buildFleetRows, buildOnDutyRows, buildTodayFlightRows,
   formatCountdown, groupOnDutyCrews,
-  isFlightLeg, normalizeTail, summarizeFleet, toMillis, MS_HOUR,
+  isFlightLeg, summarizeFleet, toMillis, MS_HOUR,
 } from './ops-dashboard-data.js';
 import { resolveManagedTails } from './fleet-config.js';
 import { buildFleetMapScene } from './fleet-tracking.js';
 import { buildActiveOpsTrips, computeOutstanding } from './ops-readiness.js';
+import FleetTrackingPanel from './FleetTrackingPanel.jsx';
 
-const TrackingMapLazy = lazy(() => import('./TrackingMap.jsx'));
 const DashboardMailboxPreviewLazy = lazy(() => import('./DashboardMailboxPreview.jsx'));
 
 const SEVERITY_TONE = { critical: 'danger', warning: 'warning', info: 'info' };
@@ -71,6 +71,7 @@ function useOpsData(enabled) {
   const [squawks, setSquawks] = useState([]);
   const [mel, setMel] = useState([]);
   const [positions, setPositions] = useState({});
+  const [positionsReady, setPositionsReady] = useState(false);
   const [tripStates, setTripStates] = useState(null);
   const [aogEvents, setAogEvents] = useState([]);
   const [dutyPeriods, setDutyPeriods] = useState([]);
@@ -103,7 +104,11 @@ function useOpsData(enabled) {
     guard('fleet positions', async () => {
       const m = await import('./firebase-data.js');
       if (cancelled) return;
-      track(m.subscribeFleetPositions?.((map) => !cancelled && setPositions(map || {})));
+      track(m.subscribeFleetPositions?.((map) => {
+        if (cancelled) return;
+        setPositions(map || {});
+        setPositionsReady(true);
+      }));
       track(m.subscribeAllTripStates?.((map) => !cancelled && setTripStates(map || null)));
     });
 
@@ -145,7 +150,7 @@ function useOpsData(enabled) {
   }, [enabled]);
 
   return {
-    squawks, mel, positions, tripStates, aogEvents,
+    squawks, mel, positions, positionsReady, tripStates, aogEvents,
     dutyPeriods, pilotDocs, expenses,
     deriveStatus, legalityFn, expirationFn,
   };
@@ -686,17 +691,17 @@ export default function OpsDashboard({
               No known position for {mapScene.unlocated.join(', ')}. Add a home base in Settings or wait for the next FlightAware position.
             </div>
           )}
-          <div className="h-[28rem] md:h-[34rem]">
-            <Suspense fallback={<div className="flex h-full items-center justify-center"><Spinner label="Loading fleet map" /></div>}>
-              <TrackingMapLazy
-                scene={mapScene}
-                fitKey={`managed-fleet-${mapScene.aircraft.map((item) => `${item.id}:${item.airborne}`).join('|')}`}
-                basemapDefault="dark"
-                showTrailToggle={false}
-                className="h-full w-full"
-              />
-            </Suspense>
-          </div>
+          <FleetTrackingPanel
+            fleetTails={fleetTails}
+            fleetRows={managedRows}
+            positions={data.positions}
+            trips={trips}
+            aircraftByTail={config?.aircraftByTail || {}}
+            unlocated={mapScene.unlocated}
+            now={now}
+            positionsReady={data.positionsReady}
+            onSelectTrip={onSelectTrip}
+          />
         </SectionCard>
 
         {/* Personal and shared mail at a glance. */}

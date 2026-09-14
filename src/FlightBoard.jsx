@@ -334,8 +334,8 @@ function FlightRow({ trip, state, faPosition, phase }) {
 // ====================================================================
 
 function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
-  // Real US map via Leaflet + CARTO dark tiles. Same pattern as the
-  // existing TrackingScreen so we get consistent rendering. Map shows:
+  // Real US map: Apple Maps preferred, Esri tiles as fallback, Leaflet
+  // overlays for routes and aircraft. Map shows:
   //   - All airport endpoints as small dots with code labels
   //   - Route lines colored by phase (cyan=airborne, amber=preflight,
   //     slate=pending, emerald=landed, dim=completed)
@@ -475,7 +475,7 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
 
   // Initialize Apple Maps as the imagery layer and Leaflet as the transparent
   // operational overlay. If MapKit is not configured or fails at runtime, the
-  // board falls back to the previous Esri/CARTO imagery without losing routes,
+  // board falls back to Esri imagery (never CARTO) without losing routes,
   // aircraft positions, or radar.
   useEffect(() => {
     let cancelled = false;
@@ -511,8 +511,8 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
               maxZoom: 12,
               attribution: 'Tiles &copy; Esri',
             }),
-            L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', {
-              maxZoom: 12, subdomains: 'abcd', opacity: 0.8,
+            L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', {
+              maxZoom: 12, opacity: 0.85,
             }),
           ]).addTo(map);
           const tilePane = map.getPane('tilePane');
