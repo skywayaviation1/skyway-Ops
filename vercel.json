@@ -46,7 +46,11 @@
       "destination": "https://skyway-ops-app.firebaseapp.com/__/auth/:path*"
     },
     {
-      "source": "/((?!api/|assets/).*)",
+      "source": "/privacy",
+      "destination": "/privacy.html"
+    },
+    {
+      "source": "/((?!api/|assets/|privacy).*)",
       "destination": "/index.html",
       "has": [
         { "type": "header", "key": "accept", "value": ".*text/html.*" }
