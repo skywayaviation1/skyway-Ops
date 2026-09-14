@@ -1,7 +1,8 @@
 // Firebase initialization. Public client config - safe to commit.
 import { initializeApp } from 'firebase/app';
 import { initializeFirestore } from 'firebase/firestore';
-import { getAuth } from 'firebase/auth';
+import { getAuth, indexedDBLocalPersistence, initializeAuth } from 'firebase/auth';
+import { Capacitor } from '@capacitor/core';
 
 // signInWithRedirect sends the browser to `authDomain` to run the sign-in
 // helper, then back here. When authDomain is a different origin from the app,
@@ -57,4 +58,9 @@ export const db = initializeFirestore(
   'appusers',
 );
 
-export const auth = getAuth(app);
+// A bundled Capacitor app runs on a local WebView origin. Explicit IndexedDB
+// persistence keeps the web Firebase session that backs Firestore alive across
+// native process restarts. Browser builds retain Firebase's normal defaults.
+export const auth = Capacitor.isNativePlatform()
+  ? initializeAuth(app, { persistence: indexedDBLocalPersistence })
+  : getAuth(app);

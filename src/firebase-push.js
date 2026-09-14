@@ -27,6 +27,7 @@ import { db } from './firebase.js';
 import {
   doc, setDoc, deleteDoc, serverTimestamp,
 } from 'firebase/firestore';
+import { isNativeApp } from './mobile-runtime.js';
 
 // Cached so we don't repeatedly import the heavy messaging SDK.
 let cachedMessaging = null;
@@ -43,6 +44,7 @@ function getVapidKey() {
 
 export function pushSupported() {
   if (typeof window === 'undefined') return false;
+  if (isNativeApp()) return true;
   if (!('serviceWorker' in navigator)) return false;
   if (!('Notification' in window)) return false;
   if (!('PushManager' in window)) return false;
@@ -54,6 +56,7 @@ export function pushSupported() {
 // Returns null when undetermined.
 export function iosNeedsHomeScreenInstall() {
   if (typeof window === 'undefined') return null;
+  if (isNativeApp()) return false;
   const ua = navigator.userAgent || '';
   const isIos = /iPad|iPhone|iPod/.test(ua) && !window.MSStream;
   if (!isIos) return false;
@@ -66,6 +69,13 @@ export function iosNeedsHomeScreenInstall() {
 }
 
 export function notificationPermissionState() {
+  if (isNativeApp()) {
+    try {
+      return localStorage.getItem('skyway_native_push_permission') || 'default';
+    } catch {
+      return 'default';
+    }
+  }
   if (typeof Notification === 'undefined') return 'unsupported';
   return Notification.permission; // 'granted' | 'denied' | 'default'
 }
@@ -108,6 +118,11 @@ export async function enablePush(user, opts = {}) {
   if (!pushSupported()) {
     throw new Error('Push notifications are not supported in this browser.');
   }
+
+  if (isNativeApp()) {
+    return enableNativePush(user, opts);
+  }
+
   if (iosNeedsHomeScreenInstall()) {
     const e = new Error('On iPhone, push requires the app to be added to your Home Screen first. Open in Safari → share → "Add to Home Screen" → open from the home-screen icon.');
     e.code = 'ios-not-installed';
@@ -188,6 +203,50 @@ export async function enablePush(user, opts = {}) {
   return token;
 }
 
+async function enableNativePush(user, opts = {}) {
+  const uid = user.uid || user.id;
+  const { FirebaseMessaging } = await import('@capacitor-firebase/messaging');
+  const permission = await FirebaseMessaging.requestPermissions();
+  const granted = permission.receive === 'granted';
+  try {
+    localStorage.setItem(
+      'skyway_native_push_permission',
+      granted ? 'granted' : 'denied',
+    );
+  } catch {
+    // private mode
+  }
+  if (!granted) {
+    const error = new Error('Notification permission was not granted.');
+    error.code = 'permission-denied';
+    throw error;
+  }
+
+  const { token } = await FirebaseMessaging.getToken();
+  if (!token) throw new Error('Firebase did not return a device push token.');
+  const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || '';
+  await savePushToken(uid, token, 'native', ua);
+  cachedToken = token;
+  startNativeForegroundListener(uid, opts.onForegroundMessage);
+  return token;
+}
+
+async function savePushToken(uid, token, platform, userAgent = null) {
+  const ua = userAgent ?? ((typeof navigator !== 'undefined' && navigator.userAgent) || '');
+  await setDoc(
+    doc(db, 'users', uid, 'push-tokens', token),
+    {
+      token,
+      uid,
+      platform,
+      userAgent: ua.slice(0, 200),
+      createdAt: serverTimestamp(),
+      lastSeenAt: serverTimestamp(),
+    },
+    { merge: true },
+  );
+}
+
 export async function disablePush(user, token = null) {
   if (!user) return;
   const uid = user.uid || user.id;
@@ -198,6 +257,14 @@ export async function disablePush(user, token = null) {
   foregroundHandler = null;
   if (t) {
     try { await deleteDoc(doc(db, 'users', uid, 'push-tokens', t)); } catch (_) {}
+  }
+  if (isNativeApp()) {
+    try {
+      const { FirebaseMessaging } = await import('@capacitor-firebase/messaging');
+      await FirebaseMessaging.deleteToken();
+    } catch {
+      // token already gone
+    }
   }
   cachedToken = null;
 }
@@ -238,12 +305,45 @@ function startForegroundListener(uid, onForeground) {
   })();
 }
 
+function startNativeForegroundListener(uid, onForeground) {
+  foregroundUid = uid;
+  if (onForeground) foregroundHandler = onForeground;
+  if (foregroundUnsub) return;
+  (async () => {
+    try {
+      const { FirebaseMessaging } = await import('@capacitor-firebase/messaging');
+      const received = await FirebaseMessaging.addListener(
+        'notificationReceived',
+        (event) => {
+          const notification = event.notification || event;
+          const data = notification.data || {};
+          if (data.senderUid && data.senderUid === foregroundUid) return;
+          foregroundHandler?.({
+            title: notification.title || data.title || 'Skyway',
+            body: notification.body || data.body || '',
+            url: data.url || '/',
+            conversationId: data.conversationId || null,
+            kind: data.kind || null,
+          });
+        },
+      );
+      foregroundUnsub = () => received.remove();
+    } catch (e) {
+      console.error('[push] native foreground listener setup:', e);
+    }
+  })();
+}
+
 // Restore foreground message handling on every signed-in app boot. The FCM
 // token itself remains registered in Firestore; this only reconnects the
 // in-app toast path for sessions where PushSettings is never opened.
 export function listenForForegroundPush(user, onForeground) {
   const uid = user?.uid || user?.id;
   if (!uid || notificationPermissionState() !== 'granted') return;
+  if (isNativeApp()) {
+    startNativeForegroundListener(uid, onForeground);
+    return;
+  }
   startForegroundListener(uid, onForeground);
 }
 

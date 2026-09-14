@@ -9,6 +9,17 @@ dist
 .env.*
 !.env.example
 
+# Native Firebase configuration is downloaded per registered app.
+android/app/google-services.json
+ios/App/App/GoogleService-Info.plist
+
+# Local release signing material must never be committed.
+*.jks
+*.keystore
+android/keystore.properties
+ios/*.mobileprovision
+ios/*.p12
+
 # Untrimmed browser captures. The cropped versions in marketing/shots are the
 # ones the PDF is built from and those are tracked.
 marketing/raw

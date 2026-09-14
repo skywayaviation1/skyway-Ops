@@ -11,6 +11,11 @@
     "preview:surfaces": "vite --config vite.preview.config.js",
     "marketing:pdf": "node scripts/prepare-marketing-shots.mjs && node scripts/build-marketing-pdf.mjs",
     "test": "node --test tests/*.test.mjs",
+    "mobile:sync": "npm run build && cap sync",
+    "mobile:android": "npm run mobile:sync && cap open android",
+    "mobile:ios": "npm run mobile:sync && cap open ios",
+    "ios:setup": "./scripts/setup-ios.sh",
+    "mobile:doctor": "cap doctor",
     "verify:sso": "node scripts/verify-microsoft-sso.mjs",
     "marketing:capture": "node scripts/capture-marketing-shots.mjs",
     "preview:stubs": "node scripts/check-preview-stubs.mjs",
@@ -18,6 +23,14 @@
     "currency:import-report": "node scripts/import-currency-report.mjs"
   },
   "dependencies": {
+    "@capacitor-firebase/authentication": "^8.3.0",
+    "@capacitor-firebase/messaging": "^8.3.0",
+    "@capacitor/app": "^8.1.1",
+    "@capacitor/core": "^8.5.0",
+    "@capacitor/haptics": "^8.0.2",
+    "@capacitor/keyboard": "^8.0.5",
+    "@capacitor/network": "^8.0.1",
+    "@capacitor/status-bar": "^8.0.3",
     "dompurify": "^3.4.13",
     "firebase": "10.13.2",
     "firebase-admin": "12.5.0",
@@ -32,6 +45,10 @@
     "stream-chat-react": "^13.13.0"
   },
   "devDependencies": {
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/assets": "^3.0.5",
+    "@capacitor/cli": "^8.5.0",
+    "@capacitor/ios": "^8.5.0",
     "@vitejs/plugin-react": "4.3.1",
     "autoprefixer": "10.4.19",
     "playwright": "^1.62.1",

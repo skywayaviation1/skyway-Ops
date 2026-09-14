@@ -1,3 +1,4 @@
+import { initializeMobileRuntime, isNativeApp } from './mobile-runtime.js';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App, { ExternalTechPage } from './App.jsx';
@@ -126,7 +127,7 @@ const isOperatorFlightRoute =
    startup. The app works fine without it; users just don't get
    the "Install" prompt.
    ============================================================ */
-if (typeof window !== 'undefined' && 'serviceWorker' in navigator
+if (!isNativeApp() && typeof window !== 'undefined' && 'serviceWorker' in navigator
     && !isExternalTechRoute && !isServiceTechRoute && !isTripTrackRoute
     && !isOperatorFlightRoute) {
   // Register after the page has finished loading so we don't compete
@@ -153,6 +154,10 @@ if (typeof window !== 'undefined' && 'serviceWorker' in navigator
     }
   });
 }
+
+initializeMobileRuntime().catch((err) => {
+  console.warn('[mobile] native runtime initialization skipped:', err?.message);
+});
 
 const rootEl = ReactDOM.createRoot(document.getElementById('root'));
 

@@ -58,7 +58,12 @@ export default async function handler(req, res) {
 
     const email = normalizedEmail(decoded);
     const provider = decoded.firebase?.sign_in_provider;
-    if (provider !== 'microsoft.com') {
+    // Native Capacitor sign-in exchanges a verified Microsoft ID token for a
+    // custom token that carries nativeMicrosoft=true. That session is the same
+    // company identity; do not treat it as a missing Microsoft provider.
+    const verifiedNativeMicrosoft =
+      provider === 'custom' && decoded.nativeMicrosoft === true;
+    if (provider !== 'microsoft.com' && !verifiedNativeMicrosoft) {
       res.status(403).json({ error: 'A @flyskyway.com Microsoft account is required' });
       return;
     }

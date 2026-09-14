@@ -1,0 +1,47 @@
+{
+  "appId": "com.flyskyway.ops",
+  "appName": "Skyway Ops",
+  "webDir": "dist",
+  "backgroundColor": "#060c16",
+  "ios": {
+    "backgroundColor": "#060c16",
+    "contentInset": "automatic",
+    "preferredContentMode": "mobile"
+  },
+  "android": {
+    "backgroundColor": "#060c16",
+    "allowMixedContent": false
+  },
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": true
+    },
+    "FirebaseAuthentication": {
+      "providers": ["microsoft.com"],
+      "skipNativeAuth": false
+    },
+    "FirebaseMessaging": {
+      "presentationOptions": ["alert", "badge", "sound"]
+    },
+    "Keyboard": {
+      "resize": "native",
+      "resizeOnFullScreen": true
+    },
+    "StatusBar": {
+      "style": "dark",
+      "backgroundColor": "#060c16",
+      "overlaysWebView": true
+    }
+  },
+  "experimental": {
+    "ios": {
+      "spm": {
+        "packageOptions": {
+          "@capacitor-firebase/messaging": {
+            "symlink": true
+          }
+        }
+      }
+    }
+  }
+}
