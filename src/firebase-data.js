@@ -50,7 +50,8 @@ export async function fetchPreloadedPax(tripId) {
  * One-shot fetch combining preloadedPax + statuses + scanned passengers
  * for a trip. Used by SHARE WITH BROKER to grab everything needed for
  * the broker snapshot in a single read per leg.
- *   { preloadedPax: [], passengers: [], statuses: {} }
+ *   { preloadedPax: [], passengers: [], statuses: {}, tripSheetData,
+ *     fromFbo, toFbo, hasCatering }
  * Empty arrays/object if the doc doesn't exist or fields are missing.
  */
 export async function fetchTripStateForShare(tripId) {
@@ -64,6 +65,16 @@ export async function fetchTripStateForShare(tripId) {
       preloadedPax: Array.isArray(data.preloadedPax) ? data.preloadedPax : [],
       passengers: Array.isArray(data.passengers) ? data.passengers : [],
       statuses: (data.statuses && typeof data.statuses === 'object') ? data.statuses : {},
+      // The broker-share selector uses the trip code to prove two legs came
+      // from the same trip sheet before passenger details can be enabled.
+      tripSheetData: (
+        data.tripSheetData && typeof data.tripSheetData === 'object'
+          ? data.tripSheetData
+          : null
+      ),
+      fromFbo: data.fromFbo || null,
+      toFbo: data.toFbo || null,
+      hasCatering: data.hasCatering !== false,
     };
   } catch (err) {
     console.error('[firebase-data] fetchTripStateForShare failed:', tripId, err);
@@ -242,6 +253,7 @@ export async function seedTripMeta(tripUid, meta) {
       from: String(meta.from).toUpperCase(),
       to: String(meta.to || '').toUpperCase(),
       start: meta.start,
+      end: meta.end || null,
       legType: meta.legType || 'REVENUE',
     },
     updatedAt: Date.now(),

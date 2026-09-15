@@ -99,7 +99,7 @@ async function ensureTokenIssued(tripId, opts = {}) {
         // render with individual check-in indicators. Whitelist the four
         // fields we care about; reject anything else (covers PII leakage
         // if a future caller mistakenly forwards DOB/weight/etc).
-        pax: Array.isArray(leg.pax)
+        pax: leg.showPax === true && Array.isArray(leg.pax)
           ? leg.pax.slice(0, 30).map((p) => {
               if (!p || typeof p !== 'object') return null;
               const name = String(p.name || '').slice(0, 80).trim();
