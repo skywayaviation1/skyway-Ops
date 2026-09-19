@@ -24,6 +24,7 @@
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import { recordWearLanding } from './_wear-cadence.js';
+import { notifyBrokerShareSubscribers } from './_broker-share-notifications.js';
 
 let adminApp = null;
 let _db = null;
@@ -645,11 +646,31 @@ export default async function handler(req, res) {
       console.log(`[fa-webhook] step already fired AND notified — no email needed`);
     }
 
+    const linkedShare = await notifyBrokerShareSubscribers({
+      database: db,
+      host: req.headers.host || 'skyway-ops.vercel.app',
+      tripUid,
+      tripState,
+      stepId,
+      eventTimeMs,
+      eventState: {
+        ident,
+        origin: originCode,
+        destination: destCode,
+        originTz,
+        destinationTz: destTz,
+      },
+    }).catch((error) => {
+      console.error('[fa-webhook] linked broker notification failed:', error.message);
+      return { sent: 0 };
+    });
+
     await eventRef.update({
       processed: true,
       autoFired: firedAuto,
       isRecovery,
       emailSent,
+      linkedBrokerEmailsSent: linkedShare.sent,
     });
 
     res.status(200).json({

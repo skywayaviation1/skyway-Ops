@@ -19,6 +19,7 @@ import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import { lookupAirport } from './_airports-data.js';
 import { recordWearLanding } from './_wear-cadence.js';
+import { notifyBrokerShareSubscribers } from './_broker-share-notifications.js';
 import { DEFAULT_MANAGED_TAILS, normalizeFleetTails } from '../src/fleet-config.js';
 
 const FA_API_BASE = 'https://aeroapi.flightaware.com/aeroapi';
@@ -440,6 +441,17 @@ function buildBrokerEmail({ tail, eventType, originCode, destCode, originTz, des
 async function fireStatus({ db, host, tripUid, tripState, stepId, eventTimeMs, eventState, eventType }) {
   const existingStatuses = tripState.statuses || {};
   const autoFiredEvents = tripState.autoFiredEvents || {};
+  await notifyBrokerShareSubscribers({
+    database: db,
+    host,
+    tripUid,
+    tripState,
+    stepId,
+    eventTimeMs,
+    eventState,
+  }).catch((error) => {
+    console.error('[fa-cron-poll] linked broker notification failed:', error.message);
+  });
 
   // Idempotent: if this step was auto-fired before, skip
   if (autoFiredEvents[stepId]) {

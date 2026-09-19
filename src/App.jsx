@@ -131,7 +131,12 @@ const AdminDutyReportLazy = lazy(() => import('./AdminDutyReport.jsx'));
 const AogTabLazy = lazy(() => import('./AogTab.jsx'));
 import AppTimezoneSwitch from './AppTimezoneSwitch.jsx';
 import { todayInAppTz } from './app-timezone.js';
-import { autoSelectedShareUids, relatedBrokerLegs } from './broker-leg-grouping.js';
+import {
+  autoSelectedShareUids,
+  previousShareableLegs,
+  relatedBrokerLegs,
+  shouldRedactPreviousLeg,
+} from './broker-leg-grouping.js';
 import AppAuditTracker from './AppAuditTracker.jsx';
 import { isSuperAdmin, useRemoteNavigation } from './navigation-config.js';
 import { createPortal } from 'react-dom';
@@ -5757,6 +5762,26 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
     setStatuses(nextStatuses);
     await persist({ statuses: nextStatuses, passengers, brokerEmail, autoNotify, completed, hasCatering, paxOverride });
 
+    if (['taxi_dep', 'wheels_up', 'landed'].includes(step.id)) {
+      try {
+        const { auth } = await import('./firebase.js');
+        const response = await fetch('/api/broker-share-notify', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${await auth.currentUser?.getIdToken()}`,
+          },
+          body: JSON.stringify({ tripId: trip.uid, stepId: step.id }),
+        });
+        if (!response.ok) {
+          const result = await response.json().catch(() => ({}));
+          console.warn('[broker share] linked-leg notification failed:', result.error || response.status);
+        }
+      } catch (error) {
+        console.warn('[broker share] linked-leg notification failed:', error?.message || error);
+      }
+    }
+
     if (step.id === 'landed') {
       try {
         const nextLeg = (allTrips || [])
@@ -7987,6 +8012,12 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
   const allCandidateLegs = useMemo(() => {
     // Start from the sync seed (anchor + positioning chain, tagged).
     const byUid = new Map(syncCandidateLegs.map(l => [l.uid, l]));
+    // Also offer earlier same-aircraft flights as explicit, opt-in context.
+    // They are never auto-selected and are privacy-redacted unless trip-sheet
+    // or passenger matching proves they belong to this same charter.
+    previousShareableLegs(canonicalTrip, allTrips).forEach((leg) => {
+      if (!byUid.has(leg.uid)) byUid.set(leg.uid, leg);
+    });
 
     // Nothing more to add if trip-states haven't loaded yet.
     if (Object.keys(tripStatesByUid).length === 0) {
@@ -8021,7 +8052,6 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
     // (already in) or a non-flight event.
     (allTrips || []).forEach(t => {
       if (!t?.info || !t.uid || t.uid === canonicalTrip.uid) return;
-      if (byUid.has(t.uid)) return; // already in from sync seed
       if (String(t.info.tail || '').toUpperCase() !== tail) return;
       if (t.info.isFlight === false) return;
       const rawCat = String(t.info.category || '').toUpperCase();
@@ -8365,6 +8395,12 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
     // Renumber legs sequentially as they appear in the final included list.
     const legs = included.map(({ t, showPax }, i) => {
       const state = stateByUid[t.uid] || { preloadedPax: [], passengers: [], statuses: {} };
+      const privacyMode = shouldRedactPreviousLeg({
+        leg: t,
+        anchor,
+        statesByUid: stateByUid,
+      }) ? 'repositioning' : 'standard';
+      const isPrivatePrevious = privacyMode === 'repositioning';
 
       // Build per-pax records that the broker page can render with
       // individual check-in indicators. Join logic:
@@ -8443,6 +8479,10 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
         'wheels_up', 'landed',
       ];
       for (const key of BROKER_STATUS_KEYS) {
+        if (
+          isPrivatePrevious
+          && !['taxi_dep', 'wheels_up', 'landed'].includes(key)
+        ) continue;
         const v = statusBag[key];
         if (v && typeof v === 'object' && Number.isFinite(v.timestamp)) {
           cleanStatus[key] = { at: v.timestamp };
@@ -8472,17 +8512,23 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
         // FBO details in the DESCRIPTION field, so admin manually sets
         // them in trip-state. Without this preference, manually-set
         // FBOs never reach the broker page.
-        fromFbo: liveFromFbo || state.fromFbo || t.info?.fromFbo || null,
-        toFbo:   liveToFbo   || state.toFbo   || t.info?.toFbo   || null,
+        fromFbo: isPrivatePrevious ? null : (liveFromFbo || state.fromFbo || t.info?.fromFbo || null),
+        toFbo: isPrivatePrevious ? null : (liveToFbo || state.toFbo || t.info?.toFbo || null),
         departure: t.start || null,
         arrival: t.end || null,
-        category: t.info?.legType || t.info?.category || 'REVENUE',
-        picName: t.info?.pic || null,
-        sicName: t.info?.sic || null,
-        showPax,
-        pax: showPax ? paxRecords : [],
+        category: isPrivatePrevious
+          ? 'REPOSITIONING'
+          : (t.info?.legType || t.info?.category || 'REVENUE'),
+        picName: isPrivatePrevious ? null : (t.info?.pic || null),
+        sicName: isPrivatePrevious ? null : (t.info?.sic || null),
+        showPax: isPrivatePrevious ? false : showPax,
+        pax: !isPrivatePrevious && showPax ? paxRecords : [],
+        privacyMode,
+        // Selected linked legs subscribe the recipients of this broker link
+        // to privacy-safe movement notifications when the link is emailed.
+        notifyBroker: t.uid !== anchor.uid,
         // Drives whether the broker sees a catering milestone at all.
-        hasCatering: state.hasCatering !== false,
+        hasCatering: isPrivatePrevious ? false : state.hasCatering !== false,
         status: cleanStatus,
       };
     });
@@ -8600,9 +8646,12 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
         message: emailMessage.trim(),
         theme: brokerTheme,
       });
-      setInfo(recipients.length === 1
+      const success = recipients.length === 1
         ? `Email sent to ${recipients[0]}.`
-        : `Email sent to ${recipients.length} recipients: ${recipients.join(', ')}.`);
+        : `Email sent to ${recipients.length} recipients: ${recipients.join(', ')}.`;
+      setInfo(data.notificationWarning
+        ? `${success} ${data.notificationWarning}`
+        : success);
       if (data.url) setUrl(data.url);
     } catch (e) {
       setErr(e.message || 'Could not send email');
@@ -8693,6 +8742,7 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
                   'positioning-out': 'DEADHEAD OUT', // deadhead leaving anchor's destination
                   'same-trip-sheet': 'SAME TRIP',    // parsed from the same trip sheet PDF
                   'same-pax':        'SAME PAX',    // pax name overlap with anchor's manifest
+                  'previous-private':'PRIVATE REPOSITIONING',
                 })[leg._shareReason] ?? null;
                 return (
                   <label
@@ -8732,6 +8782,7 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
                             leg._shareReason === 'positioning-out' ? 'Repo leg — deadhead out of your anchor destination' :
                             leg._shareReason === 'same-trip-sheet' ? 'Parsed from the same trip sheet PDF as the anchor — same broker charter' :
                             leg._shareReason === 'same-pax'        ? 'One or more passenger names match the anchor manifest — same customer group' :
+                            leg._shareReason === 'previous-private'? 'Optional previous leg. The broker sees only route, movement times, and repositioning status; prior client and passenger information stays private.' :
                             ''
                           }>{reasonLabel}</span>
                         )}
@@ -8739,6 +8790,11 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
                       <div className="text-[10px] text-slate-500 truncate">
                         {broker}{pax ? ` · ${pax} pax` : ''}
                       </div>
+                      {leg._shareReason === 'previous-private' && (
+                        <div className="text-[9px] text-amber-300/80 mt-0.5">
+                          Shared as repositioning only · private trip details hidden · notifications enabled when emailed
+                        </div>
+                      )}
                     </div>
                   </label>
                 );
