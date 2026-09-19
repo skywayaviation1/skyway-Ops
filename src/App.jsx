@@ -4251,7 +4251,7 @@ function NotifyPanel({ trip, opsEmail, brokerEmail, setBrokerEmail, statuses, au
         <div>
           <div className="text-sm text-slate-100" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>AUTO-NOTIFY ON STATUS</div>
           <p className="text-[11px] text-slate-500 mt-0.5">
-            When enabled, tapping any status button opens an email draft to broker + ops with the event details.
+            When enabled, each status update is sent to the broker and ops through the reliable email queue.
           </p>
         </div>
       </label>
@@ -5756,7 +5756,8 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       timestamp: Date.now(),
       coords: gpsCoords || null,
       author: currentUserDisplayName || (currentUser?.name || 'Unknown'),
-      notified: false, // set to true only after email actually sends
+      notified: !sendNotif,
+      notificationSuppressed: !sendNotif,
     };
     const nextStatuses = { ...statuses, [step.id]: newStatus };
     setStatuses(nextStatuses);
@@ -5810,62 +5811,62 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       }
     }
 
-    // Parse broker email field — supports comma-separated list of recipients
-    // (e.g. "broker@x.com, ops@flightsupport.com")
-    const brokerEmails = (brokerEmail || '')
-      .split(/[,;\s]+/)
-      .map(e => e.trim())
-      .filter(e => e.length > 0 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
+    // The NOTIFY toggle controls normal broker + ops status emails. Linked
+    // share notifications above are an explicit share subscription and stay
+    // independent from this per-leg setting.
+    if (sendNotif) {
+      const brokerEmails = (brokerEmail || '')
+        .split(/[,;\s]+/)
+        .map(e => e.trim())
+        .filter(e => e.length > 0 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
+      const recipients = [opsEmail, ...brokerEmails]
+        .filter(Boolean)
+        .map(e => e.trim())
+        .filter(e => e.length > 0);
+      const emailContent = buildStatusEmail(step, trip, brokerEmails[0] || '');
 
-    // Auto-send email on every status update
-    const recipients = [opsEmail, ...brokerEmails]
-      .filter(Boolean)
-      .map(e => e.trim())
-      .filter(e => e.length > 0);
-
-    if (recipients.length === 0) {
-      console.warn('[email] Skipping send — no valid recipients. opsEmail:', opsEmail || '(empty)', 'brokerEmail:', brokerEmail || '(empty)');
-      return;
-    }
-
-    // Use first broker email for the "Hi [Name]" greeting
-    const emailContent = buildStatusEmail(step, trip, brokerEmails[0] || '');
-    if (!emailContent) {
-      console.warn('[email] No email template for step:', step.id, '· legType:', trip.info?.legType);
-      return;
-    }
-
-    try {
-      const r = await sendEmailViaApi({
-        to: recipients,
-        subject: emailContent.subject,
-        text: emailContent.text,
-        tripId: trip.uid,
-        // Status updates always include the tracking button when an
-        // active broker link exists — these emails always go to the
-        // broker by design.
-        includeTrackingButton: true,
-      });
-      const respData = await r.json().catch(() => ({}));
-      if (!r.ok) {
-        console.error('[email] Send failed:', r.status, respData.error || '', respData);
-        // The status itself is recorded; only the notification failed. Say so,
-        // because the alternative is a dispatcher believing the broker was
-        // told. `notified` stays false, so the timeline keeps its retry action.
-        notify.error(
-          respData.willRetry
-            ? 'Status saved, but the broker email has not gone out yet — retrying automatically.'
-            : 'Status saved, but the broker email failed to send.',
-          { description: respData.explanation || respData.error || 'Check Settings → Email delivery.' },
-        );
-        return;
+      if (recipients.length === 0) {
+        console.warn('[email] Skipping send — no valid recipients. opsEmail:', opsEmail || '(empty)', 'brokerEmail:', brokerEmail || '(empty)');
+      } else if (!emailContent) {
+        console.warn('[email] No email template for step:', step.id, '· legType:', trip.info?.legType);
+      } else {
+        try {
+          const r = await sendEmailViaApi({
+            to: recipients,
+            subject: emailContent.subject,
+            text: emailContent.text,
+            tripId: trip.uid,
+            includeTrackingButton: true,
+          });
+          const respData = await r.json().catch(() => ({}));
+          if (!r.ok || respData.delivered === false) {
+            console.error('[email] Send failed:', r.status, respData.error || '', respData);
+            notify.error(
+              respData.willRetry
+                ? 'Status saved, but the broker email has not gone out yet — retrying automatically.'
+                : 'Status saved, but the broker email failed to send.',
+              { description: respData.explanation || respData.error || 'Check Settings → Email delivery.' },
+            );
+          } else {
+            const updatedStatuses = {
+              ...nextStatuses,
+              [step.id]: { ...newStatus, notified: true },
+            };
+            setStatuses(updatedStatuses);
+            await persist({
+              statuses: updatedStatuses,
+              passengers,
+              brokerEmail,
+              autoNotify,
+              completed,
+              hasCatering,
+              paxOverride,
+            });
+          }
+        } catch (err) {
+          console.error('[email] Network error:', err);
+        }
       }
-      // Email sent successfully — mark notified=true now
-      const updatedStatuses = { ...nextStatuses, [step.id]: { ...newStatus, notified: true } };
-      setStatuses(updatedStatuses);
-      await persist({ statuses: updatedStatuses, passengers, brokerEmail, autoNotify, completed, hasCatering, paxOverride });
-    } catch (err) {
-      console.error('[email] Network error:', err);
     }
 
     // Push notification for status step transitions. Fires regardless of
@@ -8643,10 +8644,12 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
       recipients.push(e);
     }
     try {
+      const publicTripData = await buildPublicTripData();
       const data = await callShare('email', {
         to: recipients,
         message: emailMessage.trim(),
         theme: brokerTheme,
+        publicTripData,
       });
       const success = recipients.length === 1
         ? `Email sent to ${recipients[0]}.`

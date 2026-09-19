@@ -232,6 +232,7 @@ async function sendEmail(req, to, subject, text, meta) {
       source: meta?.source || 'fa-webhook',
       tripId: meta?.tripId || null,
       statusKey: meta?.statusKey || null,
+      includeTrackingButton: meta?.includeTrackingButton === true,
     });
     const queueUrl = `${proto}://${host}/api/email-enqueue`;
     const r = await fetch(queueUrl, { method: 'POST', headers, body });
@@ -597,9 +598,12 @@ export default async function handler(req, res) {
 
     let emailSent = false;
     if (shouldSendEmail) {
-      const brokerEmail = tripState.brokerEmail;
+      const brokerEmails = String(tripState.brokerEmail || '')
+        .split(/[,;\s]+/)
+        .map((email) => email.trim())
+        .filter((email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email));
       const autoNotify = tripState.autoNotify === true;
-      if (brokerEmail && autoNotify) {
+      if (brokerEmails.length > 0 && autoNotify) {
         const { subject, body: emailBody } = buildBrokerEmail({
           tail: ident,
           eventType,
@@ -612,12 +616,13 @@ export default async function handler(req, res) {
           actualOn,
           scheduledArrivalIso: scheduledIn || scheduledOn,
         });
-        emailSent = await sendEmail(req, brokerEmail, subject, emailBody, {
+        emailSent = await sendEmail(req, brokerEmails, subject, emailBody, {
           source: isRecovery ? 'fa-webhook-recovery' : 'fa-webhook',
           tripId: tripUid,
           statusKey: stepId,
+          includeTrackingButton: true,
         });
-        console.log(`[fa-webhook] broker email ${emailSent ? 'sent' : 'failed'} → ${brokerEmail} ${isRecovery ? '(RECOVERY)' : ''}`);
+        console.log(`[fa-webhook] broker email ${emailSent ? 'sent' : 'failed'} → ${brokerEmails.join(', ')} ${isRecovery ? '(RECOVERY)' : ''}`);
 
         // If recovery succeeded, mark the manual status as notified so the
         // App.jsx "EMAIL FAILED" pill clears and we don't try recovering

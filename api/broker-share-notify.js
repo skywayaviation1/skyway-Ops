@@ -20,7 +20,14 @@ function db() {
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'POST only' });
-  const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+  let body = req.body || {};
+  if (typeof body === 'string') {
+    try {
+      body = JSON.parse(body);
+    } catch {
+      return res.status(400).json({ ok: false, error: 'Invalid JSON' });
+    }
+  }
   const token = req.headers.authorization?.replace(/^Bearer\s+/i, '') || body.idToken;
   if (!token) return res.status(401).json({ ok: false, error: 'Unauthorized' });
   try {

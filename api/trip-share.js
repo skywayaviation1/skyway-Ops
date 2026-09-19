@@ -288,7 +288,10 @@ export default async function handler(req, res) {
         recipients.push(e);
         if (recipients.length >= 20) break;
       }
-      const r = await ensureTokenIssued(tripId, { rotate: false });
+      const r = await ensureTokenIssued(tripId, {
+        rotate: false,
+        publicTripData: body?.publicTripData,
+      });
       let url = publicUrl(req, r.token);
       // Append the broker-page theme if ops opted into the classic view.
       // Premium is the default — leave the URL clean in that case.

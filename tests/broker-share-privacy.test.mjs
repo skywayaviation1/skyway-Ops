@@ -69,6 +69,7 @@ test('share, manual, webhook, and cron paths wire linked-leg notifications', asy
   const manual = await source('api/broker-share-notify.js');
   const webhook = await source('api/flightaware-webhook.js');
   const cron = await source('api/flightaware-cron-poll.js');
+  const enqueue = await source('api/email-enqueue.js');
   const publicApi = await source('api/trip-public.js');
   const app = await source('src/App.jsx');
 
@@ -80,4 +81,13 @@ test('share, manual, webhook, and cron paths wire linked-leg notifications', asy
   assert.match(publicApi, /privacyMode === 'repositioning'/);
   assert.match(app, /previousShareableLegs/);
   assert.match(app, /\/api\/broker-share-notify/);
+  assert.match(app, /const publicTripData = await buildPublicTripData\(\)/);
+  assert.match(app, /if \(sendNotif\)/);
+  assert.match(app, /notificationSuppressed: !sendNotif/);
+  assert.match(share, /publicTripData: body\?\.publicTripData/);
+  assert.match(enqueue, /signTripToken\(linkTripId, linkData\.linkTokenIssuedAt\)/);
+  assert.doesNotMatch(enqueue, /if \(!data\.token\)/);
+  assert.match(webhook, /\.split\(\/\[,;\\s\]\+\/\)/);
+  assert.match(webhook, /includeTrackingButton: true/);
+  assert.match(cron, /includeTrackingButton: true/);
 });

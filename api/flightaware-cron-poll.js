@@ -365,6 +365,7 @@ async function sendEmail(host, to, subject, text, meta) {
       source: meta?.source || 'fa-cron',
       tripId: meta?.tripId || null,
       statusKey: meta?.statusKey || null,
+      includeTrackingButton: meta?.includeTrackingButton === true,
     });
 
     // Try queue first
@@ -519,7 +520,12 @@ async function fireStatus({ db, host, tripUid, tripState, stepId, eventTimeMs, e
     actualOn: eventState.actualOn,
     scheduledArrivalIso: eventState.scheduledIn || eventState.scheduledOn,
   });
-  const sent = await sendEmail(host, brokerEmails, subject, body);
+  const sent = await sendEmail(host, brokerEmails, subject, body, {
+    source: isRecovery ? 'fa-cron-recovery' : 'fa-cron',
+    tripId: tripUid,
+    statusKey: stepId,
+    includeTrackingButton: true,
+  });
 
   // Recovery: mark the manual status notified=true so the App.jsx
   // "EMAIL FAILED" pill clears and the next poll skips this step.
