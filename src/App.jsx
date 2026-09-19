@@ -8528,7 +8528,9 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
         // to privacy-safe movement notifications when the link is emailed.
         notifyBroker: t.uid !== anchor.uid,
         // Drives whether the broker sees a catering milestone at all.
-        hasCatering: isPrivatePrevious ? false : state.hasCatering !== false,
+        // The API privacy sanitizer forces this off for private
+        // repositioning legs before anything reaches the public link.
+        hasCatering: state.hasCatering !== false,
         status: cleanStatus,
       };
     });
