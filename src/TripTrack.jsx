@@ -721,6 +721,7 @@ function Leg({ leg, isActive, position }) {
   const checkedInCount = paxList.filter((p) => p?.status === 'checked_in').length;
   // REVENUE legs show the pax check-in milestones too (CATERING, PAX ARRIVED, PAX BOARDED)
   const isRevenue = String(leg.category || '').toUpperCase() === 'REVENUE';
+  const privateRepositioning = leg.privacyMode === 'repositioning';
 
   return (
     <div className={`border ${isActive ? 'border-cyan-400/60 shadow-[0_0_24px_rgba(34,211,238,0.12)]' : 'border-slate-700'} bg-slate-900/40 mb-3 overflow-hidden`}>
@@ -801,8 +802,12 @@ function Leg({ leg, isActive, position }) {
 
         {/* Crew/aircraft milestones — same five steps for all legs. */}
         <div className="space-y-1 pt-2 border-t border-slate-800">
-          <StatusDot on={!!legStatuses.crew_onsite?.at}    label="Crew on site"    ts={legStatuses.crew_onsite?.at}    iataCode={leg.from} />
-          <StatusDot on={!!legStatuses.aircraft_ready?.at} label="Aircraft ready"  ts={legStatuses.aircraft_ready?.at} iataCode={leg.from} />
+          {!privateRepositioning && (
+            <>
+              <StatusDot on={!!legStatuses.crew_onsite?.at}    label="Crew on site"    ts={legStatuses.crew_onsite?.at}    iataCode={leg.from} />
+              <StatusDot on={!!legStatuses.aircraft_ready?.at} label="Aircraft ready"  ts={legStatuses.aircraft_ready?.at} iataCode={leg.from} />
+            </>
+          )}
           {/* Revenue legs get catering + pax arrived / boarded milestones.
               Catering is omitted entirely when the trip has none, so the
               broker never sees a milestone that will never complete. */}

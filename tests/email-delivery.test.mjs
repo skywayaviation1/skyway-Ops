@@ -60,9 +60,11 @@ test('the app treats a provider rejection as a failed notification', async () =>
   const text = await source('src/App.jsx');
   assert.match(text, /const delivered = data\.delivered !== false;/);
   assert.match(text, /status: delivered \? 200 : 502/);
-  // `notified` may only be set once delivery succeeded, so the timeline keeps
-  // showing the retry affordance for anything that did not go out.
-  assert.match(text, /notified: false, \/\/ set to true only after email actually sends/);
+  // Auto-notify-off is recorded as intentionally suppressed. When enabled,
+  // notified is flipped only after delivery succeeds.
+  assert.match(text, /notified: !sendNotif/);
+  assert.match(text, /notificationSuppressed: !sendNotif/);
+  assert.match(text, /if \(!r\.ok \|\| respData\.delivered === false\)/);
 });
 
 test('queue drain pages the queue so a backlog cannot starve new mail', async () => {

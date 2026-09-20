@@ -94,12 +94,16 @@ function sanitizeTrip(tripId, data, legs, liveLegData = {}) {
   // key, live wins if present. This lets us pick up landed/wheels_up events
   // that fired after the link was shared without requiring ops to rotate
   // or re-open the share dialog.
-  const mergeStatusForLeg = (legTripId, snapshotStatus) => {
+  const mergeStatusForLeg = (legTripId, snapshotStatus, privacyMode = 'standard') => {
     const snap = snapshotStatus && typeof snapshotStatus === 'object' ? snapshotStatus : {};
     const live = (legTripId && liveLegData[legTripId]?.statuses) || {};
     const merged = {};
+    const allowed = privacyMode === 'repositioning'
+      ? new Set(['taxi_dep', 'wheels_up', 'landed'])
+      : null;
     const allKeys = new Set([...Object.keys(snap), ...Object.keys(live)]);
     for (const k of allKeys) {
+      if (allowed && !allowed.has(k)) continue;
       // Live takes priority if it has a valid timestamp. Otherwise fall
       // back to the snapshot value.
       if (live[k] && Number.isFinite(live[k].at)) {
@@ -134,7 +138,7 @@ function sanitizeTrip(tripId, data, legs, liveLegData = {}) {
     const byLeg = {};
     data.publicTripData.legs.forEach((leg) => {
       if (!leg || !Number.isFinite(leg.legNumber)) return;
-      const merged = mergeStatusForLeg(leg.tripId, leg.status);
+      const merged = mergeStatusForLeg(leg.tripId, leg.status, leg.privacyMode);
       byLeg[leg.legNumber] = merged;
     });
     outStatuses = byLeg;
@@ -153,20 +157,23 @@ function sanitizeTrip(tripId, data, legs, liveLegData = {}) {
       departure: leg.departure || null,    // ISO
       arrival: leg.arrival || null,        // ISO
       category: leg.category || 'REVENUE', // REVENUE/REPO/FERRY
-      pic: leg.picName || null,            // NAME ONLY — no contact info
-      sic: leg.sicName || null,            // NAME ONLY — no contact info
+      pic: leg.privacyMode === 'repositioning' ? null : (leg.picName || null),
+      sic: leg.privacyMode === 'repositioning' ? null : (leg.sicName || null),
+      privacyMode: leg.privacyMode === 'repositioning' ? 'repositioning' : 'standard',
       // Pax list — LIVE overlay if available, snapshot fallback. showPax
       // policy from the snapshot is enforced as the last line of defense.
       pax: paxForLeg(leg),
       showPax: leg.showPax === true,
       // Live value wins so catering turned off after sharing disappears from
       // the broker page without re-sharing.
-      hasCatering: (leg.tripId && typeof liveLegData[leg.tripId]?.hasCatering === 'boolean')
+      hasCatering: leg.privacyMode === 'repositioning'
+        ? false
+        : (leg.tripId && typeof liveLegData[leg.tripId]?.hasCatering === 'boolean')
         ? liveLegData[leg.tripId].hasCatering
         : leg.hasCatering !== false,
       // Per-leg status timeline — MERGED snapshot + live. Live wins where
       // present so brokers see post-share-time events (landed, etc.).
-      status: mergeStatusForLeg(leg.tripId, leg.status),
+      status: mergeStatusForLeg(leg.tripId, leg.status, leg.privacyMode),
     })),
     statuses: outStatuses,
     completed: data.completed === true,

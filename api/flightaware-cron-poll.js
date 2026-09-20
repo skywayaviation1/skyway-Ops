@@ -19,6 +19,7 @@ import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import { lookupAirport } from './_airports-data.js';
 import { recordWearLanding } from './_wear-cadence.js';
+import { notifyBrokerShareSubscribers } from './_broker-share-notifications.js';
 import { DEFAULT_MANAGED_TAILS, normalizeFleetTails } from '../src/fleet-config.js';
 
 const FA_API_BASE = 'https://aeroapi.flightaware.com/aeroapi';
@@ -364,6 +365,7 @@ async function sendEmail(host, to, subject, text, meta) {
       source: meta?.source || 'fa-cron',
       tripId: meta?.tripId || null,
       statusKey: meta?.statusKey || null,
+      includeTrackingButton: meta?.includeTrackingButton === true,
     });
 
     // Try queue first
@@ -440,6 +442,17 @@ function buildBrokerEmail({ tail, eventType, originCode, destCode, originTz, des
 async function fireStatus({ db, host, tripUid, tripState, stepId, eventTimeMs, eventState, eventType }) {
   const existingStatuses = tripState.statuses || {};
   const autoFiredEvents = tripState.autoFiredEvents || {};
+  await notifyBrokerShareSubscribers({
+    database: db,
+    host,
+    tripUid,
+    tripState,
+    stepId,
+    eventTimeMs,
+    eventState,
+  }).catch((error) => {
+    console.error('[fa-cron-poll] linked broker notification failed:', error.message);
+  });
 
   // Idempotent: if this step was auto-fired before, skip
   if (autoFiredEvents[stepId]) {
@@ -507,7 +520,12 @@ async function fireStatus({ db, host, tripUid, tripState, stepId, eventTimeMs, e
     actualOn: eventState.actualOn,
     scheduledArrivalIso: eventState.scheduledIn || eventState.scheduledOn,
   });
-  const sent = await sendEmail(host, brokerEmails, subject, body);
+  const sent = await sendEmail(host, brokerEmails, subject, body, {
+    source: isRecovery ? 'fa-cron-recovery' : 'fa-cron',
+    tripId: tripUid,
+    statusKey: stepId,
+    includeTrackingButton: true,
+  });
 
   // Recovery: mark the manual status notified=true so the App.jsx
   // "EMAIL FAILED" pill clears and the next poll skips this step.

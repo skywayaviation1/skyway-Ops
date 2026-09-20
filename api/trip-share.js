@@ -17,6 +17,11 @@
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import { signTripToken } from './_trip-token.js';
+import { sanitizePublicLeg } from '../src/broker-share-privacy.js';
+import {
+  removeBrokerShareSubscriptions,
+  syncBrokerShareSubscriptions,
+} from './_broker-share-notifications.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -77,52 +82,7 @@ async function ensureTokenIssued(tripId, opts = {}) {
     publicTripData = {
       tail: String(incoming.tail || '').slice(0, 16),
       aircraftType: incoming.aircraftType ? String(incoming.aircraftType).slice(0, 80) : null,
-      legs: incoming.legs.slice(0, 20).map((leg, i) => ({
-        tripId: leg.tripId ? String(leg.tripId).slice(0, 200) : null,
-        legNumber: Number.isFinite(leg.legNumber) ? leg.legNumber : (i + 1),
-        from: leg.from ? String(leg.from).slice(0, 8) : null,
-        to: leg.to ? String(leg.to).slice(0, 8) : null,
-        fromFbo: leg.fromFbo ? String(leg.fromFbo).slice(0, 120) : null,
-        toFbo: leg.toFbo ? String(leg.toFbo).slice(0, 120) : null,
-        departure: leg.departure || null,   // ISO string
-        arrival: leg.arrival || null,
-        category: leg.category ? String(leg.category).slice(0, 16) : 'REVENUE',
-        picName: leg.picName ? String(leg.picName).slice(0, 80) : null,
-        sicName: leg.sicName ? String(leg.sicName).slice(0, 80) : null,
-        // Pax visibility flag (per privacy spec). Even if pax array is
-        // present, the broker page must honor showPax — defensive defense.
-        showPax: leg.showPax === true,
-        // Absent on shares created before catering could be turned off, and
-        // those trips did have catering, so only an explicit false hides it.
-        hasCatering: leg.hasCatering !== false,
-        // Per-pax records: each entry is an object the broker page can
-        // render with individual check-in indicators. Whitelist the four
-        // fields we care about; reject anything else (covers PII leakage
-        // if a future caller mistakenly forwards DOB/weight/etc).
-        pax: Array.isArray(leg.pax)
-          ? leg.pax.slice(0, 30).map((p) => {
-              if (!p || typeof p !== 'object') return null;
-              const name = String(p.name || '').slice(0, 80).trim();
-              if (!name) return null;
-              const status = ['checked_in', 'pending', 'skipped', 'no_show'].includes(p.status)
-                ? p.status : 'pending';
-              const checkedInAt = Number.isFinite(p.checkedInAt) ? p.checkedInAt : null;
-              return { name, status, checkedInAt, walkUp: p.walkUp === true };
-            }).filter(Boolean)
-          : [],
-        // Per-leg status timeline. Whitelist the known keys + only the
-        // numeric `at` timestamp per entry. Reject anything else.
-        status: leg.status && typeof leg.status === 'object'
-          ? ['crew_onsite', 'aircraft_ready', 'catering_aboard', 'pax_arrived', 'pax_boarded', 'taxi_dep', 'wheels_up', 'landed']
-              .reduce((acc, key) => {
-                const v = leg.status[key];
-                if (v && typeof v === 'object' && typeof v.at === 'number') {
-                  acc[key] = { at: v.at };
-                }
-                return acc;
-              }, {})
-          : {},
-      })),
+      legs: incoming.legs.slice(0, 20).map(sanitizePublicLeg),
       updatedAt: now,
     };
   }
@@ -299,6 +259,7 @@ export default async function handler(req, res) {
       await db().collection('trip-state').doc(tripId).set({
         linkRevoked: true, linkUpdatedAt: Date.now(),
       }, { merge: true });
+      await removeBrokerShareSubscriptions({ database: db(), shareTripId: tripId });
       return res.status(200).json({ ok: true, revoked: true });
     }
     if (action === 'email') {
@@ -327,7 +288,10 @@ export default async function handler(req, res) {
         recipients.push(e);
         if (recipients.length >= 20) break;
       }
-      const r = await ensureTokenIssued(tripId, { rotate: false });
+      const r = await ensureTokenIssued(tripId, {
+        rotate: false,
+        publicTripData: body?.publicTripData,
+      });
       let url = publicUrl(req, r.token);
       // Append the broker-page theme if ops opted into the classic view.
       // Premium is the default — leave the URL clean in that case.
@@ -360,6 +324,22 @@ export default async function handler(req, res) {
         return res.status(502).json({ ok: false, error: result.error || 'email delivery failed', url });
       }
 
+      let notificationWarning = null;
+      let subscribedLegIds = [];
+      try {
+        const subscriptionResult = await syncBrokerShareSubscriptions({
+          database: db(),
+          shareTripId: tripId,
+          recipients,
+          publicTripData: data?.publicTripData,
+          trackingUrl: url,
+        });
+        subscribedLegIds = subscriptionResult.subscribedLegIds;
+      } catch (error) {
+        notificationWarning = 'Tracking email sent, but linked-leg notifications could not be enabled.';
+        console.error('[trip-share] linked-leg subscription failed:', error);
+      }
+
       // Record share history for audit. Joined string keeps the field
       // shape unchanged for any downstream consumer that expected a
       // single string (backwards compatible).
@@ -370,7 +350,14 @@ export default async function handler(req, res) {
         lastSharedBy: auth.uid || null,
       }, { merge: true });
 
-      return res.status(200).json({ ok: true, sent: true, url, recipientCount: recipients.length });
+      return res.status(200).json({
+        ok: true,
+        sent: true,
+        url,
+        recipientCount: recipients.length,
+        subscribedLegIds,
+        notificationWarning,
+      });
     }
     return res.status(400).json({ ok: false, error: `Unknown action: ${action}` });
   } catch (e) {

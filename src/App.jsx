@@ -131,7 +131,13 @@ const AdminDutyReportLazy = lazy(() => import('./AdminDutyReport.jsx'));
 const AogTabLazy = lazy(() => import('./AogTab.jsx'));
 import AppTimezoneSwitch from './AppTimezoneSwitch.jsx';
 import { todayInAppTz } from './app-timezone.js';
-import { autoSelectedShareUids, relatedBrokerLegs } from './broker-leg-grouping.js';
+import {
+  autoSelectedShareUids,
+  limitPreviousRepositioningOptions,
+  previousShareableLegs,
+  relatedBrokerLegs,
+  shouldRedactPreviousLeg,
+} from './broker-leg-grouping.js';
 import AppAuditTracker from './AppAuditTracker.jsx';
 import { isSuperAdmin, useRemoteNavigation } from './navigation-config.js';
 import { createPortal } from 'react-dom';
@@ -4246,7 +4252,7 @@ function NotifyPanel({ trip, opsEmail, brokerEmail, setBrokerEmail, statuses, au
         <div>
           <div className="text-sm text-slate-100" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 600 }}>AUTO-NOTIFY ON STATUS</div>
           <p className="text-[11px] text-slate-500 mt-0.5">
-            When enabled, tapping any status button opens an email draft to broker + ops with the event details.
+            When enabled, each status update is sent to the broker and ops through the reliable email queue.
           </p>
         </div>
       </label>
@@ -5751,11 +5757,32 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       timestamp: Date.now(),
       coords: gpsCoords || null,
       author: currentUserDisplayName || (currentUser?.name || 'Unknown'),
-      notified: false, // set to true only after email actually sends
+      notified: !sendNotif,
+      notificationSuppressed: !sendNotif,
     };
     const nextStatuses = { ...statuses, [step.id]: newStatus };
     setStatuses(nextStatuses);
     await persist({ statuses: nextStatuses, passengers, brokerEmail, autoNotify, completed, hasCatering, paxOverride });
+
+    if (['taxi_dep', 'wheels_up', 'landed'].includes(step.id)) {
+      try {
+        const { auth } = await import('./firebase.js');
+        const response = await fetch('/api/broker-share-notify', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${await auth.currentUser?.getIdToken()}`,
+          },
+          body: JSON.stringify({ tripId: trip.uid, stepId: step.id }),
+        });
+        if (!response.ok) {
+          const result = await response.json().catch(() => ({}));
+          console.warn('[broker share] linked-leg notification failed:', result.error || response.status);
+        }
+      } catch (error) {
+        console.warn('[broker share] linked-leg notification failed:', error?.message || error);
+      }
+    }
 
     if (step.id === 'landed') {
       try {
@@ -5785,62 +5812,62 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       }
     }
 
-    // Parse broker email field — supports comma-separated list of recipients
-    // (e.g. "broker@x.com, ops@flightsupport.com")
-    const brokerEmails = (brokerEmail || '')
-      .split(/[,;\s]+/)
-      .map(e => e.trim())
-      .filter(e => e.length > 0 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
+    // The NOTIFY toggle controls normal broker + ops status emails. Linked
+    // share notifications above are an explicit share subscription and stay
+    // independent from this per-leg setting.
+    if (sendNotif) {
+      const brokerEmails = (brokerEmail || '')
+        .split(/[,;\s]+/)
+        .map(e => e.trim())
+        .filter(e => e.length > 0 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
+      const recipients = [opsEmail, ...brokerEmails]
+        .filter(Boolean)
+        .map(e => e.trim())
+        .filter(e => e.length > 0);
+      const emailContent = buildStatusEmail(step, trip, brokerEmails[0] || '');
 
-    // Auto-send email on every status update
-    const recipients = [opsEmail, ...brokerEmails]
-      .filter(Boolean)
-      .map(e => e.trim())
-      .filter(e => e.length > 0);
-
-    if (recipients.length === 0) {
-      console.warn('[email] Skipping send — no valid recipients. opsEmail:', opsEmail || '(empty)', 'brokerEmail:', brokerEmail || '(empty)');
-      return;
-    }
-
-    // Use first broker email for the "Hi [Name]" greeting
-    const emailContent = buildStatusEmail(step, trip, brokerEmails[0] || '');
-    if (!emailContent) {
-      console.warn('[email] No email template for step:', step.id, '· legType:', trip.info?.legType);
-      return;
-    }
-
-    try {
-      const r = await sendEmailViaApi({
-        to: recipients,
-        subject: emailContent.subject,
-        text: emailContent.text,
-        tripId: trip.uid,
-        // Status updates always include the tracking button when an
-        // active broker link exists — these emails always go to the
-        // broker by design.
-        includeTrackingButton: true,
-      });
-      const respData = await r.json().catch(() => ({}));
-      if (!r.ok) {
-        console.error('[email] Send failed:', r.status, respData.error || '', respData);
-        // The status itself is recorded; only the notification failed. Say so,
-        // because the alternative is a dispatcher believing the broker was
-        // told. `notified` stays false, so the timeline keeps its retry action.
-        notify.error(
-          respData.willRetry
-            ? 'Status saved, but the broker email has not gone out yet — retrying automatically.'
-            : 'Status saved, but the broker email failed to send.',
-          { description: respData.explanation || respData.error || 'Check Settings → Email delivery.' },
-        );
-        return;
+      if (recipients.length === 0) {
+        console.warn('[email] Skipping send — no valid recipients. opsEmail:', opsEmail || '(empty)', 'brokerEmail:', brokerEmail || '(empty)');
+      } else if (!emailContent) {
+        console.warn('[email] No email template for step:', step.id, '· legType:', trip.info?.legType);
+      } else {
+        try {
+          const r = await sendEmailViaApi({
+            to: recipients,
+            subject: emailContent.subject,
+            text: emailContent.text,
+            tripId: trip.uid,
+            includeTrackingButton: true,
+          });
+          const respData = await r.json().catch(() => ({}));
+          if (!r.ok || respData.delivered === false) {
+            console.error('[email] Send failed:', r.status, respData.error || '', respData);
+            notify.error(
+              respData.willRetry
+                ? 'Status saved, but the broker email has not gone out yet — retrying automatically.'
+                : 'Status saved, but the broker email failed to send.',
+              { description: respData.explanation || respData.error || 'Check Settings → Email delivery.' },
+            );
+          } else {
+            const updatedStatuses = {
+              ...nextStatuses,
+              [step.id]: { ...newStatus, notified: true },
+            };
+            setStatuses(updatedStatuses);
+            await persist({
+              statuses: updatedStatuses,
+              passengers,
+              brokerEmail,
+              autoNotify,
+              completed,
+              hasCatering,
+              paxOverride,
+            });
+          }
+        } catch (err) {
+          console.error('[email] Network error:', err);
+        }
       }
-      // Email sent successfully — mark notified=true now
-      const updatedStatuses = { ...nextStatuses, [step.id]: { ...newStatus, notified: true } };
-      setStatuses(updatedStatuses);
-      await persist({ statuses: updatedStatuses, passengers, brokerEmail, autoNotify, completed, hasCatering, paxOverride });
-    } catch (err) {
-      console.error('[email] Network error:', err);
     }
 
     // Push notification for status step transitions. Fires regardless of
@@ -7987,10 +8014,19 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
   const allCandidateLegs = useMemo(() => {
     // Start from the sync seed (anchor + positioning chain, tagged).
     const byUid = new Map(syncCandidateLegs.map(l => [l.uid, l]));
+    // Also offer earlier same-aircraft flights as explicit, opt-in context.
+    // They are never auto-selected and are privacy-redacted unless trip-sheet
+    // or passenger matching proves they belong to this same charter.
+    previousShareableLegs(canonicalTrip, allTrips).forEach((leg) => {
+      if (!byUid.has(leg.uid)) byUid.set(leg.uid, leg);
+    });
 
     // Nothing more to add if trip-states haven't loaded yet.
     if (Object.keys(tripStatesByUid).length === 0) {
-      return Array.from(byUid.values());
+      return limitPreviousRepositioningOptions(
+        canonicalTrip,
+        Array.from(byUid.values()),
+      );
     }
 
     const anchorState = tripStatesByUid[canonicalTrip.uid] || {};
@@ -8021,7 +8057,6 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
     // (already in) or a non-flight event.
     (allTrips || []).forEach(t => {
       if (!t?.info || !t.uid || t.uid === canonicalTrip.uid) return;
-      if (byUid.has(t.uid)) return; // already in from sync seed
       if (String(t.info.tail || '').toUpperCase() !== tail) return;
       if (t.info.isFlight === false) return;
       const rawCat = String(t.info.category || '').toUpperCase();
@@ -8052,8 +8087,10 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
     });
 
     // Return chronologically sorted.
-    return Array.from(byUid.values())
-      .sort((a, b) => new Date(a.start || 0).getTime() - new Date(b.start || 0).getTime());
+    return limitPreviousRepositioningOptions(
+      canonicalTrip,
+      Array.from(byUid.values()),
+    ).sort((a, b) => new Date(a.start || 0).getTime() - new Date(b.start || 0).getTime());
   }, [syncCandidateLegs, tripStatesByUid, canonicalTrip, allTrips]);
   // Initial selection: just the canonical anchor. useState's lazy
   // initializer runs once at mount; the dialog unmounts between
@@ -8365,6 +8402,12 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
     // Renumber legs sequentially as they appear in the final included list.
     const legs = included.map(({ t, showPax }, i) => {
       const state = stateByUid[t.uid] || { preloadedPax: [], passengers: [], statuses: {} };
+      const privacyMode = shouldRedactPreviousLeg({
+        leg: t,
+        anchor,
+        statesByUid: stateByUid,
+      }) ? 'repositioning' : 'standard';
+      const isPrivatePrevious = privacyMode === 'repositioning';
 
       // Build per-pax records that the broker page can render with
       // individual check-in indicators. Join logic:
@@ -8443,6 +8486,10 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
         'wheels_up', 'landed',
       ];
       for (const key of BROKER_STATUS_KEYS) {
+        if (
+          isPrivatePrevious
+          && !['taxi_dep', 'wheels_up', 'landed'].includes(key)
+        ) continue;
         const v = statusBag[key];
         if (v && typeof v === 'object' && Number.isFinite(v.timestamp)) {
           cleanStatus[key] = { at: v.timestamp };
@@ -8472,16 +8519,24 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
         // FBO details in the DESCRIPTION field, so admin manually sets
         // them in trip-state. Without this preference, manually-set
         // FBOs never reach the broker page.
-        fromFbo: liveFromFbo || state.fromFbo || t.info?.fromFbo || null,
-        toFbo:   liveToFbo   || state.toFbo   || t.info?.toFbo   || null,
+        fromFbo: isPrivatePrevious ? null : (liveFromFbo || state.fromFbo || t.info?.fromFbo || null),
+        toFbo: isPrivatePrevious ? null : (liveToFbo || state.toFbo || t.info?.toFbo || null),
         departure: t.start || null,
         arrival: t.end || null,
-        category: t.info?.legType || t.info?.category || 'REVENUE',
-        picName: t.info?.pic || null,
-        sicName: t.info?.sic || null,
-        showPax,
-        pax: showPax ? paxRecords : [],
+        category: isPrivatePrevious
+          ? 'REPOSITIONING'
+          : (t.info?.legType || t.info?.category || 'REVENUE'),
+        picName: isPrivatePrevious ? null : (t.info?.pic || null),
+        sicName: isPrivatePrevious ? null : (t.info?.sic || null),
+        showPax: isPrivatePrevious ? false : showPax,
+        pax: !isPrivatePrevious && showPax ? paxRecords : [],
+        privacyMode,
+        // Selected linked legs subscribe the recipients of this broker link
+        // to privacy-safe movement notifications when the link is emailed.
+        notifyBroker: t.uid !== anchor.uid,
         // Drives whether the broker sees a catering milestone at all.
+        // The API privacy sanitizer forces this off for private
+        // repositioning legs before anything reaches the public link.
         hasCatering: state.hasCatering !== false,
         status: cleanStatus,
       };
@@ -8595,14 +8650,19 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
       recipients.push(e);
     }
     try {
+      const publicTripData = await buildPublicTripData();
       const data = await callShare('email', {
         to: recipients,
         message: emailMessage.trim(),
         theme: brokerTheme,
+        publicTripData,
       });
-      setInfo(recipients.length === 1
+      const success = recipients.length === 1
         ? `Email sent to ${recipients[0]}.`
-        : `Email sent to ${recipients.length} recipients: ${recipients.join(', ')}.`);
+        : `Email sent to ${recipients.length} recipients: ${recipients.join(', ')}.`;
+      setInfo(data.notificationWarning
+        ? `${success} ${data.notificationWarning}`
+        : success);
       if (data.url) setUrl(data.url);
     } catch (e) {
       setErr(e.message || 'Could not send email');
@@ -8693,6 +8753,7 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
                   'positioning-out': 'DEADHEAD OUT', // deadhead leaving anchor's destination
                   'same-trip-sheet': 'SAME TRIP',    // parsed from the same trip sheet PDF
                   'same-pax':        'SAME PAX',    // pax name overlap with anchor's manifest
+                  'previous-private':'PRIVATE REPOSITIONING',
                 })[leg._shareReason] ?? null;
                 return (
                   <label
@@ -8732,6 +8793,7 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
                             leg._shareReason === 'positioning-out' ? 'Repo leg — deadhead out of your anchor destination' :
                             leg._shareReason === 'same-trip-sheet' ? 'Parsed from the same trip sheet PDF as the anchor — same broker charter' :
                             leg._shareReason === 'same-pax'        ? 'One or more passenger names match the anchor manifest — same customer group' :
+                            leg._shareReason === 'previous-private'? 'Optional previous leg. The broker sees only route, movement times, and repositioning status; prior client and passenger information stays private.' :
                             ''
                           }>{reasonLabel}</span>
                         )}
@@ -8739,6 +8801,11 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
                       <div className="text-[10px] text-slate-500 truncate">
                         {broker}{pax ? ` · ${pax} pax` : ''}
                       </div>
+                      {leg._shareReason === 'previous-private' && (
+                        <div className="text-[9px] text-amber-300/80 mt-0.5">
+                          Shared as repositioning only · private trip details hidden · movement notifications automatic
+                        </div>
+                      )}
                     </div>
                   </label>
                 );

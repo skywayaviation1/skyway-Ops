@@ -382,6 +382,24 @@ function brokerTrip() {
     legs: [
       {
         legNumber: 1,
+        from: 'MBS', to: LEAD.from,
+        fromFbo: null, toFbo: null,
+        departure: new Date(now() - 5 * HOUR).toISOString(),
+        arrival: new Date(now() - 3.6 * HOUR).toISOString(),
+        category: 'REPOSITIONING',
+        pic: null, sic: null,
+        privacyMode: 'repositioning',
+        showPax: false,
+        hasCatering: false,
+        pax: [],
+        status: {
+          taxi_dep: brokerStep(5 * HOUR),
+          wheels_up: brokerStep(4.9 * HOUR),
+          landed: brokerStep(3.6 * HOUR),
+        },
+      },
+      {
+        legNumber: 2,
         from: LEAD.from, to: LEAD.to,
         fromFbo: 'Signature Flight Support', toFbo: 'Atlantic Aviation',
         departure: new Date(now() - 95 * MIN).toISOString(),
@@ -402,7 +420,7 @@ function brokerTrip() {
         },
       },
       {
-        legNumber: 2,
+        legNumber: 3,
         from: NEXT_LEG.from, to: NEXT_LEG.to,
         fromFbo: 'Atlantic Aviation', toFbo: 'Jet Aviation',
         departure: new Date(now() + 4 * HOUR).toISOString(),

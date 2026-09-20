@@ -33,6 +33,7 @@ import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import { applySkywaySignature, textToHtml, withCharterCopy } from './_email-signature.js';
 import { explainSendFailure, isPermanentSendFailure } from './_email-delivery.js';
+import { signTripToken } from './_trip-token.js';
 import { deliverNotification } from './_email-transport.js';
 
 export const config = { runtime: 'nodejs' };
@@ -270,7 +271,7 @@ export default async function handler(req, res) {
 }
 
 // Look up the broker tracking URL for a given trip. Returns null when
-// there's no active link (no trip-state doc, no token, or link revoked).
+// there's no active link (no trip-state doc, issued timestamp, or link revoked).
 // Used by the "Track This Flight" button injection above.
 //
 // The URL format matches /api/trip-share's publicUrl helper so brokers
@@ -279,16 +280,28 @@ export default async function handler(req, res) {
 async function findActiveBrokerTrackingUrl(req, tripId) {
   try {
     const db = getDb();
-    const snap = await db.collection('trip-state').doc(String(tripId)).get();
-    if (!snap.exists) return null;
-    const data = snap.data() || {};
-    if (data.linkRevoked === true) return null;
-    if (!data.token) return null;
+    const sourceSnap = await db.collection('trip-state').doc(String(tripId)).get();
+    if (!sourceSnap.exists) return null;
+    const source = sourceSnap.data() || {};
+    let linkTripId = String(tripId);
+    let linkData = source;
+    if (!Number.isFinite(linkData.linkTokenIssuedAt) || linkData.linkRevoked === true) {
+      const linkedShare = (Array.isArray(source.brokerShareSubscriptions)
+        ? source.brokerShareSubscriptions : [])
+        .find((item) => item?.active !== false && item?.shareTripId);
+      if (!linkedShare) return null;
+      linkTripId = String(linkedShare.shareTripId);
+      const linkSnap = await db.collection('trip-state').doc(linkTripId).get();
+      if (!linkSnap.exists) return null;
+      linkData = linkSnap.data() || {};
+    }
+    if (linkData.linkRevoked === true || !Number.isFinite(linkData.linkTokenIssuedAt)) return null;
+    const token = signTripToken(linkTripId, linkData.linkTokenIssuedAt);
     const host = req.headers.host
       || process.env.VERCEL_PROJECT_PRODUCTION_URL
       || 'skyway-ops.vercel.app';
     const proto = host.includes('localhost') ? 'http' : 'https';
-    return `${proto}://${host}/trip-track.html?token=${encodeURIComponent(data.token)}`;
+    return `${proto}://${host}/trip-track.html?token=${encodeURIComponent(token)}`;
   } catch (e) {
     console.warn('[track-url] lookup error:', e.message);
     return null;
