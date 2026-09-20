@@ -133,6 +133,7 @@ import AppTimezoneSwitch from './AppTimezoneSwitch.jsx';
 import { todayInAppTz } from './app-timezone.js';
 import {
   autoSelectedShareUids,
+  limitPreviousRepositioningOptions,
   previousShareableLegs,
   relatedBrokerLegs,
   shouldRedactPreviousLeg,
@@ -8022,7 +8023,10 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
 
     // Nothing more to add if trip-states haven't loaded yet.
     if (Object.keys(tripStatesByUid).length === 0) {
-      return Array.from(byUid.values());
+      return limitPreviousRepositioningOptions(
+        canonicalTrip,
+        Array.from(byUid.values()),
+      );
     }
 
     const anchorState = tripStatesByUid[canonicalTrip.uid] || {};
@@ -8083,8 +8087,10 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
     });
 
     // Return chronologically sorted.
-    return Array.from(byUid.values())
-      .sort((a, b) => new Date(a.start || 0).getTime() - new Date(b.start || 0).getTime());
+    return limitPreviousRepositioningOptions(
+      canonicalTrip,
+      Array.from(byUid.values()),
+    ).sort((a, b) => new Date(a.start || 0).getTime() - new Date(b.start || 0).getTime());
   }, [syncCandidateLegs, tripStatesByUid, canonicalTrip, allTrips]);
   // Initial selection: just the canonical anchor. useState's lazy
   // initializer runs once at mount; the dialog unmounts between
@@ -8797,7 +8803,7 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
                       </div>
                       {leg._shareReason === 'previous-private' && (
                         <div className="text-[9px] text-amber-300/80 mt-0.5">
-                          Shared as repositioning only · private trip details hidden · notifications enabled when emailed
+                          Shared as repositioning only · private trip details hidden · movement notifications automatic
                         </div>
                       )}
                     </div>

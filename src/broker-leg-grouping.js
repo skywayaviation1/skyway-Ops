@@ -94,7 +94,7 @@ export function previousShareableLegs(anchor, allTrips = [], windowHours = 48) {
   if (!anchor?.uid) return [];
   const anchorTime = time(anchor);
   const windowMs = Math.max(1, Number(windowHours) || 48) * HOUR;
-  return allTrips
+  const eligible = allTrips
     .filter((leg) => (
       leg?.uid
       && leg.uid !== anchor.uid
@@ -107,8 +107,28 @@ export function previousShareableLegs(anchor, allTrips = [], windowHours = 48) {
       )
       && normalizeAirport(leg.info?.from) !== normalizeAirport(leg.info?.to)
     ))
-    .map((leg) => ({ ...leg, _shareReason: leg._shareReason || 'previous-private' }))
-    .sort((a, b) => time(a) - time(b));
+    .sort((a, b) => time(b) - time(a));
+  const latest = eligible[0];
+  return latest
+    ? [{ ...latest, _shareReason: latest._shareReason || 'previous-private' }]
+    : [];
+}
+
+export function limitPreviousRepositioningOptions(anchor, candidateLegs = []) {
+  const prior = candidateLegs
+    .filter((leg) => (
+      time(leg) < time(anchor)
+      && ['positioning-in', 'previous-private'].includes(leg?._shareReason)
+    ))
+    .sort((a, b) => time(b) - time(a));
+  const keepUid = prior[0]?.uid;
+  return candidateLegs.filter((leg) => (
+    !(
+      time(leg) < time(anchor)
+      && ['positioning-in', 'previous-private'].includes(leg?._shareReason)
+    )
+    || leg.uid === keepUid
+  ));
 }
 
 const passengerKeys = (state) => new Set(

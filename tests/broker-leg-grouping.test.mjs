@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   autoSelectedShareUids,
+  limitPreviousRepositioningOptions,
   precedingRepoChain,
   previousShareableLegs,
   relatedBrokerLegs,
@@ -67,13 +68,26 @@ test('broker share automatically checks anchor, preceding repo, and trip-code le
 });
 
 test('earlier same-tail flights are offered but never auto-selected', () => {
+  const older = leg('older', 'MBS', 'TVC', 4, 'REVENUE');
   const previous = leg('previous', 'TVC', 'IAD', 7, 'REVENUE');
   const anchor = leg('anchor', 'IAD', 'TEB', 10, 'REVENUE');
   const future = leg('future', 'TEB', 'BOS', 13, 'REVENUE');
-  const offered = previousShareableLegs(anchor, [previous, anchor, future]);
+  const offered = previousShareableLegs(anchor, [older, previous, anchor, future]);
   assert.deepEqual(offered.map((item) => item.uid), ['previous']);
   assert.equal(offered[0]._shareReason, 'previous-private');
   assert.deepEqual([...autoSelectedShareUids(offered)], []);
+});
+
+test('only the closest prior repositioning option remains in the picker', () => {
+  const oldRepo = { ...leg('old-repo', 'MBS', 'TVC', 4, 'REPO'), _shareReason: 'positioning-in' };
+  const latest = { ...leg('latest', 'TVC', 'IAD', 7, 'REVENUE'), _shareReason: 'previous-private' };
+  const anchor = { ...leg('anchor', 'IAD', 'TEB', 10, 'REVENUE'), _shareReason: 'anchor' };
+  const sameTrip = { ...leg('same-trip', 'TEB', 'BOS', 13, 'REVENUE'), _shareReason: 'same-trip-sheet' };
+  assert.deepEqual(
+    limitPreviousRepositioningOptions(anchor, [oldRepo, latest, anchor, sameTrip])
+      .map((item) => item.uid),
+    ['latest', 'anchor', 'same-trip'],
+  );
 });
 
 test('different-passenger previous revenue leg is privacy-redacted as repositioning', () => {

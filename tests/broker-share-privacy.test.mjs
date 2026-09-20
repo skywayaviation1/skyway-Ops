@@ -72,6 +72,7 @@ test('share, manual, webhook, and cron paths wire linked-leg notifications', asy
   const enqueue = await source('api/email-enqueue.js');
   const publicApi = await source('api/trip-public.js');
   const app = await source('src/App.jsx');
+  const brokerPage = await source('src/TripTrack.jsx');
 
   assert.match(share, /syncBrokerShareSubscriptions/);
   assert.match(share, /removeBrokerShareSubscriptions/);
@@ -90,4 +91,12 @@ test('share, manual, webhook, and cron paths wire linked-leg notifications', asy
   assert.match(webhook, /\.split\(\/\[,;\\s\]\+\/\)/);
   assert.match(webhook, /includeTrackingButton: true/);
   assert.match(cron, /includeTrackingButton: true/);
+  assert.doesNotMatch(
+    brokerPage,
+    /PREVIOUS REPOSITIONING LEG · Passenger, customer, broker, crew, and private trip details are hidden/,
+  );
+  assert.doesNotMatch(
+    await source('api/_broker-share-notifications.js'),
+    /autoNotify/,
+  );
 });

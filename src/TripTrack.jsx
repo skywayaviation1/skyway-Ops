@@ -769,12 +769,6 @@ function Leg({ leg, isActive, position }) {
           )}
         </div>
 
-        {privateRepositioning && (
-          <div className="mb-3 border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-[10px] text-amber-200">
-            PREVIOUS REPOSITIONING LEG · Passenger, customer, broker, crew, and private trip details are hidden.
-          </div>
-        )}
-
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3 text-xs">
           <div>
             <div className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>DEPARTURE</div>
