@@ -26,6 +26,7 @@
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import { verifyTripToken } from './_trip-token.js';
+import { composeBrokerTrip, linkExpiryLandedAt } from '../src/linked-leg.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -139,35 +140,58 @@ function sanitizeTrip(tripId, data, legs, liveLegData = {}) {
     });
     outStatuses = byLeg;
   }
-  return {
-    tripId,
-    tripCode: data.tripCode || null,
-    tail: (data.publicTripData?.tail) || data.tail || (legs[0] && legs[0].tail) || null,
-    aircraftType: (data.publicTripData?.aircraftType) || data.aircraftType || null,
-    legs: legs.map((leg) => ({
+  const hasSnapshot = data.publicTripData && Array.isArray(data.publicTripData.legs) && data.publicTripData.legs.length > 0;
+  let publicLegs;
+  if (hasSnapshot) {
+    const composed = composeBrokerTrip({
+      tripId,
+      publicTripData: {
+        ...data.publicTripData,
+        legs: data.publicTripData.legs.map((leg) => ({
+          ...leg,
+          pic: leg.pic || leg.picName || null,
+          sic: leg.sic || leg.sicName || null,
+          hasCatering: (leg.tripId && typeof liveLegData[leg.tripId]?.hasCatering === 'boolean')
+            ? liveLegData[leg.tripId].hasCatering
+            : leg.hasCatering,
+        })),
+      },
+      liveByTripId: liveLegData,
+    });
+    publicLegs = composed.legs;
+    const byLeg = {};
+    publicLegs.forEach((leg) => {
+      if (!leg || !Number.isFinite(leg.legNumber)) return;
+      byLeg[leg.legNumber] = leg.status || {};
+    });
+    outStatuses = byLeg;
+  } else {
+    publicLegs = legs.map((leg) => ({
       legNumber: leg.legNumber,
       from: leg.from || null,
       to: leg.to || null,
       fromFbo: leg.fromFbo || data.fromFbo || null,
       toFbo: leg.toFbo || data.toFbo || null,
-      departure: leg.departure || null,    // ISO
-      arrival: leg.arrival || null,        // ISO
-      category: leg.category || 'REVENUE', // REVENUE/REPO/FERRY
-      pic: leg.picName || null,            // NAME ONLY — no contact info
-      sic: leg.sicName || null,            // NAME ONLY — no contact info
-      // Pax list — LIVE overlay if available, snapshot fallback. showPax
-      // policy from the snapshot is enforced as the last line of defense.
+      departure: leg.departure || null,
+      arrival: leg.arrival || null,
+      category: leg.category || 'REVENUE',
+      pic: leg.picName || null,
+      sic: leg.sicName || null,
       pax: paxForLeg(leg),
       showPax: leg.showPax === true,
-      // Live value wins so catering turned off after sharing disappears from
-      // the broker page without re-sharing.
       hasCatering: (leg.tripId && typeof liveLegData[leg.tripId]?.hasCatering === 'boolean')
         ? liveLegData[leg.tripId].hasCatering
         : leg.hasCatering !== false,
-      // Per-leg status timeline — MERGED snapshot + live. Live wins where
-      // present so brokers see post-share-time events (landed, etc.).
       status: mergeStatusForLeg(leg.tripId, leg.status),
-    })),
+    }));
+  }
+
+  return {
+    tripId,
+    tripCode: data.tripCode || null,
+    tail: (data.publicTripData?.tail) || data.tail || (legs[0] && legs[0].tail) || null,
+    aircraftType: (data.publicTripData?.aircraftType) || data.aircraftType || null,
+    legs: publicLegs,
     statuses: outStatuses,
     completed: data.completed === true,
     completedAt: data.completedAt || null,
@@ -436,21 +460,17 @@ function buildPaxRecordsFromLiveData(preloadedPax, scannedPassengers) {
 // Defensive on failures: any doc that can't be read just returns no live
 // data for that leg and we fall back to the snapshot. Never throw — broker
 // page should still render.
-async function fetchLiveLegData(legs) {
-  if (!Array.isArray(legs) || legs.length === 0) return {};
-  const tripIds = legs.map((l) => l?.tripId).filter(Boolean);
+async function fetchLiveLegData(legs, viewerTripId) {
+  const tripIds = [...new Set([
+    ...(Array.isArray(legs) ? legs.map((l) => l?.tripId) : []),
+    viewerTripId,
+  ].filter(Boolean))];
   if (tripIds.length === 0) return {};
   const out = {};
   // Whitelist of status keys we forward to the broker. Same list the
   // sanitizer uses; keeping them in sync is critical for the overlay to
   // do anything useful.
   const STATUS_KEYS = ['crew_onsite', 'aircraft_ready', 'catering_aboard', 'pax_arrived', 'pax_boarded', 'taxi_dep', 'wheels_up', 'landed'];
-  // Build a quick lookup of legs by tripId so we can preserve the showPax
-  // policy from the snapshot when building pax records.
-  const showPaxByTripId = {};
-  for (const leg of legs) {
-    if (leg?.tripId) showPaxByTripId[leg.tripId] = leg.showPax === true;
-  }
   await Promise.all(tripIds.map(async (tid) => {
     try {
       const snap = await db().collection('trip-state').doc(tid).get();
@@ -470,21 +490,17 @@ async function fetchLiveLegData(legs) {
         }
       }
 
-      // ---------- Live pax ----------
-      // Only build pax records if the snapshot said this leg shows pax.
-      // Otherwise we leave the field undefined and the sanitizer falls back
-      // to the snapshot's (empty) array.
-      let livePax = undefined;
-      if (showPaxByTripId[tid]) {
-        livePax = buildPaxRecordsFromLiveData(sd.preloadedPax, sd.passengers);
-      }
-
       out[tid] = {
         statuses: liveStatuses,
-        pax: livePax,
-        // Only a stored boolean overrides the snapshot; a missing field means
-        // ops never made a catering decision on this leg.
+        // The projection decides whether these names leave the server.
+        pax: buildPaxRecordsFromLiveData(sd.preloadedPax, sd.passengers),
         hasCatering: typeof sd.hasCatering === 'boolean' ? sd.hasCatering : undefined,
+        identity: {
+          uid: tid,
+          customer: sd.tripMeta?.customer || null,
+          tripCode: sd.tripSheetData?.tripCode || null,
+          brokerEmail: typeof sd.brokerEmail === 'string' ? sd.brokerEmail : '',
+        },
       };
     } catch (e) {
       // Swallow — broker page renders fine without live overlay for this leg.
@@ -521,21 +537,18 @@ export default async function handler(req, res) {
   // reach the broker — they'd see frozen status and frozen pax check-in
   // forever. Two things refresh per poll: statuses (wheels_up/landed/etc)
   // and pax check-in records.
-  const liveLegData = await fetchLiveLegData(legs);
+  const liveLegData = await fetchLiveLegData(legs, tripId);
 
   const sanitized = sanitizeTrip(tripId, data, legs, liveLegData);
 
-  // Re-check the 24h post-landing expiry against the live data we just
-  // pulled. The earlier check used the anchor's stale `data.statuses` —
-  // if a leg's `landed` event has fired more than 24h ago but the snapshot
-  // doesn't know about it, we'd be serving a "completed" trip indefinitely.
-  // Pull the latest landed timestamp across all legs from the LIVE data and
-  // bounce the request if past grace.
-  let lastLanded = landedAt;
-  for (const tid of Object.keys(liveLegData)) {
-    const lt = liveLegData[tid]?.statuses?.landed?.at;
-    if (Number.isFinite(lt) && (!lastLanded || lt > lastLanded)) lastLanded = lt;
-  }
+  // Grace uses the observer's own legs. A borrowed repositioning landing
+  // must not start the 24-hour expiry.
+  const lastLanded = linkExpiryLandedAt({
+    anchorStatuses: data.statuses,
+    snapshotLegs: data.publicTripData?.legs || legs,
+    liveByTripId: liveLegData,
+    viewerUid: tripId,
+  });
   if (lastLanded && (Date.now() - lastLanded) > GRACE_HOURS_AFTER_LAST_LEG * 3600 * 1000) {
     return res.status(410).json({ ok: false, reason: 'link expired after trip completion' });
   }

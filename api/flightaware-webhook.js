@@ -23,6 +23,7 @@
 
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
+import { secondaryNotifyPayloads } from '../src/linked-leg.js';
 
 let adminApp = null;
 let _db = null;
@@ -230,6 +231,8 @@ async function sendEmail(req, to, subject, text, meta) {
       source: meta?.source || 'fa-webhook',
       tripId: meta?.tripId || null,
       statusKey: meta?.statusKey || null,
+      includeTrackingButton: meta?.includeTrackingButton === true,
+      trackingForTripId: meta?.trackingForTripId || null,
     });
     const queueUrl = `${proto}://${host}/api/email-enqueue`;
     const r = await fetch(queueUrl, { method: 'POST', headers, body });
@@ -627,6 +630,35 @@ export default async function handler(req, res) {
         }
       } else {
         console.log(`[fa-webhook] no broker email or autoNotify off for ${tripUid}`);
+      }
+      try {
+        const ownerEmails = String(tripState.brokerEmail || '')
+          .split(/[,;\s]+/)
+          .map((email) => email.trim())
+          .filter((email) => email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email));
+        const eventIso = new Date(eventTimeMs).toISOString();
+        const payloads = secondaryNotifyPayloads({
+          entries: Array.isArray(tripState.secondaryNotify) ? tripState.secondaryNotify : [],
+          ownerEmails,
+          stepId,
+          tail: ident,
+          from: originCode,
+          to: destCode,
+          localTimeStr: fmtTime(eventIso, originTz),
+          arrTimeStr: fmtTime(eventIso, destTz),
+          signature: '\n\n— Skyway Aviation\nPrivate Jet & Helicopter Charter Services',
+        });
+        for (const payload of payloads) {
+          await sendEmail(req, payload.to, payload.subject, payload.text, {
+            source: 'secondary-notify',
+            tripId: tripUid,
+            statusKey: stepId,
+            includeTrackingButton: false,
+            trackingForTripId: payload.trackingForTripId,
+          });
+        }
+      } catch (err) {
+        console.warn('[fa-webhook] secondary notify failed:', err?.message || err);
       }
     } else {
       console.log(`[fa-webhook] step already fired AND notified — no email needed`);

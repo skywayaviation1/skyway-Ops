@@ -109,16 +109,17 @@ export default async function handler(req, res) {
             return;
           }
 
+          const ref = db.collection('trip-state').doc(trip.uid);
+          const snap = await ref.get();
+          const existingCustomer = snap.exists ? (snap.data()?.tripMeta?.customer || '') : '';
           const tripMeta = {
             tail: String(trip.tail).toUpperCase(),
             from: String(trip.from).toUpperCase(),
             to: String(trip.to || '').toUpperCase(),
             start: trip.start || null,
             legType: trip.legType || 'REVENUE',
+            customer: trip.customer ? String(trip.customer) : existingCustomer,
           };
-
-          const ref = db.collection('trip-state').doc(trip.uid);
-          const snap = await ref.get();
 
           if (snap.exists) {
             // Update existing doc — shallow merge, only tripMeta + updatedAt
