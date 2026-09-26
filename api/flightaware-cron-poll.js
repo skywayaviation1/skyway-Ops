@@ -19,6 +19,7 @@ import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import { lookupAirport } from './_airports-data.js';
 import { DEFAULT_MANAGED_TAILS, normalizeFleetTails } from '../src/fleet-config.js';
+import { secondaryNotifyPayloads } from '../src/linked-leg.js';
 
 const FA_API_BASE = 'https://aeroapi.flightaware.com/aeroapi';
 export const MAX_BROKERED_TAILS_PER_POLL = 20;
@@ -414,6 +415,8 @@ async function sendEmail(host, to, subject, text, meta) {
       source: meta?.source || 'fa-cron',
       tripId: meta?.tripId || null,
       statusKey: meta?.statusKey || null,
+      includeTrackingButton: meta?.includeTrackingButton === true,
+      trackingForTripId: meta?.trackingForTripId || null,
     });
 
     // Try queue first
@@ -541,23 +544,51 @@ async function fireStatus({ db, host, tripUid, tripState, stepId, eventTimeMs, e
     .map(e => e.trim())
     .filter(e => e.length > 0 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
 
-  if (brokerEmails.length === 0 || tripState.autoNotify !== true) {
-    return { fired: !alreadyFired, isRecovery, emailed: false, reason: 'no-broker-or-autonotify-off' };
+  let sent = false;
+  if (brokerEmails.length > 0 && tripState.autoNotify === true) {
+    const { subject, body } = buildBrokerEmail({
+      tail: eventState.ident,
+      eventType: stepId,
+      originCode: eventState.origin,
+      destCode: eventState.destination,
+      originTz: eventState.originTz,
+      destTz: eventState.destinationTz,
+      estimatedOn: eventState.estimatedOn,
+      actualOff: eventState.actualOff,
+      actualOn: eventState.actualOn,
+      scheduledArrivalIso: eventState.scheduledIn || eventState.scheduledOn,
+    });
+    sent = await sendEmail(host, brokerEmails, subject, body, {
+      source: 'fa-cron',
+      tripId: tripUid,
+      statusKey: stepId,
+    });
   }
-
-  const { subject, body } = buildBrokerEmail({
-    tail: eventState.ident,
-    eventType: stepId,
-    originCode: eventState.origin,
-    destCode: eventState.destination,
-    originTz: eventState.originTz,
-    destTz: eventState.destinationTz,
-    estimatedOn: eventState.estimatedOn,
-    actualOff: eventState.actualOff,
-    actualOn: eventState.actualOn,
-    scheduledArrivalIso: eventState.scheduledIn || eventState.scheduledOn,
-  });
-  const sent = await sendEmail(host, brokerEmails, subject, body);
+  try {
+    const eventIso = new Date(eventTimeMs).toISOString();
+    const payloads = secondaryNotifyPayloads({
+      entries: Array.isArray(tripState.secondaryNotify) ? tripState.secondaryNotify : [],
+      ownerEmails: brokerEmails,
+      stepId,
+      tail: eventState.ident,
+      from: eventState.origin,
+      to: eventState.destination,
+      localTimeStr: fmtTime(eventIso, eventState.originTz),
+      arrTimeStr: fmtTime(eventIso, eventState.destinationTz),
+      signature: '\n\n— Skyway Aviation\nPrivate Jet & Helicopter Charter Services',
+    });
+    for (const payload of payloads) {
+      await sendEmail(host, payload.to, payload.subject, payload.text, {
+        source: 'secondary-notify',
+        tripId: tripUid,
+        statusKey: stepId,
+        includeTrackingButton: false,
+        trackingForTripId: payload.trackingForTripId,
+      });
+    }
+  } catch (err) {
+    console.warn('[fa-cron-poll] secondary notify failed:', err?.message || err);
+  }
 
   // Recovery: mark the manual status notified=true so the App.jsx
   // "EMAIL FAILED" pill clears and the next poll skips this step.

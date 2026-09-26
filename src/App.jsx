@@ -5,6 +5,17 @@ import React, { useState, useEffect, useRef, useMemo, useCallback, Suspense, laz
 // on the <html> element and is a no-op when not active. Default dark
 // theme uses Tailwind utility colors as-is.
 import './theme-classy.css';
+import {
+  brokerMaySeePax,
+  delayNoticeText,
+  immediateChainedLeg,
+  movementEmailText,
+  observerSharePatch,
+  openSecondaryNotifyField,
+  saveSecondaryNotify,
+  secondaryNotifyPayloads,
+  secondaryRecipients,
+} from './linked-leg.js';
 
 // Code-split: Comms screen loads only when the user opens the COMMS tab.
 const CommsScreenLazy = lazy(() => import('./CommsStream.jsx'));
@@ -1480,7 +1491,7 @@ function greetingFromEmail(email) {
 // All send-email calls from the frontend now include the user's Firebase
 // idToken so the server can authorize them. send-email.js rejects calls
 // that don't have either a valid idToken or the internal server secret.
-async function sendEmailViaApi({ to, subject, text, source, tripId, statusKey, includeTrackingButton }) {
+async function sendEmailViaApi({ to, subject, text, source, tripId, statusKey, includeTrackingButton, trackingForTripId }) {
   // Reliable delivery: writes to the email-queue collection. The
   // /api/email-queue-drain cron picks it up within ~60s and delivers via
   // Resend, retrying failures with backoff. Returns a faux Response object
@@ -1510,6 +1521,7 @@ async function sendEmailViaApi({ to, subject, text, source, tripId, statusKey, i
         // the email. Only active (non-revoked) links produce a button;
         // otherwise the email goes out unchanged.
         includeTrackingButton: includeTrackingButton === true,
+        trackingForTripId: trackingForTripId || null,
       }),
     });
     if (r.ok) {
@@ -1542,10 +1554,77 @@ async function sendEmailViaApi({ to, subject, text, source, tripId, statusKey, i
   });
 }
 
+async function sendSecondaryCopies({ trip, step, ownerEmails, delay }) {
+  try {
+    const { fetchTripStateForShare } = await import('./firebase-data.js');
+    const state = await fetchTripStateForShare(trip.uid);
+    const entries = Array.isArray(state?.secondaryNotify) ? state.secondaryNotify : [];
+    if (entries.length === 0) return;
+    const tail = trip.info?.tail || '';
+    const from = trip.info?.from || '';
+    const to = trip.info?.to || '';
+    if (delay) {
+      for (const entry of entries) {
+        const toList = secondaryRecipients(ownerEmails, entry);
+        if (toList.length === 0) continue;
+        const email = delayNoticeText({
+          repo: true,
+          tail,
+          route: `${from}-${to}`,
+          greeting: `Hi ${greetingFromEmail(toList[0])},`,
+          reason: delay.reason || '',
+          delayDuration: delay.delayDuration || '',
+          newEtd: delay.newEtd || '',
+          paxArrivalTime: delay.paxArrivalTime || '',
+        });
+        await sendEmailViaApi({
+          to: toList,
+          subject: email.subject,
+          text: email.text,
+          source: 'secondary-notify',
+          tripId: trip.uid,
+          includeTrackingButton: false,
+          trackingForTripId: entry.observerTripUid || null,
+        });
+      }
+      return;
+    }
+    const eventDate = step?.timestamp ? new Date(step.timestamp) : new Date();
+    const local = formatLocalTime(eventDate, from);
+    const localTimeStr = local.tz ? `${local.time} ${local.tz}` : local.time;
+    const localArr = formatLocalTime(eventDate, to);
+    const arrTimeStr = localArr.tz ? `${localArr.time} ${localArr.tz}` : localArr.time;
+    const payloads = secondaryNotifyPayloads({
+      entries,
+      ownerEmails,
+      stepId: step?.id,
+      tail,
+      from,
+      to,
+      localTimeStr,
+      arrTimeStr,
+      signature: `\n\n— ${brand().name}\n${brand().tagline}`,
+    });
+    for (const payload of payloads) {
+      await sendEmailViaApi({
+        to: payload.to,
+        subject: payload.subject,
+        text: payload.text,
+        source: 'secondary-notify',
+        tripId: trip.uid,
+        statusKey: step?.id || null,
+        includeTrackingButton: false,
+        trackingForTripId: payload.trackingForTripId,
+      });
+    }
+  } catch (err) {
+    console.warn('[secondary-notify] fan-out failed:', err?.message || err);
+  }
+}
+
 function buildStatusEmail(step, trip, brokerEmail) {
   const greeting = `Hi ${greetingFromEmail(brokerEmail)},`;
   const tail = trip.info.tail || '';
-  const route = `${trip.info.from || ''}-${trip.info.to || ''}`;
   const isRepo = trip.info.legType === 'REPO';
 
   // Time of the event in the LOCAL timezone of the departure airport (where
@@ -1598,152 +1677,22 @@ function buildStatusEmail(step, trip, brokerEmail) {
     sigLines.splice(2, 0, ...crewLines);
   }
   const signature = sigLines.join('\n');
-
-  switch (step.id) {
-    case 'crew_onsite':
-      if (isRepo) {
-        return {
-          subject: `Crew Preparing Aircraft for Repositioning — ${tail} ${route}`,
-          text:
-            `${greeting}\n\n` +
-            `Our crew has arrived at the FBO at ${localTimeStr} and is preparing the aircraft for the repositioning ` +
-            `flight from ${trip.info.from || ''} to ${trip.info.to || ''}. ` +
-            `We will notify you when the aircraft is ready and again when it begins taxi for departure.` +
-            signature,
-        };
-      }
-      return {
-        subject: `Crew Arrival Notification — ${tail} ${route}`,
-        text:
-          `${greeting}\n\n` +
-          `This email is to inform you that our crew has arrived at the FBO at ${localTimeStr} ` +
-          `and is preparing the aircraft for your passengers. We will notify you as soon as ` +
-          `the aircraft is ready for boarding.` +
-          signature,
-      };
-
-    case 'aircraft_ready':
-      if (isRepo) {
-        return {
-          subject: `Aircraft Ready for Repositioning — ${tail} ${route}`,
-          text:
-            `${greeting}\n\n` +
-            `${tail} is ready for the repositioning flight from ${trip.info.from || ''} to ${trip.info.to || ''} ` +
-            `as of ${localTimeStr}. ` +
-            `We will send a final notification once the aircraft begins taxi for departure.` +
-            signature,
-        };
-      }
-      return {
-        subject: `Aircraft Ready for Passengers — ${tail} ${route}`,
-        text:
-          `${greeting}\n\n` +
-          `The aircraft is now ready for your passengers as of ${localTimeStr}. ` +
-          `We will advise you once they have checked in.\n\n` +
-          `If catering has been arranged for this flight, you will receive a separate notification ` +
-          `once it has been loaded onboard.` +
-          signature,
-      };
-
-    case 'catering_aboard':
-      return {
-        subject: `Catering Loaded — ${tail} ${route}`,
-        text:
-          `${greeting}\n\n` +
-          `Catering has been loaded onboard the aircraft at ${localTimeStr}.` +
-          signature,
-      };
-
-    case 'pax_arrived':
-      return {
-        subject: `Passengers Arrived — ${tail} ${route}`,
-        text:
-          `${greeting}\n\n` +
-          `Passengers have arrived at the FBO at ${localTimeStr}. We will notify you once IDs have been ` +
-          `verified and they have boarded the aircraft.` +
-          signature,
-      };
-
-    case 'pax_boarded':
-      return {
-        subject: `Passengers Checked In — ${tail} ${route}`,
-        text:
-          `${greeting}\n\n` +
-          `Passengers have checked in at ${localTimeStr}, IDs have been verified, and they are now boarding the aircraft.\n\n` +
-          `The next update will be our taxi notification.` +
-          signature,
-      };
-
-    case 'taxi_dep':
-      if (isRepo) {
-        return {
-          subject: `Aircraft Taxiing for Repositioning — ${tail} ${route}`,
-          text:
-            `${greeting}\n\n` +
-            `${tail} began taxiing at ${localTimeStr} for the repositioning flight from ${trip.info.from || ''} to ${trip.info.to || ''}. ` +
-            `We will provide the aircraft's ETA once it is airborne.` +
-            signature,
-        };
-      }
-      return {
-        subject: `Aircraft Taxiing for Departure — ${tail} ${route}`,
-        text:
-          `${greeting}\n\n` +
-          `The aircraft began taxiing for departure at ${localTimeStr}. We will provide the aircraft's ETA once ` +
-          `it is airborne.` +
-          signature,
-      };
-
-    case 'wheels_up':
-      if (isRepo) {
-        return {
-          subject: `Wheels Up (Repositioning) — ${tail} ${route}`,
-          text:
-            `${greeting}\n\n` +
-            `${tail} is wheels up at ${localTimeStr} from ${trip.info.from || ''} and en route to ${trip.info.to || ''} ` +
-            `for the repositioning flight. We will notify you upon landing.` +
-            signature,
-        };
-      }
-      return {
-        subject: `Wheels Up — ${tail} ${route}`,
-        text:
-          `${greeting}\n\n` +
-          `${tail} is wheels up at ${localTimeStr} from ${trip.info.from || ''} and en route to ${trip.info.to || ''}. ` +
-          `We will notify you upon landing.` +
-          signature,
-      };
-
-    case 'landed': {
-      // Landed time is local to the ARRIVAL airport, not the departure one.
-      // Re-format using trip.info.to so the broker sees the destination's
-      // local time instead of the time at the departure FBO.
-      const localArr = formatLocalTime(eventDate, trip.info.to);
-      const arrTimeStr = localArr.tz ? `${localArr.time} ${localArr.tz}` : localArr.time;
-      if (isRepo) {
-        return {
-          subject: `Landed (Repositioning) — ${tail} ${route}`,
-          text:
-            `${greeting}\n\n` +
-            `${tail} has landed at ${trip.info.to || ''} at ${arrTimeStr}. The repositioning flight is complete.` +
-            signature,
-        };
-      }
-      return {
-        subject: `Landed — ${tail} ${route}`,
-        text:
-          `${greeting}\n\n` +
-          `${tail} has landed at ${trip.info.to || ''} at ${arrTimeStr}. Thank you for choosing ${brand().name}. ` +
-          `We look forward to serving you again.` +
-          signature,
-      };
-    }
-
-    default:
-      // Unknown status — don't send an email
-      return null;
-  }
+  const localArr = formatLocalTime(eventDate, trip.info.to);
+  const arrTimeStr = localArr.tz ? `${localArr.time} ${localArr.tz}` : localArr.time;
+  return movementEmailText({
+    stepId: step.id,
+    repo: isRepo,
+    tail,
+    from: trip.info.from || '',
+    to: trip.info.to || '',
+    greeting,
+    localTimeStr,
+    arrTimeStr,
+    signature,
+    brandName: brand().name,
+  });
 }
+
 
 function fmtRelative(d) {
   if (!d) return '';
@@ -4005,6 +3954,18 @@ function DelayPanel({ trip, opsEmail, brokerEmail, currentUser, statuses, setSta
       const nextStatuses = { ...statuses, [eventKey]: delayEvent };
       setStatuses(nextStatuses);
       await persist({ statuses: nextStatuses, passengers, brokerEmail, autoNotify, completed, hasCatering, paxOverride });
+      if (notifyBroker) {
+        await sendSecondaryCopies({
+          trip,
+          ownerEmails: brokerEmails,
+          delay: {
+            reason: reason.trim(),
+            delayDuration: delayDuration.trim(),
+            newEtd: newEtd.trim(),
+            paxArrivalTime: paxArrivalTime.trim(),
+          },
+        });
+      }
 
       const recipientCount = recipients.length;
       setResult({
@@ -4175,7 +4136,99 @@ function DelayPanel({ trip, opsEmail, brokerEmail, currentUser, statuses, setSta
   );
 }
 
-function NotifyPanel({ trip, opsEmail, brokerEmail, setBrokerEmail, statuses, autoNotify, setAutoNotify, hasCatering, setHasCatering }) {
+function SecondaryNotifyEditor({ trip, allTrips, currentUser }) {
+  const [draft, setDraft] = useState('');
+  const [saved, setSaved] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { fetchTripStateForShare } = await import('./firebase-data.js');
+        const own = await fetchTripStateForShare(trip.uid);
+        const next = immediateChainedLeg(trip, allTrips || [], 'next');
+        let prefill = '';
+        if (next?.uid) {
+          const nextState = await fetchTripStateForShare(next.uid);
+          prefill = nextState?.brokerEmail || '';
+        }
+        const opened = openSecondaryNotifyField({
+          stored: own?.secondaryNotify ?? null,
+          prefill,
+        });
+        if (cancelled) return;
+        setDraft(opened.draft);
+        setSaved(opened.persisted !== null);
+      } catch (err) {
+        console.warn('[secondary-notify] load failed:', err?.message || err);
+      } finally {
+        if (!cancelled) setLoaded(true);
+      }
+    })();
+    return () => { cancelled = true; };
+    // allTrips is the schedule already on screen when the panel opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trip.uid]);
+
+  const save = async () => {
+    setBusy(true);
+    setMsg('');
+    try {
+      const { saveTripState } = await import('./firebase-data.js');
+      const patch = saveSecondaryNotify({
+        draft,
+        observerTripUid: trip.uid,
+        updatedBy: currentUser?.email || currentUser?.name || null,
+        now: Date.now(),
+      });
+      await saveTripState(trip.uid, patch);
+      setSaved(true);
+      setMsg('Saved. This list stays until you edit it.');
+    } catch (err) {
+      setMsg(err?.message || 'Could not save.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="border border-slate-700 bg-slate-900/40 p-3 space-y-2">
+      <div className="text-[10px] tracking-widest text-slate-500 uppercase" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        SECONDARY NOTIFY
+      </div>
+      <p className="text-[11px] text-slate-500" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+        Movement updates for the next chained leg within 30 hours, sent as a repositioning leg.
+        Nothing is stored or sent until you save. A saved list stays as is until you edit it, even if that trip&apos;s broker email changes.
+      </p>
+      <input
+        type="text"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        disabled={!loaded || busy}
+        placeholder={loaded ? 'next-broker@example.com' : 'Loading…'}
+        className="w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
+        style={{ fontFamily: 'JetBrains Mono, monospace' }}
+      />
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={save}
+          disabled={!loaded || busy}
+          className="px-3 py-1.5 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 text-[10px] tracking-widest disabled:opacity-40"
+          style={{ fontFamily: 'JetBrains Mono, monospace' }}
+        >
+          {busy ? 'SAVING…' : saved ? 'UPDATE LIST' : 'SAVE LIST'}
+        </button>
+        {msg && <span className="text-[10px] text-slate-400">{msg}</span>}
+      </div>
+    </div>
+  );
+}
+
+function NotifyPanel({ trip, allTrips, currentUser, opsEmail, brokerEmail, setBrokerEmail, statuses, autoNotify, setAutoNotify, hasCatering, setHasCatering }) {
   const [customMsg, setCustomMsg] = useState('');
   const lastStatus = useMemo(() => {
     const ordered = STATUS_STEPS.map(s => ({ step: s, status: statuses[s.id] })).filter(x => x.status);
@@ -4228,6 +4281,7 @@ function NotifyPanel({ trip, opsEmail, brokerEmail, setBrokerEmail, statuses, au
             Separate multiple addresses with commas. Status emails go to all of them plus the ops email.
           </span>
         </label>
+        <SecondaryNotifyEditor trip={trip} allTrips={allTrips} currentUser={currentUser} />
         <div className="text-[10px] tracking-widest text-slate-500 uppercase" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
           OPS EMAIL: <span className="text-slate-300">{opsEmail || 'not configured'}</span>
         </div>
@@ -5699,6 +5753,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
         to: (trip.info?.to || '').toUpperCase(),
         start: trip.start instanceof Date ? trip.start.toISOString() : (trip.start || null),
         legType: trip.info?.legType || 'REVENUE',
+        customer: trip.info?.customer || '',
       };
       // Merge in trip-sheet fields and preloadedPax unless caller passed them explicitly
       const merged = {
@@ -5719,7 +5774,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       console.error('Failed to save trip state:', err);
       notify.error('Failed to save — check your connection');
     }
-  }, [trip.uid, trip.info?.tail, trip.info?.from, trip.info?.to, trip.start, trip.info?.legType, tripSheetUrl, tripSheetPath, tripSheetFilename, tripSheetUploadedAt, tripSheetUploadedBy, preloadedPax, tripSheetNotes, fromFbo, toFbo]);
+  }, [trip.uid, trip.info?.tail, trip.info?.from, trip.info?.to, trip.info?.customer, trip.start, trip.info?.legType, tripSheetUrl, tripSheetPath, tripSheetFilename, tripSheetUploadedAt, tripSheetUploadedBy, preloadedPax, tripSheetNotes, fromFbo, toFbo]);
 
   const openMailto = (url) => {
     const a = document.createElement('a');
@@ -5755,8 +5810,10 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       .map(e => e.trim())
       .filter(e => e.length > 0);
 
+    const secondaryStep = { id: step.id, timestamp: newStatus.timestamp };
     if (recipients.length === 0) {
       console.warn('[email] Skipping send — no valid recipients. opsEmail:', opsEmail || '(empty)', 'brokerEmail:', brokerEmail || '(empty)');
+      await sendSecondaryCopies({ trip, step: secondaryStep, ownerEmails: brokerEmails });
       return;
     }
 
@@ -5764,6 +5821,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
     const emailContent = buildStatusEmail(step, trip, brokerEmails[0] || '');
     if (!emailContent) {
       console.warn('[email] No email template for step:', step.id, '· legType:', trip.info?.legType);
+      await sendSecondaryCopies({ trip, step: secondaryStep, ownerEmails: brokerEmails });
       return;
     }
 
@@ -5790,14 +5848,17 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
             : 'Status saved, but the broker email failed to send.',
           { description: respData.explanation || respData.error || 'Check Settings → Email delivery.' },
         );
+        await sendSecondaryCopies({ trip, step: secondaryStep, ownerEmails: brokerEmails });
         return;
       }
       // Email sent successfully — mark notified=true now
       const updatedStatuses = { ...nextStatuses, [step.id]: { ...newStatus, notified: true } };
       setStatuses(updatedStatuses);
       await persist({ statuses: updatedStatuses, passengers, brokerEmail, autoNotify, completed, hasCatering, paxOverride });
+      await sendSecondaryCopies({ trip, step: secondaryStep, ownerEmails: brokerEmails });
     } catch (err) {
       console.error('[email] Network error:', err);
+      await sendSecondaryCopies({ trip, step: secondaryStep, ownerEmails: brokerEmails });
     }
 
     // Push notification for status step transitions. Fires regardless of
@@ -5865,6 +5926,11 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
           description: respData.explanation || respData.error
             || 'Check Settings → Email delivery for the provider error.',
         });
+        await sendSecondaryCopies({
+          trip,
+          step: { id: step.id, timestamp: existing.timestamp },
+          ownerEmails: brokerEmails,
+        });
         return;
       }
       // Success — flip notified=true on the same status object
@@ -5874,6 +5940,11 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       };
       setStatuses(updatedStatuses);
       await persist({ statuses: updatedStatuses, passengers, brokerEmail, autoNotify, completed, hasCatering, paxOverride });
+      await sendSecondaryCopies({
+        trip,
+        step: { id: step.id, timestamp: existing.timestamp },
+        ownerEmails: brokerEmails,
+      });
     } catch (err) {
       console.error('[resend] network error:', err);
       notify.error(`Resend failed: ${err.message || 'network error'}. Check your connection and try again.`);
@@ -5969,6 +6040,37 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       const sendData = await sendR.json().catch(() => ({}));
       if (!sendR.ok) {
         throw new Error(`Email send failed: ${sendData.error || sendR.status}`);
+      }
+      const { fetchTripStateForShare } = await import('./firebase-data.js');
+      const etaState = await fetchTripStateForShare(trip.uid);
+      const etaPayloads = secondaryNotifyPayloads({
+        entries: Array.isArray(etaState?.secondaryNotify) ? etaState.secondaryNotify : [],
+        ownerEmails: brokerEmails,
+        stepId: 'wheels_up',
+        tail: tailLabel,
+        from: fromAirport,
+        to: dest,
+        localTimeStr: etaStr,
+        arrTimeStr: etaStr,
+        signature: `\n\n— ${brand().name}\n${brand().tagline}`,
+      });
+      for (const payload of etaPayloads) {
+        await sendEmailViaApi({
+          to: payload.to,
+          subject: `Updated ETA — ${tailLabel} ${fromAirport}-${dest}`,
+          text: [
+            `Hi ${greetingFromEmail(payload.to[0])},`,
+            '',
+            `The estimated arrival time for the repositioning of ${tailLabel} at ${dest} is ${etaStr}.`,
+            '',
+            'We will continue to keep you informed.',
+            signature,
+          ].join('\n'),
+          source: 'secondary-notify',
+          tripId: trip.uid,
+          includeTrackingButton: false,
+          trackingForTripId: payload.trackingForTripId,
+        });
       }
       setEtaResult({ ok: true, msg: `ETA emailed to ${brokerEmails.join(', ')} — New ETA ${etaStr}` });
     } catch (err) {
@@ -7383,6 +7485,8 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
           <div className="p-6 max-w-2xl">
             <NotifyPanel
               trip={trip}
+              allTrips={allTrips}
+              currentUser={currentUser}
               opsEmail={opsEmail}
               brokerEmail={brokerEmail}
               setBrokerEmail={updateBroker}
@@ -7702,12 +7806,17 @@ function shareCandidateLegs(canonical, allTrips) {
     let nextStartMs = new Date(anchor.start).getTime();
     for (let i = anchorIdx - 1; i >= 0; i--) {
       const leg = allTailLegs[i];
-      if (!isRepo(leg)) break;                   // rev leg breaks the chain
       const legTo   = norm(leg.info?.to);
       const legFrom = norm(leg.info?.from);
       if (legTo !== nextOrigin) break;           // destination doesn't chain
       const legEndMs = new Date(leg.start).getTime();
       if (nextStartMs - legEndMs > MAX_CHAIN_GAP_MS) break;
+      // A live revenue leg is offered once, as repositioning, then the
+      // walk stops. It is not included by default.
+      if (!isRepo(leg)) {
+        add(leg, 'live-as-repositioning');
+        break;
+      }
       add(leg, 'positioning-in');
       nextOrigin = legFrom;
       nextStartMs = legEndMs;
@@ -7733,12 +7842,16 @@ function shareCandidateLegs(canonical, allTrips) {
     let prevEndMs = new Date(anchor.start).getTime();
     for (let i = anchorIdx + 1; i < allTailLegs.length; i++) {
       const leg = allTailLegs[i];
-      if (!isRepo(leg)) break;
       const legFrom = norm(leg.info?.from);
       const legTo   = norm(leg.info?.to);
       if (legFrom !== prevDest) break;
       const legStartMs = new Date(leg.start).getTime();
-      if (legStartMs - prevEndMs > POST_REPO_GAP_MS) break;
+      const gap = legStartMs - prevEndMs;
+      if (!isRepo(leg)) {
+        if (gap <= MAX_CHAIN_GAP_MS) add(leg, 'live-as-repositioning');
+        break;
+      }
+      if (gap > POST_REPO_GAP_MS) break;
       add(leg, 'positioning-out');
       prevDest = legTo;
       prevEndMs = legStartMs;
@@ -7967,6 +8080,15 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
       else next.add(uid);
       // Defense in depth — anchor stays in the set regardless.
       next.add(canonicalTrip.uid);
+      return next;
+    });
+  };
+  const [hidePaxUids, setHidePaxUids] = useState(() => new Set());
+  const toggleHidePax = (uid) => {
+    setHidePaxUids((prev) => {
+      const next = new Set(prev);
+      if (next.has(uid)) next.delete(uid);
+      else next.add(uid);
       return next;
     });
   };
@@ -8251,6 +8373,16 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
       );
     }
 
+    const anchorShareState = stateByUid[anchor.uid] || {};
+    const viewer = {
+      uid: anchor.uid,
+      customer: anchor.info?.customer || anchorShareState.customer || null,
+      tripCode: anchorShareState.tripCode || null,
+      brokerEmail: anchorShareState.brokerEmail || '',
+    };
+    const reasonByUid = new Map(allCandidateLegs.map((leg) => [leg.uid, leg._shareReason]));
+    const anchorStart = anchor.start ? new Date(anchor.start).getTime() : 0;
+
     // Renumber legs sequentially as they appear in the final included list.
     const legs = included.map(({ t, showPax }, i) => {
       const state = stateByUid[t.uid] || { preloadedPax: [], passengers: [], statuses: {} };
@@ -8351,6 +8483,17 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
       const isCurrentLeg = t.uid === trip.uid;
       const liveFromFbo = isCurrentLeg ? liveAnchorFromFbo : null;
       const liveToFbo   = isCurrentLeg ? liveAnchorToFbo   : null;
+      const owner = {
+        uid: t.uid,
+        customer: t.info?.customer || state.customer || null,
+        tripCode: state.tripCode || null,
+        brokerEmail: state.brokerEmail || '',
+      };
+      const liveAsRepo = reasonByUid.get(t.uid) === 'live-as-repositioning';
+      const maySeePax = brokerMaySeePax({ viewer, leg: owner, hidePax: false });
+      const hidePax = liveAsRepo ? (!maySeePax || hidePaxUids.has(t.uid)) : false;
+      const legShowPax = liveAsRepo ? (maySeePax && !hidePax) : showPax;
+      const legStart = t.start ? new Date(t.start).getTime() : 0;
       return {
         tripId: t.uid,
         legNumber: i + 1,
@@ -8368,18 +8511,35 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
         category: t.info?.legType || t.info?.category || 'REVENUE',
         picName: t.info?.pic || null,
         sicName: t.info?.sic || null,
-        showPax,
-        pax: showPax ? paxRecords : [],
+        showPax: legShowPax,
+        pax: legShowPax ? paxRecords : [],
         // Drives whether the broker sees a catering milestone at all.
         hasCatering: state.hasCatering !== false,
         status: cleanStatus,
+        presentAs: liveAsRepo ? 'repositioning' : null,
+        hidePax,
+        ownerCustomer: owner.customer,
+        ownerTripCode: owner.tripCode,
+        ownerBrokerEmail: owner.brokerEmail,
+        _role: legStart < anchorStart ? 'previous' : 'next',
       };
     });
+
+    const linkedLegs = legs
+      .filter((leg) => leg.presentAs === 'repositioning' && leg.tripId !== anchor.uid)
+      .map((leg) => ({
+        legUid: leg.tripId,
+        role: leg._role === 'previous' ? 'previous' : 'next',
+        presentAs: 'repositioning',
+        hidePax: leg.hidePax === true,
+      }));
 
     return {
       tail,
       aircraftType: anchor.info?.aircraftType || anchor.info?.tripType || null,
-      legs,
+      viewer,
+      legs: legs.map(({ _role, ...leg }) => leg),
+      linkedLegs,
     };
   }
 
@@ -8422,7 +8582,11 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
     (async () => {
       try {
         const publicTripData = await buildPublicTripData();
-        const data = await callShare('generate', { publicTripData });
+        const shareExtra = { publicTripData };
+        if (publicTripData) {
+          shareExtra.linkedLegs = observerSharePatch(publicTripData.linkedLegs || []).linkedLegs;
+        }
+        const data = await callShare('generate', shareExtra);
         if (cancelled) return;
         setUrl(data.url || '');
         setTokenIssuedAt(data.issuedAt || null);
@@ -8438,7 +8602,7 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
     // a PDF auto-extract or admin edit while the dialog is open instantly
     // pushes the new FBO to the broker page without needing a reopen.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedUids, liveAnchorFromFbo, liveAnchorToFbo]);
+  }, [selectedUids, hidePaxUids, liveAnchorFromFbo, liveAnchorToFbo]);
 
   const handleCopy = async () => {
     if (!effectiveUrl) return;
@@ -8502,7 +8666,11 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
     if (!window.confirm('Rotate the link? Any tracking links you previously sent will stop working. A new URL will be generated.')) return;
     try {
       const publicTripData = await buildPublicTripData();
-      const data = await callShare('rotate', { publicTripData });
+      const shareExtra = { publicTripData };
+      if (publicTripData) {
+        shareExtra.linkedLegs = observerSharePatch(publicTripData.linkedLegs || []).linkedLegs;
+      }
+      const data = await callShare('rotate', shareExtra);
       setUrl(data.url || '');
       setTokenIssuedAt(data.issuedAt || null);
       setRevoked(false);
@@ -8571,7 +8739,9 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
                   ? new Date(leg.start).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
                   : '';
                 const route = `${leg.info?.from || '—'} → ${leg.info?.to || '—'}`;
-                const broker = leg.info?.broker || '(no broker)';
+                const broker = leg._shareReason === 'live-as-repositioning'
+                  ? (leg.info?.customer || leg.info?.broker || 'Unknown customer')
+                  : (leg.info?.broker || leg.info?.customer || '(no broker)');
                 const pax = leg.info?.paxCount || leg.info?.pax || '';
                 const cat = String(leg.info?.legType || leg.info?.category || '').toUpperCase();
                 // _shareReason is set by shareCandidateLegs — tells the operator
@@ -8582,19 +8752,36 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
                   'positioning-out': 'DEADHEAD OUT', // deadhead leaving anchor's destination
                   'same-trip-sheet': 'SAME TRIP',    // parsed from the same trip sheet PDF
                   'same-pax':        'SAME PAX',    // pax name overlap with anchor's manifest
+                  'live-as-repositioning': 'LIVE AS REPO',
                 })[leg._shareReason] ?? null;
+                const legIdentity = {
+                  uid: leg.uid,
+                  customer: leg.info?.customer || tripStatesByUid[leg.uid]?.customer || null,
+                  tripCode: tripStatesByUid[leg.uid]?.tripCode || null,
+                  brokerEmail: tripStatesByUid[leg.uid]?.brokerEmail || '',
+                };
+                const viewerIdentity = {
+                  uid: canonicalTrip.uid,
+                  customer: canonicalTrip.info?.customer || tripStatesByUid[canonicalTrip.uid]?.customer || null,
+                  tripCode: tripStatesByUid[canonicalTrip.uid]?.tripCode || null,
+                  brokerEmail: tripStatesByUid[canonicalTrip.uid]?.brokerEmail || '',
+                };
+                const maySeePax = brokerMaySeePax({ viewer: viewerIdentity, leg: legIdentity, hidePax: false });
+                const hideLocked = !maySeePax;
                 return (
-                  <label
-                    key={leg.uid}
-                    className={`flex items-start gap-2 px-2 py-1.5 border ${
+                  <div key={leg.uid} className={`border ${
                       isAnchor
-                        ? 'border-amber-500/50 bg-amber-500/5 cursor-default'
+                        ? 'border-amber-500/50 bg-amber-500/5'
                         : isChecked
-                        ? 'border-cyan-500/50 bg-cyan-500/5 cursor-pointer'
-                        : 'border-slate-800 hover:border-slate-600 cursor-pointer'
-                    }`}
-                    style={{ fontFamily: 'JetBrains Mono, monospace' }}
-                  >
+                        ? 'border-cyan-500/50 bg-cyan-500/5'
+                        : 'border-slate-800'
+                    }`}>
+                    <label
+                      className={`flex items-start gap-2 px-2 py-1.5 ${
+                        isAnchor ? 'cursor-default' : 'cursor-pointer'
+                      }`}
+                      style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                    >
                     <input
                       type="checkbox"
                       checked={isChecked}
@@ -8621,6 +8808,7 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
                             leg._shareReason === 'positioning-out' ? 'Repo leg — deadhead out of your anchor destination' :
                             leg._shareReason === 'same-trip-sheet' ? 'Parsed from the same trip sheet PDF as the anchor — same broker charter' :
                             leg._shareReason === 'same-pax'        ? 'One or more passenger names match the anchor manifest — same customer group' :
+                            leg._shareReason === 'live-as-repositioning' ? 'Live leg owned by the adjacent trip, shown as repositioning' :
                             ''
                           }>{reasonLabel}</span>
                         )}
@@ -8629,7 +8817,23 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
                         {broker}{pax ? ` · ${pax} pax` : ''}
                       </div>
                     </div>
-                  </label>
+                    </label>
+                    {leg._shareReason === 'live-as-repositioning' && (
+                      <label
+                        className="flex items-center gap-2 px-2 pb-1.5 text-[10px] text-slate-400"
+                        style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={hideLocked || hidePaxUids.has(leg.uid)}
+                          disabled={hideLocked || busy}
+                          onChange={() => toggleHidePax(leg.uid)}
+                          className="w-3.5 h-3.5 accent-cyan-500 shrink-0 disabled:opacity-50"
+                        />
+                        {hideLocked ? 'PASSENGERS HIDDEN' : 'HIDE PASSENGERS'}
+                      </label>
+                    )}
+                  </div>
                 );
               })}
             </div>
@@ -14829,6 +15033,7 @@ function FlightAwarePanel({ currentUser, allTrips }) {
           to: t.info.to || '',
           start: t.start instanceof Date ? t.start.toISOString() : (t.start || null),
           legType: t.info.legType || 'REVENUE',
+          customer: t.info.customer || '',
         }));
 
       if (trips.length === 0) {
@@ -28444,6 +28649,7 @@ export default function CharterOps() {
           to: t.info.to || '',
           start: t.start instanceof Date ? t.start.toISOString() : (t.start || null),
           legType: t.info.legType || 'REVENUE',
+          customer: t.info.customer || '',
         }));
       if (trips.length === 0) return;
       const r = await fetch('/api/flightaware-backfill-tripmeta', {

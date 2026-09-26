@@ -17,6 +17,7 @@
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import { signTripToken } from './_trip-token.js';
+import { enforcePublicTrip, observerSharePatch } from '../src/linked-leg.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -59,6 +60,25 @@ function publicUrl(req, token) {
   return `${proto}://${host}/trip-track.html?token=${encodeURIComponent(token)}`;
 }
 
+async function readShareIdentity(uid) {
+  const id = String(uid || '');
+  if (!id) return null;
+  try {
+    const snap = await db().collection('trip-state').doc(id).get();
+    if (!snap.exists) return { uid: id, customer: null, tripCode: null, brokerEmail: '' };
+    const data = snap.data() || {};
+    return {
+      uid: id,
+      customer: data.tripMeta?.customer || null,
+      tripCode: data.tripSheetData?.tripCode || null,
+      brokerEmail: typeof data.brokerEmail === 'string' ? data.brokerEmail : '',
+    };
+  } catch (err) {
+    console.warn('[trip-share] identity read failed:', id, err?.message || err);
+    return { uid: id, customer: null, tripCode: null, brokerEmail: '' };
+  }
+}
+
 async function ensureTokenIssued(tripId, opts = {}) {
   const ref = db().collection('trip-state').doc(tripId);
   const snap = await ref.get();
@@ -74,10 +94,29 @@ async function ensureTokenIssued(tripId, opts = {}) {
   const incoming = opts.publicTripData;
   let publicTripData = null;
   if (incoming && typeof incoming === 'object' && Array.isArray(incoming.legs)) {
+    const identitiesByUid = {};
+    const identityIds = [tripId, ...(incoming.legs || []).map((leg) => leg?.tripId).filter(Boolean)];
+    await Promise.all([...new Set(identityIds)].map(async (uid) => {
+      identitiesByUid[uid] = await readShareIdentity(uid);
+    }));
+    const enforced = enforcePublicTrip({
+      ...incoming,
+      viewer: { ...(incoming.viewer || {}), uid: incoming.viewer?.uid || tripId },
+    }, identitiesByUid);
+    const clip = (value, max) => {
+      if (value === undefined || value === null || value === '') return null;
+      return String(value).slice(0, max);
+    };
     publicTripData = {
-      tail: String(incoming.tail || '').slice(0, 16),
-      aircraftType: incoming.aircraftType ? String(incoming.aircraftType).slice(0, 80) : null,
-      legs: incoming.legs.slice(0, 20).map((leg, i) => ({
+      tail: String(enforced.tail || '').slice(0, 16),
+      aircraftType: enforced.aircraftType ? String(enforced.aircraftType).slice(0, 80) : null,
+      viewer: {
+        uid: clip(enforced.viewer?.uid, 200),
+        customer: clip(enforced.viewer?.customer, 120),
+        tripCode: clip(enforced.viewer?.tripCode, 32),
+        brokerEmail: clip(enforced.viewer?.brokerEmail, 500) || '',
+      },
+      legs: enforced.legs.slice(0, 20).map((leg, i) => ({
         tripId: leg.tripId ? String(leg.tripId).slice(0, 200) : null,
         legNumber: Number.isFinite(leg.legNumber) ? leg.legNumber : (i + 1),
         from: leg.from ? String(leg.from).slice(0, 8) : null,
@@ -87,18 +126,17 @@ async function ensureTokenIssued(tripId, opts = {}) {
         departure: leg.departure || null,   // ISO string
         arrival: leg.arrival || null,
         category: leg.category ? String(leg.category).slice(0, 16) : 'REVENUE',
-        picName: leg.picName ? String(leg.picName).slice(0, 80) : null,
-        sicName: leg.sicName ? String(leg.sicName).slice(0, 80) : null,
-        // Pax visibility flag (per privacy spec). Even if pax array is
-        // present, the broker page must honor showPax — defensive defense.
+        presentAs: leg.presentAs === 'repositioning' ? 'repositioning' : null,
+        hidePax: leg.hidePax === true,
+        ownerCustomer: clip(leg.ownerCustomer, 120),
+        ownerTripCode: clip(leg.ownerTripCode, 32),
+        ownerBrokerEmail: clip(leg.ownerBrokerEmail, 500) || '',
+        picName: leg.pic ? String(leg.pic).slice(0, 80) : (leg.picName ? String(leg.picName).slice(0, 80) : null),
+        sicName: leg.sic ? String(leg.sic).slice(0, 80) : (leg.sicName ? String(leg.sicName).slice(0, 80) : null),
+        // Pax visibility is recomputed above. A client showPax flag cannot
+        // reveal passengers when the broker or trip id differs.
         showPax: leg.showPax === true,
-        // Absent on shares created before catering could be turned off, and
-        // those trips did have catering, so only an explicit false hides it.
         hasCatering: leg.hasCatering !== false,
-        // Per-pax records: each entry is an object the broker page can
-        // render with individual check-in indicators. Whitelist the four
-        // fields we care about; reject anything else (covers PII leakage
-        // if a future caller mistakenly forwards DOB/weight/etc).
         pax: Array.isArray(leg.pax)
           ? leg.pax.slice(0, 30).map((p) => {
               if (!p || typeof p !== 'object') return null;
@@ -110,8 +148,6 @@ async function ensureTokenIssued(tripId, opts = {}) {
               return { name, status, checkedInAt, walkUp: p.walkUp === true };
             }).filter(Boolean)
           : [],
-        // Per-leg status timeline. Whitelist the known keys + only the
-        // numeric `at` timestamp per entry. Reject anything else.
         status: leg.status && typeof leg.status === 'object'
           ? ['crew_onsite', 'aircraft_ready', 'catering_aboard', 'pax_arrived', 'pax_boarded', 'taxi_dep', 'wheels_up', 'landed']
               .reduce((acc, key) => {
@@ -135,6 +171,12 @@ async function ensureTokenIssued(tripId, opts = {}) {
     patch.linkUpdatedAt = now;
   }
   if (publicTripData) patch.publicTripData = publicTripData;
+  // Linked legs are written only when this request includes the array.
+  // Older clients omit it, and that must not clear a list already saved.
+  // Secondary notify is a separate manual save and is never part of share.
+  if (Array.isArray(opts.linkedLegs)) {
+    patch.linkedLegs = observerSharePatch(opts.linkedLegs).linkedLegs;
+  }
   if (Object.keys(patch).length > 0) {
     await ref.set(patch, { merge: true });
   }
@@ -268,7 +310,11 @@ export default async function handler(req, res) {
 
   try {
     if (action === 'generate') {
-      const r = await ensureTokenIssued(tripId, { rotate: false, publicTripData: body?.publicTripData });
+      const r = await ensureTokenIssued(tripId, {
+        rotate: false,
+        publicTripData: body?.publicTripData,
+        linkedLegs: body?.linkedLegs,
+      });
       return res.status(200).json({
         ok: true,
         url: publicUrl(req, r.token),
@@ -284,7 +330,11 @@ export default async function handler(req, res) {
       });
     }
     if (action === 'rotate') {
-      const r = await ensureTokenIssued(tripId, { rotate: true, publicTripData: body?.publicTripData });
+      const r = await ensureTokenIssued(tripId, {
+        rotate: true,
+        publicTripData: body?.publicTripData,
+        linkedLegs: body?.linkedLegs,
+      });
       return res.status(200).json({
         ok: true, url: publicUrl(req, r.token), token: r.token, rotated: true,
         _diag: {

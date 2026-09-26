@@ -698,10 +698,13 @@ function PaxRow({ pax, iataCode }) {
 
 function Leg({ leg, isActive, position }) {
   const cat = categoryBadge(leg.category);
+  // A borrowed live leg is presented as repositioning: route and movement
+  // times only. Crew, FBO, and passenger milestones stay on charter cards.
+  const repoCard = leg.presentAs === 'repositioning';
   // Status lives directly on the leg (server-attached per-leg from each
   // trip-state doc). No need for the legacy statuses[leg.legNumber] map.
   const legStatuses = leg.status || {};
-  const hasPilots = !!(leg.pic || leg.sic);
+  const hasPilots = !repoCard && !!(leg.pic || leg.sic);
   // Normalize pax to the structured-record shape so the renderer works
   // regardless of which payload version is persisted on the trip-state
   // doc. Old links were saved with `pax: ['Paul Smith', 'Nicole Smith']`
@@ -769,18 +772,18 @@ function Leg({ leg, isActive, position }) {
           <div>
             <div className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>DEPARTURE</div>
             <div className="text-slate-200">{fmtAirportTime(leg.departure, leg.from)}</div>
-            {leg.fromFbo && <div className="text-slate-500 mt-0.5">{leg.fromFbo}</div>}
+            {!repoCard && leg.fromFbo && <div className="text-slate-500 mt-0.5">{leg.fromFbo}</div>}
           </div>
           <div>
             <div className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>ARRIVAL</div>
             <div className="text-slate-200">{fmtAirportTime(leg.arrival, leg.to)}</div>
-            {leg.toFbo && <div className="text-slate-500 mt-0.5">{leg.toFbo}</div>}
+            {!repoCard && leg.toFbo && <div className="text-slate-500 mt-0.5">{leg.toFbo}</div>}
           </div>
         </div>
 
         {/* Passenger list with per-pax check-in indicators — shown ONLY
             when showPax=true (this broker's leg, not a repo leg). */}
-        {leg.showPax && paxList.length > 0 && (
+        {!repoCard && leg.showPax && paxList.length > 0 && (
           <div className="mb-3 pb-3 border-b border-slate-800">
             <div className="flex items-center gap-2 mb-1.5">
               <div className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
@@ -798,12 +801,13 @@ function Leg({ leg, isActive, position }) {
 
         {/* Crew/aircraft milestones — same five steps for all legs. */}
         <div className="space-y-1 pt-2 border-t border-slate-800">
-          <StatusDot on={!!legStatuses.crew_onsite?.at}    label="Crew on site"    ts={legStatuses.crew_onsite?.at}    iataCode={leg.from} />
-          <StatusDot on={!!legStatuses.aircraft_ready?.at} label="Aircraft ready"  ts={legStatuses.aircraft_ready?.at} iataCode={leg.from} />
+          {!repoCard && <StatusDot on={!!legStatuses.crew_onsite?.at}    label="Crew on site"    ts={legStatuses.crew_onsite?.at}    iataCode={leg.from} />}
+          {!repoCard && <StatusDot on={!!legStatuses.aircraft_ready?.at} label="Aircraft ready"  ts={legStatuses.aircraft_ready?.at} iataCode={leg.from} />}
           {/* Revenue legs get catering + pax arrived / boarded milestones.
               Catering is omitted entirely when the trip has none, so the
-              broker never sees a milestone that will never complete. */}
-          {isRevenue && (
+              broker never sees a milestone that will never complete.
+              A repositioning card keeps taxi, airborne, and landed only. */}
+          {!repoCard && isRevenue && (
             <>
               {showsCateringStatus(leg) && (
                 <StatusDot on={!!legStatuses.catering_aboard?.at} label="Catering on board" ts={legStatuses.catering_aboard?.at} iataCode={leg.from} />

@@ -32,6 +32,8 @@
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import { applySkywaySignature, textToHtml, withCharterCopy } from './_email-signature.js';
+import { signTripToken } from './_trip-token.js';
+import { secondaryTrackingUrl } from '../src/linked-leg.js';
 import { explainSendFailure, isPermanentSendFailure } from './_email-delivery.js';
 import { deliverNotification } from './_email-transport.js';
 
@@ -91,7 +93,7 @@ export default async function handler(req, res) {
     return res.status(401).json({ error: 'Unauthorized: provide idToken or x-internal-secret' });
   }
 
-  const { to, cc, subject, html, text, from, source, tripId, statusKey, threadKey, includeTrackingButton } = body;
+  const { to, cc, subject, html, text, from, source, tripId, statusKey, threadKey, includeTrackingButton, trackingForTripId } = body;
   if (!Array.isArray(to) || to.length === 0) {
     return res.status(400).json({ error: 'to[] required' });
   }
@@ -133,7 +135,30 @@ export default async function handler(req, res) {
   // body BEFORE applySkywaySignature wraps with the Skyway header/footer.
   // This way the button lands between the header and the message body —
   // prominent placement above the fold for brokers reading the email.
-  if (includeTrackingButton && tripId) {
+  if (trackingForTripId) {
+    try {
+      const observerId = String(trackingForTripId).slice(0, 200);
+      const snap = await getDb().collection('trip-state').doc(observerId).get();
+      const tripData = snap.exists ? (snap.data() || {}) : {};
+      const host = req.headers.host
+        || process.env.VERCEL_PROJECT_PRODUCTION_URL
+        || 'skyway-ops.vercel.app';
+      const proto = host.includes('localhost') ? 'http' : 'https';
+      const trackingUrl = secondaryTrackingUrl({
+        observerTripUid: observerId,
+        linkTokenIssuedAt: tripData.linkTokenIssuedAt,
+        linkRevoked: tripData.linkRevoked === true,
+        origin: `${proto}://${host}`,
+        sign: (uid, issuedAt) => {
+          if (!process.env.TRIP_LINK_SECRET) return null;
+          return signTripToken(uid, issuedAt);
+        },
+      });
+      if (trackingUrl) rawHtml = renderTrackButton(trackingUrl) + rawHtml;
+    } catch (e) {
+      console.warn('[email-enqueue] secondary track-button lookup failed:', e.message);
+    }
+  } else if (includeTrackingButton && tripId) {
     try {
       const trackingUrl = await findActiveBrokerTrackingUrl(req, tripId);
       if (trackingUrl) {
