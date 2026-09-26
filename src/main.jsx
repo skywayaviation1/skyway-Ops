@@ -5,6 +5,7 @@ import App, { ExternalTechPage } from './App.jsx';
 import { ServiceTechPage } from './ServiceRequests.jsx';
 import TripTrackPage from './TripTrack.jsx';
 import OperatorFlightPortal from './OperatorFlightPortal.jsx';
+import AogCoverageOffer from './AogCoverageOffer.jsx';
 import './index.css';
 
 // Chromium's install event is one-shot and can fire while Firebase is still
@@ -111,6 +112,10 @@ const isOperatorFlightRoute =
   typeof window !== 'undefined'
   && window.location.pathname.replace(/\/+$/, '') === '/operator-flight';
 
+const isAogCoverageRoute =
+  typeof window !== 'undefined'
+  && window.location.pathname.replace(/\/+$/, '') === '/aog-coverage';
+
 /* ============================================================
    PWA SERVICE WORKER REGISTRATION
    ------------------------------------------------------------
@@ -129,7 +134,7 @@ const isOperatorFlightRoute =
    ============================================================ */
 if (!isNativeApp() && typeof window !== 'undefined' && 'serviceWorker' in navigator
     && !isExternalTechRoute && !isServiceTechRoute && !isTripTrackRoute
-    && !isOperatorFlightRoute) {
+    && !isOperatorFlightRoute && !isAogCoverageRoute) {
   // Register after the page has finished loading so we don't compete
   // with initial render for the network.
   window.addEventListener('load', () => {
@@ -187,6 +192,12 @@ if (isExternalTechRoute) {
   rootEl.render(
     <React.StrictMode>
       <OperatorFlightPortal token={params.get('token') || ''} />
+    </React.StrictMode>
+  );
+} else if (isAogCoverageRoute) {
+  rootEl.render(
+    <React.StrictMode>
+      <AogCoverageOffer />
     </React.StrictMode>
   );
 } else {

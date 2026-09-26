@@ -1,0 +1,12 @@
+SUBJECT: Charter agreement checkout SKY-TEST-3003
+FROM: broker@example-charter.test
+ATTACHMENTS: signed-charter-contract.pdf
+
+Broker: Example Charter Group
+Checkout email: broker@example-charter.test
+Aircraft: Citation CJ3
+Tail: N100TS
+Route: KAPF - KTEB
+Departure: 2026-11-02
+Trip total: $18,500.00
+Trip total: $19,250.00

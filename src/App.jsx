@@ -128,7 +128,8 @@ const AdminDutyReportLazy = lazy(() => import('./AdminDutyReport.jsx'));
 // Charter Flight Support policy. Lazy because non-ops roles never see
 // it and even ops only opens it when new coverage records need
 // creating or reviewing.
-const AogTabLazy = lazy(() => import('./AogTab.jsx'));
+const AogRecoveryTabLazy = lazy(() => import('./AogRecoveryTab.jsx'));
+const AogRecoveryGiftButtonLazy = lazy(() => import('./AogRecoveryGiftButton.jsx'));
 import AppTimezoneSwitch from './AppTimezoneSwitch.jsx';
 import { todayInAppTz } from './app-timezone.js';
 import { createPortal } from 'react-dom';
@@ -6477,6 +6478,11 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
                 <MXShareButton tail={trip.info.tail} onOpenModal={() => setMxShareOpen(true)} />
                 <TailStatusBadge tail={trip.info.tail} />
               </>
+            )}
+            {(currentUser?.role === 'ops' || currentUser?.role === 'admin') && (
+              <Suspense fallback={null}>
+                <AogRecoveryGiftButtonLazy trip={trip} brokerEmail={brokerEmail} />
+              </Suspense>
             )}
             {fromFbo && <StatusChip tone="neutral">{trip.info.from}: {fromFbo}</StatusChip>}
             {toFbo && <StatusChip tone="neutral">{trip.info.to}: {toFbo}</StatusChip>}
@@ -21797,7 +21803,7 @@ const NAV_SECTIONS = [
   { id: 'reports',   label: 'Reports',     icon: AlertCircle,   roles: ['crew', 'ops', 'admin'] },
 
   { id: 'maint',     label: 'Maintenance', icon: Wrench,        roles: ['maint', 'ops', 'admin'] },
-  { id: 'aog',       label: 'AOG',         icon: AlertTriangle, roles: ['ops', 'admin'] },
+  { id: 'aog',       label: 'AOG Coverage', icon: AlertTriangle, roles: ['ops', 'admin'] },
 
   { id: 'expenses',  label: 'Expenses',    icon: Mail,          roles: ['crew', 'sales', 'ops', 'accounting', 'admin'] },
   { id: 'accounting', label: 'Accounting',  icon: Building2,     roles: ['accounting', 'admin'] },
@@ -29287,7 +29293,7 @@ export default function CharterOps() {
         {section === 'aog' && (currentUser.role === 'ops' || currentUser.role === 'admin') && (
           <div className="flex-1 overflow-y-auto scroll-area">
             <Suspense fallback={<div className="flex items-center justify-center py-16 text-slate-500"><Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading AOG coverage...</div>}>
-              <AogTabLazy currentUser={currentUser} />
+              <AogRecoveryTabLazy currentUser={currentUser} />
             </Suspense>
           </div>
         )}
