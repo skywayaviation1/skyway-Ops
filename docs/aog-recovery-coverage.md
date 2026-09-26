@@ -129,6 +129,7 @@ Merge `firestore/aog-recovery.rules` into the **appusers** database rules. Do no
 | `aogRecovery` | read: ops or admin. write: denied (Admin SDK only) |
 | `aogRecoveryConfig` | read: ops or admin. write: denied |
 | `aogRecoveryProcessed` | no client access |
+| `aogRecovery/{id}/coverageEvents` | read: ops or admin. write: denied |
 
 ## Routes
 

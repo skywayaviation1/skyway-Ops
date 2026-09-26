@@ -26,6 +26,13 @@ service cloud.firestore {
     match /aogRecovery/{coverageId} {
       allow read: if isOpsOrAdmin();
       allow create, update, delete: if false;
+
+      // Append-only coverage history. Ops can read it for a later report.
+      // Clients cannot create or edit events; the Admin SDK is the only writer.
+      match /coverageEvents/{eventId} {
+        allow read: if isOpsOrAdmin();
+        allow create, update, delete: if false;
+      }
     }
 
     // Rate table and complimentary domains. The tab reads them; saves go
