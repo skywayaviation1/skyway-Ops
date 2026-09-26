@@ -53,7 +53,7 @@ export default function AogCoverageOffer() {
       try {
         const response = await fetch(`/api/aog-recovery-public?token=${encodeURIComponent(token)}`);
         const data = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(data.error || 'This coverage link is not valid');
+        if (!response.ok || !data.coverage) throw new Error(data.error || 'This coverage link is not valid');
         if (cancelled) return;
         setCoverage(data.coverage);
         setError('');
