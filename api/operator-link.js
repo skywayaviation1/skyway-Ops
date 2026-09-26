@@ -7,6 +7,7 @@
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import { signOperatorToken } from './_operator-token.js';
+import { applyLegTailUpdate, requestOrigin } from './_tail-change.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -134,6 +135,22 @@ export default async function handler(req, res) {
       }
       const issuedAt = Date.now();
       const expiresAt = trackingExpiry(trip);
+      // Notice a tail swap on an existing brokered leg before the portal
+      // snapshot below replaces tripMeta with the same new tail.
+      try {
+        await applyLegTailUpdate(db(), tripId, {
+          tail: trip.tail,
+          from: trip.from,
+          to: trip.to,
+          start: trip.start,
+          end: trip.end,
+          legType: 'REVENUE',
+          aircraftType: trip.aircraftType,
+          isFlight: true,
+        }, { origin: requestOrigin(req) });
+      } catch (err) {
+        console.warn('[operator-link] tail-change notice failed:', err?.message || err);
+      }
       const patch = {
         operatorLinkIssuedAt: issuedAt,
         operatorLinkRevoked: false,

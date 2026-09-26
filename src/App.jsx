@@ -324,9 +324,12 @@ function extractTripInfo(event) {
   // legType drives the status flow (5 buttons): only REVENUE shows pax-related steps
   const legType = category === 'REVENUE' || category === 'OWNER' ? 'REVENUE' : 'REPO';
 
+  const cancelled = /cancel/i.test(String(event.STATUS || ''))
+    || /\bcancell?ed\b|\bcxl\b/i.test(`${summary}\n${description}\n${tripType}`);
+
   return {
     tail, customer, from, to, pax, pic, sic, notes,
-    tripType, category, legType,
+    tripType, category, legType, cancelled,
     isFlight: !['MX', 'TRAINING', 'HOLD'].includes(category),
     isOps: ['REVENUE', 'REPO', 'FERRY', 'OWNER'].includes(category),
     url,
@@ -4175,7 +4178,7 @@ function DelayPanel({ trip, opsEmail, brokerEmail, currentUser, statuses, setSta
   );
 }
 
-function NotifyPanel({ trip, opsEmail, brokerEmail, setBrokerEmail, statuses, autoNotify, setAutoNotify, hasCatering, setHasCatering }) {
+function NotifyPanel({ trip, opsEmail, brokerEmail, setBrokerEmail, statuses, autoNotify, setAutoNotify, hasCatering, setHasCatering, activity = [] }) {
   const [customMsg, setCustomMsg] = useState('');
   const lastStatus = useMemo(() => {
     const ordered = STATUS_STEPS.map(s => ({ step: s, status: statuses[s.id] })).filter(x => x.status);
@@ -4309,6 +4312,45 @@ function NotifyPanel({ trip, opsEmail, brokerEmail, setBrokerEmail, statuses, au
           </div>
         </div>
       )}
+
+      <LegActivity activity={activity} />
+    </div>
+  );
+}
+
+function LegActivity({ activity }) {
+  const entries = (Array.isArray(activity) ? activity : [])
+    .filter((entry) => entry && entry.type === 'tail-change')
+    .slice()
+    .reverse()
+    .slice(0, 8);
+  if (entries.length === 0) return null;
+  return (
+    <div className="border border-slate-700 bg-slate-900/40 p-3">
+      <div className="text-[10px] tracking-widest text-slate-500 uppercase mb-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        LEG ACTIVITY
+      </div>
+      <div className="space-y-2">
+        {entries.map((entry, index) => {
+          const when = entry.at ? new Date(entry.at) : null;
+          const recipients = Array.isArray(entry.recipients) ? entry.recipients.filter(Boolean) : [];
+          return (
+            <div key={`${entry.at || index}-${entry.newTail || index}`} className="text-xs text-slate-300">
+              <div style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                Tail change emailed: {entry.oldTail || '—'} → {entry.newTail || '—'}
+                {entry.oldType && entry.newType && entry.oldType !== entry.newType
+                  ? ` (${entry.oldType} → ${entry.newType})`
+                  : (entry.newType ? ` · ${entry.newType}` : '')}
+              </div>
+              <div className="text-[10px] text-slate-500 mt-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                {when && !Number.isNaN(when.getTime()) ? when.toISOString().slice(0, 16).replace('T', ' ') + 'Z' : 'time unknown'}
+                {recipients.length ? ` · ${recipients.join(', ')}` : ''}
+                {entry.testMode ? ` · test mode${Array.isArray(entry.deliveredTo) && entry.deliveredTo.length ? ` → ${entry.deliveredTo.join(', ')}` : ''}` : ''}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -5257,6 +5299,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   // iCal-parsed value.
   const [fromFbo, setFromFbo] = useState(trip.info?.fromFbo || null);
   const [toFbo, setToFbo] = useState(trip.info?.toFbo || null);
+  const [activity, setActivity] = useState([]);
   const [pendingScanPax, setPendingScanPax] = useState(null); // pre-loaded pax being checked in
   const [loading, setLoading] = useState(true);
   // UPDATE ETA flow: tracks whether we're mid-call so we can disable the button
@@ -5481,6 +5524,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
           // Rare event; preferable to FBOs disappearing for the common case.
           setFromFbo(state.fromFbo || trip.info?.fromFbo || null);
           setToFbo(state.toFbo || trip.info?.toFbo || null);
+          setActivity(Array.isArray(state.activity) ? state.activity : []);
           setCompleted(state.completed === true);
           setFratState(state.frat || null);
           setOpsDisposition(state.opsDisposition || null);
@@ -5698,7 +5742,13 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
         from: (trip.info?.from || '').toUpperCase(),
         to: (trip.info?.to || '').toUpperCase(),
         start: trip.start instanceof Date ? trip.start.toISOString() : (trip.start || null),
+        end: trip.end instanceof Date ? trip.end.toISOString() : (trip.end || null),
         legType: trip.info?.legType || 'REVENUE',
+        aircraftType: trip.info?.aircraftType || trip.info?.acType || '',
+        tripCode: trip.info?.tripCode || '',
+        summary: trip.info?.rawSummary || '',
+        cancelled: trip.info?.cancelled === true,
+        isFlight: trip.info?.isFlight !== false,
       };
       // Merge in trip-sheet fields and preloadedPax unless caller passed them explicitly
       const merged = {
@@ -5719,7 +5769,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       console.error('Failed to save trip state:', err);
       notify.error('Failed to save — check your connection');
     }
-  }, [trip.uid, trip.info?.tail, trip.info?.from, trip.info?.to, trip.start, trip.info?.legType, tripSheetUrl, tripSheetPath, tripSheetFilename, tripSheetUploadedAt, tripSheetUploadedBy, preloadedPax, tripSheetNotes, fromFbo, toFbo]);
+  }, [trip.uid, trip.info?.tail, trip.info?.from, trip.info?.to, trip.info?.aircraftType, trip.info?.acType, trip.info?.tripCode, trip.info?.rawSummary, trip.info?.cancelled, trip.info?.isFlight, trip.start, trip.end, trip.info?.legType, tripSheetUrl, tripSheetPath, tripSheetFilename, tripSheetUploadedAt, tripSheetUploadedBy, preloadedPax, tripSheetNotes, fromFbo, toFbo]);
 
   const openMailto = (url) => {
     const a = document.createElement('a');
@@ -7391,6 +7441,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
               setAutoNotify={updateAutoNotify}
               hasCatering={hasCatering}
               setHasCatering={updateHasCatering}
+              activity={activity}
             />
           </div>
         ) : tab === 'delay' ? (
@@ -14828,7 +14879,14 @@ function FlightAwarePanel({ currentUser, allTrips }) {
           from: t.info.from,
           to: t.info.to || '',
           start: t.start instanceof Date ? t.start.toISOString() : (t.start || null),
+          end: t.end instanceof Date ? t.end.toISOString() : (t.end || null),
           legType: t.info.legType || 'REVENUE',
+          aircraftType: t.info.aircraftType || t.info.acType || '',
+          tripCode: t.info.tripCode || '',
+          summary: t.info.rawSummary || '',
+          cancelled: t.info.cancelled === true,
+          isFlight: t.info.isFlight !== false,
+          brokerEmail: t.info.broker || '',
         }));
 
       if (trips.length === 0) {
@@ -28274,7 +28332,14 @@ export default function CharterOps() {
               tail, from,
               to: (t.info?.to || '').toUpperCase(),
               start: startIso,
+              end: t.end instanceof Date ? t.end.toISOString() : (t.end || null),
               legType: t.info?.legType || 'REVENUE',
+              aircraftType: t.info?.aircraftType || t.info?.acType || '',
+              tripCode: t.info?.tripCode || '',
+              summary: t.info?.rawSummary || '',
+              cancelled: t.info?.cancelled === true,
+              isFlight: t.info?.isFlight !== false,
+              brokerEmail: t.info?.broker || '',
             });
             ok++;
           } catch (err) {
@@ -28405,6 +28470,11 @@ export default function CharterOps() {
       autoBackfillActiveTripMeta(newTrips).catch((e) => {
         console.warn('[ical] tripMeta auto-backfill failed:', e?.message || e);
       });
+      import('./firebase-data.js')
+        .then(({ syncUpcomingLegTails }) => syncUpcomingLegTails(newTrips))
+        .catch((e) => {
+          console.warn('[ical] tail-change sync failed:', e?.message || e);
+        });
     } catch (e) {
       setSyncStatus({ status: 'error', message: e.message });
       log('error', `Parse error: ${e.message}`);
@@ -28443,7 +28513,14 @@ export default function CharterOps() {
           from: t.info.from,
           to: t.info.to || '',
           start: t.start instanceof Date ? t.start.toISOString() : (t.start || null),
+          end: t.end instanceof Date ? t.end.toISOString() : (t.end || null),
           legType: t.info.legType || 'REVENUE',
+          aircraftType: t.info.aircraftType || t.info.acType || '',
+          tripCode: t.info.tripCode || '',
+          summary: t.info.rawSummary || '',
+          cancelled: t.info.cancelled === true,
+          isFlight: t.info.isFlight !== false,
+          brokerEmail: t.info.broker || '',
         }));
       if (trips.length === 0) return;
       const r = await fetch('/api/flightaware-backfill-tripmeta', {
