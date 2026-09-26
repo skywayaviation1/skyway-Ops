@@ -121,6 +121,11 @@ export async function scanInbox({ db, baseUrl }) {
         pdfFilename: files.filename,
         settings,
         baseUrl,
+        source: {
+          messageId: message.id,
+          receivedAt: full.receivedDateTime || message.receivedDateTime || '',
+          sender: full.from?.emailAddress?.address || message.from?.emailAddress?.address || '',
+        },
       });
       await markMessageProcessed(db, message.id, {
         outcome: result.outcome,

@@ -130,6 +130,7 @@ const AdminDutyReportLazy = lazy(() => import('./AdminDutyReport.jsx'));
 // creating or reviewing.
 const AogRecoveryTabLazy = lazy(() => import('./AogRecoveryTab.jsx'));
 const AogRecoveryGiftButtonLazy = lazy(() => import('./AogRecoveryGiftButton.jsx'));
+import TripCharterContract from './TripCharterContract.jsx';
 import AppTimezoneSwitch from './AppTimezoneSwitch.jsx';
 import { todayInAppTz } from './app-timezone.js';
 import { createPortal } from 'react-dom';
@@ -6886,6 +6887,8 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       </>
       )}
       </div>
+
+      <TripCharterContract tripUid={trip.uid} />
 
       {/* Tabs — grouped the same way as the primary nav. `tab` still holds a
           leaf id so every `tab === '…'` content branch below is untouched;

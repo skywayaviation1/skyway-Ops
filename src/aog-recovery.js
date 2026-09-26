@@ -55,6 +55,7 @@ export const CSV_COLUMNS = Object.freeze([
   ['charterContract', 'Charter contract'],
   ['offerSentAt', 'Offer sent'],
   ['bindEmailSentAt', 'Bind email sent'],
+  ['contractAttachStatus', 'Contract on trip'],
 ]);
 
 function typeKey(value) {

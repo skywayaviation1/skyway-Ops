@@ -16,6 +16,14 @@ import {
   paymentDecision,
   quotePremium,
 } from '../src/aog-recovery.js';
+import {
+  contractStoragePath,
+  contractVersionPath,
+  isUnmatchedContract,
+  matchContractToTrips,
+  planContractWrite,
+  shouldAttachCharterContract,
+} from '../src/charter-contract.js';
 
 const fixtureDir = path.resolve(import.meta.dirname, 'fixtures/aog-checkout');
 
@@ -176,6 +184,105 @@ test('trip id links every matching leg and a lone tail does not', () => {
   assert.equal(draft.needsReview, true);
   assert.equal(draft.matchStatus, 'unmatched');
   assert.equal(draft.coverageLevel, 'included_50');
+});
+
+test('charter contract follows the trip id onto every leg, then tail route and date', () => {
+  const trips = [
+    { id: 'leg-a', tripCode: 'SKY-TEST-1001', tail: 'N100TS', from: 'KAPF', to: 'KTEB', start: '2026-10-12T14:00:00.000Z' },
+    { id: 'leg-b', tripCode: 'SKY-TEST-1001', tail: 'N100TS', from: 'KTEB', to: 'KAPF', start: '2026-10-14T18:00:00.000Z' },
+    { id: 'other', tripCode: 'SKY-TEST-9', tail: 'N100TS', from: 'KAPF', to: 'KTEB', start: '2026-10-12T14:00:00.000Z' },
+  ];
+  const byId = matchContractToTrips({
+    tripId: 'SKY-TEST-1001', tail: 'N999XX', routeFrom: 'KORD', routeTo: 'KJFK', departDate: '2026-01-01',
+  }, trips);
+  assert.equal(byId.status, 'linked');
+  assert.equal(byId.via, 'trip-id');
+  assert.deepEqual(byId.matches.map((trip) => trip.id).sort(), ['leg-a', 'leg-b']);
+
+  const byFallback = matchContractToTrips({
+    tripId: 'SKY-TEST-MISSING',
+    tail: 'N100TS',
+    routeFrom: 'KAPF',
+    routeTo: 'KTEB',
+    departDate: '2026-10-12',
+  }, trips);
+  assert.equal(byFallback.status, 'unmatched');
+  assert.equal(byFallback.ambiguous, true);
+
+  const unique = trips.filter((trip) => trip.tripCode !== 'SKY-TEST-9');
+  const dated = matchContractToTrips({
+    tail: 'N100TS', routeFrom: 'APF', routeTo: 'TEB', departDate: '2026-10-12',
+  }, unique);
+  assert.equal(dated.status, 'linked');
+  assert.equal(dated.via, 'tail-route-date');
+  assert.deepEqual(dated.matches.map((trip) => trip.id).sort(), ['leg-a', 'leg-b']);
+
+  const noDate = matchContractToTrips({ tail: 'N100TS', routeFrom: 'KAPF', routeTo: 'KTEB' }, unique);
+  assert.equal(noDate.status, 'unmatched');
+  assert.equal(matchContractToTrips({ tail: 'N100TS' }, unique).status, 'unmatched');
+});
+
+test('the same charter PDF is not duplicated, and a new one is versioned with the source email', () => {
+  assert.equal(shouldAttachCharterContract({ isCheckout: true, hasPdf: true }), true);
+  assert.equal(shouldAttachCharterContract({ isCheckout: true, hasPdf: false }), false);
+  const source = {
+    messageId: 'graph-message-synthetic-1',
+    receivedAt: '2026-10-01T15:00:00.000Z',
+    sender: 'broker@example-charter.test',
+  };
+  const first = planContractWrite({
+    incoming: {
+      fingerprint: 'abc123',
+      filename: 'synthetic-charter.pdf',
+      path: contractStoragePath('SKY-TEST-1001'),
+      sizeBytes: 1200,
+      source,
+      attachedAt: '2026-10-01T15:04:00.000Z',
+    },
+  });
+  assert.equal(first.action, 'attached');
+  assert.equal(first.contract.path, 'trip-contracts/SKY-TEST-1001/charter-contract.pdf');
+  assert.equal(first.contract.source.messageId, source.messageId);
+  assert.equal(first.contract.source.sender, source.sender);
+  assert.equal(first.contract.source.receivedAt, source.receivedAt);
+  assert.deepEqual(first.contract.versions, []);
+
+  const again = planContractWrite({
+    existing: first.contract,
+    incoming: {
+      fingerprint: 'abc123',
+      filename: 'synthetic-charter.pdf',
+      path: contractStoragePath('SKY-TEST-1001'),
+      source: { ...source, messageId: 'graph-message-synthetic-2' },
+      attachedAt: '2026-10-02T15:04:00.000Z',
+    },
+  });
+  assert.equal(again.action, 'unchanged');
+  assert.equal(again.contract.source.messageId, 'graph-message-synthetic-1');
+
+  const versionPath = contractVersionPath('SKY-TEST-1001', 'abc123');
+  const replaced = planContractWrite({
+    existing: first.contract,
+    versionPath,
+    incoming: {
+      fingerprint: 'def456',
+      filename: 'synthetic-charter-revised.pdf',
+      path: contractStoragePath('SKY-TEST-1001'),
+      source: { ...source, messageId: 'graph-message-synthetic-3', sender: 'dispatch@example-charter.test' },
+      attachedAt: '2026-10-03T15:04:00.000Z',
+    },
+  });
+  assert.equal(replaced.action, 'replaced');
+  assert.equal(replaced.contract.fingerprint, 'def456');
+  assert.equal(replaced.contract.source.messageId, 'graph-message-synthetic-3');
+  assert.equal(replaced.contract.versions.length, 1);
+  assert.equal(replaced.contract.versions[0].fingerprint, 'abc123');
+  assert.equal(replaced.contract.versions[0].path, versionPath);
+  assert.equal(replaced.contract.versions[0].source.sender, 'broker@example-charter.test');
+  assert.equal(isUnmatchedContract({ charterContractPath: 'aog-recovery/x/charter-contract.pdf', contractAttachStatus: 'unmatched' }), true);
+  assert.equal(isUnmatchedContract({ charterContractPath: 'aog-recovery/x/charter-contract.pdf', contractAttachStatus: 'attached' }), false);
+  assert.equal(isUnmatchedContract({ charterContractPath: 'aog-recovery/x/charter-contract.pdf', contractAttachStatus: 'unchanged' }), false);
+  assert.equal(isUnmatchedContract({ contractAttachStatus: 'unmatched' }), false);
 });
 
 test('notify test mode is on unless explicitly disabled and rewrites the whole envelope', () => {
@@ -367,6 +474,12 @@ test('recovery mail and stripe routes are wired, and test mode is centralized', 
   assert.match(vercel, /\*\/10 \* \* \* \*/);
   assert.match(app, /AogRecoveryTab/);
   assert.match(app, /AogRecoveryGiftButton/);
+  assert.match(app, /TripCharterContract/);
+  assert.match(mailer, /attachCheckoutContract/);
+  const tab = await readFile(path.join(root, 'src/AogRecoveryTab.jsx'), 'utf8');
+  assert.match(tab, /Unmatched contracts/);
+  const scan = await readFile(path.join(root, 'api/aog-recovery-inbox-scan.js'), 'utf8');
+  assert.match(scan, /receivedAt/);
   assert.match(main, /\/aog-coverage/);
   const stripeRoute = await readFile(path.join(root, 'api/aog-recovery-stripe-webhook.js'), 'utf8');
   assert.match(stripeRoute, /constructEvent/);

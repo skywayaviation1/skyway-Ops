@@ -29,6 +29,13 @@ import {
   premiumLabel,
   quotePremium,
 } from '../src/aog-recovery.js';
+import {
+  contractStoragePath,
+  contractVersionPath,
+  matchContractToTrips,
+  planContractWrite,
+  shouldAttachCharterContract,
+} from '../src/charter-contract.js';
 
 const COLLECTION = 'aogRecovery';
 const CONFIG_DOC = ['aogRecoveryConfig', 'settings'];
@@ -433,6 +440,157 @@ export async function savePdf(path, buffer) {
   });
 }
 
+function storageDownloadUrl(path, token) {
+  const bucket = process.env.FIREBASE_STORAGE_BUCKET || BUCKET_FALLBACK;
+  return `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodeURIComponent(path)}?alt=media&token=${token}`;
+}
+
+async function saveContractPdf(path, buffer) {
+  const token = crypto.randomUUID();
+  await storageBucket().file(path).save(buffer, {
+    resumable: false,
+    contentType: 'application/pdf',
+    metadata: {
+      contentType: 'application/pdf',
+      cacheControl: 'private, max-age=3600',
+      metadata: { firebaseStorageDownloadTokens: token },
+    },
+  });
+  return storageDownloadUrl(path, token);
+}
+
+async function legsSharingTripCode(db, matches) {
+  const byId = new Map((matches || []).filter((leg) => leg?.id).map((leg) => [leg.id, leg]));
+  const codes = [...new Set([...byId.values()].map((leg) => leg.tripCode).filter(Boolean))];
+  for (const code of codes) {
+    // eslint-disable-next-line no-await-in-loop
+    const snap = await db.collection('trip-state').where('tripSheetData.tripCode', '==', code).limit(30).get();
+    snap.docs.forEach((docSnap) => {
+      if (!byId.has(docSnap.id)) byId.set(docSnap.id, tripFromState(docSnap));
+    });
+  }
+  return [...byId.values()];
+}
+
+async function currentContract(db, legs) {
+  for (const leg of legs) {
+    // eslint-disable-next-line no-await-in-loop
+    const snap = await db.collection('trip-state').doc(sanitizeKey(leg.id)).get();
+    const contract = snap.exists ? snap.data()?.charterContract : null;
+    if (contract?.fingerprint) return contract;
+  }
+  return null;
+}
+
+/**
+ * Write one charter PDF onto every leg. The same bytes are not uploaded again.
+ * A different PDF replaces the current object and copies the previous file
+ * under versions/ before the overwrite.
+ */
+export async function writeCharterContract(db, { legs, pdfBuffer, filename, source, tripKey }) {
+  const targets = (legs || []).filter((leg) => leg?.id);
+  if (!targets.length || !pdfBuffer?.length) {
+    return { contractAttachStatus: 'unmatched', contractLegIds: [] };
+  }
+  const fingerprint = crypto.createHash('sha256').update(pdfBuffer).digest('hex');
+  const key = tripKey || targets.find((leg) => leg.tripCode)?.tripCode || targets[0].id;
+  const path = contractStoragePath(key);
+  const attachedAt = new Date().toISOString();
+  const existing = await currentContract(db, targets);
+  const versionPath = existing?.fingerprint ? contractVersionPath(key, existing.fingerprint) : '';
+  const plan = planContractWrite({
+    existing,
+    versionPath,
+    incoming: {
+      fingerprint,
+      filename: filename || 'charter-contract.pdf',
+      path,
+      sizeBytes: pdfBuffer.length,
+      source,
+      attachedAt,
+    },
+  });
+
+  let contract = plan.contract;
+  if (plan.action === 'replaced' && existing?.path && versionPath && existing.path !== versionPath) {
+    try {
+      await storageBucket().file(existing.path).copy(storageBucket().file(versionPath));
+    } catch (err) {
+      console.warn('[aog-recovery] previous charter contract was not copied:', err.message);
+      const versions = contract.versions || [];
+      const last = versions[versions.length - 1];
+      if (last) {
+        last.preserved = false;
+        last.path = '';
+      }
+    }
+  }
+  if (plan.action !== 'unchanged') {
+    const url = await saveContractPdf(path, pdfBuffer);
+    contract = { ...contract, url, path };
+  }
+
+  await Promise.all(targets.map((leg) => db.collection('trip-state').doc(sanitizeKey(leg.id)).set({
+    charterContract: contract,
+    updatedAt: Date.now(),
+  }, { merge: true })));
+
+  return {
+    contractAttachStatus: plan.action === 'skip' ? 'unmatched' : plan.action,
+    contractLegIds: targets.map((leg) => leg.id),
+    contractFingerprint: fingerprint,
+  };
+}
+
+export async function attachCheckoutContract(db, { parsed, trips, pdfBuffer, filename, source }) {
+  if (!shouldAttachCharterContract({ isCheckout: true, hasPdf: Boolean(pdfBuffer?.length) })) {
+    return { contractAttachStatus: '' };
+  }
+  const match = matchContractToTrips(parsed, trips);
+  if (match.status !== 'linked') {
+    return {
+      contractAttachStatus: 'unmatched',
+      contractLegIds: [],
+      contractCandidateTripUids: (match.matches || []).map((trip) => trip.id).filter(Boolean),
+      contractAmbiguous: match.ambiguous === true,
+    };
+  }
+  let legs = match.matches;
+  try {
+    legs = await legsSharingTripCode(db, match.matches);
+  } catch (err) {
+    console.warn('[aog-recovery] sibling leg lookup skipped:', err.message);
+  }
+  const tripKey = legs.find((leg) => leg.tripCode)?.tripCode || parsed?.tripId || legs[0].id;
+  return writeCharterContract(db, { legs, pdfBuffer, filename, source, tripKey });
+}
+
+export async function resolveTripLegs(db, tripUid) {
+  const raw = String(tripUid || '').trim();
+  if (!raw) return [];
+  const found = new Map();
+  const add = (docSnap) => {
+    if (docSnap?.exists) found.set(docSnap.id, tripFromState(docSnap));
+  };
+  add(await db.collection('trip-state').doc(sanitizeKey(raw)).get());
+  const pullCode = async (code) => {
+    const snap = await db.collection('trip-state').where('tripSheetData.tripCode', '==', code).limit(30).get();
+    snap.docs.forEach(add);
+  };
+  try {
+    await pullCode(raw);
+    const codes = [...new Set([...found.values()].map((leg) => leg.tripCode).filter(Boolean))];
+    for (const code of codes) {
+      if (code === raw) continue;
+      // eslint-disable-next-line no-await-in-loop
+      await pullCode(code);
+    }
+  } catch (err) {
+    console.warn('[aog-recovery] trip lookup skipped:', err.message);
+  }
+  return [...found.values()];
+}
+
 export async function readPdf(path) {
   const [buffer] = await storageBucket().file(path).download();
   return buffer;
@@ -530,6 +688,13 @@ export function serializeCoverage(id, data = {}) {
     parserVersion: data.parserVersion || '',
     graphMessageId: data.graphMessageId || '',
     addedBy: data.addedBy || '',
+    contractAttachStatus: data.contractAttachStatus || '',
+    contractLegIds: data.contractLegIds || [],
+    contractFingerprint: data.contractFingerprint || '',
+    contractCandidateTripUids: data.contractCandidateTripUids || [],
+    contractAmbiguous: data.contractAmbiguous === true,
+    contractSource: data.contractSource || null,
+    contractAttachError: data.contractAttachError || '',
   };
 }
 
@@ -606,7 +771,7 @@ export async function dispatchCoverageEmails(db, id, record, { baseUrl, force = 
   return { ok: errors.length === 0, error: patch.emailError, patch };
 }
 
-export async function ingestParsedCheckout(db, { messageId, parsed, pdfBuffer, pdfFilename, settings, baseUrl }) {
+export async function ingestParsedCheckout(db, { messageId, parsed, pdfBuffer, pdfFilename, settings, baseUrl, source }) {
   if (!parsed?.isCheckout) {
     return { outcome: 'skipped', skipReason: parsed?.skipReason || 'not a checkout' };
   }
@@ -630,11 +795,35 @@ export async function ingestParsedCheckout(db, { messageId, parsed, pdfBuffer, p
     updatedAt: now,
   };
 
+  const contractSource = source || {
+    messageId: messageId || '',
+    receivedAt: '',
+    sender: parsed?.checkoutEmail || '',
+  };
+  record.contractSource = contractSource;
   if (pdfBuffer?.length) {
     const path = `aog-recovery/${id}/charter-contract.pdf`;
     await savePdf(path, pdfBuffer);
     record.charterContractPath = path;
     record.charterContractFilename = pdfFilename || 'charter-contract.pdf';
+    try {
+      const attached = await attachCheckoutContract(db, {
+        parsed,
+        trips,
+        pdfBuffer,
+        filename: record.charterContractFilename,
+        source: contractSource,
+      });
+      record.contractAttachStatus = attached.contractAttachStatus || '';
+      record.contractLegIds = attached.contractLegIds || [];
+      record.contractFingerprint = attached.contractFingerprint || '';
+      record.contractCandidateTripUids = attached.contractCandidateTripUids || [];
+      record.contractAmbiguous = attached.contractAmbiguous === true;
+    } catch (err) {
+      console.error('[aog-recovery] charter contract was not attached to the trip', err.message);
+      record.contractAttachStatus = 'error';
+      record.contractAttachError = String(err.message || err).slice(0, 300);
+    }
   }
 
   await ref.set(record, { merge: true });

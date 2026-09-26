@@ -14,6 +14,7 @@ import {
   premiumLabel,
   fmtMoney,
 } from './aog-recovery.js';
+import { contractIsOnTrip, isUnmatchedContract } from './charter-contract.js';
 
 const LegacyAogTab = lazy(() => import('./AogTab.jsx'));
 
@@ -118,6 +119,7 @@ export default function AogRecoveryTab({ currentUser }) {
   }, [records, queryText, level, payment, reviewOnly]);
 
   const selected = records.find((record) => record.id === selectedId) || null;
+  const unmatchedContracts = useMemo(() => records.filter(isUnmatchedContract), [records]);
 
   function exportCsv() {
     const blob = new Blob([coverageCsv(filtered)], { type: 'text/csv;charset=utf-8' });
@@ -186,6 +188,25 @@ export default function AogRecoveryTab({ currentUser }) {
     }
   }
 
+  async function attachContract(record, tripUid) {
+    setBusy(true);
+    setError('');
+    try {
+      const data = await authPost('/api/aog-recovery-ops', {
+        action: 'attach-contract',
+        coverageId: record.id,
+        tripUid,
+      });
+      const count = data.contractLegIds?.length || 0;
+      setBanner(`Charter contract attached to ${count} leg${count === 1 ? '' : 's'}.`);
+      if (source === 'api') await loadApi();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function runAction(action, extra) {
     setBusy(true);
     setError('');
@@ -248,6 +269,20 @@ export default function AogRecoveryTab({ currentUser }) {
         </Card>
       )}
 
+      {unmatchedContracts.length > 0 && (
+        <Card className="mb-4">
+          <h2 className="text-sm font-semibold">Unmatched contracts</h2>
+          <p className="mt-1 text-2xs text-content-muted">
+            These signed charter contracts are saved, but no trip matched. Attaching one puts the PDF on every leg that shares that trip id. Coverage level does not matter.
+          </p>
+          <div className="mt-3 space-y-3">
+            {unmatchedContracts.map((record) => (
+              <UnmatchedContract key={record.id} record={record} busy={busy} onAttach={(tripUid) => attachContract(record, tripUid)} />
+            ))}
+          </div>
+        </Card>
+      )}
+
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <input value={queryText} onChange={(event) => setQueryText(event.target.value)} placeholder="Search trip, email, tail" aria-label="Search coverage" className="h-8 rounded border border-edge bg-surface px-2 text-sm" />
         <select aria-label="Coverage level" value={level} onChange={(event) => setLevel(event.target.value)} className="h-8 rounded border border-edge bg-surface px-2 text-sm">
@@ -289,7 +324,7 @@ export default function AogRecoveryTab({ currentUser }) {
                 <td className="px-2 py-2">{record.datesLabel || '—'}</td>
                 <td className="px-2 py-2">{record.route || '—'}</td>
                 <td className="px-2 py-2">{fmtMoney(record.tripTotal)}</td>
-                <td className="px-2 py-2">{coverageLevelLabel(record.coverageLevel)}{record.needsReview ? ' · review' : ''}{record.matchStatus !== 'linked' ? ' · unmatched' : ''}</td>
+                <td className="px-2 py-2">{coverageLevelLabel(record.coverageLevel)}{record.needsReview ? ' · review' : ''}{record.matchStatus !== 'linked' ? ' · unmatched' : ''}{contractIsOnTrip(record.contractAttachStatus) ? ' · contract on trip' : ''}{isUnmatchedContract(record) ? ' · contract unmatched' : ''}</td>
                 <td className="px-2 py-2">{premiumLabel(record)}</td>
                 <td className="px-2 py-2">{paymentStatusLabel(record.paymentStatus)}</td>
                 <td className="px-2 py-2 font-mono">{record.stripeReference || '—'}</td>
@@ -329,6 +364,33 @@ export default function AogRecoveryTab({ currentUser }) {
           <LegacyAogTab currentUser={currentUser} />
         </Suspense>
       )}
+    </div>
+  );
+}
+
+function UnmatchedContract({ record, busy, onAttach }) {
+  const [tripUid, setTripUid] = useState(record.contractCandidateTripUids?.[0] || record.linkedTripUid || '');
+  const source = record.contractSource || {};
+  return (
+    <div className="rounded-lg border border-edge px-3 py-2">
+      <p className="text-sm font-medium">{record.tripId || 'No trip id'} · {record.tail || 'no tail'} · {record.route || 'no route'}</p>
+      <p className="text-xs text-content-muted">{record.datesLabel || 'Dates unknown'} · {record.charterContractFilename || 'charter-contract.pdf'}</p>
+      <p className="text-xs text-content-muted">
+        From {source.sender || 'unknown sender'}
+        {source.receivedAt ? ` · received ${stamp(source.receivedAt)}` : ''}
+        {source.messageId ? ` · message ${source.messageId}` : ''}
+      </p>
+      {record.contractAmbiguous && <p className="text-xs text-warning">More than one trip matched. Pick the leg uid.</p>}
+      {(record.contractCandidateTripUids || []).length > 0 && (
+        <p className="text-2xs text-content-muted">Candidates: {record.contractCandidateTripUids.join(', ')}</p>
+      )}
+      <div className="mt-2 flex flex-wrap items-end gap-2">
+        <label className="text-2xs text-content-muted">
+          Trip id or leg uid
+          <input aria-label={`Attach contract ${record.tripId || record.id}`} value={tripUid} onChange={(event) => setTripUid(event.target.value)} className="mt-1 w-64 rounded border border-edge bg-surface px-2 py-1 text-xs text-content" />
+        </label>
+        <Button size="sm" variant="secondary" loading={busy} onClick={() => onAttach(tripUid)}>Attach to trip</Button>
+      </div>
     </div>
   );
 }
@@ -387,7 +449,7 @@ function ReviewForm({ record, busy, onSave, onLink, onResendOffer, onResendBind 
           <input aria-label="Link trip uid" value={tripUid} onChange={(event) => setTripUid(event.target.value)} className="mt-1 w-64 rounded border border-edge bg-surface px-2 py-1 text-xs text-content" />
         </label>
         <Button size="sm" variant="secondary" loading={busy} onClick={() => onLink(tripUid)}>Link trip</Button>
-        <span className="text-2xs text-content-muted">{record.matchStatus === 'linked' ? `Linked ${record.linkedTripUid}` : 'Unmatched'}</span>
+        <span className="text-2xs text-content-muted">{record.matchStatus === 'linked' ? `Linked ${record.linkedTripUid}` : 'Unmatched'}. Linking also attaches the charter contract when the PDF is on file.</span>
       </div>
     </div>
   );

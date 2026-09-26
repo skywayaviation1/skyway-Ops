@@ -10,9 +10,12 @@ import {
   loadSettings,
   publicBaseUrl,
   readJson,
+  readPdf,
   recoveryDb,
   recomputeOffer,
+  resolveTripLegs,
   serializeCoverage,
+  writeCharterContract,
 } from './_aog-recovery.js';
 
 export const config = { runtime: 'nodejs' };
@@ -72,21 +75,56 @@ export default async function handler(req, res) {
     }
     let record = { id, ...snap.data() };
 
-    if (action === 'link') {
+    if (action === 'link' || action === 'attach-contract') {
       const tripUid = String(body.tripUid || '').trim();
       if (!tripUid) {
         res.status(400).json({ error: 'tripUid is required' });
         return;
       }
-      await ref.set({
-        linkedTripUid: tripUid,
-        linkedTripUids: [tripUid],
+      const legs = await resolveTripLegs(db, tripUid);
+      if (legs.length === 0) {
+        res.status(404).json({ error: 'No trip found for that id. Open the trip once so the leg exists, then paste the leg uid or the trip id.' });
+        return;
+      }
+      const patch = {
+        linkedTripUid: legs[0].id,
+        linkedTripUids: legs.map((leg) => leg.id),
         matchStatus: 'linked',
         matchAmbiguous: false,
         needsReview: (record.uncertainFields || []).length > 0,
         updatedAt: new Date().toISOString(),
-      }, { merge: true });
-      res.status(200).json({ ok: true });
+      };
+      if (record.charterContractPath) {
+        const pdfBuffer = await readPdf(record.charterContractPath);
+        const attached = await writeCharterContract(db, {
+          legs,
+          pdfBuffer,
+          filename: record.charterContractFilename || 'charter-contract.pdf',
+          source: record.contractSource || {
+            messageId: record.graphMessageId || '',
+            receivedAt: record.createdAt || '',
+            sender: record.checkoutEmail || '',
+          },
+          tripKey: legs.find((leg) => leg.tripCode)?.tripCode || record.tripId || tripUid,
+        });
+        Object.assign(patch, {
+          contractAttachStatus: attached.contractAttachStatus,
+          contractLegIds: attached.contractLegIds || [],
+          contractFingerprint: attached.contractFingerprint || record.contractFingerprint || '',
+          contractCandidateTripUids: [],
+          contractAmbiguous: false,
+          contractAttachError: '',
+        });
+      } else if (action === 'attach-contract') {
+        res.status(400).json({ error: 'This record has no charter contract PDF' });
+        return;
+      }
+      await ref.set(patch, { merge: true });
+      res.status(200).json({
+        ok: true,
+        contractAttachStatus: patch.contractAttachStatus || '',
+        contractLegIds: patch.contractLegIds || [],
+      });
       return;
     }
 

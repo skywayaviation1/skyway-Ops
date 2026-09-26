@@ -48,6 +48,19 @@ Each Graph message id is written to `aogRecoveryProcessed`. A message already ma
 
 Matching uses the trip id when the schedule already has it (`trip-state` id or `tripSheetData.tripCode`), otherwise tail plus the first leg’s route. Unmatched checkouts are still saved and shown for ops to link.
 
+## Charter contract on the trip
+
+The signed charter PDF is attached to the trip even when coverage stays at the included 50%. It is stored once under `trip-contracts/{trip id}/charter-contract.pdf` (the same Storage layout style as trip sheets: one object, a download URL, metadata on `trip-state`). Every leg whose `tripSheetData.tripCode` or document id matches that trip id gets the same `charterContract` field, so the trip detail Documents block shows it on each leg.
+
+Match order for the attachment:
+
+1. Trip id, and then every leg that shares it.
+2. Otherwise tail, route, and departure date (within 36 hours). A lone tail, or a route with no date, stays unmatched. Two different trip ids that both fit stay unmatched.
+
+The same PDF (same sha256) does not create a second file. A different PDF replaces the current one and the previous file is copied to `trip-contracts/{trip id}/versions/{fingerprint}.pdf`. The attachment records the source mailbox message id, received time, and sender.
+
+If nothing matches, the row stays in **Unmatched contracts** on the AOG Coverage tab. Ops enter a trip id or leg uid and **Attach to trip**, which writes the same field on every leg of that trip. Linking a coverage row does this too when the PDF is already stored.
+
 ## Public election and Stripe
 
 The offer link is `/aog-coverage?token=…`. The token is 32 random bytes. The page does not require a Skyway login.
@@ -111,5 +124,6 @@ Merge `firestore/aog-recovery.rules` into the **appusers** database rules. Do no
 4. Mail to the broker and to CFS should arrive only at the test recipient, subject starting with `[TEST]`, body listing the real To and Cc.
 5. Gift 100% from a trip page and confirm a bind email is queued the same way, with premium `complimentary`.
 6. Add a domain under Rates, re-scan a checkout from that domain, and confirm coverage becomes 100% complimentary without a card charge.
+7. On a matched trip, open any leg and confirm Documents shows the signed charter contract, the sender, and the received time. Send the same PDF again and confirm the trip still has one current file. A checkout that matches no trip stays under Unmatched contracts until ops attaches it.
 
 `npm test` uses synthetic fixtures only. It does not call Graph or Stripe.
