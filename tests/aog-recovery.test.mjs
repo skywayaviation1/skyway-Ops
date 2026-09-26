@@ -24,6 +24,13 @@ import {
   planContractWrite,
   shouldAttachCharterContract,
 } from '../src/charter-contract.js';
+import {
+  coverageEvent,
+  dollarsFromCents,
+  electionSourceFor,
+  eventDocId,
+  reportingFacts,
+} from '../src/aog-reporting.js';
 
 const fixtureDir = path.resolve(import.meta.dirname, 'fixtures/aog-checkout');
 
@@ -285,6 +292,58 @@ test('the same charter PDF is not duplicated, and a new one is versioned with th
   assert.equal(isUnmatchedContract({ contractAttachStatus: 'unmatched' }), false);
 });
 
+test('reporting fields are typed cents, ICAO, and an append-only event id', () => {
+  const facts = reportingFacts({
+    brokerCompany: '  Example   Charter Group ',
+    checkoutEmail: 'Broker@Example-Charter.test',
+    aircraftType: 'Citation CJ3',
+    tail: 'n100ts',
+    tripId: 'sky-test-1001',
+    routeFrom: 'APF',
+    routeTo: 'TEB',
+    itinerary: 'KAPF → KTEB → KAPF',
+    departDate: '2026-10-12',
+    returnDate: '2026-10-14',
+    tripTotal: 18500,
+    premiumCents: 27750,
+    ratePercent: 1.5,
+    coverageLevel: 'included_50',
+    paymentStatus: 'offer_pending',
+  });
+  assert.equal(facts.currency, 'usd');
+  assert.equal(facts.tripTotalCents, 1850000);
+  assert.equal(facts.premiumCents, 27750);
+  assert.equal(dollarsFromCents(facts.premiumCents), 277.5);
+  assert.equal(facts.brokerCompany, 'Example Charter Group');
+  assert.equal(facts.brokerEmail, 'broker@example-charter.test');
+  assert.equal(facts.brokerDomain, 'example-charter.test');
+  assert.equal(facts.tail, 'N100TS');
+  assert.equal(facts.tripId, 'SKY-TEST-1001');
+  assert.equal(facts.origin, 'KAPF');
+  assert.equal(facts.destination, 'KTEB');
+  assert.equal(facts.legCount, 2);
+  assert.equal(facts.departAtUtc, '2026-10-12T00:00:00.000Z');
+  assert.equal(facts.returnAtUtc, '2026-10-14T00:00:00.000Z');
+  assert.equal(facts.electionSource, null);
+  assert.equal(facts.ratePercent, 1.5);
+  assert.equal(electionSourceFor('purchased_100'), 'purchased');
+  assert.equal(electionSourceFor('gifted_100'), 'gifted');
+  assert.equal(electionSourceFor('complimentary_100'), 'complimentary_domain');
+
+  const offered = coverageEvent({
+    type: 'offer_sent',
+    atUtc: '2026-10-01T15:00:00.000Z',
+    ...facts,
+    actor: 'broker@example-charter.test',
+  });
+  assert.equal(offered.id, 'offer_sent');
+  assert.equal(offered.amountCents, 27750);
+  assert.equal(eventDocId('paid', { stripePaymentIntentId: 'pi_test_aog' }), 'paid_pi_test_aog');
+  assert.equal(eventDocId('refunded', { stripeRefundId: 're_test_aog' }), 'refunded_re_test_aog');
+  assert.equal(eventDocId('contract_signed', {}), 'contract_signed');
+  assert.throws(() => eventDocId('voided', {}), /Unknown coverage event/);
+});
+
 test('notify test mode is on unless explicitly disabled and rewrites the whole envelope', () => {
   assert.equal(notifyTestModeEnabled({}), true);
   assert.equal(notifyTestModeEnabled({ NOTIFY_TEST_MODE: '' }), true);
@@ -480,6 +539,13 @@ test('recovery mail and stripe routes are wired, and test mode is centralized', 
   assert.match(tab, /Unmatched contracts/);
   const scan = await readFile(path.join(root, 'api/aog-recovery-inbox-scan.js'), 'utf8');
   assert.match(scan, /receivedAt/);
+  const indexes = await readFile(path.join(root, 'firestore.indexes.json'), 'utf8');
+  assert.match(indexes, /brokerDomain/);
+  assert.match(indexes, /aircraftType/);
+  assert.match(indexes, /coverageEvents/);
+  assert.match(indexes, /charterContractData.departAt/);
+  assert.match(mailer, /appendCoverageEvent/);
+  assert.match(mailer, /charterContractData/);
   assert.match(main, /\/aog-coverage/);
   const stripeRoute = await readFile(path.join(root, 'api/aog-recovery-stripe-webhook.js'), 'utf8');
   assert.match(stripeRoute, /constructEvent/);

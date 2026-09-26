@@ -81,6 +81,45 @@ The trip page has **Add 100% AOG** for ops and admin (`POST /api/aog-recovery-gi
 
 The earlier accept/decline log (JetInsight invoice offers) is still available at the bottom of the tab. New checkouts do not use that flow.
 
+## Reporting data model
+
+No report screens are included. The fields below are what a later report should query. Cents and `electionSource` are canonical. Dollar fields (`tripTotal`, `premium`) are copies for the current screens and are always `cents / 100`.
+
+Collection `aogRecovery` (database `appusers`):
+
+| Field | Type |
+| --- | --- |
+| `currency` | string, always `usd` |
+| `tripTotalCents` | integer or null. Contract trip total. |
+| `premiumCents` | integer or null. `0` when the premium is not charged. |
+| `ratePercent` | number or null. Rate applied, such as `1.5` or `2`. |
+| `brokerCompany` | string. Whitespace collapsed and trimmed. |
+| `brokerEmail` | string, lower case. Same address as `checkoutEmail`. |
+| `brokerDomain` | string. The email domain. |
+| `aircraftType` | string. Rate-table name when it matched. |
+| `tail` | string, upper case. |
+| `tripId` | string, upper case. |
+| `origin`, `destination` | string ICAO. A 3-letter US code is stored with a `K` prefix. |
+| `legCount` | integer or null. Linked legs when the trip matched, otherwise airports in the route minus one. |
+| `coverageLevel` | `included_50`, `purchased_100`, `gifted_100`, `complimentary_100` |
+| `electionSource` | `purchased`, `gifted`, `complimentary_domain`, or null when coverage is still the included 50%. |
+| `paymentStatus` | `not_required`, `offer_pending`, `awaiting_payment`, `paid`, `complimentary`, `gifted`, `unavailable`, `refunded` |
+| `stripeCheckoutSessionId`, `stripePaymentIntentId`, `stripeEventId`, `stripeRefundId` | strings |
+| `departAt`, `returnAt`, `createdAt`, `updatedAt` | Firestore Timestamp |
+| `departAtUtc`, `returnAtUtc`, `createdAtUtc`, `updatedAtUtc` | UTC ISO strings for the same instants. A date with no time is UTC midnight. |
+
+Event history is append-only at `aogRecovery/{id}/coverageEvents/{eventId}`. Writers use create, so an existing event is never updated. Document id is `offer_sent`, `contract_signed`, or `bound` the first time, and `paid_{paymentIntent}` or `refunded_{refundId}` so a repeat webhook does not add a second row. A forced resend uses a new id. Event types: `offer_sent`, `contract_signed`, `paid`, `bound`, `refunded`. Each event stores `type`, `at` (Timestamp), `atUtc`, `amountCents`, `currency`, trip id, broker domain, aircraft, tail, coverage level, election source, payment status, and the Stripe ids known at that time.
+
+The signed charter contract on the trip is not only a PDF. `trip-state/{leg}.charterContractData` holds the same money, identity, aircraft, ICAO route, leg count, and Timestamp/UTC date fields. Every leg of the trip gets the same object.
+
+Composite indexes are in `firestore.indexes.json`. Deploy them to the named database, not as a ruleset:
+
+```bash
+firebase deploy --only firestore:indexes --project skyway-ops-app --database appusers
+```
+
+`firebase.json` points at that index file only. Do not deploy `firestore/aog-recovery.rules` by itself.
+
 ## Firestore
 
 Merge `firestore/aog-recovery.rules` into the **appusers** database rules. Do not deploy that file as a complete ruleset.

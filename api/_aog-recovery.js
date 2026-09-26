@@ -4,7 +4,7 @@
 
 import crypto from 'crypto';
 import admin from 'firebase-admin';
-import { getFirestore } from 'firebase-admin/firestore';
+import { getFirestore, Timestamp } from 'firebase-admin/firestore';
 import { getStorage } from 'firebase-admin/storage';
 import { applyNotifyTestMode } from './_notify-test-mode.js';
 import { deliverNotification, isInternalAddress } from './_email-transport.js';
@@ -36,6 +36,7 @@ import {
   planContractWrite,
   shouldAttachCharterContract,
 } from '../src/charter-contract.js';
+import { coverageEvent, dollarsFromCents, reportingFacts } from '../src/aog-reporting.js';
 
 const COLLECTION = 'aogRecovery';
 const CONFIG_DOC = ['aogRecoveryConfig', 'settings'];
@@ -147,6 +148,81 @@ export function coverageIdForMessage(messageId) {
 
 function sanitizeKey(value) {
   return String(value || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 200);
+}
+
+export function asUtc(value) {
+  if (!value) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value.toDate === 'function') return value.toDate().toISOString();
+  return '';
+}
+
+/** Reporting fields plus the dollar copies the current screens already read. */
+export function reportingPatch(input = {}) {
+  const facts = reportingFacts({
+    ...input,
+    departAtUtc: input.departAtUtc || asUtc(input.departAt) || input.departDate,
+    returnAtUtc: input.returnAtUtc || asUtc(input.returnAt) || input.returnDate,
+  });
+  const now = new Date();
+  const createdRaw = input.createdAt?.toDate ? input.createdAt.toDate() : (input.createdAt ? new Date(input.createdAt) : now);
+  const created = createdRaw instanceof Date && !Number.isNaN(createdRaw.getTime()) ? createdRaw : now;
+  return {
+    ...facts,
+    tripTotal: dollarsFromCents(facts.tripTotalCents),
+    premium: dollarsFromCents(facts.premiumCents),
+    checkoutEmail: facts.brokerEmail || input.checkoutEmail || '',
+    routeFrom: facts.origin || input.routeFrom || '',
+    routeTo: facts.destination || input.routeTo || '',
+    departAt: facts.departAtUtc ? Timestamp.fromDate(new Date(facts.departAtUtc)) : null,
+    returnAt: facts.returnAtUtc ? Timestamp.fromDate(new Date(facts.returnAtUtc)) : null,
+    createdAt: Timestamp.fromDate(created),
+    createdAtUtc: created.toISOString(),
+    updatedAt: Timestamp.fromDate(now),
+    updatedAtUtc: now.toISOString(),
+  };
+}
+
+export function charterContractDataPatch(input = {}) {
+  const facts = reportingFacts(input);
+  const receivedAtUtc = asUtc(input.receivedAt) || asUtc(input.source?.receivedAt) || '';
+  return {
+    currency: facts.currency,
+    tripTotalCents: facts.tripTotalCents,
+    tripId: facts.tripId,
+    brokerCompany: facts.brokerCompany,
+    brokerEmail: facts.brokerEmail,
+    brokerDomain: facts.brokerDomain,
+    aircraftType: facts.aircraftType,
+    tail: facts.tail,
+    origin: facts.origin,
+    destination: facts.destination,
+    legCount: facts.legCount,
+    departAt: facts.departAtUtc ? Timestamp.fromDate(new Date(facts.departAtUtc)) : null,
+    departAtUtc: facts.departAtUtc,
+    returnAt: facts.returnAtUtc ? Timestamp.fromDate(new Date(facts.returnAtUtc)) : null,
+    returnAtUtc: facts.returnAtUtc,
+    receivedAt: receivedAtUtc ? Timestamp.fromDate(new Date(receivedAtUtc)) : null,
+    receivedAtUtc,
+  };
+}
+
+/** Create-only. A second call with the same event id does not rewrite history. */
+export async function appendCoverageEvent(db, coverageId, input) {
+  const event = coverageEvent({ ...input, atUtc: input.atUtc || new Date().toISOString() });
+  const ref = db.collection(COLLECTION).doc(String(coverageId)).collection('coverageEvents').doc(event.id);
+  try {
+    await ref.create({
+      ...event,
+      coverageId: String(coverageId),
+      at: Timestamp.fromDate(new Date(event.atUtc)),
+    });
+    return { appended: true, id: event.id };
+  } catch (err) {
+    const already = err?.code === 6 || err?.code === 'already-exists' || /already exists/i.test(String(err?.message || ''));
+    if (already) return { appended: false, id: event.id };
+    throw err;
+  }
 }
 
 export async function loadSettings(db = recoveryDb()) {
@@ -487,7 +563,7 @@ async function currentContract(db, legs) {
  * A different PDF replaces the current object and copies the previous file
  * under versions/ before the overwrite.
  */
-export async function writeCharterContract(db, { legs, pdfBuffer, filename, source, tripKey }) {
+export async function writeCharterContract(db, { legs, pdfBuffer, filename, source, tripKey, facts }) {
   const targets = (legs || []).filter((leg) => leg?.id);
   if (!targets.length || !pdfBuffer?.length) {
     return { contractAttachStatus: 'unmatched', contractLegIds: [] };
@@ -530,8 +606,15 @@ export async function writeCharterContract(db, { legs, pdfBuffer, filename, sour
     contract = { ...contract, url, path };
   }
 
+  const charterContractData = charterContractDataPatch({
+    ...(facts || {}),
+    legCount: facts?.legCount || targets.length,
+    source,
+    receivedAt: source?.receivedAt,
+  });
   await Promise.all(targets.map((leg) => db.collection('trip-state').doc(sanitizeKey(leg.id)).set({
     charterContract: contract,
+    charterContractData,
     updatedAt: Date.now(),
   }, { merge: true })));
 
@@ -562,7 +645,14 @@ export async function attachCheckoutContract(db, { parsed, trips, pdfBuffer, fil
     console.warn('[aog-recovery] sibling leg lookup skipped:', err.message);
   }
   const tripKey = legs.find((leg) => leg.tripCode)?.tripCode || parsed?.tripId || legs[0].id;
-  return writeCharterContract(db, { legs, pdfBuffer, filename, source, tripKey });
+  return writeCharterContract(db, {
+    legs,
+    pdfBuffer,
+    filename,
+    source,
+    tripKey,
+    facts: { ...parsed, legCount: legs.length },
+  });
 }
 
 export async function resolveTripLegs(db, tripUid) {
@@ -683,8 +773,8 @@ export function serializeCoverage(id, data = {}) {
     signedAt: data.signedAt || '',
     signedName: data.signedName || '',
     emailError: data.emailError || '',
-    createdAt: data.createdAt || '',
-    updatedAt: data.updatedAt || '',
+    createdAt: asUtc(data.createdAtUtc || data.createdAt),
+    updatedAt: asUtc(data.updatedAtUtc || data.updatedAt),
     parserVersion: data.parserVersion || '',
     graphMessageId: data.graphMessageId || '',
     addedBy: data.addedBy || '',
@@ -695,6 +785,20 @@ export function serializeCoverage(id, data = {}) {
     contractAmbiguous: data.contractAmbiguous === true,
     contractSource: data.contractSource || null,
     contractAttachError: data.contractAttachError || '',
+    currency: data.currency || 'usd',
+    tripTotalCents: Number.isInteger(data.tripTotalCents) ? data.tripTotalCents : null,
+    brokerEmail: data.brokerEmail || data.checkoutEmail || '',
+    brokerDomain: data.brokerDomain || '',
+    origin: data.origin || data.routeFrom || '',
+    destination: data.destination || data.routeTo || '',
+    legCount: Number.isInteger(data.legCount) ? data.legCount : null,
+    electionSource: data.electionSource ?? null,
+    departAtUtc: data.departAtUtc || asUtc(data.departAt),
+    returnAtUtc: data.returnAtUtc || asUtc(data.returnAt),
+    stripeCheckoutSessionId: data.stripeCheckoutSessionId || '',
+    stripePaymentIntentId: data.stripePaymentIntentId || '',
+    stripeEventId: data.stripeEventId || '',
+    stripeRefundId: data.stripeRefundId || '',
   };
 }
 
@@ -726,6 +830,15 @@ export async function dispatchCoverageEmails(db, id, record, { baseUrl, force = 
       patch.offerTokenHash = hashOfferToken(token);
       patch.offerSentAt = new Date().toISOString();
       patch.paymentStatus = 'offer_pending';
+      await appendCoverageEvent(db, id, {
+        type: 'offer_sent',
+        force,
+        atUtc: patch.offerSentAt,
+        ...record,
+        paymentStatus: 'offer_pending',
+        amountCents: record.premiumCents,
+        actor: record.checkoutEmail || '',
+      }).catch((err) => errors.push(`offer event: ${err.message}`));
     } else errors.push(sent.error || 'offer email failed');
   }
 
@@ -756,8 +869,17 @@ export async function dispatchCoverageEmails(db, id, record, { baseUrl, force = 
       text: letter.text,
       attachments: [election.file, charter.file].filter(Boolean),
     });
-    if (sent.ok) patch.bindEmailSentAt = new Date().toISOString();
-    else errors.push(sent.error || 'bind email failed');
+    if (sent.ok) {
+      patch.bindEmailSentAt = new Date().toISOString();
+      await appendCoverageEvent(db, id, {
+        type: 'bound',
+        force,
+        atUtc: patch.bindEmailSentAt,
+        ...record,
+        amountCents: record.premiumCents,
+        actor: record.electedBy || record.checkoutEmail || '',
+      }).catch((err) => errors.push(`bind event: ${err.message}`));
+    } else errors.push(sent.error || 'bind email failed');
   }
 
   if (emails.includes('broker_paid') && record.checkoutEmail && (force || !record.brokerConfirmSentAt)) {
@@ -789,10 +911,14 @@ export async function ingestParsedCheckout(db, { messageId, parsed, pdfBuffer, p
   const match = matchCoverageToTrips(parsed, trips);
   const draft = buildCoverageDraft({ parsed, settings, match, messageId });
   const now = new Date().toISOString();
+  const legCount = match?.status === 'linked' ? match.matches.length : undefined;
   const record = {
     ...draft,
-    createdAt: existing.exists ? (existing.data().createdAt || now) : now,
-    updatedAt: now,
+    ...reportingPatch({
+      ...draft,
+      legCount,
+      createdAt: existing.exists ? (existing.data().createdAt || now) : now,
+    }),
   };
 
   const contractSource = source || {
@@ -895,8 +1021,16 @@ export async function applySignature(db, recordRef, record, { fullName, agreed, 
     signedUserAgent: signature.userAgent,
     termsVersion: AOG_COVERAGE_TERMS_VERSION,
     electionContractPath: path,
-    updatedAt: signedAt,
+    updatedAt: Timestamp.fromDate(new Date(signedAt)),
+    updatedAtUtc: signedAt,
   }, { merge: true });
+  await appendCoverageEvent(db, recordRef.id, {
+    type: 'contract_signed',
+    atUtc: signedAt,
+    ...record,
+    actor: name,
+    amountCents: Number.isInteger(record.premiumCents) ? record.premiumCents : null,
+  });
   return { signedAt, path };
 }
 

@@ -9,6 +9,7 @@ import {
   publicCoverageView,
   readJson,
   recoveryDb,
+  reportingPatch,
   requestClient,
 } from './_aog-recovery.js';
 
@@ -88,10 +89,13 @@ export default async function handler(req, res) {
       });
       const session = await stripeClient().checkout.sessions.create(params);
       await found.ref.set({
-        stripeCheckoutSessionId: session.id,
+        ...reportingPatch({
+          ...current,
+          paymentStatus: 'awaiting_payment',
+          stripeCheckoutSessionId: session.id,
+          createdAt: current.createdAt,
+        }),
         stripeAmountCents: current.premiumCents,
-        paymentStatus: 'awaiting_payment',
-        updatedAt: new Date().toISOString(),
       }, { merge: true });
       res.status(200).json({ ok: true, url: session.url });
       return;

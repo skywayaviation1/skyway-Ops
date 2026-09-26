@@ -17,6 +17,7 @@ export const PAYMENT_STATUSES = Object.freeze({
   complimentary: 'Complimentary',
   gifted: 'Gifted',
   unavailable: 'Upgrade unavailable',
+  refunded: 'Refunded',
 });
 
 export const CFS_BIND_TO = 'charter@charterflightsupport.com';

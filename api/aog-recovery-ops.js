@@ -13,6 +13,7 @@ import {
   readPdf,
   recoveryDb,
   recomputeOffer,
+  reportingPatch,
   resolveTripLegs,
   serializeCoverage,
   writeCharterContract,
@@ -106,6 +107,7 @@ export default async function handler(req, res) {
             sender: record.checkoutEmail || '',
           },
           tripKey: legs.find((leg) => leg.tripCode)?.tripCode || record.tripId || tripUid,
+          facts: { ...record, legCount: legs.length },
         });
         Object.assign(patch, {
           contractAttachStatus: attached.contractAttachStatus,
@@ -184,6 +186,13 @@ export default async function handler(req, res) {
       });
       patch.uncertainFields = stillUncertain;
       patch.needsReview = stillUncertain.length > 0 || next.matchStatus !== 'linked';
+      Object.assign(patch, reportingPatch({
+        ...record,
+        ...next,
+        ...patch,
+        brokerEmail: patch.checkoutEmail || next.checkoutEmail || '',
+        createdAt: record.createdAt,
+      }));
       await ref.set(patch, { merge: true });
       const saved = { ...next, ...patch };
       if (patch.coverageLevel === 'complimentary_100') {

@@ -10,6 +10,7 @@ import {
   publicBaseUrl,
   readJson,
   recoveryDb,
+  reportingPatch,
 } from './_aog-recovery.js';
 
 export const config = { runtime: 'nodejs' };
@@ -91,9 +92,9 @@ export default async function handler(req, res) {
       charterContractPath: existing?.data()?.charterContractPath || '',
       charterContractFilename: existing?.data()?.charterContractFilename || '',
       electionContractPath: existing?.data()?.electionContractPath || '',
-      updatedAt: now,
       createdAt: existing?.data()?.createdAt || now,
     };
+    Object.assign(record, reportingPatch(record));
     if (!Number.isFinite(record.tripTotal)) record.needsReview = true;
 
     const ref = existing ? existing.ref : db.collection(COLLECTION).doc();

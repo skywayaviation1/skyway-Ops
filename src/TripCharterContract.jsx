@@ -27,11 +27,18 @@ function when(value) {
   });
 }
 
-export function CharterContractDocument({ contract, onOpen }) {
+function money(cents) {
+  if (!Number.isInteger(cents)) return '';
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(cents / 100);
+}
+
+export function CharterContractDocument({ contract, facts, onOpen }) {
   if (!contract?.path && !contract?.url) return null;
   const source = contract.source || {};
   const received = when(source.receivedAt);
   const versions = Array.isArray(contract.versions) ? contract.versions.length : 0;
+  const route = [facts?.origin, facts?.destination].filter(Boolean).join(' → ');
+  const total = money(facts?.tripTotalCents);
   return (
     <section className="mx-4 mt-3 rounded-lg border border-edge bg-surface px-3 py-3 md:mx-6" aria-label="Trip documents">
       <h2 className="text-2xs uppercase tracking-[0.14em] text-content-muted">Documents</h2>
@@ -39,6 +46,11 @@ export function CharterContractDocument({ contract, onOpen }) {
         <div>
           <p className="text-sm font-medium text-content">Signed charter contract</p>
           <p className="text-xs text-content-muted">{contract.filename || 'charter-contract.pdf'}</p>
+          {(facts?.tripId || route || total) && (
+            <p className="mt-1 text-xs text-content">
+              {[facts?.tripId, facts?.tail, route, total].filter(Boolean).join(' · ')}
+            </p>
+          )}
           <p className="mt-1 text-xs text-content-muted">
             From {source.sender || 'unknown sender'}
             {received ? ` · received ${received}` : ''}
@@ -66,13 +78,16 @@ export function CharterContractDocument({ contract, onOpen }) {
 
 export default function TripCharterContract({ tripUid }) {
   const [contract, setContract] = useState(null);
+  const [facts, setFacts] = useState(null);
 
   useEffect(() => {
     const id = safeTripId(tripUid);
     if (!id) return undefined;
     return onSnapshot(doc(db, 'trip-state', id), (snap) => {
-      setContract(snap.exists() ? (snap.data()?.charterContract || null) : null);
-    }, () => setContract(null));
+      const data = snap.exists() ? snap.data() || {} : {};
+      setContract(data.charterContract || null);
+      setFacts(data.charterContractData || null);
+    }, () => { setContract(null); setFacts(null); });
   }, [tripUid]);
 
   async function open() {
@@ -85,5 +100,5 @@ export default function TripCharterContract({ tripUid }) {
     }
   }
 
-  return <CharterContractDocument contract={contract} onOpen={open} />;
+  return <CharterContractDocument contract={contract} facts={facts} onOpen={open} />;
 }

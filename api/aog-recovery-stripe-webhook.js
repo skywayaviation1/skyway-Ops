@@ -6,9 +6,11 @@ import { stripeClient } from './_aog-stripe.js';
 import { paymentDecision } from '../src/aog-recovery.js';
 import {
   COLLECTION,
+  appendCoverageEvent,
   dispatchCoverageEmails,
   publicBaseUrl,
   recoveryDb,
+  reportingPatch,
 } from './_aog-recovery.js';
 
 export const config = {
@@ -43,6 +45,51 @@ export default async function handler(req, res) {
     event = stripeClient().webhooks.constructEvent(raw, signature, secret);
   } catch (err) {
     res.status(400).json({ error: `Webhook signature failed: ${err.message}` });
+    return;
+  }
+
+  if (event.type === 'charge.refunded') {
+    try {
+      const charge = event.data?.object || {};
+      const paymentIntentId = String(charge.payment_intent || '');
+      const refundId = charge.refunds?.data?.[0]?.id || '';
+      if (!paymentIntentId) {
+        res.status(200).json({ ok: true, ignored: 'refund without payment intent' });
+        return;
+      }
+      const db = recoveryDb();
+      const snap = await db.collection(COLLECTION).where('stripePaymentIntentId', '==', paymentIntentId).limit(1).get();
+      if (snap.empty) {
+        res.status(200).json({ ok: true, ignored: 'refund for unknown coverage' });
+        return;
+      }
+      const docSnap = snap.docs[0];
+      const record = { id: docSnap.id, ...docSnap.data() };
+      const atUtc = new Date().toISOString();
+      await docSnap.ref.set({
+        ...reportingPatch({
+          ...record,
+          paymentStatus: 'refunded',
+          stripeRefundId: refundId,
+          stripeEventId: event.id,
+          createdAt: record.createdAt,
+        }),
+      }, { merge: true });
+      await appendCoverageEvent(db, docSnap.id, {
+        type: 'refunded',
+        atUtc,
+        ...record,
+        paymentStatus: 'refunded',
+        stripeRefundId: refundId,
+        stripeEventId: event.id,
+        amountCents: charge.amount_refunded,
+        actor: 'stripe',
+      });
+      res.status(200).json({ ok: true, action: 'refunded' });
+    } catch (err) {
+      console.error('[aog-recovery] refund handling failed', err.message);
+      res.status(500).json({ error: 'Webhook handling failed' });
+    }
     return;
   }
 
@@ -81,28 +128,38 @@ export default async function handler(req, res) {
       return;
     }
 
+    const paymentIntentId = typeof session.payment_intent === 'string' ? session.payment_intent : '';
+    const paidAt = new Date().toISOString();
     const paid = {
       ...record,
       coverageLevel: 'purchased_100',
+      electionSource: 'purchased',
       paymentStatus: 'paid',
+      premiumCents: decision.amountCents,
       premium: decision.amountCents / 100,
       stripeReference: decision.stripeReference,
+      stripePaymentIntentId: paymentIntentId,
+      stripeCheckoutSessionId: session.id || record.stripeCheckoutSessionId || '',
+      stripeEventId: event.id,
       electedBy: record.signedName
         ? `${record.signedName} <${record.checkoutEmail || ''}>`.trim()
         : (record.checkoutEmail || 'Broker'),
       emailsToSend: ['cfs_bind', 'broker_paid'],
     };
     await ref.set({
-      coverageLevel: paid.coverageLevel,
-      paymentStatus: 'paid',
-      premium: paid.premium,
+      ...reportingPatch({ ...paid, createdAt: record.createdAt }),
       stripeReference: paid.stripeReference,
-      stripeEventId: event.id,
       electedBy: paid.electedBy,
-      paidAt: new Date().toISOString(),
+      paidAt,
       paymentMismatch: false,
-      updatedAt: new Date().toISOString(),
     }, { merge: true });
+    await appendCoverageEvent(db, snap.id, {
+      type: 'paid',
+      atUtc: paidAt,
+      ...paid,
+      amountCents: decision.amountCents,
+      actor: paid.electedBy,
+    });
     await dispatchCoverageEmails(db, snap.id, paid, { baseUrl: publicBaseUrl(req) });
     res.status(200).json({ ok: true, action: 'capture' });
   } catch (err) {

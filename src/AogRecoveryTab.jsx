@@ -19,7 +19,7 @@ import { contractIsOnTrip, isUnmatchedContract } from './charter-contract.js';
 const LegacyAogTab = lazy(() => import('./AogTab.jsx'));
 
 const LEVEL_OPTIONS = ['', 'included_50', 'purchased_100', 'gifted_100', 'complimentary_100'];
-const PAYMENT_OPTIONS = ['', 'not_required', 'offer_pending', 'awaiting_payment', 'paid', 'complimentary', 'gifted', 'unavailable'];
+const PAYMENT_OPTIONS = ['', 'not_required', 'offer_pending', 'awaiting_payment', 'paid', 'complimentary', 'gifted', 'unavailable', 'refunded'];
 
 async function authPost(url, body) {
   const idToken = await auth.currentUser?.getIdToken();
