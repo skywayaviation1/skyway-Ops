@@ -927,7 +927,7 @@ async function portalShots(page) {
   await page.getByRole('button', { name: 'Acknowledge coverage' }).click();
   const acknowledged = page.getByRole('heading', { name: 'Coverage acknowledged' });
   await acknowledged.waitFor({ timeout: 20000 });
-  await acknowledged.evaluate((el) => el.scrollIntoView({ block: 'center' }));
+  await page.locator('.cfs-success').evaluate((el) => el.scrollIntoView({ block: 'start' }));
   await page.getByText('Signed in.').waitFor({ state: 'hidden', timeout: 1000 }).catch(() => {});
   await shot(page, 'cfs-ack-success');
 
@@ -945,9 +945,10 @@ async function portalShots(page) {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.getByRole('button', { name: 'Monthly statement' }).click();
   await page.getByRole('button', { name: 'Show statement' }).click();
-  await page.getByText('N6C2WT').waitFor({ timeout: 15000 });
-  await page.getByText(/Coverage value total/).waitFor();
-  await page.getByText('N6C2WT').evaluate((el) => el.scrollIntoView({ block: 'center' }));
+  const statementId = page.locator('.cfs-table .cfs-trip-id', { hasText: 'N6C2WT' });
+  await statementId.waitFor({ timeout: 15000 });
+  await page.locator('.cfs-totals').getByText(/Coverage value total/).waitFor();
+  await page.locator('.cfs-table').evaluate((el) => el.scrollIntoView({ block: 'start' }));
   await shot(page, 'cfs-statement');
 
   await page.setViewportSize({ width: 1280, height: 900 });
