@@ -20,7 +20,8 @@
     "marketing:capture": "node scripts/capture-marketing-shots.mjs",
     "preview:stubs": "node scripts/check-preview-stubs.mjs",
     "logo:elite": "node scripts/build-elite-logo.mjs",
-    "currency:import-report": "node scripts/import-currency-report.mjs"
+    "currency:import-report": "node scripts/import-currency-report.mjs",
+    "wyvern:import": "node scripts/import-wyvern.mjs"
   },
   "dependencies": {
     "@capacitor-firebase/authentication": "^8.3.0",

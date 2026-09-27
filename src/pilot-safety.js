@@ -346,7 +346,27 @@ export function emptyLogbook(uid = '', pilotName = '') {
       programName: '',
     },
     internalNotes: '',
+    wyvern: null,
   };
+}
+
+function normalizeWyvernStamp(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const importedAt = Number(raw.importedAt);
+  const stamp = {
+    id: String(raw.id || '').trim().slice(0, 80),
+    source: 'Wyvern',
+    importedAt: Number.isFinite(importedAt) ? importedAt : null,
+    hoursAsOf: /^\d{4}-\d{2}-\d{2}$/.test(raw.hoursAsOf || '') ? raw.hoursAsOf : '',
+    verificationStatus: String(raw.verificationStatus || '').slice(0, 80),
+    position: String(raw.position || '').slice(0, 40),
+  };
+  const empty = !stamp.id
+    && stamp.importedAt == null
+    && !stamp.hoursAsOf
+    && !stamp.verificationStatus
+    && !stamp.position;
+  return empty ? null : stamp;
 }
 
 function asStringList(value) {
@@ -392,6 +412,7 @@ export function normalizeLogbook(raw, uid = '') {
     : '';
   book.drugAlcohol.programName = String(raw.drugAlcohol?.programName || '').slice(0, 80);
   book.internalNotes = String(raw.internalNotes || '').slice(0, 2000);
+  book.wyvern = normalizeWyvernStamp(raw.wyvern);
   return book;
 }
 
@@ -860,6 +881,8 @@ const BANNED_REPORT_KEYS = [
   'notes',
   'email',
   'phone',
+  'wyvern',
+  'wyvernId',
 ];
 
 function assertBrokerSafe(value, path = 'report') {

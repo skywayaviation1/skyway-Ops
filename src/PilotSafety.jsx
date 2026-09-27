@@ -5,7 +5,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import {
-  Download, Eye, Mail, Plus, Save, ShieldCheck, Trash2, X,
+  Download, Eye, Mail, Plus, Save, ShieldCheck, Trash2, Upload, X,
 } from 'lucide-react';
 import { brand } from './brand.js';
 import BrokerPilotReport, { PilotRatingBadge } from './BrokerPilotReport.jsx';
@@ -22,6 +22,7 @@ import {
   summarizeDutyFlightHours,
 } from './pilot-safety.js';
 import { usePilotSafetyData } from './use-pilot-safety-data.js';
+import WyvernImporter from './WyvernImporter.jsx';
 
 const TIER_ORDER = { doesNotMeet: 0, caution: 1, meets: 2 };
 
@@ -35,6 +36,7 @@ export default function PilotSafetyScreen({ currentUser, users = [] }) {
   const [banner, setBanner] = useState(null);
   const [showReport, setShowReport] = useState(false);
   const [showEmail, setShowEmail] = useState(false);
+  const [showImport, setShowImport] = useState(false);
 
   const pilots = useMemo(() => {
     const list = data.viewAll
@@ -131,12 +133,24 @@ export default function PilotSafetyScreen({ currentUser, users = [] }) {
               PILOT SAFETY RATING
             </h1>
           </div>
-          <input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search pilot…"
-            className="w-full max-w-xs border border-slate-800 bg-slate-950 px-2 py-1.5 text-xs text-slate-100 sm:w-56"
-          />
+          <div className="flex flex-wrap items-center gap-2">
+            {data.canEdit && (
+              <button
+                type="button"
+                onClick={() => setShowImport(true)}
+                className="inline-flex items-center gap-1 border border-cyan-500/50 px-2 py-1.5 text-[10px] tracking-widest text-cyan-200"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              >
+                <Upload className="h-3.5 w-3.5" /> IMPORT FROM WYVERN
+              </button>
+            )}
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search pilot…"
+              className="w-full max-w-xs border border-slate-800 bg-slate-950 px-2 py-1.5 text-xs text-slate-100 sm:w-56"
+            />
+          </div>
         </div>
         <p className="mt-2 text-[11px] leading-relaxed text-amber-100/80">
           {data.standards?.customized
@@ -355,6 +369,23 @@ export default function PilotSafetyScreen({ currentUser, users = [] }) {
         <EmailPilotReport
           pilot={selected.pilot}
           onClose={() => setShowEmail(false)}
+        />
+      )}
+      {showImport && data.canEdit && (
+        <WyvernImporter
+          users={users}
+          currentUser={currentUser}
+          logbooks={data.logbooks}
+          currencies={data.currencies}
+          onClose={() => setShowImport(false)}
+          onImported={({ written, errors }) => {
+            setBanner({
+              ok: errors === 0,
+              text: errors
+                ? `Imported ${written} pilot${written === 1 ? '' : 's'} from Wyvern. ${errors} failed.`
+                : `Imported ${written} pilot${written === 1 ? '' : 's'} from Wyvern. Ratings use the updated records.`,
+            });
+          }}
         />
       )}
     </div>

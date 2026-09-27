@@ -23,6 +23,9 @@ The rating is an operator-owned crew vetting summary. It is not a WYVERN Ltd PAS
   },
   drugAlcohol: { enrolled: true | false | null, enrolledDate, programName },
   internalNotes,          // never copied onto a broker report
+  wyvern: {               // present after an ACES import; never copied onto a broker report
+    id, source: 'Wyvern', importedAt, hoursAsOf, verificationStatus, position
+  },
   updatedAt, updatedBy, updatedByName
 }
 ```
@@ -41,6 +44,23 @@ Checks, training, and the medical class/expiration used day to day stay on the e
 - drug and alcohol enrollment on the logbook
 
 `last90Days` and `last12Months` use the logbook figure when one is saved. If that field is blank, flight time already recorded on `duty-periods-v2` fills it. The source is shown on the rating breakdown.
+
+## Import from Wyvern
+
+Pilot Safety → Import from Wyvern accepts the operator’s ACES export as JSON (an array, or an object with `pilots`, `records`, `data`, or `crew`) or as a CSV with a header row. Field names are matched loosely (`pilotName` / `name`, `flightHours.totalTime` / `Total Time`, `135.297 Completed`, and so on) because the export columns are not fixed yet.
+
+Only rows marked active (`Active`, `Active Pilot`, `current`, `employed`) are imported. Everyone else is listed and skipped. Each active row is matched to an existing user by email, then by normalized name (including `Last, First`), then by a Wyvern ID already stored on that pilot’s logbook. Ambiguous matches stay unmatched until an admin picks the pilot or skips the row.
+
+The preview splits the file into matched, conflicts, and unmatched. A conflict is a saved hour, certificate, medical, or check date that the file would change. Importing overwrites those fields with the Wyvern values. Fields the file leaves blank stay as they are. The write uses `pilot-logbooks/{uid}` and, when the file includes a medical or a check, `pilot-currencies/{uid}`, so a second import updates the same documents. The screen recomputes the safety rating from those records. Each imported logbook stores `wyvern.source`, `wyvern.importedAt`, the Wyvern ID, the hours as-of date, verification status, and position. Phone numbers, certificate numbers, dates of birth, addresses, and document files are not written.
+
+The same rules run from a laptop with a service account:
+
+```
+FIREBASE_SERVICE_ACCOUNT_JSON='...' node scripts/import-wyvern.mjs ./wyvern-pilots.json
+FIREBASE_SERVICE_ACCOUNT_JSON='...' node scripts/import-wyvern.mjs ./wyvern-pilots.json --apply
+```
+
+That command is a dry run until `--apply`. It refuses to write while any active pilot is unmatched or ambiguous. `--skip-unmatched` updates the matched rows and leaves the rest. `preview/fixtures/wyvern-sample.json` is fictitious sample data for the preview harness and tests.
 
 ## How the tier is decided
 
