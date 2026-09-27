@@ -3,6 +3,7 @@
 // Firestore Timestamps as well. This module does not import Firebase.
 
 import { emailDomain } from './aog-recovery.js';
+import { normalizeTripId } from './trip-id.js';
 
 export const COVERAGE_CURRENCY = 'usd';
 
@@ -12,6 +13,8 @@ export const EVENT_TYPES = Object.freeze([
   'paid',
   'bound',
   'refunded',
+  'broker_backfilled',
+  'broker_mismatch',
 ]);
 
 /** 100% was chosen by a purchase, a Skyway gift, or a complimentary domain. Included 50% is not an election. */
@@ -88,7 +91,7 @@ export function reportingFacts(input = {}) {
     brokerDomain: emailDomain(brokerEmail),
     aircraftType: String(input.aircraftType || '').replace(/\s+/g, ' ').trim().slice(0, 80),
     tail: String(input.tail || '').replace(/\s+/g, '').toUpperCase().slice(0, 12),
-    tripId: String(input.tripId || '').trim().toUpperCase().slice(0, 80),
+    tripId: normalizeTripId(input.tripId),
     origin: toIcao(input.origin || input.routeFrom),
     destination: toIcao(input.destination || input.routeTo),
     legCount: legCountFromRoute(input.itinerary || input.route, input.legCount),
@@ -121,6 +124,9 @@ export function eventDocId(type, { stripePaymentIntentId, stripeEventId, stripeR
   if (type === 'paid') return `paid_${stripePaymentIntentId || stripeEventId || atUtc || 'unknown'}`;
   if (type === 'refunded') return `refunded_${stripeRefundId || stripeEventId || atUtc || 'unknown'}`;
   if (type === 'contract_signed') return 'contract_signed';
+  if (type === 'broker_backfilled' || type === 'broker_mismatch') {
+    return `${type}_${String(atUtc || '').replace(/[:.]/g, '')}`;
+  }
   if (force) return `${type}_${String(atUtc || '').replace(/[:.]/g, '')}`;
   return type;
 }
@@ -153,5 +159,6 @@ export function coverageEvent(input = {}) {
     stripeEventId: facts.stripeEventId,
     stripeRefundId: facts.stripeRefundId,
     actor: String(input.actor || '').slice(0, 160),
+    detail: String(input.detail || '').slice(0, 500),
   };
 }

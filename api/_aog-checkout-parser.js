@@ -14,13 +14,17 @@
 // Input: { subject, from, bodyText, attachmentNames, attachmentText, hasPdf }
 // Output: structured trip fields, per-field confidence, and isCheckout.
 
+import { normalizeTripId } from '../src/trip-id.js';
+
 export const PARSER_VERSION = 'provisional-1';
 
 const CHECKOUT_SIGNAL = /\b(checkout|charter agreement|charter contract|signed contract|signed agreement|trip total|charter total|contract total)\b/i;
 
 const TOTAL_LABEL = /(?:trip\s*total|charter\s*total|grand\s*total|total\s*due|contract\s*total|amount\s*due)\s*[:#-]?\s*\$?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2})?|[0-9]+(?:\.[0-9]{2})?)/gi;
 
-const TRIP_ID_LABEL = /(?:trip\s*(?:id|#|number|no\.?|code)|confirmation(?:\s*(?:#|number|code))?|charter\s*(?:#|id|number))\s*[:#-]?\s*([A-Z0-9][A-Z0-9-]{2,40})|\btrip\s+([A-Z][A-Z0-9-]*\d[A-Z0-9-]*)\b/gi;
+const TRIP_ID_LABEL = /(?:(?:passenger|crew)\s+itinerary\s*\(\s*([A-Z0-9]{6,7})\s*\)|(?:trip\s*(?:id|code)|confirmation\s*code)\s*[:#-]?\s*([A-Z0-9]{6,7})\b|\btrip\s+(?!id\b|code\b|number\b|no\b|total\b|date\b)([A-Z0-9]{6,7})\b)/gi;
+
+const PHONE_LABEL = /(?:broker\s*)?phone\s*[:#-]\s*(\+?\(?[0-9][0-9().\-\s]{6,20}[0-9])/gi;
 
 const AIRCRAFT_LABEL = /(?:aircraft(?:\s*type)?|equipment|a\/c)\s*[:#-]\s*([^\n]{2,60})/gi;
 
@@ -154,13 +158,8 @@ export function parseCheckoutEmail(input = {}, options = {}) {
   const notes = [];
   const confidence = {};
 
-  let tripIds = unique(allMatches(TRIP_ID_LABEL, body).map((value) => value.toUpperCase()).filter((value) => /\d/.test(value)));
-  let tripIdConfidence = tripIds.length === 1 ? 'high' : (tripIds.length > 1 ? 'low' : 'missing');
-  if (tripIds.length === 0) {
-    tripIds = unique(String(body).toUpperCase().match(/\b[A-Z]{2,}(?:-[A-Z0-9]+){2,}\b/g) || []);
-    tripIdConfidence = tripIds.length === 1 ? 'low' : (tripIds.length > 1 ? 'low' : 'missing');
-    if (tripIds.length === 1) notes.push('Trip id was inferred from a code in the message, not a labeled field');
-  }
+  const tripIds = unique(allMatches(TRIP_ID_LABEL, body).map((value) => normalizeTripId(value)).filter(Boolean));
+  const tripIdConfidence = tripIds.length === 1 ? 'high' : (tripIds.length > 1 ? 'low' : 'missing');
   const tripId = tripIds[0] || null;
   confidence.tripId = tripIdConfidence;
   if (tripIds.length > 1) notes.push(`Multiple trip ids: ${tripIds.join(', ')}`);
@@ -251,6 +250,7 @@ export function parseCheckoutEmail(input = {}, options = {}) {
     .filter((value) => value && !value.includes('@') && !/^checkout$/i.test(value));
   const brokerCompany = companies[0] || '';
   confidence.brokerCompany = companies.length === 1 ? 'high' : (companies.length > 1 ? 'low' : 'missing');
+  const brokerPhone = (allMatches(PHONE_LABEL, body)[0] || '').replace(/\s+/g, ' ').trim();
 
   const haystack = `${subject}\n${input.bodyText || ''}\n${attachmentNames.join('\n')}`;
   const signal = CHECKOUT_SIGNAL.test(haystack);
@@ -287,6 +287,7 @@ export function parseCheckoutEmail(input = {}, options = {}) {
     tripTotal,
     checkoutEmail,
     brokerCompany,
+    brokerPhone,
     confidence,
     uncertainFields: isCheckout ? uncertainFields : [],
     notes: isCheckout ? notes : (skipReason ? [skipReason] : []),

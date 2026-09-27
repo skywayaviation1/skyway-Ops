@@ -2,6 +2,7 @@
 // with coverage overlaid. Writes go through the Admin SDK routes.
 
 import { Suspense, lazy, useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { collection, limit, onSnapshot, orderBy, query } from 'firebase/firestore';
 import { Download, RefreshCw } from 'lucide-react';
 import { auth, db } from './firebase.js';
@@ -14,6 +15,8 @@ import {
   premiumLabel,
 } from './aog-recovery.js';
 import { isUnmatchedContract } from './charter-contract.js';
+import { planBrokerBackfill } from './broker-backfill.js';
+import { normalizeTripId } from './trip-id.js';
 import {
   TRIP_PAGE_SIZE,
   buildTripRows,
@@ -301,7 +304,7 @@ export default function AogRecoveryTab({ currentUser, scheduleTrips = [] }) {
       {panel === 'trips' && (
         <>
           <div className="mb-3 flex flex-wrap items-center gap-2">
-            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search trip, broker, tail" aria-label="Search trips" className="h-8 rounded border border-edge bg-surface px-2 text-sm" />
+            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search trip ID, broker, tail" aria-label="Search trips" className="h-8 rounded border border-edge bg-surface px-2 text-sm" />
             <select aria-label="Trip window" value={windowName} onChange={(event) => setWindowName(event.target.value)} className="h-8 rounded border border-edge bg-surface px-2 text-sm">
               <option value="current">Upcoming and recent</option>
               <option value="upcoming">Upcoming</option>
@@ -356,7 +359,7 @@ export default function AogRecoveryTab({ currentUser, scheduleTrips = [] }) {
                     className={cx('cursor-pointer border-t border-edge hover:bg-surface-raised', selectedKey === row.groupKey && 'bg-accent-soft')}
                   >
                     <td className="px-2 py-2 font-mono">
-                      {row.tripId}
+                      {row.tripId || '—'}
                       {row.legCount > 1 && <div className="text-2xs text-content-muted">{row.legCount} legs</div>}
                     </td>
                     <td className="px-2 py-2">{row.datesLabel || '—'}</td>
@@ -420,13 +423,52 @@ function TripDrawer({ row, settings, busy, setBusy, setError, setBanner, onClose
   const [review, setReview] = useState(null);
   const [pdfFile, setPdfFile] = useState(null);
   const [giftArmed, setGiftArmed] = useState(false);
+  const [tripBroker, setTripBroker] = useState(null);
+  const view = useMemo(() => ({
+    ...row,
+    tripId: row.tripId || tripBroker?.tripId || '',
+    brokerCompany: row.brokerCompany || tripBroker?.brokerCompany || '',
+    brokerEmail: row.brokerEmail || tripBroker?.brokerEmail || '',
+    brokerPhone: row.brokerPhone || tripBroker?.brokerPhone || '',
+    aircraft: row.aircraft || tripBroker?.aircraft || '',
+  }), [row, tripBroker]);
   const [fields, setFields] = useState(() => fieldState(row, null));
   const locked = row.paymentStatus === 'paid' || row.coverageLevel === 'purchased_100';
 
   useEffect(() => {
-    setFields(fieldState(row, review));
+    let cancelled = false;
+    setTripBroker(null);
+    (async () => {
+      const { doc, getDoc } = await import('firebase/firestore');
+      for (const uid of row.legUids || []) {
+        try {
+          const snap = await getDoc(doc(db, 'trip-state', uid));
+          if (cancelled || !snap.exists()) continue;
+          const data = snap.data() || {};
+          const sheet = data.tripSheetData || {};
+          const next = {
+            tripId: normalizeTripId(sheet.tripCode),
+            brokerCompany: data.brokerCompany || sheet.client || '',
+            brokerEmail: data.brokerEmail || '',
+            brokerPhone: data.brokerPhone || '',
+            aircraft: sheet.aircraftType || '',
+          };
+          if (next.tripId || next.brokerEmail || next.brokerCompany || next.aircraft) {
+            setTripBroker(next);
+            break;
+          }
+        } catch {
+          /* The schedule row is enough when trip-state cannot be read. */
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [row.groupKey]);
+
+  useEffect(() => {
+    setFields(fieldState(view, review));
     setGiftArmed(false);
-  }, [row.groupKey, row.coverageId, row.tripTotal, row.brokerEmail, review]);
+  }, [view, review]);
 
   useEffect(() => {
     if (!row.coverageId) {
@@ -590,24 +632,31 @@ function TripDrawer({ row, settings, busy, setBusy, setError, setBanner, onClose
     aircraftType: fields.aircraftType,
     tripTotal: fields.tripTotal,
   }, { rates: settings?.rates, complimentaryDomains: settings?.complimentaryDomains });
+  const brokerPlan = review?.parsed
+    ? planBrokerBackfill(view, {
+      brokerCompany: review.parsed.brokerCompany,
+      brokerEmail: review.parsed.checkoutEmail,
+      brokerPhone: review.parsed.brokerPhone,
+    })
+    : null;
 
-  return (
-    <div className="fixed inset-0 z-40 flex justify-end bg-black/40" onClick={onClose}>
+  const sheet = (
+    <div className="sw-sheet justify-end bg-black/40" onClick={onClose}>
       <div
         role="dialog"
-        aria-label={`Trip ${row.tripId}`}
-        className="h-full w-full max-w-xl overflow-y-auto bg-surface p-4 shadow-xl"
+        aria-label={`Trip ${view.tripId || 'unassigned'}`}
+        className="sw-sheet-panel sw-sheet-fill ml-auto w-full max-w-xl border-l border-edge shadow-xl"
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="flex items-start justify-between gap-3">
+        <div className="flex shrink-0 items-start justify-between gap-3 border-b border-edge bg-surface px-4 py-3">
           <div>
-            <h2 className="text-sm font-semibold">{row.tripId}</h2>
+            <h2 className="text-sm font-semibold">{view.tripId || 'No trip ID'}</h2>
             <p className="text-xs text-content-muted">{row.datesLabel || 'Dates unknown'} · {row.route || 'Route unknown'} · {row.legCount} leg{row.legCount === 1 ? '' : 's'}</p>
           </div>
           <Button size="sm" variant="ghost" onClick={onClose}>Close</Button>
         </div>
-
-        <div className="mt-3 flex flex-wrap gap-2">
+        <div className="sw-sheet-body px-4 py-3">
+        <div className="flex flex-wrap gap-2">
           <label className="inline-flex">
             <input type="file" accept="application/pdf,.pdf" className="sr-only" aria-label="Charter contract PDF" onChange={onFile} />
             <span className="inline-flex cursor-pointer items-center rounded border border-edge px-2 py-1 text-xs font-semibold">{row.contractStatus === 'attached' ? 'Replace contract' : 'Upload contract'}</span>
@@ -630,12 +679,20 @@ function TripDrawer({ row, settings, busy, setBusy, setError, setBanner, onClose
         )}
 
         <FieldGrid fields={fields} setFields={setFields} disabled={locked && !review} />
+        {brokerPlan?.filled?.length > 0 && (
+          <p className="mt-2 text-xs text-success">Broker details from this contract will be saved onto the trip.</p>
+        )}
+        {brokerPlan?.mismatches?.length > 0 && (
+          <div role="status" className="mt-2 rounded border border-warning-border bg-warning-soft p-2 text-xs text-warning">
+            <p>Broker on the trip does not match this contract. Existing broker details stay on the trip.</p>
+            <ul className="mt-1 space-y-1">
+              {brokerPlan.mismatches.map((item) => (
+                <li key={item.field}>{item.field}: trip has {item.existing}; contract has {item.parsed}</li>
+              ))}
+            </ul>
+          </div>
+        )}
 
-        <div className="mt-3 flex flex-wrap gap-2">
-          {review && <Button size="sm" variant="primary" loading={busy} onClick={saveContract}>Save contract</Button>}
-          {review && <Button size="sm" variant="ghost" onClick={() => { setReview(null); setPdfFile(null); }}>Cancel upload</Button>}
-          {row.coverageId && <Button size="sm" variant="outline" loading={busy} disabled={locked} onClick={correct}>Save corrections</Button>}
-        </div>
         {locked && <p className="mt-2 text-2xs text-content-muted">Paid coverage keeps its premium. Replacing the PDF does not change the amount that was charged.</p>}
 
         <h3 className="mt-5 text-xs font-semibold uppercase tracking-wide text-content-muted">Event history</h3>
@@ -645,12 +702,21 @@ function TripDrawer({ row, settings, busy, setBusy, setError, setBanner, onClose
             <li key={event.id} className="text-xs">
               <span className="font-medium">{event.type}</span>
               <span className="text-content-muted"> · {stamp(event.at)}{event.actor ? ` · ${event.actor}` : ''}</span>
+              {event.detail && <div className="text-content-muted">{event.detail}</div>}
             </li>
           ))}
         </ul>
+        <p className="pt-6 text-2xs text-content-subtle">End of trip details</p>
+        </div>
+        <div className="flex shrink-0 flex-wrap gap-2 border-t border-edge bg-surface px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+          {review && <Button size="sm" variant="primary" loading={busy} onClick={saveContract}>Save contract</Button>}
+          {review && <Button size="sm" variant="ghost" onClick={() => { setReview(null); setPdfFile(null); }}>Cancel upload</Button>}
+          {row.coverageId && <Button size="sm" variant="outline" loading={busy} disabled={locked} onClick={correct}>Save corrections</Button>}
+        </div>
       </div>
     </div>
   );
+  return typeof document === 'undefined' ? sheet : createPortal(sheet, document.body);
 }
 
 function uncertainLeft(fields) {
@@ -669,10 +735,12 @@ function uncertainLeft(fields) {
 function fieldState(row, review) {
   const parsed = review?.parsed || {};
   const pick = (parsedValue, rowValue) => (parsedValue || parsedValue === 0 ? parsedValue : (rowValue ?? ''));
+  const keepTrip = (rowValue, parsedValue) => (rowValue ? rowValue : (parsedValue || ''));
   return {
-    tripId: pick(parsed.tripId, row.tripId),
-    brokerCompany: pick(parsed.brokerCompany, row.brokerCompany),
-    checkoutEmail: pick(parsed.checkoutEmail, row.brokerEmail),
+    tripId: normalizeTripId(parsed.tripId) || normalizeTripId(row.tripId) || '',
+    brokerCompany: keepTrip(row.brokerCompany, parsed.brokerCompany),
+    checkoutEmail: keepTrip(row.brokerEmail, parsed.checkoutEmail),
+    brokerPhone: keepTrip(row.brokerPhone, parsed.brokerPhone),
     tail: pick(parsed.tail, row.tail),
     aircraftType: pick(parsed.aircraftType, row.aircraft),
     routeFrom: pick(parsed.routeFrom, row.routeFrom),
@@ -690,6 +758,7 @@ function FieldGrid({ fields, setFields, disabled }) {
     ['tripId', 'Trip ID'],
     ['brokerCompany', 'Broker company'],
     ['checkoutEmail', 'Broker email'],
+    ['brokerPhone', 'Broker phone'],
     ['tail', 'Tail'],
     ['aircraftType', 'Aircraft'],
     ['routeFrom', 'From'],

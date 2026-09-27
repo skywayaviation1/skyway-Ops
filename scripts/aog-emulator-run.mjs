@@ -60,49 +60,57 @@ async function seed() {
 
   const writes = [];
   writes.push(leg(db, {
-    id: 'leg-3001-a', tripId: 'SKY-TEST-3001', start: '2026-10-12T14:00:00.000Z', end: '2026-10-12T16:00:00.000Z',
+    id: 'leg-3001-a', tripId: 'WEQVQD', start: '2026-10-12T14:00:00.000Z', end: '2026-10-12T16:00:00.000Z',
     from: 'KAPF', to: 'KTEB', tail: 'N100TS', aircraft: 'Citation CJ3', customer: 'Example Charter Group', email: 'broker@example-charter.test',
   }));
   writes.push(leg(db, {
-    id: 'leg-3001-b', tripId: 'SKY-TEST-3001', start: '2026-10-14T18:00:00.000Z', end: '2026-10-14T20:00:00.000Z',
+    id: 'leg-3001-b', tripId: 'WEQVQD', start: '2026-10-14T18:00:00.000Z', end: '2026-10-14T20:00:00.000Z',
     from: 'KTEB', to: 'KAPF', tail: 'N100TS', aircraft: 'Citation CJ3', customer: 'Example Charter Group', email: 'broker@example-charter.test',
   }));
   writes.push(leg(db, {
-    id: 'leg-3002', tripId: 'SKY-TEST-3002', start: '2026-08-01T14:00:00.000Z', end: '2026-08-01T16:00:00.000Z',
+    id: 'leg-3002', tripId: 'M4PQ8K', start: '2026-08-01T14:00:00.000Z', end: '2026-08-01T16:00:00.000Z',
     from: 'KTEB', to: 'KMIA', tail: 'N200TS', aircraft: 'Learjet 60', customer: 'Northwind Example Jets', email: 'past@example-past.test',
   }));
   writes.push(leg(db, {
-    id: 'leg-3003', tripId: 'SKY-TEST-3003', start: '2026-10-20T14:00:00.000Z', end: '2026-10-22T14:00:00.000Z',
+    id: 'leg-3003', tripId: 'H7N2QD', start: '2026-10-20T14:00:00.000Z', end: '2026-10-22T14:00:00.000Z',
     from: 'KTEB', to: 'KMIA', tail: 'N200TS', aircraft: 'Learjet 60', customer: 'Northwind Example Jets', email: 'dispatch@example-lear.test',
   }));
   writes.push(leg(db, {
-    id: 'leg-3004', tripId: 'SKY-TEST-3004', start: '2026-10-21T14:00:00.000Z', end: '2026-10-21T18:00:00.000Z',
+    id: 'leg-3004', tripId: 'R2K8LM', start: '2026-10-21T14:00:00.000Z', end: '2026-10-21T18:00:00.000Z',
     from: 'KAPF', to: 'KTEB', tail: 'N100TS', aircraft: 'Citation CJ3', customer: 'Example Gift Jets', email: 'gift@example-gift.test',
   }));
   writes.push(leg(db, {
-    id: 'leg-3005', tripId: 'SKY-TEST-3005', start: '2026-10-22T14:00:00.000Z', end: '2026-10-22T18:00:00.000Z',
+    id: 'leg-3005', tripId: 'B6TQ9N', start: '2026-10-22T14:00:00.000Z', end: '2026-10-22T18:00:00.000Z',
     from: 'KMIA', to: 'KTEB', tail: 'N200TS', aircraft: 'Learjet 60', customer: 'Example Other Jets', email: 'other@example-other.test',
   }));
   writes.push(leg(db, {
-    id: 'leg-3006', tripId: 'SKY-TEST-3006', start: '2026-10-23T14:00:00.000Z', end: '2026-10-23T18:00:00.000Z',
+    id: 'leg-3006', tripId: 'C8W4PL', start: '2026-10-23T14:00:00.000Z', end: '2026-10-23T18:00:00.000Z',
     from: 'KAPF', to: 'KTEB', tail: 'N100TS', aircraft: 'Citation CJ3', customer: 'Example History Jets', email: 'history@example-history.test',
-    contract: { path: 'trip-contracts/SKY-TEST-3006/charter-contract.pdf', fingerprint: 'synthetic-fingerprint' },
+    contract: { path: 'trip-contracts/C8W4PL/charter-contract.pdf', fingerprint: 'synthetic-fingerprint' },
   }));
   writes.push(leg(db, {
-    id: 'leg-3020', tripId: 'SKY-TEST-3020', start: '2026-09-20T14:00:00.000Z', end: '2026-09-20T16:00:00.000Z',
+    id: 'leg-3020', tripId: 'F5H9RT', start: '2026-09-20T14:00:00.000Z', end: '2026-09-20T16:00:00.000Z',
     from: 'KTEB', to: 'KAPF', tail: 'N100TS', aircraft: 'Citation CJ3', customer: 'Example Recent Jets', email: 'recent@example-recent.test',
   }));
   for (let i = 1; i <= 45; i += 1) {
-    const n = String(i).padStart(3, '0');
+    const n = String(i).padStart(5, '0');
     writes.push(leg(db, {
-      id: `leg-fill-${n}`, tripId: `SKY-FILL-${n}`, start: '2026-10-15T12:00:00.000Z', end: '2026-10-15T15:00:00.000Z',
+      id: `leg-fill-${n}`, tripId: `F${n}`, start: '2026-10-15T12:00:00.000Z', end: '2026-10-15T15:00:00.000Z',
       from: 'KAPF', to: 'KTEB', tail: 'N100TS', aircraft: 'Citation CJ3', customer: 'Example Fill Broker', email: 'fill@example-fill.test',
     }));
   }
+  writes.push(leg(db, {
+    id: 'leg-q4', tripId: 'Q4M8LN', start: '2026-10-18T14:00:00.000Z', end: '2026-10-18T16:00:00.000Z',
+    from: 'KACY', to: 'KSYR', tail: 'N286N', aircraft: '', customer: '', email: '',
+  }));
+  writes.push(leg(db, {
+    id: 'leg-k9', tripId: 'K9P2DX', start: '2026-10-19T14:00:00.000Z', end: '2026-10-19T16:00:00.000Z',
+    from: 'KMIA', to: 'KTEB', tail: 'N444AM', aircraft: 'Citation CJ3', customer: 'Kept Broker Co', email: 'kept@example-broker.test',
+  }));
   await Promise.all(writes);
   await db.collection('manual-trips').doc('leg-3007').set({
     uid: 'leg-3007',
-    tripCode: 'SKY-TEST-3007',
+    tripCode: 'D3Y7KS',
     start: '2026-10-24T14:00:00.000Z',
     end: '2026-10-24T18:00:00.000Z',
     info: {
@@ -114,7 +122,7 @@ async function seed() {
   const created = Timestamp.fromDate(new Date('2026-09-20T15:00:00.000Z'));
   await db.collection('aogRecovery').doc('cov-3006').set({
     source: 'inbox',
-    tripId: 'SKY-TEST-3006',
+    tripId: 'C8W4PL',
     brokerCompany: 'Example History Jets',
     checkoutEmail: 'history@example-history.test',
     brokerEmail: 'history@example-history.test',
@@ -146,11 +154,11 @@ async function seed() {
     currency: 'usd',
     amountCents: 27750,
   });
-  await savePdf('aog-recovery/cov-3006/charter-contract.pdf', contractPdf(['Charter contract', 'Trip ID: SKY-TEST-3006']));
+  await savePdf('aog-recovery/cov-3006/charter-contract.pdf', contractPdf(['Charter contract', 'Trip ID: C8W4PL']));
 
   await db.collection('aogRecovery').doc('unmatched_synthetic').set({
     source: 'inbox',
-    tripId: 'SKY-TEST-4040',
+    tripId: 'P2L6VX',
     brokerCompany: 'Example Charter Group',
     checkoutEmail: 'broker@example-charter.test',
     brokerEmail: 'broker@example-charter.test',
@@ -172,13 +180,13 @@ async function seed() {
   });
   await savePdf('aog-recovery/unmatched_synthetic/charter-contract.pdf', contractPdf([
     'Charter contract',
-    'Trip ID: SKY-TEST-4040',
+    'Trip ID: P2L6VX',
     'Charter total: $18,500.00',
   ]));
 
   const uploadPdf = contractPdf([
     'Charter contract',
-    'Trip ID: SKY-TEST-3003',
+    'Trip ID: H7N2QD',
     'Company: Northwind Example Jets',
     'Checkout email: dispatch@example-lear.test',
     'Aircraft type: Learjet 60',
@@ -189,6 +197,29 @@ async function seed() {
     'Charter total: $24,000.00',
   ]);
   await writeFile('/tmp/synthetic-charter-3003.pdf', uploadPdf);
+  await writeFile('/tmp/synthetic-charter-q4.pdf', contractPdf([
+    'Charter contract',
+    'Trip ID: Q4M8LN',
+    'Company: New Broker Jets',
+    'Checkout email: newbroker@example-charter.test',
+    'Broker phone: (305) 555-0148',
+    'Aircraft type: Citation CJ3',
+    'Registration: N286N',
+    'Itinerary: KACY → KSYR',
+    'Depart: 2026-10-18',
+    'Charter total: $12,000.00',
+  ]));
+  await writeFile('/tmp/synthetic-charter-k9.pdf', contractPdf([
+    'Charter contract',
+    'Trip ID: K9P2DX',
+    'Company: Other Jets',
+    'Checkout email: other@example-other.test',
+    'Aircraft type: Citation CJ3',
+    'Registration: N444AM',
+    'Itinerary: KMIA → KTEB',
+    'Depart: 2026-10-19',
+    'Charter total: $15,000.00',
+  ]));
   console.log('seeded synthetic trips');
 }
 
@@ -273,6 +304,21 @@ function waitForHttp(url) {
   });
 }
 
+async function scrollSheetBody(locator) {
+  return locator.evaluate(async (el) => {
+    let top = 0;
+    let max = 0;
+    for (let i = 0; i < 6; i += 1) {
+      el.scrollTop = el.scrollHeight;
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      max = el.scrollHeight - el.clientHeight;
+      top = el.scrollTop;
+      if (max <= 20 || top >= max - 8) break;
+    }
+    return { top, max };
+  });
+}
+
 async function shot(page, name) {
   await mkdir(SHOT, { recursive: true });
   const file = path.join(SHOT, `${name}.png`);
@@ -292,21 +338,21 @@ async function clickThrough() {
   });
   try {
     await page.goto(`http://127.0.0.1:${WEB_PORT}/aog-emulator`, { waitUntil: 'domcontentloaded' });
-    await page.getByText('SKY-TEST-3001').first().waitFor({ timeout: 25000 });
+    await page.getByText('WEQVQD').first().waitFor({ timeout: 25000 });
     await page.getByText('Email test mode is on').waitFor();
     await page.getByText('2 legs').waitFor();
     await shot(page, 'aog-trips-list');
 
     await page.getByLabel('Trip window').selectOption('past');
-    await page.getByText('SKY-TEST-3002').waitFor();
-    if (await page.getByText('SKY-TEST-3001').count()) throw new Error('upcoming trip still visible in past view');
+    await page.getByText('M4PQ8K').waitFor();
+    if (await page.getByText('WEQVQD').count()) throw new Error('upcoming trip still visible in past view');
     await shot(page, 'aog-trips-past-filter');
     await page.getByLabel('Trip window').selectOption('current');
-    await page.getByLabel('Search trips').fill('SKY-TEST-3003');
+    await page.getByLabel('Search trips').fill('H7N2QD');
     await page.getByLabel('Contract').selectOption('missing');
-    await page.getByText('SKY-TEST-3003').waitFor();
-    await page.getByText('SKY-TEST-3003').click();
-    await page.getByRole('dialog', { name: 'Trip SKY-TEST-3003' }).waitFor();
+    await page.getByText('H7N2QD').waitFor();
+    await page.getByText('H7N2QD').click();
+    await page.getByRole('dialog', { name: 'Trip H7N2QD' }).waitFor();
     await page.locator('input[type=file]').setInputFiles('/tmp/synthetic-charter-3003.pdf');
     await page.getByRole('button', { name: 'Save contract' }).waitFor({ timeout: 20000 });
     const total = page.getByRole('dialog').getByLabel('Trip total');
@@ -321,21 +367,30 @@ async function clickThrough() {
     await page.getByText(/Contract saved/).waitFor({ timeout: 20000 });
     await page.getByRole('button', { name: 'Close' }).click();
     await page.getByLabel('Contract').selectOption('attached');
-    await page.getByText('SKY-TEST-3003').waitFor();
+    await page.getByText('H7N2QD').waitFor();
     await shot(page, 'aog-contract-saved');
 
-    await page.getByLabel('Search trips').fill('SKY-TEST-3004');
+    await page.getByLabel('Search trips').fill('R2K8LM');
     await page.getByLabel('Contract').selectOption('');
-    await page.getByText('SKY-TEST-3004').click();
+    await page.getByText('R2K8LM').click();
     await page.getByRole('button', { name: 'Gift 100%' }).click();
-    await page.getByRole('button', { name: 'Confirm gift' }).click();
+    const confirmGift = page.getByRole('button', { name: 'Confirm gift' });
+    await confirmGift.waitFor();
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await confirmGift.click({ timeout: 8000 });
+        break;
+      } catch (err) {
+        if (attempt === 2) throw err;
+      }
+    }
     await page.getByText(/Gifted 100%/).waitFor({ timeout: 20000 });
     await page.getByRole('button', { name: 'Close' }).click();
     await page.getByRole('cell', { name: /100% gifted by Skyway/ }).waitFor({ timeout: 15000 });
     await shot(page, 'aog-gift');
 
-    await page.getByLabel('Search trips').fill('SKY-TEST-3006');
-    await page.getByText('SKY-TEST-3006').click();
+    await page.getByLabel('Search trips').fill('C8W4PL');
+    await page.getByText('C8W4PL').click();
     await page.getByText('offer_sent').waitFor();
     await page.getByRole('button', { name: 'View charter' }).click();
     await shot(page, 'aog-event-history');
@@ -351,22 +406,22 @@ async function clickThrough() {
 
     await page.getByLabel('Complimentary domain').fill('example-charter.test');
     await page.getByRole('button', { name: 'Add domain' }).click();
-    await page.getByLabel('Apply to SKY-TEST-3001').waitFor();
+    await page.getByLabel('Apply to WEQVQD').waitFor();
     await page.locator('li').filter({ hasText: 'example-charter.test' }).getByText(/ops@example-charter\.test/).waitFor();
     await shot(page, 'aog-domain-apply');
     await page.getByRole('button', { name: 'Apply complimentary 100%' }).click();
     await page.getByText(/Complimentary 100% applied/).waitFor({ timeout: 20000 });
 
     await page.getByRole('tab', { name: 'Trips' }).click();
-    await page.getByLabel('Search trips').fill('SKY-TEST-3001');
+    await page.getByLabel('Search trips').fill('WEQVQD');
     await page.getByLabel('Trip window').selectOption('all');
     await page.getByLabel('Contract').selectOption('');
     await page.getByRole('cell', { name: /100% complimentary domain/ }).waitFor({ timeout: 15000 });
     await shot(page, 'aog-complimentary-applied');
 
     await page.getByRole('tab', { name: /Unmatched contracts/ }).click();
-    await page.getByText('SKY-TEST-4040').waitFor();
-    await page.getByLabel('Trip for SKY-TEST-4040').selectOption('SKY-TEST-3005');
+    await page.getByText('P2L6VX').waitFor();
+    await page.getByLabel('Trip for P2L6VX').selectOption('B6TQ9N');
     await shot(page, 'aog-unmatched');
     await page.getByRole('button', { name: 'Attach to trip' }).click();
     await page.getByText(/Charter contract attached/).waitFor({ timeout: 20000 });
@@ -379,7 +434,7 @@ async function clickThrough() {
     const download = await downloadPromise;
     const csv = await readFile(await download.path(), 'utf8');
     if (!csv.includes('Trip ID,Dates,Route')) throw new Error('csv header missing');
-    if (!csv.includes('SKY-TEST-3001')) throw new Error('csv missing synthetic trip');
+    if (!csv.includes('WEQVQD')) throw new Error('csv missing synthetic trip');
     await writeFile(path.join(SHOT, 'aog-coverage.csv'), csv);
 
     await page.getByRole('button', { name: 'Next page' }).click();
@@ -388,7 +443,90 @@ async function clickThrough() {
 
     await page.setViewportSize({ width: 390, height: 844 });
     await page.getByRole('tab', { name: 'Trips' }).click();
-    await shot(page, 'aog-trips-mobile');
+    await page.getByLabel('Search trips').fill('WEQVQD');
+    await page.getByLabel('Trip window').selectOption('current');
+    await page.getByLabel('Contract').selectOption('');
+    await page.getByText('WEQVQD').first().waitFor();
+    await shot(page, 'aog-trip-ids-iphone');
+
+    await page.getByLabel('Search trips').fill('Q4M8LN');
+    await page.getByLabel('Contract').selectOption('missing');
+    await page.getByText('Q4M8LN').click();
+    await page.getByRole('dialog', { name: 'Trip Q4M8LN' }).waitFor();
+    await page.locator('input[type=file]').setInputFiles('/tmp/synthetic-charter-q4.pdf');
+    await page.getByRole('button', { name: 'Save contract' }).waitFor({ timeout: 20000 });
+    const backfillEmail = await page.getByRole('dialog').getByLabel('Broker email').inputValue();
+    if (backfillEmail !== 'newbroker@example-charter.test') throw new Error(`backfill email ${backfillEmail}`);
+    const backfillAircraft = await page.getByRole('dialog').getByLabel('Aircraft').inputValue();
+    if (!String(backfillAircraft).includes('Citation')) throw new Error(`aircraft prefill ${backfillAircraft}`);
+    await page.getByText('saved onto the trip').waitFor();
+    await shot(page, 'aog-broker-backfill-review');
+    await page.getByRole('button', { name: 'Save contract' }).click();
+    await page.getByText(/Contract saved/).waitFor({ timeout: 20000 });
+    const drawer = page.locator('.sw-sheet-body').last();
+    const scrolled = await scrollSheetBody(drawer);
+    await page.getByText('End of trip details').waitFor();
+    if (scrolled.max > 20 && scrolled.top < scrolled.max - 8) throw new Error(`drawer did not reach the bottom ${JSON.stringify(scrolled)}`);
+    await shot(page, 'aog-drawer-scrolled-iphone-390');
+    await page.getByRole('button', { name: 'Close' }).click();
+
+    await page.getByLabel('Search trips').fill('K9P2DX');
+    await page.getByText('K9P2DX').click();
+    await page.locator('input[type=file]').setInputFiles('/tmp/synthetic-charter-k9.pdf');
+    await page.getByText('does not match this contract').waitFor({ timeout: 20000 });
+    const keptEmail = await page.getByRole('dialog').getByLabel('Broker email').inputValue();
+    if (keptEmail !== 'kept@example-broker.test') throw new Error(`mismatch overwrote broker ${keptEmail}`);
+    await shot(page, 'aog-broker-mismatch');
+    await page.getByRole('button', { name: 'Close' }).click();
+
+    await page.setViewportSize({ width: 375, height: 667 });
+    await page.getByLabel('Contract').selectOption('');
+    await page.getByLabel('Search trips').fill('Q4M8LN');
+    await page.getByText('Q4M8LN').click();
+    const shortDrawer = page.locator('.sw-sheet-body').last();
+    const shortScrolled = await scrollSheetBody(shortDrawer);
+    await page.getByText('End of trip details').waitFor();
+    if (shortScrolled.max > 20 && shortScrolled.top < shortScrolled.max - 8) throw new Error(`short drawer did not reach the bottom ${JSON.stringify(shortScrolled)}`);
+    await shot(page, 'aog-drawer-scrolled-iphone-375');
+    await page.getByRole('button', { name: 'Close' }).click();
+
+    const opened = await page.evaluate(() => {
+      const buttons = [...document.querySelectorAll('button')];
+      const described = buttons.map((el) => {
+        const rect = el.getBoundingClientRect();
+        return {
+          el,
+          text: (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim(),
+          w: Math.round(rect.width),
+          h: Math.round(rect.height),
+          top: Math.round(rect.top),
+        };
+      });
+      const target = described.filter((item) => item.text === 'More').pop();
+      if (!target) {
+        return {
+          ok: false,
+          width: window.innerWidth,
+          navs: [...document.querySelectorAll('nav')].map((nav) => ({
+            label: nav.getAttribute('aria-label'),
+            hidden: getComputedStyle(nav).display,
+            texts: [...nav.querySelectorAll('button')].map((el) => (el.innerText || '').replace(/\s+/g, ' ').trim()),
+          })),
+          texts: described.map((item) => item.text).filter(Boolean).slice(-20),
+        };
+      }
+      target.el.click();
+      return { ok: true, top: target.top, w: target.w, h: target.h };
+    });
+    console.log('more click', JSON.stringify(opened));
+    if (!opened.ok) throw new Error(`More tab is not on screen ${JSON.stringify(opened)}`);
+    const more = page.getByRole('dialog', { name: 'More destinations' });
+    await more.waitFor();
+    const moreBody = more.locator('.sw-sheet-body');
+    const moreScrolled = await scrollSheetBody(moreBody);
+    await more.getByText('End of menu').waitFor();
+    if (moreScrolled.max > 20 && moreScrolled.top < moreScrolled.max - 8) throw new Error(`more sheet did not reach the bottom ${JSON.stringify(moreScrolled)}`);
+    await shot(page, 'more-sheet-scrolled-iphone');
     console.log('click-through ok');
   } catch (err) {
     await shot(page, 'aog-failure').catch(() => {});

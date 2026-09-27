@@ -3,6 +3,7 @@
 // records are overlaid. A trip with no coverage row is 50% included.
 
 import { contractIsOnTrip } from './charter-contract.js';
+import { normalizeTripId } from './trip-id.js';
 import {
   coverageLevelLabel,
   fmtMoney,
@@ -35,7 +36,7 @@ export function legsFromScheduleTrips(trips) {
   if (!Array.isArray(trips)) return [];
   return trips.map((trip) => ({
     uid: String(trip?.uid || ''),
-    tripId: String(trip?.info?.tripCode || trip?.tripCode || trip?.info?.tripId || '').trim(),
+    tripId: normalizeTripId(trip?.info?.tripCode || trip?.tripCode || trip?.info?.tripId),
     start: trip?.start instanceof Date ? trip.start.toISOString() : (trip?.start || ''),
     end: trip?.end instanceof Date ? trip.end.toISOString() : (trip?.end || ''),
     tail: String(trip?.info?.tail || '').trim().toUpperCase(),
@@ -43,7 +44,8 @@ export function legsFromScheduleTrips(trips) {
     to: String(trip?.info?.to || '').trim().toUpperCase(),
     aircraft: String(trip?.info?.aircraft || trip?.info?.aircraftType || '').trim(),
     customer: String(trip?.info?.customer || trip?.info?.broker || '').trim(),
-    brokerEmail: String(trip?.info?.brokerEmail || '').trim().toLowerCase(),
+    brokerEmail: String(trip?.info?.brokerEmail || trip?.info?.broker || '').trim().toLowerCase(),
+    brokerPhone: String(trip?.info?.brokerPhone || '').trim(),
     contractAttached: false,
   })).filter((leg) => leg.uid);
 }
@@ -72,7 +74,7 @@ export function mergeScheduleLegs(clientLegs, serverLegs) {
 }
 
 function groupKey(leg) {
-  const tripId = String(leg.tripId || '').trim().toUpperCase();
+  const tripId = normalizeTripId(leg.tripId);
   if (tripId) return `trip:${tripId}`;
   return `leg:${leg.uid}`;
 }
@@ -145,7 +147,7 @@ export function buildTripRows(legs, records = []) {
   const rows = [];
   for (const [key, members] of groups) {
     const ordered = [...members].sort((a, b) => String(a.start).localeCompare(String(b.start)));
-    const tripId = key.startsWith('trip:') ? key.slice(5) : (ordered[0]?.uid || key);
+    const tripId = key.startsWith('trip:') ? key.slice(5) : '';
     const routing = routeOf(ordered);
     const departAt = earliest(ordered, 'start');
     const returnAt = latest(ordered, 'end') || latest(ordered, 'start');
@@ -166,6 +168,7 @@ export function buildTripRows(legs, records = []) {
       aircraft: firstText(ordered, 'aircraft'),
       brokerCompany: firstText(ordered, 'customer'),
       brokerEmail: firstText(ordered, 'brokerEmail'),
+      brokerPhone: firstText(ordered, 'brokerPhone'),
       contractStatus: ordered.some((leg) => leg.contractAttached) ? 'attached' : 'missing',
       tripTotal: null,
       coverageLevel: 'included_50',

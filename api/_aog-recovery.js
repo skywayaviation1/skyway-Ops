@@ -34,6 +34,12 @@ import {
   readDomainRecords,
 } from '../src/aog-recovery.js';
 import { buildTripRows, nyDay, rowsEligibleForComplimentary } from '../src/aog-trip-rows.js';
+import { normalizeTripId } from '../src/trip-id.js';
+import {
+  brokerBackfillDetail,
+  brokerMismatchDetail,
+  planBrokerBackfill,
+} from '../src/broker-backfill.js';
 import {
   contractStoragePath,
   contractVersionPath,
@@ -298,9 +304,12 @@ function tripFromState(docSnap) {
     from: meta.from || '',
     to: meta.to || '',
     start: meta.start || '',
-    tripCode: sheet.tripCode || '',
-    customer: sheet.client || data.customer || '',
+    tripCode: normalizeTripId(sheet.tripCode),
+    customer: sheet.client || data.brokerCompany || data.customer || '',
     brokerEmail: data.brokerEmail || '',
+    brokerPhone: data.brokerPhone || '',
+    brokerCompany: data.brokerCompany || sheet.client || '',
+    brokerDomain: data.brokerDomain || '',
   };
 }
 
@@ -618,7 +627,7 @@ export async function writeCharterContract(db, { legs, pdfBuffer, filename, sour
     return { contractAttachStatus: 'unmatched', contractLegIds: [] };
   }
   const fingerprint = crypto.createHash('sha256').update(pdfBuffer).digest('hex');
-  const key = tripKey || targets.find((leg) => leg.tripCode)?.tripCode || targets[0].id;
+  const key = normalizeTripId(tripKey) || normalizeTripId(targets.find((leg) => leg.tripCode)?.tripCode) || 'unkeyed';
   const path = contractStoragePath(key);
   const attachedAt = new Date().toISOString();
   const existing = await currentContract(db, targets);
@@ -694,7 +703,7 @@ export async function attachCheckoutContract(db, { parsed, trips, pdfBuffer, fil
   } catch (err) {
     console.warn('[aog-recovery] sibling leg lookup skipped:', err.message);
   }
-  const tripKey = legs.find((leg) => leg.tripCode)?.tripCode || parsed?.tripId || legs[0].id;
+  const tripKey = normalizeTripId(legs.find((leg) => leg.tripCode)?.tripCode) || normalizeTripId(parsed?.tripId);
   return writeCharterContract(db, {
     legs,
     pdfBuffer,
@@ -1001,6 +1010,18 @@ export async function ingestParsedCheckout(db, { messageId, parsed, pdfBuffer, p
       record.contractAttachStatus = 'error';
       record.contractAttachError = String(err.message || err).slice(0, 300);
     }
+    if (record.contractLegIds?.length) {
+      try {
+        await backfillTripBroker(db, {
+          legIds: record.contractLegIds,
+          incoming: parsed,
+          coverageId: id,
+          actor: contractSource.sender || '',
+        });
+      } catch (err) {
+        console.warn('[aog-recovery] broker backfill skipped:', err.message);
+      }
+    }
   }
 
   await ref.set(record, { merge: true });
@@ -1154,6 +1175,72 @@ export function previewUploadedContract({ pdfBuffer, filename, text }) {
   return parsed;
 }
 
+export async function backfillTripBroker(db, { legIds, incoming, coverageId, actor } = {}) {
+  const ids = [...new Set((legIds || []).map((id) => sanitizeKey(id)).filter(Boolean))];
+  const plans = [];
+  for (const id of ids) {
+    // eslint-disable-next-line no-await-in-loop
+    const snap = await db.collection('trip-state').doc(id).get();
+    const data = snap.exists ? (snap.data() || {}) : {};
+    const sheet = data.tripSheetData || {};
+    const plan = planBrokerBackfill({
+      brokerCompany: data.brokerCompany || sheet.client || data.customer || '',
+      brokerEmail: data.brokerEmail || '',
+      brokerPhone: data.brokerPhone || '',
+      brokerDomain: data.brokerDomain || '',
+    }, incoming || {});
+    const write = { updatedAt: Date.now() };
+    if (plan.patch.brokerEmail) write.brokerEmail = plan.patch.brokerEmail;
+    if (plan.patch.brokerPhone) write.brokerPhone = plan.patch.brokerPhone;
+    if (plan.patch.brokerDomain) write.brokerDomain = plan.patch.brokerDomain;
+    if (plan.patch.brokerCompany) {
+      write.brokerCompany = plan.patch.brokerCompany;
+      if (!sheet.client) write['tripSheetData.client'] = plan.patch.brokerCompany;
+    }
+    if (plan.mismatches.length) write.brokerMismatch = plan.mismatches;
+    if (Object.keys(write).length > 1) {
+      const ref = db.collection('trip-state').doc(id);
+      if (snap.exists) {
+        // eslint-disable-next-line no-await-in-loop
+        await ref.update(write);
+      } else {
+        const created = { ...write };
+        if (created['tripSheetData.client']) {
+          created.tripSheetData = { client: created['tripSheetData.client'] };
+          delete created['tripSheetData.client'];
+        }
+        // eslint-disable-next-line no-await-in-loop
+        await ref.set(created);
+      }
+    }
+    plans.push(plan);
+  }
+  if (coverageId) {
+    const filled = [...new Set(plans.flatMap((plan) => plan.filled))];
+    const mismatches = plans.flatMap((plan) => plan.mismatches);
+    const atUtc = new Date().toISOString();
+    if (filled.length) {
+      await appendCoverageEvent(db, coverageId, {
+        type: 'broker_backfilled',
+        atUtc,
+        actor: actor || '',
+        detail: brokerBackfillDetail({ filled }),
+        tripId: normalizeTripId(incoming?.tripId),
+      });
+    }
+    if (mismatches.length) {
+      await appendCoverageEvent(db, coverageId, {
+        type: 'broker_mismatch',
+        atUtc,
+        actor: actor || '',
+        detail: brokerMismatchDetail(mismatches),
+        tripId: normalizeTripId(incoming?.tripId),
+      });
+    }
+  }
+  return plans;
+}
+
 export async function listScheduleLegs(db) {
   const legs = [];
   const state = await db.collection('trip-state').limit(2000).get();
@@ -1165,7 +1252,7 @@ export async function listScheduleLegs(db) {
     const contract = data.charterContract || {};
     legs.push({
       uid: docSnap.id,
-      tripId: String(sheet.tripCode || facts.tripId || '').trim(),
+      tripId: normalizeTripId(sheet.tripCode) || normalizeTripId(facts.tripId),
       start: meta.start || facts.departAtUtc || asUtc(facts.departAt) || '',
       end: facts.returnAtUtc || asUtc(facts.returnAt) || '',
       tail: String(meta.tail || facts.tail || sheet.tail || '').trim().toUpperCase(),
@@ -1174,6 +1261,7 @@ export async function listScheduleLegs(db) {
       aircraft: String(facts.aircraftType || sheet.aircraftType || '').trim(),
       customer: String(sheet.client || facts.brokerCompany || data.customer || '').trim(),
       brokerEmail: String(data.brokerEmail || facts.brokerEmail || '').trim().toLowerCase(),
+      brokerPhone: String(data.brokerPhone || '').trim(),
       contractAttached: Boolean(contract.path || contract.fingerprint),
     });
   });
@@ -1183,7 +1271,7 @@ export async function listScheduleLegs(db) {
     const info = data.info || {};
     legs.push({
       uid: String(data.uid || docSnap.id),
-      tripId: String(data.tripCode || info.tripCode || info.tripId || '').trim(),
+      tripId: normalizeTripId(data.tripCode || info.tripCode || info.tripId),
       start: data.start || '',
       end: data.end || '',
       tail: String(info.tail || data.tail || '').trim().toUpperCase(),
@@ -1191,7 +1279,8 @@ export async function listScheduleLegs(db) {
       to: String(info.to || '').trim().toUpperCase(),
       aircraft: String(info.aircraft || info.aircraftType || '').trim(),
       customer: String(info.customer || info.broker || '').trim(),
-      brokerEmail: String(info.brokerEmail || data.brokerEmail || '').trim().toLowerCase(),
+      brokerEmail: String(info.brokerEmail || info.broker || data.brokerEmail || '').trim().toLowerCase(),
+      brokerPhone: String(info.brokerPhone || data.brokerPhone || '').trim(),
       contractAttached: false,
     });
   });
@@ -1218,26 +1307,44 @@ async function findCoverageForTrip(db, tripId, legUids) {
 }
 
 export async function ensureTripLegs(db, tripId, legUids, fields = {}) {
-  const code = String(tripId || '').trim();
+  const code = normalizeTripId(tripId);
+  if (!code) return [];
   let legs = await resolveTripLegs(db, code);
   if (legs.length) return legs;
   const ids = [...new Set((legUids || []).map((id) => sanitizeKey(id)).filter(Boolean))].slice(0, 30);
-  const targets = ids.length ? ids : [sanitizeKey(code)].filter(Boolean);
-  if (!targets.length) return [];
-  await Promise.all(targets.map((id) => db.collection('trip-state').doc(id).set({
-    tripSheetData: {
-      tripCode: code,
-      tail: fields.tail || '',
-      client: fields.brokerCompany || '',
-    },
-    tripMeta: {
-      tail: fields.tail || '',
-      from: fields.routeFrom || '',
-      to: fields.routeTo || '',
-      start: fields.departDate || '',
-    },
-    brokerEmail: fields.checkoutEmail || '',
-  }, { merge: true })));
+  if (!ids.length) return [];
+  await Promise.all(ids.map(async (id) => {
+    const ref = db.collection('trip-state').doc(id);
+    const snap = await ref.get();
+    const data = snap.exists ? (snap.data() || {}) : {};
+    const sheet = data.tripSheetData || {};
+    const meta = data.tripMeta || {};
+    if (!snap.exists) {
+      await ref.set({
+        tripSheetData: {
+          tripCode: code,
+          tail: fields.tail || '',
+          aircraftType: fields.aircraftType || '',
+        },
+        tripMeta: {
+          tail: fields.tail || '',
+          from: fields.routeFrom || '',
+          to: fields.routeTo || '',
+          start: fields.departDate || '',
+        },
+      });
+      return;
+    }
+    const patch = {};
+    if (!normalizeTripId(sheet.tripCode)) patch['tripSheetData.tripCode'] = code;
+    if (!sheet.tail && fields.tail) patch['tripSheetData.tail'] = fields.tail;
+    if (!sheet.aircraftType && fields.aircraftType) patch['tripSheetData.aircraftType'] = fields.aircraftType;
+    if (!meta.tail && fields.tail) patch['tripMeta.tail'] = fields.tail;
+    if (!meta.from && fields.routeFrom) patch['tripMeta.from'] = fields.routeFrom;
+    if (!meta.to && fields.routeTo) patch['tripMeta.to'] = fields.routeTo;
+    if (!meta.start && fields.departDate) patch['tripMeta.start'] = fields.departDate;
+    if (Object.keys(patch).length) await ref.update(patch);
+  }));
   return resolveTripLegs(db, code);
 }
 
@@ -1251,7 +1358,7 @@ function reviewedParsed(fields, tripId) {
   return {
     isCheckout: true,
     parserVersion: 'provisional-1',
-    tripId: String(fields?.tripId || tripId || '').trim().slice(0, 80),
+    tripId: normalizeTripId(fields?.tripId || tripId),
     brokerCompany: String(fields?.brokerCompany || '').trim().slice(0, 120),
     checkoutEmail: String(fields?.checkoutEmail || fields?.brokerEmail || '').trim().toLowerCase().slice(0, 160),
     tail: String(fields?.tail || '').trim().toUpperCase().slice(0, 16),
@@ -1263,14 +1370,15 @@ function reviewedParsed(fields, tripId) {
     returnDate,
     datesLabel: [departDate, returnDate].filter(Boolean).join(' – '),
     tripTotal: Number.isFinite(tripTotal) ? Math.round(tripTotal * 100) / 100 : null,
+    brokerPhone: String(fields?.brokerPhone || '').trim().slice(0, 40),
     uncertainFields: Array.isArray(fields?.uncertainFields) ? fields.uncertainFields : [],
     notes: ['Uploaded by ops'],
   };
 }
 
 export async function saveUploadedContract(db, { pdfBuffer, filename, tripId, legUids, fields, actor, baseUrl }) {
-  const code = String(tripId || fields?.tripId || '').trim();
-  if (!code) throw httpError('Trip id is required', 400);
+  const code = normalizeTripId(tripId || fields?.tripId);
+  if (!code) throw httpError('Trip ID must be 6 or 7 letters and digits', 400);
   const parsed = reviewedParsed(fields, code);
   const legs = await ensureTripLegs(db, code, legUids, parsed);
   if (!legs.length) throw httpError('No legs found for that trip', 404);
@@ -1294,6 +1402,12 @@ export async function saveUploadedContract(db, { pdfBuffer, filename, tripId, le
     facts: { ...parsed, legCount: legs.length },
   });
   const coverageId = existing?.id || `up_${crypto.createHash('sha256').update(code.toUpperCase()).digest('hex').slice(0, 24)}`;
+  await backfillTripBroker(db, {
+    legIds: (attached.contractLegIds || []).length ? attached.contractLegIds : legs.map((leg) => leg.id),
+    incoming: parsed,
+    coverageId,
+    actor: actor?.email || '',
+  });
   const ref = db.collection(COLLECTION).doc(coverageId);
   const storagePath = `aog-recovery/${coverageId}/charter-contract.pdf`;
   await savePdf(storagePath, pdfBuffer);
@@ -1367,6 +1481,7 @@ export async function listCoverageEvents(db, coverageId) {
       amountCents: Number.isInteger(data.amountCents) ? data.amountCents : null,
       currency: data.currency || 'usd',
       actor: data.actor || '',
+      detail: data.detail || '',
       coverageLevel: data.coverageLevel || '',
       paymentStatus: data.paymentStatus || '',
     };

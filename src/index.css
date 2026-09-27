@@ -73,6 +73,7 @@
   /* Chrome height, used to offset toasts above the mobile bottom nav.
      Keep in sync with MobileNav tab padding (py-2.5 + icon + label). */
   --sw-bottom-nav-h: 62px;
+  --sw-subtab-h: 44px;
 }
 
 /* Light theme. Same variable names, so every token-based component follows
@@ -260,6 +261,84 @@ html[data-native] #root {
 .scroll-area {
   scrollbar-width: thin;
   scrollbar-color: rgba(148,163,184,0.22) transparent;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+/* Phone sheets and drawers. 100dvh tracks the visible viewport when the
+   iOS URL bar shows or hides. The body scrolls inside the sheet, and the
+   bottom padding clears the tab bar, the section sub-tabs, and the home
+   indicator so the last field is not stuck behind them. */
+.sw-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  max-height: 100dvh;
+  min-height: 0;
+}
+.sw-sheet-panel {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: auto;
+  max-height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--sw-surface);
+}
+.sw-sheet-panel.sw-sheet-fill {
+  height: 100%;
+}
+.sw-sheet-panel.sw-sheet-scroll {
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+.sw-sheet-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-anchor: none;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  padding-bottom: calc(var(--sw-bottom-nav-h) + var(--sw-subtab-h) + env(safe-area-inset-bottom, 0px) + 16px);
+}
+.sw-panel-scroll {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  padding-bottom: calc(var(--sw-bottom-nav-h) + var(--sw-subtab-h) + env(safe-area-inset-bottom, 0px) + 12px);
+}
+@media (min-width: 768px) {
+  .sw-sheet-body,
+  .sw-panel-scroll {
+    padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 24px);
+  }
+}
+
+/* Full-screen layers that are not portaled into their own sheet still have
+   to scroll on a phone, above the bottom navigation. */
+@media (max-width: 767px) {
+  .fixed.inset-0:not(.sw-sheet) {
+    height: 100dvh;
+    max-height: 100dvh;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    padding-bottom: calc(var(--sw-bottom-nav-h) + var(--sw-subtab-h) + env(safe-area-inset-bottom, 0px));
+  }
+  .max-h-\[90vh\],
+  .max-h-\[85vh\],
+  .max-h-\[75vh\] {
+    max-height: 100dvh;
+  }
+}
+
+.sw-app-shell .flex-1 {
+  min-height: 0;
+  min-width: 0;
 }
 
 /* Horizontal scrollers that should not advertise a bar (nav rails). The

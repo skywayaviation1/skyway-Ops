@@ -1,4 +1,4 @@
-SUBJECT: Charter checkout — Trip SKY-TEST-1001
+SUBJECT: Charter checkout — Trip WEQVQD
 FROM: broker@example-charter.test
 ATTACHMENTS: signed-charter-contract.pdf
 

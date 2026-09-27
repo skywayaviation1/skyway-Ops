@@ -8,6 +8,7 @@
 // file and keeps the previous one as a version.
 
 import { normalizeAirport } from './aog-recovery.js';
+import { normalizeTripId } from './trip-id.js';
 
 export const CONTRACT_DATE_WINDOW_MS = 36 * 60 * 60 * 1000;
 export const CONTRACT_VERSION_LIMIT = 8;
@@ -39,7 +40,7 @@ export function contractSourceFrom({ messageId, receivedAt, sender } = {}) {
 }
 
 function tripCodeOf(trip) {
-  return String(trip?.tripCode || '').trim();
+  return normalizeTripId(trip?.tripCode);
 }
 
 function sameId(left, right) {
@@ -66,9 +67,9 @@ function expandByTripCode(hits, trips) {
  */
 export function matchContractToTrips(parsed, trips) {
   const list = (Array.isArray(trips) ? trips : []).filter(Boolean);
-  const wantedId = String(parsed?.tripId || '').trim();
+  const wantedId = normalizeTripId(parsed?.tripId);
   if (wantedId) {
-    const hits = list.filter((trip) => sameId(wantedId, trip.tripCode) || sameId(wantedId, trip.id));
+    const hits = list.filter((trip) => sameId(wantedId, tripCodeOf(trip)) || sameId(wantedId, normalizeTripId(trip.id)));
     if (hits.length > 0) {
       return { status: 'linked', via: 'trip-id', ambiguous: false, matches: expandByTripCode(hits, list) };
     }

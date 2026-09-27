@@ -26,6 +26,8 @@ import {
   rowsEligibleForComplimentary,
   tripRowCsv,
 } from '../src/aog-trip-rows.js';
+import { planBrokerBackfill } from '../src/broker-backfill.js';
+import { normalizeTripId } from '../src/trip-id.js';
 import {
   contractStoragePath,
   contractVersionPath,
@@ -67,7 +69,7 @@ test('provisional parser reads a synthetic CJ3 checkout and flags nothing requir
   });
   assert.equal(parsed.isCheckout, true);
   assert.equal(parsed.parserVersion, 'provisional-1');
-  assert.equal(parsed.tripId, 'SKY-TEST-1001');
+  assert.equal(parsed.tripId, 'WEQVQD');
   assert.equal(parsed.tail, 'N100TS');
   assert.equal(parsed.aircraftType, 'Citation CJ3');
   assert.equal(parsed.routeFrom, 'KAPF');
@@ -84,7 +86,7 @@ test('provisional parser reads a synthetic CJ3 checkout and flags nothing requir
 test('provisional parser reads a synthetic Lear checkout', async () => {
   const parsed = parseCheckoutEmail(await loadFixture('lear-checkout.txt'));
   assert.equal(parsed.isCheckout, true);
-  assert.equal(parsed.tripId, 'SKY-TEST-2002');
+  assert.equal(parsed.tripId, 'TJ7R2B');
   assert.equal(parsed.aircraftType, 'Learjet 60');
   assert.equal(parsed.tail, 'N200TS');
   assert.equal(parsed.tripTotal, 24000);
@@ -170,12 +172,12 @@ test('complimentary domains get 100% and a CFS bind, and 50% does not', () => {
 
 test('trip id links every matching leg and a lone tail does not', () => {
   const trips = [
-    { id: 'leg-a', tripCode: 'SKY-TEST-1001', tail: 'N100TS', from: 'KAPF', to: 'KTEB', start: '2026-10-12T14:00:00.000Z' },
-    { id: 'leg-b', tripCode: 'SKY-TEST-1001', tail: 'N100TS', from: 'KTEB', to: 'KAPF', start: '2026-10-14T18:00:00.000Z' },
-    { id: 'other', tripCode: 'SKY-TEST-9', tail: 'N100TS', from: 'KAPF', to: 'KTEB', start: '2026-01-01T14:00:00.000Z' },
+    { id: 'leg-a', tripCode: 'WEQVQD', tail: 'N100TS', from: 'KAPF', to: 'KTEB', start: '2026-10-12T14:00:00.000Z' },
+    { id: 'leg-b', tripCode: 'WEQVQD', tail: 'N100TS', from: 'KTEB', to: 'KAPF', start: '2026-10-14T18:00:00.000Z' },
+    { id: 'other', tripCode: 'ZZZZZ9', tail: 'N100TS', from: 'KAPF', to: 'KTEB', start: '2026-01-01T14:00:00.000Z' },
   ];
   const linked = matchCoverageToTrips({
-    tripId: 'SKY-TEST-1001', tail: 'N100TS', routeFrom: 'KAPF', routeTo: 'KTEB', departDate: '2026-10-12',
+    tripId: 'WEQVQD', tail: 'N100TS', routeFrom: 'KAPF', routeTo: 'KTEB', departDate: '2026-10-12',
   }, trips);
   assert.equal(linked.status, 'linked');
   assert.deepEqual(linked.matches.map((trip) => trip.id).sort(), ['leg-a', 'leg-b']);
@@ -185,7 +187,7 @@ test('trip id links every matching leg and a lone tail does not', () => {
 
   const draft = buildCoverageDraft({
     parsed: {
-      tripId: 'SKY-TEST-9',
+      tripId: 'ZZZZZ9',
       tail: null,
       aircraftType: 'Citation CJ3',
       tripTotal: 10000,
@@ -205,12 +207,12 @@ test('trip id links every matching leg and a lone tail does not', () => {
 
 test('charter contract follows the trip id onto every leg, then tail route and date', () => {
   const trips = [
-    { id: 'leg-a', tripCode: 'SKY-TEST-1001', tail: 'N100TS', from: 'KAPF', to: 'KTEB', start: '2026-10-12T14:00:00.000Z' },
-    { id: 'leg-b', tripCode: 'SKY-TEST-1001', tail: 'N100TS', from: 'KTEB', to: 'KAPF', start: '2026-10-14T18:00:00.000Z' },
-    { id: 'other', tripCode: 'SKY-TEST-9', tail: 'N100TS', from: 'KAPF', to: 'KTEB', start: '2026-10-12T14:00:00.000Z' },
+    { id: 'leg-a', tripCode: 'WEQVQD', tail: 'N100TS', from: 'KAPF', to: 'KTEB', start: '2026-10-12T14:00:00.000Z' },
+    { id: 'leg-b', tripCode: 'WEQVQD', tail: 'N100TS', from: 'KTEB', to: 'KAPF', start: '2026-10-14T18:00:00.000Z' },
+    { id: 'other', tripCode: 'ZZZZZ9', tail: 'N100TS', from: 'KAPF', to: 'KTEB', start: '2026-10-12T14:00:00.000Z' },
   ];
   const byId = matchContractToTrips({
-    tripId: 'SKY-TEST-1001', tail: 'N999XX', routeFrom: 'KORD', routeTo: 'KJFK', departDate: '2026-01-01',
+    tripId: 'WEQVQD', tail: 'N999XX', routeFrom: 'KORD', routeTo: 'KJFK', departDate: '2026-01-01',
   }, trips);
   assert.equal(byId.status, 'linked');
   assert.equal(byId.via, 'trip-id');
@@ -226,7 +228,7 @@ test('charter contract follows the trip id onto every leg, then tail route and d
   assert.equal(byFallback.status, 'unmatched');
   assert.equal(byFallback.ambiguous, true);
 
-  const unique = trips.filter((trip) => trip.tripCode !== 'SKY-TEST-9');
+  const unique = trips.filter((trip) => trip.tripCode !== 'ZZZZZ9');
   const dated = matchContractToTrips({
     tail: 'N100TS', routeFrom: 'APF', routeTo: 'TEB', departDate: '2026-10-12',
   }, unique);
@@ -251,14 +253,14 @@ test('the same charter PDF is not duplicated, and a new one is versioned with th
     incoming: {
       fingerprint: 'abc123',
       filename: 'synthetic-charter.pdf',
-      path: contractStoragePath('SKY-TEST-1001'),
+      path: contractStoragePath('WEQVQD'),
       sizeBytes: 1200,
       source,
       attachedAt: '2026-10-01T15:04:00.000Z',
     },
   });
   assert.equal(first.action, 'attached');
-  assert.equal(first.contract.path, 'trip-contracts/SKY-TEST-1001/charter-contract.pdf');
+  assert.equal(first.contract.path, 'trip-contracts/WEQVQD/charter-contract.pdf');
   assert.equal(first.contract.source.messageId, source.messageId);
   assert.equal(first.contract.source.sender, source.sender);
   assert.equal(first.contract.source.receivedAt, source.receivedAt);
@@ -269,7 +271,7 @@ test('the same charter PDF is not duplicated, and a new one is versioned with th
     incoming: {
       fingerprint: 'abc123',
       filename: 'synthetic-charter.pdf',
-      path: contractStoragePath('SKY-TEST-1001'),
+      path: contractStoragePath('WEQVQD'),
       source: { ...source, messageId: 'graph-message-synthetic-2' },
       attachedAt: '2026-10-02T15:04:00.000Z',
     },
@@ -277,14 +279,14 @@ test('the same charter PDF is not duplicated, and a new one is versioned with th
   assert.equal(again.action, 'unchanged');
   assert.equal(again.contract.source.messageId, 'graph-message-synthetic-1');
 
-  const versionPath = contractVersionPath('SKY-TEST-1001', 'abc123');
+  const versionPath = contractVersionPath('WEQVQD', 'abc123');
   const replaced = planContractWrite({
     existing: first.contract,
     versionPath,
     incoming: {
       fingerprint: 'def456',
       filename: 'synthetic-charter-revised.pdf',
-      path: contractStoragePath('SKY-TEST-1001'),
+      path: contractStoragePath('WEQVQD'),
       source: { ...source, messageId: 'graph-message-synthetic-3', sender: 'dispatch@example-charter.test' },
       attachedAt: '2026-10-03T15:04:00.000Z',
     },
@@ -308,7 +310,7 @@ test('reporting fields are typed cents, ICAO, and an append-only event id', () =
     checkoutEmail: 'Broker@Example-Charter.test',
     aircraftType: 'Citation CJ3',
     tail: 'n100ts',
-    tripId: 'sky-test-1001',
+    tripId: 'weqvqd',
     routeFrom: 'APF',
     routeTo: 'TEB',
     itinerary: 'KAPF → KTEB → KAPF',
@@ -328,7 +330,7 @@ test('reporting fields are typed cents, ICAO, and an append-only event id', () =
   assert.equal(facts.brokerEmail, 'broker@example-charter.test');
   assert.equal(facts.brokerDomain, 'example-charter.test');
   assert.equal(facts.tail, 'N100TS');
-  assert.equal(facts.tripId, 'SKY-TEST-1001');
+  assert.equal(facts.tripId, 'WEQVQD');
   assert.equal(facts.origin, 'KAPF');
   assert.equal(facts.destination, 'KTEB');
   assert.equal(facts.legCount, 2);
@@ -368,8 +370,8 @@ test('notify test mode is on unless explicitly disabled and rewrites the whole e
     cc: ['charters@flyskyway.com'],
     bcc: 'hidden@example.test',
     subject: 'AOG coverage bind request',
-    text: 'Trip SKY-TEST-1001',
-    html: '<p>Trip SKY-TEST-1001</p>',
+    text: 'Trip WEQVQD',
+    html: '<p>Trip WEQVQD</p>',
   }, {});
   assert.equal(safe.testMode, true);
   assert.deepEqual(safe.to, ['jake@flyskyway.com']);
@@ -405,7 +407,7 @@ test('checkout session charges the server premium and refuses live keys', () => 
   const params = buildCheckoutSessionParams({
     record: {
       id: 'cov_test',
-      tripId: 'SKY-TEST-1001',
+      tripId: 'WEQVQD',
       tail: 'N100TS',
       tripTotal: 18500,
       checkoutEmail: 'broker@example-charter.test',
@@ -473,7 +475,7 @@ test('stripe webhook signature verifies and only a matching premium captures', (
 test('election PDF stores the typed name and the placeholder Jake must replace', async () => {
   const pdf = await renderElectionPdf({
     record: {
-      tripId: 'SKY-TEST-1001',
+      tripId: 'WEQVQD',
       tail: 'N100TS',
       aircraftType: 'Citation CJ3',
       route: 'KAPF → KTEB',
@@ -507,7 +509,7 @@ test('election PDF stores the typed name and the placeholder Jake must replace',
 
 test('CSV export uses coverage labels and synthetic rows only', () => {
   const csv = coverageCsv([{
-    tripId: 'SKY-TEST-1001',
+    tripId: 'WEQVQD',
     brokerCompany: 'Example Charter Group',
     checkoutEmail: 'broker@example-charter.test',
     tail: 'N100TS',
@@ -577,21 +579,21 @@ test('recovery mail and stripe routes are wired, and test mode is centralized', 
 test('trip rows group legs and default to upcoming plus recent', () => {
   const now = new Date('2026-09-27T15:00:00.000Z');
   const legs = [
-    { uid: 'a1', tripId: 'SKY-TEST-1001', start: '2026-10-12T14:00:00.000Z', end: '2026-10-12T16:00:00.000Z', tail: 'N100TS', from: 'KAPF', to: 'KTEB', aircraft: 'Citation CJ3', customer: 'Example Charter Group', brokerEmail: 'broker@example-charter.test', contractAttached: false },
-    { uid: 'a2', tripId: 'SKY-TEST-1001', start: '2026-10-14T14:00:00.000Z', end: '2026-10-14T17:00:00.000Z', tail: 'N100TS', from: 'KTEB', to: 'KAPF', aircraft: 'Citation CJ3', customer: 'Example Charter Group', brokerEmail: 'broker@example-charter.test', contractAttached: false },
-    { uid: 'past', tripId: 'SKY-TEST-OLD', start: '2026-08-01T14:00:00.000Z', end: '2026-08-01T16:00:00.000Z', tail: 'N200TS', from: 'KTEB', to: 'KMIA', aircraft: 'Learjet 60', customer: 'Northwind Example Jets', brokerEmail: 'dispatch@example-lear.test', contractAttached: false },
+    { uid: 'a1', tripId: 'WEQVQD', start: '2026-10-12T14:00:00.000Z', end: '2026-10-12T16:00:00.000Z', tail: 'N100TS', from: 'KAPF', to: 'KTEB', aircraft: 'Citation CJ3', customer: 'Example Charter Group', brokerEmail: 'broker@example-charter.test', contractAttached: false },
+    { uid: 'a2', tripId: 'WEQVQD', start: '2026-10-14T14:00:00.000Z', end: '2026-10-14T17:00:00.000Z', tail: 'N100TS', from: 'KTEB', to: 'KAPF', aircraft: 'Citation CJ3', customer: 'Example Charter Group', brokerEmail: 'broker@example-charter.test', contractAttached: false },
+    { uid: 'past', tripId: 'G7OLD2', start: '2026-08-01T14:00:00.000Z', end: '2026-08-01T16:00:00.000Z', tail: 'N200TS', from: 'KTEB', to: 'KMIA', aircraft: 'Learjet 60', customer: 'Northwind Example Jets', brokerEmail: 'dispatch@example-lear.test', contractAttached: false },
   ];
   const rows = buildTripRows(legs, []);
-  const grouped = rows.find((row) => row.tripId === 'SKY-TEST-1001');
+  const grouped = rows.find((row) => row.tripId === 'WEQVQD');
   assert.equal(grouped.legCount, 2);
   assert.equal(grouped.route, 'KAPF → KTEB → KAPF');
   assert.equal(grouped.coverageLevel, 'included_50');
   assert.equal(grouped.contractStatus, 'missing');
   assert.equal(grouped.paymentStatus, 'not_required');
   const current = filterTripRows(rows, { now, window: 'current' });
-  assert.deepEqual(current.map((row) => row.tripId), ['SKY-TEST-1001']);
+  assert.deepEqual(current.map((row) => row.tripId), ['WEQVQD']);
   const past = filterTripRows(rows, { now, window: 'past' });
-  assert.deepEqual(past.map((row) => row.tripId), ['SKY-TEST-OLD']);
+  assert.deepEqual(past.map((row) => row.tripId), ['G7OLD2']);
   const missing = filterTripRows(rows, { now, window: 'all', contract: 'missing' });
   assert.equal(missing.length, 2);
   const many = buildTripRows(Array.from({ length: TRIP_PAGE_SIZE + 5 }, (_, i) => ({
@@ -624,17 +626,17 @@ test('complimentary domain records keep who added them', () => {
   const loaded = readDomainRecords({ complimentaryDomainRecords: second });
   assert.equal(loaded.length, 2);
   const rows = buildTripRows([
-    { uid: 'up', tripId: 'SKY-TEST-1001', start: '2026-10-12T14:00:00.000Z', brokerEmail: 'broker@example-charter.test', customer: 'Example Charter Group' },
-    { uid: 'done', tripId: 'SKY-TEST-1002', start: '2026-10-12T14:00:00.000Z', brokerEmail: 'broker@example-charter.test', customer: 'Example Charter Group' },
-  ], [{ id: 'c2', tripId: 'SKY-TEST-1002', coverageLevel: 'purchased_100', brokerEmail: 'broker@example-charter.test' }]);
+    { uid: 'up', tripId: 'WEQVQD', start: '2026-10-12T14:00:00.000Z', brokerEmail: 'broker@example-charter.test', customer: 'Example Charter Group' },
+    { uid: 'done', tripId: 'X9K2M4', start: '2026-10-12T14:00:00.000Z', brokerEmail: 'broker@example-charter.test', customer: 'Example Charter Group' },
+  ], [{ id: 'c2', tripId: 'X9K2M4', coverageLevel: 'purchased_100', brokerEmail: 'broker@example-charter.test' }]);
   const eligible = rowsEligibleForComplimentary(rows, 'example-charter.test', new Date('2026-09-27T15:00:00.000Z'));
-  assert.deepEqual(eligible.map((row) => row.tripId), ['SKY-TEST-1001']);
+  assert.deepEqual(eligible.map((row) => row.tripId), ['WEQVQD']);
 });
 
 test('uncompressed charter PDF text uses the checkout parser', () => {
   const lines = [
     'Charter contract',
-    'Trip ID: SKY-TEST-1001',
+    'Trip ID: WEQVQD',
     'Company: Example Charter Group',
     'Checkout email: broker@example-charter.test',
     'Aircraft type: Citation CJ3',
@@ -655,8 +657,76 @@ test('uncompressed charter PDF text uses the checkout parser', () => {
     hasPdf: true,
   });
   assert.equal(parsed.isCheckout, true);
-  assert.equal(parsed.tripId, 'SKY-TEST-1001');
+  assert.equal(parsed.tripId, 'WEQVQD');
   assert.equal(parsed.tripTotal, 18500);
   assert.equal(parsed.checkoutEmail, 'broker@example-charter.test');
   assert.equal(parsed.tail, 'N100TS');
+});
+
+test('trip ids are the 6 or 7 character trip code, not a trip number', () => {
+  assert.equal(normalizeTripId('weqvqd'), 'WEQVQD');
+  assert.equal(normalizeTripId('X9K2M4'), 'X9K2M4');
+  assert.equal(normalizeTripId('TJ7R2B1'), 'TJ7R2B1');
+  assert.equal(normalizeTripId('SKY-TEST-3003'), '');
+  assert.equal(normalizeTripId('1234567'), '');
+  assert.equal(normalizeTripId('leg-3001-a'), '');
+
+  const parsed = parseCheckoutEmail({
+    subject: 'Crew Itinerary (WEQVQD)',
+    from: 'broker@example-charter.test',
+    bodyText: [
+      'Trip number: 482193845',
+      'Trip number: SKY-TEST-3003',
+      'Crew Itinerary (WEQVQD)',
+      'Broker: Example Charter Group',
+      'Checkout email: broker@example-charter.test',
+      'Broker phone: (305) 555-0148',
+      'Aircraft: Citation CJ3',
+      'Tail: N100TS',
+      'Route: KAPF - KTEB',
+      'Departure: 2026-10-12',
+      'Trip total: $18,500.00',
+    ].join('\n'),
+    attachmentNames: ['charter.pdf'],
+    hasPdf: true,
+  });
+  assert.equal(parsed.tripId, 'WEQVQD');
+  assert.equal(parsed.brokerPhone.includes('305'), true);
+  assert.equal(parsed.notes.some((note) => /SKY-TEST|482193845/.test(note)), false);
+});
+
+test('broker backfill fills empty trip fields and keeps a different existing broker', () => {
+  const empty = planBrokerBackfill({}, {
+    brokerCompany: 'Example Charter Group',
+    checkoutEmail: 'broker@example-charter.test',
+    brokerPhone: '(305) 555-0148',
+  });
+  assert.deepEqual(empty.filled.sort(), ['brokerCompany', 'brokerDomain', 'brokerEmail', 'brokerPhone']);
+  assert.equal(empty.patch.brokerEmail, 'broker@example-charter.test');
+  assert.equal(empty.patch.brokerDomain, 'example-charter.test');
+  assert.equal(empty.mismatches.length, 0);
+
+  const same = planBrokerBackfill({
+    brokerCompany: 'Example Charter Group',
+    brokerEmail: 'broker@example-charter.test',
+  }, {
+    brokerCompany: 'example charter group',
+    checkoutEmail: 'broker@example-charter.test',
+  });
+  assert.equal(same.filled.length, 0);
+  assert.equal(same.mismatches.length, 0);
+
+  const clash = planBrokerBackfill({
+    brokerCompany: 'Kept Broker Co',
+    brokerEmail: 'kept@example-broker.test',
+  }, {
+    brokerCompany: 'Other Jets',
+    checkoutEmail: 'other@example-other.test',
+    brokerPhone: '305-555-0199',
+  });
+  assert.equal(clash.patch.brokerEmail, undefined);
+  assert.equal(clash.patch.brokerCompany, undefined);
+  assert.equal(clash.patch.brokerPhone, '305-555-0199');
+  assert.ok(clash.mismatches.some((row) => row.field === 'brokerEmail' && row.existing === 'kept@example-broker.test'));
+  assert.ok(clash.mismatches.some((row) => row.field === 'brokerCompany'));
 });

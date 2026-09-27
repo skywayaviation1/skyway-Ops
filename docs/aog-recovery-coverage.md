@@ -46,20 +46,20 @@ There is no real checkout sample in the repo yet. Extraction is isolated in `api
 
 Each Graph message id is written to `aogRecoveryProcessed`. A message already marked recorded, skipped, or duplicate is not parsed again.
 
-Matching uses the trip id when the schedule already has it (`trip-state` id or `tripSheetData.tripCode`), otherwise tail plus the first leg’s route. Unmatched checkouts are still saved and shown for ops to link.
+The trip id is the JetInsight trip code on `trip-state.tripSheetData.tripCode`: 6 or 7 letters and digits, and it includes at least one letter (`WEQVQD`, `X9K2M4`). A leg document id, an iCal uid, a hyphenated code, and a purely numeric trip number are not trip ids. The parser reads that code from the contract or checkout email (including a JetInsight “Crew/Passenger Itinerary (CODE)” label). Matching uses only that code. Otherwise it uses tail, route, and departure date. Unmatched checkouts are still saved and shown for ops to link.
 
 ## Charter contract on the trip
 
-The signed charter PDF is attached to the trip even when coverage stays at the included 50%. It is stored once under `trip-contracts/{trip id}/charter-contract.pdf` (the same Storage layout style as trip sheets: one object, a download URL, metadata on `trip-state`). Every leg whose `tripSheetData.tripCode` or document id matches that trip id gets the same `charterContract` field, so the trip detail Documents block shows it on each leg.
+The signed charter PDF is attached to the trip even when coverage stays at the included 50%. It is stored once under `trip-contracts/{tripId}/charter-contract.pdf`, where `{tripId}` is that 6 or 7 character trip code (or `unkeyed` when the code is missing). Every leg that shares the trip code gets the same `charterContract` field, so the trip detail Documents block shows it on each leg.
 
 Match order for the attachment:
 
 1. Trip id, and then every leg that shares it.
 2. Otherwise tail, route, and departure date (within 36 hours). A lone tail, or a route with no date, stays unmatched. Two different trip ids that both fit stay unmatched.
 
-The same PDF (same sha256) does not create a second file. A different PDF replaces the current one and the previous file is copied to `trip-contracts/{trip id}/versions/{fingerprint}.pdf`. The attachment records the source mailbox message id, received time, and sender.
+The same PDF (same sha256) does not create a second file. A different PDF replaces the current one and the previous file is copied to `trip-contracts/{tripId}/versions/{fingerprint}.pdf`. The attachment records the source mailbox message id, received time, and sender.
 
-If nothing matches, the row stays in **Unmatched contracts** on the AOG Coverage tab. Ops enter a trip id or leg uid and **Attach to trip**, which writes the same field on every leg of that trip. Linking a coverage row does this too when the PDF is already stored.
+If nothing matches, the row stays in **Unmatched contracts** on the AOG Coverage tab. Ops pick the trip by its trip id and **Attach to trip**, which writes the same field on every leg of that trip. Linking a coverage row does this too when the PDF is already stored.
 
 ## Public election and Stripe
 
@@ -79,7 +79,9 @@ Aircraft → **AOG Coverage** (roles `ops` and `admin`). The page lists every tr
 
 Columns: trip id, dates, route, tail, aircraft, broker company and email, charter contract (attached or missing), contract trip total, coverage level, premium, payment status, offer sent, bound to CFS. The default window is upcoming trips plus the last 14 days. Filters cover upcoming, past, and a date range, plus contract missing, coverage level, payment status, aircraft, and broker. Search and CSV export stay. The table pages 40 rows at a time.
 
-The row drawer uploads or replaces the signed charter PDF. The same provisional parser reads it and the fields (broker email, trip total, aircraft, tail, route, dates) are editable before save. Save attaches the PDF to every leg of that trip (same storage path, dedupe, and versioning as the inbox) and creates or updates the coverage record the same way a checkout does: a complimentary domain gets 100% complimentary, the broker covered email, and the CFS bind; any other domain gets the 100% offer email. Paid rows can still replace the PDF. The drawer also corrects trip total and broker email, resends the offer, gifts 100%, downloads the charter contract and signed election, and lists the append-only event history.
+The row drawer uploads or replaces the signed charter PDF. The same provisional parser reads it and the fields (broker email, phone, trip total, aircraft, tail, route, dates) are editable before save. Broker email and aircraft are filled from the trip or the document when either already has them. Save attaches the PDF to every leg of that trip (same storage path, dedupe, and versioning as the inbox) and creates or updates the coverage record the same way a checkout does: a complimentary domain gets 100% complimentary, the broker covered email, and the CFS bind; any other domain gets the 100% offer email. Paid rows can still replace the PDF. The drawer also corrects trip total and broker email, resends the offer, gifts 100%, downloads the charter contract and signed election, and lists the append-only event history.
+
+When a trip sheet or charter contract is added (manual upload or inbox attach) and the trip has no broker information, the parsed broker company, contact email, phone, and domain are written onto every leg: `brokerEmail`, `brokerCompany`, `brokerPhone`, `brokerDomain`, and `tripSheetData.client` when client is empty. Existing broker values are never overwritten. A different existing value is kept and recorded as a `broker_mismatch` coverage event, and the review form shows that mismatch. A fill is recorded as `broker_backfilled`. Trip detail and the notify lists read those same fields.
 
 **Unmatched contracts** and **Settings** are tabs on this page. Settings edits the aircraft rate table (Citation CJ3 1.5%, Learjet 60 2%) and the complimentary domain list. Each domain stores who added it and when. Adding a domain offers to apply complimentary 100% to that domain’s upcoming trips that are not yet at 100%. The test-mode banner and **Scan inbox** stay on the page.
 
@@ -106,7 +108,7 @@ Collection `aogRecovery` (database `appusers`):
 | `brokerDomain` | string. The email domain. |
 | `aircraftType` | string. Rate-table name when it matched. |
 | `tail` | string, upper case. |
-| `tripId` | string, upper case. |
+| `tripId` | string. The 6 or 7 character trip code, upper case. Empty when the code is missing. |
 | `origin`, `destination` | string ICAO. A 3-letter US code is stored with a `K` prefix. |
 | `legCount` | integer or null. Linked legs when the trip matched, otherwise airports in the route minus one. |
 | `coverageLevel` | `included_50`, `purchased_100`, `gifted_100`, `complimentary_100` |
@@ -118,7 +120,7 @@ Collection `aogRecovery` (database `appusers`):
 
 `aogRecoveryConfig/settings.complimentaryDomainRecords` is `{ domain, addedBy, addedAt }`. `complimentaryDomains` stays the string list the classifier reads.
 
-Event history is append-only at `aogRecovery/{id}/coverageEvents/{eventId}`. Writers use create, so an existing event is never updated. Document id is `offer_sent`, `contract_signed`, or `bound` the first time, and `paid_{paymentIntent}` or `refunded_{refundId}` so a repeat webhook does not add a second row. A forced resend uses a new id. Event types: `offer_sent`, `contract_signed`, `paid`, `bound`, `refunded`. Each event stores `type`, `at` (Timestamp), `atUtc`, `amountCents`, `currency`, trip id, broker domain, aircraft, tail, coverage level, election source, payment status, and the Stripe ids known at that time.
+Event history is append-only at `aogRecovery/{id}/coverageEvents/{eventId}`. Writers use create, so an existing event is never updated. Document id is `offer_sent`, `contract_signed`, or `bound` the first time, and `paid_{paymentIntent}` or `refunded_{refundId}` so a repeat webhook does not add a second row. A forced resend uses a new id. Event types: `offer_sent`, `contract_signed`, `paid`, `bound`, `refunded`, `broker_backfilled`, `broker_mismatch`. Broker events also store a `detail` string. Each event stores `type`, `at` (Timestamp), `atUtc`, `amountCents`, `currency`, trip id, broker domain, aircraft, tail, coverage level, election source, payment status, and the Stripe ids known at that time.
 
 The signed charter contract on the trip is not only a PDF. `trip-state/{leg}.charterContractData` holds the same money, identity, aircraft, ICAO route, leg count, and Timestamp/UTC date fields. Every leg of the trip gets the same object.
 

@@ -1,7 +1,8 @@
-SUBJECT: Signed charter contract SKY-TEST-2002
+SUBJECT: Signed charter contract TJ7R2B
 FROM: dispatch@example-lear.test
 ATTACHMENTS: Charter-Agreement.pdf
 
+Trip ID: TJ7R2B
 Company: Northwind Example Jets
 Checkout email: dispatch@example-lear.test
 Aircraft type: Learjet 60

@@ -2,6 +2,8 @@
 // server. Premium math lives here so a browser preview and a Checkout Session
 // cannot drift. The broker is charged only the premium, never the trip total.
 
+import { normalizeTripId } from './trip-id.js';
+
 export const COVERAGE_LEVELS = Object.freeze({
   included_50: '50% included',
   purchased_100: '100% purchased',
@@ -301,11 +303,11 @@ export function matchCoverageToTrips(parsed, trips) {
     if (!trip) continue;
     const reasons = [];
     let score = 0;
-    const tripCode = String(trip.tripCode || '').trim().toUpperCase();
-    const tripUid = String(trip.id || '').trim().toUpperCase();
-    if (wantedId && (wantedId === tripCode || wantedId === tripUid)) {
+    const tripCode = normalizeTripId(trip.tripCode);
+    const wanted = normalizeTripId(wantedId);
+    if (wanted && wanted === tripCode) {
       score += 60;
-      reasons.push(wantedId === tripCode ? 'trip id' : 'trip uid');
+      reasons.push('trip id');
     }
     if (tail && tail === String(trip.tail || '').trim().toUpperCase()) {
       score += 15;
@@ -325,7 +327,7 @@ export function matchCoverageToTrips(parsed, trips) {
     if (score > 0) scored.push({ trip, score, reasons });
   }
 
-  const idHits = scored.filter((row) => row.reasons.includes('trip id') || row.reasons.includes('trip uid'));
+  const idHits = scored.filter((row) => row.reasons.includes('trip id'));
   if (idHits.length > 0) {
     return { status: 'linked', matches: idHits.map((row) => row.trip), ambiguous: false };
   }

@@ -8,4 +8,4 @@ Aircraft: Citation CJ3
 Route: KAPF - KTEB
 Departure: 2026-12-01
 Trip total: $10,000.00
-Trip id: SKY-TEST-4004
+Trip id: K4M8NQ
