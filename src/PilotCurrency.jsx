@@ -351,6 +351,7 @@ export default function PilotCurrencyScreen({
             logbooks={safety.logbooks}
             currencies={safety.currencies}
             flightEntries={safety.flightEntries}
+            standards={safety.standards}
             onClose={() => setShowWyvern(false)}
             onImported={() => setShowWyvern(false)}
           />

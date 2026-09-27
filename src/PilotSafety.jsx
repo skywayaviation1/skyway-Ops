@@ -586,6 +586,7 @@ function PilotSafetyView({
           logbooks={data.logbooks}
           currencies={data.currencies}
           flightEntries={data.flightEntries}
+          standards={data.standards}
           onClose={() => setShowImport(false)}
           onImported={({ written, errors }) => {
             setBanner({

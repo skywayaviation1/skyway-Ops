@@ -112,6 +112,9 @@ function Bucket({ title, tone, rows, users, logbooks, currencies, onChange }) {
             </div>
             <div className="min-w-0 md:col-span-6">
               <div className="text-[11px] text-slate-300">{wyvernRecordSummary(row.record)}</div>
+              {(row.record.warnings || []).map((warning) => (
+                <div key={warning} className="mt-1 text-[10px] text-amber-200">{warning}</div>
+              ))}
               {row.conflicts.map((item) => (
                 <div key={`${item.field}-${item.incoming}`} className="mt-1 text-[10px] text-amber-200">
                   {wyvernConflictLabel(item.field)}: {item.existing} on file → {item.incoming} from Wyvern
@@ -134,6 +137,7 @@ export default function WyvernImporter({
   logbooks = {},
   currencies = {},
   flightEntries = [],
+  standards = null,
   onClose,
   onImported,
 }) {
@@ -160,7 +164,7 @@ export default function WyvernImporter({
       setErr(parsed.warnings[0] || 'No pilots found in that file.');
       return;
     }
-    const plan = planWyvernImport(parsed.records, { users, logbooks, currencies });
+    const plan = planWyvernImport(parsed.records, { users, logbooks, currencies, standards });
     if (!plan.rows.length) {
       setWarnings(parsed.warnings);
       setSkipped(plan.skipped);

@@ -38,7 +38,8 @@ The rating is an operator-owned crew vetting summary that uses the Wyvern Regist
   drugAlcohol: { enrolled: true | false | null, enrolledDate, programName },
   internalNotes,          // never copied onto a broker report
   wyvern: {               // present after an ACES import; never copied onto a broker report
-    id, source: 'Wyvern', importedAt, hoursAsOf, verificationStatus, position
+    id, source: 'Wyvern', importedAt, hoursAsOf, verificationStatus, position,
+    hiredOn, base, newHireHours, passStatus, certificateIssuedOn, faaVerifiedOn, backgroundCheckedOn
   },
   updatedAt, updatedBy, updatedByName
 }
@@ -65,7 +66,11 @@ CRM, hazmat, security, and drug-and-alcohol enrollment stay on the record and ar
 
 Compliance → Currency → Import from Wyvern accepts the operator’s ACES export as JSON (an array, or an object with `pilots`, `records`, `data`, or `crew`) or as a CSV with a header row. Field names are matched loosely (`pilotName` / `name`, `flightHours.totalTime` / `Total Time`, `135.297 Completed`, and so on) because the export columns are not fixed yet.
 
-Only rows marked active (`Active`, `Active Pilot`, `current`, `employed`) are imported. Everyone else is listed and skipped. Each active row is matched to an existing user by email, then by normalized name (including `Last, First`), then by a Wyvern ID already stored on that pilot’s logbook. Ambiguous matches stay unmatched until an admin picks the pilot or skips the row.
+Only rows marked active (`Active`, `Active Pilot`, `Active on Roster`, `current`, `employed`) are imported. `employment_status` such as Full Time is stored as employment and does not, by itself, mark the row active. Everyone else is listed and skipped. Each active row is matched to an existing user by email, then by normalized name, then by a Wyvern ID already stored on that pilot’s logbook. Name matching ignores case, treats a middle name on only one side as the same person, and collapses a surname typed twice (`Mina Pell Pell` matches `Mina Quinn Pell`). Ambiguous matches stay unmatched until an admin picks the pilot or skips the row.
+
+The active-pilot JSON is one object per pilot: roster and employment, a certificate object (type, country, ratings — never the certificate number), medical class and check date, background AID/EIS text reduced to yes/no, an experience object (totals, fixed-wing, rotor, single- and multi-engine, and `by_type`), checks, and `type_ratings`. A type string such as `CE-525, CE-525S` stays one active type. Wyvern leaves check expiry empty, so the importer fills due dates from the completion date and the PIC intervals in Rating minimums (medical 12, IPC 6, line check 7, aircraft, recurrent, and simulator 12). Indoctrination is stored as a completion with no due date. An explicit expiry already in the file is kept. Rows whose PIC time exceeds total time, or whose other hour blocks disagree the same way, stay in the preview with a warning. Free-text notes are not imported.
+
+`src/wyvern-outbound.js` shapes a hours payload (`skyway-wyvern-hours-1`) for a future push of auto-logged hours to Wyvern’s FMS Update API. That API and the quarterly Excel vendor export are not connected: there are no credentials or API docs in this app, and `wyvernOutboundStatus()` reports both as unavailable.
 
 The preview splits the file into matched, conflicts, and unmatched. A conflict is a saved hour, certificate, medical, or check date that the file would change. Importing overwrites those fields with the Wyvern values. Fields the file leaves blank stay as they are. The write uses `pilot-logbooks/{uid}` and, when the file includes a medical or a check, `pilot-currencies/{uid}`, so a second import updates the same documents. The screen recomputes the safety rating from those records. Each imported logbook stores `wyvern.source`, `wyvern.importedAt`, the Wyvern ID, the hours as-of date, verification status, and position. Phone numbers, certificate numbers, dates of birth, addresses, and document files are not written.
 

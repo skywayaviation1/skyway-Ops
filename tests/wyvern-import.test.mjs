@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { brokerPilotReport, evaluatePilot } from '../src/pilot-safety.js';
+import { buildWyvernHoursPush, wyvernOutboundStatus, WYVERN_HOURS_SCHEMA } from '../src/wyvern-outbound.js';
 import {
   findWyvernConflicts,
   isActiveWyvernStatus,
@@ -28,6 +29,8 @@ const users = [
 test('active status accepts the words an ACES export is likely to use', () => {
   assert.equal(isActiveWyvernStatus('Active'), true);
   assert.equal(isActiveWyvernStatus('Active Pilot'), true);
+  assert.equal(isActiveWyvernStatus('Active on Roster'), true);
+  assert.equal(isActiveWyvernStatus('Full Time'), false);
   assert.equal(isActiveWyvernStatus(true), true);
   assert.equal(isActiveWyvernStatus('Inactive'), false);
   assert.equal(isActiveWyvernStatus(''), false);
@@ -275,6 +278,210 @@ test('the sample preview file is fictitious and classifies active pilots', async
   assert.equal(plan.rows.find((row) => row.record.name === 'Timothy Woods').match.reason, 'name');
   assert.equal(plan.rows.find((row) => row.record.name === 'Nora Pell').bucket, 'unmatched');
   assert.equal(JSON.stringify(plan).includes('DO-NOT-IMPORT'), false);
+});
+
+test('names match across case, a missing middle name, and a repeated surname', () => {
+  const crew = [
+    { uid: 'jordan', name: 'Jordan Hale', email: 'jordan@example.test', approved: true },
+    { uid: 'mina', name: 'Mina Quinn Pell', email: 'mina@example.test', approved: true },
+    { uid: 'ruth', name: 'Mina Ruth Pell', email: 'ruth@example.test', approved: true },
+  ];
+  assert.equal(matchWyvernPilot({ name: 'JORDAN hale', active: true }, crew, {}).user.uid, 'jordan');
+  assert.equal(matchWyvernPilot({ name: 'Mina Pell', active: true }, [crew[1]], {}).user.uid, 'mina');
+  assert.equal(matchWyvernPilot({ name: 'Mina Pell Pell', active: true }, [crew[1]], {}).user.uid, 'mina');
+  const ambiguous = matchWyvernPilot({ name: 'Mina Pell', active: true }, crew, {});
+  assert.equal(ambiguous.user, null);
+  assert.equal(ambiguous.ambiguous, true);
+  assert.equal(matchWyvernPilot({ name: 'Mina Alan Pell', active: true }, [crew[1]], {}).user, null);
+});
+
+test('the active-pilot JSON maps hours, intervals, and warnings without storing a certificate number', () => {
+  const parsed = parseWyvernText(JSON.stringify([{
+    wyvern_name: 'jordan hale',
+    roster_status: 'Active on Roster',
+    pass_status: 'Available for PASS',
+    employment_status: 'Full Time',
+    pilot_base: 'Sample Base',
+    date_of_hire: '2019-04-01',
+    notes: 'DO-NOT-IMPORT-NOTE',
+    capture_complete: false,
+    certificate: {
+      number: 'DO-NOT-KEEP-77',
+      type: 'Commercial / Instrument',
+      fixed_wing_ratings: 'Airplane Multiengine Land',
+      issuing_country: 'United States',
+      issue_date: '2018-06-01',
+      last_faa_verification: '2024-02-02',
+    },
+    medical: { class: 'Class 1', check_date: '2024-03-10' },
+    background: {
+      faa_background_check_date: '2024-01-02',
+      aid_records: 'No Reports on File for this airman',
+      eis_records: 'Enforcement case SAMPLE-99 remains open',
+    },
+    experience: {
+      last_updated: '2024-08-01',
+      total: 4000,
+      pic: 5000,
+      turbine: 3000,
+      instrument: 800,
+      last_90_days: 40,
+      last_12_months: 400,
+      fixed_wing: { total: 3900, pic: 4000, '90_days': 30 },
+      rotor_wing: { hours: { total: 100 }, landings: { '90_days': 2 } },
+      single_engine: { total: 200 },
+      multi_engine: { total: 3700, pic: 3800, '90_days': 12, '12_months': 180 },
+      landings: { '90_days': 10, '12_months': 40 },
+      by_type: [
+        { type: 'CE-525, CE-525S', total: 900, pic: 1200 },
+        { type: 'LR-60', total: 9000, pic: 10 },
+      ],
+      new_hire_adjustment: { hours_12_months_prior: 50 },
+    },
+    checks: {
+      ipc: { date: '2024-01-15', expires: null, status: 'Current' },
+      line_check: { date: '2024-01-15', expires: '2024-09-01', status: 'Current' },
+      international_procedures: { date: '2023-05-01', expires: null, status: 'Current' },
+      indoctrination: { date: '2020-05-01', expires: null, status: 'Current' },
+      uprt: { date: null, expires: null, status: 'UPRT Not Verified' },
+    },
+    type_ratings: [{
+      type: 'CE-525, CE-525S',
+      verified_status: null,
+      duty_assignment: 'PIC',
+      aircraft_specific_check: { date: '2024-02-01', expires: null, status: 'Current' },
+      recurrent_training: { date: '2024-06-01', expires: null, status: 'Current' },
+      simulator_training: {
+        date: '2024-06-02', expires: null, status: 'Current', sim_type: 'Full Motion', vendor: 'Sample Sim Co',
+      },
+      enhanced_pilot_training: { date: null, expires: null, status: 'EPT Not Verified' },
+    }, {
+      type: 'LR-60',
+      verified_status: null,
+      duty_assignment: 'PIC',
+      recurrent_training: { date: '2023-11-01', expires: null, status: 'Current' },
+      simulator_training: {
+        date: '2023-11-01', expires: null, status: 'Current', sim_type: 'Full Motion', vendor: 'Sample Sim Co',
+      },
+    }],
+    status_flags: [],
+  }, {
+    wyvern_name: 'Nora Pell',
+    roster_status: 'Active on Roster',
+    employment_status: 'Full Time',
+    certificate: { type: 'Student Pilot' },
+    status_flags: ['Type Not Verified'],
+    type_ratings: [{ type: 'CE-525, CE-525S', verified_status: 'Type Not Verified', duty_assignment: 'SIC' }],
+  }]), 'active-pilots.json');
+
+  assert.equal(parsed.records.length, 2);
+  const record = parsed.records[0];
+  assert.equal(record.active, true);
+  assert.equal(record.background.employment, 'Full Time');
+  assert.equal(record.hours.totalTime, 4000);
+  assert.equal(record.hours.pic, 5000);
+  assert.equal(record.hours.fixedWing, 3900);
+  assert.equal(record.hours.rotorWing, 100);
+  assert.equal(record.hours.singleEngine, 200);
+  assert.equal(record.hours.multiEngine, 3700);
+  assert.equal(record.hours.multiEngine90, 12);
+  assert.equal(record.hours.last90Days, 40);
+  assert.equal(record.hours.landings, undefined);
+  assert.equal(record.hoursAsOf, '2024-08-01');
+  assert.deepEqual(record.certificate.typeRatings, ['CE-525, CE-525S', 'LR-60']);
+  assert.equal(record.certificate.typeRatings.length, 2);
+  assert.equal(record.certificate.level, 'Commercial');
+  assert.equal(record.certificate.instrument, true);
+  assert.equal(record.certificate.multiEngine, true);
+  assert.equal(record.certificate.country, 'United States');
+  assert.equal(record.certificate.typeVerified, true);
+  assert.equal(record.position, 'PIC');
+  assert.equal(record.medical.class, 'First');
+  assert.equal(record.medical.issuedDate, '2024-03-10');
+  assert.equal(record.medical.expirationDate, '2025-03-31');
+  assert.equal(record.checks.instrumentCheck297.completedOn, '2024-01-15');
+  assert.equal(record.checks.instrumentCheck297.dueOn, '2024-07-31');
+  assert.equal(record.checks.lineCheck299.dueOn, '2024-09-01');
+  assert.equal(record.checks.basicIndoctrination.completedOn, '2020-05-01');
+  assert.equal(record.checks.basicIndoctrination.dueOn, '');
+  assert.equal(record.checks.internationalProcedures.completedOn, '2023-05-01');
+  assert.equal(record.checks.internationalProcedures.dueOn, '');
+  assert.equal(record.checks.uprt, undefined);
+  assert.equal(record.checks.recurrentTraining351.completedOn, '2023-11-01');
+  assert.equal(record.checks.recurrentTraining351.dueOn, '2024-11-30');
+  assert.equal(record.checks.sim293b_CE525.dueOn, '2025-06-30');
+  assert.equal(record.checks.sim293b_CE525.notes, 'Full Motion · Sample Sim Co');
+  assert.equal(/fixed[-\s]?base/i.test(record.checks.sim293b_CE525.notes), false);
+  assert.equal(record.checks.groundOral293a_CE525.completedOn, '2024-02-01');
+  assert.equal(record.background.accident, false);
+  assert.equal(record.background.enforcement, true);
+  assert.equal(record.newHireHours, 50);
+  assert.equal(record.warnings.includes('PIC time is greater than total time'), true);
+  assert.equal(record.warnings.includes('Fixed-wing PIC time is greater than fixed-wing total time'), true);
+  assert.equal(record.warnings.includes('Multi-engine PIC time is greater than multi-engine total time'), true);
+  assert.equal(record.warnings.includes('PIC time in type is greater than total time in type'), true);
+  assert.equal(record.warnings.includes('Time in type is greater than total time'), true);
+  assert.equal(record.warnings.includes('Wyvern marked this capture incomplete'), true);
+  const stored = JSON.stringify(record);
+  assert.equal(stored.includes('DO-NOT-KEEP-77'), false);
+  assert.equal(stored.includes('DO-NOT-IMPORT-NOTE'), false);
+  assert.equal(stored.includes('SAMPLE-99'), false);
+
+  const other = parsed.records[1];
+  assert.equal(other.certificate.level, '');
+  assert.equal(other.certificate.typeVerified, false);
+  assert.equal(other.warnings.includes('Certificate type was not recognized'), true);
+  assert.deepEqual(other.certificate.typeRatings, ['CE-525, CE-525S']);
+
+  const plan = planWyvernImport(parsed.records, {
+    users: [{ uid: 'jordan', name: 'Jordan Hale', email: 'jordan@example.test', approved: true }],
+    standards: { positions: { PIC: { ipcMonths: 9 } } },
+  });
+  const row = plan.rows.find((entry) => entry.record.name === 'jordan hale');
+  assert.equal(row.bucket, 'matched');
+  assert.equal(row.include, true);
+  assert.equal(row.record.checks.instrumentCheck297.dueOn, '2024-10-31');
+  assert.equal(row.record.checks.lineCheck299.dueOn, '2024-09-01');
+
+  const draft = wyvernLogbookDraft(null, record, { uid: 'jordan', pilotName: 'Jordan Hale', now: 20 });
+  const blob = JSON.stringify(draft);
+  assert.equal(blob.includes('DO-NOT-KEEP-77'), false);
+  assert.equal(blob.includes('DO-NOT-IMPORT-NOTE'), false);
+  assert.equal(blob.includes('SAMPLE-99'), false);
+  assert.equal(draft.certificate.country, 'United States');
+  assert.equal(draft.certificate.typeVerified, true);
+  assert.equal(draft.background.employment, 'Full Time');
+  assert.equal(draft.background.accident, false);
+  assert.equal(draft.background.enforcement, true);
+  assert.equal(draft.hours.landings, null);
+  assert.equal(draft.wyvern.passStatus, 'Available for PASS');
+  assert.equal(draft.wyvern.base, 'Sample Base');
+  assert.equal(draft.wyvern.hiredOn, '2019-04-01');
+  assert.equal(draft.wyvern.newHireHours, 50);
+  assert.equal(draft.wyvern.faaVerifiedOn, '2024-02-02');
+  const currency = wyvernCurrencyPatch(null, record, 20);
+  assert.equal(currency.medical.lastDate, '2024-03-10');
+  assert.equal(currency.medical.expirationDate, '2025-03-31');
+  assert.equal(currency.sim293b_CE525.notes, 'Full Motion · Sample Sim Co');
+  assert.equal(currency.basicIndoctrination.lastDate, '2020-05-01');
+  assert.equal(currency.basicIndoctrination.dueDate, undefined);
+  assert.equal(JSON.stringify(currency).includes('SAMPLE-99'), false);
+});
+
+test('a future Wyvern hours push is shaped but not connected', () => {
+  const status = wyvernOutboundStatus();
+  assert.equal(status.ready, false);
+  assert.equal(status.fmsUpdateApi.available, false);
+  assert.equal(status.quarterlyExcelExport.available, false);
+  const payload = buildWyvernHoursPush({
+    pilotName: 'Ada Lovelace',
+    baseline: { asOf: '2024-01-01', source: 'Wyvern' },
+    hours: { totalTime: 10, pic: 4, timeInType: [{ type: 'CE-525', hours: 6, picHours: 2 }] },
+  });
+  assert.equal(payload.schema, WYVERN_HOURS_SCHEMA);
+  assert.equal(payload.ready, false);
+  assert.equal(payload.hours.total, 10);
+  assert.equal(payload.hours.byType[0].pic, 2);
 });
 
 test('the bulk script refuses to touch Firestore without a service account', () => {

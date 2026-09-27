@@ -454,7 +454,7 @@ function copyHourBag(raw) {
   hours.landings = finiteNumber(raw.landings);
   const types = Array.isArray(raw.timeInType) ? raw.timeInType : [];
   hours.timeInType = types.slice(0, 24).map((entry) => ({
-    type: String(entry?.type || '').trim().slice(0, 40),
+    type: String(entry?.type || '').trim().slice(0, 80),
     hours: finiteNumber(entry?.hours),
     picHours: finiteNumber(entry?.picHours),
   })).filter((entry) => entry.type);
@@ -497,19 +497,35 @@ function normalizeHoursMeta(raw) {
 function normalizeWyvernStamp(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const importedAt = Number(raw.importedAt);
+  const newHireHours = finiteNumber(raw.newHireHours);
+  const dateOrBlank = (value) => (/^\d{4}-\d{2}-\d{2}$/.test(value || '') ? value : '');
   const stamp = {
     id: String(raw.id || '').trim().slice(0, 80),
     source: 'Wyvern',
     importedAt: Number.isFinite(importedAt) ? importedAt : null,
-    hoursAsOf: /^\d{4}-\d{2}-\d{2}$/.test(raw.hoursAsOf || '') ? raw.hoursAsOf : '',
+    hoursAsOf: dateOrBlank(raw.hoursAsOf),
     verificationStatus: String(raw.verificationStatus || '').slice(0, 80),
     position: String(raw.position || '').slice(0, 40),
+    hiredOn: dateOrBlank(raw.hiredOn),
+    base: String(raw.base || '').slice(0, 80),
+    newHireHours,
+    passStatus: String(raw.passStatus || '').slice(0, 80),
+    certificateIssuedOn: dateOrBlank(raw.certificateIssuedOn),
+    faaVerifiedOn: dateOrBlank(raw.faaVerifiedOn),
+    backgroundCheckedOn: dateOrBlank(raw.backgroundCheckedOn),
   };
   const empty = !stamp.id
     && stamp.importedAt == null
     && !stamp.hoursAsOf
     && !stamp.verificationStatus
-    && !stamp.position;
+    && !stamp.position
+    && !stamp.hiredOn
+    && !stamp.base
+    && stamp.newHireHours == null
+    && !stamp.passStatus
+    && !stamp.certificateIssuedOn
+    && !stamp.faaVerifiedOn
+    && !stamp.backgroundCheckedOn;
   return empty ? null : stamp;
 }
 

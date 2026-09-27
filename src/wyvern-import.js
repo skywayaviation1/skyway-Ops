@@ -32,6 +32,10 @@ const CHECK_KEYS = new Set([
   'crmTraining330',
   'hazmatTraining',
   'tfsspTraining',
+  'basicIndoctrination',
+  'uprt',
+  'enhancedPilotTraining',
+  'internationalProcedures',
 ]);
 
 const EVENT_RULES = [
@@ -120,13 +124,19 @@ function displayName(value) {
 }
 
 export function normalizePersonName(value) {
-  return displayName(value)
+  const tokens = displayName(value)
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, ' ')
     .trim()
-    .replace(/\s+/g, ' ');
+    .split(/\s+/)
+    .filter(Boolean);
+  const collapsed = [];
+  for (const token of tokens) {
+    if (collapsed[collapsed.length - 1] !== token) collapsed.push(token);
+  }
+  return collapsed.join(' ');
 }
 
 function normalizeEmail(value) {
@@ -243,8 +253,8 @@ const HOUR_ALIASES = {
 };
 
 function readTimeInType(bag, raw) {
-  const direct = pick(bag, ['timeintype', 'hoursbytype', 'hoursbyaircraft', 'aircrafthours'])
-    ?? pick(raw, ['timeintype', 'hoursbytype', 'hoursbyaircraft', 'aircrafthours']);
+  const direct = pick(bag, ['timeintype', 'hoursbytype', 'hoursbyaircraft', 'aircrafthours', 'bytype'])
+    ?? pick(raw, ['timeintype', 'hoursbytype', 'hoursbyaircraft', 'aircrafthours', 'bytype']);
   const rows = [];
   if (Array.isArray(direct)) {
     for (const entry of direct) {
@@ -253,13 +263,13 @@ function readTimeInType(bag, raw) {
       const hours = parseHours(pick(entry, ['hours', 'time', 'total', 'totaltime']));
       const picHours = parseHours(pick(entry, ['pichours', 'pic', 'pictime', 'pictimeintype']));
       if (type && hours != null) {
-        rows.push({ type: type.slice(0, 40), hours, ...(picHours != null ? { picHours } : {}) });
+        rows.push({ type: type.slice(0, 80), hours, ...(picHours != null ? { picHours } : {}) });
       }
     }
   } else if (direct && typeof direct === 'object') {
     for (const [type, hours] of Object.entries(direct)) {
       const parsed = parseHours(hours);
-      if (type && parsed != null) rows.push({ type: type.slice(0, 40), hours: parsed });
+      if (type && parsed != null) rows.push({ type: type.slice(0, 80), hours: parsed });
     }
   }
   return rows.slice(0, 24);
@@ -269,7 +279,7 @@ function cleanTypeName(value) {
   const text = String(value || '').trim();
   if (!text || /^\d{4,}$/.test(text)) return '';
   if (/certificate\s*(no|number)|passport|date of birth|\bdob\b/i.test(text)) return '';
-  return text.slice(0, 40);
+  return text.slice(0, 80);
 }
 
 function readTypeRatings(source) {
@@ -303,10 +313,14 @@ function readChecks(raw, aircraftTypes) {
     const eventFamilies = aircraft ? [familyOf(aircraft)] : families;
     for (const key of keysForEvent(id, eventFamilies)) {
       if (!CHECK_KEYS.has(key)) continue;
-      const prev = checks[key] || { completedOn: '', dueOn: '' };
+      const prev = checks[key] || { completedOn: '', dueOn: '', dueSource: '', intervalKey: 'none', notes: '' };
+      const explicit = Boolean(dueOn) || prev.dueSource === 'explicit';
       checks[key] = {
-        completedOn: completedOn || prev.completedOn,
-        dueOn: dueOn || prev.dueOn,
+        completedOn: completedOn || prev.completedOn || '',
+        dueOn: dueOn || prev.dueOn || '',
+        dueSource: explicit ? 'explicit' : (prev.dueSource || ''),
+        intervalKey: intervalKeyFor(key),
+        notes: prev.notes || '',
       };
     }
     return null;
@@ -361,6 +375,246 @@ function readChecks(raw, aircraftTypes) {
   return { checks, drug };
 }
 
+function intervalKeyFor(key) {
+  if (key === 'instrumentCheck297') return 'ipc';
+  if (key === 'lineCheck299') return 'line';
+  if (key === 'recurrentTraining351') return 'recurrent';
+  if (String(key).startsWith('groundOral293a_')) return 'aircraft';
+  if (String(key).startsWith('sim293b_') || key === 'competencyCheck293') return 'simulator';
+  return 'none';
+}
+
+function addCalendarMonthsEndDate(dateString, months) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateString || '')) return '';
+  const count = Number(months);
+  if (!Number.isFinite(count) || count <= 0) return '';
+  const date = new Date(`${dateString}T12:00:00Z`);
+  if (!Number.isFinite(date.getTime())) return '';
+  const end = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + count + 1, 0));
+  return end.toISOString().slice(0, 10);
+}
+
+function picIntervals(standards) {
+  const pic = standards?.positions?.PIC;
+  const fallback = { medicalMonths: 12, ipcMonths: 6, lineCheckMonths: 7, aircraftMonths: 12, recurrentMonths: 12, simulatorMonths: 12 };
+  const read = (key) => {
+    const value = Number(pic?.[key]);
+    return Number.isFinite(value) && value >= 0 ? value : fallback[key];
+  };
+  return {
+    medical: read('medicalMonths'),
+    ipc: read('ipcMonths'),
+    line: read('lineCheckMonths'),
+    aircraft: read('aircraftMonths'),
+    recurrent: read('recurrentMonths'),
+    simulator: read('simulatorMonths'),
+  };
+}
+
+export function applyWyvernIntervals(record, standards = null) {
+  if (!record) return record;
+  const months = picIntervals(standards);
+  if (record.medical && record.medical.expirationSource !== 'explicit' && record.medical.issuedDate) {
+    const due = addCalendarMonthsEndDate(record.medical.issuedDate, months.medical);
+    if (due) {
+      record.medical.expirationDate = due;
+      record.medical.expirationSource = 'interval';
+    }
+  }
+  for (const item of Object.values(record.checks || {})) {
+    if (!item || item.dueSource === 'explicit' || item.intervalKey === 'none') continue;
+    const count = months[item.intervalKey];
+    const due = addCalendarMonthsEndDate(item.completedOn, count);
+    if (!due) continue;
+    item.dueOn = due;
+    item.dueSource = 'interval';
+  }
+  return record;
+}
+
+function nestedObject(bag, aliases) {
+  const node = pick(bag, aliases);
+  return node && typeof node === 'object' && !Array.isArray(node) ? node : null;
+}
+
+function readDatedNode(node) {
+  if (!node || typeof node !== 'object' || Array.isArray(node)) return null;
+  return {
+    completedOn: parseWyvernDate(pick(node, ['date', 'completed', 'completedon', 'lastdate', 'checkdate'])),
+    explicitDue: parseWyvernDate(pick(node, ['expires', 'expiry', 'expiration', 'expirationdate', 'due', 'duedate'])),
+  };
+}
+
+function putCheck(checks, key, dated, intervalKey, notes = '') {
+  if (!CHECK_KEYS.has(key) || !dated) return;
+  if (!dated.completedOn && !dated.explicitDue) return;
+  const prev = checks[key];
+  const explicit = Boolean(dated.explicitDue) || prev?.dueSource === 'explicit';
+  checks[key] = {
+    completedOn: dated.completedOn || prev?.completedOn || '',
+    dueOn: dated.explicitDue || (explicit ? prev?.dueOn || '' : ''),
+    dueSource: explicit ? 'explicit' : (prev?.dueSource || ''),
+    intervalKey,
+    notes: notes || prev?.notes || '',
+  };
+}
+
+function putEarliest(checks, key, dated, intervalKey, notes = '') {
+  if (!dated?.completedOn && !dated?.explicitDue) return;
+  const prev = checks[key];
+  if (prev?.completedOn && dated.completedOn && prev.completedOn < dated.completedOn) return;
+  putCheck(checks, key, dated, intervalKey, notes);
+}
+
+function recordsOnFile(value) {
+  if (value == null || String(value).trim() === '') return null;
+  if (/no reports/i.test(String(value))) return false;
+  return true;
+}
+
+function typeUnverified(value) {
+  return /type\s*not\s*verified|type rating not confirmed/i.test(String(value || ''));
+}
+
+function dutySeat(values) {
+  const seats = [...new Set((values || []).map((value) => {
+    const text = String(value || '').trim().toLowerCase();
+    if (text === 'pic' || text.includes('pilot in command')) return 'PIC';
+    if (text === 'sic' || text.includes('second in command')) return 'SIC';
+    return '';
+  }).filter(Boolean))];
+  return seats.length === 1 ? seats[0] : '';
+}
+
+function hoursGreater(left, right) {
+  return left != null && right != null && Number(left) > Number(right) + 0.001;
+}
+
+function applyPassExtract(raw, record) {
+  const hourBag = readHourBag(raw);
+  const fixed = nestedObject(hourBag, ['fixedwing']);
+  const single = nestedObject(hourBag, ['singleengine']);
+  const multi = nestedObject(hourBag, ['multiengine']);
+  const rotor = nestedObject(hourBag, ['rotorwing']);
+  if (record.hours.fixedWing == null && fixed) record.hours.fixedWing = parseHours(pick(fixed, ['total', 'totaltime', 'hours']));
+  if (record.hours.singleEngine == null && single) record.hours.singleEngine = parseHours(pick(single, ['total', 'totaltime', 'hours']));
+  if (record.hours.multiEngine == null && multi) record.hours.multiEngine = parseHours(pick(multi, ['total', 'totaltime', 'hours']));
+  if (record.hours.multiEngine90 == null && multi) {
+    record.hours.multiEngine90 = parseHours(pick(multi, ['90days', 'last90', 'last90days']));
+  }
+  if (record.hours.multiEngine12 == null && multi) {
+    record.hours.multiEngine12 = parseHours(pick(multi, ['12months', 'last12', 'last12months', 'last365']));
+  }
+  if (record.hours.rotorWing == null && rotor) {
+    const rotorHours = nestedObject(rotor, ['hours']) || rotor;
+    record.hours.rotorWing = parseHours(pick(rotorHours, ['total', 'totaltime', 'hours']));
+  }
+
+  const certificateBag = pick(raw, ['certificate', 'airmancertificate']);
+  const certificateSource = certificateBag && typeof certificateBag === 'object' && !Array.isArray(certificateBag)
+    ? certificateBag
+    : {};
+  const country = String(pick(certificateSource, ['issuingcountry', 'country', 'countryofissue']) || '').trim();
+  if (country) record.certificate.country = country.slice(0, 40);
+  const issuedOn = parseWyvernDate(pick(certificateSource, ['issuedate', 'issued', 'issuedon']));
+  if (issuedOn) record.certificateIssuedOn = issuedOn;
+  const faaVerifiedOn = parseWyvernDate(pick(certificateSource, ['lastfaaverification', 'faaverification', 'faaverified']));
+  if (faaVerifiedOn) record.faaVerifiedOn = faaVerifiedOn;
+  const certificateTypeText = String(pick(certificateSource, ['type', 'certificatetype', 'grade']) || '');
+  const ratingText = [
+    certificateTypeText,
+    pick(certificateSource, ['fixedwingratings']),
+    pick(certificateSource, ['rotorwingratings']),
+  ].filter((value) => typeof value === 'string').join(' ');
+  if (record.certificate.instrument == null && /instrument/i.test(ratingText)) record.certificate.instrument = true;
+  if (record.certificate.multiEngine == null && /multi[-\s]?engine|\bmel\b/i.test(ratingText)) record.certificate.multiEngine = true;
+
+  const employment = String(pick(raw, ['employmentstatus', 'employment']) || '').trim();
+  if (employment) record.background.employment = employment.slice(0, 40);
+  const backgroundBag = nestedObject(raw, ['background']);
+  if (backgroundBag) {
+    record.background.accident = recordsOnFile(pick(backgroundBag, ['aidrecords', 'aid', 'accident']));
+    record.background.enforcement = recordsOnFile(pick(backgroundBag, ['eisrecords', 'eis', 'enforcement']));
+    const checked = parseWyvernDate(pick(backgroundBag, ['faabackgroundcheckdate', 'backgroundcheckdate', 'checkedon']));
+    if (checked) record.backgroundCheckedOn = checked;
+  }
+
+  const passStatus = String(pick(raw, ['passstatus']) || '').trim();
+  if (passStatus) record.passStatus = passStatus.slice(0, 80);
+  const hiredOn = parseWyvernDate(pick(raw, ['dateofhire', 'hiredate', 'hiredon']));
+  if (hiredOn) record.hiredOn = hiredOn;
+  const base = String(pick(raw, ['pilotbase', 'base', 'homebase']) || '').trim();
+  if (base) record.base = base.slice(0, 80);
+  const newHire = nestedObject(raw, ['newhireadjustment', 'newhire'])
+    || nestedObject(hourBag, ['newhireadjustment', 'newhire']);
+  if (newHire) record.newHireHours = parseHours(pick(newHire, ['hours12monthsprior', 'hours', 'total']));
+
+  const checksBag = nestedObject(raw, ['checks']);
+  if (checksBag) {
+    const named = [
+      ['ipc', 'instrumentCheck297', 'ipc'],
+      ['linecheck', 'lineCheck299', 'line'],
+      ['internationalprocedures', 'internationalProcedures', 'none'],
+      ['indoctrination', 'basicIndoctrination', 'none'],
+      ['uprt', 'uprt', 'none'],
+    ];
+    for (const [alias, key, intervalKey] of named) {
+      putCheck(record.checks, key, readDatedNode(pick(checksBag, [alias])), intervalKey);
+    }
+  }
+
+  let unverified = false;
+  const duties = [];
+  const typeRows = pick(raw, ['typeratings', 'typerating']);
+  if (Array.isArray(typeRows)) {
+    for (const entry of typeRows) {
+      if (!entry || typeof entry !== 'object') continue;
+      if (typeUnverified(pick(entry, ['verifiedstatus', 'verified', 'status']))) unverified = true;
+      const duty = pick(entry, ['dutyassignment', 'duty', 'seat']);
+      if (duty) duties.push(duty);
+      const typeName = cleanTypeName(pick(entry, ['type', 'aircraft', 'name']));
+      const family = familyOf(typeName);
+      putEarliest(record.checks, `groundOral293a_${family}`, readDatedNode(pick(entry, ['aircraftspecificcheck', 'aircraftcheck'])), 'aircraft');
+      putEarliest(record.checks, 'recurrentTraining351', readDatedNode(pick(entry, ['recurrenttraining', 'recurrent'])), 'recurrent');
+      const simNode = pick(entry, ['simulatortraining', 'simulator', 'sim']);
+      const simType = simNode && typeof simNode === 'object' ? String(pick(simNode, ['simtype', 'simulatortype']) || '').trim() : '';
+      const vendor = simNode && typeof simNode === 'object' ? String(pick(simNode, ['vendor', 'provider']) || '').trim() : '';
+      const simNotes = [simType, vendor].filter(Boolean).join(' · ').slice(0, 120);
+      putEarliest(record.checks, `sim293b_${family}`, readDatedNode(simNode), 'simulator', simNotes);
+      putEarliest(record.checks, 'enhancedPilotTraining', readDatedNode(pick(entry, ['enhancedpilottraining', 'ept'])), 'none');
+    }
+  }
+  const flags = pick(raw, ['statusflags', 'flags']);
+  const flagList = Array.isArray(flags) ? flags : typeof flags === 'string' ? [flags] : [];
+  if (flagList.some((flag) => typeUnverified(flag))) unverified = true;
+  if (record.certificate.typeRatings.length) record.certificate.typeVerified = !unverified;
+  if (!record.position) record.position = dutySeat(duties);
+
+  const warnings = [];
+  if (hoursGreater(record.hours.pic, record.hours.totalTime)) warnings.push('PIC time is greater than total time');
+  if (fixed && hoursGreater(parseHours(pick(fixed, ['pic', 'pichours'])), parseHours(pick(fixed, ['total', 'totaltime', 'hours'])))) {
+    warnings.push('Fixed-wing PIC time is greater than fixed-wing total time');
+  }
+  if (multi && hoursGreater(parseHours(pick(multi, ['pic', 'pichours'])), parseHours(pick(multi, ['total', 'totaltime', 'hours'])))) {
+    warnings.push('Multi-engine PIC time is greater than multi-engine total time');
+  }
+  for (const entry of record.hours.timeInType || []) {
+    if (hoursGreater(entry.picHours, entry.hours)) {
+      warnings.push('PIC time in type is greater than total time in type');
+      break;
+    }
+  }
+  if ((record.hours.timeInType || []).some((entry) => hoursGreater(entry.hours, record.hours.totalTime))) {
+    warnings.push('Time in type is greater than total time');
+  }
+  const capture = pick(raw, ['capturecomplete', 'capture_complete']);
+  if (capture === false || ['false', 'no', 'n'].includes(String(capture ?? '').trim().toLowerCase())) {
+    warnings.push('Wyvern marked this capture incomplete');
+  }
+  if (certificateTypeText.trim() && !record.certificate.level) warnings.push('Certificate type was not recognized');
+  record.warnings = [...new Set(warnings)];
+}
+
 function readAircraftTypes(raw) {
   const direct = pick(raw, ['aircrafttypes', 'aircraft', 'qualifiedaircraft', 'types', 'fleettypes']);
   const rows = [];
@@ -378,11 +632,15 @@ function readAircraftTypes(raw) {
 
 export function normalizeWyvernRecord(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-  const name = displayName(pick(raw, ['name', 'pilotname', 'fullname', 'pilot', 'crewmember', 'displayname']) || '');
+  const name = displayName(pick(raw, ['name', 'pilotname', 'fullname', 'pilot', 'crewmember', 'displayname', 'wyvernname']) || '');
   const email = normalizeEmail(pick(raw, ['email', 'emailaddress', 'pilotemail', 'mail']));
   const phone = String(pick(raw, ['phone', 'phonenumber', 'mobile', 'cellphone']) || '').trim().slice(0, 40);
   const wyvernId = String(pick(raw, ['wyvernid', 'wyvernpilotid', 'acesid', 'externalid', 'pilotwyvernid']) || pick(raw, ['id']) || '').trim().slice(0, 80);
-  const status = pick(raw, ['status', 'pilotstatus', 'employmentstatus', 'activestatus', 'active']);
+  const rosterStatus = pick(raw, ['rosterstatus']);
+  const employmentStatus = pick(raw, ['employmentstatus']);
+  const status = rosterStatus != null && String(rosterStatus).trim() !== ''
+    ? rosterStatus
+    : pick(raw, ['status', 'pilotstatus', 'activestatus', 'active']) ?? employmentStatus;
   const active = isActiveWyvernStatus(status);
   const position = String(pick(raw, ['position', 'seat', 'crewposition', 'role']) || '').trim().slice(0, 40);
   const verificationStatus = String(pick(raw, ['verificationstatus', 'verification', 'verifiedstatus', 'wyvernstatus']) || '').trim().slice(0, 80);
@@ -394,16 +652,17 @@ export function normalizeWyvernRecord(raw) {
     hours[key] = parseHours(pick(hourBag, HOUR_ALIASES[key]));
   }
   hours.timeInType = readTimeInType(hourBag, raw);
-  const hoursAsOf = parseWyvernDate(pick(hourBag, ['asof', 'asofdate', 'hoursasof', 'effectivedate', 'reportdate'])
-    ?? pick(raw, ['hoursasof', 'asof', 'asofdate']));
+  const hoursAsOf = parseWyvernDate(pick(hourBag, ['asof', 'asofdate', 'hoursasof', 'effectivedate', 'reportdate', 'lastupdated'])
+    ?? pick(raw, ['hoursasof', 'asof', 'asofdate', 'lastupdated']));
 
   const certificateBag = pick(raw, ['certificate', 'airmancertificate', 'certificates']);
   const certificateSource = certificateBag && typeof certificateBag === 'object' && !Array.isArray(certificateBag)
     ? certificateBag
     : raw;
-  const level = normalizeCertificateLevel(pick(certificateSource, [
-    'level', 'grade', 'certificatetype', 'certtype', 'airmancertificate', 'certificategrade', 'category',
+  const certificateTypeText = String(pick(certificateSource, [
+    'level', 'grade', 'certificatetype', 'certtype', 'airmancertificate', 'certificategrade', 'category', 'type',
   ]) || (typeof certificateBag === 'string' ? certificateBag : ''));
+  const level = normalizeCertificateLevel(certificateTypeText);
   const blob = `${ratingsBlob(certificateSource)} ${ratingsBlob(raw)}`;
   let instrument = parseBool(pick(certificateSource, ['instrument', 'instrumentrating', 'instrumentrated']));
   let multiEngine = parseBool(pick(certificateSource, ['multiengine', 'multienginerating', 'multirated']));
@@ -418,11 +677,13 @@ export function normalizeWyvernRecord(raw) {
   const medicalSource = medicalBag && typeof medicalBag === 'object' && !Array.isArray(medicalBag) ? medicalBag : raw;
   const medical = {
     class: normalizeMedicalClass(pick(medicalSource, ['class', 'medicalclass', 'certificateclass'])),
-    issuedDate: parseWyvernDate(pick(medicalSource, ['issued', 'issuedate', 'issuedon', 'medicaldate', 'examdate'])),
+    issuedDate: parseWyvernDate(pick(medicalSource, ['issued', 'issuedate', 'issuedon', 'medicaldate', 'examdate', 'checkdate'])),
     expirationDate: parseWyvernDate(pick(medicalSource, [
       'expiry', 'expiration', 'expirationdate', 'expires', 'medicalexpiry', 'medicalexpiration',
     ])),
+    expirationSource: '',
   };
+  if (medical.expirationDate) medical.expirationSource = 'explicit';
   const documents = pick(raw, ['documents', 'docs', 'files']);
   if (Array.isArray(documents)) {
     for (const doc of documents) {
@@ -431,6 +692,7 @@ export function normalizeWyvernRecord(raw) {
       if (!label.includes('medical')) continue;
       if (!medical.expirationDate) {
         medical.expirationDate = parseWyvernDate(pick(doc, ['expiry', 'expiration', 'expirationdate', 'expires', 'duedate']));
+        if (medical.expirationDate) medical.expirationSource = 'explicit';
       }
       if (!medical.class) medical.class = normalizeMedicalClass(pick(doc, ['class', 'medicalclass']));
     }
@@ -449,7 +711,7 @@ export function normalizeWyvernRecord(raw) {
   };
 
   if (!name && !email && !wyvernId) return null;
-  return {
+  const record = {
     name: name.slice(0, 80),
     email,
     phone,
@@ -466,11 +728,28 @@ export function normalizeWyvernRecord(raw) {
       instrument,
       multiEngine,
       typeRatings,
+      typeVerified: null,
+      country: '',
+    },
+    background: {
+      employment: '',
+      accident: null,
+      enforcement: null,
     },
     medical,
     drugAlcohol,
     checks,
+    warnings: [],
+    hiredOn: '',
+    base: '',
+    newHireHours: null,
+    passStatus: '',
+    certificateIssuedOn: '',
+    faaVerifiedOn: '',
+    backgroundCheckedOn: '',
   };
+  applyPassExtract(raw, record);
+  return applyWyvernIntervals(record, null);
 }
 
 function parseCsvTable(text) {
@@ -670,10 +949,11 @@ function bucketFor(match, conflicts) {
   return conflicts.length ? 'conflict' : 'matched';
 }
 
-export function planWyvernImport(records, { users = [], logbooks = {}, currencies = {} } = {}) {
+export function planWyvernImport(records, { users = [], logbooks = {}, currencies = {}, standards = null } = {}) {
   const rows = [];
   const skipped = [];
   for (const record of records || []) {
+    applyWyvernIntervals(record, standards);
     if (!record?.active) {
       skipped.push({ record, reason: 'Not marked active' });
       continue;
@@ -755,6 +1035,17 @@ export function wyvernLogbookDraft(existing, record, { uid, pilotName, now = Dat
   if (record?.certificate?.typeRatings?.length) {
     book.certificate.typeRatings = record.certificate.typeRatings.slice(0, 24);
   }
+  if (record?.certificate?.country) book.certificate.country = record.certificate.country.slice(0, 40);
+  if (record?.certificate?.typeVerified === true || record?.certificate?.typeVerified === false) {
+    book.certificate.typeVerified = record.certificate.typeVerified;
+  }
+  if (record?.background?.employment) book.background.employment = record.background.employment.slice(0, 40);
+  if (record?.background?.accident === true || record?.background?.accident === false) {
+    book.background.accident = record.background.accident;
+  }
+  if (record?.background?.enforcement === true || record?.background?.enforcement === false) {
+    book.background.enforcement = record.background.enforcement;
+  }
   if (record?.drugAlcohol?.enrolled != null) book.drugAlcohol.enrolled = record.drugAlcohol.enrolled;
   if (record?.drugAlcohol?.enrolledDate) book.drugAlcohol.enrolledDate = record.drugAlcohol.enrolledDate;
   if (record?.drugAlcohol?.programName) book.drugAlcohol.programName = record.drugAlcohol.programName;
@@ -765,6 +1056,13 @@ export function wyvernLogbookDraft(existing, record, { uid, pilotName, now = Dat
     hoursAsOf: snapshotAsOf,
     verificationStatus: record?.verificationStatus || book.wyvern?.verificationStatus || '',
     position: record?.position || book.wyvern?.position || '',
+    hiredOn: record?.hiredOn || book.wyvern?.hiredOn || '',
+    base: record?.base || book.wyvern?.base || '',
+    newHireHours: record?.newHireHours != null ? record.newHireHours : (book.wyvern?.newHireHours ?? null),
+    passStatus: record?.passStatus || book.wyvern?.passStatus || '',
+    certificateIssuedOn: record?.certificateIssuedOn || book.wyvern?.certificateIssuedOn || '',
+    faaVerifiedOn: record?.faaVerifiedOn || book.wyvern?.faaVerifiedOn || '',
+    backgroundCheckedOn: record?.backgroundCheckedOn || book.wyvern?.backgroundCheckedOn || '',
   };
   return normalizeLogbook(book, uid);
 }
@@ -772,9 +1070,10 @@ export function wyvernLogbookDraft(existing, record, { uid, pilotName, now = Dat
 export function wyvernCurrencyPatch(existing, record, now = Date.now()) {
   const updates = {};
   let wrote = false;
-  if (record?.medical?.class || record?.medical?.expirationDate) {
+  if (record?.medical?.class || record?.medical?.expirationDate || record?.medical?.issuedDate) {
     const medical = { ...(existing?.medical && typeof existing.medical === 'object' ? existing.medical : {}) };
     if (record.medical.class) medical.class = record.medical.class;
+    if (record.medical.issuedDate) medical.lastDate = record.medical.issuedDate;
     if (record.medical.expirationDate) medical.expirationDate = record.medical.expirationDate;
     if (!medical.notes) medical.notes = 'Imported from Wyvern';
     updates.medical = medical;
@@ -787,7 +1086,7 @@ export function wyvernCurrencyPatch(existing, record, now = Date.now()) {
     const next = { ...prev };
     if (item.completedOn) next.lastDate = item.completedOn;
     if (item.dueOn) next.dueDate = item.dueOn;
-    if (!next.notes) next.notes = 'Imported from Wyvern';
+    if (!next.notes) next.notes = item.notes || 'Imported from Wyvern';
     updates[key] = next;
     wrote = true;
   }
