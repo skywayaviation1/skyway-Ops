@@ -417,6 +417,13 @@ export function subscribeAllTripStates(onUpdate) {
           toFbo: data.toFbo || null,
           hasCatering: data.hasCatering !== false,
           paxOverride: typeof data.paxOverride === 'number' ? data.paxOverride : null,
+          oooi: data.oooi && typeof data.oooi === 'object' ? {
+            actualOut: data.oooi.actualOut || '',
+            actualOff: data.oooi.actualOff || '',
+            actualOn: data.oooi.actualOn || '',
+            actualIn: data.oooi.actualIn || '',
+            faFlightId: data.oooi.faFlightId || '',
+          } : null,
         });
       });
       onUpdate(map);

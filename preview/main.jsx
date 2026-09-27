@@ -145,7 +145,7 @@ const SURFACES = {
     label: 'Pilot safety rating',
     render: () => (
       <div style={{ overflowY: 'auto', height: '100%' }}>
-        <PilotSafety currentUser={CURRENT_USER} users={USERS} />
+        <PilotSafety currentUser={CURRENT_USER} users={USERS} trips={TRIPS} aircraftByTail={CONFIG.aircraftByTail} />
       </div>
     ),
   },

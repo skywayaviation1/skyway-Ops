@@ -519,6 +519,17 @@ export default async function handler(req, res) {
     const { uid: tripUid, data: tripState } = match;
     await eventRef.update({ matchedTripUid: tripUid });
 
+    // Actual out/off/on/in feed the pilot log. Persist them even when the
+    // status step was already fired, and never blank a time this event omits.
+    try {
+      const { mergeTripOooi } = await import('./_trip-oooi.js');
+      await mergeTripOooi(db, tripUid, tripState.oooi, {
+        actualOut, actualOff, actualOn, actualIn, faFlightId,
+      });
+    } catch (err) {
+      console.warn('[fa-webhook] could not store OOOI:', err?.message || err);
+    }
+
     // === 8. Check if status already fired (manual wins) ===
     const existingStatuses = tripState.statuses || {};
     const existingStatus = existingStatuses[stepId];

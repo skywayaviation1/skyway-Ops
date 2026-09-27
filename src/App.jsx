@@ -29342,7 +29342,12 @@ export default function CharterOps() {
 
         {section === 'pilot-rating' && (
           <Suspense fallback={<div className="flex-1 flex items-center justify-center text-slate-500"><Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading pilot ratings...</div>}>
-            <PilotSafetyLazy currentUser={currentUser} users={users} />
+            <PilotSafetyLazy
+              currentUser={currentUser}
+              users={users}
+              trips={allTrips}
+              aircraftByTail={config?.aircraftByTail || {}}
+            />
           </Suspense>
         )}
 

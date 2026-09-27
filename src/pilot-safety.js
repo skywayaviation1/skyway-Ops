@@ -332,6 +332,8 @@ export function emptyLogbook(uid = '', pilotName = '') {
       instrument: null,
       last90Days: null,
       last12Months: null,
+      last6Months: null,
+      landings: null,
       timeInType: [],
     },
     certificate: {
@@ -347,7 +349,59 @@ export function emptyLogbook(uid = '', pilotName = '') {
     },
     internalNotes: '',
     wyvern: null,
+    baseline: null,
+    hoursMeta: null,
   };
+}
+
+function copyHourBag(raw) {
+  const hours = emptyLogbook().hours;
+  if (!raw || typeof raw !== 'object') return hours;
+  for (const field of HOUR_FIELDS) {
+    if (field.perType) continue;
+    hours[field.key] = finiteNumber(raw[field.key]);
+  }
+  hours.last6Months = finiteNumber(raw.last6Months);
+  hours.landings = finiteNumber(raw.landings);
+  const types = Array.isArray(raw.timeInType) ? raw.timeInType : [];
+  hours.timeInType = types.slice(0, 24).map((entry) => ({
+    type: String(entry?.type || '').trim().slice(0, 40),
+    hours: finiteNumber(entry?.hours),
+  })).filter((entry) => entry.type);
+  return hours;
+}
+
+function normalizeBaseline(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const asOf = /^\d{4}-\d{2}-\d{2}$/.test(raw.asOf || '') ? raw.asOf : '';
+  const source = raw.source === 'Wyvern' || raw.source === 'manual' ? raw.source : '';
+  if (!asOf && !source && !raw.hours) return null;
+  return { asOf, source, hours: copyHourBag(raw.hours) };
+}
+
+function normalizeHoursMeta(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const asOf = /^\d{4}-\d{2}-\d{2}$/.test(raw.asOf || '') ? raw.asOf : '';
+  const flown = raw.flownSince && typeof raw.flownSince === 'object' ? raw.flownSince : {};
+  const meta = {
+    asOf,
+    baselineAsOf: /^\d{4}-\d{2}-\d{2}$/.test(raw.baselineAsOf || '') ? raw.baselineAsOf : '',
+    baselineSource: raw.baselineSource === 'Wyvern' || raw.baselineSource === 'manual' ? raw.baselineSource : '',
+    flownSince: {
+      totalTime: finiteNumber(flown.totalTime) || 0,
+      pic: finiteNumber(flown.pic) || 0,
+      sic: finiteNumber(flown.sic) || 0,
+      multiEngine: finiteNumber(flown.multiEngine) || 0,
+      turbine: finiteNumber(flown.turbine) || 0,
+      night: finiteNumber(flown.night) || 0,
+      landings: finiteNumber(flown.landings) || 0,
+    },
+    last6Months: finiteNumber(raw.last6Months),
+    nightUncomputed: Number.isFinite(Number(raw.nightUncomputed)) ? Math.max(0, Math.round(Number(raw.nightUncomputed))) : 0,
+    note: String(raw.note || '').slice(0, 400),
+  };
+  if (!meta.asOf && !meta.note && !meta.baselineAsOf) return null;
+  return meta;
 }
 
 function normalizeWyvernStamp(raw) {
@@ -384,15 +438,7 @@ export function normalizeLogbook(raw, uid = '') {
   if (!raw || typeof raw !== 'object') return book;
   book.uid = uid || raw.uid || book.uid;
   book.pilotName = String(raw.pilotName || '').slice(0, 80);
-  for (const field of HOUR_FIELDS) {
-    if (field.perType) continue;
-    book.hours[field.key] = finiteNumber(raw.hours?.[field.key]);
-  }
-  const types = Array.isArray(raw.hours?.timeInType) ? raw.hours.timeInType : [];
-  book.hours.timeInType = types.slice(0, 24).map((entry) => ({
-    type: String(entry?.type || '').trim().slice(0, 40),
-    hours: finiteNumber(entry?.hours),
-  })).filter((entry) => entry.type);
+  book.hours = copyHourBag(raw.hours);
   book.certificate.level = normalizeCertificateLevel(raw.certificate?.level);
   book.certificate.instrument = raw.certificate?.instrument === true
     ? true
@@ -413,6 +459,8 @@ export function normalizeLogbook(raw, uid = '') {
   book.drugAlcohol.programName = String(raw.drugAlcohol?.programName || '').slice(0, 80);
   book.internalNotes = String(raw.internalNotes || '').slice(0, 2000);
   book.wyvern = normalizeWyvernStamp(raw.wyvern);
+  book.baseline = normalizeBaseline(raw.baseline);
+  book.hoursMeta = normalizeHoursMeta(raw.hoursMeta);
   return book;
 }
 
@@ -864,6 +912,13 @@ export function evaluatePilot({
       hours: entry.hours,
     })),
     focusType: focusType || null,
+    hoursAsOf: book.hoursMeta?.asOf || book.baseline?.asOf || '',
+    baselineAsOf: book.baseline?.asOf || '',
+    baselineSource: book.baseline?.source || '',
+    hoursNote: book.hoursMeta?.note || '',
+    flownSince: book.hoursMeta?.flownSince || null,
+    landings: book.hours.landings,
+    last6Months: book.hours.last6Months,
   };
 }
 
@@ -913,6 +968,11 @@ export function brokerPilotReport(evaluation, {
     role: ev.role === 'SIC' ? 'SIC' : 'PIC',
     aircraftType: aircraftType ? String(aircraftType).slice(0, 80) : null,
     generatedAt: String(generatedAt),
+    hoursAsOf: ev.hoursAsOf || '',
+    baselineAsOf: ev.baselineAsOf || '',
+    hoursNote: String(ev.hoursNote || '').slice(0, 400),
+    landings: ev.landings == null ? null : ev.landings,
+    last6Months: ev.last6Months == null ? null : formatHours(ev.last6Months),
     score: Number.isFinite(ev.score) ? ev.score : 0,
     tier: TIER_LABELS[ev.tier] ? ev.tier : TIER.DOES_NOT_MEET,
     tierLabel: TIER_LABELS[ev.tier] || TIER_LABELS.doesNotMeet,

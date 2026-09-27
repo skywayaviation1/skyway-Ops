@@ -5,6 +5,7 @@ import { useMemo, useState } from 'react';
 import { AlertTriangle, Check, ChevronDown, Loader2, Upload, X } from 'lucide-react';
 import { savePilotCurrency } from './firebase-currency.js';
 import { savePilotLogbook } from './firebase-pilot-safety.js';
+import { rollUpPilotHours } from './flight-log.js';
 import {
   parseWyvernText,
   planWyvernImport,
@@ -132,6 +133,7 @@ export default function WyvernImporter({
   currentUser,
   logbooks = {},
   currencies = {},
+  flightEntries = [],
   onClose,
   onImported,
 }) {
@@ -215,6 +217,15 @@ export default function WyvernImporter({
           pilotName: user?.name || row.record.name,
           now,
         });
+        if (draft.baseline?.asOf) {
+          const rolled = rollUpPilotHours({
+            baseline: draft.baseline,
+            entries: (flightEntries || []).filter((entry) => entry.uid === row.matchUid),
+            now,
+          });
+          draft.hours = rolled.hours;
+          draft.hoursMeta = rolled.meta;
+        }
         await savePilotLogbook(row.matchUid, draft, currentUser);
         const currencyPatch = wyvernCurrencyPatch(currencies[row.matchUid], row.record, now);
         if (currencyPatch) {

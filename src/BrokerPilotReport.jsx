@@ -95,6 +95,14 @@ export default function BrokerPilotReport({ report }) {
 
         <section>
           <h5 className="text-[10px] tracking-[0.16em] text-slate-500" style={{ fontFamily: 'ui-sans-serif, system-ui, sans-serif' }}>FLIGHT TIME</h5>
+          {report.hoursAsOf && (
+            <p className="mt-1 text-xs text-slate-500" style={{ fontFamily: 'ui-sans-serif, system-ui, sans-serif' }} data-testid="hours-as-of">
+              Totals as of {report.hoursAsOf}
+              {report.baselineAsOf ? ` · baseline ${report.baselineAsOf} plus flights after that date` : ''}
+              {report.last6Months ? ` · last 6 months ${report.last6Months}` : ''}
+              {report.landings != null ? ` · landings ${report.landings}` : ''}
+            </p>
+          )}
           <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3" style={{ fontFamily: 'ui-sans-serif, system-ui, sans-serif' }}>
             {(report.hours || []).map((row) => (
               <div key={row.label} className="border border-slate-200 px-2 py-1.5">

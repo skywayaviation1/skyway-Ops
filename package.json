@@ -21,7 +21,8 @@
     "preview:stubs": "node scripts/check-preview-stubs.mjs",
     "logo:elite": "node scripts/build-elite-logo.mjs",
     "currency:import-report": "node scripts/import-currency-report.mjs",
-    "wyvern:import": "node scripts/import-wyvern.mjs"
+    "wyvern:import": "node scripts/import-wyvern.mjs",
+    "pilot-hours:rebuild": "node scripts/rebuild-pilot-hours.mjs"
   },
   "dependencies": {
     "@capacitor-firebase/authentication": "^8.3.0",

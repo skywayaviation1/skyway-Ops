@@ -62,6 +62,15 @@ function draw(doc, report) {
 
   y += 8;
   y = heading(doc, left, y, 'FLIGHT TIME');
+  if (report.hoursAsOf) {
+    const asOfLine = [
+      `As of ${report.hoursAsOf}`,
+      report.baselineAsOf ? `baseline ${report.baselineAsOf} plus flights after that date` : '',
+      report.last6Months ? `last 6 months ${report.last6Months}` : '',
+      report.landings != null ? `landings ${report.landings}` : '',
+    ].filter(Boolean).join(' · ');
+    y = paragraph(doc, left, y, width, asOfLine);
+  }
   for (const row of report.hours || []) {
     y = paragraph(doc, left, y, width, `${row.label}: ${row.hours || '—'} / ${row.minimum ?? '—'} minimum`);
   }

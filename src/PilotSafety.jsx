@@ -9,7 +9,13 @@ import {
 } from 'lucide-react';
 import { brand } from './brand.js';
 import BrokerPilotReport, { PilotRatingBadge } from './BrokerPilotReport.jsx';
-import { savePilotLogbook } from './firebase-pilot-safety.js';
+import { savePilotFlightEntry, savePilotLogbook } from './firebase-pilot-safety.js';
+import {
+  applyManualFlightEdit,
+  newManualFlightEntry,
+  rollUpPilotHours,
+  voidEntry,
+} from './flight-log.js';
 import { generatePilotReportPdf } from './pilot-report-pdf.js';
 import {
   CERTIFICATE_LEVELS,
@@ -26,8 +32,13 @@ import WyvernImporter from './WyvernImporter.jsx';
 
 const TIER_ORDER = { doesNotMeet: 0, caution: 1, meets: 2 };
 
-export default function PilotSafetyScreen({ currentUser, users = [] }) {
-  const data = usePilotSafetyData(currentUser);
+export default function PilotSafetyScreen({
+  currentUser,
+  users = [],
+  trips = null,
+  aircraftByTail = null,
+}) {
+  const data = usePilotSafetyData(currentUser, { trips, aircraftByTail, users });
   const [query, setQuery] = useState('');
   const [selectedUid, setSelectedUid] = useState(null);
   const [draft, setDraft] = useState(null);
@@ -68,10 +79,24 @@ export default function PilotSafetyScreen({ currentUser, users = [] }) {
 
   if (!currentUser) return <div className="p-6 text-sm text-slate-500">Sign in required.</div>;
 
-  const liveRating = selected && draft
+  const pilotEntries = (data.flightEntries || []).filter((entry) => entry.uid === selected?.pilot.uid);
+  const rolled = draft
+    ? rollUpPilotHours({
+      baseline: draft.baseline,
+      storedHours: draft.hours,
+      entries: pilotEntries,
+      now: data.todayMs,
+    })
+    : null;
+  const displayBook = draft ? {
+    ...draft,
+    hours: draft.baseline?.asOf ? rolled.hours : (draft.baseline?.hours || draft.hours),
+    hoursMeta: draft.baseline?.asOf ? rolled.meta : draft.hoursMeta,
+  } : null;
+  const liveRating = selected && displayBook
     ? evaluatePilot({
         pilot: selected.pilot,
-        logbook: draft,
+        logbook: displayBook,
         currencyDoc: data.currencies[selected.pilot.uid],
         pilotDocs: data.docsByUid[selected.pilot.uid] || [],
         standards: data.standards,
@@ -86,12 +111,29 @@ export default function PilotSafetyScreen({ currentUser, users = [] }) {
     doesNotMeet: pilots.filter((row) => row.rating.tier === 'doesNotMeet').length,
   };
 
-  const updateHours = (key, value) => {
-    setDraft((current) => ({
-      ...current,
-      hours: { ...current.hours, [key]: value === '' ? null : Number(value) },
-    }));
+  const editBaseline = (mutate) => {
+    setDraft((current) => {
+      const hours = {
+        ...(current.baseline?.hours || current.hours),
+        timeInType: [...(current.baseline?.hours?.timeInType || current.hours.timeInType || [])],
+      };
+      mutate(hours);
+      return {
+        ...current,
+        baseline: {
+          asOf: current.baseline?.asOf || '',
+          source: current.baseline?.source || 'manual',
+          hours,
+        },
+      };
+    });
     setDirty(true);
+  };
+
+  const updateHours = (key, value) => {
+    editBaseline((hours) => {
+      hours[key] = value === '' ? null : Number(value);
+    });
   };
 
   const save = async () => {
@@ -99,12 +141,25 @@ export default function PilotSafetyScreen({ currentUser, users = [] }) {
     setSaving(true);
     setBanner(null);
     try {
+      const baseline = draft.baseline || {
+        asOf: '',
+        source: 'manual',
+        hours: draft.hours,
+      };
+      const nextRoll = rollUpPilotHours({
+        baseline,
+        entries: (data.flightEntries || []).filter((entry) => entry.uid === selected.pilot.uid),
+        now: Date.now(),
+      });
       await savePilotLogbook(selected.pilot.uid, {
         ...draft,
         pilotName: selected.pilot.name || draft.pilotName,
+        baseline,
+        hours: baseline.asOf ? nextRoll.hours : baseline.hours,
+        hoursMeta: baseline.asOf ? nextRoll.meta : draft.hoursMeta,
       }, currentUser);
       setDirty(false);
-      setBanner({ ok: true, text: 'Logbook saved.' });
+      setBanner({ ok: true, text: 'Logbook saved. Totals include the baseline plus flights after the as-of date.' });
     } catch (err) {
       setBanner({ ok: false, text: err?.message || 'Could not save the logbook.' });
     } finally {
@@ -222,9 +277,39 @@ export default function PilotSafetyScreen({ currentUser, users = [] }) {
                     </button>
                   )}
                 </div>
+                <p className="mb-3 text-[11px] leading-relaxed text-slate-400">
+                  {draft.baseline?.asOf
+                    ? `Baseline snapshot ${draft.baseline.asOf}${draft.baseline.source ? ` (${draft.baseline.source})` : ''} plus flights that blocked in after that date. Current totals are what the rating and the broker report use.`
+                    : 'These figures are the snapshot. Set an as-of date before completed flights are added on top.'}
+                  {rolled?.meta?.nightUncomputed
+                    ? ` ${rolled.meta.nightUncomputed} leg${rolled.meta.nightUncomputed === 1 ? '' : 's'} still need night time.`
+                    : ''}
+                </p>
+                <label className="mb-3 block max-w-xs text-[11px] text-slate-400">
+                  Baseline as of
+                  <input
+                    type="date"
+                    aria-label="Baseline as of"
+                    disabled={!data.canEdit}
+                    value={draft.baseline?.asOf || ''}
+                    onChange={(event) => {
+                      setDraft({
+                        ...draft,
+                        baseline: {
+                          asOf: event.target.value,
+                          source: draft.baseline?.source || 'manual',
+                          hours: draft.baseline?.hours || draft.hours,
+                        },
+                      });
+                      setDirty(true);
+                    }}
+                    className="mt-1 w-full border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-100"
+                  />
+                </label>
                 <div className="grid gap-2 sm:grid-cols-2">
                   {HOUR_FIELDS.filter((field) => !field.perType).map((field) => {
                     const line = liveRating?.experience.find((entry) => entry.key === field.key);
+                    const baselineValue = (draft.baseline?.hours || draft.hours)[field.key];
                     return (
                       <label key={field.key} className="text-[11px] text-slate-400">
                         <span className="mb-1 flex items-center justify-between">
@@ -237,31 +322,43 @@ export default function PilotSafetyScreen({ currentUser, users = [] }) {
                           step="0.1"
                           disabled={!data.canEdit}
                           aria-label={field.label}
-                          value={draft.hours[field.key] ?? ''}
+                          value={baselineValue ?? ''}
                           onChange={(event) => updateHours(field.key, event.target.value)}
                           className="w-full border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-100 disabled:opacity-70"
                         />
                         <span className="mt-0.5 block text-[10px] text-slate-500">
-                          Minimum {line?.required ? line.minimum : 'not required'}
+                          {hourCaption(field.key, draft, rolled, displayBook)}
+                          {` · minimum ${line?.required ? line.minimum : 'not required'}`}
                           {line?.source === 'duty' ? ' · showing duty flight time until a logbook value is saved' : ''}
                         </span>
                       </label>
                     );
                   })}
                 </div>
+                {draft.baseline?.asOf && (
+                  <p className="mt-3 text-[11px] text-slate-400" data-testid="flown-since">
+                    Flown since {draft.baseline.asOf}: {fmtHours(rolled?.flownSince?.totalTime)} block
+                    {' · '}PIC {fmtHours(rolled?.flownSince?.pic)}
+                    {' · '}SIC {fmtHours(rolled?.flownSince?.sic)}
+                    {' · '}landings {fmtHours(rolled?.flownSince?.landings)}
+                    {' · '}last 6 months {fmtHours(displayBook?.hours?.last6Months)}
+                    {' · '}current total {fmtHours(displayBook?.hours?.totalTime)}
+                  </p>
+                )}
                 <div className="mt-3">
-                  <div className="mb-1 text-[11px] text-slate-400">Time in type</div>
-                  {(draft.hours.timeInType || []).map((row, index) => (
+                  <div className="mb-1 text-[11px] text-slate-400">Time in type (baseline)</div>
+                  {((draft.baseline?.hours || draft.hours).timeInType || []).map((row, index) => (
                     <div key={`${row.type}-${index}`} className="mb-1 flex gap-2">
                       <input
                         aria-label={`Aircraft type ${index + 1}`}
                         disabled={!data.canEdit}
                         value={row.type}
                         onChange={(event) => {
-                          const timeInType = draft.hours.timeInType.slice();
-                          timeInType[index] = { ...row, type: event.target.value };
-                          setDraft({ ...draft, hours: { ...draft.hours, timeInType } });
-                          setDirty(true);
+                          editBaseline((hours) => {
+                            const timeInType = hours.timeInType.slice();
+                            timeInType[index] = { ...row, type: event.target.value };
+                            hours.timeInType = timeInType;
+                          });
                         }}
                         className="flex-1 border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-100"
                       />
@@ -272,37 +369,51 @@ export default function PilotSafetyScreen({ currentUser, users = [] }) {
                         disabled={!data.canEdit}
                         value={row.hours ?? ''}
                         onChange={(event) => {
-                          const timeInType = draft.hours.timeInType.slice();
-                          timeInType[index] = { ...row, hours: event.target.value === '' ? null : Number(event.target.value) };
-                          setDraft({ ...draft, hours: { ...draft.hours, timeInType } });
-                          setDirty(true);
+                          editBaseline((hours) => {
+                            const timeInType = hours.timeInType.slice();
+                            timeInType[index] = { ...row, hours: event.target.value === '' ? null : Number(event.target.value) };
+                            hours.timeInType = timeInType;
+                          });
                         }}
                         className="w-24 border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-100"
                       />
                       {data.canEdit && (
                         <button type="button" aria-label={`Remove type ${index + 1}`} onClick={() => {
-                          const timeInType = draft.hours.timeInType.filter((_, i) => i !== index);
-                          setDraft({ ...draft, hours: { ...draft.hours, timeInType } });
-                          setDirty(true);
+                          editBaseline((hours) => {
+                            hours.timeInType = hours.timeInType.filter((_, i) => i !== index);
+                          });
                         }} className="px-2 text-slate-500 hover:text-red-300">
                           <Trash2 className="h-4 w-4" />
                         </button>
                       )}
                     </div>
                   ))}
+                  {draft.baseline?.asOf && (displayBook?.hours?.timeInType || []).length > 0 && (
+                    <p className="mt-1 text-[10px] text-slate-500">
+                      Current time in type: {displayBook.hours.timeInType.map((entry) => `${entry.type} ${fmtHours(entry.hours)}`).join(' · ')}
+                    </p>
+                  )}
                   {data.canEdit && (
                     <button type="button" onClick={() => {
-                      setDraft({
-                        ...draft,
-                        hours: { ...draft.hours, timeInType: [...draft.hours.timeInType, { type: '', hours: null }] },
+                      editBaseline((hours) => {
+                        hours.timeInType = [...hours.timeInType, { type: '', hours: null }];
                       });
-                      setDirty(true);
                     }} className="mt-1 inline-flex items-center gap-1 text-[10px] tracking-widest text-cyan-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
                       <Plus className="h-3 w-3" /> ADD TYPE
                     </button>
                   )}
                 </div>
               </section>
+
+              <FlightLogPanel
+                pilot={selected.pilot}
+                entries={pilotEntries}
+                canEdit={data.canEdit}
+                currentUser={currentUser}
+                baseline={draft.baseline}
+                onSaved={(text) => setBanner({ ok: true, text })}
+                onError={(text) => setBanner({ ok: false, text })}
+              />
 
               <CertificateBlock
                 draft={draft}
@@ -377,6 +488,7 @@ export default function PilotSafetyScreen({ currentUser, users = [] }) {
           currentUser={currentUser}
           logbooks={data.logbooks}
           currencies={data.currencies}
+          flightEntries={data.flightEntries}
           onClose={() => setShowImport(false)}
           onImported={({ written, errors }) => {
             setBanner({
@@ -619,5 +731,205 @@ function EmailPilotReport({ pilot, onClose }) {
         </button>
       </div>
     </Modal>
+  );
+}
+
+function fmtHours(value) {
+  if (value == null || !Number.isFinite(Number(value))) return '—';
+  const n = Number(value);
+  return Number.isInteger(n) ? String(n) : (Math.round(n * 10) / 10).toFixed(1);
+}
+
+function hourCaption(key, draft, rolled, displayBook) {
+  if (!draft?.baseline?.asOf) return 'Baseline snapshot';
+  if (key === 'instrument') return 'Baseline only — instrument time is not taken from the schedule';
+  if (key === 'last90Days' || key === 'last12Months') {
+    return `Current ${fmtHours(displayBook?.hours?.[key])} (baseline still in the window is estimated)`;
+  }
+  const added = rolled?.flownSince?.[key];
+  return `Baseline + ${fmtHours(added)} flown since = ${fmtHours(displayBook?.hours?.[key])} current`;
+}
+
+function sourceLabel(source) {
+  if (source === 'flightaware') return 'FlightAware';
+  if (source === 'schedule') return 'Schedule';
+  if (source === 'manual') return 'Manual';
+  return source || '—';
+}
+
+function whenLabel(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value).slice(0, 16);
+  return date.toISOString().slice(0, 16).replace('T', ' ');
+}
+
+function FlightLogPanel({ pilot, entries, canEdit, currentUser, baseline, onSaved, onError }) {
+  const [openId, setOpenId] = useState('');
+  const [note, setNote] = useState('');
+  const [blockHours, setBlockHours] = useState('');
+  const [nightHours, setNightHours] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [manual, setManual] = useState({
+    origin: '', destination: '', role: 'PIC', aircraftType: '', blockHours: '', blockIn: '', nightHours: '', landings: '1', note: '',
+    multiEngine: '', turbine: '',
+  });
+  const rows = [...(entries || [])].sort((a, b) => String(b.blockIn || '').localeCompare(String(a.blockIn || '')));
+
+  const correct = async (entry) => {
+    try {
+      const next = applyManualFlightEdit(entry, {
+        note,
+        blockHours: blockHours === '' ? null : Number(blockHours),
+        nightHours: nightHours === '' ? null : Number(nightHours),
+      }, currentUser);
+      await savePilotFlightEntry(next, currentUser);
+      setOpenId('');
+      setNote('');
+      onSaved('Correction saved. The total recounts this leg once.');
+    } catch (err) {
+      onError(err?.message || 'Could not save the correction.');
+    }
+  };
+
+  const voidLeg = async (entry) => {
+    const reason = note.trim();
+    if (!reason) {
+      onError('A note is required to void a leg.');
+      return;
+    }
+    try {
+      await savePilotFlightEntry(voidEntry(entry, reason, currentUser), currentUser);
+      setOpenId('');
+      setNote('');
+      onSaved('Leg voided. It no longer counts toward the total.');
+    } catch (err) {
+      onError(err?.message || 'Could not void the leg.');
+    }
+  };
+
+  const addManual = async () => {
+    try {
+      const blockIn = manual.blockIn ? new Date(manual.blockIn).toISOString() : new Date().toISOString();
+      const entry = newManualFlightEntry({
+        uid: pilot.uid,
+        pilotName: pilot.name,
+        editor: currentUser,
+        patch: {
+          ...manual,
+          blockIn,
+          blockHours: manual.blockHours,
+          nightHours: manual.nightHours === '' ? null : Number(manual.nightHours),
+          landings: manual.landings === '' ? 1 : Number(manual.landings),
+          multiEngine: manual.multiEngine === '' ? null : manual.multiEngine === 'yes',
+          turbine: manual.turbine === '' ? null : manual.turbine === 'yes',
+        },
+      });
+      await savePilotFlightEntry(entry, currentUser);
+      setAdding(false);
+      setManual({
+        origin: '', destination: '', role: 'PIC', aircraftType: '', blockHours: '', blockIn: '', nightHours: '', landings: '1', note: '',
+        multiEngine: '', turbine: '',
+      });
+      onSaved(baseline?.asOf
+        ? 'Manual entry added. It counts when the block-in date is after the baseline.'
+        : 'Manual entry added. Set a baseline as-of date before it changes the total.');
+    } catch (err) {
+      onError(err?.message || 'Could not add the entry.');
+    }
+  };
+
+  return (
+    <section className="border border-slate-800 p-4" data-testid="flight-log">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <h3 className="text-[10px] tracking-widest text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>FLIGHT LOG</h3>
+        {canEdit && (
+          <button type="button" onClick={() => setAdding((open) => !open)} className="inline-flex items-center gap-1 text-[10px] tracking-widest text-cyan-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            <Plus className="h-3 w-3" /> ADD ENTRY
+          </button>
+        )}
+      </div>
+      <p className="mb-3 text-[11px] text-slate-500">
+        Each completed leg is credited once to the assigned PIC and SIC. FlightAware out–in is preferred; the schedule is used after the leg ends when actual times are missing. A correction keeps an audit note and is not overwritten by the next sync.
+      </p>
+      {adding && canEdit && (
+        <div className="mb-3 grid gap-2 border border-slate-800 p-3 sm:grid-cols-2">
+          <input aria-label="Manual origin" placeholder="From" value={manual.origin} onChange={(event) => setManual({ ...manual, origin: event.target.value })} className="border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm" />
+          <input aria-label="Manual destination" placeholder="To" value={manual.destination} onChange={(event) => setManual({ ...manual, destination: event.target.value })} className="border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm" />
+          <input aria-label="Manual aircraft" placeholder="Aircraft type" value={manual.aircraftType} onChange={(event) => setManual({ ...manual, aircraftType: event.target.value })} className="border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm" />
+          <select aria-label="Manual role" value={manual.role} onChange={(event) => setManual({ ...manual, role: event.target.value })} className="border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm">
+            <option value="PIC">PIC</option>
+            <option value="SIC">SIC</option>
+          </select>
+          <input aria-label="Manual block hours" type="number" min="0" step="0.1" placeholder="Block hours" value={manual.blockHours} onChange={(event) => setManual({ ...manual, blockHours: event.target.value })} className="border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm" />
+          <input aria-label="Manual block in" type="datetime-local" value={manual.blockIn} onChange={(event) => setManual({ ...manual, blockIn: event.target.value })} className="border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm" />
+          <select aria-label="Manual multi-engine" value={manual.multiEngine} onChange={(event) => setManual({ ...manual, multiEngine: event.target.value })} className="border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm">
+            <option value="">Multi-engine unknown</option>
+            <option value="yes">Multi-engine</option>
+            <option value="no">Single-engine</option>
+          </select>
+          <select aria-label="Manual turbine" value={manual.turbine} onChange={(event) => setManual({ ...manual, turbine: event.target.value })} className="border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm">
+            <option value="">Turbine unknown</option>
+            <option value="yes">Turbine</option>
+            <option value="no">Not turbine</option>
+          </select>
+          <input aria-label="Manual night hours" type="number" min="0" step="0.1" placeholder="Night hours, if known" value={manual.nightHours} onChange={(event) => setManual({ ...manual, nightHours: event.target.value })} className="border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm" />
+          <input aria-label="Manual note" placeholder="Why this entry is being added" value={manual.note} onChange={(event) => setManual({ ...manual, note: event.target.value })} className="border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm" />
+          <button type="button" onClick={addManual} className="border border-cyan-500/40 px-2 py-1.5 text-[10px] tracking-widest text-cyan-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>SAVE ENTRY</button>
+        </div>
+      )}
+      {rows.length === 0 && <p className="text-sm italic text-slate-500">No credited legs yet.</p>}
+      <div className="divide-y divide-slate-800">
+        {rows.map((entry) => (
+          <div key={entry.id} className={`py-2 text-sm ${entry.status === 'void' ? 'opacity-50' : ''}`} data-testid={`leg-${entry.tripUid || entry.id}`}>
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <div className="text-slate-100">
+                {entry.role} {entry.origin || '—'}–{entry.destination || '—'}
+                <span className="ml-2 text-[11px] text-slate-500">{entry.aircraftType || entry.tail}</span>
+              </div>
+              <div className="text-[11px] text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                {fmtHours(entry.blockHours)} block
+                {entry.flightHours != null ? ` · ${fmtHours(entry.flightHours)} flight` : ''}
+                {' · '}{entry.landings ?? 0} landing{entry.landings === 1 ? '' : 's'}
+              </div>
+            </div>
+            <div className="mt-1 text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              {whenLabel(entry.blockIn)} · {sourceLabel(entry.timeSource)}
+              {entry.nightStatus === 'unknown' ? ' · night needs manual entry' : ` · night ${fmtHours(entry.nightHours)}`}
+              {entry.status === 'void' ? ` · void${entry.voidReason ? `: ${entry.voidReason}` : ''}` : ''}
+              {entry.manualOverride ? ' · corrected' : ''}
+            </div>
+            {canEdit && entry.status !== 'void' && (
+              <button type="button" onClick={() => {
+                setOpenId(openId === entry.id ? '' : entry.id);
+                setNote('');
+                setBlockHours(entry.blockHours ?? '');
+                setNightHours(entry.nightHours ?? '');
+              }} className="mt-1 text-[10px] tracking-widest text-cyan-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                {openId === entry.id ? 'CLOSE' : 'CORRECT'}
+              </button>
+            )}
+            {openId === entry.id && (
+              <div className="mt-2 grid gap-2 border border-slate-800 p-2">
+                <input aria-label="Corrected block hours" type="number" min="0" step="0.1" value={blockHours} onChange={(event) => setBlockHours(event.target.value)} className="border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm" />
+                <input aria-label="Corrected night hours" type="number" min="0" step="0.1" placeholder="Night hours" value={nightHours} onChange={(event) => setNightHours(event.target.value)} className="border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm" />
+                <input aria-label="Correction note" placeholder="Why this leg is being changed" value={note} onChange={(event) => setNote(event.target.value)} className="border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm" />
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => correct(entry)} className="border border-cyan-500/40 px-2 py-1 text-[10px] tracking-widest text-cyan-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>SAVE CORRECTION</button>
+                  <button type="button" onClick={() => voidLeg(entry)} className="border border-red-500/40 px-2 py-1 text-[10px] tracking-widest text-red-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>VOID LEG</button>
+                </div>
+                {(entry.audit || []).length > 0 && (
+                  <ul className="space-y-1 text-[10px] text-slate-500">
+                    {entry.audit.map((line, index) => (
+                      <li key={`${line.at}-${index}`}>{line.action} · {line.byName || 'Flight log'} · {line.note}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }

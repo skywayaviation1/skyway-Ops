@@ -95,6 +95,14 @@ function drawReport(doc, report, pageWidth, margin) {
   y += 8;
 
   y = section(doc, margin, y, 'FLIGHT TIME');
+  if (report.hoursAsOf) {
+    const asOfLine = [
+      `As of ${report.hoursAsOf}`,
+      report.baselineAsOf ? `baseline ${report.baselineAsOf}` : '',
+    ].filter(Boolean).join(' · ');
+    line(doc, margin, y, asOfLine, { size: 8, color: MUTED });
+    y += 12;
+  }
   const hours = report.hours || [];
   for (let i = 0; i < hours.length; i += 2) {
     const left = hours[i];

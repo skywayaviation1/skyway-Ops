@@ -274,8 +274,17 @@ export function tripStates(now = Date.now()) {
   }));
 
   const flown = LEG.flownEarlier;
+  const flownOut = at(flown.startH);
+  const flownIn = at(flown.endH);
   map.set(flown.uid, tripState({
     tripId: flown.uid,
+    oooi: {
+      actualOut: flownOut.toISOString(),
+      actualOff: new Date(flownOut.getTime() + 6 * MIN).toISOString(),
+      actualOn: new Date(flownIn.getTime() - 8 * MIN).toISOString(),
+      actualIn: flownIn.toISOString(),
+      faFlightId: 'preview-sky-1003',
+    },
     statuses: {
       crew_onsite: step(now - 11 * HOUR, flown.pic),
       aircraft_ready: step(now - 10.6 * HOUR, flown.pic),
@@ -572,10 +581,22 @@ export function pilotSafetySeed() {
     } else if (profile === 'unenrolled') {
       drugAlcohol = { enrolled: false, enrolledDate: '', programName: '' };
     }
+    const snapshot = {
+      ...hours,
+      timeInType: hours.timeInType.map((entry) => ({ ...entry })),
+    };
     logbooks.push({
       uid: person.uid,
       pilotName: person.name,
-      hours,
+      hours: snapshot,
+      baseline: {
+        asOf: ymd(-2),
+        source: index === 4 ? 'Wyvern' : 'manual',
+        hours: {
+          ...snapshot,
+          timeInType: snapshot.timeInType.map((entry) => ({ ...entry })),
+        },
+      },
       certificate,
       drugAlcohol,
       internalNotes: profile === 'meets' && index === 0 ? 'Home address must never reach a broker.' : '',

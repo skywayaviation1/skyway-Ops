@@ -605,9 +605,10 @@ export function findWyvernConflicts(existingLogbook, existingCurrency, record, u
     }
   }
   const book = existingLogbook || {};
+  const savedHours = book.baseline?.asOf ? (book.baseline.hours || {}) : (book.hours || {});
   for (const key of HOUR_KEYS) {
     const incoming = record?.hours?.[key];
-    const existing = book.hours?.[key];
+    const existing = savedHours?.[key];
     if (incoming == null || existing == null || sameNumber(existing, incoming)) continue;
     conflicts.push({
       field: key,
@@ -615,7 +616,7 @@ export function findWyvernConflicts(existingLogbook, existingCurrency, record, u
       incoming: String(incoming),
     });
   }
-  const existingTypes = new Map((book.hours?.timeInType || []).map((entry) => [
+  const existingTypes = new Map((savedHours?.timeInType || []).map((entry) => [
     String(entry.type || '').trim().toLowerCase(),
     entry,
   ]));
@@ -720,6 +721,14 @@ export function wyvernLogbookDraft(existing, record, { uid, pilotName, now = Dat
   if (record?.hours?.timeInType?.length) {
     book.hours.timeInType = upsertTimeInType(book.hours.timeInType, record.hours.timeInType);
   }
+  const snapshotAsOf = record?.hoursAsOf
+    || (/^\d{4}-\d{2}-\d{2}$/.test(book.baseline?.asOf || '') ? book.baseline.asOf : '')
+    || new Date(now).toISOString().slice(0, 10);
+  book.baseline = {
+    asOf: snapshotAsOf,
+    source: 'Wyvern',
+    hours: book.hours,
+  };
   if (record?.certificate?.level) book.certificate.level = record.certificate.level;
   if (record?.certificate?.instrument != null) book.certificate.instrument = record.certificate.instrument;
   if (record?.certificate?.multiEngine != null) book.certificate.multiEngine = record.certificate.multiEngine;
@@ -733,7 +742,7 @@ export function wyvernLogbookDraft(existing, record, { uid, pilotName, now = Dat
     id: record?.wyvernId || book.wyvern?.id || '',
     source: WYVERN_SOURCE,
     importedAt: now,
-    hoursAsOf: record?.hoursAsOf || book.wyvern?.hoursAsOf || '',
+    hoursAsOf: snapshotAsOf,
     verificationStatus: record?.verificationStatus || book.wyvern?.verificationStatus || '',
     position: record?.position || book.wyvern?.position || '',
   };

@@ -11,7 +11,7 @@
 // The UI also limits editing to admin and ops. Pilots read their own record.
 
 import { db } from './firebase.js';
-import { doc, setDoc, collection, onSnapshot } from 'firebase/firestore';
+import { doc, setDoc, collection, onSnapshot, query, where } from 'firebase/firestore';
 import { normalizeLogbook, normalizeStandards } from './pilot-safety.js';
 
 export function subscribePilotLogbooks(onUpdate) {
@@ -63,6 +63,58 @@ export async function savePilotLogbook(uid, draft, editor) {
     ...book,
     uid,
     updatedAt: Date.now(),
+    updatedBy: editor?.uid || null,
+    updatedByName: editor?.name || editor?.email || null,
+  });
+}
+
+function readFlightEntry(entry) {
+  const data = entry.data() || {};
+  return { ...data, id: entry.id, uid: data.uid || '' };
+}
+
+export function subscribePilotFlightLog(onUpdate) {
+  return onSnapshot(
+    collection(db, 'pilot-flight-log'),
+    (snap) => {
+      const entries = [];
+      snap.forEach((entry) => entries.push(readFlightEntry(entry)));
+      onUpdate(entries);
+    },
+    (err) => {
+      console.warn('[pilot-flight-log] subscribe error:', err?.message || err);
+      onUpdate([]);
+    },
+  );
+}
+
+export function subscribeMyPilotFlightLog(uid, onUpdate) {
+  if (!uid) {
+    onUpdate([]);
+    return () => {};
+  }
+  return onSnapshot(
+    query(collection(db, 'pilot-flight-log'), where('uid', '==', uid)),
+    (snap) => {
+      const entries = [];
+      snap.forEach((entry) => entries.push(readFlightEntry(entry)));
+      onUpdate(entries);
+    },
+    (err) => {
+      console.warn('[pilot-flight-log] self subscribe error:', err?.message || err);
+      onUpdate([]);
+    },
+  );
+}
+
+export async function savePilotFlightEntry(entry, editor) {
+  if (!entry?.id) throw new Error('Flight log entry id is required.');
+  const audit = Array.isArray(entry.audit) ? entry.audit.slice(-12) : [];
+  await setDoc(doc(db, 'pilot-flight-log', entry.id), {
+    ...entry,
+    id: entry.id,
+    audit,
+    updatedAt: entry.updatedAt || Date.now(),
     updatedBy: editor?.uid || null,
     updatedByName: editor?.name || editor?.email || null,
   });
