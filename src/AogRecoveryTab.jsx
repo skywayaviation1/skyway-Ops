@@ -625,8 +625,8 @@ function TripDrawer({ row, settings, busy, setBusy, setError, setBanner, onClose
           <p className="mt-3 text-xs text-content-muted">{proposalText(plan)}</p>
         )}
         {(review?.parsed?.notes || []).map((note) => <p key={note} className="mt-1 text-xs text-warning">{note}</p>)}
-        {(fields.uncertainFields || []).length > 0 && (
-          <p className="mt-1 text-xs text-content-muted">Uncertain: {fields.uncertainFields.join(', ')}</p>
+        {uncertainLeft(fields).length > 0 && (
+          <p className="mt-1 text-xs text-content-muted">Uncertain: {uncertainLeft(fields).join(', ')}</p>
         )}
 
         <FieldGrid fields={fields} setFields={setFields} disabled={locked && !review} />
@@ -651,6 +651,19 @@ function TripDrawer({ row, settings, busy, setBusy, setError, setBanner, onClose
       </div>
     </div>
   );
+}
+
+function uncertainLeft(fields) {
+  const blank = {
+    tripId: !fields.tripId,
+    tail: !fields.tail,
+    aircraftType: !fields.aircraftType,
+    route: !(fields.routeFrom || fields.routeTo),
+    dates: !fields.departDate,
+    tripTotal: fields.tripTotal === '' || fields.tripTotal == null,
+    checkoutEmail: !fields.checkoutEmail,
+  };
+  return (fields.uncertainFields || []).filter((field) => blank[field]);
 }
 
 function fieldState(row, review) {

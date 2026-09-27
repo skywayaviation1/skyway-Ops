@@ -15,7 +15,7 @@ process.env.GOOGLE_CLOUD_PROJECT = process.env.GCLOUD_PROJECT;
 const EMAIL = 'ops@example-charter.test';
 const PASSWORD = 'synthetic-ops-pass';
 const API_PORT = 8787;
-const WEB_PORT = 5173;
+const WEB_PORT = 5199;
 const SHOT = '/opt/cursor/artifacts/screenshots';
 
 if (!process.env.FIRESTORE_EMULATOR_HOST || !process.env.FIREBASE_AUTH_EMULATOR_HOST) {
@@ -291,7 +291,7 @@ async function clickThrough() {
     if (msg.type() === 'error') console.log('CONSOLE', msg.text());
   });
   try {
-    await page.goto(`http://127.0.0.1:${WEB_PORT}/aog-emulator`, { waitUntil: 'networkidle' });
+    await page.goto(`http://127.0.0.1:${WEB_PORT}/aog-emulator`, { waitUntil: 'domcontentloaded' });
     await page.getByText('SKY-TEST-3001').first().waitFor({ timeout: 25000 });
     await page.getByText('Email test mode is on').waitFor();
     await page.getByText('2 legs').waitFor();
@@ -302,11 +302,9 @@ async function clickThrough() {
     if (await page.getByText('SKY-TEST-3001').count()) throw new Error('upcoming trip still visible in past view');
     await shot(page, 'aog-trips-past-filter');
     await page.getByLabel('Trip window').selectOption('current');
-    await page.getByText('SKY-TEST-3001').first().waitFor();
-
+    await page.getByLabel('Search trips').fill('SKY-TEST-3003');
     await page.getByLabel('Contract').selectOption('missing');
     await page.getByText('SKY-TEST-3003').waitFor();
-    await page.getByLabel('Search trips').fill('SKY-TEST-3003');
     await page.getByText('SKY-TEST-3003').click();
     await page.getByRole('dialog', { name: 'Trip SKY-TEST-3003' }).waitFor();
     await page.locator('input[type=file]').setInputFiles('/tmp/synthetic-charter-3003.pdf');
@@ -333,7 +331,7 @@ async function clickThrough() {
     await page.getByRole('button', { name: 'Confirm gift' }).click();
     await page.getByText(/Gifted 100%/).waitFor({ timeout: 20000 });
     await page.getByRole('button', { name: 'Close' }).click();
-    await page.getByText('100% gifted by Skyway').waitFor({ timeout: 15000 });
+    await page.getByRole('cell', { name: /100% gifted by Skyway/ }).waitFor({ timeout: 15000 });
     await shot(page, 'aog-gift');
 
     await page.getByLabel('Search trips').fill('SKY-TEST-3006');
@@ -354,7 +352,7 @@ async function clickThrough() {
     await page.getByLabel('Complimentary domain').fill('example-charter.test');
     await page.getByRole('button', { name: 'Add domain' }).click();
     await page.getByLabel('Apply to SKY-TEST-3001').waitFor();
-    await page.getByText('ops@example-charter.test').waitFor();
+    await page.locator('li').filter({ hasText: 'example-charter.test' }).getByText(/ops@example-charter\.test/).waitFor();
     await shot(page, 'aog-domain-apply');
     await page.getByRole('button', { name: 'Apply complimentary 100%' }).click();
     await page.getByText(/Complimentary 100% applied/).waitFor({ timeout: 20000 });
@@ -363,7 +361,7 @@ async function clickThrough() {
     await page.getByLabel('Search trips').fill('SKY-TEST-3001');
     await page.getByLabel('Trip window').selectOption('all');
     await page.getByLabel('Contract').selectOption('');
-    await page.getByText('100% complimentary domain').waitFor({ timeout: 15000 });
+    await page.getByRole('cell', { name: /100% complimentary domain/ }).waitFor({ timeout: 15000 });
     await shot(page, 'aog-complimentary-applied');
 
     await page.getByRole('tab', { name: /Unmatched contracts/ }).click();
@@ -392,6 +390,9 @@ async function clickThrough() {
     await page.getByRole('tab', { name: 'Trips' }).click();
     await shot(page, 'aog-trips-mobile');
     console.log('click-through ok');
+  } catch (err) {
+    await shot(page, 'aog-failure').catch(() => {});
+    throw err;
   } finally {
     await browser.close();
   }
@@ -402,7 +403,8 @@ let api;
 try {
   await seed();
   api = await startApi();
-  const vite = spawn('npx', ['vite', '--host', '127.0.0.1', '--port', String(WEB_PORT)], {
+  const viteBin = path.resolve(import.meta.dirname, '../node_modules/vite/bin/vite.js');
+  const vite = spawn(process.execPath, [viteBin, '--host', '127.0.0.1', '--port', String(WEB_PORT), '--strictPort'], {
     cwd: path.resolve(import.meta.dirname, '..'),
     env: {
       ...process.env,
@@ -416,6 +418,6 @@ try {
   await waitForHttp(`http://127.0.0.1:${WEB_PORT}/aog-emulator`);
   await clickThrough();
 } finally {
-  for (const child of children) child.kill('SIGTERM');
+  for (const child of children) child.kill('SIGKILL');
   if (api) await new Promise((resolve) => api.close(resolve));
 }
