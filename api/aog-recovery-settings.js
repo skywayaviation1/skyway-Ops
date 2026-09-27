@@ -43,6 +43,9 @@ export default async function handler(req, res) {
         rates: body.rates,
         complimentaryDomains: body.action === 'save' ? body.complimentaryDomains : undefined,
         complimentaryDomainRecords: body.complimentaryDomainRecords,
+        includedMultiplier: body.includedMultiplier,
+        upgradeMultiplier: body.upgradeMultiplier,
+        cfsStaff: body.cfsStaff,
         actor,
       });
       res.status(200).json({ ok: true, settings });
@@ -68,6 +71,25 @@ export default async function handler(req, res) {
       const existing = await loadSettings(db);
       const records = existing.domainRecords.filter((row) => row.domain !== domain);
       const settings = await saveSettings(db, { complimentaryDomainRecords: records, actor });
+      res.status(200).json({ ok: true, settings });
+      return;
+    }
+    if (body.action === 'add-cfs-staff') {
+      const existing = await loadSettings(db);
+      const settings = await saveSettings(db, {
+        cfsStaff: [...existing.cfsStaff, { email: body.email }],
+        actor,
+      });
+      res.status(200).json({ ok: true, settings });
+      return;
+    }
+    if (body.action === 'remove-cfs-staff') {
+      const existing = await loadSettings(db);
+      const email = String(body.email || '').trim().toLowerCase();
+      const settings = await saveSettings(db, {
+        cfsStaff: existing.cfsStaff.filter((row) => row.email !== email),
+        actor,
+      });
       res.status(200).json({ ok: true, settings });
       return;
     }

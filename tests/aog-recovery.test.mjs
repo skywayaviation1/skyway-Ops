@@ -348,15 +348,19 @@ test('reporting fields are typed cents, ICAO, and an append-only event id', () =
   assert.equal(facts.returnAtUtc, '2026-10-14T00:00:00.000Z');
   assert.equal(facts.electionSource, null);
   assert.equal(facts.ratePercent, 1.5);
-  assert.equal(facts.coverageLimitCents, null);
-  assert.equal(facts.coverageMultiplier, null);
+  assert.equal(facts.coverageLimitCents, 1850000);
+  assert.equal(facts.coverageMultiplier, 1);
+  assert.equal(facts.includedMultiplier, 1);
+  assert.equal(facts.upgradeMultiplier, 2);
   const hundred = reportingFacts({ tripTotal: 20000, coverageLevel: 'gifted_100', premiumCents: 30000 });
   assert.equal(hundred.coverageLimitCents, 4000000);
   assert.equal(hundred.coverageMultiplier, 2);
   const corrected = reportingFacts({ tripTotalCents: 2500000, coverageLevel: 'purchased_100' });
   assert.equal(corrected.coverageLimitCents, 5000000);
   assert.equal(corrected.coverageMultiplier, 2);
-  assert.equal(coverageLimitCentsFor(2000000, 'included_50'), null);
+  assert.equal(coverageLimitCentsFor(2000000, 'included_50'), 2000000);
+  assert.equal(coverageLimitCentsFor(2000000, 'included_50', { includedMultiplier: 1.5 }), 3000000);
+  assert.equal(coverageLimitCentsFor(2000000, 'gifted_100', { upgradeMultiplier: 3 }), 6000000);
   assert.equal(electionSourceFor('purchased_100'), 'purchased');
   assert.equal(electionSourceFor('gifted_100'), 'gifted');
   assert.equal(electionSourceFor('complimentary_100'), 'complimentary_domain');
@@ -782,6 +786,8 @@ test('CFS bind email omits the premium and rate and links to acknowledge coverag
   assert.match(body, /\$20,000\.00/);
   assert.match(body, /Coverage value: up to \$40,000\.00/);
   assert.match(body, /Coverage: 100%/);
+  assert.match(body, /Open the CFS portal/);
+  assert.equal(/50%|gifted|complimentary/i.test(body), false);
   assert.match(body, /N100TS/);
   assert.match(body, /KTEB/);
   assert.match(body, /2026-11-02/);
@@ -862,7 +868,8 @@ test('broker CFS mail omits cost and premium, and both notices show the 2x cover
   };
   const broker = cfsBrokerLetter(cfsRecord, fields);
   const brokerBody = `${broker.html}\n${broker.text}`;
-  assert.equal(/premium/i.test(brokerBody), false);
+  assert.match(brokerBody, /Included: 50%, up to \$20,000\.00/);
+  assert.match(brokerBody, /Upgrade: 100%, up to \$40,000\.00, premium \$360\.00/);
   assert.equal(brokerBody.includes('$640'), false);
   assert.equal(brokerBody.includes('640.00'), false);
   assert.equal(/CFS cost/i.test(brokerBody), false);
@@ -881,7 +888,8 @@ test('broker CFS mail omits cost and premium, and both notices show the 2x cover
   assert.equal(/premium/i.test(opsBody), false);
   const offer = offerLetter({ ...cfsRecord, coverageLevel: 'included_50', premium: 300, ratePercent: 1.5 }, 'https://example.test/aog-coverage');
   const offerBody = `${offer.html}\n${offer.text}`;
-  assert.match(offerBody, /50%/);
+  assert.match(offerBody, /Included: 50%, up to \$20,000\.00/);
+  assert.match(offerBody, /Upgrade: 100%, up to \$40,000\.00, premium \$300\.00/);
   assert.match(offerBody, /Coverage value: up to \$40,000\.00/);
 
   const view = JSON.stringify(publicCfsView({ ...cfsRecord, cfsStatus: '' }));
@@ -899,6 +907,9 @@ test('broker CFS mail omits cost and premium, and both notices show the 2x cover
   });
   assert.equal(acknowledged.acknowledgement.acceptedCoveragePercent, 100);
   assert.equal(acknowledged.coverageValueLabel, 'up to $40,000.00');
+  assert.equal(acknowledged.coverage, '100%');
+  assert.equal(JSON.stringify(acknowledged).includes('gifted'), false);
+  assert.equal(JSON.stringify(acknowledged).includes('complimentary'), false);
   assert.equal(acknowledged.acknowledgement.cfsCost, '640.00');
   assert.equal(Object.hasOwn(acknowledged, 'premium'), false);
 });

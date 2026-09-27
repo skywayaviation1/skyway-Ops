@@ -163,6 +163,10 @@ export default function AogCfsAcknowledge() {
                   {existing ? 'Update acknowledgement' : 'Acknowledge coverage'}
                 </Button>
               </form>
+              <p className="mt-4 text-sm">
+                <a className="font-medium text-accent underline" href="/cfs">Open the CFS portal</a>
+                <span className="text-content-muted"> for every other trip.</span>
+              </p>
               <p className="pt-6 text-2xs text-content-subtle">End of acknowledgement</p>
             </>
           )}

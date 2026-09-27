@@ -44,6 +44,8 @@ import {
   premiumLabel,
   quotePremium,
   readDomainRecords,
+  cfsStaffFromList,
+  readCfsStaff,
 } from '../src/aog-recovery.js';
 import { buildTripRows, nyDay, rowsEligibleForComplimentary } from '../src/aog-trip-rows.js';
 import { normalizeTripId } from '../src/trip-id.js';
@@ -59,7 +61,8 @@ import {
   planContractWrite,
   shouldAttachCharterContract,
 } from '../src/charter-contract.js';
-import { coverageEvent, coverageLimitCentsFor, dollarsFromCents, isHundredCoverage, reportingFacts, tripTotalCentsOf } from '../src/aog-reporting.js';
+import { comparisonHtml, comparisonText } from '../src/aog-offer-copy.js';
+import { coverageEvent, coverageLimitCentsFor, coverageTierCents, dollarsFromCents, isHundredCoverage, multiplierOr, reportingFacts, requireCoverageMultiplier, tripTotalCentsOf, DEFAULT_INCLUDED_MULTIPLIER, DEFAULT_UPGRADE_MULTIPLIER } from '../src/aog-reporting.js';
 
 const COLLECTION = 'aogRecovery';
 const CONFIG_DOC = ['aogRecoveryConfig', 'settings'];
@@ -279,12 +282,23 @@ export async function loadSettings(db = recoveryDb()) {
     rates: Array.isArray(data.rates) && data.rates.length ? data.rates : DEFAULT_RATES.map((row) => ({ ...row })),
     complimentaryDomains: domainRecords.map((row) => row.domain),
     domainRecords,
+    includedMultiplier: multiplierOr(data.includedMultiplier, DEFAULT_INCLUDED_MULTIPLIER),
+    upgradeMultiplier: multiplierOr(data.upgradeMultiplier, DEFAULT_UPGRADE_MULTIPLIER),
+    cfsStaff: readCfsStaff(data),
     updatedAt: data.updatedAt || '',
     updatedBy: data.updatedBy || '',
   };
 }
 
-export async function saveSettings(db, { rates, complimentaryDomains, complimentaryDomainRecords, actor } = {}) {
+export async function saveSettings(db, {
+  rates,
+  complimentaryDomains,
+  complimentaryDomainRecords,
+  includedMultiplier,
+  upgradeMultiplier,
+  cfsStaff,
+  actor,
+} = {}) {
   const existing = await loadSettings(db);
   const now = new Date().toISOString();
   const domainInput = complimentaryDomainRecords || complimentaryDomains;
@@ -299,6 +313,15 @@ export async function saveSettings(db, { rates, complimentaryDomains, compliment
     rates: rates ? normalizeRateTable(rates) : existing.rates,
     complimentaryDomains: domainRecords.map((row) => row.domain),
     complimentaryDomainRecords: domainRecords,
+    includedMultiplier: includedMultiplier == null
+      ? existing.includedMultiplier
+      : requireCoverageMultiplier(includedMultiplier, '50% multiplier'),
+    upgradeMultiplier: upgradeMultiplier == null
+      ? existing.upgradeMultiplier
+      : requireCoverageMultiplier(upgradeMultiplier, '100% multiplier'),
+    cfsStaff: cfsStaff == null
+      ? existing.cfsStaff
+      : cfsStaffFromList(cfsStaff, { previous: existing.cfsStaff, actorEmail: actor?.email || '', now }),
     updatedAt: now,
     updatedBy: actor?.email || '',
   };
@@ -372,7 +395,7 @@ function detailRows(record) {
     ['Dates', record.datesLabel || [record.departDate, record.returnDate].filter(Boolean).join(' – ')],
     ['Route', record.route],
     ['Trip total', fmtMoney(record.tripTotal)],
-    ['Coverage', coverageLevelLabel(record.coverageLevel)],
+    ['Coverage', isHundredCoverage(record.coverageLevel) ? '100%' : '50% included'],
     ['Premium', premiumLabel(record)],
   ];
   return rows.map(([label, value]) => (
@@ -389,43 +412,46 @@ function shell(title, inner) {
     + `</div>`;
 }
 
+function brokerLetterBody(record, intro, url) {
+  const compare = comparisonText(record);
+  const html = `
+    <p>${intro}</p>
+    ${comparisonHtml(record)}
+    <table style="border-collapse:collapse;font-size:14px;margin:16px 0">${detailRows(record)}</table>
+    ${url ? `<p><a href="${escapeHtml(url)}" style="display:inline-block;background:#0f766e;color:#ffffff;text-decoration:none;padding:12px 18px;border-radius:6px">Review and elect 100% coverage</a></p>` : ''}
+  `;
+  return { html, text: `${intro}\n${compare}\n${url || ''}`.trim() };
+}
+
 export function offerLetter(record, url) {
   const subject = `AOG coverage for trip ${record.tripId || record.tail || ''}`.trim();
-  const value = coverageValueText(record);
-  const valueSentence = value ? ` Coverage value: ${escapeHtml(value)}.` : '';
-  const html = shell('50% is included. 100% is available.', `
-    <p>Your charter includes <strong>50%</strong> AOG mechanical recovery coverage at no charge. No action is required to keep that coverage.</p>
-    <p><strong>100%</strong> coverage is available for <strong>${escapeHtml(fmtMoney(record.premium))}</strong> (${escapeHtml(String(record.ratePercent))}% of the trip total). That amount is the premium only. The trip itself is not charged.${valueSentence}</p>
-    <table style="border-collapse:collapse;font-size:14px;margin:16px 0">${detailRows(record)}</table>
-    <p><a href="${escapeHtml(url)}" style="display:inline-block;background:#0f766e;color:#ffffff;text-decoration:none;padding:12px 18px;border-radius:6px">Review and elect 100% coverage</a></p>
-    <p style="font-size:12px;color:#64748b">This link is unique to this trip. If you do nothing, you stay at the included 50%.</p>
-  `);
-  const text = `50% AOG coverage is included.\n100% is available for ${fmtMoney(record.premium)}.${value ? ` Coverage value: ${value}.` : ''}\nThe premium is the only amount charged.\n\n${url}\n`;
-  return { subject, html, text };
+  const body = brokerLetterBody(
+    record,
+    '50% AOG recovery coverage is included with the charter at no charge. 100% is the upgrade. The premium is the only amount charged. The trip itself is not charged.',
+    url,
+  );
+  const html = shell('50% is included. 100% is available.', `${body.html}<p style="font-size:12px;color:#64748b">This link is unique to this trip. If you do nothing, you stay at the included 50%.</p>`);
+  return { subject, html, text: body.text };
 }
 
 export function includedOnlyLetter(record) {
   const subject = `AOG coverage for trip ${record.tripId || record.tail || ''} — 50% included`.trim();
-  const html = shell('50% AOG coverage is included', `
-    <p>Your charter includes <strong>50%</strong> AOG mechanical recovery coverage at no charge.</p>
-    <p>100% coverage is not available for this aircraft type until Skyway publishes a premium rate for it.</p>
-    <table style="border-collapse:collapse;font-size:14px;margin:16px 0">${detailRows(record)}</table>
-  `);
-  const text = `50% AOG coverage is included for this trip. 100% coverage is not offered for this aircraft type.\n`;
-  return { subject, html, text };
+  const body = brokerLetterBody(
+    record,
+    '50% AOG recovery coverage is included with the charter at no charge. 100% is not offered for this aircraft until a premium rate is published.',
+    '',
+  );
+  return { subject, html: shell('50% AOG coverage is included', body.html), text: body.text };
 }
 
 export function coveredLetter(record) {
   const subject = `You are covered at 100% AOG — trip ${record.tripId || record.tail || ''}`.trim();
-  const value = coverageValueText(record);
-  const html = shell('You are covered at 100%', `
-    <p>This trip is recorded at <strong>100%</strong> AOG mechanical recovery coverage at no charge to you.</p>
-    ${value ? `<p>Coverage value: ${escapeHtml(value)}.</p>` : ''}
-    <table style="border-collapse:collapse;font-size:14px;margin:16px 0">${detailRows(record)}</table>
-    <p style="font-size:12px;color:#64748b">Coverage level: ${escapeHtml(coverageLevelLabel(record.coverageLevel))}. Premium: complimentary.</p>
-  `);
-  const text = `You are covered at 100% AOG mechanical recovery coverage for this trip.${value ? ` Coverage value: ${value}.` : ''} Premium: complimentary.\n`;
-  return { subject, html, text };
+  const body = brokerLetterBody(
+    record,
+    'This trip is covered at 100% AOG recovery. 50% is what the charter includes. There is no premium to pay.',
+    '',
+  );
+  return { subject, html: shell('You are covered at 100%', body.html), text: body.text };
 }
 
 export function bindLetter(record, attachmentNotes, ackUrl) {
@@ -434,14 +460,12 @@ export function bindLetter(record, attachmentNotes, ackUrl) {
 
 export function brokerPaidLetter(record) {
   const subject = `AOG coverage confirmed — trip ${record.tripId || record.tail || ''}`.trim();
-  const value = coverageValueText(record);
-  const html = shell('100% coverage is confirmed', `
-    <p>Payment of the premium was received. This trip is covered at <strong>100%</strong>. The amount paid was the premium only.</p>
-    ${value ? `<p>Coverage value: ${escapeHtml(value)}.</p>` : ''}
-    <table style="border-collapse:collapse;font-size:14px;margin:16px 0">${detailRows(record)}</table>
-  `);
-  const text = `Your 100% AOG coverage is confirmed.${value ? ` Coverage value: ${value}.` : ''} Premium paid: ${fmtMoney(record.premium)}. The trip total was not charged.\n`;
-  return { subject, html, text };
+  const body = brokerLetterBody(
+    record,
+    `Payment of the premium was received. This trip is covered at 100%. Premium paid: ${fmtMoney(record.premium)}. The trip total was not charged.`,
+    '',
+  );
+  return { subject, html: shell('100% coverage is confirmed', body.html), text: body.text };
 }
 
 async function sendViaResend({ to, cc, subject, html, attachments }) {
@@ -761,6 +785,10 @@ export function publicCoverageView(record) {
   const payable = record.upgradeAvailable === true
     && record.coverageLevel === 'included_50'
     && record.paymentStatus !== 'paid';
+  const tiers = coverageTierCents(record);
+  const includedValueLabel = Number.isInteger(tiers.includedCents) ? `up to ${fmtMoney(tiers.includedCents / 100)}` : '';
+  const upgradeValueLabel = Number.isInteger(tiers.upgradeCents) ? `up to ${fmtMoney(tiers.upgradeCents / 100)}` : '';
+  const premiumLabelText = fmtMoney(record.premium);
   return {
     tripId: record.tripId || '',
     brokerCompany: record.brokerCompany || '',
@@ -771,11 +799,21 @@ export function publicCoverageView(record) {
     departDate: record.departDate || '',
     returnDate: record.returnDate || '',
     tripTotal: record.tripTotal ?? null,
-    coverageValueLabel: (payable || isHundredCoverage(record.coverageLevel)) ? coverageValueText(record) : '',
+    includedMultiplier: tiers.includedMultiplier,
+    upgradeMultiplier: tiers.upgradeMultiplier,
+    includedValueLabel,
+    upgradeValueLabel,
+    includedLine: includedValueLabel ? `Included: 50%, ${includedValueLabel}` : 'Included: 50%',
+    upgradeLine: payable
+      ? `Upgrade: 100%, ${upgradeValueLabel}, premium ${premiumLabelText}`
+      : (isHundredCoverage(record.coverageLevel)
+        ? `Upgrade: 100%, ${upgradeValueLabel}, premium ${premiumLabelText}`
+        : 'Upgrade: 100% is not offered for this aircraft'),
+    coverageValueLabel: upgradeValueLabel,
     premium: record.premium ?? null,
     ratePercent: record.ratePercent ?? null,
     coverageLevel: record.coverageLevel || 'included_50',
-    coverageLabel: coverageLevelLabel(record.coverageLevel),
+    coverageLabel: isHundredCoverage(record.coverageLevel) ? '100%' : '50% included',
     paymentStatus: record.paymentStatus || '',
     upgradeAvailable: payable,
     signed: Boolean(record.signedAt),
@@ -789,7 +827,10 @@ export function publicCoverageView(record) {
 export function serializeCoverage(id, data = {}) {
   const coverageLimitCents = Number.isInteger(data.coverageLimitCents)
     ? data.coverageLimitCents
-    : coverageLimitCentsFor(tripTotalCentsOf(data), data.coverageLevel);
+    : coverageLimitCentsFor(tripTotalCentsOf(data), data.coverageLevel, {
+      includedMultiplier: data.includedMultiplier,
+      upgradeMultiplier: data.upgradeMultiplier,
+    });
   return {
     id,
     source: data.source || '',
@@ -847,8 +888,15 @@ export function serializeCoverage(id, data = {}) {
     contractAttachError: data.contractAttachError || '',
     currency: data.currency || 'usd',
     tripTotalCents: Number.isInteger(data.tripTotalCents) ? data.tripTotalCents : null,
+    includedMultiplier: multiplierOr(data.includedMultiplier, DEFAULT_INCLUDED_MULTIPLIER),
+    upgradeMultiplier: multiplierOr(data.upgradeMultiplier, DEFAULT_UPGRADE_MULTIPLIER),
     coverageLimitCents,
-    coverageMultiplier: coverageLimitCents == null ? null : 2,
+    coverageMultiplier: coverageLimitCents == null
+      ? null
+      : multiplierOr(data.coverageMultiplier, isHundredCoverage(data.coverageLevel) ? DEFAULT_UPGRADE_MULTIPLIER : DEFAULT_INCLUDED_MULTIPLIER),
+    cfsReminder24SentAt: data.cfsReminder24SentAt || '',
+    cfsReminderDepartSentAt: data.cfsReminderDepartSentAt || '',
+    cfsReminderDue: data.cfsReminderDue === true,
     brokerEmail: data.brokerEmail || data.checkoutEmail || '',
     brokerDomain: data.brokerDomain || '',
     origin: data.origin || data.routeFrom || '',
@@ -939,12 +987,13 @@ export async function dispatchCoverageEmails(db, id, record, { baseUrl, force = 
     const election = await pdfAttachment(record.electionContractPath, 'aog-election.pdf');
     const charter = await pdfAttachment(record.charterContractPath, record.charterContractFilename || 'charter-contract.pdf');
     const notes = [election.note, charter.note].filter(Boolean);
-    if (!record.electionContractPath) notes.push('Signed election contract: not signed (complimentary or gifted by Skyway).');
+    if (!record.electionContractPath) notes.push('Signed election contract: not on file.');
     if (!record.charterContractPath) notes.push('Charter contract: not on file.');
     else notes.push('Charter contract is attached.');
     const token = newOfferToken();
-    const ackUrl = `${String(baseUrl || '').replace(/\/$/, '')}/aog-cfs?token=${encodeURIComponent(token)}`;
-    const letter = bindLetter(record, notes.join(' '), ackUrl);
+    const origin = String(baseUrl || '').replace(/\/$/, '');
+    const ackUrl = `${origin}/cfs?ack=${encodeURIComponent(token)}`;
+    const letter = bindLetterContent(record, { ackUrl, portalUrl: `${origin}/cfs`, attachmentNotes: notes.join(' ') });
     const sent = await sendRecoveryEmail({
       to: CFS_BIND_TO,
       cc: CFS_BIND_CC,
@@ -1021,7 +1070,10 @@ export async function syncConfirmedCoverageValue(db, record) {
   if (record?.cfsStatus !== 'cfs_confirmed') return;
   const coverageLimitCents = Number.isInteger(record.coverageLimitCents)
     ? record.coverageLimitCents
-    : coverageLimitCentsFor(tripTotalCentsOf(record), record.coverageLevel);
+    : coverageLimitCentsFor(tripTotalCentsOf(record), record.coverageLevel, {
+      includedMultiplier: record.includedMultiplier,
+      upgradeMultiplier: record.upgradeMultiplier,
+    });
   await stampConfirmedLegs(db, record, {
     acceptedCoveragePercent: 100,
     coverageLimitCents,
@@ -1039,7 +1091,10 @@ async function sendAckNotices(db, ref, revision) {
     acceptedCoveragePercent: 100,
     coverageLimitCents: Number.isInteger(data.coverageLimitCents)
       ? data.coverageLimitCents
-      : coverageLimitCentsFor(tripTotalCentsOf(data), data.coverageLevel),
+      : coverageLimitCentsFor(tripTotalCentsOf(data), data.coverageLevel, {
+        includedMultiplier: data.includedMultiplier,
+        upgradeMultiplier: data.upgradeMultiplier,
+      }),
     reference: data.cfsReference || '',
     notes: data.cfsNotes || '',
   };
@@ -1173,6 +1228,8 @@ export async function ingestParsedCheckout(db, { messageId, parsed, pdfBuffer, p
     ...reportingPatch({
       ...draft,
       legCount,
+      includedMultiplier: settings?.includedMultiplier,
+      upgradeMultiplier: settings?.upgradeMultiplier,
       createdAt: existing.exists ? (existing.data().createdAt || now) : now,
     }),
   };
@@ -1637,6 +1694,8 @@ export async function saveUploadedContract(db, { pdfBuffer, filename, tripId, le
       ...draft,
       legCount: legs.length,
       brokerEmail: draft.checkoutEmail,
+      includedMultiplier: settings?.includedMultiplier,
+      upgradeMultiplier: settings?.upgradeMultiplier,
       createdAt: existingData.createdAt || now,
     }),
     charterContractPath: storagePath,
@@ -1767,7 +1826,13 @@ export async function applyComplimentaryDomain(db, { domain, tripIds, actor, bas
       electionContractPath: data.electionContractPath || '',
       createdAt: data.createdAt || new Date().toISOString(),
     };
-    Object.assign(record, reportingPatch({ ...record, legCount: rowLegs.length, brokerEmail: email }));
+    Object.assign(record, reportingPatch({
+      ...record,
+      legCount: rowLegs.length,
+      brokerEmail: email,
+      includedMultiplier: settings?.includedMultiplier,
+      upgradeMultiplier: settings?.upgradeMultiplier,
+    }));
     // eslint-disable-next-line no-await-in-loop
     await db.collection(COLLECTION).doc(coverageId).set(record, { merge: true });
     // eslint-disable-next-line no-await-in-loop

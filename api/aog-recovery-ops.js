@@ -258,6 +258,8 @@ export default async function handler(req, res) {
         ...record,
         ...next,
         ...patch,
+        includedMultiplier: settings.includedMultiplier,
+        upgradeMultiplier: settings.upgradeMultiplier,
         brokerEmail: patch.checkoutEmail || next.checkoutEmail || '',
         createdAt: record.createdAt,
       }));

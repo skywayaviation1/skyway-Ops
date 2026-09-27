@@ -107,6 +107,9 @@ function CfsBadge({ row }) {
   if (row.cfsStatus === 'cfs_confirmed') {
     return <span className="font-semibold text-success">Confirmed</span>;
   }
+  if (row.cfsReminderDue || row.cfsReminder24SentAt || row.cfsReminderDepartSentAt) {
+    return <span className="font-semibold text-warning">Reminder</span>;
+  }
   if (row.bindEmailSentAt) return <span className="text-content-muted">Awaiting</span>;
   return '—';
 }
@@ -742,6 +745,9 @@ function TripDrawer({ row, settings, busy, setBusy, setError, setBanner, onClose
             <p className="mt-1 text-content-muted">{row.cfsConfirmedByName || '—'}{row.cfsConfirmedByEmail ? ` · ${row.cfsConfirmedByEmail}` : ''} · {stamp(row.cfsConfirmedAt)}</p>
             <p className="mt-1">Coverage: 100%</p>
             <p className="mt-1">Coverage value: {coverageValueLabel(row)}</p>
+            {(row.cfsReminder24SentAt || row.cfsReminderDepartSentAt) && (
+              <p className="mt-1 text-warning">CFS reminder sent {stamp(row.cfsReminderDepartSentAt || row.cfsReminder24SentAt)}</p>
+            )}
             <p className="mt-1">Reference: {row.cfsReference || '—'}</p>
             <p className="mt-1">CFS cost: {Number.isInteger(row.cfsCostCents) ? fmtMoney(row.cfsCostCents / 100) : '—'}</p>
             <p className="mt-1">Margin: {Number.isInteger(row.cfsMarginCents) ? fmtMoney(row.cfsMarginCents / 100) : '—'}</p>
@@ -870,11 +876,18 @@ function UnmatchedContract({ record, trips, busy, onAttach }) {
 
 function SettingsPanel({ settings, busy, setBusy, setError, setBanner, onSettings, tripRows }) {
   const [rates, setRates] = useState(() => rateDraft(settings));
+  const [includedMultiplier, setIncludedMultiplier] = useState(settings?.includedMultiplier ?? 1);
+  const [upgradeMultiplier, setUpgradeMultiplier] = useState(settings?.upgradeMultiplier ?? 2);
   const [domain, setDomain] = useState('');
+  const [staffEmail, setStaffEmail] = useState('');
   const [pending, setPending] = useState(null);
   const [picked, setPicked] = useState({});
 
-  useEffect(() => { setRates(rateDraft(settings)); }, [settings]);
+  useEffect(() => {
+    setRates(rateDraft(settings));
+    setIncludedMultiplier(settings?.includedMultiplier ?? 1);
+    setUpgradeMultiplier(settings?.upgradeMultiplier ?? 2);
+  }, [settings]);
 
   async function saveRates() {
     setBusy(true);
@@ -887,6 +900,8 @@ function SettingsPanel({ settings, busy, setBusy, setError, setBanner, onSetting
           ratePercent: Number(row.ratePercent),
           aliases: row.aliases,
         })),
+        includedMultiplier: Number(includedMultiplier),
+        upgradeMultiplier: Number(upgradeMultiplier),
       });
       onSettings(data.settings);
       setBanner('Aircraft rates saved.');
@@ -965,6 +980,17 @@ function SettingsPanel({ settings, busy, setBusy, setError, setBanner, onSetting
       <Card>
         <h2 className="text-sm font-semibold">Premium rates by aircraft type</h2>
         <p className="mt-1 text-2xs text-content-muted">Percent of the signed charter trip total. Citation CJ3 starts at 1.5% and Learjet 60 at 2%. Types with no row cannot be upgraded. The broker is charged this premium only.</p>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          <label className="text-2xs text-content-muted">
+            50% included multiplier
+            <input aria-label="50% multiplier" inputMode="decimal" value={includedMultiplier} onChange={(event) => setIncludedMultiplier(event.target.value)} className="mt-1 w-full rounded border border-edge bg-surface px-2 py-1 text-sm text-content" />
+          </label>
+          <label className="text-2xs text-content-muted">
+            100% upgrade multiplier
+            <input aria-label="100% multiplier" inputMode="decimal" value={upgradeMultiplier} onChange={(event) => setUpgradeMultiplier(event.target.value)} className="mt-1 w-full rounded border border-edge bg-surface px-2 py-1 text-sm text-content" />
+          </label>
+        </div>
+        <p className="mt-1 text-2xs text-content-muted">Coverage value is the multiplier times the contract trip total. Defaults are 1× for included 50% and 2× for 100%.</p>
         <div className="mt-3 space-y-2">
           {rates.map((row, index) => (
             <div key={`${row.aircraftType}-${index}`} className="grid gap-2 md:grid-cols-[1fr_120px_1fr_auto]">
@@ -1028,8 +1054,73 @@ function SettingsPanel({ settings, busy, setBusy, setError, setBanner, onSetting
         )}
         <p className="mt-3 text-2xs text-content-muted">{tripRows.length} trips loaded for this offer.</p>
       </Card>
+
+      <Card className="lg:col-span-2">
+        <h2 className="text-sm font-semibold">Charter Flight Support portal</h2>
+        <p className="mt-1 text-2xs text-content-muted">Only these email addresses can request a magic link. The default address is charter@charterflightsupport.com until you change the list.</p>
+        <div className="mt-3 flex flex-wrap items-end gap-2">
+          <label className="text-2xs text-content-muted">
+            CFS staff email
+            <input aria-label="CFS staff email" value={staffEmail} onChange={(event) => setStaffEmail(event.target.value)} placeholder="charter@charterflightsupport.com" className="mt-1 w-72 rounded border border-edge bg-surface px-2 py-1 text-sm text-content" />
+          </label>
+          <Button size="sm" variant="primary" loading={busy} onClick={addStaff}>Add staff</Button>
+          <Button size="sm" variant="outline" loading={busy} onClick={openPreview}>CFS portal preview</Button>
+        </div>
+        <ul className="mt-3 space-y-2">
+          {(settings?.cfsStaff || []).length === 0 && <li className="text-xs text-content-muted">No CFS staff can sign in.</li>}
+          {(settings?.cfsStaff || []).map((row) => (
+            <li key={row.email} className="flex flex-wrap items-center justify-between gap-2 rounded border border-edge px-2 py-1">
+              <span className="text-sm">{row.email}</span>
+              <span className="text-2xs text-content-muted">{row.addedBy || 'default'} · {row.addedAt ? stamp(row.addedAt) : 'time not recorded'}</span>
+              <Button size="sm" variant="danger-outline" onClick={() => removeStaff(row.email)}>Remove</Button>
+            </li>
+          ))}
+        </ul>
+      </Card>
     </div>
   );
+
+  async function addStaff() {
+    setBusy(true);
+    setError('');
+    try {
+      const data = await authPost('/api/aog-recovery-settings', { action: 'add-cfs-staff', email: staffEmail });
+      onSettings(data.settings);
+      setStaffEmail('');
+      setBanner('CFS staff allowlist updated.');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeStaff(email) {
+    setBusy(true);
+    setError('');
+    try {
+      const data = await authPost('/api/aog-recovery-settings', { action: 'remove-cfs-staff', email });
+      onSettings(data.settings);
+      setBanner(`Removed ${email} from the CFS portal.`);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openPreview() {
+    setBusy(true);
+    setError('');
+    try {
+      const data = await authPost('/api/cfs-portal', { action: 'preview' });
+      window.open(data.portalPath, '_blank', 'noopener');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
 }
 
 function rateDraft(settings) {

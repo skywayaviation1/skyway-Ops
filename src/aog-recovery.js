@@ -24,6 +24,7 @@ export const PAYMENT_STATUSES = Object.freeze({
 
 export const CFS_BIND_TO = 'charter@charterflightsupport.com';
 export const CFS_BIND_CC = 'charters@flyskyway.com';
+export const DEFAULT_CFS_STAFF_EMAIL = CFS_BIND_TO;
 
 /** Premium percentages. A rate at or above this would stop being "only the premium". */
 export const MAX_PREMIUM_PERCENT = 15;
@@ -145,6 +146,66 @@ export function domainRecordsFromList(input, { previous = [], actorEmail = '', n
       addedAt: String((old && old.addedAt) || extra?.addedAt || (!old ? now : '') || '').slice(0, 40),
     };
   });
+}
+
+function staffEmail(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function validStaffEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && email.length <= 160;
+}
+
+/** Allowlist stored on settings. Invalid rows are skipped. Empty means none saved yet. */
+export function readCfsStaff(data = {}) {
+  const raw = Array.isArray(data.cfsStaff) ? data.cfsStaff : null;
+  if (!raw) {
+    return [{ email: DEFAULT_CFS_STAFF_EMAIL, addedBy: '', addedAt: '' }];
+  }
+  const records = [];
+  for (const item of raw) {
+    const email = staffEmail(typeof item === 'string' ? item : item?.email);
+    if (!validStaffEmail(email) || records.some((row) => row.email === email)) continue;
+    records.push({
+      email,
+      addedBy: item && typeof item === 'object' ? String(item.addedBy || '').slice(0, 160) : '',
+      addedAt: item && typeof item === 'object' ? String(item.addedAt || '').slice(0, 40) : '',
+    });
+  }
+  return records.slice(0, 50);
+}
+
+/**
+ * Replace the CFS staff allowlist. Existing addresses keep who added them.
+ * A new address is stamped with the actor. Invalid addresses are rejected.
+ */
+export function cfsStaffFromList(input, { previous = [], actorEmail = '', now = '' } = {}) {
+  const prior = new Map((previous || []).map((row) => [row.email, row]));
+  const list = Array.isArray(input) ? input : String(input || '').split(/[\s,;]+/);
+  const records = [];
+  for (const item of list) {
+    const email = staffEmail(typeof item === 'string' ? item : item?.email);
+    if (!email) continue;
+    if (!validStaffEmail(email)) {
+      const error = new Error(`Invalid CFS staff email: ${email}`);
+      error.status = 400;
+      throw error;
+    }
+    if (records.some((row) => row.email === email)) continue;
+    const old = prior.get(email);
+    const extra = item && typeof item === 'object' ? item : null;
+    records.push({
+      email,
+      addedBy: String(old?.addedBy || extra?.addedBy || (!old ? actorEmail : '') || '').slice(0, 160),
+      addedAt: String(old?.addedAt || extra?.addedAt || (!old ? now : '') || '').slice(0, 40),
+    });
+  }
+  return records.slice(0, 50);
+}
+
+export function cfsStaffAllows(email, staff) {
+  const value = staffEmail(email);
+  return (staff || []).some((row) => row.email === value);
 }
 
 export function normalizeRateTable(input) {

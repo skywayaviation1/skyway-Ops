@@ -6,7 +6,9 @@ import { emailDomain } from './aog-recovery.js';
 import { normalizeTripId } from './trip-id.js';
 
 export const COVERAGE_CURRENCY = 'usd';
-export const COVERAGE_VALUE_MULTIPLIER = 2;
+export const DEFAULT_INCLUDED_MULTIPLIER = 1;
+export const DEFAULT_UPGRADE_MULTIPLIER = 2;
+export const COVERAGE_VALUE_MULTIPLIER = DEFAULT_UPGRADE_MULTIPLIER;
 
 const HUNDRED_COVERAGE = new Set(['purchased_100', 'gifted_100', 'complimentary_100']);
 
@@ -14,17 +16,62 @@ export function isHundredCoverage(level) {
   return HUNDRED_COVERAGE.has(level);
 }
 
-/** 100% coverage is twice the contract trip total. Included 50% has no dollar limit here. */
-export function coverageLimitCentsFor(tripTotalCents, coverageLevel) {
-  if (!isHundredCoverage(coverageLevel)) return null;
-  return hundredCoverageLimitCents(tripTotalCents);
+/** A coverage multiplier ops can edit. Invalid values fall back instead of throwing. */
+export function multiplierOr(value, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0 || n > 20) return fallback;
+  return Math.round(n * 1000) / 1000;
 }
 
-/** Dollar limit of the 100% option, from the contract trip total. */
-export function hundredCoverageLimitCents(tripTotalCents) {
+export function requireCoverageMultiplier(value, label) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0 || n > 20) {
+    const error = new Error(`${label} must be greater than 0 and at most 20`);
+    error.status = 400;
+    throw error;
+  }
+  return Math.round(n * 1000) / 1000;
+}
+
+export function limitCentsForMultiplier(tripTotalCents, multiplier) {
   if (!Number.isInteger(tripTotalCents)) return null;
-  const limit = tripTotalCents * COVERAGE_VALUE_MULTIPLIER;
+  const factor = multiplierOr(multiplier, null);
+  if (factor == null) return null;
+  const limit = Math.round(tripTotalCents * factor);
   return Number.isSafeInteger(limit) ? limit : null;
+}
+
+/**
+ * Dollar limit for the coverage level on the record.
+ * Included 50% uses the included multiplier (default 1× the trip total).
+ * 100% uses the upgrade multiplier (default 2×).
+ */
+export function coverageLimitCentsFor(tripTotalCents, coverageLevel, multipliers = {}) {
+  const included = multiplierOr(multipliers.includedMultiplier, DEFAULT_INCLUDED_MULTIPLIER);
+  const upgrade = multiplierOr(multipliers.upgradeMultiplier, DEFAULT_UPGRADE_MULTIPLIER);
+  if (isHundredCoverage(coverageLevel)) return limitCentsForMultiplier(tripTotalCents, upgrade);
+  if (coverageLevel === 'included_50') return limitCentsForMultiplier(tripTotalCents, included);
+  return null;
+}
+
+/** Dollar limit of the 100% option. */
+export function hundredCoverageLimitCents(tripTotalCents, multiplier = DEFAULT_UPGRADE_MULTIPLIER) {
+  return limitCentsForMultiplier(tripTotalCents, multiplier);
+}
+
+/** Included 50% limit and 100% upgrade limit for broker-facing comparison. */
+export function coverageTierCents(record = {}) {
+  const tripTotalCents = tripTotalCentsOf(record);
+  const includedMultiplier = multiplierOr(record.includedMultiplier, DEFAULT_INCLUDED_MULTIPLIER);
+  const upgradeMultiplier = multiplierOr(record.upgradeMultiplier, DEFAULT_UPGRADE_MULTIPLIER);
+  const stored = Number.isInteger(record.coverageLimitCents) ? record.coverageLimitCents : null;
+  const hundred = isHundredCoverage(record.coverageLevel);
+  return {
+    includedMultiplier,
+    upgradeMultiplier,
+    includedCents: !hundred && stored != null ? stored : limitCentsForMultiplier(tripTotalCents, includedMultiplier),
+    upgradeCents: hundred && stored != null ? stored : limitCentsForMultiplier(tripTotalCents, upgradeMultiplier),
+  };
 }
 
 export function tripTotalCentsOf(record = {}) {
@@ -41,6 +88,8 @@ export const EVENT_TYPES = Object.freeze([
   'broker_backfilled',
   'broker_mismatch',
   'cfs_acknowledged',
+  'cfs_reminder_sent',
+  'cfs_portal_opened',
 ]);
 
 /** 100% was chosen by a purchase, a Skyway gift, or a complimentary domain. Included 50% is not an election. */
@@ -107,7 +156,12 @@ export function reportingFacts(input = {}) {
     : dollarsToCents(input.premium);
   const rate = input.ratePercent == null || input.ratePercent === '' ? null : Number(input.ratePercent);
   const coverageLevel = input.coverageLevel || 'included_50';
-  const coverageLimitCents = coverageLimitCentsFor(tripTotalCents, coverageLevel);
+  const includedMultiplier = multiplierOr(input.includedMultiplier, DEFAULT_INCLUDED_MULTIPLIER);
+  const upgradeMultiplier = multiplierOr(input.upgradeMultiplier, DEFAULT_UPGRADE_MULTIPLIER);
+  const coverageLimitCents = coverageLimitCentsFor(tripTotalCents, coverageLevel, { includedMultiplier, upgradeMultiplier });
+  const coverageMultiplier = coverageLimitCents == null
+    ? null
+    : (isHundredCoverage(coverageLevel) ? upgradeMultiplier : includedMultiplier);
   return {
     currency: COVERAGE_CURRENCY,
     tripTotalCents,
@@ -123,8 +177,10 @@ export function reportingFacts(input = {}) {
     destination: toIcao(input.destination || input.routeTo),
     legCount: legCountFromRoute(input.itinerary || input.route, input.legCount),
     coverageLevel,
+    includedMultiplier,
+    upgradeMultiplier,
     coverageLimitCents,
-    coverageMultiplier: coverageLimitCents == null ? null : COVERAGE_VALUE_MULTIPLIER,
+    coverageMultiplier,
     electionSource: input.electionSource === undefined ? electionSourceFor(coverageLevel) : input.electionSource,
     paymentStatus: String(input.paymentStatus || ''),
     stripeCheckoutSessionId: String(input.stripeCheckoutSessionId || '').slice(0, 120),
@@ -153,7 +209,7 @@ export function eventDocId(type, { stripePaymentIntentId, stripeEventId, stripeR
   if (type === 'paid') return `paid_${stripePaymentIntentId || stripeEventId || atUtc || 'unknown'}`;
   if (type === 'refunded') return `refunded_${stripeRefundId || stripeEventId || atUtc || 'unknown'}`;
   if (type === 'contract_signed') return 'contract_signed';
-  if (type === 'broker_backfilled' || type === 'broker_mismatch' || type === 'cfs_acknowledged') {
+  if (type === 'broker_backfilled' || type === 'broker_mismatch' || type === 'cfs_acknowledged' || type === 'cfs_reminder_sent' || type === 'cfs_portal_opened') {
     return `${type}_${String(atUtc || '').replace(/[:.]/g, '')}`;
   }
   if (force) return `${type}_${String(atUtc || '').replace(/[:.]/g, '')}`;

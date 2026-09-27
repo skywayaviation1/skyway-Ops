@@ -122,8 +122,22 @@ export default function AogCoverageOffer() {
             <Row label="Route" value={coverage.route} />
             <Row label="Dates" value={coverage.datesLabel} />
             <Row label="Trip total" value={fmtMoney(coverage.tripTotal)} />
-            {coverage.coverageValueLabel && <Row label="Coverage value" value={coverage.coverageValueLabel} />}
-            <Row label="100% premium" value={coverage.upgradeAvailable || coverage.paymentStatus === 'paid' ? fmtMoney(coverage.premium) : '—'} />
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <section aria-label={coverage.includedLine || 'Included 50%'} className="rounded-lg border border-edge bg-surface-sunken p-3">
+                <p className="text-2xs uppercase tracking-[0.14em] text-content-muted">Included with the charter</p>
+                <p className="mt-1 text-2xl font-semibold">50%</p>
+                <p className="text-sm">No charge</p>
+                <p className="mt-2 text-sm">Coverage value: {coverage.includedValueLabel || '—'}</p>
+                <p className="mt-2 text-sm font-medium">{coverage.includedLine}</p>
+              </section>
+              <section aria-label={coverage.upgradeLine || 'Upgrade 100%'} className="rounded-lg border border-accent bg-accent-soft p-3">
+                <p className="text-2xs uppercase tracking-[0.14em] text-content-muted">Upgrade</p>
+                <p className="mt-1 text-2xl font-semibold">100%</p>
+                <p className="text-sm">{coverage.upgradeAvailable || coverage.paymentStatus === 'paid' ? `Premium ${fmtMoney(coverage.premium)}. The trip total is not charged.` : '100% is not offered for this aircraft until a premium rate is published.'}</p>
+                <p className="mt-2 text-sm">Coverage value: {coverage.upgradeValueLabel || '—'}</p>
+                <p className="mt-2 text-sm font-medium">{coverage.upgradeLine}</p>
+              </section>
+            </div>
 
             {coverage.paymentStatus === 'paid' && (
               <p className="mt-4 text-sm text-success">Payment received. You are covered at 100%. A confirmation email follows once Stripe’s notice is recorded.</p>

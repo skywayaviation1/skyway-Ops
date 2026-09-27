@@ -3,17 +3,30 @@
 // The ops notice includes the CFS cost. A second identical submit does not
 // send another email once both notices for that revision have been recorded.
 
-import { coverageLevelLabel, fmtMoney } from './aog-recovery.js';
-import { hundredCoverageLimitCents, tripTotalCentsOf } from './aog-reporting.js';
+import { fmtMoney } from './aog-recovery.js';
+import { comparisonHtml, comparisonText } from './aog-offer-copy.js';
+import {
+  DEFAULT_UPGRADE_MULTIPLIER,
+  hundredCoverageLimitCents,
+  isHundredCoverage,
+  multiplierOr,
+  tripTotalCentsOf,
+} from './aog-reporting.js';
 import { normalizeTripId } from './trip-id.js';
 
 export const ACK_TOKEN_TTL_MS = 45 * 24 * 60 * 60 * 1000;
 export const OPS_ACK_TO = 'charters@flyskyway.com';
 export const ACCEPTED_COVERAGE_PERCENT = 100;
 
-/** "up to $40,000.00" for a $20,000 contract. Empty when the trip total is unknown. */
-export function coverageValueText(record) {
-  const cents = hundredCoverageLimitCents(tripTotalCentsOf(record));
+/** "up to $40,000.00" for a $20,000 contract at the 2× upgrade. Empty when the trip total is unknown. */
+export function coverageValueText(record = {}) {
+  const stored = isHundredCoverage(record.coverageLevel) && Number.isInteger(record.coverageLimitCents)
+    ? record.coverageLimitCents
+    : null;
+  const cents = stored ?? hundredCoverageLimitCents(
+    tripTotalCentsOf(record),
+    multiplierOr(record.upgradeMultiplier, DEFAULT_UPGRADE_MULTIPLIER),
+  );
   if (!Number.isInteger(cents)) return '';
   return `up to ${fmtMoney(cents / 100)}`;
 }
@@ -86,13 +99,15 @@ export function validateAcknowledgement(input = {}, record = {}) {
   const notes = String(input.notes || '').trim().slice(0, 1000);
   const tripTotalCents = tripTotalCentsOf(record);
   const premiumCents = Number.isInteger(record.premiumCents) ? record.premiumCents : null;
-  const coverageLimitCents = hundredCoverageLimitCents(tripTotalCents);
+  const upgradeMultiplier = multiplierOr(record.upgradeMultiplier, DEFAULT_UPGRADE_MULTIPLIER);
+  const coverageLimitCents = hundredCoverageLimitCents(tripTotalCents, upgradeMultiplier);
   const fields = {
     name,
     email,
     cfsCostCents: cost.cents,
     acceptedCoveragePercent: ACCEPTED_COVERAGE_PERCENT,
     coverageLimitCents,
+    upgradeMultiplier,
     reference,
     notes,
     cfsMarginCents: premiumCents == null ? null : premiumCents - cost.cents,
@@ -119,7 +134,11 @@ function storedFields(existing) {
     acceptedCoveragePercent: ACCEPTED_COVERAGE_PERCENT,
     coverageLimitCents: Number.isInteger(existing.coverageLimitCents)
       ? existing.coverageLimitCents
-      : hundredCoverageLimitCents(tripTotalCentsOf(existing)),
+      : hundredCoverageLimitCents(
+        tripTotalCentsOf(existing),
+        multiplierOr(existing.upgradeMultiplier, DEFAULT_UPGRADE_MULTIPLIER),
+      ),
+    upgradeMultiplier: multiplierOr(existing.upgradeMultiplier, DEFAULT_UPGRADE_MULTIPLIER),
     reference: existing.cfsReference || '',
     notes: existing.cfsNotes || '',
     cfsMarginCents: Number.isInteger(existing.cfsMarginCents) ? existing.cfsMarginCents : null,
@@ -168,7 +187,8 @@ export function planCfsAcknowledgement(existing = {}, input = {}, now = new Date
       cfsMarginCents: fields.cfsMarginCents,
       acceptedCoveragePercent: ACCEPTED_COVERAGE_PERCENT,
       coverageLimitCents: fields.coverageLimitCents,
-      coverageMultiplier: fields.coverageLimitCents == null ? null : 2,
+      coverageMultiplier: fields.coverageLimitCents == null ? null : fields.upgradeMultiplier,
+      cfsReminderDue: false,
       cfsReference: fields.reference,
       cfsNotes: fields.notes,
       cfsShortfall: false,
@@ -211,14 +231,16 @@ function tripRows(record) {
   ].join('');
 }
 
-export function bindLetterContent(record, { ackUrl, attachmentNotes } = {}) {
+export function bindLetterContent(record, { ackUrl, portalUrl, attachmentNotes } = {}) {
+  const portal = portalUrl || String(ackUrl || '').replace(/[?#].*$/, '').replace(/\/aog-cfs$/, '/cfs');
   const subject = `AOG coverage bind request — ${normalizeTripId(record.tripId) || record.tripId || 'trip'} ${record.tail || ''}`.trim();
   const html = shell('Bind request', `
     <p>Please bind AOG mechanical recovery coverage for the trip below.</p>
     <table style="border-collapse:collapse;font-size:14px;margin:16px 0">${tripRows(record)}</table>
     <p style="font-size:13px;color:#334155">${escapeHtml(attachmentNotes || '')}</p>
     <p><a href="${escapeHtml(ackUrl || '')}" style="display:inline-block;background:#0f766e;color:#ffffff;text-decoration:none;padding:12px 18px;border-radius:6px">Acknowledge coverage</a></p>
-    <p style="font-size:12px;color:#64748b">This link is unique to this trip and expires. Use it to confirm the coverage you are binding.</p>
+    <p style="font-size:13px"><a href="${escapeHtml(portal || '')}">Open the CFS portal</a> for every other trip.</p>
+    <p style="font-size:12px;color:#64748b">The acknowledge link is unique to this trip and works without signing in. It expires.</p>
   `);
   const text = [
     'AOG coverage bind request',
@@ -234,6 +256,7 @@ export function bindLetterContent(record, { ackUrl, attachmentNotes } = {}) {
     `Coverage value: ${coverageValueText(record) || '—'}`,
     attachmentNotes || '',
     `Acknowledge coverage: ${ackUrl || ''}`,
+    `Open the CFS portal: ${portal || ''}`,
   ].join('\n');
   return { subject, html, text };
 }
@@ -270,7 +293,8 @@ export function cfsBrokerLetter(record) {
   const tripId = normalizeTripId(record.tripId) || record.tripId || 'trip';
   const subject = `AOG recovery coverage accepted — trip ${tripId}`;
   const html = shell('AOG recovery coverage has been accepted', `
-    <p>Charter Flight Support has accepted AOG recovery coverage for this trip.</p>
+    <p>Charter Flight Support has accepted 100% AOG recovery coverage for this trip.</p>
+    ${comparisonHtml(record)}
     <table style="border-collapse:collapse;font-size:14px;margin:16px 0">
       ${row('Trip ID', tripId)}
       ${row('Route', record.route)}
@@ -282,6 +306,7 @@ export function cfsBrokerLetter(record) {
   `);
   const text = [
     'AOG recovery coverage has been accepted by Charter Flight Support.',
+    comparisonText(record),
     `Trip ID: ${tripId}`,
     `Route: ${record.route || '—'}`,
     `Dates: ${record.datesLabel || '—'}`,
@@ -304,8 +329,7 @@ export function publicCfsView(record = {}) {
     datesLabel: record.datesLabel || '',
     legCount: Number.isInteger(record.legCount) ? record.legCount : null,
     tripTotal: record.tripTotal ?? null,
-    coverageLevel: record.coverageLevel || '',
-    coverageLabel: coverageLevelLabel(record.coverageLevel),
+    coverage: '100%',
     acceptedCoveragePercent: ACCEPTED_COVERAGE_PERCENT,
     coverageValueLabel: coverageValueText(record),
     acknowledgement: acknowledged ? {

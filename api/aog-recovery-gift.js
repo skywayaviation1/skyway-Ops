@@ -94,7 +94,11 @@ export default async function handler(req, res) {
       electionContractPath: existing?.data()?.electionContractPath || '',
       createdAt: existing?.data()?.createdAt || now,
     };
-    Object.assign(record, reportingPatch(record));
+    Object.assign(record, reportingPatch({
+      ...record,
+      includedMultiplier: settings.includedMultiplier,
+      upgradeMultiplier: settings.upgradeMultiplier,
+    }));
     if (!Number.isFinite(record.tripTotal)) record.needsReview = true;
 
     const ref = existing ? existing.ref : db.collection(COLLECTION).doc();

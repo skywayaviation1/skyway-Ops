@@ -14,8 +14,12 @@ service cloud.firestore {
     function userDoc() {
       return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
+    function isCfsRole() {
+      return signedIn() && request.auth.token.role == 'cfs';
+    }
     function isOpsOrAdmin() {
       return signedIn()
+        && !isCfsRole()
         && exists(/databases/$(database)/documents/users/$(request.auth.uid))
         && userDoc().role in ['ops', 'admin']
         && userDoc().active != false
@@ -47,5 +51,22 @@ service cloud.firestore {
     match /aogRecoveryProcessed/{messageHash} {
       allow read, write: if false;
     }
+
+    // Portal sessions, magic links, and contract download tokens. Admin SDK only.
+    // A cfs-role client cannot read Skyway collections or these secrets.
+    match /cfsAuthLinks/{id} {
+      allow read, write: if false;
+    }
+    match /cfsSessions/{id} {
+      allow read, write: if false;
+    }
+    match /cfsDownloads/{id} {
+      allow read, write: if false;
+    }
+
+    // Production rules for users, trip-state, and every other Skyway
+    // collection must also require request.auth.token.role != 'cfs'.
+    // A CFS custom token is not an ops login. The portal reads through
+    // the Admin SDK, never through these client rules.
   }
 }

@@ -27,6 +27,10 @@
     {
       "path": "/api/aog-recovery-inbox-scan",
       "schedule": "*/10 * * * *"
+    },
+    {
+      "path": "/api/cfs-portal-reminders",
+      "schedule": "15 * * * *"
     }
   ],
   "functions": {
@@ -44,6 +48,9 @@
       "maxDuration": 60
     },
     "api/aog-recovery-inbox-scan.js": {
+      "maxDuration": 60
+    },
+    "api/cfs-portal-reminders.js": {
       "maxDuration": 60
     }
   },
