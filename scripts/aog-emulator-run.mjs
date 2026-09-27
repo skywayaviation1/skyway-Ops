@@ -806,8 +806,26 @@ async function portalShots(page) {
   await included.evaluate((el) => el.scrollIntoView({ block: 'center' }));
   await shot(page, 'aog-offer-comparison-desktop');
   await page.setViewportSize({ width: 390, height: 844 });
-  await included.evaluate((el) => el.scrollIntoView({ block: 'start' }));
+  const offerSheet = page.locator('.aog-public-sheet .sw-sheet-body');
+  await upgrade.evaluate((el) => el.scrollIntoView({ block: 'center' }));
+  const includedBox = await included.boundingBox();
+  const upgradeBox = await upgrade.boundingBox();
+  const offerViewport = page.viewportSize();
+  if (!includedBox || !upgradeBox
+    || includedBox.y < 0
+    || upgradeBox.y + upgradeBox.height > offerViewport.height + 2) {
+    throw new Error(`offer comparison is outside the iPhone viewport ${JSON.stringify({ includedBox, upgradeBox, offerViewport })}`);
+  }
   await shot(page, 'aog-offer-comparison-iphone');
+  await page.setViewportSize({ width: 375, height: 667 });
+  const offerScrolled = await scrollSheetBody(offerSheet);
+  const offerEnd = page.getByText('End of offer');
+  await offerEnd.waitFor();
+  const offerEndBox = await offerEnd.boundingBox();
+  const offerSmall = page.viewportSize();
+  if (!offerEndBox || offerEndBox.y < 0 || offerEndBox.y + offerEndBox.height > offerSmall.height + 2) {
+    throw new Error(`offer page did not reach the bottom ${JSON.stringify({ offerScrolled, offerEndBox })}`);
+  }
 
   const { offerLetter } = await import('../api/_aog-recovery.js');
   const letter = offerLetter({

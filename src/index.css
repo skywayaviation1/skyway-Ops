@@ -447,7 +447,8 @@ html[data-native] .sw-mobile-tab {
   --cfs-ok-bg: #052e16;
   --cfs-ok: #86efac;
 }
-.cfs-portal .sw-sheet-body { padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 28px); }
+.cfs-portal .sw-sheet-body,
+.aog-public-sheet .sw-sheet-body { padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 28px); }
 .cfs-header, .cfs-body, .cfs-card, .cfs-filters, .cfs-toolbar { color: var(--cfs-ink); }
 .cfs-header {
   display: flex;

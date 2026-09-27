@@ -97,8 +97,10 @@ export default function AogCoverageOffer() {
   }
 
   return (
-    <main className="min-h-screen bg-surface-sunken px-4 py-10 text-content">
-      <div className="mx-auto max-w-xl">
+    <main className="aog-public-sheet sw-sheet bg-surface-sunken text-content">
+      <div className="sw-sheet-panel sw-sheet-fill">
+      <div className="sw-sheet-body">
+      <div className="mx-auto w-full max-w-xl px-4 py-6">
         <p className="text-2xs uppercase tracking-[0.16em] text-content-muted">Skyway Aviation · Charter Flight Support</p>
         <h1 className="mt-2 text-2xl font-semibold">AOG mechanical recovery coverage</h1>
         <p className="mt-2 text-sm text-content-muted">50% is included with the trip. 100% is optional and, when you buy it, you pay only the premium.</p>
@@ -198,6 +200,9 @@ export default function AogCoverageOffer() {
             )}
           </Card>
         )}
+        <p className="aog-end mt-6 text-xs text-content-muted">End of offer</p>
+      </div>
+      </div>
       </div>
     </main>
   );
