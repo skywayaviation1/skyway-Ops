@@ -54,10 +54,13 @@ import {
 } from './firebase-currency.js';
 import { PilotRatingBadge } from './BrokerPilotReport.jsx';
 import { usePilotSafetyData } from './use-pilot-safety-data.js';
+import PilotSafetySettings from './PilotSafetySettings.jsx';
 
 // Lazy-loaded bulk importer modal. Only pulled in when admin clicks
 // IMPORT — keeps the dashboard load light for everyone else.
 const CurrencyImporterLazy = lazy(() => import('./CurrencyImporter.jsx'));
+const WyvernImporterLazy = lazy(() => import('./WyvernImporter.jsx'));
+const PilotSafetyLazy = lazy(() => import('./PilotSafety.jsx'));
 
 const ACTIVE_TYPES = CURRENCY_TYPES.filter(t => !t.hidden && t.category !== 'LEGACY');
 
@@ -96,23 +99,39 @@ const TYPES_BY_CATEGORY = (() => {
    ROOT
    ═══════════════════════════════════════════════════════════════════ */
 
-export default function PilotCurrencyScreen({ currentUser, users, allTrips }) {
+export default function PilotCurrencyScreen({
+  currentUser,
+  users,
+  allTrips,
+  aircraftByTail = null,
+  focusUid = null,
+  focusToken = 0,
+  initialView = null,
+  initialStandards = false,
+}) {
   const isAdminOrOps = currentUser?.role === 'admin' || currentUser?.role === 'ops';
+  const isAdmin = currentUser?.role === 'admin';
   const isCrew = currentUser?.role === 'crew';
+  const canReadFleet = isAdminOrOps || currentUser?.role === 'sales';
+  const canBrowseAll = canReadFleet;
 
   const [currenciesByUid, setCurrenciesByUid] = useState({});
   useEffect(() => {
     if (!currentUser) return;
     let unsub = null;
-    if (isAdminOrOps) {
+    if (canReadFleet) {
       unsub = subscribePilotCurrencies(setCurrenciesByUid);
     } else if (isCrew) {
       unsub = subscribeMyPilotCurrency(currentUser.uid, setCurrenciesByUid);
     }
     return () => { if (unsub) unsub(); };
-  }, [currentUser, isAdminOrOps, isCrew]);
+  }, [currentUser, canReadFleet, isCrew]);
 
-  const safety = usePilotSafetyData(currentUser);
+  const safety = usePilotSafetyData(currentUser, {
+    trips: allTrips,
+    aircraftByTail,
+    users,
+  });
   const ratingByUid = useMemo(() => {
     const map = {};
     for (const pilot of users || []) {
@@ -136,13 +155,27 @@ export default function PilotCurrencyScreen({ currentUser, users, allTrips }) {
       .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   }, [users, currenciesEnriched, isCrew, currentUser?.uid]);
 
-  const [view, setView] = useState('matrix');
-  useEffect(() => { if (isCrew) setView('cards'); }, [isCrew]);
+  const [view, setView] = useState(initialView || (isCrew ? 'cards' : 'matrix'));
+  const [ratingUid, setRatingUid] = useState(focusUid || null);
+  useEffect(() => {
+    if (isCrew) setView((current) => (current === 'matrix' || current === 'agenda' ? 'cards' : current));
+  }, [isCrew]);
+  useEffect(() => {
+    if (!focusUid) return;
+    setRatingUid(focusUid);
+    setView('rating');
+  }, [focusUid, focusToken]);
 
   const [statusFilter, setStatusFilter] = useState('all');
   const [search, setSearch] = useState('');
   const [editTarget, setEditTarget] = useState(null);
   const [showImporter, setShowImporter] = useState(false);
+  const [showWyvern, setShowWyvern] = useState(false);
+  const [showStandards, setShowStandards] = useState(initialStandards);
+  const openRating = (uid) => {
+    setRatingUid(uid || null);
+    setView('rating');
+  };
 
   const summary = useMemo(() => {
     let expired = 0, warning = 0, current = 0, unknown = 0;
@@ -180,23 +213,53 @@ export default function PilotCurrencyScreen({ currentUser, users, allTrips }) {
             <ShieldCheck className="w-5 h-5 text-cyan-400" />
             <h1 className="text-sm tracking-widest text-slate-200"
               style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              PILOT CURRENCY &amp; TRAINING
+              COMPLIANCE · CURRENCY
             </h1>
           </div>
-          {isAdminOrOps && (
-            <div className="flex items-center gap-1">
+          <div className="flex flex-wrap items-center gap-1">
+            {isAdminOrOps && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setShowImporter(true)}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-[10px] tracking-widest border border-cyan-500/40 hover:border-cyan-400 text-cyan-300 hover:text-cyan-200"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                  title="Bulk-import currency data from JetInsight"
+                >
+                  <Upload className="w-3 h-3" /> IMPORT
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowWyvern(true)}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-[10px] tracking-widest border border-cyan-500/40 hover:border-cyan-400 text-cyan-300 hover:text-cyan-200"
+                  style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                >
+                  <Upload className="w-3 h-3" /> IMPORT FROM WYVERN
+                </button>
+              </>
+            )}
+            {isAdmin && (
               <button
                 type="button"
-                onClick={() => setShowImporter(true)}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 text-[10px] tracking-widest border border-cyan-500/40 hover:border-cyan-400 text-cyan-300 hover:text-cyan-200"
+                onClick={() => setShowStandards(true)}
+                className="px-2.5 py-1.5 text-[10px] tracking-widest border border-slate-700 text-slate-300 hover:text-slate-100"
                 style={{ fontFamily: 'JetBrains Mono, monospace' }}
-                title="Bulk-import currency data from JetInsight"
               >
-                <Upload className="w-3 h-3" /> IMPORT
+                RATING MINIMUMS
               </button>
-              <ViewToggle current={view} onChange={setView} />
-            </div>
-          )}
+            )}
+            {canBrowseAll && <ViewToggle current={view} onChange={setView} />}
+            {isCrew && (
+              <button
+                type="button"
+                onClick={() => openRating(currentUser.uid)}
+                className={`px-2.5 py-1.5 text-[10px] tracking-widest border ${view === 'rating' ? 'border-cyan-400 text-cyan-200' : 'border-slate-700 text-slate-300'}`}
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              >
+                HOURS AND RATING
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mt-3">
@@ -208,8 +271,9 @@ export default function PilotCurrencyScreen({ currentUser, users, allTrips }) {
         </div>
 
         <div className="mt-3 border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-[10px] text-amber-100/70" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-          Requirements are applicability-aware. Mark PIC-only, SIC-only, IFR,
-          aircraft-specific, special-authorization, or operator-program items N/A
+          Hours, the flight log, certificate grade, medical, Part 135 checks, training,
+          Wyvern import, and safety-rating minimums are edited in this section.
+          Mark PIC-only, SIC-only, IFR, aircraft-specific, or operator-program items N/A
           when they do not apply. The approved training program and OpSpecs remain controlling.
         </div>
 
@@ -236,11 +300,26 @@ export default function PilotCurrencyScreen({ currentUser, users, allTrips }) {
       </header>
 
       <main className="flex-1 min-h-0 overflow-auto">
+        {view === 'rating' && (
+          <Suspense fallback={<div className="flex items-center justify-center py-16 text-slate-500"><Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading hours and rating...</div>}>
+            <PilotSafetyLazy
+              embedded
+              data={safety}
+              currentUser={currentUser}
+              users={users}
+              initialUid={ratingUid}
+              onEditChecks={(uid) => {
+                setEditTarget({ pilotUid: uid });
+                setView(isCrew ? 'cards' : 'matrix');
+              }}
+            />
+          </Suspense>
+        )}
         {view === 'matrix' && (
-          <MatrixView pilots={filteredPilots} currencies={currenciesEnriched} todayMs={todayMs} canEdit={isAdminOrOps} ratingByUid={ratingByUid} onEdit={(uid, focusKey) => setEditTarget({ pilotUid: uid, focusKey })} />
+          <MatrixView pilots={filteredPilots} currencies={currenciesEnriched} todayMs={todayMs} canEdit={isAdminOrOps} ratingByUid={ratingByUid} onEdit={(uid, focusKey) => setEditTarget({ pilotUid: uid, focusKey })} onOpenRating={openRating} />
         )}
         {view === 'cards' && (
-          <CardsView pilots={filteredPilots} currencies={currenciesEnriched} todayMs={todayMs} canEdit={isAdminOrOps} ratingByUid={ratingByUid} onEdit={(uid, focusKey) => setEditTarget({ pilotUid: uid, focusKey })} />
+          <CardsView pilots={filteredPilots} currencies={currenciesEnriched} todayMs={todayMs} canEdit={isAdminOrOps} ratingByUid={ratingByUid} onEdit={(uid, focusKey) => setEditTarget({ pilotUid: uid, focusKey })} onOpenRating={openRating} />
         )}
         {view === 'agenda' && (
           <AgendaView pilots={filteredPilots} currencies={currenciesEnriched} todayMs={todayMs} canEdit={isAdminOrOps} onEdit={(uid, focusKey) => setEditTarget({ pilotUid: uid, focusKey })} />
@@ -258,6 +337,37 @@ export default function PilotCurrencyScreen({ currentUser, users, allTrips }) {
             setEditTarget(null);
           }}
         />
+      )}
+
+      {showWyvern && isAdminOrOps && (
+        <Suspense fallback={
+          <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center">
+            <Loader2 className="w-6 h-6 animate-spin text-slate-400" />
+          </div>
+        }>
+          <WyvernImporterLazy
+            users={users}
+            currentUser={currentUser}
+            logbooks={safety.logbooks}
+            currencies={safety.currencies}
+            flightEntries={safety.flightEntries}
+            onClose={() => setShowWyvern(false)}
+            onImported={() => setShowWyvern(false)}
+          />
+        </Suspense>
+      )}
+
+      {showStandards && isAdmin && (
+        <div className="fixed inset-0 z-50 overflow-auto bg-black/70 p-4">
+          <div className="mx-auto max-w-3xl">
+            <div className="mb-2 flex justify-end">
+              <button type="button" onClick={() => setShowStandards(false)} className="border border-slate-700 bg-slate-900 px-3 py-1.5 text-[10px] tracking-widest text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                CLOSE
+              </button>
+            </div>
+            <PilotSafetySettings currentUser={currentUser} />
+          </div>
+        </div>
       )}
 
       {showImporter && isAdminOrOps && (
@@ -290,6 +400,7 @@ function ViewToggle({ current, onChange }) {
     { id: 'matrix', icon: Grid3x3,    label: 'MATRIX' },
     { id: 'cards',  icon: LayoutList, label: 'CARDS' },
     { id: 'agenda', icon: ListTree,   label: 'AGENDA' },
+    { id: 'rating', icon: ShieldCheck, label: 'RATING' },
   ];
   return (
     <div className="flex items-center bg-slate-950 border border-slate-800 p-0.5">
@@ -348,7 +459,7 @@ function StatusPill({ status, daysUntil, compact = false }) {
    MATRIX
    ═══════════════════════════════════════════════════════════════════ */
 
-function MatrixView({ pilots, currencies, todayMs, canEdit, onEdit, ratingByUid = {} }) {
+function MatrixView({ pilots, currencies, todayMs, canEdit, onEdit, onOpenRating, ratingByUid = {} }) {
   const cellClick = (uid, key) => { if (canEdit) onEdit(uid, key); };
   return (
     <div className="overflow-auto">
@@ -402,7 +513,20 @@ function MatrixView({ pilots, currencies, todayMs, canEdit, onEdit, ratingByUid 
                 >
                   <div className="text-slate-100 leading-tight">{pilot.name || pilot.email}</div>
                   <div className="mt-0.5 flex items-center gap-1">
-                    <PilotRatingBadge rating={ratingByUid[pilot.uid]} />
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      onClick={(event) => { event.stopPropagation(); onOpenRating?.(pilot.uid); }}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.stopPropagation();
+                          onOpenRating?.(pilot.uid);
+                        }
+                      }}
+                      title="Open hours and rating"
+                    >
+                      <PilotRatingBadge rating={ratingByUid[pilot.uid]} />
+                    </span>
                   </div>
                   <div className="text-[9px] text-slate-500 leading-tight" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
                     {(pilot.role || 'crew').toUpperCase()}
@@ -465,7 +589,7 @@ function MatrixCell({ result }) {
    CARDS
    ═══════════════════════════════════════════════════════════════════ */
 
-function CardsView({ pilots, currencies, todayMs, canEdit, onEdit, ratingByUid = {} }) {
+function CardsView({ pilots, currencies, todayMs, canEdit, onEdit, onOpenRating, ratingByUid = {} }) {
   const [expandedUid, setExpandedUid] = useState(null);
   return (
     <div className="p-4 space-y-3">
@@ -485,7 +609,15 @@ function CardsView({ pilots, currencies, todayMs, canEdit, onEdit, ratingByUid =
                 <div className="min-w-0 text-left">
                   <div className="flex items-center gap-2">
                     <div className="text-sm text-slate-100 truncate">{p.name || p.email}</div>
-                    <PilotRatingBadge rating={ratingByUid[p.uid]} />
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      onClick={(event) => { event.stopPropagation(); onOpenRating?.(p.uid); }}
+                      onKeyDown={(event) => { if (event.key === 'Enter') { event.stopPropagation(); onOpenRating?.(p.uid); } }}
+                      title="Open hours and rating"
+                    >
+                      <PilotRatingBadge rating={ratingByUid[p.uid]} />
+                    </span>
                   </div>
                   <div className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
                     {(p.role || 'crew').toUpperCase()}
@@ -510,13 +642,16 @@ function CardsView({ pilots, currencies, todayMs, canEdit, onEdit, ratingByUid =
                   if (visible.length === 0) return null;
                   return <CategoryBlock key={cat} cat={cat} rows={visible} pilotUid={p.uid} canEdit={canEdit} onEdit={onEdit} />;
                 })}
-                {canEdit && (
-                  <div className="pt-2">
-                    <button type="button" onClick={() => onEdit(p.uid)} className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] tracking-widest text-cyan-300 hover:text-cyan-200 border border-cyan-500/30 hover:border-cyan-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                      <Edit3 className="w-3 h-3" /> EDIT ALL ITEMS
+                <div className="flex flex-wrap gap-2 pt-2">
+                  <button type="button" onClick={() => onOpenRating?.(p.uid)} className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] tracking-widest text-cyan-300 hover:text-cyan-200 border border-cyan-500/30 hover:border-cyan-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    <Edit3 className="w-3 h-3" /> {canEdit ? 'HOURS AND RATING' : 'VIEW RATING'}
+                  </button>
+                  {canEdit && (
+                    <button type="button" onClick={() => onEdit(p.uid)} className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] tracking-widest text-slate-300 hover:text-slate-100 border border-slate-700" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                      EDIT CHECKS
                     </button>
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
             )}
           </div>

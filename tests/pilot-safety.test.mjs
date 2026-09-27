@@ -290,3 +290,21 @@ test('the broker share and the email route are wired to the sanitized report', a
   assert.match(email, /buildPilotReportPdf/);
   assert.match(screen, /\/api\/pilot-report-email/);
 });
+
+test('rating editors live in Compliance / Currency', async () => {
+  const app = await readFile(path.join(root, 'src/App.jsx'), 'utf8');
+  const admin = await readFile(path.join(root, 'src/AdminSettings.jsx'), 'utf8');
+  const currency = await readFile(path.join(root, 'src/PilotCurrency.jsx'), 'utf8');
+  const crewBoard = await readFile(path.join(root, 'src/CrewBoardV2.jsx'), 'utf8');
+  assert.doesNotMatch(app, /id: 'pilot-rating'/);
+  assert.match(app, /section === 'currency'/);
+  assert.match(app, /roles: \['crew', 'sales', 'ops', 'admin'\]/);
+  assert.doesNotMatch(admin, /PilotSafetySettings/);
+  assert.match(currency, /IMPORT FROM WYVERN/);
+  assert.match(currency, /RATING MINIMUMS/);
+  assert.match(currency, /PilotSafetySettings/);
+  assert.match(currency, /PilotSafetyLazy/);
+  assert.match(currency, /COMPLIANCE · CURRENCY/);
+  assert.match(crewBoard, /onOpenCompliance/);
+  assert.doesNotMatch(crewBoard, /usePilotSafetyData\(currentUser, \{[^}]*trips/);
+});

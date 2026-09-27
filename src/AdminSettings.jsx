@@ -22,7 +22,6 @@ import {
 } from './fleet-config.js';
 import { DUTY_TRACKER_ENABLED } from './duty-feature.js';
 import MailboxSettingsPanel from './MailboxSettingsPanel.jsx';
-import PilotSafetySettings from './PilotSafetySettings.jsx';
 
 const DEFAULT_ALERT_EMAILS = [
   'jim@flyskyway.com',
@@ -409,8 +408,6 @@ export default function AdminSettings({
             </Card>
 
             <MailboxSettingsPanel currentUser={currentUser} placement="settings" showShared />
-
-            <PilotSafetySettings currentUser={currentUser} />
 
             <Card>
               <CardHeader title="Advanced configuration" icon={Wrench} />

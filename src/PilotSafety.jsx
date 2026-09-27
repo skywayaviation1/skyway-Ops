@@ -1,7 +1,7 @@
-// Pilot safety rating. Hours and enrollment are edited here. Checks,
-// training, and the medical are read from Currency. Certificate scans in
-// Pilot Docs fill a blank certificate summary and never contribute a
-// certificate number to the screen or the broker report.
+// Hours, certificate grade, and the flight log for the safety rating.
+// Opened from Compliance / Currency. Medical, checks, and training are
+// edited in that same section. Certificate scans in Pilot Docs fill a
+// blank certificate summary and never contribute a certificate number.
 
 import { useEffect, useMemo, useState } from 'react';
 import {
@@ -32,13 +32,14 @@ import WyvernImporter from './WyvernImporter.jsx';
 
 const TIER_ORDER = { doesNotMeet: 0, caution: 1, meets: 2 };
 
-export default function PilotSafetyScreen({
+function PilotSafetyView({
   currentUser,
   users = [],
-  trips = null,
-  aircraftByTail = null,
+  data,
+  embedded = false,
+  initialUid = null,
+  onEditChecks = null,
 }) {
-  const data = usePilotSafetyData(currentUser, { trips, aircraftByTail, users });
   const [query, setQuery] = useState('');
   const [selectedUid, setSelectedUid] = useState(null);
   const [draft, setDraft] = useState(null);
@@ -66,6 +67,13 @@ export default function PilotSafetyScreen({
   });
 
   const selected = visible.find((row) => row.pilot.uid === selectedUid) || visible[0] || null;
+
+  useEffect(() => {
+    if (!initialUid) return;
+    setSelectedUid(initialUid);
+    setDirty(false);
+    setShowReport(false);
+  }, [initialUid]);
 
   const selectedStamp = `${selected?.pilot.uid || ''}:${data.logbooks[selected?.pilot.uid]?.updatedAt || 'none'}`;
   useEffect(() => {
@@ -179,17 +187,17 @@ export default function PilotSafetyScreen({
   };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-slate-950">
+    <div className={`flex min-h-0 flex-1 flex-col bg-slate-950 ${embedded ? 'h-full' : ''}`}>
       <header className="shrink-0 border-b border-slate-800 bg-slate-900/40 px-4 py-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <ShieldCheck className="h-5 w-5 text-cyan-400" />
             <h1 className="text-sm tracking-widest text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              PILOT SAFETY RATING
+              {embedded ? 'HOURS AND RATING' : 'PILOT SAFETY RATING'}
             </h1>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            {data.canEdit && (
+            {data.canEdit && !embedded && (
               <button
                 type="button"
                 onClick={() => setShowImport(true)}
@@ -431,7 +439,12 @@ export default function PilotSafetyScreen({
 
               <section className="border border-slate-800 p-4">
                 <h3 className="text-[10px] tracking-widest text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>REQUIREMENTS</h3>
-                <p className="mt-1 text-[11px] text-slate-500">Completion and expiration dates are edited on Currency. This list is the rating’s reading of that record.</p>
+                <p className="mt-1 text-[11px] text-slate-500">Medical class, check dates, and training dates are edited in this Compliance section. This list is the rating’s reading of that record.</p>
+                {onEditChecks && data.canEdit && (
+                  <button type="button" onClick={() => onEditChecks(selected.pilot.uid)} className="mt-2 text-[10px] tracking-widest text-cyan-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    EDIT CHECKS AND MEDICAL
+                  </button>
+                )}
                 <div className="mt-2 divide-y divide-slate-800">
                   {(liveRating?.requirements || []).filter((item) => item.included).map((item) => (
                     <div key={item.id} className="flex items-start justify-between gap-3 py-2 text-sm">
@@ -732,6 +745,20 @@ function EmailPilotReport({ pilot, onClose }) {
       </div>
     </Modal>
   );
+}
+
+export default function PilotSafetyScreen(props) {
+  if (props.data) return <PilotSafetyView {...props} />;
+  return <PilotSafetyConnected {...props} />;
+}
+
+function PilotSafetyConnected(props) {
+  const data = usePilotSafetyData(props.currentUser, {
+    trips: props.trips ?? null,
+    aircraftByTail: props.aircraftByTail ?? null,
+    users: props.users || [],
+  });
+  return <PilotSafetyView {...props} data={data} />;
 }
 
 function fmtHours(value) {

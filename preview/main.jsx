@@ -57,8 +57,7 @@ const OpsConsole = lazy(() => import('../src/OpsConsole.jsx'));
 const FlightBoard = lazy(() => import('../src/FlightBoard.jsx'));
 const AdminDutyReport = lazy(() => import('../src/AdminDutyReport.jsx'));
 const TripTrackPage = lazy(() => import('../src/TripTrack.jsx'));
-const PilotSafety = lazy(() => import('../src/PilotSafety.jsx'));
-const AdminSettings = lazy(() => import('../src/AdminSettings.jsx'));
+const PilotCurrency = lazy(() => import('../src/PilotCurrency.jsx'));
 
 const SURFACES = {
   dashboard: {
@@ -141,21 +140,42 @@ const SURFACES = {
     render: () => <TripTrackPage token="preview-token" />,
   },
 
-  'pilot-rating': {
-    label: 'Pilot safety rating',
+  currency: {
+    label: 'Compliance and currency',
     render: () => (
-      <div style={{ overflowY: 'auto', height: '100%' }}>
-        <PilotSafety currentUser={CURRENT_USER} users={USERS} trips={TRIPS} aircraftByTail={CONFIG.aircraftByTail} />
-      </div>
+      <PilotCurrency
+        currentUser={CURRENT_USER}
+        users={USERS}
+        allTrips={TRIPS}
+        aircraftByTail={CONFIG.aircraftByTail}
+      />
+    ),
+  },
+
+  'pilot-rating': {
+    label: 'Hours and rating inside Compliance',
+    render: () => (
+      <PilotCurrency
+        currentUser={CURRENT_USER}
+        users={USERS}
+        allTrips={TRIPS}
+        aircraftByTail={CONFIG.aircraftByTail}
+        initialView="rating"
+        focusUid="pilot-cade"
+      />
     ),
   },
 
   'pilot-settings': {
-    label: 'Pilot safety rating settings',
+    label: 'Rating minimums inside Compliance',
     render: () => (
-      <div style={{ overflowY: 'auto', height: '100%', padding: 24 }}>
-        <AdminSettings currentUser={CURRENT_USER} config={{}} />
-      </div>
+      <PilotCurrency
+        currentUser={CURRENT_USER}
+        users={USERS}
+        allTrips={TRIPS}
+        aircraftByTail={CONFIG.aircraftByTail}
+        initialStandards
+      />
     ),
   },
 

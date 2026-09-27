@@ -1,6 +1,6 @@
 # Pilot safety rating and broker pilot report
 
-The rating is an operator-owned crew vetting summary. It is not a WYVERN Ltd PASS or Wingman score. Shipped hour minimums and the requirement list are industry-typical Part 135 turbine charter defaults. Admins replace them under Settings → Pilot safety rating. Saved values live at `app-config/pilot-safety`.
+The rating is an operator-owned crew vetting summary. It is not a WYVERN Ltd PASS or Wingman score. Shipped hour minimums and the requirement list are industry-typical Part 135 turbine charter defaults. Admins replace them in Compliance → Currency → Rating minimums. Saved values live at `app-config/pilot-safety`.
 
 ## What is stored
 
@@ -57,7 +57,7 @@ Checks, training, and the medical class/expiration used day to day stay on the e
 
 ## Import from Wyvern
 
-Pilot Safety → Import from Wyvern accepts the operator’s ACES export as JSON (an array, or an object with `pilots`, `records`, `data`, or `crew`) or as a CSV with a header row. Field names are matched loosely (`pilotName` / `name`, `flightHours.totalTime` / `Total Time`, `135.297 Completed`, and so on) because the export columns are not fixed yet.
+Compliance → Currency → Import from Wyvern accepts the operator’s ACES export as JSON (an array, or an object with `pilots`, `records`, `data`, or `crew`) or as a CSV with a header row. Field names are matched loosely (`pilotName` / `name`, `flightHours.totalTime` / `Total Time`, `135.297 Completed`, and so on) because the export columns are not fixed yet.
 
 Only rows marked active (`Active`, `Active Pilot`, `current`, `employed`) are imported. Everyone else is listed and skipped. Each active row is matched to an existing user by email, then by normalized name (including `Last, First`), then by a Wyvern ID already stored on that pilot’s logbook. Ambiguous matches stay unmatched until an admin picks the pilot or skips the row.
 
@@ -108,7 +108,7 @@ Block time (out–in) is what the totals use. Flight time (off–on) is stored b
 
 Career totals are `baseline.hours` plus credited block time whose block-in UTC date is after `baseline.asOf`. A flight on the as-of date itself is treated as already inside the snapshot. Instrument time stays at the baseline. Last 90 days, last 6 months, and last 12 months are the share of the baseline figure that still overlaps the window (an estimate, because the snapshot is not a day-by-day log) plus logged flights after the as-of date that fall in the window. Last 6 months and landings are shown; they are not part of the 0–100 score.
 
-Opening Pilot Safety as admin or ops runs the sync. Crew see their own log and do not write it. `scripts/rebuild-pilot-hours.mjs` recomputes stored totals from the ledger and the baseline; it does not read the iCal feed.
+Opening Currency as admin or ops runs the sync. Crew see their own log and do not write it. `scripts/rebuild-pilot-hours.mjs` recomputes stored totals from the ledger and the baseline; it does not read the iCal feed.
 
 ```
 FIREBASE_SERVICE_ACCOUNT_JSON='...' node scripts/rebuild-pilot-hours.mjs
