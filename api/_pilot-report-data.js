@@ -132,6 +132,14 @@ export async function crewReportsForTrip(db, trip) {
   return buildBrokerCrewReports({
     legs,
     aircraftType: trip?.aircraftType || null,
+    aircraft: {
+      registration: trip?.tail || '',
+      type: trip?.aircraftType || '',
+      serial: trip?.serialNumber || trip?.serial || '',
+      year: trip?.year || '',
+      seats: trip?.seats ?? '',
+      insuranceExpiry: trip?.insuranceExpiry || '',
+    },
     users,
     logbooksByUid,
     currenciesByUid,

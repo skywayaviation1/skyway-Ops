@@ -1,168 +1,256 @@
-// Presentational pilot report. Used on the broker share page and in the
-// in-app preview. It renders only the sanitized report object — there is
-// no path from here back to a logbook, a certificate file, or a medical date.
+// Presentational PASS-style pilot report. Used on the broker share page
+// and in the in-app preview. It renders only the sanitized report object.
 
-import { TIER_LABELS } from './pilot-safety.js';
+import { statusToneName } from './pilot-safety.js';
 
 function fmtGenerated(iso) {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return '';
-  return date.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+  return date.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
 }
 
-function tierTone(tier) {
-  if (tier === 'meets') return { bg: '#e7f6ee', fg: '#0f7a48', label: TIER_LABELS.meets };
-  if (tier === 'caution') return { bg: '#fff4df', fg: '#9a5b04', label: TIER_LABELS.caution };
-  return { bg: '#fdecec', fg: '#9b1c1c', label: TIER_LABELS.doesNotMeet };
+function chipStyle(status) {
+  if (status === 'Meets' || status === 'Current' || status === 'None') {
+    return { background: '#e7f6ee', color: '#0f7a48' };
+  }
+  if (status === 'Expires in 30 Days' || status === 'Expires in 7 Days') {
+    return { background: '#fff4df', color: '#9a5b04' };
+  }
+  if (status === 'Does Not Meet' || status === 'Expired' || status === 'Not Validated' || status === 'Yes') {
+    return { background: '#fdecec', color: '#9b1c1c' };
+  }
+  return { background: '#f3f4f6', color: '#3c4450' };
 }
 
-function statusTone(status) {
-  if (status === 'Current' || status === 'Valid' || status === 'Yes') return '#0f7a48';
-  if (status === 'Expiring soon') return '#9a5b04';
-  if (status === 'Expired' || status === 'Not on file' || status === 'No') return '#9b1c1c';
+function statusColor(status) {
+  const tone = statusToneName(status);
+  if (tone === 'current') return '#0f7a48';
+  if (tone === 'soon') return '#9a5b04';
+  if (tone === 'bad') return '#9b1c1c';
   return '#3c4450';
 }
 
 export function PilotRatingBadge({ rating }) {
   if (!rating) return null;
-  const tone = rating.tier === 'meets'
-    ? 'border-emerald-500/40 text-emerald-300'
-    : rating.tier === 'caution'
+  const fail = rating.tier === 'doesNotMeet';
+  const caution = rating.tier === 'caution';
+  const seats = (rating.qualifiesFor || []).join(' · ');
+  const label = fail ? 'DOES NOT MEET' : (seats || 'MEETS');
+  const tone = fail
+    ? 'border-red-500/40 text-red-200'
+    : caution
       ? 'border-amber-500/40 text-amber-200'
-      : 'border-red-500/40 text-red-200';
+      : 'border-emerald-500/40 text-emerald-300';
   return (
     <span
       className={`inline-flex items-center gap-1 border px-1.5 py-0.5 text-[9px] tracking-widest ${tone}`}
       style={{ fontFamily: 'JetBrains Mono, monospace' }}
       title={(rating.reasons || []).join(' ')}
     >
-      {rating.score} {rating.tierLabel}
+      {label}
     </span>
   );
 }
 
+const HOUR_ROWS = [
+  ['totalTime', 'Total'],
+  ['pic', 'PIC'],
+  ['fixedWing', 'Fixed-wing'],
+  ['multiEngine', 'Multi-engine'],
+  ['turbine', 'Turbine'],
+  ['instrument', 'Instrument'],
+  ['last90Days', '90 days'],
+  ['last12Months', '12 months'],
+];
+
 export default function BrokerPilotReport({ report }) {
   if (!report) return null;
-  const tone = tierTone(report.tier);
-  const cert = report.certificate || {};
-  const medical = report.medical || {};
+  const unmet = (report.gapAnalysis || []).filter((row) => row.picMet === false || row.sicMet === false);
+  const aircraft = report.aircraft || {};
+  const crew = report.crew || [];
   return (
-    <article className="bg-white text-slate-900 shadow-sm" style={{ fontFamily: 'Georgia, "Iowan Old Style", serif' }}>
-      <header className="flex items-start justify-between gap-4 bg-[#0c2a3a] px-5 py-4 text-white">
-        <div>
-          <p className="text-[10px] tracking-[0.22em] text-cyan-100/80" style={{ fontFamily: 'ui-sans-serif, system-ui, sans-serif' }}>
-            {(report.operatorName || 'OPERATOR').toUpperCase()}
-          </p>
-          <h3 className="mt-1 text-lg leading-tight">Pilot Report</h3>
-          <p className="mt-1 text-xs text-slate-200" style={{ fontFamily: 'ui-sans-serif, system-ui, sans-serif' }}>
-            {report.operatorLegalName || report.operatorName}
-          </p>
-        </div>
-        <div className="text-right">
-          <div className="inline-block px-2 py-1 text-xs font-semibold" style={{ background: tone.bg, color: tone.fg, fontFamily: 'ui-sans-serif, system-ui, sans-serif' }}>
-            {report.tierLabel || tone.label}
-          </div>
-          <p className="mt-1 text-sm" style={{ fontFamily: 'ui-sans-serif, system-ui, sans-serif' }}>
-            {report.score ?? '—'}
-            <span className="text-slate-300"> / 100</span>
+    <article className="bg-white text-slate-900 shadow-sm" style={{ fontFamily: 'ui-sans-serif, system-ui, sans-serif' }}>
+      <header className="bg-[#0c2a3a] px-5 py-4 text-white">
+        <p className="text-[10px] tracking-[0.22em] text-cyan-100/80">
+          {(report.criteriaName || 'REGISTERED STANDARD').toUpperCase()}
+        </p>
+        <div className="mt-1 flex flex-wrap items-end justify-between gap-3">
+          <h3 className="text-lg leading-tight">Pilot Report</h3>
+          <p className="text-xs text-slate-200">
+            Generated {fmtGenerated(report.generatedAt)}
+            {report.expiresAt ? ` · Expires ${fmtGenerated(report.expiresAt)}` : ''}
           </p>
         </div>
       </header>
 
       <div className="space-y-4 px-5 py-4">
-        <div className="flex flex-wrap items-end justify-between gap-2 border-b border-slate-200 pb-3">
-          <div>
-            <h4 className="text-xl leading-tight">{report.pilotName}</h4>
-            <p className="text-xs text-slate-500" style={{ fontFamily: 'ui-sans-serif, system-ui, sans-serif' }}>
-              {[report.role, report.aircraftType].filter(Boolean).join(' · ') || 'Crew'}
-            </p>
-          </div>
-          <p className="text-xs text-slate-500" style={{ fontFamily: 'ui-sans-serif, system-ui, sans-serif' }}>
-            Generated {fmtGenerated(report.generatedAt)}
-          </p>
+        <div className="flex flex-wrap gap-2" data-testid="report-chips">
+          {(report.chips || []).map((chip) => (
+            <span key={chip.id} className="px-2 py-1 text-xs font-semibold" style={chipStyle(chip.status)}>
+              {chip.label}: {chip.status}
+            </span>
+          ))}
         </div>
 
+        {(report.flags || []).length > 0 && (
+          <p className="text-xs text-amber-800">
+            Flags: {report.flags.join(' · ')}
+          </p>
+        )}
+        <p className="text-xs text-slate-500">
+          Waivers: {(report.waivers || []).length ? report.waivers.join(' · ') : 'None'}
+        </p>
+
         <section>
-          <h5 className="text-[10px] tracking-[0.16em] text-slate-500" style={{ fontFamily: 'ui-sans-serif, system-ui, sans-serif' }}>CERTIFICATE AND RATINGS</h5>
-          <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-2 text-sm sm:grid-cols-3" style={{ fontFamily: 'ui-sans-serif, system-ui, sans-serif' }}>
-            <Field label="Certificate" value={cert.level || 'Not on file'} />
-            <Field label="Instrument" value={cert.instrument || 'Not on file'} />
-            <Field label="Multi-engine" value={cert.multiEngine || 'Not on file'} />
-            <Field label="Type ratings" value={(cert.typeRatings || []).join(', ') || 'None on file'} />
-            <Field label="Medical" value={`${medical.class || 'Not on file'} · ${medical.status || 'Not on file'}`} />
+          <h5 className="text-[10px] tracking-[0.16em] text-slate-500">OPERATOR</h5>
+          <p className="mt-1 text-sm">{report.operatorLegalName || report.operatorName || 'Not on file'}</p>
+        </section>
+
+        {report.itinerary && (
+          <section>
+            <h5 className="text-[10px] tracking-[0.16em] text-slate-500">ITINERARY</h5>
+            <p className="mt-1 text-sm">
+              {[report.itinerary.from, report.itinerary.to].filter(Boolean).join(' → ')}
+              {report.itinerary.date ? ` · ${report.itinerary.date}` : ''}
+              {report.itinerary.tail ? ` · ${report.itinerary.tail}` : ''}
+            </p>
+          </section>
+        )}
+
+        <section>
+          <h5 className="text-[10px] tracking-[0.16em] text-slate-500">AIRCRAFT</h5>
+          <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-2 text-sm sm:grid-cols-3">
+            <Field label="Registration" value={aircraft.registration || '—'} />
+            <Field label="Type" value={aircraft.type || report.aircraftType || '—'} />
+            <Field label="Serial" value={aircraft.serial || '—'} />
+            <Field label="Year" value={aircraft.year || '—'} />
+            <Field label="Seats" value={aircraft.seats || '—'} />
+            <Field label="Insurance expiry" value={aircraft.insuranceExpiry || '—'} />
           </dl>
         </section>
 
         <section>
-          <h5 className="text-[10px] tracking-[0.16em] text-slate-500" style={{ fontFamily: 'ui-sans-serif, system-ui, sans-serif' }}>FLIGHT TIME</h5>
+          <h5 className="text-[10px] tracking-[0.16em] text-slate-500">CREW</h5>
           {report.hoursAsOf && (
-            <p className="mt-1 text-xs text-slate-500" style={{ fontFamily: 'ui-sans-serif, system-ui, sans-serif' }} data-testid="hours-as-of">
+            <p className="mt-1 text-xs text-slate-500" data-testid="hours-as-of">
               Totals as of {report.hoursAsOf}
               {report.baselineAsOf ? ` · baseline ${report.baselineAsOf} plus flights after that date` : ''}
               {report.last6Months ? ` · last 6 months ${report.last6Months}` : ''}
               {report.landings != null ? ` · landings ${report.landings}` : ''}
             </p>
           )}
-          <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3" style={{ fontFamily: 'ui-sans-serif, system-ui, sans-serif' }}>
-            {(report.hours || []).map((row) => (
-              <div key={row.label} className="border border-slate-200 px-2 py-1.5">
-                <div className="text-[10px] uppercase tracking-wide text-slate-500">{row.label}</div>
-                <div className="text-sm">
-                  {row.hours || '—'}
-                  {row.minimum != null && <span className="text-slate-400"> / {row.minimum}</span>}
-                </div>
-              </div>
+          <div className="mt-2 grid gap-3 lg:grid-cols-2">
+            {crew.map((member) => (
+              <CrewCard key={`${member.role}-${member.pilotName}`} member={member} />
             ))}
           </div>
-          {(report.timeInType || []).length > 0 && (
-            <p className="mt-2 text-xs text-slate-600" style={{ fontFamily: 'ui-sans-serif, system-ui, sans-serif' }}>
-              Time in type:{' '}
-              {report.timeInType.map((entry) => `${entry.type} ${entry.hours || '—'}`).join(' · ')}
-              {report.timeInTypeScored?.detail ? ` (${report.timeInTypeScored.detail})` : ''}
-            </p>
+        </section>
+
+        <section>
+          <h5 className="text-[10px] tracking-[0.16em] text-slate-500">GAP ANALYSIS</h5>
+          {unmet.length === 0 ? (
+            <p className="mt-2 text-sm text-slate-600">No unmet items.</p>
+          ) : (
+            <table className="mt-2 w-full text-left text-xs">
+              <thead>
+                <tr className="border-b border-slate-200 text-[10px] uppercase tracking-wide text-slate-500">
+                  <th className="py-1 font-medium">Item</th>
+                  <th className="py-1 font-medium">Pilot</th>
+                  <th className="py-1 font-medium">PIC</th>
+                  <th className="py-1 font-medium">SIC</th>
+                </tr>
+              </thead>
+              <tbody>
+                {unmet.map((row) => (
+                  <tr key={`${row.label}-${row.pilotValue}`} className="border-b border-slate-100">
+                    <td className="py-1 pr-2">{row.label}</td>
+                    <td className="py-1 pr-2">{row.pilotValue}</td>
+                    <td className="py-1 pr-2" style={{ color: row.picMet ? '#0f7a48' : '#9b1c1c' }}>{row.picCriteria}</td>
+                    <td className="py-1" style={{ color: row.sicMet ? '#0f7a48' : '#9b1c1c' }}>{row.sicCriteria}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           )}
         </section>
 
-        <section>
-          <h5 className="text-[10px] tracking-[0.16em] text-slate-500" style={{ fontFamily: 'ui-sans-serif, system-ui, sans-serif' }}>REQUIREMENTS</h5>
-          <table className="mt-2 w-full text-left text-xs" style={{ fontFamily: 'ui-sans-serif, system-ui, sans-serif' }}>
-            <thead>
-              <tr className="border-b border-slate-200 text-[10px] uppercase tracking-wide text-slate-500">
-                <th className="py-1 font-medium">Item</th>
-                <th className="py-1 font-medium">Status</th>
-                <th className="py-1 font-medium">Completed</th>
-                <th className="py-1 font-medium">Due</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(report.requirements || []).map((item) => (
-                <tr key={item.label} className="border-b border-slate-100">
-                  <td className="py-1 pr-2">{item.label}</td>
-                  <td className="py-1 pr-2" style={{ color: statusTone(item.status) }}>{item.status}</td>
-                  <td className="py-1 pr-2 text-slate-500">{item.completedOn || '—'}</td>
-                  <td className="py-1 text-slate-500">{item.dueOn || '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </section>
-
-        <section>
-          <h5 className="text-[10px] tracking-[0.16em] text-slate-500" style={{ fontFamily: 'ui-sans-serif, system-ui, sans-serif' }}>WHY THIS RATING</h5>
-          <ul className="mt-2 space-y-1 text-xs leading-relaxed text-slate-700" style={{ fontFamily: 'ui-sans-serif, system-ui, sans-serif' }}>
-            {(report.summary || []).map((reason) => (
-              <li key={reason}>{reason}</li>
-            ))}
-          </ul>
-          <p className="mt-3 text-[10px] leading-relaxed text-slate-400" style={{ fontFamily: 'ui-sans-serif, system-ui, sans-serif' }}>
-            {report.usingDefaultStandards
-              ? 'Hour minimums are the operator’s shipped defaults: industry-typical Part 135 charter figures, not a third-party audit score.'
-              : 'Hour minimums are the operator’s saved safety-rating settings.'}
-            {' '}Certificate numbers, date of birth, home address, and medical detail beyond class and validity are omitted.
+        <footer className="border-t border-slate-200 pt-3 text-[10px] leading-relaxed text-slate-400">
+          <p>
+            Criteria {report.criteriaVersion || 'registered-standard-1'}
+            {report.generatedAt ? ` · Generated ${report.generatedAt}` : ''}
           </p>
-        </section>
+          {report.shareUrl ? (
+            <p className="mt-1">
+              Verify this report:{' '}
+              <a href={report.shareUrl} className="break-all text-slate-600 underline">{report.shareUrl}</a>
+            </p>
+          ) : (
+            <p className="mt-1">The live verification link is on the broker share page for the trip.</p>
+          )}
+          <p className="mt-2">
+            {report.usingDefaultStandards
+              ? 'Minimums are the operator’s Wyvern Registered Standard defaults and can be replaced. This is not a live WYVERN Ltd audit.'
+              : 'Minimums are the operator’s saved Registered Standard settings.'}
+            {' '}Certificate numbers, date of birth, and addresses are omitted.
+          </p>
+        </footer>
       </div>
     </article>
+  );
+}
+
+function CrewCard({ member }) {
+  const hours = member.hours || {};
+  return (
+    <div className="border border-slate-200 p-3">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <div className="text-[10px] tracking-widest text-slate-500">{member.role}</div>
+          <div className="text-base">{member.pilotName}</div>
+        </div>
+        <span className="px-2 py-1 text-[10px] font-semibold" style={chipStyle(member.status)}>{member.status}</span>
+      </div>
+      <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+        <Field label="Certificate" value={member.certificateType} />
+        <Field label="Country" value={member.country} />
+        <Field label="Type rating" value={member.typeRating} />
+        <Field label="Medical" value={`${member.medicalClass || '—'} · ${member.medicalStatus || '—'}`} />
+        <Field label="Last medical" value={member.lastMedical || '—'} />
+        <Field label="Employment" value={member.employment} />
+        <Field label="Accident / incident" value={member.accident} />
+        <Field label="Enforcement" value={member.enforcement} />
+      </dl>
+      <div className="mt-2 grid grid-cols-2 gap-1 text-xs">
+        {HOUR_ROWS.map(([key, label]) => (
+          <div key={key} className="flex justify-between gap-2 border border-slate-100 px-1.5 py-1">
+            <span className="text-slate-500">{label}</span>
+            <span>{hours[key] || '—'}</span>
+          </div>
+        ))}
+        <div className="flex justify-between gap-2 border border-slate-100 px-1.5 py-1">
+          <span className="text-slate-500">Time in type</span>
+          <span>{member.timeInType || '—'}</span>
+        </div>
+        <div className="flex justify-between gap-2 border border-slate-100 px-1.5 py-1">
+          <span className="text-slate-500">PIC in type</span>
+          <span>{member.picTimeInType || '—'}</span>
+        </div>
+      </div>
+      <ul className="mt-2 space-y-1 text-xs">
+        {(member.checks || []).map((check) => (
+          <li key={check.label} className="flex justify-between gap-2">
+            <span>{check.label}</span>
+            <span style={{ color: statusColor(check.status) }}>{check.status}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -170,7 +258,7 @@ function Field({ label, value }) {
   return (
     <div className="min-w-0">
       <dt className="text-[10px] uppercase tracking-wide text-slate-500">{label}</dt>
-      <dd className="truncate text-sm">{value}</dd>
+      <dd className="truncate">{value || '—'}</dd>
     </div>
   );
 }

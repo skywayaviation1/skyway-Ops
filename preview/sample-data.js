@@ -503,19 +503,25 @@ export function pilotSafetySeed() {
     totalTime: 4820,
     pic: 2310,
     sic: 2510,
+    fixedWing: 4700,
+    rotorWing: 0,
+    singleEngine: 120,
     multiEngine: 4100,
+    multiEngine90: 42,
+    multiEngine12: 210,
     turbine: 3600,
     night: 640,
     instrument: 410,
     last90Days: 48,
     last12Months: 312,
     timeInType: [
-      { type: primary, hours: 860 },
-      { type: secondary, hours: 240 },
+      { type: primary, hours: 860, picHours: 410 },
+      { type: secondary, hours: 240, picHours: 80 },
     ],
   };
   const checks = () => ({
-    medical: { class: 'First', expirationDate: ymd(420) },
+    medical: { class: 'First', expirationDate: ymd(420), lastDate: ymd(-50) },
+    basicIndoctrination: currentCheck(200),
     groundOralGeneral293a: currentCheck(60),
     groundOral293a_CE525: currentCheck(60),
     groundOral293a_LR60: notApplicable(),
@@ -547,21 +553,25 @@ export function pilotSafetySeed() {
       level: 'ATP',
       instrument: true,
       multiEngine: true,
-      typeRatings: [primary],
+      typeRatings: ['CE-525', 'LR-60'],
+      typeVerified: true,
+      country: 'United States',
     };
+    const background = { employment: 'Full Time', accident: false, enforcement: false };
     let drugAlcohol = {
       enrolled: true,
       enrolledDate: ymd(-800),
       programName: 'Company DOT/FAA program',
     };
     if (profile === 'caution') {
-      currency.hazmatTraining = dueOn(18);
+      currency.recurrentTraining351 = dueOn(18);
       certificate.level = 'Commercial';
     } else if (profile === 'short') {
       hours.turbine = 180;
-      hours.timeInType = [{ type: primary, hours: 40 }];
+      hours.timeInType = [{ type: primary, hours: 40, picHours: 12 }];
       currency.lineCheck299 = dueOn(-12);
       certificate.level = 'Commercial';
+      certificate.typeVerified = false;
     } else if (profile === 'from-certificate') {
       certificate.level = '';
       certificate.instrument = null;
@@ -598,6 +608,7 @@ export function pilotSafetySeed() {
         },
       },
       certificate,
+      background,
       drugAlcohol,
       internalNotes: profile === 'meets' && index === 0 ? 'Home address must never reach a broker.' : '',
       updatedAt: Date.now(),

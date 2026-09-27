@@ -17,12 +17,14 @@ import {
   voidEntry,
 } from './flight-log.js';
 import { generatePilotReportPdf } from './pilot-report-pdf.js';
+import { computeStatus } from './currency-status.js';
 import {
   CERTIFICATE_LEVELS,
   HOUR_FIELDS,
   brokerPilotReport,
   emptyLogbook,
   evaluatePilot,
+  itemStatusLabel,
   normalizeCertificateLevel,
   normalizeLogbook,
   summarizeDutyFlightHours,
@@ -49,6 +51,7 @@ function PilotSafetyView({
   const [showReport, setShowReport] = useState(false);
   const [showEmail, setShowEmail] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [recordTab, setRecordTab] = useState('pilot');
 
   const pilots = useMemo(() => {
     const list = data.viewAll
@@ -217,13 +220,13 @@ function PilotSafetyView({
         </div>
         <p className="mt-2 text-[11px] leading-relaxed text-amber-100/80">
           {data.standards?.customized
-            ? 'Ratings use the minimums saved in Admin settings.'
-            : 'Ratings use shipped defaults: industry-typical Part 135 charter figures, not a Wyvern score. Change them in Admin settings.'}
+            ? 'Ratings use the Registered Standard minimums saved in this section.'
+            : 'Ratings use the Wyvern Registered Standard defaults, split by PIC and SIC. Change them with Rating minimums in this section.'}
           {' '}Checks and training dates are maintained on Currency.
         </p>
         <div className="mt-3 grid grid-cols-3 gap-2">
-          <Count label="MEETS STANDARD" value={counts.meets} tone="text-emerald-300" />
-          <Count label="CAUTION" value={counts.caution} tone="text-amber-200" />
+          <Count label="MEETS" value={counts.meets} tone="text-emerald-300" />
+          <Count label="EXPIRES SOON" value={counts.caution} tone="text-amber-200" />
           <Count label="DOES NOT MEET" value={counts.doesNotMeet} tone="text-red-200" />
         </div>
       </header>
@@ -263,22 +266,64 @@ function PilotSafetyView({
                 <div>
                   <h2 className="text-lg text-slate-100">{selected.pilot.name}</h2>
                   <p className="mt-1 text-xs text-slate-400">
-                    Score {liveRating?.score} / 100 · {liveRating?.weights.experience}% experience, {liveRating?.weights.requirements}% requirements
+                    Qualifies for {(liveRating?.qualifiesFor || []).join(' and ') || 'neither PIC nor SIC'}
+                    {liveRating?.hoursUpdatedAt ? ` · hours last updated ${liveRating.hoursUpdatedAt}` : ''}
                   </p>
+                  {(liveRating?.flags || []).length > 0 && (
+                    <p className="mt-1 text-[11px] text-amber-200">{liveRating.flags.join(' · ')}</p>
+                  )}
                 </div>
-                <PilotRatingBadge rating={liveRating} />
+                <div className="flex flex-wrap gap-2">
+                  <SeatChip seat="PIC" tier={liveRating?.positions?.PIC?.tier} />
+                  <SeatChip seat="SIC" tier={liveRating?.positions?.SIC?.tier} />
+                </div>
               </div>
 
-              <section className="border border-slate-800 p-4">
-                <h3 className="text-[10px] tracking-widest text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>WHY THIS RATING</h3>
-                <ul className="mt-2 space-y-1 text-sm text-slate-200">
-                  {(liveRating?.reasons || []).map((reason) => <li key={reason}>{reason}</li>)}
-                </ul>
+              <section className="border border-slate-800 p-4" data-testid="gap-analysis">
+                <h3 className="text-[10px] tracking-widest text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>GAP ANALYSIS</h3>
+                {(liveRating?.unmet || []).length === 0 ? (
+                  <p className="mt-2 text-sm text-slate-300">No unmet items.</p>
+                ) : (
+                  <table className="mt-2 w-full text-left text-xs text-slate-200">
+                    <thead>
+                      <tr className="text-[10px] uppercase tracking-wide text-slate-500">
+                        <th className="py-1 font-medium">Item</th>
+                        <th className="py-1 font-medium">Pilot</th>
+                        <th className="py-1 font-medium">PIC</th>
+                        <th className="py-1 font-medium">SIC</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {liveRating.unmet.map((row) => (
+                        <tr key={row.label} className="border-t border-slate-800">
+                          <td className="py-1 pr-2">{row.label}</td>
+                          <td className="py-1 pr-2">{row.pilotValue}</td>
+                          <td className={`py-1 pr-2 ${row.picMet ? 'text-emerald-300' : 'text-red-300'}`}>{row.picCriteria}</td>
+                          <td className={`py-1 ${row.sicMet ? 'text-emerald-300' : 'text-red-300'}`}>{row.sicCriteria}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
               </section>
 
-              <section className="border border-slate-800 p-4">
+              <div className="flex gap-2">
+                {[['pilot', 'PILOT'], ['experience', 'EXPERIENCE'], ['types', 'TYPE RATINGS']].map(([id, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setRecordTab(id)}
+                    className={`border px-2 py-1 text-[10px] tracking-widest ${recordTab === id ? 'border-cyan-400 text-cyan-200' : 'border-slate-700 text-slate-400'}`}
+                    style={{ fontFamily: 'JetBrains Mono, monospace' }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {recordTab === 'experience' && <section className="border border-slate-800 p-4">
                 <div className="mb-2 flex items-center justify-between gap-2">
-                  <h3 className="text-[10px] tracking-widest text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>HOURS</h3>
+                  <h3 className="text-[10px] tracking-widest text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>EXPERIENCE</h3>
                   {data.canEdit && (
                     <button type="button" onClick={save} disabled={saving || !dirty} className="inline-flex items-center gap-1 border border-cyan-500/40 px-2 py-1 text-[10px] tracking-widest text-cyan-200 disabled:opacity-40" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
                       <Save className="h-3 w-3" /> {saving ? 'SAVING' : 'SAVE LOGBOOK'}
@@ -373,6 +418,21 @@ function PilotSafetyView({
                       <input
                         type="number"
                         min="0"
+                        aria-label={`PIC hours in type ${index + 1}`}
+                        disabled={!data.canEdit}
+                        value={row.picHours ?? ''}
+                        onChange={(event) => {
+                          editBaseline((hours) => {
+                            const timeInType = hours.timeInType.slice();
+                            timeInType[index] = { ...row, picHours: event.target.value === '' ? null : Number(event.target.value) };
+                            hours.timeInType = timeInType;
+                          });
+                        }}
+                        className="w-24 border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-100"
+                      />
+                      <input
+                        type="number"
+                        min="0"
                         aria-label={`Hours in type ${index + 1}`}
                         disabled={!data.canEdit}
                         value={row.hours ?? ''}
@@ -402,31 +462,35 @@ function PilotSafetyView({
                     </p>
                   )}
                   {data.canEdit && (
-                    <button type="button" onClick={() => {
+                    <button type="button"                 onClick={() => {
                       editBaseline((hours) => {
-                        hours.timeInType = [...hours.timeInType, { type: '', hours: null }];
+                        hours.timeInType = [...hours.timeInType, { type: '', hours: null, picHours: null }];
                       });
                     }} className="mt-1 inline-flex items-center gap-1 text-[10px] tracking-widest text-cyan-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
                       <Plus className="h-3 w-3" /> ADD TYPE
                     </button>
                   )}
                 </div>
-              </section>
+              </section>}
 
-              <FlightLogPanel
-                pilot={selected.pilot}
-                entries={pilotEntries}
-                canEdit={data.canEdit}
-                currentUser={currentUser}
-                baseline={draft.baseline}
-                onSaved={(text) => setBanner({ ok: true, text })}
-                onError={(text) => setBanner({ ok: false, text })}
-              />
+              {recordTab === 'experience' && (
+                <FlightLogPanel
+                  pilot={selected.pilot}
+                  entries={pilotEntries}
+                  canEdit={data.canEdit}
+                  currentUser={currentUser}
+                  baseline={draft.baseline}
+                  onSaved={(text) => setBanner({ ok: true, text })}
+                  onError={(text) => setBanner({ ok: false, text })}
+                />
+              )}
 
+              {recordTab === 'pilot' && (
               <CertificateBlock
                 draft={draft}
                 canEdit={data.canEdit}
                 docs={data.docsByUid[selected.pilot.uid] || []}
+                rating={liveRating}
                 onChange={(certificate) => {
                   setDraft({ ...draft, certificate });
                   setDirty(true);
@@ -435,9 +499,24 @@ function PilotSafetyView({
                   setDraft({ ...draft, drugAlcohol });
                   setDirty(true);
                 }}
+                onBackground={(background) => {
+                  setDraft({ ...draft, background });
+                  setDirty(true);
+                }}
               />
+              )}
 
-              <section className="border border-slate-800 p-4">
+              {recordTab === 'types' && (
+                <TypeRatingsPanel
+                  draft={draft}
+                  currencyDoc={data.currencies[selected.pilot.uid]}
+                  rating={liveRating}
+                  todayMs={data.todayMs}
+                  onEditChecks={onEditChecks && data.canEdit ? () => onEditChecks(selected.pilot.uid) : null}
+                />
+              )}
+
+              {recordTab === 'pilot' && <section className="border border-slate-800 p-4">
                 <h3 className="text-[10px] tracking-widest text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>REQUIREMENTS</h3>
                 <p className="mt-1 text-[11px] text-slate-500">Medical class, check dates, and training dates are edited in this Compliance section. This list is the rating’s reading of that record.</p>
                 {onEditChecks && data.canEdit && (
@@ -460,13 +539,18 @@ function PilotSafetyView({
                     </div>
                   ))}
                 </div>
-              </section>
+              </section>}
 
               {banner && (
                 <p className={`text-xs ${banner.ok ? 'text-emerald-300' : 'text-red-300'}`}>{banner.text}</p>
               )}
 
               <div className="flex flex-wrap gap-2">
+                {data.canEdit && (
+                  <button type="button" onClick={save} disabled={saving || !dirty} className="inline-flex items-center gap-1 border border-cyan-500/40 px-3 py-2 text-[10px] tracking-widest text-cyan-200 disabled:opacity-40" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    <Save className="h-3.5 w-3.5" /> {saving ? 'SAVING' : 'SAVE LOGBOOK'}
+                  </button>
+                )}
                 <button type="button" onClick={() => setShowReport(true)} className="inline-flex items-center gap-1 border border-slate-600 px-3 py-2 text-[10px] tracking-widest text-slate-100" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
                   <Eye className="h-3.5 w-3.5" /> PREVIEW REPORT
                 </button>
@@ -535,7 +619,72 @@ function Count({ label, value, tone }) {
   );
 }
 
-function CertificateBlock({ draft, canEdit, docs, onChange, onDrugChange }) {
+const TYPE_FAMILIES = [
+  { id: 'CE525', label: 'CE-525 / CE-525S', oral: 'groundOral293a_CE525', sim: 'sim293b_CE525' },
+  { id: 'LR60', label: 'LR-60', oral: 'groundOral293a_LR60', sim: 'sim293b_LR60' },
+  { id: 'SF50', label: 'SF-50', oral: 'groundOral293a_SF50', sim: 'sim293b_SF50' },
+];
+
+function SeatChip({ seat, tier }) {
+  const fail = tier === 'doesNotMeet' || !tier;
+  const caution = tier === 'caution';
+  const tone = fail ? 'border-red-500/40 text-red-200' : caution ? 'border-amber-500/40 text-amber-200' : 'border-emerald-500/40 text-emerald-300';
+  return (
+    <span className={`border px-2 py-1 text-[10px] tracking-widest ${tone}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+      {seat} {fail ? 'DOES NOT MEET' : caution ? 'EXPIRES SOON' : 'MEETS'}
+    </span>
+  );
+}
+
+function checkLabel(item, months, todayMs) {
+  if (!item || item.notApplicable) return 'Not Required';
+  const result = computeStatus(item, null, todayMs, months > 0 ? { intervalMonths: months, graceMonths: 0 } : {});
+  return itemStatusLabel(result.status, result.daysUntil);
+}
+
+function TypeRatingsPanel({ draft, currencyDoc, rating, todayMs, onEditChecks }) {
+  const ratings = draft?.certificate?.typeRatings || [];
+  const verified = draft?.certificate?.typeVerified === true;
+  return (
+    <section className="border border-slate-800 p-4">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <h3 className="text-[10px] tracking-widest text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>TYPE RATINGS</h3>
+        {onEditChecks && (
+          <button type="button" onClick={onEditChecks} className="text-[10px] tracking-widest text-cyan-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            EDIT CHECKS AND MEDICAL
+          </button>
+        )}
+      </div>
+      <p className="mb-3 text-[11px] text-slate-400">
+        Verified: {verified ? 'Yes' : 'Type Not Verified'}. Recurrent training {checkLabel(currencyDoc?.recurrentTraining351, 12, todayMs)}.
+        {' '}{(rating?.flags || []).join(' · ')}
+      </p>
+      <div className="space-y-3">
+        {TYPE_FAMILIES.map((family) => {
+          const assigned = ratings.some((type) => type.toUpperCase().replace(/[^A-Z0-9]/g, '').includes(family.id));
+          const oral = currencyDoc?.[family.oral];
+          const sim = currencyDoc?.[family.sim];
+          return (
+            <div key={family.id} className="border border-slate-800 p-3 text-sm text-slate-200">
+              <div className="flex items-center justify-between gap-2">
+                <span>{family.label}</span>
+                <span className="text-[10px] tracking-widest text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  {assigned ? 'ASSIGNED' : 'NOT ASSIGNED'}
+                </span>
+              </div>
+              <dl className="mt-2 grid gap-1 text-[11px] text-slate-400 sm:grid-cols-2">
+                <div>Aircraft-specific check: {checkLabel(oral, 12, todayMs)}{oral?.lastDate ? ` · ${oral.lastDate}` : ''}</div>
+                <div>Simulator: {checkLabel(sim, 12, todayMs)}{sim?.notes ? ` · ${sim.notes}` : ''}</div>
+              </dl>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function CertificateBlock({ draft, canEdit, docs, rating, onChange, onDrugChange, onBackground }) {
   const certificate = docs.find((entry) => entry.docType === 'certificate');
   const hint = certificate && !draft.certificate.level
     ? `Airman certificate on file lists ${certificate.certType || 'a grade'}${certificate.ratings ? ` (${certificate.ratings})` : ''}. The certificate number stays on Pilot Docs.`
@@ -551,7 +700,13 @@ function CertificateBlock({ draft, canEdit, docs, onChange, onDrugChange }) {
   };
   return (
     <section className="border border-slate-800 p-4">
-      <h3 className="text-[10px] tracking-widest text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>CERTIFICATE, RATINGS, DRUG AND ALCOHOL</h3>
+      <h3 className="text-[10px] tracking-widest text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>PILOT</h3>
+      {rating?.medical && (
+        <p className="mt-2 text-[11px] text-slate-400">
+          Medical {rating.medical.class || 'not on file'} · {rating.medical.statusLabel || 'Not Validated'}
+          {rating.medical.lastDate ? ` · last medical ${rating.medical.lastDate}` : ''}
+        </p>
+      )}
       {hint && (
         <p className="mt-2 text-[11px] text-slate-400">
           {hint}
@@ -597,10 +752,53 @@ function CertificateBlock({ draft, canEdit, docs, onChange, onDrugChange }) {
             ...draft.certificate,
             typeRatings: event.target.value.split(',').map((part) => part.trim()),
           })}
-          placeholder="CE-525, LR-60"
+          placeholder="CE-525, LR-60, SF-50"
           className="mt-1 w-full border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-100"
         />
       </label>
+      <div className="mt-2 grid gap-2 sm:grid-cols-3">
+        <label className="text-[11px] text-slate-400">
+          Issuing country
+          <input
+            disabled={!canEdit}
+            aria-label="Issuing country"
+            value={draft.certificate.country || ''}
+            onChange={(event) => onChange({ ...draft.certificate, country: event.target.value })}
+            className="mt-1 w-full border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-100"
+          />
+        </label>
+        <TriState
+          label="Type rating verified"
+          value={draft.certificate.typeVerified}
+          disabled={!canEdit}
+          onChange={(typeVerified) => onChange({ ...draft.certificate, typeVerified })}
+        />
+        <label className="text-[11px] text-slate-400">
+          Employment
+          <input
+            disabled={!canEdit}
+            aria-label="Employment status"
+            value={draft.background?.employment || ''}
+            onChange={(event) => onBackground?.({ ...draft.background, employment: event.target.value })}
+            placeholder="Full Time"
+            className="mt-1 w-full border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-100"
+          />
+        </label>
+      </div>
+      <div className="mt-2 grid gap-2 sm:grid-cols-2">
+        <RecordSelect
+          label="Accident / incident"
+          value={draft.background?.accident}
+          disabled={!canEdit}
+          onChange={(accident) => onBackground?.({ ...draft.background, accident })}
+        />
+        <RecordSelect
+          label="Enforcement"
+          value={draft.background?.enforcement}
+          disabled={!canEdit}
+          onChange={(enforcement) => onBackground?.({ ...draft.background, enforcement })}
+        />
+      </div>
       <div className="mt-3 grid gap-2 sm:grid-cols-3">
         <label className="text-[11px] text-slate-400">
           Drug and alcohol program
@@ -642,6 +840,26 @@ function CertificateBlock({ draft, canEdit, docs, onChange, onDrugChange }) {
         </label>
       </div>
     </section>
+  );
+}
+
+function RecordSelect({ label, value, onChange, disabled }) {
+  const current = value === true ? 'yes' : value === false ? 'none' : '';
+  return (
+    <label className="text-[11px] text-slate-400">
+      {label}
+      <select
+        disabled={disabled}
+        aria-label={label}
+        value={current}
+        onChange={(event) => onChange(event.target.value === '' ? null : event.target.value === 'yes')}
+        className="mt-1 w-full border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-100"
+      >
+        <option value="">Not recorded</option>
+        <option value="none">None</option>
+        <option value="yes">Yes</option>
+      </select>
+    </label>
   );
 }
 
@@ -770,8 +988,11 @@ function fmtHours(value) {
 function hourCaption(key, draft, rolled, displayBook) {
   if (!draft?.baseline?.asOf) return 'Baseline snapshot';
   if (key === 'instrument') return 'Baseline only — instrument time is not taken from the schedule';
-  if (key === 'last90Days' || key === 'last12Months') {
+  if (key === 'last90Days' || key === 'last12Months' || key === 'multiEngine90' || key === 'multiEngine12') {
     return `Current ${fmtHours(displayBook?.hours?.[key])} (baseline still in the window is estimated)`;
+  }
+  if (key === 'fixedWing' || key === 'rotorWing' || key === 'singleEngine') {
+    return `Baseline ${fmtHours(displayBook?.hours?.[key])}`;
   }
   const added = rolled?.flownSince?.[key];
   return `Baseline + ${fmtHours(added)} flown since = ${fmtHours(displayBook?.hours?.[key])} current`;

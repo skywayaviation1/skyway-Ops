@@ -33,81 +33,61 @@ function draw(doc, report) {
   doc.save();
   doc.rect(0, 0, 612, 72).fill('#0c2a3a');
   doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(16);
-  doc.text(report.operatorName || 'Charter operator', left, 22, { width: 340 });
+  doc.text(report.operatorName || 'Charter operator', left, 18, { width: 300 });
   doc.font('Helvetica').fontSize(9).fillColor('#d5e7ee');
-  doc.text('PILOT REPORT', left, 44);
-  doc.font('Helvetica-Bold').fontSize(12).fillColor('#ffffff');
-  doc.text(report.tierLabel || '', left + 340, 22, { width: 176, align: 'right' });
-  doc.font('Helvetica').fontSize(9);
-  doc.text(`Score ${report.score ?? '—'} / 100`, left + 340, 42, { width: 176, align: 'right' });
+  doc.text(report.criteriaName || 'Pilot Report', left, 40);
+  doc.fillColor('#ffffff').fontSize(8);
+  doc.text((report.chips || []).map((chip) => `${chip.label}: ${chip.status}`).join('   '), left, 54, { width });
   doc.restore();
 
-  doc.fillColor('#111827').font('Helvetica-Bold').fontSize(18);
-  doc.text(report.pilotName || 'Pilot', left, 92, { width });
-  doc.font('Helvetica').fontSize(10).fillColor('#4b5563');
-  doc.text(
-    [report.role, report.aircraftType, `Generated ${fmtGenerated(report.generatedAt)}`].filter(Boolean).join('  ·  '),
-    left,
-    116,
-    { width },
-  );
+  let y = 90;
+  doc.fillColor('#111827').font('Helvetica-Bold').fontSize(16);
+  doc.text('Pilot Report', left, y, { width });
+  y = 112;
+  doc.font('Helvetica').fontSize(9).fillColor('#4b5563');
+  doc.text(`Generated ${fmtGenerated(report.generatedAt)}${report.expiresAt ? ` · Expires ${fmtGenerated(report.expiresAt)}` : ''}`, left, y, { width });
+  y = doc.y + 10;
 
-  let y = 146;
-  y = heading(doc, left, y, 'CERTIFICATE AND RATINGS');
-  const cert = report.certificate || {};
-  const medical = report.medical || {};
-  y = paragraph(doc, left, y, width, `Certificate: ${cert.level || 'Not on file'}    Instrument: ${cert.instrument || 'Not on file'}    Multi-engine: ${cert.multiEngine || 'Not on file'}`);
-  y = paragraph(doc, left, y, width, `Type ratings: ${(cert.typeRatings || []).join(', ') || 'None on file'}`);
-  y = paragraph(doc, left, y, width, `Medical: ${medical.class || 'Not on file'} · ${medical.status || 'Not on file'}`);
+  y = heading(doc, left, y, 'OPERATOR AND AIRCRAFT');
+  const aircraft = report.aircraft || {};
+  y = paragraph(doc, left, y, width, `Operator: ${report.operatorLegalName || report.operatorName || '—'}`);
+  y = paragraph(doc, left, y, width, `Aircraft: ${[aircraft.registration, aircraft.type || report.aircraftType, aircraft.serial].filter(Boolean).join(' · ') || '—'}`);
+  if (report.itinerary) {
+    y = paragraph(doc, left, y, width, `Itinerary: ${[report.itinerary.from, report.itinerary.to].filter(Boolean).join(' → ')}`);
+  }
+  if (report.hoursAsOf) y = paragraph(doc, left, y, width, `Totals as of ${report.hoursAsOf}`);
 
-  y += 8;
-  y = heading(doc, left, y, 'FLIGHT TIME');
-  if (report.hoursAsOf) {
-    const asOfLine = [
-      `As of ${report.hoursAsOf}`,
-      report.baselineAsOf ? `baseline ${report.baselineAsOf} plus flights after that date` : '',
-      report.last6Months ? `last 6 months ${report.last6Months}` : '',
-      report.landings != null ? `landings ${report.landings}` : '',
-    ].filter(Boolean).join(' · ');
-    y = paragraph(doc, left, y, width, asOfLine);
-  }
-  for (const row of report.hours || []) {
-    y = paragraph(doc, left, y, width, `${row.label}: ${row.hours || '—'} / ${row.minimum ?? '—'} minimum`);
-  }
-  if ((report.timeInType || []).length) {
-    y = paragraph(
-      doc,
-      left,
-      y,
-      width,
-      `Time in type: ${report.timeInType.map((entry) => `${entry.type} ${entry.hours || '—'}`).join(', ')}`,
-    );
+  y = heading(doc, left, y, 'CREW');
+  for (const member of (report.crew || []).slice(0, 2)) {
+    if (y > 640) break;
+    y = paragraph(doc, left, y, width, `${member.role} ${member.pilotName} — ${member.status}`);
+    y = paragraph(doc, left, y, width, `Certificate ${member.certificateType || '—'} · ${member.country || '—'} · Type ${member.typeRating || '—'}`);
+    y = paragraph(doc, left, y, width, `Medical ${member.medicalClass || '—'} · last medical ${member.lastMedical || '—'} · ${member.employment || '—'}`);
+    const hours = member.hours || {};
+    y = paragraph(doc, left, y, width, `Total ${hours.totalTime || '—'} · PIC ${hours.pic || '—'} · Fixed-wing ${hours.fixedWing || '—'} · Multi ${hours.multiEngine || '—'} · Turbine ${hours.turbine || '—'} · Instrument ${hours.instrument || '—'}`);
+    y = paragraph(doc, left, y, width, `90 days ${hours.last90Days || '—'} · 12 months ${hours.last12Months || '—'} · Type ${member.timeInType || '—'} · PIC in type ${member.picTimeInType || '—'}`);
+    y = paragraph(doc, left, y, width, `Accident/incident ${member.accident || '—'} · Enforcement ${member.enforcement || '—'}`);
+    for (const check of (member.checks || []).slice(0, 8)) {
+      y = paragraph(doc, left, y, width, `${check.label}: ${check.status}`);
+    }
   }
 
-  y += 8;
-  y = heading(doc, left, y, 'REQUIREMENTS');
-  for (const item of report.requirements || []) {
-    if (y > 700) break;
-    y = paragraph(
-      doc,
-      left,
-      y,
-      width,
-      `${item.label} — ${item.status}    Completed ${item.completedOn || '—'}    Due ${item.dueOn || '—'}`,
-    );
-  }
-
-  y += 8;
-  y = heading(doc, left, y, 'WHY THIS RATING');
-  for (const reason of (report.summary || []).slice(0, 6)) {
-    y = paragraph(doc, left, y, width, `• ${reason}`);
+  const unmet = (report.gapAnalysis || []).filter((row) => row.picMet === false || row.sicMet === false).slice(0, 8);
+  if (unmet.length) {
+    y = heading(doc, left, y, 'UNMET ITEMS');
+    for (const row of unmet) {
+      if (y > 700) break;
+      y = paragraph(doc, left, y, width, `${row.label}: ${row.pilotValue} (PIC ${row.picCriteria} / SIC ${row.sicCriteria})`);
+    }
   }
 
   doc.font('Helvetica').fontSize(8).fillColor('#6b7280');
-  const note = report.usingDefaultStandards
-    ? 'Minimums are the operator’s shipped defaults (industry-typical Part 135 charter figures), not a third-party audit score.'
-    : 'Minimums are the operator’s saved safety-rating settings.';
-  doc.text(`${note} Certificate numbers, date of birth, home address, and medical limitations are omitted.`, left, 740, { width });
+  const note = [
+    `Criteria ${report.criteriaVersion || 'registered-standard-1'}.`,
+    report.shareUrl ? `Verify: ${report.shareUrl}` : '',
+    'Certificate numbers, date of birth, and addresses are omitted. This is not a live WYVERN Ltd audit.',
+  ].filter(Boolean).join(' ');
+  doc.text(note, left, 730, { width });
 }
 
 function heading(doc, x, y, text) {

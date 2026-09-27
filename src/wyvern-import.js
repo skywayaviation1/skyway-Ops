@@ -11,7 +11,8 @@ import { normalizeCertificateLevel, normalizeLogbook } from './pilot-safety.js';
 export const WYVERN_SOURCE = 'Wyvern';
 
 const HOUR_KEYS = [
-  'totalTime', 'pic', 'sic', 'multiEngine', 'turbine', 'night', 'instrument', 'last90Days', 'last12Months',
+  'totalTime', 'pic', 'sic', 'fixedWing', 'rotorWing', 'singleEngine', 'multiEngine',
+  'multiEngine90', 'multiEngine12', 'turbine', 'night', 'instrument', 'last90Days', 'last12Months',
 ];
 
 const CHECK_KEYS = new Set([
@@ -204,7 +205,12 @@ function emptyHours() {
     totalTime: null,
     pic: null,
     sic: null,
+    fixedWing: null,
+    rotorWing: null,
+    singleEngine: null,
     multiEngine: null,
+    multiEngine90: null,
+    multiEngine12: null,
     turbine: null,
     night: null,
     instrument: null,
@@ -223,7 +229,12 @@ const HOUR_ALIASES = {
   totalTime: ['totaltime', 'totalhours', 'totalt', 'tt', 'total'],
   pic: ['pic', 'pichours', 'pilotincommand', 'commandhours'],
   sic: ['sic', 'sichours', 'secondincommand'],
+  fixedWing: ['fixedwing', 'fixedwinghours', 'airplane', 'fw'],
+  rotorWing: ['rotorwing', 'rotor', 'helicopter', 'rw'],
+  singleEngine: ['singleengine', 'singleenginehours', 'sel'],
   multiEngine: ['multiengine', 'multienginehours', 'me', 'melhours'],
+  multiEngine90: ['multiengine90', 'multienginelast90', 'melast90', 'me90'],
+  multiEngine12: ['multiengine12', 'multienginelast12', 'multienginelast365', 'melast365', 'me12'],
   turbine: ['turbine', 'turbinehours'],
   night: ['night', 'nighthours'],
   instrument: ['instrument', 'instrumenthours', 'actualinstrument', 'hood'],
@@ -240,7 +251,10 @@ function readTimeInType(bag, raw) {
       if (typeof entry === 'string') continue;
       const type = String(pick(entry, ['type', 'aircraft', 'aircrafttype', 'name']) || '').trim();
       const hours = parseHours(pick(entry, ['hours', 'time', 'total', 'totaltime']));
-      if (type && hours != null) rows.push({ type: type.slice(0, 40), hours });
+      const picHours = parseHours(pick(entry, ['pichours', 'pic', 'pictime', 'pictimeintype']));
+      if (type && hours != null) {
+        rows.push({ type: type.slice(0, 40), hours, ...(picHours != null ? { picHours } : {}) });
+      }
     }
   } else if (direct && typeof direct === 'object') {
     for (const [type, hours] of Object.entries(direct)) {
@@ -700,13 +714,19 @@ export function relinkWyvernRow(row, user, logbooks = {}, currencies = {}) {
 }
 
 function upsertTimeInType(existing, incoming) {
-  const list = (existing || []).map((entry) => ({ type: entry.type, hours: entry.hours }));
+  const list = (existing || []).map((entry) => ({
+    type: entry.type,
+    hours: entry.hours,
+    picHours: entry.picHours ?? null,
+  }));
   for (const entry of incoming || []) {
     if (!entry?.type || entry.hours == null) continue;
     const key = entry.type.trim().toLowerCase();
     const index = list.findIndex((item) => String(item.type || '').trim().toLowerCase() === key);
-    if (index >= 0) list[index] = { type: entry.type, hours: entry.hours };
-    else list.push({ type: entry.type, hours: entry.hours });
+    const picHours = entry.picHours != null ? entry.picHours : (index >= 0 ? list[index].picHours : null);
+    const next = { type: entry.type, hours: entry.hours, picHours };
+    if (index >= 0) list[index] = next;
+    else list.push(next);
   }
   return list;
 }
@@ -793,7 +813,12 @@ const HOUR_LABELS = {
   totalTime: 'Total time',
   pic: 'Pilot in command',
   sic: 'Second in command',
+  fixedWing: 'Fixed-wing',
+  rotorWing: 'Rotor-wing',
+  singleEngine: 'Single-engine',
   multiEngine: 'Multi-engine',
+  multiEngine90: 'Multi-engine last 90 days',
+  multiEngine12: 'Multi-engine last 12 months',
   turbine: 'Turbine',
   night: 'Night',
   instrument: 'Instrument',

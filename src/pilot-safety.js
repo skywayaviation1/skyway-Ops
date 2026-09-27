@@ -3,8 +3,9 @@
  *
  * Pure scoring for a Part 135 charter crewmember. Hour minimums and which
  * requirements count are operator settings (app-config/pilot-safety). The
- * numbers shipped here are industry-typical charter defaults — a starting
- * point an admin can replace — and are not a WYVERN Ltd PASS / Wingman score.
+ * numbers shipped here are the Wyvern Registered Standard, split by PIC and
+ * SIC. An admin can replace them. The result is the operator’s own rating,
+ * not a live WYVERN Ltd audit.
  *
  * Experience comes from the pilot logbook, with last-90-day and last-12-month
  * flight time filled from duty records when the logbook leaves them blank.
@@ -24,23 +25,53 @@ export const TIER = Object.freeze({
 });
 
 export const TIER_LABELS = Object.freeze({
-  meets: 'Meets Standard',
-  caution: 'Caution',
+  meets: 'Meets',
+  caution: 'Meets',
   doesNotMeet: 'Does Not Meet',
 });
 
+export const CRITERIA_NAME = 'Wyvern Registered Standard';
+export const CRITERIA_VERSION = 'registered-standard-1';
+
+/** Logbook fields the hours editor reads. Scoring uses POSITION_HOUR_FIELDS. */
 export const HOUR_FIELDS = Object.freeze([
-  { key: 'totalTime', label: 'Total time', minimum: 2500, required: true },
-  { key: 'pic', label: 'Pilot in command', minimum: 1500, required: true },
-  { key: 'sic', label: 'Second in command', minimum: 500, required: false },
-  { key: 'multiEngine', label: 'Multi-engine', minimum: 500, required: true },
-  { key: 'turbine', label: 'Turbine', minimum: 500, required: true },
-  { key: 'night', label: 'Night', minimum: 100, required: true },
-  { key: 'instrument', label: 'Instrument', minimum: 75, required: true },
-  { key: 'last90Days', label: 'Last 90 days', minimum: 15, required: true },
-  { key: 'last12Months', label: 'Last 12 months', minimum: 100, required: true },
-  { key: 'timeInType', label: 'Time in type', minimum: 100, required: true, perType: true },
+  { key: 'totalTime', label: 'Total time' },
+  { key: 'pic', label: 'PIC time' },
+  { key: 'sic', label: 'SIC time' },
+  { key: 'fixedWing', label: 'Fixed-wing' },
+  { key: 'rotorWing', label: 'Rotor-wing' },
+  { key: 'singleEngine', label: 'Single-engine' },
+  { key: 'multiEngine', label: 'Multi-engine' },
+  { key: 'multiEngine90', label: 'Multi-engine last 90 days' },
+  { key: 'multiEngine12', label: 'Multi-engine last 12 months' },
+  { key: 'turbine', label: 'Turbine' },
+  { key: 'instrument', label: 'Instrument' },
+  { key: 'night', label: 'Night' },
+  { key: 'last90Days', label: 'Last 90 days' },
+  { key: 'last12Months', label: 'Last 12 months' },
+  { key: 'timeInType', label: 'Time in type', perType: true },
 ]);
+
+/** Wyvern Registered Standard hour minimums, PIC value then SIC value. */
+export const POSITION_HOUR_FIELDS = Object.freeze([
+  { key: 'totalTime', label: 'Total time', pic: 2500, sic: 1000 },
+  { key: 'pic', label: 'PIC time', pic: 1000, sic: 0 },
+  { key: 'fixedWing', label: 'Fixed-wing', pic: 2000, sic: 1000 },
+  { key: 'multiEngine', label: 'Multi-engine', pic: 1000, sic: 50 },
+  { key: 'multiEngine12', label: 'Multi-engine last 12 months', pic: 150, sic: 50 },
+  { key: 'multiEngine90', label: 'Multi-engine last 90 days', pic: 30, sic: 30 },
+  { key: 'instrument', label: 'Instrument', pic: 100, sic: 50 },
+  { key: 'turbine', label: 'Turbine', pic: 1000, sic: 30 },
+  { key: 'timeInType', label: 'Total time in type', pic: 200, sic: 30, perType: true },
+  { key: 'picTimeInType', label: 'PIC time in type', pic: 100, sic: 0, perType: true },
+]);
+
+const MEDICAL_CLASS_RANK = Object.freeze({
+  First: 3,
+  Second: 2,
+  Third: 1,
+  BasicMed: 0,
+});
 
 /** Credit a requirement status contributes to the 0–100 score. N/A is omitted. */
 const STATUS_CREDIT = Object.freeze({
@@ -194,16 +225,34 @@ export const CERTIFICATE_LEVELS = Object.freeze([
 ]);
 
 export const DEFAULT_STANDARDS_NOTE =
-  'Industry-typical Part 135 turbine charter defaults. Not a WYVERN Ltd PASS or Wingman score. Replace these when the operator’s own or Wyvern criteria are confirmed.';
+  'Wyvern Registered Standard defaults, by position (PIC and SIC). These are the starting minimums for this operator and can be replaced. They are not a live WYVERN Ltd audit result.';
 
-function hourDefaults() {
-  const minimums = {};
-  const required = {};
-  for (const field of HOUR_FIELDS) {
-    minimums[field.key] = field.minimum;
-    required[field.key] = field.required;
+function positionHourDefaults(seat) {
+  const hours = {};
+  for (const field of POSITION_HOUR_FIELDS) {
+    hours[field.key] = seat === 'SIC' ? field.sic : field.pic;
   }
-  return { minimums, required };
+  return hours;
+}
+
+function defaultPosition(seat) {
+  const pic = seat !== 'SIC';
+  return {
+    hours: positionHourDefaults(seat),
+    medicalClass: pic ? 'First' : 'Second',
+    medicalMonths: 12,
+    indoctrination: true,
+    lineCheck: pic,
+    lineCheckMonths: pic ? 7 : 0,
+    ipc: pic,
+    ipcMonths: pic ? 6 : 0,
+    maxActiveTypes: 2,
+    confirmedType: pic,
+    aircraftMonths: 12,
+    recurrentMonths: 12,
+    simulatorMonths: 12,
+    motionSimulator: true,
+  };
 }
 
 function requirementDefaults() {
@@ -214,10 +263,10 @@ function requirementDefaults() {
   }));
 }
 
-const hourSeed = hourDefaults();
-
 export const DEFAULT_PILOT_SAFETY_STANDARDS = Object.freeze({
   customized: false,
+  criteriaName: CRITERIA_NAME,
+  criteriaVersion: CRITERIA_VERSION,
   sourceNote: DEFAULT_STANDARDS_NOTE,
   standingRole: 'PIC',
   weights: Object.freeze({ experience: 55, requirements: 45 }),
@@ -227,9 +276,9 @@ export const DEFAULT_PILOT_SAFETY_STANDARDS = Object.freeze({
     requireInstrument: true,
     requireMultiEngine: true,
   }),
-  hours: Object.freeze({
-    minimums: Object.freeze({ ...hourSeed.minimums }),
-    required: Object.freeze({ ...hourSeed.required }),
+  positions: Object.freeze({
+    PIC: Object.freeze({ ...defaultPosition('PIC'), hours: Object.freeze(positionHourDefaults('PIC')) }),
+    SIC: Object.freeze({ ...defaultPosition('SIC'), hours: Object.freeze(positionHourDefaults('SIC')) }),
   }),
   requirements: Object.freeze(requirementDefaults().map((item) => Object.freeze({ ...item }))),
 });
@@ -237,17 +286,43 @@ export const DEFAULT_PILOT_SAFETY_STANDARDS = Object.freeze({
 function cloneDefaults() {
   return {
     customized: false,
+    criteriaName: CRITERIA_NAME,
+    criteriaVersion: CRITERIA_VERSION,
     sourceNote: DEFAULT_STANDARDS_NOTE,
     standingRole: 'PIC',
     weights: { ...DEFAULT_PILOT_SAFETY_STANDARDS.weights },
     tiers: { ...DEFAULT_PILOT_SAFETY_STANDARDS.tiers },
     certificate: { ...DEFAULT_PILOT_SAFETY_STANDARDS.certificate },
-    hours: {
-      minimums: { ...DEFAULT_PILOT_SAFETY_STANDARDS.hours.minimums },
-      required: { ...DEFAULT_PILOT_SAFETY_STANDARDS.hours.required },
+    positions: {
+      PIC: { ...defaultPosition('PIC'), hours: positionHourDefaults('PIC') },
+      SIC: { ...defaultPosition('SIC'), hours: positionHourDefaults('SIC') },
     },
     requirements: DEFAULT_PILOT_SAFETY_STANDARDS.requirements.map((item) => ({ ...item })),
   };
+}
+
+function readPosition(raw, seat, fallback) {
+  const source = raw?.positions?.[seat];
+  const next = {
+    ...fallback,
+    hours: { ...fallback.hours },
+  };
+  if (!source || typeof source !== 'object') return next;
+  for (const field of POSITION_HOUR_FIELDS) {
+    const minimum = finiteNumber(source.hours?.[field.key]);
+    if (minimum != null) next.hours[field.key] = minimum;
+  }
+  if (typeof source.medicalClass === 'string' && MEDICAL_CLASS_RANK[medicalClassLabel(source.medicalClass)] != null) {
+    next.medicalClass = medicalClassLabel(source.medicalClass);
+  }
+  for (const key of ['medicalMonths', 'lineCheckMonths', 'ipcMonths', 'maxActiveTypes', 'aircraftMonths', 'recurrentMonths', 'simulatorMonths']) {
+    const value = finiteNumber(source[key]);
+    if (value != null) next[key] = value;
+  }
+  for (const key of ['indoctrination', 'lineCheck', 'ipc', 'confirmedType', 'motionSimulator']) {
+    if (typeof source[key] === 'boolean') next[key] = source[key];
+  }
+  return next;
 }
 
 function finiteNumber(value) {
@@ -294,11 +369,13 @@ export function normalizeStandards(raw) {
     standards.certificate.requireMultiEngine = raw.certificate.requireMultiEngine;
   }
 
-  for (const field of HOUR_FIELDS) {
-    const minimum = finiteNumber(raw.hours?.minimums?.[field.key]);
-    if (minimum != null) standards.hours.minimums[field.key] = minimum;
-    if (typeof raw.hours?.required?.[field.key] === 'boolean') {
-      standards.hours.required[field.key] = raw.hours.required[field.key];
+  standards.positions.PIC = readPosition(raw, 'PIC', standards.positions.PIC);
+  standards.positions.SIC = readPosition(raw, 'SIC', standards.positions.SIC);
+  // Older saved settings stored one hour table. Apply it to the PIC column.
+  if (raw.hours?.minimums && !raw.positions) {
+    for (const field of POSITION_HOUR_FIELDS) {
+      const minimum = finiteNumber(raw.hours.minimums[field.key]);
+      if (minimum != null) standards.positions.PIC.hours[field.key] = minimum;
     }
   }
 
@@ -326,7 +403,12 @@ export function emptyLogbook(uid = '', pilotName = '') {
       totalTime: null,
       pic: null,
       sic: null,
+      fixedWing: null,
+      rotorWing: null,
+      singleEngine: null,
       multiEngine: null,
+      multiEngine90: null,
+      multiEngine12: null,
       turbine: null,
       night: null,
       instrument: null,
@@ -341,6 +423,13 @@ export function emptyLogbook(uid = '', pilotName = '') {
       instrument: null,
       multiEngine: null,
       typeRatings: [],
+      typeVerified: null,
+      country: '',
+    },
+    background: {
+      employment: '',
+      accident: null,
+      enforcement: null,
     },
     drugAlcohol: {
       enrolled: null,
@@ -367,6 +456,7 @@ function copyHourBag(raw) {
   hours.timeInType = types.slice(0, 24).map((entry) => ({
     type: String(entry?.type || '').trim().slice(0, 40),
     hours: finiteNumber(entry?.hours),
+    picHours: finiteNumber(entry?.picHours),
   })).filter((entry) => entry.type);
   return hours;
 }
@@ -451,6 +541,17 @@ export function normalizeLogbook(raw, uid = '') {
       ? false
       : null;
   book.certificate.typeRatings = asStringList(raw.certificate?.typeRatings);
+  book.certificate.typeVerified = raw.certificate?.typeVerified === true
+    ? true
+    : raw.certificate?.typeVerified === false
+      ? false
+      : null;
+  book.certificate.country = String(raw.certificate?.country || '').slice(0, 40);
+  const accident = raw.background?.accident;
+  const enforcement = raw.background?.enforcement;
+  book.background.employment = String(raw.background?.employment || '').slice(0, 40);
+  book.background.accident = accident === true ? true : accident === false ? false : null;
+  book.background.enforcement = enforcement === true ? true : enforcement === false ? false : null;
   const enrolled = raw.drugAlcohol?.enrolled;
   book.drugAlcohol.enrolled = enrolled === true ? true : enrolled === false ? false : null;
   book.drugAlcohol.enrolledDate = /^\d{4}-\d{2}-\d{2}$/.test(raw.drugAlcohol?.enrolledDate || '')
@@ -487,36 +588,34 @@ function formatHours(value) {
   return Number.isInteger(n) ? String(n) : (Math.round(n * 10) / 10).toFixed(1);
 }
 
-export function brokerStatusLabel(status) {
-  switch (status) {
-    case 'current':
-    case 'noExpiration':
-      return 'Current';
-    case 'caution':
-    case 'warning':
-    case 'critical':
-      return 'Expiring soon';
-    case 'expired':
-      return 'Expired';
-    default:
-      return 'Not on file';
-  }
+export function itemStatusLabel(status, daysUntil = null) {
+  if (status === 'na') return 'Not Required';
+  if (status === 'expired') return 'Expired';
+  if (status === 'unknown' || !status) return 'Not Validated';
+  const days = daysUntil == null || daysUntil === '' || !Number.isFinite(Number(daysUntil))
+    ? null
+    : Number(daysUntil);
+  if (days != null && days >= 0 && days <= 7) return 'Expires in 7 Days';
+  if (days != null && days > 7 && days <= 30) return 'Expires in 30 Days';
+  if (status === 'critical') return 'Expires in 7 Days';
+  if (status === 'warning') return 'Expires in 30 Days';
+  if (status === 'current' || status === 'noExpiration' || status === 'caution') return 'Current';
+  return 'Not Validated';
 }
 
-export function medicalBrokerLabel(status) {
-  switch (status) {
-    case 'current':
-    case 'noExpiration':
-      return 'Valid';
-    case 'caution':
-    case 'warning':
-    case 'critical':
-      return 'Expiring soon';
-    case 'expired':
-      return 'Expired';
-    default:
-      return 'Not on file';
-  }
+export function brokerStatusLabel(status, daysUntil = null) {
+  return itemStatusLabel(status, daysUntil);
+}
+
+export function medicalBrokerLabel(status, daysUntil = null) {
+  return itemStatusLabel(status, daysUntil);
+}
+
+export function statusToneName(label) {
+  if (label === 'Current' || label === 'Meets' || label === 'None') return 'current';
+  if (label === 'Expires in 30 Days' || label === 'Expires in 7 Days') return 'soon';
+  if (label === 'Expired' || label === 'Not Validated' || label === 'Does Not Meet' || label === 'Yes') return 'bad';
+  return 'muted';
 }
 
 function medicalClassLabel(value) {
@@ -647,7 +746,15 @@ function resolveCertificate(logbook, pilotDocs) {
   if (typeRatings.length === 0 && onFile?.ratings) {
     typeRatings = asStringList(onFile.ratings).filter((part) => !/instrument|commercial|atp|private|multi/i.test(part));
   }
-  return { level, instrument, multiEngine, typeRatings, levelSource };
+  return {
+    level,
+    instrument,
+    multiEngine,
+    typeRatings,
+    typeVerified: stored.typeVerified === true ? true : stored.typeVerified === false ? false : null,
+    country: stored.country || '',
+    levelSource,
+  };
 }
 
 function resolveMedical(currencyDoc, pilotDocs, todayMs) {
@@ -657,6 +764,8 @@ function resolveMedical(currencyDoc, pilotDocs, todayMs) {
     return {
       class: medicalClassLabel(fromCurrency.class) || '',
       status: status.status,
+      daysUntil: status.daysUntil,
+      lastDate: /^\d{4}-\d{2}-\d{2}$/.test(fromCurrency.lastDate || '') ? fromCurrency.lastDate : '',
       source: 'currency',
     };
   }
@@ -667,9 +776,15 @@ function resolveMedical(currencyDoc, pilotDocs, todayMs) {
       expirationDate: onFile.expiration,
     };
     const status = computeMedicalStatus(med, todayMs);
-    return { class: med.class, status: status.status, source: 'medical-certificate' };
+    return {
+      class: med.class,
+      status: status.status,
+      daysUntil: status.daysUntil,
+      lastDate: '',
+      source: 'medical-certificate',
+    };
   }
-  return { class: '', status: 'unknown', source: 'missing' };
+  return { class: '', status: 'unknown', daysUntil: null, lastDate: '', source: 'missing' };
 }
 
 function timeInTypeActual(entries, focusType) {
@@ -703,18 +818,322 @@ function scoreRequirements(lines, weight) {
   return avg * weight;
 }
 
+function classMeets(actual, minimum) {
+  if (!minimum) return true;
+  if (!actual || MEDICAL_CLASS_RANK[actual] == null) return false;
+  return MEDICAL_CLASS_RANK[actual] >= (MEDICAL_CLASS_RANK[minimum] || 0);
+}
+
+function checkDated(currencyDoc, key, months, todayMs) {
+  const item = currencyDoc?.[key];
+  if (item?.notApplicable === true) return { status: 'na', dueDate: null, daysUntil: null, completedOn: null };
+  const completedOn = /^\d{4}-\d{2}-\d{2}$/.test(item?.lastDate || '') ? item.lastDate : null;
+  if (months > 0) {
+    const result = computeStatus(item, null, todayMs, { intervalMonths: months, graceMonths: 0 });
+    return { ...result, completedOn };
+  }
+  if (completedOn || item?.present === true) {
+    return { status: 'noExpiration', dueDate: null, daysUntil: null, completedOn };
+  }
+  return { status: 'unknown', dueDate: null, daysUntil: null, completedOn };
+}
+
+function groupDated(currencyDoc, keys, months, todayMs) {
+  const results = keys.map((key) => checkDated(currencyDoc, key, months, todayMs));
+  const applicable = results.filter((result) => result.status !== 'na');
+  if (applicable.length === 0) {
+    return { status: 'unknown', dueDate: null, daysUntil: null, completedOn: null };
+  }
+  const recorded = applicable.filter((result) => result.status !== 'unknown');
+  return worstResult(recorded.length ? recorded : applicable);
+}
+
+function hourActual(book, key, dutyHours, focusType) {
+  if (key === 'fixedWing') {
+    if (book.hours.fixedWing != null) return { actual: book.hours.fixedWing, source: 'logbook', detail: '' };
+    if (book.hours.totalTime != null) {
+      return {
+        actual: Math.max(0, Number(book.hours.totalTime) - (Number(book.hours.rotorWing) || 0)),
+        source: 'derived',
+        detail: 'Fixed-wing from total time',
+      };
+    }
+    return { actual: null, source: 'missing', detail: '' };
+  }
+  if (key === 'timeInType' || key === 'picTimeInType') {
+    const list = Array.isArray(book.hours.timeInType) ? book.hours.timeInType : [];
+    const wanted = focusType ? normalizeType(focusType) : '';
+    const hit = wanted
+      ? list.find((entry) => normalizeType(entry.type) === wanted || normalizeType(entry.type).includes(wanted) || wanted.includes(normalizeType(entry.type)))
+      : null;
+    const chosen = hit || (key === 'picTimeInType'
+      ? list.slice().sort((a, b) => (Number(b.picHours) || 0) - (Number(a.picHours) || 0))[0]
+      : null);
+    const resolved = chosen ? null : timeInTypeActual(list, focusType);
+    if (key === 'picTimeInType') {
+      const entry = chosen;
+      return {
+        actual: entry?.picHours ?? null,
+        source: entry?.picHours != null ? 'logbook' : 'missing',
+        detail: entry?.type || (focusType ? `No PIC time for ${focusType}` : ''),
+      };
+    }
+    if (chosen) {
+      return { actual: finiteNumber(chosen.hours), source: 'logbook', detail: chosen.type };
+    }
+    return {
+      actual: resolved.actual,
+      source: resolved.source === 'logbook' ? 'logbook' : 'missing',
+      detail: resolved.matchedType || (focusType ? `No entry for ${focusType}` : ''),
+    };
+  }
+  if (book.hours[key] != null) return { actual: book.hours[key], source: 'logbook', detail: '' };
+  if ((key === 'last90Days' || key === 'last12Months') && dutyHours?.[key] != null) {
+    return { actual: dutyHours[key], source: 'duty', detail: 'From duty flight time' };
+  }
+  return { actual: null, source: 'missing', detail: '' };
+}
+
+function failingStatus(label) {
+  return label === 'Expired' || label === 'Not Validated';
+}
+
+function expiringStatus(label) {
+  return label === 'Expires in 30 Days' || label === 'Expires in 7 Days';
+}
+
+function scorePosition(seat, position, ctx) {
+  const experience = [];
+  const requirements = [];
+  const gaps = [];
+  const hardFailures = [];
+  const expiring = [];
+  const noteGap = (row, ok, failure) => {
+    gaps.push({ ...row, met: ok });
+    if (!ok && failure) hardFailures.push(failure);
+  };
+
+  for (const field of POSITION_HOUR_FIELDS) {
+    const minimum = Number(position.hours[field.key]) || 0;
+    const resolved = hourActual(ctx.book, field.key, ctx.dutyHours, ctx.focusType);
+    const required = minimum > 0;
+    let state = 'meets';
+    if (!required) state = 'optional';
+    else if (resolved.actual == null) state = 'missing';
+    else if (resolved.actual < minimum) state = 'short';
+    const ratio = !required || minimum === 0
+      ? 1
+      : resolved.actual == null
+        ? 0
+        : Math.max(0, Math.min(1, resolved.actual / minimum));
+    experience.push({
+      key: field.key,
+      label: field.label,
+      actual: resolved.actual,
+      actualDisplay: formatHours(resolved.actual),
+      minimum: required ? minimum : 0,
+      required,
+      ratio,
+      state,
+      source: resolved.source,
+      detail: resolved.detail || '',
+    });
+    const pilotValue = resolved.actual == null ? 'Not on file' : formatHours(resolved.actual);
+    const met = state !== 'missing' && state !== 'short';
+    noteGap(
+      { id: `${seat}:${field.key}`, label: field.label, pilotValue, criterion: String(minimum) },
+      met,
+      state === 'missing'
+        ? `${field.label} is not on file.`
+        : state === 'short'
+          ? `${field.label} is ${formatHours(resolved.actual)}, below the ${minimum} minimum.`
+          : '',
+    );
+  }
+
+  const classOk = classMeets(ctx.medical.class, position.medicalClass);
+  const medicalLabel = itemStatusLabel(ctx.medical.status, ctx.medical.daysUntil);
+  const medicalOk = classOk && !failingStatus(medicalLabel);
+  noteGap(
+    {
+      id: `${seat}:medicalClass`,
+      label: 'Minimum medical class',
+      pilotValue: ctx.medical.class || 'Not on file',
+      criterion: position.medicalClass === 'First' ? 'Class 1' : position.medicalClass === 'Second' ? 'Class 2' : position.medicalClass,
+    },
+    classOk,
+    classOk ? '' : 'Minimum medical class is not met.',
+  );
+  noteGap(
+    {
+      id: `${seat}:medicalValidity`,
+      label: 'Medical validity',
+      pilotValue: medicalLabel,
+      criterion: `${position.medicalMonths} months`,
+    },
+    !failingStatus(medicalLabel),
+    failingStatus(medicalLabel) ? `Medical certificate is ${medicalLabel}.` : '',
+  );
+  requirements.push({
+    id: 'medical',
+    label: 'Medical certificate',
+    included: true,
+    required: true,
+    status: medicalOk ? ctx.medical.status : (ctx.medical.class ? 'expired' : 'unknown'),
+    statusLabel: medicalOk ? medicalLabel : (classOk ? medicalLabel : 'Not Validated'),
+    completedOn: ctx.medical.lastDate || null,
+    dueOn: null,
+    detail: ctx.medical.class ? `${ctx.medical.class} class` : 'Not on file',
+    credit: medicalOk ? (STATUS_CREDIT[ctx.medical.status] ?? 0) : 0,
+  });
+  if (medicalOk && expiringStatus(medicalLabel)) {
+    expiring.push(`Medical certificate ${medicalLabel}.`);
+  }
+  requirements.push({
+    id: 'certificate',
+    label: 'Airman certificate',
+    included: true,
+    required: false,
+    status: ctx.certificate.level ? 'current' : 'unknown',
+    statusLabel: ctx.certificate.level ? 'Current' : 'Not Validated',
+    completedOn: null,
+    dueOn: null,
+    detail: [ctx.certificate.level, ctx.certificate.country].filter(Boolean).join(' · ') || 'Not on file',
+    credit: null,
+  });
+
+  const addCheck = (id, label, required, result, criterion) => {
+    const statusLabel = required ? itemStatusLabel(result.status, result.daysUntil) : 'Not Required';
+    requirements.push({
+      id,
+      label,
+      included: required,
+      required,
+      status: required ? result.status : 'na',
+      statusLabel,
+      completedOn: result.completedOn || null,
+      dueOn: result.dueDate || null,
+      detail: result.completedOn || statusLabel,
+      credit: !required ? null : (STATUS_CREDIT[result.status] ?? 0),
+    });
+    if (!required) {
+      gaps.push({ id: `${seat}:${id}`, label, pilotValue: 'Not required', criterion, met: true });
+      return;
+    }
+    const met = !failingStatus(statusLabel);
+    noteGap(
+      { id: `${seat}:${id}`, label, pilotValue: statusLabel, criterion },
+      met,
+      met ? '' : `${label} is ${statusLabel}.`,
+    );
+    if (met && expiringStatus(statusLabel)) expiring.push(`${label} ${statusLabel}.`);
+  };
+
+  addCheck(
+    'indoctrination',
+    'Indoctrination training',
+    position.indoctrination === true,
+    checkDated(ctx.currencyDoc, 'basicIndoctrination', 0, ctx.todayMs),
+    'Required',
+  );
+  addCheck(
+    'lineCheck299',
+    'Line check',
+    position.lineCheck === true,
+    checkDated(ctx.currencyDoc, 'lineCheck299', position.lineCheckMonths, ctx.todayMs),
+    position.lineCheck ? `${position.lineCheckMonths} months` : 'Not required',
+  );
+  addCheck(
+    'instrumentCheck297',
+    'Instrument proficiency check',
+    position.ipc === true,
+    checkDated(ctx.currencyDoc, 'instrumentCheck297', position.ipcMonths, ctx.todayMs),
+    position.ipc ? `${position.ipcMonths} months` : 'Not required',
+  );
+
+  const typeCount = (ctx.certificate.typeRatings || []).length;
+  const typesOk = typeCount <= (Number(position.maxActiveTypes) || 0);
+  noteGap(
+    { id: `${seat}:maxTypes`, label: 'Active type ratings', pilotValue: String(typeCount), criterion: String(position.maxActiveTypes) },
+    typesOk,
+    typesOk ? '' : `Active type ratings are ${typeCount}, above the ${position.maxActiveTypes} maximum.`,
+  );
+
+  const confirmed = (ctx.certificate.typeRatings || []).length > 0;
+  const confirmedOk = position.confirmedType !== true || confirmed;
+  noteGap(
+    { id: `${seat}:confirmedType`, label: 'Confirmed type rating', pilotValue: confirmed ? (ctx.certificate.typeRatings || []).join(', ') : 'Not on file', criterion: position.confirmedType ? 'Required' : 'Not required' },
+    confirmedOk,
+    confirmedOk ? '' : 'Confirmed type rating is Not Validated.',
+  );
+
+  addCheck(
+    'aircraftKnowledge293',
+    'Aircraft-specific training',
+    true,
+    groupDated(ctx.currencyDoc, AIRCRAFT_KNOWLEDGE_KEYS, position.aircraftMonths, ctx.todayMs),
+    `${position.aircraftMonths} months`,
+  );
+  addCheck(
+    'recurrentTraining351',
+    'Recurrent training',
+    true,
+    checkDated(ctx.currencyDoc, 'recurrentTraining351', position.recurrentMonths, ctx.todayMs),
+    `${position.recurrentMonths} months`,
+  );
+  const simulator = groupDated(ctx.currencyDoc, COMPETENCY_KEYS, position.simulatorMonths, ctx.todayMs);
+  addCheck('competency293', 'Simulator training', true, simulator, `${position.simulatorMonths} months`);
+  const simNotes = COMPETENCY_KEYS.map((key) => ctx.currencyDoc?.[key]?.notes || '').join(' ');
+  const fixedBase = /fixed[-\s]?base/i.test(simNotes);
+  const motionOk = position.motionSimulator !== true || (!fixedBase && !failingStatus(itemStatusLabel(simulator.status, simulator.daysUntil)));
+  noteGap(
+    { id: `${seat}:motion`, label: 'Motion-based simulator', pilotValue: fixedBase ? 'Fixed base' : itemStatusLabel(simulator.status, simulator.daysUntil), criterion: position.motionSimulator ? 'Required' : 'Not required' },
+    position.motionSimulator !== true || motionOk,
+    motionOk ? '' : 'Motion-based simulator is Not Validated.',
+  );
+
+  const expLines = experience.filter((line) => line.required);
+  const reqLines = requirements.filter((line) => line.included && line.credit != null);
+  const rawScore = scoreExperience(expLines, ctx.standards.weights.experience)
+    + scoreRequirements(reqLines, ctx.standards.weights.requirements);
+  const score = Math.max(0, Math.min(100, Math.round(rawScore)));
+  let tier = TIER.MEETS;
+  if (hardFailures.length > 0) tier = TIER.DOES_NOT_MEET;
+  else if (expiring.length > 0) tier = TIER.CAUTION;
+  return {
+    role: seat,
+    tier,
+    tierLabel: TIER_LABELS[tier],
+    score,
+    gaps,
+    experience,
+    requirements,
+    hardFailures,
+    expiring,
+  };
+}
+
+function mergeGapAnalysis(pic, sic) {
+  const rows = [];
+  const sicByLabel = new Map((sic.gaps || []).map((row) => [row.label, row]));
+  for (const row of pic.gaps || []) {
+    const other = sicByLabel.get(row.label);
+    rows.push({
+      label: row.label,
+      pilotValue: row.pilotValue,
+      picCriteria: row.criterion,
+      sicCriteria: other?.criterion || '',
+      picMet: row.met === true,
+      sicMet: other ? other.met === true : false,
+    });
+  }
+  return rows;
+}
+
 /**
- * Score one pilot.
- *
- * Tier is rule-based, on purpose:
- *   Does Not Meet — a required hour is missing or short, a required item is
- *     expired or not on file, the certificate is below the minimum, or the
- *     drug and alcohol program is not confirmed.
- *   Caution — nothing above, but a required item is expiring soon.
- *   Meets Standard — every required hour is met and every required item is current.
- * The 0–100 score is the weighted average of those same inputs so the
- * breakdown and the number describe one thing. Thresholds in settings are
- * the operator’s published bands; the rules above decide the tier.
+ * Score one pilot against the PIC standard and the SIC standard.
+ * A requested seat (a trip assignment) is the tier for that report.
+ * With no seat, the pilot meets when at least one position meets.
  */
 export function evaluatePilot({
   pilot = {},
@@ -729,178 +1148,114 @@ export function evaluatePilot({
 } = {}) {
   const standards = normalizeStandards(rawStandards);
   const book = normalizeLogbook(logbook, pilot.uid || logbook?.uid || '');
-  const seat = role === 'SIC' || role === 'PIC' ? role : standards.standingRole;
   const certificate = resolveCertificate(book, pilotDocs);
   const medical = resolveMedical(currencyDoc, pilotDocs, todayMs);
+  const ctx = {
+    book, certificate, medical, currencyDoc, dutyHours, focusType, todayMs, standards,
+  };
+  const pic = scorePosition('PIC', standards.positions.PIC, ctx);
+  const sic = scorePosition('SIC', standards.positions.SIC, ctx);
+  const requested = role === 'SIC' || role === 'PIC' ? role : null;
+  const qualifiesFor = [];
+  if (pic.tier !== TIER.DOES_NOT_MEET) qualifiesFor.push('PIC');
+  if (sic.tier !== TIER.DOES_NOT_MEET) qualifiesFor.push('SIC');
+  const active = requested === 'SIC' ? sic : requested === 'PIC' ? pic : (qualifiesFor.includes('PIC') ? pic : sic);
+  let tier = TIER.DOES_NOT_MEET;
+  if (requested) tier = active.tier;
+  else if (qualifiesFor.length === 0) tier = TIER.DOES_NOT_MEET;
+  else if (qualifiesFor.some((seat) => (seat === 'SIC' ? sic : pic).tier === TIER.CAUTION)) tier = TIER.CAUTION;
+  else tier = TIER.MEETS;
 
-  const experience = [];
-  for (const field of HOUR_FIELDS) {
-    const required = standards.hours.required[field.key] !== false;
-    const minimum = standards.hours.minimums[field.key];
-    let actual = null;
-    let source = 'missing';
-    let detail = '';
-    if (field.perType) {
-      const resolved = timeInTypeActual(book.hours.timeInType, focusType);
-      actual = resolved.actual;
-      source = resolved.source === 'logbook' ? 'logbook' : 'missing';
-      if (focusType && resolved.matchedType) detail = resolved.matchedType;
-      else if (focusType) detail = `No entry for ${focusType}`;
-      else if (resolved.matchedType) detail = `Best type on file: ${resolved.matchedType}`;
-    } else if (book.hours[field.key] != null) {
-      actual = book.hours[field.key];
-      source = 'logbook';
-    } else if ((field.key === 'last90Days' || field.key === 'last12Months') && dutyHours?.[field.key] != null) {
-      actual = dutyHours[field.key];
-      source = 'duty';
-      detail = 'From duty flight time';
-    }
-    const ratio = !required
-      ? 1
-      : actual == null || minimum == null
-        ? 0
-        : Math.max(0, Math.min(1, actual / (minimum || 1)));
-    let state = 'meets';
-    if (!required) state = 'optional';
-    else if (actual == null) state = 'missing';
-    else if (minimum != null && actual < minimum) state = 'short';
-    experience.push({
-      key: field.key,
-      label: field.label,
-      actual,
-      actualDisplay: formatHours(actual),
-      minimum: required ? minimum : null,
-      required,
-      ratio,
-      state,
-      source,
-      detail,
+  const recent = [];
+  for (const key of ['last90Days', 'last12Months']) {
+    const resolved = hourActual(book, key, dutyHours, focusType);
+    recent.push({
+      key,
+      label: key === 'last90Days' ? 'Last 90 days' : 'Last 12 months',
+      actual: resolved.actual,
+      actualDisplay: formatHours(resolved.actual),
+      minimum: null,
+      required: false,
+      ratio: 1,
+      state: 'optional',
+      source: resolved.source,
+      detail: resolved.detail || '',
     });
   }
 
-  const savedById = Object.fromEntries(standards.requirements.map((item) => [item.id, item]));
-  const requirements = [];
-  for (const defn of REQUIREMENT_CATALOG) {
-    const saved = savedById[defn.id] || { id: defn.id, label: defn.label, required: true };
-    const included = requirementApplies(defn, saved, seat, standards);
-    let status = 'na';
-    let completedOn = null;
-    let dueOn = null;
-    let detail = '';
-    if (included) {
-      if (defn.kind === 'medical') {
-        status = medical.status;
-        detail = medical.class ? `${medical.class} class` : '';
-      } else if (defn.kind === 'certificate') {
-        const needed = levelRank(standards.certificate.minimumLevel);
-        if (!certificate.level) status = 'unknown';
-        else if (levelRank(certificate.level) >= needed) status = 'current';
-        else status = 'expired';
-        detail = certificate.level || 'Not on file';
-      } else if (defn.kind === 'instrumentRating') {
-        status = certificate.instrument === true ? 'current' : certificate.instrument === false ? 'expired' : 'unknown';
-        detail = certificate.instrument === true ? 'Held' : certificate.instrument === false ? 'Not held' : 'Not on file';
-      } else if (defn.kind === 'multiEngineRating') {
-        status = certificate.multiEngine === true ? 'current' : certificate.multiEngine === false ? 'expired' : 'unknown';
-        detail = certificate.multiEngine === true ? 'Held' : certificate.multiEngine === false ? 'Not held' : 'Not on file';
-      } else if (defn.kind === 'drugAlcohol') {
-        if (book.drugAlcohol.enrolled === true) status = 'current';
-        else if (book.drugAlcohol.enrolled === false) status = 'expired';
-        else status = 'unknown';
-        completedOn = book.drugAlcohol.enrolledDate || null;
-        detail = book.drugAlcohol.enrolled === true
-          ? (book.drugAlcohol.programName || 'Enrolled')
-          : book.drugAlcohol.enrolled === false
-            ? 'Not enrolled'
-            : 'Not on file';
-      } else if (defn.kind === 'currency') {
-        const result = checkResult(currencyDoc, defn.key, todayMs);
-        status = result.status;
-        dueOn = result.dueDate || null;
-        completedOn = currencyDoc?.[defn.key]?.lastDate || null;
-      } else if (defn.kind === 'currency-group') {
-        const result = groupResult(currencyDoc, defn.keys, todayMs);
-        status = result.status;
-        dueOn = result.dueDate || null;
-        completedOn = result.completedOn || null;
-      }
-    }
-    const credit = !included ? null : (STATUS_CREDIT[status] ?? 0);
-    requirements.push({
-      id: defn.id,
-      label: saved.label || defn.label,
-      included,
-      required: saved.required !== false,
-      status,
-      statusLabel: included ? (
-        defn.kind === 'medical' ? medicalBrokerLabel(status) : brokerStatusLabel(status)
-      ) : 'N/A',
-      credit,
-      completedOn,
-      dueOn,
-      detail,
-      picOnly: defn.picOnly === true,
-    });
+  const hoursUpdatedAt = book.hoursMeta?.asOf || book.baseline?.asOf || '';
+  const updatedMs = /^\d{4}-\d{2}-\d{2}$/.test(hoursUpdatedAt)
+    ? Date.parse(`${hoursUpdatedAt}T00:00:00Z`)
+    : null;
+  const staleHours = updatedMs != null && todayMs - updatedMs > 92 * 86400000;
+  const flags = [];
+  if ((certificate.typeRatings || []).length > 0 && certificate.typeVerified !== true) flags.push('Type Not Verified');
+  if (!currencyDoc?.uprt?.lastDate && !currencyDoc?.uprtTraining?.lastDate) flags.push('UPRT Not Verified');
+  if (!currencyDoc?.enhancedPilotTraining?.lastDate && !currencyDoc?.ept?.lastDate) flags.push('EPT Not Verified');
+  if (staleHours) flags.push('Total time last updated more than 3 months ago');
+
+  const unmet = mergeGapAnalysis(pic, sic).filter((row) => !row.picMet || !row.sicMet);
+  const reasons = [];
+  if (tier === TIER.MEETS && qualifiesFor.length === 2) {
+    reasons.push('Meets the PIC and SIC Registered Standard.');
+  } else if (tier !== TIER.DOES_NOT_MEET && qualifiesFor.length === 1) {
+    reasons.push(`Meets the ${qualifiesFor[0]} Registered Standard.`);
   }
-
-  const expLines = experience.filter((line) => line.required);
-  const reqLines = requirements.filter((line) => line.included);
-  const rawScore = scoreExperience(expLines, standards.weights.experience)
-    + scoreRequirements(reqLines, standards.weights.requirements);
-  const score = Math.max(0, Math.min(100, Math.round(rawScore)));
-
-  const hardFailures = [];
-  for (const line of expLines) {
-    if (line.state === 'missing') hardFailures.push(`${line.label} is not on file.`);
-    else if (line.state === 'short') {
-      hardFailures.push(`${line.label} is ${line.actualDisplay}, below the ${line.minimum} minimum.`);
-    }
+  const explain = requested ? active : (qualifiesFor.includes('PIC') ? pic : active);
+  reasons.push(...explain.hardFailures, ...explain.expiring);
+  if (requested && requested !== 'PIC' && pic.tier === TIER.DOES_NOT_MEET) {
+    reasons.push('Does not meet the PIC standard.');
   }
-  const expiring = [];
-  for (const line of reqLines) {
-    if (line.status === 'expired') {
-      hardFailures.push(`${line.label} is expired${line.dueOn ? ` (due ${line.dueOn})` : ''}.`);
-    } else if (line.status === 'unknown') {
-      hardFailures.push(`${line.label} is not on file.`);
-    } else if (['caution', 'warning', 'critical'].includes(line.status)) {
-      expiring.push(`${line.label} is expiring soon${line.dueOn ? ` (due ${line.dueOn})` : ''}.`);
-    }
-  }
+  if (!reasons.length) reasons.push('Does not meet the PIC or SIC Registered Standard.');
 
-  let tier = TIER.MEETS;
-  if (hardFailures.length > 0) tier = TIER.DOES_NOT_MEET;
-  else if (expiring.length > 0) tier = TIER.CAUTION;
-
-  const reasons = tier === TIER.MEETS
-    ? ['Every required hour minimum is met and every required item is current.']
-    : [...hardFailures, ...expiring];
+  const gapAnalysis = mergeGapAnalysis(pic, sic);
 
   return {
     uid: book.uid || pilot.uid || '',
     pilotName: pilot.name || book.pilotName || '',
-    role: seat,
-    score,
+    role: requested || (qualifiesFor.includes('PIC') ? 'PIC' : qualifiesFor[0] || 'PIC'),
+    score: active.score,
     tier,
     tierLabel: TIER_LABELS[tier],
+    qualifiesFor,
+    positions: {
+      PIC: { tier: pic.tier, tierLabel: pic.tierLabel, score: pic.score },
+      SIC: { tier: sic.tier, tierLabel: sic.tierLabel, score: sic.score },
+    },
+    gapAnalysis,
+    unmet,
+    flags,
+    hoursUpdatedAt,
+    staleHours,
     usingDefaultStandards: standards.customized !== true,
     standardsNote: standards.sourceNote,
+    criteriaName: standards.criteriaName || CRITERIA_NAME,
+    criteriaVersion: standards.criteriaVersion || CRITERIA_VERSION,
     weights: standards.weights,
     tiers: standards.tiers,
     reasons,
-    experience,
-    requirements,
+    experience: [...active.experience, ...recent],
+    requirements: active.requirements,
     certificate: {
       level: certificate.level,
       instrument: certificate.instrument,
       multiEngine: certificate.multiEngine,
       typeRatings: certificate.typeRatings,
+      typeVerified: certificate.typeVerified,
+      country: certificate.country,
       levelSource: certificate.levelSource,
     },
     medical: {
       class: medical.class,
       status: medical.status,
-      statusLabel: medicalBrokerLabel(medical.status),
+      statusLabel: medicalBrokerLabel(medical.status, medical.daysUntil),
+      lastDate: medical.lastDate || '',
       source: medical.source,
+    },
+    background: {
+      employment: book.background.employment,
+      accident: book.background.accident,
+      enforcement: book.background.enforcement,
     },
     drugAlcohol: {
       enrolled: book.drugAlcohol.enrolled,
@@ -910,6 +1265,7 @@ export function evaluatePilot({
     timeInType: book.hours.timeInType.map((entry) => ({
       type: entry.type,
       hours: entry.hours,
+      picHours: entry.picHours,
     })),
     focusType: focusType || null,
     hoursAsOf: book.hoursMeta?.asOf || book.baseline?.asOf || '',
@@ -921,7 +1277,6 @@ export function evaluatePilot({
     last6Months: book.hours.last6Months,
   };
 }
-
 const BANNED_REPORT_KEYS = [
   'certificateNumber',
   'documentNumber',
@@ -954,20 +1309,129 @@ function assertBrokerSafe(value, path = 'report') {
  * The document a broker is allowed to see. Built by copying named fields
  * only — caller objects are never spread into it.
  */
+function chipLabel(tier) {
+  return tier && tier !== TIER.DOES_NOT_MEET ? 'Meets' : 'Does Not Meet';
+}
+
+function scopedGaps(evaluations) {
+  if (!evaluations) return null;
+  const rows = [];
+  for (const seat of ['PIC', 'SIC']) {
+    const ev = evaluations[seat];
+    if (!ev) continue;
+    for (const row of ev.gapAnalysis || []) {
+      const met = seat === 'SIC' ? row.sicMet === true : row.picMet === true;
+      if (met) continue;
+      rows.push({
+        label: `${ev.pilotName || seat} · ${row.label}`,
+        pilotValue: row.pilotValue,
+        picCriteria: row.picCriteria,
+        sicCriteria: row.sicCriteria,
+        picMet: seat !== 'PIC',
+        sicMet: seat !== 'SIC',
+      });
+    }
+  }
+  return rows;
+}
+
+function yesNoUnknown(value) {
+  if (value === true) return 'Yes';
+  if (value === false) return 'None';
+  return 'Not on file';
+}
+
+function addDaysIso(iso, days) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '';
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString();
+}
+
+function crewFromEvaluation(ev) {
+  const hours = {};
+  for (const line of ev?.experience || []) {
+    if (!line?.key || line.key === 'timeInType' || line.key === 'picTimeInType') continue;
+    hours[line.key] = line.actualDisplay;
+  }
+  const typeLine = (ev?.experience || []).find((line) => line.key === 'timeInType');
+  const picType = (ev?.experience || []).find((line) => line.key === 'picTimeInType');
+  return {
+    role: ev?.role === 'SIC' ? 'SIC' : 'PIC',
+    pilotName: String(ev?.pilotName || '').slice(0, 80),
+    status: chipLabel(ev?.tier),
+    certificateType: ev?.certificate?.level || 'Not on file',
+    country: ev?.certificate?.country || 'Not on file',
+    typeRating: asStringList(ev?.certificate?.typeRatings).join(', ') || 'Not on file',
+    medicalClass: ev?.medical?.class || 'Not on file',
+    lastMedical: ev?.medical?.lastDate || '',
+    medicalStatus: ev?.medical?.statusLabel || medicalBrokerLabel(ev?.medical?.status),
+    employment: ev?.background?.employment || 'Not on file',
+    accident: yesNoUnknown(ev?.background?.accident),
+    enforcement: yesNoUnknown(ev?.background?.enforcement),
+    hours,
+    timeInType: typeLine?.actualDisplay || null,
+    picTimeInType: picType?.actualDisplay || null,
+    checks: (ev?.requirements || []).filter((line) => line.id !== 'certificate' && line.id !== 'medical').map((line) => ({
+      label: line.label,
+      status: line.statusLabel,
+      completedOn: line.completedOn || '',
+    })),
+  };
+}
+
+/**
+ * Broker-facing PASS-style report. Named fields only. Certificate numbers,
+ * dates of birth, and addresses are not copied.
+ */
 export function brokerPilotReport(evaluation, {
   operatorName = '',
   operatorLegalName = '',
   generatedAt = new Date().toISOString(),
   aircraftType = null,
+  aircraft = null,
+  itinerary = null,
+  shareUrl = '',
+  evaluations = null,
 } = {}) {
   const ev = evaluation || {};
+  const bySeat = evaluations || null;
+  const picEval = bySeat?.PIC || ev;
+  const sicEval = bySeat?.SIC || ev;
+  const picCrew = crewFromEvaluation(bySeat?.PIC || { ...ev, role: 'PIC', tier: ev.positions?.PIC?.tier || ev.tier });
+  const sicCrew = bySeat?.SIC
+    ? crewFromEvaluation(bySeat.SIC)
+    : null;
+  const crew = sicCrew && sicCrew.pilotName && sicCrew.pilotName !== picCrew.pilotName
+    ? [picCrew, sicCrew]
+    : [picCrew];
+  if (!bySeat && ev.positions) {
+    picCrew.status = chipLabel(ev.positions.PIC?.tier);
+    if (sicCrew == null) {
+      crew[0].sicStatus = chipLabel(ev.positions.SIC?.tier);
+    }
+  }
+  const aircraftBlock = {
+    registration: String(aircraft?.registration || aircraft?.tail || '').slice(0, 16),
+    type: String(aircraft?.type || aircraftType || '').slice(0, 80),
+    serial: String(aircraft?.serial || aircraft?.serialNumber || '').slice(0, 40),
+    year: String(aircraft?.year || '').slice(0, 8),
+    seats: aircraft?.seats == null ? '' : String(aircraft.seats).slice(0, 8),
+    insuranceExpiry: String(aircraft?.insuranceExpiry || '').slice(0, 20),
+  };
+  const hasAircraft = Boolean(aircraftBlock.registration || aircraftBlock.type);
   const report = {
+    reportTitle: 'Pilot Report',
+    criteriaName: ev.criteriaName || CRITERIA_NAME,
+    criteriaVersion: ev.criteriaVersion || CRITERIA_VERSION,
     operatorName: String(operatorName || '').slice(0, 80),
     operatorLegalName: String(operatorLegalName || '').slice(0, 120),
-    pilotName: String(ev.pilotName || '').slice(0, 80),
+    pilotName: picCrew.pilotName,
     role: ev.role === 'SIC' ? 'SIC' : 'PIC',
-    aircraftType: aircraftType ? String(aircraftType).slice(0, 80) : null,
+    aircraftType: aircraftBlock.type || null,
     generatedAt: String(generatedAt),
+    expiresAt: addDaysIso(generatedAt, 90),
+    shareUrl: String(shareUrl || '').slice(0, 300),
     hoursAsOf: ev.hoursAsOf || '',
     baselineAsOf: ev.baselineAsOf || '',
     hoursNote: String(ev.hoursNote || '').slice(0, 400),
@@ -976,38 +1440,62 @@ export function brokerPilotReport(evaluation, {
     score: Number.isFinite(ev.score) ? ev.score : 0,
     tier: TIER_LABELS[ev.tier] ? ev.tier : TIER.DOES_NOT_MEET,
     tierLabel: TIER_LABELS[ev.tier] || TIER_LABELS.doesNotMeet,
+    qualifiesFor: Array.isArray(ev.qualifiesFor) ? ev.qualifiesFor.filter((seat) => seat === 'PIC' || seat === 'SIC') : [],
     standardsNote: String(ev.standardsNote || DEFAULT_STANDARDS_NOTE).slice(0, 400),
     usingDefaultStandards: ev.usingDefaultStandards !== false,
     summary: Array.isArray(ev.reasons) ? ev.reasons.map((line) => String(line)).slice(0, 24) : [],
+    flags: Array.isArray(ev.flags) ? ev.flags.map((flag) => String(flag).slice(0, 80)).slice(0, 12) : [],
+    waivers: [],
+    chips: [
+      { id: 'operator', label: 'Operator', status: operatorName ? 'Meets' : 'Does Not Meet' },
+      { id: 'aircraft', label: 'Aircraft', status: hasAircraft ? 'Meets' : 'Does Not Meet' },
+      { id: 'pic', label: 'PIC', status: chipLabel(bySeat?.PIC?.tier || ev.positions?.PIC?.tier || (ev.role === 'SIC' ? null : ev.tier)) },
+      { id: 'sic', label: 'SIC', status: chipLabel(bySeat?.SIC?.tier || ev.positions?.SIC?.tier || (ev.role === 'SIC' ? ev.tier : null)) },
+    ],
+    operator: {
+      name: String(operatorName || '').slice(0, 80),
+      legalName: String(operatorLegalName || '').slice(0, 120),
+    },
+    itinerary: itinerary && (itinerary.from || itinerary.to) ? {
+      from: String(itinerary.from || '').slice(0, 8),
+      to: String(itinerary.to || '').slice(0, 8),
+      date: String(itinerary.date || '').slice(0, 40),
+      tail: String(itinerary.tail || aircraftBlock.registration || '').slice(0, 16),
+    } : null,
+    aircraft: aircraftBlock,
+    crew,
+    gapAnalysis: (scopedGaps(bySeat) || ev.gapAnalysis || []).slice(0, 40).map((row) => ({
+      label: String(row.label || '').slice(0, 120),
+      pilotValue: String(row.pilotValue || '').slice(0, 80),
+      picCriteria: String(row.picCriteria || '').slice(0, 40),
+      sicCriteria: String(row.sicCriteria || '').slice(0, 40),
+      picMet: row.picMet === true,
+      sicMet: row.sicMet === true,
+    })),
     certificate: {
       level: ev.certificate?.level || 'Not on file',
       instrument: ev.certificate?.instrument === true ? 'Yes' : ev.certificate?.instrument === false ? 'No' : 'Not on file',
       multiEngine: ev.certificate?.multiEngine === true ? 'Yes' : ev.certificate?.multiEngine === false ? 'No' : 'Not on file',
       typeRatings: asStringList(ev.certificate?.typeRatings),
+      country: ev.certificate?.country || 'Not on file',
     },
     medical: {
       class: ev.medical?.class || 'Not on file',
       status: ev.medical?.statusLabel || medicalBrokerLabel(ev.medical?.status),
+      lastMedical: ev.medical?.lastDate || '',
     },
-    hours: (ev.experience || []).filter((line) => line.required && line.key !== 'timeInType').map((line) => ({
+    hours: (ev.experience || []).filter((line) => line.required && line.key !== 'timeInType' && line.key !== 'picTimeInType').map((line) => ({
       label: line.label,
       hours: line.actualDisplay,
       minimum: line.minimum,
       state: line.state,
-      source: line.source === 'duty' ? 'Duty records' : line.source === 'logbook' ? 'Logbook' : 'Not on file',
+      source: line.source === 'duty' ? 'Duty records' : line.source === 'logbook' || line.source === 'derived' ? 'Logbook' : 'Not on file',
     })),
     timeInType: (ev.timeInType || []).map((entry) => ({
       type: String(entry.type || '').slice(0, 40),
       hours: formatHours(entry.hours),
+      picHours: formatHours(entry.picHours),
     })),
-    timeInTypeScored: (ev.experience || []).find((line) => line.key === 'timeInType')
-      ? {
-          hours: (ev.experience || []).find((line) => line.key === 'timeInType').actualDisplay,
-          minimum: (ev.experience || []).find((line) => line.key === 'timeInType').minimum,
-          state: (ev.experience || []).find((line) => line.key === 'timeInType').state,
-          detail: (ev.experience || []).find((line) => line.key === 'timeInType').detail || '',
-        }
-      : null,
     requirements: (ev.requirements || []).filter((line) => line.included).map((line) => ({
       label: line.label,
       status: line.statusLabel,
@@ -1040,13 +1528,16 @@ export function matchCrewUser(displayName, users) {
 }
 
 /**
- * One sanitized report per assigned seat on a trip. The same pilot in the
- * same seat on two legs appears once. PIC and SIC are scored against that
- * seat, so a PIC-only line check is not charged to the SIC.
+ * One PASS-style report for the trip. PIC and SIC are scored against the
+ * seat they are assigned, so a PIC-only line check is not charged to the SIC.
+ * The same pilot in the same seat on two legs appears once.
  */
 export function buildBrokerCrewReports({
   legs = [],
   aircraftType = null,
+  aircraft = null,
+  itinerary = null,
+  shareUrl = '',
   users = [],
   logbooksByUid = {},
   currenciesByUid = {},
@@ -1072,8 +1563,10 @@ export function buildBrokerCrewReports({
     add(leg?.pic ?? leg?.picName, 'PIC');
     add(leg?.sic ?? leg?.sicName, 'SIC');
   }
+  if (seats.length === 0) return [];
 
-  return seats.map((seat) => {
+  const evaluations = {};
+  for (const seat of seats) {
     const user = matchCrewUser(seat.name, users);
     const uid = user?.uid || '';
     const evaluation = evaluatePilot({
@@ -1088,11 +1581,25 @@ export function buildBrokerCrewReports({
       todayMs,
     });
     evaluation.pilotName = seat.name;
-    return brokerPilotReport(evaluation, {
-      operatorName: operator.name || operator.operatorName || '',
-      operatorLegalName: operator.legalName || operator.operatorLegalName || '',
-      generatedAt,
-      aircraftType: seat.aircraftType,
-    });
-  });
+    evaluations[seat.role] = evaluation;
+  }
+
+  const leg = (legs || []).find((item) => item?.from || item?.to || item?.origin) || legs?.[0] || {};
+  const route = itinerary || (leg.from || leg.to || leg.origin || leg.destination ? {
+    from: leg.from || leg.origin || '',
+    to: leg.to || leg.destination || '',
+    date: leg.date || leg.departDate || '',
+    tail: leg.tail || aircraft?.registration || aircraft?.tail || '',
+  } : null);
+
+  return [brokerPilotReport(evaluations.PIC || evaluations.SIC, {
+    operatorName: operator.name || operator.operatorName || '',
+    operatorLegalName: operator.legalName || operator.operatorLegalName || '',
+    generatedAt,
+    aircraftType: aircraftType || seats.find((seat) => seat.aircraftType)?.aircraftType || null,
+    aircraft,
+    itinerary: route,
+    shareUrl,
+    evaluations,
+  })];
 }

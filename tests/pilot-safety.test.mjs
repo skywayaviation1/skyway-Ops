@@ -24,7 +24,8 @@ function currency(overrides = {}) {
   const later = { dueDate: ymd(200) };
   const na = { notApplicable: true };
   return {
-    medical: { class: 'First', expirationDate: ymd(400) },
+    medical: { class: 'First', expirationDate: ymd(400), lastDate: ymd(-40) },
+    basicIndoctrination: current,
     groundOralGeneral293a: current,
     groundOral293a_CE525: current,
     groundOral293a_LR60: na,
@@ -51,20 +52,27 @@ function logbook(overrides = {}) {
       totalTime: 4820,
       pic: 2310,
       sic: 900,
+      fixedWing: 4700,
+      rotorWing: 0,
       multiEngine: 4100,
+      multiEngine90: 40,
+      multiEngine12: 200,
       turbine: 3600,
       night: 640,
       instrument: 410,
       last90Days: 48,
       last12Months: 312,
-      timeInType: [{ type: 'Citation XLS+', hours: 860 }],
+      timeInType: [{ type: 'Citation XLS+', hours: 860, picHours: 400 }],
     },
     certificate: {
       level: 'ATP',
       instrument: true,
       multiEngine: true,
       typeRatings: ['Citation XLS+'],
+      typeVerified: true,
+      country: 'United States',
     },
+    background: { employment: 'Full Time', accident: false, enforcement: false },
     drugAlcohol: { enrolled: true, enrolledDate: ymd(-400), programName: 'Company program' },
     internalNotes: 'Home address 1 Secret Street',
     certificateNumber: 'SHOULD-NOT-APPEAR',
@@ -74,16 +82,53 @@ function logbook(overrides = {}) {
 
 const pilot = { uid: 'pilot-1', name: 'Maxwell Hagberg' };
 
-test('shipped standards are labeled as defaults and are not a Wyvern score', () => {
+test('shipped standards are the Wyvern Registered Standard by position', () => {
   const standards = normalizeStandards(null);
   assert.equal(standards.customized, false);
-  assert.match(standards.sourceNote, /Not a WYVERN/);
+  assert.match(standards.sourceNote, /Registered Standard/);
   assert.equal(standards.sourceNote, DEFAULT_STANDARDS_NOTE);
-  assert.equal(standards.hours.minimums.totalTime, 2500);
-  assert.equal(standards.certificate.minimumLevel, 'Commercial');
+  assert.equal(standards.positions.PIC.hours.totalTime, 2500);
+  assert.equal(standards.positions.SIC.hours.totalTime, 1000);
+  assert.equal(standards.positions.PIC.hours.pic, 1000);
+  assert.equal(standards.positions.SIC.hours.pic, 0);
+  assert.equal(standards.positions.PIC.hours.fixedWing, 2000);
+  assert.equal(standards.positions.SIC.hours.fixedWing, 1000);
+  assert.equal(standards.positions.PIC.hours.multiEngine, 1000);
+  assert.equal(standards.positions.SIC.hours.multiEngine, 50);
+  assert.equal(standards.positions.PIC.hours.multiEngine12, 150);
+  assert.equal(standards.positions.SIC.hours.multiEngine12, 50);
+  assert.equal(standards.positions.PIC.hours.multiEngine90, 30);
+  assert.equal(standards.positions.SIC.hours.multiEngine90, 30);
+  assert.equal(standards.positions.PIC.hours.instrument, 100);
+  assert.equal(standards.positions.SIC.hours.instrument, 50);
+  assert.equal(standards.positions.PIC.hours.turbine, 1000);
+  assert.equal(standards.positions.SIC.hours.turbine, 30);
+  assert.equal(standards.positions.PIC.hours.timeInType, 200);
+  assert.equal(standards.positions.SIC.hours.timeInType, 30);
+  assert.equal(standards.positions.PIC.hours.picTimeInType, 100);
+  assert.equal(standards.positions.SIC.hours.picTimeInType, 0);
+  assert.equal(standards.positions.PIC.medicalClass, 'First');
+  assert.equal(standards.positions.SIC.medicalClass, 'Second');
+  assert.equal(standards.positions.PIC.medicalMonths, 12);
+  assert.equal(standards.positions.SIC.medicalMonths, 12);
+  assert.equal(standards.positions.PIC.indoctrination, true);
+  assert.equal(standards.positions.SIC.indoctrination, true);
+  assert.equal(standards.positions.PIC.lineCheck, true);
+  assert.equal(standards.positions.SIC.lineCheck, false);
+  assert.equal(standards.positions.PIC.lineCheckMonths, 7);
+  assert.equal(standards.positions.PIC.ipc, true);
+  assert.equal(standards.positions.SIC.ipc, false);
+  assert.equal(standards.positions.PIC.ipcMonths, 6);
+  assert.equal(standards.positions.PIC.maxActiveTypes, 2);
+  assert.equal(standards.positions.SIC.maxActiveTypes, 2);
+  assert.equal(standards.positions.PIC.confirmedType, true);
+  assert.equal(standards.positions.SIC.confirmedType, false);
+  assert.equal(standards.positions.PIC.aircraftMonths, 12);
+  assert.equal(standards.positions.SIC.motionSimulator, true);
+  assert.equal(standards.criteriaName, 'Wyvern Registered Standard');
 });
 
-test('a pilot who meets every default minimum is Meets Standard', () => {
+test('a pilot who meets every default minimum qualifies for PIC and SIC', () => {
   const rating = evaluatePilot({
     pilot,
     logbook: logbook(),
@@ -91,44 +136,55 @@ test('a pilot who meets every default minimum is Meets Standard', () => {
     todayMs: today,
   });
   assert.equal(rating.tier, 'meets');
-  assert.equal(rating.tierLabel, 'Meets Standard');
+  assert.equal(rating.tierLabel, 'Meets');
+  assert.deepEqual(rating.qualifiesFor, ['PIC', 'SIC']);
+  assert.equal(rating.positions.PIC.tier, 'meets');
+  assert.equal(rating.positions.SIC.tier, 'meets');
   assert.ok(rating.score >= 85);
   assert.equal(rating.reasons.length, 1);
+  assert.match(rating.reasons[0], /PIC and SIC Registered Standard/);
 });
 
-test('an expiring requirement with hours met is Caution', () => {
+test('an expiring requirement with hours met is caution and still meets the chip', () => {
   const rating = evaluatePilot({
     pilot,
     logbook: logbook(),
-    currencyDoc: currency({ hazmatTraining: { dueDate: ymd(18) } }),
+    currencyDoc: currency({ recurrentTraining351: { dueDate: ymd(18), lastDate: ymd(-300) } }),
     todayMs: today,
   });
   assert.equal(rating.tier, 'caution');
-  assert.match(rating.reasons.join(' '), /Hazmat|Hazardous materials/i);
-  assert.match(rating.reasons.join(' '), /expiring soon/i);
+  assert.equal(rating.tierLabel, 'Meets');
+  assert.equal(rating.requirements.find((item) => item.id === 'recurrentTraining351').statusLabel, 'Expires in 30 Days');
+  assert.match(rating.reasons.join(' '), /Expires in 30 Days/);
 });
 
-test('short hours or an expired check does not meet the standard', () => {
+test('short hours fail PIC and can still qualify SIC, and an expired PIC line check fails PIC', () => {
   const short = evaluatePilot({
     pilot,
     logbook: logbook({ hours: { ...logbook().hours, turbine: 180 } }),
     currencyDoc: currency(),
     todayMs: today,
   });
-  assert.equal(short.tier, 'doesNotMeet');
-  assert.match(short.reasons.join(' '), /Turbine is 180/);
+  assert.equal(short.positions.PIC.tier, 'doesNotMeet');
+  assert.equal(short.positions.SIC.tier, 'meets');
+  assert.deepEqual(short.qualifiesFor, ['SIC']);
+  const turbine = short.gapAnalysis.find((row) => row.label === 'Turbine');
+  assert.equal(turbine.picMet, false);
+  assert.equal(turbine.sicMet, true);
+  assert.match(turbine.pilotValue, /180/);
 
   const expired = evaluatePilot({
     pilot,
     logbook: logbook(),
     currencyDoc: currency({ lineCheck299: { dueDate: ymd(-5) } }),
+    role: 'PIC',
     todayMs: today,
   });
   assert.equal(expired.tier, 'doesNotMeet');
-  assert.match(expired.reasons.join(' '), /line check is expired/i);
+  assert.match(expired.reasons.join(' '), /Line check is Expired/);
 });
 
-test('raising a minimum changes the tier without a code change', () => {
+test('raising a PIC minimum changes that position without a code change', () => {
   const standards = normalizeStandards({
     customized: true,
     hours: { minimums: { totalTime: 9000 }, required: { totalTime: true } },
@@ -140,8 +196,11 @@ test('raising a minimum changes the tier without a code change', () => {
     standards,
     todayMs: today,
   });
-  assert.equal(rating.tier, 'doesNotMeet');
-  assert.match(rating.reasons.join(' '), /9000/);
+  assert.equal(rating.positions.PIC.tier, 'doesNotMeet');
+  assert.equal(rating.positions.SIC.tier, 'meets');
+  const total = rating.gapAnalysis.find((row) => row.label === 'Total time');
+  assert.equal(total.picCriteria, '9000');
+  assert.equal(total.picMet, false);
 });
 
 test('SIC is not failed for a PIC-only check', () => {
@@ -208,7 +267,7 @@ test('certificate and medical on file are used when the logbook and currency are
   assert.equal(rating.certificate.instrument, true);
   assert.equal(rating.certificate.multiEngine, true);
   assert.equal(rating.medical.class, 'First');
-  assert.equal(rating.medical.statusLabel, 'Valid');
+  assert.equal(rating.medical.statusLabel, 'Current');
   assert.equal(rating.requirements.find((item) => item.id === 'certificate').status, 'current');
   assert.equal(rating.requirements.find((item) => item.id === 'medical').status, 'current');
 });
@@ -245,19 +304,26 @@ test('the broker report keeps vetting facts and drops personal data', () => {
   }
   assert.equal(report.pilotName, 'Maxwell Hagberg');
   assert.equal(report.medical.class, 'First');
-  assert.equal(report.medical.status, 'Valid');
+  assert.equal(report.medical.status, 'Current');
+  assert.equal(report.medical.lastMedical, '');
   assert.equal(report.certificate.level, 'ATP');
+  assert.equal(report.criteriaName, 'Wyvern Registered Standard');
+  assert.equal(report.chips.find((chip) => chip.id === 'pic').status, 'Meets');
+  assert.equal(report.chips.find((chip) => chip.id === 'sic').status, 'Meets');
   assert.ok(report.hours.some((row) => row.label === 'Total time' && row.hours === '4820'));
-  assert.ok(report.requirements.some((row) => /135\.293/.test(row.label)));
+  assert.ok(report.requirements.some((row) => /Line check|Instrument proficiency|Recurrent/.test(row.label)));
   assert.equal(report.generatedAt, '2026-09-27T15:00:00.000Z');
+  assert.equal(report.crew[0].country, 'United States');
+  assert.equal(report.crew[0].accident, 'None');
 });
 
-test('a trip share builds one report per seat and keeps the SIC on the SIC standard', () => {
+test('a trip share builds one PASS report and keeps the SIC on the SIC standard', () => {
   const reports = buildBrokerCrewReports({
     legs: [
-      { pic: 'Maxwell Hagberg', sic: 'Timothy Woods', aircraftType: 'Citation XLS+' },
+      { pic: 'Maxwell Hagberg', sic: 'Timothy Woods', aircraftType: 'Citation XLS+', from: 'TVC', to: 'IAD', date: '2026-09-28', tail: 'N286N' },
       { pic: 'Maxwell Hagberg', sic: 'Timothy Woods', aircraftType: 'Citation XLS+' },
     ],
+    aircraft: { registration: 'N286N', type: 'Citation XLS+', serial: '560-0001' },
     users: [
       { uid: 'pilot-1', name: 'Maxwell Hagberg' },
       { uid: 'pilot-2', name: 'Timothy Woods' },
@@ -274,11 +340,15 @@ test('a trip share builds one report per seat and keeps the SIC on the SIC stand
     generatedAt: '2026-09-27T15:00:00.000Z',
     todayMs: today,
   });
-  assert.equal(reports.length, 2);
-  assert.equal(reports[0].role, 'PIC');
-  assert.equal(reports[0].tier, 'meets');
-  assert.equal(reports[1].role, 'SIC');
-  assert.equal(reports[1].tier, 'meets');
+  assert.equal(reports.length, 1);
+  assert.equal(reports[0].crew.length, 2);
+  assert.equal(reports[0].chips.find((chip) => chip.id === 'pic').status, 'Meets');
+  assert.equal(reports[0].chips.find((chip) => chip.id === 'sic').status, 'Meets');
+  assert.equal(reports[0].itinerary.from, 'TVC');
+  assert.equal(reports[0].itinerary.to, 'IAD');
+  assert.equal(reports[0].aircraft.registration, 'N286N');
+  assert.equal(reports[0].aircraft.serial, '560-0001');
+  assert.equal(reports[0].criteriaVersion, 'registered-standard-1');
   assert.equal(JSON.stringify(reports).includes('Secret Street'), false);
 });
 

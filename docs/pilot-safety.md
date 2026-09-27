@@ -1,6 +1,6 @@
 # Pilot safety rating and broker pilot report
 
-The rating is an operator-owned crew vetting summary. It is not a WYVERN Ltd PASS or Wingman score. Shipped hour minimums and the requirement list are industry-typical Part 135 turbine charter defaults. Admins replace them in Compliance → Currency → Rating minimums. Saved values live at `app-config/pilot-safety`.
+The rating is an operator-owned crew vetting summary that uses the Wyvern Registered Standard as its shipped defaults, split by PIC and SIC. Brokers see a PASS-style report. It is not a live WYVERN Ltd audit. Admins replace the minimums in Compliance → Currency → Rating minimums. Saved values live at `app-config/pilot-safety`.
 
 ## What is stored
 
@@ -11,9 +11,10 @@ The rating is an operator-owned crew vetting summary. It is not a WYVERN Ltd PAS
   uid,
   pilotName,
   hours: {
-    totalTime, pic, sic, multiEngine, turbine, night, instrument,
+    totalTime, pic, sic, fixedWing, rotorWing, singleEngine, multiEngine,
+    multiEngine90, multiEngine12, turbine, night, instrument,
     last90Days, last6Months, last12Months, landings,
-    timeInType: [{ type, hours }]
+    timeInType: [{ type, hours, picHours }]
   },
   baseline: {                 // snapshot the automatic log adds to; never a broker field
     asOf: 'YYYY-MM-DD',       // flights are added only when block-in is a later UTC date
@@ -29,8 +30,11 @@ The rating is an operator-owned crew vetting summary. It is not a WYVERN Ltd PAS
     level: 'ATP' | 'Commercial' | 'Private' | '',
     instrument: true | false | null,
     multiEngine: true | false | null,
-    typeRatings: [string]
+    typeRatings: [string],
+    typeVerified: true | false | null,
+    country: string
   },
+  background: { employment, accident: true | false | null, enforcement: true | false | null },
   drugAlcohol: { enrolled: true | false | null, enrolledDate, programName },
   internalNotes,          // never copied onto a broker report
   wyvern: {               // present after an ACES import; never copied onto a broker report
@@ -44,14 +48,16 @@ Do not put certificate numbers, dates of birth, addresses, medical limitations, 
 
 Checks, training, and the medical class/expiration used day to day stay on the existing `pilot-currencies/{uid}` record and are edited on the Currency screen. The rating reads:
 
-- §135.293 written/oral (`groundOralGeneral293a`)
-- §135.293 aircraft knowledge (worst recorded aircraft-specific oral; N/A types are ignored)
-- §135.293 competency check (same rule for the competency group)
-- §135.297 PIC instrument proficiency check (PIC seat only)
-- §135.299 PIC line check (PIC seat only)
-- recurrent training, CRM, hazmat, and security training (`tfsspTraining`)
-- medical class and expiration
-- drug and alcohol enrollment on the logbook
+- indoctrination (`basicIndoctrination`, presence only)
+- aircraft-specific training (worst recorded `groundOral293a_*`; N/A types are ignored)
+- simulator / competency training (worst recorded `sim293b_*` or `competencyCheck293`), including a motion-simulator note
+- §135.297 instrument proficiency check (PIC seat, 6 months unless the saved minimum says otherwise)
+- §135.299 line check (PIC seat, 7 months unless the saved minimum says otherwise)
+- recurrent training
+- medical class and expiration, plus last medical date when Currency has one
+- UPRT and enhanced pilot training dates, as flags only
+
+CRM, hazmat, security, and drug-and-alcohol enrollment stay on the record and are not part of this standard.
 
 `last90Days` and `last12Months` use the logbook figure when one is saved. If that field is blank, flight time already recorded on `duty-periods-v2` fills it. The source is shown on the rating breakdown.
 
@@ -117,19 +123,17 @@ FIREBASE_SERVICE_ACCOUNT_JSON='...' node scripts/rebuild-pilot-hours.mjs --apply
 
 ## How the tier is decided
 
-The 0–100 score is 55% experience and 45% requirements with the shipped weights. Each required hour contributes `min(actual / minimum, 1)` (a blank required hour contributes 0). Each included requirement contributes full credit when current, partial credit when expiring, and none when expired or not on file.
+Each pilot is scored against both the PIC column and the SIC column of `standards.positions`. A position Does Not Meet when a required hour is missing or short, or a required item is Expired or Not Validated. Expires in 30 Days and Expires in 7 Days still meet that position and mark the rating caution. Current meets. With no assigned seat, the standing rating meets when at least one position meets, and the screen shows which seats qualify plus a gap analysis of unmet items. A trip report scores each pilot in the seat they are assigned, so a PIC line check and instrument proficiency check are not charged to the SIC.
 
-The tier is rule-based, so a high score cannot hide a failed item:
+Shipped PIC / SIC minimums: medical class 1 / 2, medical validity 12 / 12 months, indoctrination required / required, line check 7 months / not required, instrument proficiency check 6 months / not required, max active type ratings 2 / 2, confirmed type required / not required, aircraft-specific, recurrent, and simulator training 12 / 12 months, motion simulator required / required, total time 2500 / 1000, PIC time 1000 / 0, fixed-wing 2000 / 1000, multi-engine 1000 / 50, multi-engine last 12 months 150 / 50, multi-engine last 90 days 30 / 30, instrument 100 / 50, turbine 1000 / 30, time in type 200 / 30, PIC time in type 100 / 0.
 
-- **Does Not Meet** — a required hour is missing or below the minimum, or a required item is expired or not on file (including a certificate below the minimum, or drug and alcohol enrollment not confirmed).
-- **Caution** — every minimum is met, and at least one required item is expiring soon.
-- **Meets Standard** — every required hour is met and every required item is current.
+Flags such as Type Not Verified, UPRT Not Verified, and EPT Not Verified are shown and do not by themselves fail the standard. Total time last updated more than three months ago is flagged; automatic flight-log updates keep that date current.
 
-The standing rating on the crew screen uses the PIC seat. A broker report for a trip scores each pilot in the seat they are assigned, so a PIC-only line check is not charged to the SIC. Unmarked aircraft-specific checks are not failures when another type in that group is recorded; mark types the pilot does not fly N/A on Currency.
+Unmarked aircraft-specific checks are not failures when another type in that group is recorded; mark types the pilot does not fly N/A on Currency.
 
 ## Broker report
 
-`BrokerPilotReport` and both PDF builders render `brokerPilotReport()`. That function copies named fields only. It includes operator, pilot name, seat, aircraft type, generated date, the flight-time as-of date, certificate grade, instrument and multi-engine (yes/no), type ratings, medical class and Valid / Expiring soon / Expired, the hours summary, requirement status with completion and due dates, the score, the tier, and the reasons. The as-of date is the day the totals were last rolled forward. When a baseline date is present, the report also names that snapshot.
+`BrokerPilotReport` and both PDF builders render `brokerPilotReport()`. That function copies named fields only. A trip share is one report: identity, generated date and expiration, Operator / Aircraft / PIC / SIC chips (Meets or Does Not Meet), flags and waivers, operator, itinerary when the trip has one, aircraft registration, type, and serial (year, seats, and insurance only when the trip record has them), a PIC and SIC crew summary, unmet gap rows, and a footer with the criteria version plus a link to the live share page. Crew lines show certificate type and country, type rating, medical class and last medical date, employment, accident/incident and enforcement as None or Yes, the hour totals, 90-day and 12-month recency, and the check statuses. The as-of date is the day the totals were last rolled forward.
 
 It does not include certificate numbers, date of birth, home address, medical expiration or limitations, internal notes, document files, email, or phone.
 

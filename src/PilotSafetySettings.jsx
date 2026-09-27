@@ -1,20 +1,37 @@
 // Operator minimums for the pilot safety rating.
-// Stored at app-config/pilot-safety. Blank means the shipped defaults.
+// Stored at app-config/pilot-safety. Blank means the shipped Registered Standard.
 
 import { useEffect, useState } from 'react';
 import { RotateCcw, Save, ShieldCheck } from 'lucide-react';
 import { Button, Card, CardHeader } from './ui.jsx';
 import {
-  CERTIFICATE_LEVELS,
   DEFAULT_PILOT_SAFETY_STANDARDS,
   DEFAULT_STANDARDS_NOTE,
-  HOUR_FIELDS,
+  POSITION_HOUR_FIELDS,
   normalizeStandards,
 } from './pilot-safety.js';
 import {
   savePilotSafetyStandards,
   subscribePilotSafetyStandards,
 } from './firebase-pilot-safety.js';
+
+const RULES = [
+  { key: 'medicalMonths', label: 'Medical valid (months)' },
+  { key: 'lineCheckMonths', label: 'Line check expiry (months)' },
+  { key: 'ipcMonths', label: 'Instrument proficiency expiry (months)' },
+  { key: 'maxActiveTypes', label: 'Max active type ratings' },
+  { key: 'aircraftMonths', label: 'Aircraft-specific training (months)' },
+  { key: 'recurrentMonths', label: 'Recurrent training (months)' },
+  { key: 'simulatorMonths', label: 'Simulator training (months)' },
+];
+
+const FLAGS = [
+  { key: 'indoctrination', label: 'Indoctrination required' },
+  { key: 'lineCheck', label: 'Line check required' },
+  { key: 'ipc', label: 'Instrument proficiency check required' },
+  { key: 'confirmedType', label: 'Confirmed type rating required' },
+  { key: 'motionSimulator', label: 'Motion-based simulator required' },
+];
 
 export default function PilotSafetySettings({ currentUser }) {
   const [saved, setSaved] = useState(null);
@@ -28,29 +45,23 @@ export default function PilotSafetySettings({ currentUser }) {
   }), []);
 
   const usingDefaults = !saved?.customized;
-  const setHour = (key, value) => {
+
+  const setPosition = (seat, patch) => {
     setDraft((current) => ({
       ...current,
-      hours: {
-        ...current.hours,
-        minimums: { ...current.hours.minimums, [key]: value },
+      positions: {
+        ...current.positions,
+        [seat]: { ...current.positions[seat], ...patch },
       },
     }));
   };
-  const setRequired = (key, required) => {
-    setDraft((current) => ({
-      ...current,
+  const setHour = (seat, key, value) => {
+    setPosition(seat, {
       hours: {
-        ...current.hours,
-        required: { ...current.hours.required, [key]: required },
+        ...draft.positions[seat].hours,
+        [key]: value,
       },
-    }));
-  };
-  const setRequirement = (id, patch) => {
-    setDraft((current) => ({
-      ...current,
-      requirements: current.requirements.map((item) => (item.id === id ? { ...item, ...patch } : item)),
-    }));
+    });
   };
 
   const save = async () => {
@@ -82,118 +93,98 @@ export default function PilotSafetySettings({ currentUser }) {
       />
       <p className="mb-4 text-xs leading-relaxed text-content-muted">{DEFAULT_STANDARDS_NOTE}</p>
 
-      <div className="mb-4 grid gap-3 sm:grid-cols-3">
-        <label className="text-xs text-content-muted">
-          Minimum certificate
-          <select
-            value={draft.certificate.minimumLevel}
-            onChange={(event) => setDraft((current) => ({
-              ...current,
-              certificate: { ...current.certificate, minimumLevel: event.target.value },
-            }))}
-            className="mt-1 w-full rounded-lg border border-edge bg-surface px-3 py-2 text-sm text-content"
-          >
-            {CERTIFICATE_LEVELS.map((level) => (
-              <option key={level.id} value={level.id}>{level.label}</option>
-            ))}
-          </select>
-        </label>
-        <NumberField
-          label="Meets Standard at"
-          value={draft.tiers.meetsAt}
-          onChange={(value) => setDraft((current) => ({ ...current, tiers: { ...current.tiers, meetsAt: value } }))}
-          hint="Score band published with the rating"
-        />
-        <NumberField
-          label="Caution at"
-          value={draft.tiers.cautionAt}
-          onChange={(value) => setDraft((current) => ({ ...current, tiers: { ...current.tiers, cautionAt: value } }))}
-          hint="Below the meets band"
-        />
-      </div>
-
       <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-content-subtle">Hour minimums</h3>
-      <div className="mb-4 divide-y divide-edge border border-edge">
-        {HOUR_FIELDS.map((field) => {
-          const isDefault = Number(draft.hours.minimums[field.key]) === DEFAULT_PILOT_SAFETY_STANDARDS.hours.minimums[field.key]
-            && draft.hours.required[field.key] === DEFAULT_PILOT_SAFETY_STANDARDS.hours.required[field.key];
-          return (
-            <div key={field.key} className="grid grid-cols-[1fr_7rem_auto] items-center gap-3 px-3 py-2">
-              <div>
-                <div className="text-sm text-content">{field.label}</div>
-                {isDefault && <div className="text-[10px] uppercase tracking-wide text-content-subtle">Default</div>}
-              </div>
-              <input
-                type="number"
-                min="0"
-                step="1"
-                aria-label={`${field.label} minimum`}
-                value={draft.hours.minimums[field.key] ?? ''}
-                onChange={(event) => setHour(field.key, event.target.value)}
-                className="rounded-lg border border-edge bg-surface px-2 py-1.5 text-sm text-content"
-              />
-              <label className="flex items-center gap-2 text-xs text-content-muted">
-                <input
-                  type="checkbox"
-                  checked={draft.hours.required[field.key] !== false}
-                  onChange={(event) => setRequired(field.key, event.target.checked)}
-                />
-                Required
-              </label>
-            </div>
-          );
-        })}
+      <div className="mb-4 overflow-x-auto border border-edge">
+        <table className="w-full text-left text-sm">
+          <thead>
+            <tr className="border-b border-edge text-[10px] uppercase tracking-wide text-content-subtle">
+              <th className="px-3 py-2 font-medium">Item</th>
+              <th className="px-3 py-2 font-medium">PIC</th>
+              <th className="px-3 py-2 font-medium">SIC</th>
+            </tr>
+          </thead>
+          <tbody>
+            {POSITION_HOUR_FIELDS.map((field) => (
+              <tr key={field.key} className="border-b border-edge">
+                <td className="px-3 py-2 text-content">{field.label}</td>
+                <td className="px-3 py-2"><HourInput seat="PIC" field={field} draft={draft} onChange={setHour} /></td>
+                <td className="px-3 py-2"><HourInput seat="SIC" field={field} draft={draft} onChange={setHour} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
 
-      <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-content-subtle">Requirements</h3>
-      <div className="mb-4 divide-y divide-edge border border-edge">
-        {draft.requirements.map((item) => (
-          <label key={item.id} className="flex items-center gap-3 px-3 py-2 text-sm text-content">
-            <input
-              type="checkbox"
-              checked={item.required !== false}
-              onChange={(event) => setRequirement(item.id, { required: event.target.checked })}
-            />
-            <input
-              value={item.label}
-              aria-label={`${item.id} label`}
-              onChange={(event) => setRequirement(item.id, { label: event.target.value })}
-              className="min-w-0 flex-1 rounded-lg border border-edge bg-surface px-2 py-1.5 text-sm text-content"
-            />
+      <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-content-subtle">Medical class</h3>
+      <div className="mb-4 grid gap-3 sm:grid-cols-2">
+        {['PIC', 'SIC'].map((seat) => (
+          <label key={seat} className="text-xs text-content-muted">
+            {seat} minimum medical class
+            <select
+              aria-label={`${seat} medical class`}
+              value={draft.positions[seat].medicalClass}
+              onChange={(event) => setPosition(seat, { medicalClass: event.target.value })}
+              className="mt-1 w-full rounded-lg border border-edge bg-surface px-3 py-2 text-sm text-content"
+            >
+              <option value="First">Class 1</option>
+              <option value="Second">Class 2</option>
+              <option value="Third">Class 3</option>
+            </select>
           </label>
         ))}
       </div>
 
-      <div className="mb-3 grid gap-2 text-xs text-content-muted sm:grid-cols-2">
-        <label className="flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={draft.certificate.requireInstrument !== false}
-            onChange={(event) => setDraft((current) => ({
-              ...current,
-              certificate: { ...current.certificate, requireInstrument: event.target.checked },
-            }))}
-          />
-          Instrument rating required
-        </label>
-        <label className="flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={draft.certificate.requireMultiEngine !== false}
-            onChange={(event) => setDraft((current) => ({
-              ...current,
-              certificate: { ...current.certificate, requireMultiEngine: event.target.checked },
-            }))}
-          />
-          Multi-engine rating required
-        </label>
+      <div className="mb-4 overflow-x-auto border border-edge">
+        <table className="w-full text-left text-sm">
+          <thead>
+            <tr className="border-b border-edge text-[10px] uppercase tracking-wide text-content-subtle">
+              <th className="px-3 py-2 font-medium">Rule</th>
+              <th className="px-3 py-2 font-medium">PIC</th>
+              <th className="px-3 py-2 font-medium">SIC</th>
+            </tr>
+          </thead>
+          <tbody>
+            {RULES.map((rule) => (
+              <tr key={rule.key} className="border-b border-edge">
+                <td className="px-3 py-2 text-content">{rule.label}</td>
+                {['PIC', 'SIC'].map((seat) => (
+                  <td key={seat} className="px-3 py-2">
+                    <input
+                      type="number"
+                      min="0"
+                      aria-label={`${seat} ${rule.label}`}
+                      value={draft.positions[seat][rule.key] ?? ''}
+                      onChange={(event) => setPosition(seat, { [rule.key]: event.target.value })}
+                      className="w-24 rounded-lg border border-edge bg-surface px-2 py-1.5 text-sm text-content"
+                    />
+                  </td>
+                ))}
+              </tr>
+            ))}
+            {FLAGS.map((rule) => (
+              <tr key={rule.key} className="border-b border-edge">
+                <td className="px-3 py-2 text-content">{rule.label}</td>
+                {['PIC', 'SIC'].map((seat) => (
+                  <td key={seat} className="px-3 py-2">
+                    <input
+                      type="checkbox"
+                      aria-label={`${seat} ${rule.label}`}
+                      checked={draft.positions[seat][rule.key] === true}
+                      onChange={(event) => setPosition(seat, { [rule.key]: event.target.checked })}
+                    />
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
 
       <p className="mb-3 text-[11px] leading-relaxed text-content-subtle">
-        A pilot Does Not Meet when a required hour is short or missing, or a required item is expired or not on file.
-        Caution means every minimum is met and at least one required item is expiring soon. Meets Standard means every required hour is met and every required item is current.
-        PIC-only checks are not charged to a pilot sitting SIC on a broker report. The standing rating on the crew screen uses the PIC seat.
-        Experience is {draft.weights.experience}% of the score and requirements are {draft.weights.requirements}%.
+        Each pilot is scored against the PIC column and the SIC column. A position is Meets when every required hour is met and every required item is Current or expiring. Expires in 30 Days and Expires in 7 Days still meet the position and show as caution. Expired and Not Validated do not. A zero hour minimum means that item is not required for that seat. The standing rating meets when at least one position meets.
+      </p>
+      <p className="mb-3 text-[11px] text-content-subtle">
+        Defaults match {DEFAULT_PILOT_SAFETY_STANDARDS.criteriaName}, version {DEFAULT_PILOT_SAFETY_STANDARDS.criteriaVersion}.
       </p>
 
       {message && (
@@ -207,19 +198,19 @@ export default function PilotSafetySettings({ currentUser }) {
   );
 }
 
-function NumberField({ label, value, onChange, hint }) {
+function HourInput({ seat, field, draft, onChange }) {
+  const value = draft.positions[seat].hours[field.key];
+  const shipped = DEFAULT_PILOT_SAFETY_STANDARDS.positions[seat].hours[field.key];
   return (
-    <label className="text-xs text-content-muted">
-      {label}
-      <input
-        type="number"
-        min="0"
-        max="100"
-        value={value ?? ''}
-        onChange={(event) => onChange(event.target.value)}
-        className="mt-1 w-full rounded-lg border border-edge bg-surface px-3 py-2 text-sm text-content"
-      />
-      {hint && <span className="mt-1 block text-[10px] text-content-subtle">{hint}</span>}
-    </label>
+    <input
+      type="number"
+      min="0"
+      step="1"
+      aria-label={`${seat} ${field.label} minimum`}
+      value={value ?? ''}
+      onChange={(event) => onChange(seat, field.key, event.target.value)}
+      className="w-24 rounded-lg border border-edge bg-surface px-2 py-1.5 text-sm text-content"
+      title={Number(value) === shipped ? 'Default' : 'Changed from the shipped default'}
+    />
   );
 }

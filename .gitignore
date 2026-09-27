@@ -24,3 +24,7 @@ ios/*.p12
 # ones the PDF is built from and those are tracked.
 marketing/raw
 marketing/raw2
+
+# Wyvern reference screenshots. They contain real pilot data and must not
+# be committed.
+wyvern/

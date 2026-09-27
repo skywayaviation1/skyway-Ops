@@ -514,6 +514,11 @@ export function rollUpPilotHours({
     turbine: asOf ? addHours(base.turbine, flown.turbine) : base.turbine ?? null,
     night: asOf ? addHours(base.night, flown.night) : base.night ?? null,
     instrument: base.instrument ?? null,
+    fixedWing: base.fixedWing ?? null,
+    rotorWing: base.rotorWing ?? null,
+    singleEngine: base.singleEngine ?? null,
+    multiEngine90: base.multiEngine90 ?? null,
+    multiEngine12: base.multiEngine12 ?? null,
     last90Days: null,
     last6Months: null,
     last12Months: null,
@@ -526,11 +531,22 @@ export function rollUpPilotHours({
     for (const entry of credited) {
       if (!afterBaseline(entry, asOf) || !entry.aircraftType) continue;
       const key = entry.aircraftType.toLowerCase();
-      const prev = byType.get(key) || { type: entry.aircraftType, hours: 0 };
+      const prev = byType.get(key) || { type: entry.aircraftType, hours: 0, picHours: null };
       prev.hours = addHours(prev.hours, entry.blockHours);
+      if (entry.role === 'PIC') prev.picHours = addHours(prev.picHours, entry.blockHours);
       byType.set(key, prev);
     }
     hours.timeInType = [...byType.values()];
+    const recentMulti = (days, field) => {
+      const fromLog = sumField(
+        credited.filter((entry) => inWindow(entry, now - days * DAY, now) && entry.multiEngine === true),
+        (entry) => entry.blockHours,
+        asOf,
+      );
+      return addHours(baselineOverlap(base[field], asOf, days, now), fromLog);
+    };
+    if (base.multiEngine90 != null) hours.multiEngine90 = recentMulti(90, 'multiEngine90');
+    if (base.multiEngine12 != null) hours.multiEngine12 = recentMulti(365, 'multiEngine12');
     const recent = (days, field) => {
       const fromLog = sumField(
         credited.filter((entry) => inWindow(entry, now - days * DAY, now)),
@@ -572,7 +588,7 @@ export function rollUpPilotHours({
 }
 
 function hoursClose(left, right) {
-  const keys = ['totalTime', 'pic', 'sic', 'multiEngine', 'turbine', 'night', 'instrument', 'last90Days', 'last6Months', 'last12Months', 'landings'];
+  const keys = ['totalTime', 'pic', 'sic', 'multiEngine', 'turbine', 'night', 'instrument', 'fixedWing', 'rotorWing', 'singleEngine', 'multiEngine90', 'multiEngine12', 'last90Days', 'last6Months', 'last12Months', 'landings'];
   for (const key of keys) {
     const a = left?.[key] ?? null;
     const b = right?.[key] ?? null;
@@ -580,7 +596,7 @@ function hoursClose(left, right) {
     if (a == null || b == null || Math.abs(Number(a) - Number(b)) > 0.05) return false;
   }
   const typeKey = (hours) => (hours?.timeInType || [])
-    .map((entry) => `${String(entry.type || '').toLowerCase()}:${entry.hours ?? ''}`)
+    .map((entry) => `${String(entry.type || '').toLowerCase()}:${entry.hours ?? ''}:${entry.picHours ?? ''}`)
     .sort()
     .join('|');
   return typeKey(left) === typeKey(right);

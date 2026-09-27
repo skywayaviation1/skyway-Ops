@@ -63,102 +63,95 @@ function drawReport(doc, report, pageWidth, margin) {
   doc.setFillColor(...NAVY);
   doc.rect(0, 0, pageWidth, 64, 'F');
   line(doc, margin, 28, report.operatorName || 'Charter operator', { size: 14, style: 'bold', color: [255, 255, 255] });
-  line(doc, margin, 46, 'PILOT REPORT', { size: 9, color: [186, 214, 224] });
-  line(doc, right - 150, 28, report.tierLabel || '', { size: 11, style: 'bold', color: [255, 255, 255] });
-  line(doc, right - 150, 46, `Score ${report.score ?? '—'} / 100`, { size: 9, color: [220, 228, 232] });
+  line(doc, margin, 46, report.criteriaName || 'PILOT REPORT', { size: 9, color: [186, 214, 224] });
+  const chips = (report.chips || []).map((chip) => `${chip.label} ${chip.status}`).join('   ');
+  line(doc, right - 280, 36, chips, { size: 8, color: [255, 255, 255], width: 270 });
 
   y = 84;
-  line(doc, margin, y, report.pilotName || 'Pilot', { size: 16, style: 'bold' });
-  y += 16;
-  const seat = [report.role, report.aircraftType].filter(Boolean).join(' · ');
-  line(doc, margin, y, seat || 'Crew', { size: 10, color: MUTED });
-  line(doc, right - 160, y, `Generated ${fmtGenerated(report.generatedAt)}`, { size: 9, color: MUTED });
-  y += 16;
-  doc.setDrawColor(...RULE);
-  doc.line(margin, y, right, y);
-  y += 18;
-
-  y = section(doc, margin, y, 'CERTIFICATE AND RATINGS');
-  const cert = report.certificate || {};
-  y = kvRow(doc, margin, right, y, [
-    ['Certificate', cert.level || 'Not on file'],
-    ['Instrument', cert.instrument || 'Not on file'],
-    ['Multi-engine', cert.multiEngine || 'Not on file'],
-  ]);
-  const types = (cert.typeRatings || []).join(', ') || 'None on file';
-  y = kvRow(doc, margin, right, y, [['Type ratings', types]]);
-  const medical = report.medical || {};
-  y = kvRow(doc, margin, right, y, [[
-    'Medical',
-    `${medical.class || 'Not on file'} · ${medical.status || 'Not on file'}`,
-  ]]);
-  y += 8;
-
-  y = section(doc, margin, y, 'FLIGHT TIME');
-  if (report.hoursAsOf) {
-    const asOfLine = [
-      `As of ${report.hoursAsOf}`,
-      report.baselineAsOf ? `baseline ${report.baselineAsOf}` : '',
-    ].filter(Boolean).join(' · ');
-    line(doc, margin, y, asOfLine, { size: 8, color: MUTED });
+  line(doc, margin, y, 'Pilot Report', { size: 16, style: 'bold' });
+  line(doc, right - 220, y, `Generated ${fmtGenerated(report.generatedAt)}`, { size: 8, color: MUTED });
+  y += 14;
+  if (report.expiresAt) {
+    line(doc, margin, y, `Expires ${fmtGenerated(report.expiresAt)}`, { size: 8, color: MUTED });
     y += 12;
   }
-  const hours = report.hours || [];
-  for (let i = 0; i < hours.length; i += 2) {
-    const left = hours[i];
-    const rightCol = hours[i + 1];
-    y = kvRow(doc, margin, right, y, [
-      [left.label, hourCell(left)],
-      rightCol ? [rightCol.label, hourCell(rightCol)] : ['', ''],
-    ]);
-  }
-  const scored = report.timeInTypeScored;
-  if (scored) {
+  doc.setDrawColor(...RULE);
+  doc.line(margin, y, right, y);
+  y += 16;
+
+  y = section(doc, margin, y, 'OPERATOR AND AIRCRAFT');
+  const aircraft = report.aircraft || {};
+  y = kvRow(doc, margin, right, y, [
+    ['Operator', report.operatorLegalName || report.operatorName || '—'],
+    ['Aircraft', [aircraft.registration, aircraft.type || report.aircraftType].filter(Boolean).join(' ') || '—'],
+  ]);
+  y = kvRow(doc, margin, right, y, [
+    ['Serial', aircraft.serial || '—'],
+    ['Insurance', aircraft.insuranceExpiry || '—'],
+  ]);
+  if (report.itinerary) {
     y = kvRow(doc, margin, right, y, [[
-      'Time in type (scored)',
-      `${scored.hours || '—'} / ${scored.minimum ?? '—'} min${scored.detail ? ` · ${scored.detail}` : ''}`,
+      'Itinerary',
+      [report.itinerary.from, report.itinerary.to].filter(Boolean).join(' → ') || '—',
     ]]);
   }
-  const typeLines = (report.timeInType || []).map((entry) => `${entry.type} ${entry.hours || '—'}`).join('   ');
-  if (typeLines) y = kvRow(doc, margin, right, y, [['Time in type', typeLines]]);
-  y += 8;
 
-  y = section(doc, margin, y, 'REQUIREMENTS');
-  line(doc, margin, y, 'Item', { size: 8, color: MUTED });
-  line(doc, margin + 250, y, 'Status', { size: 8, color: MUTED });
-  line(doc, margin + 340, y, 'Completed', { size: 8, color: MUTED });
-  line(doc, margin + 430, y, 'Due', { size: 8, color: MUTED });
-  y += 6;
-  doc.line(margin, y, right, y);
-  y += 12;
-  for (const item of report.requirements || []) {
-    if (y > 730) break;
-    line(doc, margin, y, item.label, { size: 8, width: 240 });
-    line(doc, margin + 250, y, item.status || '', { size: 8, color: statusInk(item.status) });
-    line(doc, margin + 340, y, item.completedOn || '—', { size: 8, color: MUTED });
-    line(doc, margin + 430, y, item.dueOn || '—', { size: 8, color: MUTED });
-    y += 13;
+  y = section(doc, margin, y, 'CREW');
+  if (report.hoursAsOf) {
+    line(doc, margin, y, `Totals as of ${report.hoursAsOf}`, { size: 8, color: MUTED });
+    y += 12;
   }
-  y += 8;
+  for (const member of (report.crew || []).slice(0, 2)) {
+    if (y > 680) break;
+    line(doc, margin, y, `${member.role} ${member.pilotName} — ${member.status}`, { size: 10, style: 'bold' });
+    y += 12;
+    y = kvRow(doc, margin, right, y, [
+      ['Certificate', `${member.certificateType || '—'} · ${member.country || '—'}`],
+      ['Type', member.typeRating || '—'],
+    ]);
+    y = kvRow(doc, margin, right, y, [
+      ['Medical', `${member.medicalClass || '—'} · ${member.lastMedical || '—'}`],
+      ['Employment', member.employment || '—'],
+    ]);
+    const hours = member.hours || {};
+    y = kvRow(doc, margin, right, y, [
+      ['Total / PIC', `${hours.totalTime || '—'} / ${hours.pic || '—'}`],
+      ['Multi / turbine', `${hours.multiEngine || '—'} / ${hours.turbine || '—'}`],
+    ]);
+    y = kvRow(doc, margin, right, y, [
+      ['90 days / 12 months', `${hours.last90Days || '—'} / ${hours.last12Months || '—'}`],
+      ['Type / PIC in type', `${member.timeInType || '—'} / ${member.picTimeInType || '—'}`],
+    ]);
+    const checks = (member.checks || []).slice(0, 6).map((check) => `${check.label}: ${check.status}`).join('   ');
+    if (checks) {
+      const wrapped = doc.splitTextToSize(checks, right - margin).slice(0, 3);
+      wrapped.forEach((row) => {
+        line(doc, margin, y, row, { size: 7, color: MUTED, width: right - margin });
+        y += 10;
+      });
+    }
+    y += 6;
+  }
 
-  y = section(doc, margin, y, 'RATING');
-  const reasons = (report.summary || []).slice(0, 5);
-  for (const reason of reasons) {
-    const wrapped = doc.splitTextToSize(`• ${reason}`, right - margin).slice(0, 2);
-    wrapped.forEach((row, index) => {
-      line(doc, margin + (index ? 10 : 0), y, row, { size: 8, color: index ? MUTED : INK, width: right - margin });
-      y += 11;
-    });
+  const unmet = (report.gapAnalysis || []).filter((row) => row.picMet === false || row.sicMet === false).slice(0, 6);
+  if (unmet.length) {
+    y = section(doc, margin, y, 'UNMET ITEMS');
+    for (const row of unmet) {
+      if (y > 730) break;
+      line(doc, margin, y, `${row.label}: ${row.pilotValue} (PIC ${row.picCriteria}, SIC ${row.sicCriteria})`, { size: 8, width: right - margin });
+      y += 12;
+    }
   }
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7);
   doc.setTextColor(...MUTED);
-  const note = report.usingDefaultStandards
-    ? 'Minimums shown are the operator’s shipped defaults (industry-typical Part 135 charter figures), not a third-party audit score.'
-    : 'Minimums are the operator’s saved safety-rating settings.';
-  doc.text(doc.splitTextToSize(note, right - margin), margin, 760);
-  doc.text('Prepared for charter crew vetting. Certificate numbers, date of birth, home address, and medical limitations are omitted.', margin, 774);
+  const footer = [
+    `Criteria ${report.criteriaVersion || 'registered-standard-1'}`,
+    report.shareUrl ? `Verify: ${report.shareUrl}` : '',
+    'Certificate numbers, date of birth, and addresses are omitted. This is not a live WYVERN Ltd audit.',
+  ].filter(Boolean).join('  ');
+  doc.text(doc.splitTextToSize(footer, right - margin), margin, 748);
 }
 
 function section(doc, x, y, title) {
@@ -185,8 +178,8 @@ function hourCell(lineItem) {
 }
 
 function statusInk(status) {
-  if (status === 'Current' || status === 'Valid') return [16, 122, 72];
-  if (status === 'Expiring soon') return [161, 98, 7];
-  if (status === 'Expired' || status === 'Not on file' || status === 'No') return [153, 27, 27];
+  if (status === 'Current' || status === 'Meets' || status === 'None') return [16, 122, 72];
+  if (status === 'Expires in 30 Days' || status === 'Expires in 7 Days') return [161, 98, 7];
+  if (status === 'Expired' || status === 'Not Validated' || status === 'Does Not Meet' || status === 'Yes') return [153, 27, 27];
   return INK;
 }
