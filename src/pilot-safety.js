@@ -39,9 +39,11 @@ export const HOUR_FIELDS = Object.freeze([
   { key: 'pic', label: 'PIC time' },
   { key: 'sic', label: 'SIC time' },
   { key: 'fixedWing', label: 'Fixed-wing' },
+  { key: 'picFixedWing', label: 'PIC fixed-wing' },
   { key: 'rotorWing', label: 'Rotor-wing' },
   { key: 'singleEngine', label: 'Single-engine' },
   { key: 'multiEngine', label: 'Multi-engine' },
+  { key: 'picMultiEngine', label: 'PIC multi-engine' },
   { key: 'multiEngine90', label: 'Multi-engine last 90 days' },
   { key: 'multiEngine12', label: 'Multi-engine last 12 months' },
   { key: 'turbine', label: 'Turbine' },
@@ -404,9 +406,11 @@ export function emptyLogbook(uid = '', pilotName = '') {
       pic: null,
       sic: null,
       fixedWing: null,
+      picFixedWing: null,
       rotorWing: null,
       singleEngine: null,
       multiEngine: null,
+      picMultiEngine: null,
       multiEngine90: null,
       multiEngine12: null,
       turbine: null,
@@ -1273,6 +1277,11 @@ export function evaluatePilot({
       accident: book.background.accident,
       enforcement: book.background.enforcement,
     },
+    displayHours: {
+      picFixedWing: book.hours.picFixedWing,
+      picMultiEngine: book.hours.picMultiEngine,
+      rotorWing: book.hours.rotorWing,
+    },
     drugAlcohol: {
       enrolled: book.drugAlcohol.enrolled,
       enrolledDate: book.drugAlcohol.enrolledDate,
@@ -1325,202 +1334,225 @@ function assertBrokerSafe(value, path = 'report') {
  * The document a broker is allowed to see. Built by copying named fields
  * only — caller objects are never spread into it.
  */
-function chipLabel(tier) {
-  return tier && tier !== TIER.DOES_NOT_MEET ? 'Meets' : 'Does Not Meet';
+function seatMet(row, seat) {
+  return seat === 'SIC' ? row?.sicMet === true : row?.picMet === true;
 }
 
-function scopedGaps(evaluations) {
-  if (!evaluations) return null;
-  const rows = [];
-  for (const seat of ['PIC', 'SIC']) {
-    const ev = evaluations[seat];
-    if (!ev) continue;
-    for (const row of ev.gapAnalysis || []) {
-      const met = seat === 'SIC' ? row.sicMet === true : row.picMet === true;
-      if (met) continue;
-      rows.push({
-        label: `${ev.pilotName || seat} · ${row.label}`,
-        pilotValue: row.pilotValue,
-        picCriteria: row.picCriteria,
-        sicCriteria: row.sicCriteria,
-        picMet: seat !== 'PIC',
-        sicMet: seat !== 'SIC',
-      });
+function seatCriterion(row, seat) {
+  return seat === 'SIC' ? row?.sicCriteria : row?.picCriteria;
+}
+
+/** Internal only. Explains a seat that does not meet, for admins fixing the record. */
+export function brokerWithholdReasons(evaluation, seat = null) {
+  const seats = seat ? [seat] : ['PIC', 'SIC'];
+  const lines = [];
+  for (const name of seats) {
+    const tier = evaluation?.positions?.[name]?.tier;
+    if (tier && tier !== TIER.DOES_NOT_MEET) continue;
+    if (!tier && evaluation?.tier !== TIER.DOES_NOT_MEET) continue;
+    const failed = (evaluation?.gapAnalysis || []).filter((row) => !seatMet(row, name));
+    if (!failed.length) {
+      lines.push(`${name} is short of the configured standard.`);
+      continue;
+    }
+    for (const row of failed) {
+      lines.push(`${name}: ${row.label} is ${row.pilotValue} (${seatCriterion(row, name)}).`);
     }
   }
-  return rows;
+  return lines;
 }
 
-function yesNoUnknown(value) {
-  if (value === true) return 'Yes';
-  if (value === false) return 'None';
+function prettyDate(value) {
+  const text = String(value || '').trim();
+  const iso = text.match(/^(\d{4}-\d{2}-\d{2})/);
+  const date = iso ? new Date(`${iso[1]}T12:00:00Z`) : new Date(text);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    timeZone: 'UTC',
+  });
+}
+
+function hourPhrase(value) {
+  if (value == null || value === '' || value === '—') return '—';
+  const text = String(value).trim();
+  if (!text || text === 'Not on file') return '—';
+  if (/hrs/i.test(text)) return text;
+  return `${text} Hrs`;
+}
+
+function certificatePhrase(level) {
+  if (level === 'ATP') return 'Airline Transport Pilot';
+  if (level === 'Commercial') return 'Commercial Pilot';
+  if (level === 'Private') return 'Private Pilot';
+  return level || 'Not on file';
+}
+
+function medicalClassPhrase(value) {
+  if (value === 'First') return 'Class 1';
+  if (value === 'Second') return 'Class 2';
+  if (value === 'Third') return 'Class 3';
+  if (value === 'BasicMed') return 'BasicMed';
+  return value || 'Not on file';
+}
+
+function sanctionsPhrase(background) {
+  if (background?.accident === true || background?.enforcement === true) return 'Yes';
+  if (background?.accident === false && background?.enforcement === false) return 'No';
   return 'Not on file';
 }
 
-function addDaysIso(iso, days) {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return '';
-  date.setUTCDate(date.getUTCDate() + days);
-  return date.toISOString();
+function experienceValue(ev, key) {
+  return (ev?.experience || []).find((line) => line.key === key)?.actualDisplay || null;
 }
 
-function crewFromEvaluation(ev) {
-  const hours = {};
-  for (const line of ev?.experience || []) {
-    if (!line?.key || line.key === 'timeInType' || line.key === 'picTimeInType') continue;
-    hours[line.key] = line.actualDisplay;
+function requirementLine(ev, id) {
+  return (ev?.requirements || []).find((line) => line.id === id) || null;
+}
+
+function checkPhrase(ev, id) {
+  const line = requirementLine(ev, id);
+  if (!line) return '—';
+  if (line.status === 'na' || line.statusLabel === 'Not Required') {
+    return line.completedOn ? prettyDate(line.completedOn) : 'Not required';
   }
-  const typeLine = (ev?.experience || []).find((line) => line.key === 'timeInType');
-  const picType = (ev?.experience || []).find((line) => line.key === 'picTimeInType');
+  if (line.completedOn) return prettyDate(line.completedOn);
+  if (line.dueOn) return prettyDate(line.dueOn);
+  return '—';
+}
+
+function motionPhrase(ev) {
+  const line = requirementLine(ev, 'competency293');
+  if (!line) return '—';
+  if (line.status === 'na' || line.statusLabel === 'Not Required') return 'Not required';
+  if (line.statusLabel === 'Expired' || line.statusLabel === 'Not Validated') return '—';
+  return 'Yes';
+}
+
+function picFixedPhrase(ev) {
+  if (ev?.displayHours?.picFixedWing != null) return hourPhrase(formatHours(ev.displayHours.picFixedWing));
+  const rotor = ev?.displayHours?.rotorWing;
+  if (rotor == null || Number(rotor) === 0) return hourPhrase(experienceValue(ev, 'pic'));
+  return '—';
+}
+
+function picMultiPhrase(ev) {
+  if (ev?.displayHours?.picMultiEngine != null) return hourPhrase(formatHours(ev.displayHours.picMultiEngine));
+  return '—';
+}
+
+export const BROKER_CREW_ROWS = Object.freeze([
+  'Employment Status',
+  'Accident/Incident/Sanctions',
+  'Total PIC Time',
+  'Total Flight Time',
+  'Total Time Last Updated',
+  'PIC Fixed-Wing Time',
+  'Total Fixed-Wing Time',
+  'PIC Multi-Engine Time',
+  'Total Multi-Engine Time',
+  'Multi-Engine Time (90 Days)',
+  'Multi-Engine Time (12 Months)',
+  'PIC Time in Type',
+  'Total Time in Type',
+  'Instrument Time',
+  'Turbine Time',
+  'Instrument Proficiency Check',
+  'Line Check',
+  'Aircraft Specific Check',
+  'Recurrent Training',
+  'Motion Based Simulator Training',
+]);
+
+function crewMember(ev, seat) {
+  const rows = [
+    ['Employment Status', ev?.background?.employment || 'Not on file'],
+    ['Accident/Incident/Sanctions', sanctionsPhrase(ev?.background)],
+    ['Total PIC Time', hourPhrase(experienceValue(ev, 'pic'))],
+    ['Total Flight Time', hourPhrase(experienceValue(ev, 'totalTime'))],
+    ['Total Time Last Updated', prettyDate(ev?.hoursAsOf) || '—'],
+    ['PIC Fixed-Wing Time', picFixedPhrase(ev)],
+    ['Total Fixed-Wing Time', hourPhrase(experienceValue(ev, 'fixedWing'))],
+    ['PIC Multi-Engine Time', picMultiPhrase(ev)],
+    ['Total Multi-Engine Time', hourPhrase(experienceValue(ev, 'multiEngine'))],
+    ['Multi-Engine Time (90 Days)', hourPhrase(experienceValue(ev, 'multiEngine90'))],
+    ['Multi-Engine Time (12 Months)', hourPhrase(experienceValue(ev, 'multiEngine12'))],
+    ['PIC Time in Type', hourPhrase(experienceValue(ev, 'picTimeInType'))],
+    ['Total Time in Type', hourPhrase(experienceValue(ev, 'timeInType'))],
+    ['Instrument Time', hourPhrase(experienceValue(ev, 'instrument'))],
+    ['Turbine Time', hourPhrase(experienceValue(ev, 'turbine'))],
+    ['Instrument Proficiency Check', checkPhrase(ev, 'instrumentCheck297')],
+    ['Line Check', checkPhrase(ev, 'lineCheck299')],
+    ['Aircraft Specific Check', checkPhrase(ev, 'aircraftKnowledge293')],
+    ['Recurrent Training', checkPhrase(ev, 'recurrentTraining351')],
+    ['Motion Based Simulator Training', motionPhrase(ev)],
+  ];
   return {
-    role: ev?.role === 'SIC' ? 'SIC' : 'PIC',
+    role: seat === 'SIC' ? 'Second-in-Command' : 'Pilot-in-Command',
     pilotName: String(ev?.pilotName || '').slice(0, 80),
-    status: chipLabel(ev?.tier),
-    certificateType: ev?.certificate?.level || 'Not on file',
+    certificateType: certificatePhrase(ev?.certificate?.level),
     country: ev?.certificate?.country || 'Not on file',
     typeRating: asStringList(ev?.certificate?.typeRatings).join(', ') || 'Not on file',
-    medicalClass: ev?.medical?.class || 'Not on file',
-    lastMedical: ev?.medical?.lastDate || '',
-    medicalStatus: ev?.medical?.statusLabel || medicalBrokerLabel(ev?.medical?.status),
-    employment: ev?.background?.employment || 'Not on file',
-    accident: yesNoUnknown(ev?.background?.accident),
-    enforcement: yesNoUnknown(ev?.background?.enforcement),
-    hours,
-    timeInType: typeLine?.actualDisplay || null,
-    picTimeInType: picType?.actualDisplay || null,
-    checks: (ev?.requirements || []).filter((line) => line.id !== 'certificate' && line.id !== 'medical').map((line) => ({
-      label: line.label,
-      status: line.statusLabel,
-      completedOn: line.completedOn || '',
-    })),
+    medicalClass: medicalClassPhrase(ev?.medical?.class),
+    lastMedical: prettyDate(ev?.medical?.lastDate) || 'Not on file',
+    rows: rows.map(([label, value]) => ({ label, value: String(value || '—').slice(0, 80) })),
   };
+}
+
+function passesSeat(evaluation) {
+  return Boolean(evaluation && evaluation.tier && evaluation.tier !== TIER.DOES_NOT_MEET);
 }
 
 /**
- * Broker-facing PASS-style report. Named fields only. Certificate numbers,
- * dates of birth, and addresses are not copied.
+ * Broker crew summary. Returned only when every pilot in the report meets
+ * the seat they are scored against. A failing crew gets null — nothing for
+ * a broker to render. Certificate numbers, dates of birth, and addresses
+ * are not copied.
  */
 export function brokerPilotReport(evaluation, {
-  operatorName = '',
-  operatorLegalName = '',
   generatedAt = new Date().toISOString(),
-  aircraftType = null,
-  aircraft = null,
-  itinerary = null,
-  shareUrl = '',
   evaluations = null,
 } = {}) {
-  const ev = evaluation || {};
   const bySeat = evaluations || null;
-  const picEval = bySeat?.PIC || ev;
-  const sicEval = bySeat?.SIC || ev;
-  const picCrew = crewFromEvaluation(bySeat?.PIC || { ...ev, role: 'PIC', tier: ev.positions?.PIC?.tier || ev.tier });
-  const sicCrew = bySeat?.SIC
-    ? crewFromEvaluation(bySeat.SIC)
-    : null;
-  const crew = sicCrew && sicCrew.pilotName && sicCrew.pilotName !== picCrew.pilotName
-    ? [picCrew, sicCrew]
-    : [picCrew];
-  if (!bySeat && ev.positions) {
-    picCrew.status = chipLabel(ev.positions.PIC?.tier);
-    if (sicCrew == null) {
-      crew[0].sicStatus = chipLabel(ev.positions.SIC?.tier);
-    }
+  let crew = [];
+  let source = evaluation;
+  if (bySeat) {
+    const seats = ['PIC', 'SIC'].filter((seat) => bySeat[seat]);
+    if (!seats.length || seats.some((seat) => !passesSeat(bySeat[seat]))) return null;
+    crew = seats.map((seat) => crewMember(bySeat[seat], seat)).filter((member) => member.pilotName);
+    source = bySeat.PIC || bySeat.SIC;
+  } else {
+    if (!passesSeat(evaluation)) return null;
+    const seat = evaluation?.role === 'SIC' || evaluation?.positions?.PIC?.tier === TIER.DOES_NOT_MEET
+      ? 'SIC'
+      : 'PIC';
+    const member = crewMember(evaluation, seat);
+    if (!member.pilotName) return null;
+    crew = [member];
   }
-  const aircraftBlock = {
-    registration: String(aircraft?.registration || aircraft?.tail || '').slice(0, 16),
-    type: String(aircraft?.type || aircraftType || '').slice(0, 80),
-    serial: String(aircraft?.serial || aircraft?.serialNumber || '').slice(0, 40),
-    year: String(aircraft?.year || '').slice(0, 8),
-    seats: aircraft?.seats == null ? '' : String(aircraft.seats).slice(0, 8),
-    insuranceExpiry: String(aircraft?.insuranceExpiry || '').slice(0, 20),
-  };
-  const hasAircraft = Boolean(aircraftBlock.registration || aircraftBlock.type);
+  if (!crew.length) return null;
   const report = {
-    reportTitle: 'Pilot Report',
-    criteriaName: ev.criteriaName || CRITERIA_NAME,
-    criteriaVersion: ev.criteriaVersion || CRITERIA_VERSION,
-    operatorName: String(operatorName || '').slice(0, 80),
-    operatorLegalName: String(operatorLegalName || '').slice(0, 120),
-    pilotName: picCrew.pilotName,
-    role: ev.role === 'SIC' ? 'SIC' : 'PIC',
-    aircraftType: aircraftBlock.type || null,
     generatedAt: String(generatedAt),
-    expiresAt: addDaysIso(generatedAt, 90),
-    shareUrl: String(shareUrl || '').slice(0, 300),
-    hoursAsOf: ev.hoursAsOf || '',
-    baselineAsOf: ev.baselineAsOf || '',
-    hoursNote: String(ev.hoursNote || '').slice(0, 400),
-    landings: ev.landings == null ? null : ev.landings,
-    last6Months: ev.last6Months == null ? null : formatHours(ev.last6Months),
-    score: Number.isFinite(ev.score) ? ev.score : 0,
-    tier: TIER_LABELS[ev.tier] ? ev.tier : TIER.DOES_NOT_MEET,
-    tierLabel: TIER_LABELS[ev.tier] || TIER_LABELS.doesNotMeet,
-    qualifiesFor: Array.isArray(ev.qualifiesFor) ? ev.qualifiesFor.filter((seat) => seat === 'PIC' || seat === 'SIC') : [],
-    standardsNote: String(ev.standardsNote || DEFAULT_STANDARDS_NOTE).slice(0, 400),
-    usingDefaultStandards: ev.usingDefaultStandards !== false,
-    summary: Array.isArray(ev.reasons) ? ev.reasons.map((line) => String(line)).slice(0, 24) : [],
-    flags: Array.isArray(ev.flags) ? ev.flags.map((flag) => String(flag).slice(0, 80)).slice(0, 12) : [],
-    waivers: [],
-    chips: [
-      { id: 'operator', label: 'Operator', status: operatorName ? 'Meets' : 'Does Not Meet' },
-      ...(hasAircraft ? [{ id: 'aircraft', label: 'Aircraft', status: 'Meets' }] : []),
-      { id: 'pic', label: 'PIC', status: chipLabel(bySeat?.PIC?.tier || ev.positions?.PIC?.tier || (ev.role === 'SIC' ? null : ev.tier)) },
-      { id: 'sic', label: 'SIC', status: chipLabel(bySeat?.SIC?.tier || ev.positions?.SIC?.tier || (ev.role === 'SIC' ? ev.tier : null)) },
-    ],
-    operator: {
-      name: String(operatorName || '').slice(0, 80),
-      legalName: String(operatorLegalName || '').slice(0, 120),
-    },
-    itinerary: itinerary && (itinerary.from || itinerary.to) ? {
-      from: String(itinerary.from || '').slice(0, 8),
-      to: String(itinerary.to || '').slice(0, 8),
-      date: String(itinerary.date || '').slice(0, 40),
-      tail: String(itinerary.tail || aircraftBlock.registration || '').slice(0, 16),
-    } : null,
-    aircraft: aircraftBlock,
+    hoursAsOf: prettyDate(source?.hoursAsOf) || '',
     crew,
-    gapAnalysis: (scopedGaps(bySeat) || ev.gapAnalysis || []).slice(0, 40).map((row) => ({
-      label: String(row.label || '').slice(0, 120),
-      pilotValue: String(row.pilotValue || '').slice(0, 80),
-      picCriteria: String(row.picCriteria || '').slice(0, 40),
-      sicCriteria: String(row.sicCriteria || '').slice(0, 40),
-      picMet: row.picMet === true,
-      sicMet: row.sicMet === true,
-    })),
-    certificate: {
-      level: ev.certificate?.level || 'Not on file',
-      instrument: ev.certificate?.instrument === true ? 'Yes' : ev.certificate?.instrument === false ? 'No' : 'Not on file',
-      multiEngine: ev.certificate?.multiEngine === true ? 'Yes' : ev.certificate?.multiEngine === false ? 'No' : 'Not on file',
-      typeRatings: asStringList(ev.certificate?.typeRatings),
-      country: ev.certificate?.country || 'Not on file',
-    },
-    medical: {
-      class: ev.medical?.class || 'Not on file',
-      status: ev.medical?.statusLabel || medicalBrokerLabel(ev.medical?.status),
-      lastMedical: ev.medical?.lastDate || '',
-    },
-    hours: (ev.experience || []).filter((line) => line.required && line.key !== 'timeInType' && line.key !== 'picTimeInType').map((line) => ({
-      label: line.label,
-      hours: line.actualDisplay,
-      minimum: line.minimum,
-      state: line.state,
-      source: line.source === 'duty' ? 'Duty records' : line.source === 'logbook' || line.source === 'derived' ? 'Logbook' : 'Not on file',
-    })),
-    timeInType: (ev.timeInType || []).map((entry) => ({
-      type: String(entry.type || '').slice(0, 40),
-      hours: formatHours(entry.hours),
-      picHours: formatHours(entry.picHours),
-    })),
-    requirements: (ev.requirements || []).filter((line) => line.included).map((line) => ({
-      label: line.label,
-      status: line.statusLabel,
-      completedOn: line.completedOn,
-      dueOn: line.id === 'medical' ? null : line.dueOn,
-    })),
   };
   assertBrokerSafe(report);
   return report;
+}
+
+/**
+ * Admin gate for email and download. reasons stay off the broker payload.
+ */
+export function releaseBrokerReport(evaluation, options = {}) {
+  const report = brokerPilotReport(evaluation, options);
+  if (report) return { released: true, report, reasons: [] };
+  return {
+    released: false,
+    report: null,
+    reasons: brokerWithholdReasons(evaluation),
+  };
 }
 
 function normalizePersonName(value) {
@@ -1600,22 +1632,9 @@ export function buildBrokerCrewReports({
     evaluations[seat.role] = evaluation;
   }
 
-  const leg = (legs || []).find((item) => item?.from || item?.to || item?.origin) || legs?.[0] || {};
-  const route = itinerary || (leg.from || leg.to || leg.origin || leg.destination ? {
-    from: leg.from || leg.origin || '',
-    to: leg.to || leg.destination || '',
-    date: leg.date || leg.departDate || '',
-    tail: leg.tail || aircraft?.registration || aircraft?.tail || '',
-  } : null);
-
-  return [brokerPilotReport(evaluations.PIC || evaluations.SIC, {
-    operatorName: operator.name || operator.operatorName || '',
-    operatorLegalName: operator.legalName || operator.operatorLegalName || '',
+  const report = brokerPilotReport(evaluations.PIC || evaluations.SIC, {
     generatedAt,
-    aircraftType: aircraftType || seats.find((seat) => seat.aircraftType)?.aircraftType || null,
-    aircraft,
-    itinerary: route,
-    shareUrl,
     evaluations,
-  })];
+  });
+  return report ? [report] : [];
 }

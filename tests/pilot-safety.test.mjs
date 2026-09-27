@@ -6,6 +6,7 @@ import test from 'node:test';
 import {
   DEFAULT_STANDARDS_NOTE,
   brokerPilotReport,
+  brokerWithholdReasons,
   buildBrokerCrewReports,
   evaluatePilot,
   normalizeStandards,
@@ -302,19 +303,48 @@ test('the broker report keeps vetting facts and drops personal data', () => {
   ]) {
     assert.equal(blob.includes(banned), false, banned);
   }
-  assert.equal(report.pilotName, 'Maxwell Hagberg');
-  assert.equal(report.medical.class, 'First');
-  assert.equal(report.medical.status, 'Current');
-  assert.equal(report.medical.lastMedical, '');
-  assert.equal(report.certificate.level, 'ATP');
-  assert.equal(report.criteriaName, 'Wyvern Registered Standard');
-  assert.equal(report.chips.find((chip) => chip.id === 'pic').status, 'Meets');
-  assert.equal(report.chips.find((chip) => chip.id === 'sic').status, 'Meets');
-  assert.ok(report.hours.some((row) => row.label === 'Total time' && row.hours === '4820'));
-  assert.ok(report.requirements.some((row) => /Line check|Instrument proficiency|Recurrent/.test(row.label)));
-  assert.equal(report.generatedAt, '2026-09-27T15:00:00.000Z');
+  assert.equal(report.crew[0].pilotName, 'Maxwell Hagberg');
+  assert.equal(report.crew[0].certificateType, 'Airline Transport Pilot');
+  assert.equal(report.crew[0].medicalClass, 'Class 1');
   assert.equal(report.crew[0].country, 'United States');
-  assert.equal(report.crew[0].accident, 'None');
+  assert.equal(report.crew[0].rows.find((row) => row.label === 'Total Flight Time').value, '4820 Hrs');
+  assert.equal(report.crew[0].rows.find((row) => row.label === 'Accident/Incident/Sanctions').value, 'No');
+  assert.equal(report.generatedAt, '2026-09-27T15:00:00.000Z');
+  assert.equal(report.gapAnalysis, undefined);
+  assert.equal(report.chips, undefined);
+  assert.equal(blob.includes('Does Not Meet'), false);
+});
+
+test('a crew that does not meet is omitted from the broker report', () => {
+  const short = evaluatePilot({
+    pilot,
+    logbook: logbook({ hours: { ...logbook().hours, turbine: 10, timeInType: [{ type: 'Citation XLS+', hours: 10, picHours: 0 }] } }),
+    currencyDoc: currency({ lineCheck299: { dueDate: ymd(-12) } }),
+    todayMs: today,
+  });
+  assert.equal(short.positions.PIC.tier, 'doesNotMeet');
+  assert.equal(short.positions.SIC.tier, 'doesNotMeet');
+  assert.equal(brokerPilotReport(short, { generatedAt: '2026-09-27T15:00:00.000Z' }), null);
+  const reasons = brokerWithholdReasons(short);
+  assert.ok(reasons.some((line) => line.startsWith('PIC:') && /Turbine/.test(line)));
+  const reports = buildBrokerCrewReports({
+    legs: [{ pic: 'Maxwell Hagberg', sic: 'Timothy Woods', aircraftType: 'Citation XLS+' }],
+    users: [
+      { uid: 'pilot-1', name: 'Maxwell Hagberg' },
+      { uid: 'pilot-2', name: 'Timothy Woods' },
+    ],
+    logbooksByUid: {
+      'pilot-1': logbook({ hours: { ...logbook().hours, turbine: 180 } }),
+      'pilot-2': logbook(),
+    },
+    currenciesByUid: {
+      'pilot-1': currency(),
+      'pilot-2': currency(),
+    },
+    generatedAt: '2026-09-27T15:00:00.000Z',
+    todayMs: today,
+  });
+  assert.deepEqual(reports, []);
 });
 
 test('a trip share builds one PASS report and keeps the SIC on the SIC standard', () => {
@@ -342,14 +372,11 @@ test('a trip share builds one PASS report and keeps the SIC on the SIC standard'
   });
   assert.equal(reports.length, 1);
   assert.equal(reports[0].crew.length, 2);
-  assert.equal(reports[0].chips.find((chip) => chip.id === 'aircraft').status, 'Meets');
-  assert.equal(reports[0].chips.find((chip) => chip.id === 'pic').status, 'Meets');
-  assert.equal(reports[0].chips.find((chip) => chip.id === 'sic').status, 'Meets');
-  assert.equal(reports[0].itinerary.from, 'TVC');
-  assert.equal(reports[0].itinerary.to, 'IAD');
-  assert.equal(reports[0].aircraft.registration, 'N286N');
-  assert.equal(reports[0].aircraft.serial, '560-0001');
-  assert.equal(reports[0].criteriaVersion, 'registered-standard-1');
+  assert.equal(reports[0].crew[0].role, 'Pilot-in-Command');
+  assert.equal(reports[0].crew[1].role, 'Second-in-Command');
+  assert.equal(reports[0].crew[1].rows.find((row) => row.label === 'Line Check').value, 'Not required');
+  assert.equal(reports[0].gapAnalysis, undefined);
+  assert.equal(JSON.stringify(reports).includes('Does Not Meet'), false);
   assert.equal(JSON.stringify(reports).includes('Secret Street'), false);
 });
 
@@ -359,6 +386,8 @@ test('the broker share and the email route are wired to the sanitized report', a
   const screen = await readFile(path.join(root, 'src/PilotSafety.jsx'), 'utf8');
   assert.match(tripPublic, /crewReportsForTrip/);
   assert.match(email, /buildPilotReportPdf/);
+  assert.match(email, /blocked/);
+  assert.match(screen, /broker-withhold/);
   assert.match(screen, /\/api\/pilot-report-email/);
 });
 

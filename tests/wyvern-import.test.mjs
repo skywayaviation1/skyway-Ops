@@ -250,13 +250,11 @@ test('the broker report still omits Wyvern import metadata and contact data', ()
     todayMs: Date.UTC(2026, 8, 27),
   });
   const report = brokerPilotReport(rating, { operatorName: 'Example Air', generatedAt: '2026-09-27T00:00:00.000Z' });
-  const blob = JSON.stringify(report);
+  const blob = JSON.stringify(report ?? {});
   for (const banned of ['ACES-SAMPLE-4', '555', 'DO-NOT-IMPORT', 'ada@example.test', 'wyvernId']) {
     assert.equal(blob.includes(banned), false, banned);
   }
-  assert.equal(Object.hasOwn(report, 'wyvern'), false);
-  assert.equal(report.certificate.level, 'ATP');
-  assert.equal(report.medical.class, 'First');
+  assert.equal(report, null);
 });
 
 test('the sample preview file is fictitious and classifies active pilots', async () => {

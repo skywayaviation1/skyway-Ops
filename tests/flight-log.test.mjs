@@ -260,12 +260,12 @@ test('totals are the baseline plus block time after the as-of date', () => {
     todayMs: Date.parse('2026-09-21T00:00:00.000Z'),
   });
   const report = brokerPilotReport(rating, { operatorName: 'Example Air', generatedAt: '2026-09-21T00:00:00.000Z' });
-  assert.equal(report.hoursAsOf, '2026-09-21');
-  assert.equal(report.baselineAsOf, '2026-09-01');
-  const blob = JSON.stringify(report);
+  assert.equal(report, null);
+  assert.equal(rating.hoursAsOf, '2026-09-21');
+  assert.equal(rating.baselineAsOf, '2026-09-01');
+  const blob = JSON.stringify(report ?? {});
   assert.equal(blob.includes('555'), false);
   assert.equal(blob.includes('DO-NOT-IMPORT'), false);
-  assert.equal(Object.hasOwn(report, 'wyvern'), false);
 });
 
 test('a Wyvern import becomes the baseline and ignores hours already flown since', () => {

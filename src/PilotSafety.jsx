@@ -7,7 +7,6 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   Download, Eye, Mail, Plus, Save, ShieldCheck, Trash2, Upload, X,
 } from 'lucide-react';
-import { brand } from './brand.js';
 import BrokerPilotReport, { PilotRatingBadge } from './BrokerPilotReport.jsx';
 import { savePilotFlightEntry, savePilotLogbook } from './firebase-pilot-safety.js';
 import {
@@ -21,7 +20,8 @@ import { computeStatus } from './currency-status.js';
 import {
   CERTIFICATE_LEVELS,
   HOUR_FIELDS,
-  brokerPilotReport,
+  brokerWithholdReasons,
+  releaseBrokerReport,
   emptyLogbook,
   evaluatePilot,
   itemStatusLabel,
@@ -115,7 +115,9 @@ function PilotSafetyView({
         todayMs: data.todayMs,
       })
     : selected?.rating;
-  const report = liveRating ? toBrokerReport(liveRating) : null;
+  const release = liveRating ? toBrokerRelease(liveRating) : null;
+  const withhold = liveRating ? brokerWithholdReasons(liveRating) : [];
+  const report = release?.report || null;
   const counts = {
     meets: pilots.filter((row) => row.rating.tier === 'meets').length,
     caution: pilots.filter((row) => row.rating.tier === 'caution').length,
@@ -179,7 +181,10 @@ function PilotSafetyView({
   };
 
   const download = async () => {
-    if (!report) return;
+    if (!report) {
+      setShowReport(true);
+      return;
+    }
     const file = await generatePilotReportPdf(report);
     const url = URL.createObjectURL(file.blob);
     const link = document.createElement('a');
@@ -278,6 +283,26 @@ function PilotSafetyView({
                   <SeatChip seat="SIC" tier={liveRating?.positions?.SIC?.tier} />
                 </div>
               </div>
+
+              <section className="border border-slate-800 p-4" data-testid="broker-withhold">
+                <h3 className="text-[10px] tracking-widest text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>BROKER REPORT</h3>
+                {withhold.length === 0 ? (
+                  <p className="mt-2 text-sm text-slate-300">
+                    Shown to brokers only when every pilot assigned to the trip meets the standard. The share page and the emailed PDF are the green crew summary.
+                  </p>
+                ) : (
+                  <>
+                    <p className="mt-2 text-sm text-amber-100">
+                      {report
+                        ? 'Hidden from brokers on any trip that assigns this pilot to a seat they do not meet. That share page leaves the crew report off.'
+                        : 'Hidden from brokers. The share page leaves the crew report off, and email is blocked, until this pilot meets the standard.'}
+                    </p>
+                    <ul className="mt-2 list-disc space-y-1 pl-4 text-xs text-slate-300">
+                      {withhold.map((line) => <li key={line}>{line}</li>)}
+                    </ul>
+                  </>
+                )}
+              </section>
 
               <section className="border border-slate-800 p-4" data-testid="gap-analysis">
                 <h3 className="text-[10px] tracking-widest text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>GAP ANALYSIS</h3>
@@ -552,13 +577,13 @@ function PilotSafetyView({
                   </button>
                 )}
                 <button type="button" onClick={() => setShowReport(true)} className="inline-flex items-center gap-1 border border-slate-600 px-3 py-2 text-[10px] tracking-widest text-slate-100" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                  <Eye className="h-3.5 w-3.5" /> PREVIEW REPORT
+                  <Eye className="h-3.5 w-3.5" /> {report ? 'PREVIEW REPORT' : 'WHY IT IS HIDDEN'}
                 </button>
-                <button type="button" onClick={download} className="inline-flex items-center gap-1 border border-slate-600 px-3 py-2 text-[10px] tracking-widest text-slate-100" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                <button type="button" onClick={download} disabled={!report} className="inline-flex items-center gap-1 border border-slate-600 px-3 py-2 text-[10px] tracking-widest text-slate-100 disabled:opacity-40" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
                   <Download className="h-3.5 w-3.5" /> DOWNLOAD PDF
                 </button>
                 {data.canSend && (
-                  <button type="button" onClick={() => setShowEmail(true)} className="inline-flex items-center gap-1 border border-cyan-500/50 px-3 py-2 text-[10px] tracking-widest text-cyan-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  <button type="button" onClick={() => setShowEmail(true)} disabled={!report} className="inline-flex items-center gap-1 border border-cyan-500/50 px-3 py-2 text-[10px] tracking-widest text-cyan-200 disabled:opacity-40" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
                     <Mail className="h-3.5 w-3.5" /> EMAIL BROKER
                   </button>
                 )}
@@ -568,9 +593,16 @@ function PilotSafetyView({
         </main>
       </div>
 
-      {showReport && report && (
-        <Modal title="Pilot report" onClose={() => setShowReport(false)}>
-          <BrokerPilotReport report={report} />
+      {showReport && (
+        <Modal title={report ? 'Crew report' : 'Not sent to brokers'} onClose={() => setShowReport(false)}>
+          {report ? <BrokerPilotReport report={report} /> : (
+            <div className="border border-slate-700 bg-slate-950 p-4 text-sm text-slate-200">
+              <p>This crew report is hidden from brokers. The share page omits it, and email is blocked, until the assigned pilot meets the standard.</p>
+              <ul className="mt-3 list-disc space-y-1 pl-4 text-xs text-slate-300">
+                {withhold.map((line) => <li key={line}>{line}</li>)}
+              </ul>
+            </div>
+          )}
         </Modal>
       )}
       {showEmail && report && selected && (
@@ -602,13 +634,8 @@ function PilotSafetyView({
   );
 }
 
-function toBrokerReport(rating) {
-  const operator = brand();
-  return brokerPilotReport(rating, {
-    operatorName: operator.name,
-    operatorLegalName: operator.legalName,
-    generatedAt: new Date().toISOString(),
-  });
+function toBrokerRelease(rating) {
+  return releaseBrokerReport(rating, { generatedAt: new Date().toISOString() });
 }
 
 function Count({ label, value, tone }) {
@@ -921,6 +948,10 @@ function EmailPilotReport({ pilot, onClose }) {
         }),
       });
       const body = await response.json().catch(() => ({}));
+      if (body.blocked) {
+        const why = Array.isArray(body.reasons) && body.reasons.length ? ` ${body.reasons.join(' ')}` : '';
+        throw new Error(`${body.error || 'This report was not sent.'}${why}`);
+      }
       if (!response.ok || body.ok === false) {
         throw new Error(body.error || body.emailError || 'Email was not sent');
       }
@@ -936,7 +967,7 @@ function EmailPilotReport({ pilot, onClose }) {
     <Modal title="Email pilot report" onClose={onClose}>
       <div className="space-y-3 border border-slate-700 bg-slate-950 p-4 text-slate-100">
         <p className="text-sm text-slate-300">
-          Sends {pilot.name}’s broker report as a PDF attachment. The file includes the safety rating, hours, certificate grade, and requirement dates. It leaves out certificate numbers, date of birth, home address, and medical detail beyond class and validity.
+          Sends {pilot.name}’s crew summary as a PDF. It goes out only when this pilot meets the standard. Certificate numbers, date of birth, and addresses are not included.
         </p>
         <label className="block text-[11px] text-slate-400">
           Broker email

@@ -564,12 +564,7 @@ export default async function handler(req, res) {
       return [];
     }),
   ]);
-  const host = req.headers['x-forwarded-host'] || req.headers.host || '';
-  const proto = String(req.headers['x-forwarded-proto'] || 'https').split(',')[0].trim();
-  const shareUrl = host && token ? `${proto}://${host}/trip-track?token=${encodeURIComponent(token)}` : '';
-  sanitized.crewReports = Array.isArray(crewReports)
-    ? crewReports.map((report) => (report && shareUrl ? { ...report, shareUrl } : report))
-    : crewReports;
+  sanitized.crewReports = Array.isArray(crewReports) ? crewReports : [];
 
   return res.status(200).json({
     ok: true,

@@ -81,23 +81,28 @@ export default async function handler(req, res) {
     const userSnap = await db().collection('users').doc(pilotUid).get();
     const profile = userSnap.exists ? userSnap.data() : {};
     const pilotName = profile.name || profile.displayName || 'Pilot';
-    const reports = await reportsForPilots(db(), [{ uid: pilotUid, name: pilotName }]);
-    if (reports.length === 0) return res.status(404).json({ error: 'Pilot report could not be built' });
+    const prepared = await reportsForPilots(db(), [{ uid: pilotUid, name: pilotName }]);
+    const reports = prepared.reports || [];
+    if (!reports.length) {
+      const reasons = prepared.blocked?.[0]?.reasons || [];
+      return res.status(409).json({
+        ok: false,
+        blocked: true,
+        error: 'This report was not sent. The pilot does not meet the standard, so nothing was emailed to the broker.',
+        reasons,
+      });
+    }
     const report = reports[0];
     const pdf = await buildPilotReportPdf(reports);
-    const filename = `pilot-report-${pilotName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'pilot'}.pdf`;
+    const filename = `crew-report-${pilotName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'pilot'}.pdf`;
     const note = String(body?.note || '').trim().slice(0, 2000);
     const text = [
-      `${report.operatorName} pilot report for ${report.pilotName}.`,
-      '',
-      `Safety rating: ${report.tierLabel} (${report.score}/100)`,
-      report.summary?.[0] || '',
-      note ? '' : null,
+      `Crew report for ${report.crew?.[0]?.pilotName || pilotName}.`,
+      report.hoursAsOf ? `Totals as of ${report.hoursAsOf}.` : '',
       note || null,
       '',
-      'The PDF is attached. It is the crew summary a charter broker uses to vet the assigned pilots.',
-      'Certificate numbers, date of birth, home address, and medical limitations are not included.',
-    ].filter((line) => line != null).join('\n');
+      'The PDF is attached. It is the crew summary sent only when the pilot meets the standard.',
+    ].filter((line) => line != null && line !== '').join('\n');
 
     const apiKey = process.env.RESEND_API_KEY;
     if (!apiKey) {
@@ -120,7 +125,7 @@ export default async function handler(req, res) {
         to: recipients,
         cc: ensureCharterCc([], recipients),
         reply_to: process.env.OPS_REPLY_TO || 'charters@flyskyway.com',
-        subject: `Pilot report — ${report.pilotName} — ${report.tierLabel}`,
+        subject: `Crew report — ${report.crew?.[0]?.pilotName || pilotName}`,
         text,
         html: applySkywaySignature(textToHtml(text)),
         attachments: [{ filename, content: pdf.toString('base64') }],

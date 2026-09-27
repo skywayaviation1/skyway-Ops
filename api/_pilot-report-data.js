@@ -6,8 +6,8 @@
 import { brand } from '../src/brand.js';
 import {
   buildBrokerCrewReports,
-  brokerPilotReport,
   evaluatePilot,
+  releaseBrokerReport,
   matchCrewUser,
   summarizeDutyFlightHours,
 } from '../src/pilot-safety.js';
@@ -83,8 +83,8 @@ export async function reportsForPilots(db, pilots, { role } = {}) {
   const todayMs = Date.now();
   const generatedAt = new Date(todayMs).toISOString();
   const { standards } = await loadSafetyContext(db);
-  const operator = operatorIdentity();
   const reports = [];
+  const blocked = [];
   for (const pilot of pilots) {
     if (!pilot?.uid) continue;
     const inputs = await loadPilotInputs(db, pilot.uid, todayMs);
@@ -96,13 +96,14 @@ export async function reportsForPilots(db, pilots, { role } = {}) {
       todayMs,
     });
     evaluation.pilotName = pilot.name || evaluation.pilotName;
-    reports.push(brokerPilotReport(evaluation, {
-      operatorName: operator.name,
-      operatorLegalName: operator.legalName,
-      generatedAt,
-    }));
+    const release = releaseBrokerReport(evaluation, { generatedAt });
+    if (!release.released) {
+      blocked.push({ pilotName: evaluation.pilotName, reasons: release.reasons });
+      continue;
+    }
+    reports.push(release.report);
   }
-  return reports;
+  return { reports, blocked };
 }
 
 export async function crewReportsForTrip(db, trip) {

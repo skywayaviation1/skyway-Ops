@@ -1,6 +1,6 @@
 # Pilot safety rating and broker pilot report
 
-The rating is an operator-owned crew vetting summary that uses the Wyvern Registered Standard as its shipped defaults, split by PIC and SIC. Brokers see a PASS-style report. It is not a live WYVERN Ltd audit. Admins replace the minimums in Compliance → Currency → Rating minimums. Saved values live at `app-config/pilot-safety`.
+The rating is an operator-owned crew vetting summary that uses the Wyvern Registered Standard as its shipped defaults, split by PIC and SIC. Brokers see a crew summary only when every assigned pilot meets that standard. It is not a live WYVERN Ltd audit. Admins replace the minimums in Compliance → Currency → Rating minimums. Saved values live at `app-config/pilot-safety`.
 
 ## What is stored
 
@@ -138,13 +138,15 @@ Unmarked aircraft-specific checks are not failures when another type in that gro
 
 ## Broker report
 
-`BrokerPilotReport` and both PDF builders render `brokerPilotReport()`. That function copies named fields only. A trip share is one report: identity, generated date and expiration, Operator / Aircraft / PIC / SIC chips (Meets or Does Not Meet), flags and waivers, operator, itinerary when the trip has one, aircraft registration, type, and serial (year, seats, and insurance only when the trip record has them), a PIC and SIC crew summary, unmet gap rows, and a footer with the criteria version plus a link to the live share page. Crew lines show certificate type and country, type rating, medical class and last medical date, employment, accident/incident and enforcement as None or Yes, the hour totals, 90-day and 12-month recency, and the check statuses. The as-of date is the day the totals were last rolled forward.
+Brokers see a crew summary only when every assigned pilot meets the seat they are flying. If anyone does not meet, `buildBrokerCrewReports()` returns an empty list. The share page then has no crew section: no failing status, no gap list, and no placeholder. Pass/fail detail and the gap analysis stay in Compliance → Currency. That screen tells an admin which seat is hidden and which items are short. Email and PDF download are blocked when the pilot meets neither seat, and the email route returns those internal reasons to the signed-in admin. A pilot who meets only one seat can still send the green summary for that seat; assigning them to the seat they miss leaves the trip crew report off.
 
-It does not include certificate numbers, date of birth, home address, medical expiration or limitations, internal notes, document files, email, or phone.
+When the crew does meet, `brokerPilotReport()` is a short crew list. Pilot-in-Command is on the left and Second-in-Command on the right. Each column has the name, certificate type, country, type rating, medical class, and last medical date, then green rows for employment, accident/incident/sanctions, the hour totals, and the check dates. Every value is a green pill because a failing report is never built. A generated date and the hours as-of date sit under the Crew heading. The share page places this block at the bottom, under the trip details. The emailed PDF uses the same list.
 
-The public trip link (`GET /api/trip-public`) attaches `trip.crewReports` after the existing token, revocation, rotation, and 24-hour-after-landing checks. A failed lookup yields an empty list and does not take the tracking page down.
+It does not include certificate numbers, date of birth, home address, medical expiration or limitations, internal notes, document files, email, phone, operator or insurance blocks, flags, or waivers.
 
-Emailing a report (`POST /api/pilot-report-email`) is limited to admin, ops, and sales. The server rebuilds the sanitized report and attaches a PDF through Resend. The shared email queue does not carry attachments, which is why this send does not go through `email-enqueue`.
+The public trip link (`GET /api/trip-public`) attaches `trip.crewReports` after the existing token, revocation, rotation, and 24-hour-after-landing checks. A failed lookup, or a crew that does not meet, yields an empty list and does not take the tracking page down.
+
+Emailing a report (`POST /api/pilot-report-email`) is limited to admin, ops, and sales. The server rebuilds the crew summary and refuses to send when the pilot does not meet. A send that is allowed attaches a PDF through Resend. The shared email queue does not carry attachments, which is why this send does not go through `email-enqueue`.
 
 ## Security rules
 

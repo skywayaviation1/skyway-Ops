@@ -957,17 +957,6 @@ export default function TripTrackPage({ token }) {
             the ground. */}
         <HeroCard trip={trip} position={position} />
 
-        {Array.isArray(trip.crewReports) && trip.crewReports.length > 0 && (
-          <section>
-            <h2 className="text-lg tracking-wider mb-2" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>CREW SAFETY REPORTS</h2>
-            <div className="space-y-3">
-              {trip.crewReports.map((report) => (
-                <BrokerPilotReport key={`${report.role}-${report.pilotName}`} report={report} />
-              ))}
-            </div>
-          </section>
-        )}
-
         {/* Map opens on the aircraft's full flown trail. Basemap, weather radar
             and fullscreen controls live inside the map frame. */}
         <BrokerFlightMap
@@ -998,6 +987,14 @@ export default function TripTrackPage({ token }) {
             );
           })}
         </section>
+
+        {Array.isArray(trip.crewReports) && trip.crewReports.length > 0 && (
+          <section data-testid="broker-crew">
+            {trip.crewReports.map((report) => (
+              <BrokerPilotReport key={report.generatedAt || report.crew?.[0]?.pilotName} report={report} />
+            ))}
+          </section>
+        )}
 
         <footer className="text-[10px] text-slate-600 text-center py-6 border-t border-slate-800" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
           QUESTIONS? · CHARTERS@FLYSKYWAY.COM · 727-605-5000
