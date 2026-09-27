@@ -44,12 +44,7 @@ function draw(doc, report) {
     doc.fillColor('#111827').font('Helvetica-Bold').fontSize(12).text(member.pilotName || 'Pilot', x, y, { width: colWidth });
     y += 16;
     doc.font('Helvetica').fontSize(8).fillColor('#374151');
-    const identity = [
-      member.certificateType,
-      member.country,
-      member.typeRating,
-      [member.medicalClass, member.lastMedical ? `last medical ${member.lastMedical}` : ''].filter(Boolean).join(' · '),
-    ].filter(Boolean);
+    const identity = [member.certificateType, member.typeRating].filter(Boolean);
     for (const line of identity) {
       doc.text(line, x, y, { width: colWidth });
       y = doc.y + 2;
@@ -57,9 +52,9 @@ function draw(doc, report) {
     y += 6;
     for (const row of member.rows || []) {
       if (y > 740) break;
-      doc.fillColor('#374151').font('Helvetica').fontSize(7).text(row.label, x, y, { width: colWidth - 90 });
+      doc.fillColor('#374151').font('Helvetica').fontSize(7).text(row.label, x, y, { width: colWidth - 176 });
       const pill = `✓  ${row.value || '—'}`;
-      const pillWidth = Math.min(120, doc.widthOfString(pill) + 10);
+      const pillWidth = Math.min(168, doc.widthOfString(pill) + 10);
       const pillX = x + colWidth - pillWidth;
       doc.roundedRect(pillX, y - 8, pillWidth, 12, 6).fill('#e7f6ee');
       doc.fillColor('#0f7a48').font('Helvetica-Bold').fontSize(7).text(pill, pillX + 4, y - 5, { width: pillWidth - 6, lineBreak: false });

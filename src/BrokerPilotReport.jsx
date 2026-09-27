@@ -61,12 +61,7 @@ function CrewColumn({ member }) {
       <p className="mt-1 text-xs leading-5 text-slate-600">
         {member.certificateType}
         <br />
-        {member.country}
-        <br />
         {member.typeRating}
-        <br />
-        {member.medicalClass}
-        {member.lastMedical ? ` · last medical ${member.lastMedical}` : ''}
       </p>
       <dl className="mt-3 divide-y divide-slate-100 border-t border-slate-100">
         {(member.rows || []).map((row) => (

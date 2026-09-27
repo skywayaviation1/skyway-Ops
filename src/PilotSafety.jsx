@@ -288,14 +288,14 @@ function PilotSafetyView({
                 <h3 className="text-[10px] tracking-widest text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>BROKER REPORT</h3>
                 {withhold.length === 0 ? (
                   <p className="mt-2 text-sm text-slate-300">
-                    Shown to brokers only when every pilot assigned to the trip meets the standard. The share page and the emailed PDF are the green crew summary.
+                    Shown to brokers when every assigned pilot’s hours and medical meet that seat. Checks, training, and background stay on this screen.
                   </p>
                 ) : (
                   <>
                     <p className="mt-2 text-sm text-amber-100">
                       {report
-                        ? 'Hidden from brokers on any trip that assigns this pilot to a seat they do not meet. That share page leaves the crew report off.'
-                        : 'Hidden from brokers. The share page leaves the crew report off, and email is blocked, until this pilot meets the standard.'}
+                        ? 'Hidden from brokers on any trip that assigns this pilot to a seat whose hours or medical do not meet. That share page leaves the crew report off.'
+                        : 'Hidden from brokers. The share page leaves the crew report off, and email is blocked, until this pilot’s hours and medical meet a seat.'}
                     </p>
                     <ul className="mt-2 list-disc space-y-1 pl-4 text-xs text-slate-300">
                       {withhold.map((line) => <li key={line}>{line}</li>)}
@@ -597,7 +597,7 @@ function PilotSafetyView({
         <Modal title={report ? 'Crew report' : 'Not sent to brokers'} onClose={() => setShowReport(false)}>
           {report ? <BrokerPilotReport report={report} /> : (
             <div className="border border-slate-700 bg-slate-950 p-4 text-sm text-slate-200">
-              <p>This crew report is hidden from brokers. The share page omits it, and email is blocked, until the assigned pilot meets the standard.</p>
+              <p>This crew report is hidden from brokers. The share page omits it, and email is blocked, until the assigned pilot’s hours and medical meet the seat.</p>
               <ul className="mt-3 list-disc space-y-1 pl-4 text-xs text-slate-300">
                 {withhold.map((line) => <li key={line}>{line}</li>)}
               </ul>
@@ -967,7 +967,7 @@ function EmailPilotReport({ pilot, onClose }) {
     <Modal title="Email pilot report" onClose={onClose}>
       <div className="space-y-3 border border-slate-700 bg-slate-950 p-4 text-slate-100">
         <p className="text-sm text-slate-300">
-          Sends {pilot.name}’s crew summary as a PDF. It goes out only when this pilot meets the standard. Certificate numbers, date of birth, and addresses are not included.
+          Sends {pilot.name}’s crew summary as a PDF. It goes out only when this pilot’s hours and medical meet a seat. Certificate numbers, date of birth, and addresses are not included.
         </p>
         <label className="block text-[11px] text-slate-400">
           Broker email

@@ -88,7 +88,7 @@ export default async function handler(req, res) {
       return res.status(409).json({
         ok: false,
         blocked: true,
-        error: 'This report was not sent. The pilot does not meet the standard, so nothing was emailed to the broker.',
+        error: 'This report was not sent. The pilot’s hours or medical do not meet the seat, so nothing was emailed to the broker.',
         reasons,
       });
     }
@@ -101,7 +101,7 @@ export default async function handler(req, res) {
       report.hoursAsOf ? `Totals as of ${report.hoursAsOf}.` : '',
       note || null,
       '',
-      'The PDF is attached. It is the crew summary sent only when the pilot meets the standard.',
+      'The PDF is attached. It is the crew summary sent only when the pilot’s hours and medical meet the seat.',
     ].filter((line) => line != null && line !== '').join('\n');
 
     const apiKey = process.env.RESEND_API_KEY;

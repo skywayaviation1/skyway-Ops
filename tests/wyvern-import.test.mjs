@@ -383,8 +383,12 @@ test('the active-pilot JSON maps hours, intervals, and warnings without storing 
   assert.equal(record.hours.singleEngine, 200);
   assert.equal(record.hours.multiEngine, 3700);
   assert.equal(record.hours.multiEngine90, 12);
+  assert.equal(record.hours.picFixedWing, 4000);
+  assert.equal(record.hours.picMultiEngine, 3800);
   assert.equal(record.hours.last90Days, 40);
-  assert.equal(record.hours.landings, undefined);
+  assert.equal(record.hours.landings, null);
+  assert.equal(record.hours.landings90, 10);
+  assert.equal(record.hours.landings12, 40);
   assert.equal(record.hoursAsOf, '2024-08-01');
   assert.deepEqual(record.certificate.typeRatings, ['CE-525, CE-525S', 'LR-60']);
   assert.equal(record.certificate.typeRatings.length, 2);
@@ -452,6 +456,11 @@ test('the active-pilot JSON maps hours, intervals, and warnings without storing 
   assert.equal(draft.background.accident, false);
   assert.equal(draft.background.enforcement, true);
   assert.equal(draft.hours.landings, null);
+  assert.equal(draft.hours.landings90, 10);
+  assert.equal(draft.hours.landings12, 40);
+  assert.equal(draft.hours.picFixedWing, 4000);
+  assert.equal(draft.hours.picMultiEngine, 3800);
+  assert.equal(draft.baseline.asOf, '2024-08-01');
   assert.equal(draft.wyvern.passStatus, 'Available for PASS');
   assert.equal(draft.wyvern.base, 'Sample Base');
   assert.equal(draft.wyvern.hiredOn, '2019-04-01');

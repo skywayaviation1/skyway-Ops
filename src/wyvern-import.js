@@ -11,8 +11,9 @@ import { normalizeCertificateLevel, normalizeLogbook } from './pilot-safety.js';
 export const WYVERN_SOURCE = 'Wyvern';
 
 const HOUR_KEYS = [
-  'totalTime', 'pic', 'sic', 'fixedWing', 'rotorWing', 'singleEngine', 'multiEngine',
-  'multiEngine90', 'multiEngine12', 'turbine', 'night', 'instrument', 'last90Days', 'last12Months',
+  'totalTime', 'pic', 'sic', 'fixedWing', 'picFixedWing', 'rotorWing', 'singleEngine', 'multiEngine',
+  'picMultiEngine', 'multiEngine90', 'multiEngine12', 'turbine', 'night', 'instrument', 'last90Days', 'last12Months',
+  'landings', 'landings90', 'landings12',
 ];
 
 const CHECK_KEYS = new Set([
@@ -219,13 +220,18 @@ function emptyHours() {
     rotorWing: null,
     singleEngine: null,
     multiEngine: null,
+    picMultiEngine: null,
     multiEngine90: null,
     multiEngine12: null,
+    picFixedWing: null,
     turbine: null,
     night: null,
     instrument: null,
     last90Days: null,
     last12Months: null,
+    landings: null,
+    landings90: null,
+    landings12: null,
     timeInType: [],
   };
 }
@@ -497,13 +503,22 @@ function applyPassExtract(raw, record) {
   const multi = nestedObject(hourBag, ['multiengine']);
   const rotor = nestedObject(hourBag, ['rotorwing']);
   if (record.hours.fixedWing == null && fixed) record.hours.fixedWing = parseHours(pick(fixed, ['total', 'totaltime', 'hours']));
+  if (record.hours.picFixedWing == null && fixed) record.hours.picFixedWing = parseHours(pick(fixed, ['pic', 'pichours']));
   if (record.hours.singleEngine == null && single) record.hours.singleEngine = parseHours(pick(single, ['total', 'totaltime', 'hours']));
   if (record.hours.multiEngine == null && multi) record.hours.multiEngine = parseHours(pick(multi, ['total', 'totaltime', 'hours']));
+  if (record.hours.picMultiEngine == null && multi) record.hours.picMultiEngine = parseHours(pick(multi, ['pic', 'pichours']));
   if (record.hours.multiEngine90 == null && multi) {
     record.hours.multiEngine90 = parseHours(pick(multi, ['90days', 'last90', 'last90days']));
   }
   if (record.hours.multiEngine12 == null && multi) {
     record.hours.multiEngine12 = parseHours(pick(multi, ['12months', 'last12', 'last12months', 'last365']));
+  }
+  const landings = nestedObject(hourBag, ['landings']);
+  if (landings) {
+    if (record.hours.landings90 == null) record.hours.landings90 = parseHours(pick(landings, ['90days', 'last90', 'last90days']));
+    if (record.hours.landings12 == null) record.hours.landings12 = parseHours(pick(landings, ['12months', 'last12', 'last12months']));
+  } else if (record.hours.landings == null) {
+    record.hours.landings = parseHours(pick(hourBag, ['landings']));
   }
   if (record.hours.rotorWing == null && rotor) {
     const rotorHours = nestedObject(rotor, ['hours']) || rotor;
@@ -649,7 +664,8 @@ export function normalizeWyvernRecord(raw) {
   const hourBag = readHourBag(raw);
   const hours = emptyHours();
   for (const key of HOUR_KEYS) {
-    hours[key] = parseHours(pick(hourBag, HOUR_ALIASES[key]));
+    const aliases = HOUR_ALIASES[key];
+    hours[key] = aliases ? parseHours(pick(hourBag, aliases)) : null;
   }
   hours.timeInType = readTimeInType(hourBag, raw);
   const hoursAsOf = parseWyvernDate(pick(hourBag, ['asof', 'asofdate', 'hoursasof', 'effectivedate', 'reportdate', 'lastupdated'])
@@ -1113,11 +1129,16 @@ const HOUR_LABELS = {
   pic: 'Pilot in command',
   sic: 'Second in command',
   fixedWing: 'Fixed-wing',
+  picFixedWing: 'PIC fixed-wing',
   rotorWing: 'Rotor-wing',
   singleEngine: 'Single-engine',
   multiEngine: 'Multi-engine',
+  picMultiEngine: 'PIC multi-engine',
   multiEngine90: 'Multi-engine last 90 days',
   multiEngine12: 'Multi-engine last 12 months',
+  landings: 'Landings',
+  landings90: 'Landings last 90 days',
+  landings12: 'Landings last 12 months',
   turbine: 'Turbine',
   night: 'Night',
   instrument: 'Instrument',

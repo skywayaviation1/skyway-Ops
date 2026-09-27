@@ -69,7 +69,7 @@ function drawReport(doc, report, pageWidth, margin) {
     y += 14;
     line(doc, x, y, member.pilotName || 'Pilot', { size: 12, style: 'bold' });
     y += 14;
-    for (const identity of [member.certificateType, member.country, member.typeRating, [member.medicalClass, member.lastMedical ? `last medical ${member.lastMedical}` : ''].filter(Boolean).join(' · ')]) {
+    for (const identity of [member.certificateType, member.typeRating]) {
       if (!identity) continue;
       line(doc, x, y, identity, { size: 8, color: INK, width: colWidth });
       y += 11;
@@ -77,11 +77,11 @@ function drawReport(doc, report, pageWidth, margin) {
     y += 4;
     for (const row of member.rows || []) {
       if (y > 740) break;
-      line(doc, x, y, row.label, { size: 7, color: INK, width: colWidth - 88 });
+      line(doc, x, y, row.label, { size: 7, color: INK, width: colWidth - 176 });
       const pill = `✓  ${row.value || '—'}`;
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(7);
-      const pillWidth = Math.min(110, doc.getTextWidth(pill) + 10);
+      const pillWidth = Math.min(168, doc.getTextWidth(pill) + 10);
       const pillX = x + colWidth - pillWidth;
       doc.setFillColor(231, 246, 238);
       doc.roundedRect(pillX, y - 8, pillWidth, 12, 6, 6, 'F');

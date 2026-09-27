@@ -51,6 +51,8 @@ export const HOUR_FIELDS = Object.freeze([
   { key: 'night', label: 'Night' },
   { key: 'last90Days', label: 'Last 90 days' },
   { key: 'last12Months', label: 'Last 12 months' },
+  { key: 'landings90', label: 'Landings last 90 days' },
+  { key: 'landings12', label: 'Landings last 12 months' },
   { key: 'timeInType', label: 'Time in type', perType: true },
 ]);
 
@@ -420,6 +422,8 @@ export function emptyLogbook(uid = '', pilotName = '') {
       last12Months: null,
       last6Months: null,
       landings: null,
+      landings90: null,
+      landings12: null,
       timeInType: [],
     },
     certificate: {
@@ -456,6 +460,8 @@ function copyHourBag(raw) {
   }
   hours.last6Months = finiteNumber(raw.last6Months);
   hours.landings = finiteNumber(raw.landings);
+  hours.landings90 = finiteNumber(raw.landings90);
+  hours.landings12 = finiteNumber(raw.landings12);
   const types = Array.isArray(raw.timeInType) ? raw.timeInType : [];
   hours.timeInType = types.slice(0, 24).map((entry) => ({
     type: String(entry?.type || '').trim().slice(0, 80),
@@ -1342,20 +1348,35 @@ function seatCriterion(row, seat) {
   return seat === 'SIC' ? row?.sicCriteria : row?.picCriteria;
 }
 
-/** Internal only. Explains a seat that does not meet, for admins fixing the record. */
+/**
+ * Hours and medical are the only items a broker report is allowed to depend on.
+ * Checks, training, and background stay on the internal rating.
+ */
+const BROKER_GATE_LABELS = new Set([
+  'Total time',
+  'PIC time',
+  'Fixed-wing',
+  'Multi-engine',
+  'Multi-engine last 12 months',
+  'Multi-engine last 90 days',
+  'Instrument',
+  'Turbine',
+  'Total time in type',
+  'PIC time in type',
+  'Minimum medical class',
+  'Medical validity',
+]);
+
+function brokerGateFailures(evaluation, seat) {
+  return (evaluation?.gapAnalysis || []).filter((row) => BROKER_GATE_LABELS.has(row.label) && !seatMet(row, seat));
+}
+
+/** Internal only. Explains a seat whose hours or medical miss the broker gate. */
 export function brokerWithholdReasons(evaluation, seat = null) {
   const seats = seat ? [seat] : ['PIC', 'SIC'];
   const lines = [];
   for (const name of seats) {
-    const tier = evaluation?.positions?.[name]?.tier;
-    if (tier && tier !== TIER.DOES_NOT_MEET) continue;
-    if (!tier && evaluation?.tier !== TIER.DOES_NOT_MEET) continue;
-    const failed = (evaluation?.gapAnalysis || []).filter((row) => !seatMet(row, name));
-    if (!failed.length) {
-      lines.push(`${name} is short of the configured standard.`);
-      continue;
-    }
-    for (const row of failed) {
+    for (const row of brokerGateFailures(evaluation, name)) {
       lines.push(`${name}: ${row.label} is ${row.pilotValue} (${seatCriterion(row, name)}).`);
     }
   }
@@ -1398,111 +1419,81 @@ function medicalClassPhrase(value) {
   return value || 'Not on file';
 }
 
-function sanctionsPhrase(background) {
-  if (background?.accident === true || background?.enforcement === true) return 'Yes';
-  if (background?.accident === false && background?.enforcement === false) return 'No';
-  return 'Not on file';
-}
-
 function experienceValue(ev, key) {
   return (ev?.experience || []).find((line) => line.key === key)?.actualDisplay || null;
 }
 
-function requirementLine(ev, id) {
-  return (ev?.requirements || []).find((line) => line.id === id) || null;
+function bareHours(value) {
+  const phrase = hourPhrase(value);
+  if (phrase === '—') return '—';
+  return phrase.replace(/ Hrs$/i, '');
 }
 
-function checkPhrase(ev, id) {
-  const line = requirementLine(ev, id);
-  if (!line) return '—';
-  if (line.status === 'na' || line.statusLabel === 'Not Required') {
-    return line.completedOn ? prettyDate(line.completedOn) : 'Not required';
-  }
-  if (line.completedOn) return prettyDate(line.completedOn);
-  if (line.dueOn) return prettyDate(line.dueOn);
-  return '—';
+function pairPhrase(total, pic) {
+  const left = bareHours(total);
+  const right = bareHours(pic);
+  if (left === '—' && right === '—') return '—';
+  return `${left} / ${right} Hrs`;
 }
 
-function motionPhrase(ev) {
-  const line = requirementLine(ev, 'competency293');
-  if (!line) return '—';
-  if (line.status === 'na' || line.statusLabel === 'Not Required') return 'Not required';
-  if (line.statusLabel === 'Expired' || line.statusLabel === 'Not Validated') return '—';
-  return 'Yes';
-}
-
-function picFixedPhrase(ev) {
-  if (ev?.displayHours?.picFixedWing != null) return hourPhrase(formatHours(ev.displayHours.picFixedWing));
+function picFixedRaw(ev) {
+  if (ev?.displayHours?.picFixedWing != null) return formatHours(ev.displayHours.picFixedWing);
   const rotor = ev?.displayHours?.rotorWing;
-  if (rotor == null || Number(rotor) === 0) return hourPhrase(experienceValue(ev, 'pic'));
-  return '—';
+  if (rotor == null || Number(rotor) === 0) return experienceValue(ev, 'pic');
+  return null;
 }
 
-function picMultiPhrase(ev) {
-  if (ev?.displayHours?.picMultiEngine != null) return hourPhrase(formatHours(ev.displayHours.picMultiEngine));
-  return '—';
+function medicalRowValue(ev) {
+  const klass = medicalClassPhrase(ev?.medical?.class);
+  const date = prettyDate(ev?.medical?.lastDate);
+  if ((!klass || klass === 'Not on file') && !date) return 'Not on file';
+  if (!date) return klass;
+  if (!klass || klass === 'Not on file') return date;
+  return `${klass} · ${date}`;
 }
 
 export const BROKER_CREW_ROWS = Object.freeze([
-  'Employment Status',
-  'Accident/Incident/Sanctions',
-  'Total PIC Time',
+  'Medical',
   'Total Flight Time',
+  'Total PIC Time',
   'Total Time Last Updated',
-  'PIC Fixed-Wing Time',
-  'Total Fixed-Wing Time',
-  'PIC Multi-Engine Time',
-  'Total Multi-Engine Time',
+  'Fixed-Wing Time',
+  'Multi-Engine Time',
   'Multi-Engine Time (90 Days)',
   'Multi-Engine Time (12 Months)',
-  'PIC Time in Type',
-  'Total Time in Type',
+  'Time in Type',
   'Instrument Time',
   'Turbine Time',
-  'Instrument Proficiency Check',
-  'Line Check',
-  'Aircraft Specific Check',
-  'Recurrent Training',
-  'Motion Based Simulator Training',
 ]);
 
 function crewMember(ev, seat) {
   const rows = [
-    ['Employment Status', ev?.background?.employment || 'Not on file'],
-    ['Accident/Incident/Sanctions', sanctionsPhrase(ev?.background)],
-    ['Total PIC Time', hourPhrase(experienceValue(ev, 'pic'))],
+    ['Medical', medicalRowValue(ev)],
     ['Total Flight Time', hourPhrase(experienceValue(ev, 'totalTime'))],
+    ['Total PIC Time', hourPhrase(experienceValue(ev, 'pic'))],
     ['Total Time Last Updated', prettyDate(ev?.hoursAsOf) || '—'],
-    ['PIC Fixed-Wing Time', picFixedPhrase(ev)],
-    ['Total Fixed-Wing Time', hourPhrase(experienceValue(ev, 'fixedWing'))],
-    ['PIC Multi-Engine Time', picMultiPhrase(ev)],
-    ['Total Multi-Engine Time', hourPhrase(experienceValue(ev, 'multiEngine'))],
+    ['Fixed-Wing Time', pairPhrase(experienceValue(ev, 'fixedWing'), picFixedRaw(ev))],
+    ['Multi-Engine Time', pairPhrase(
+      experienceValue(ev, 'multiEngine'),
+      ev?.displayHours?.picMultiEngine != null ? formatHours(ev.displayHours.picMultiEngine) : null,
+    )],
     ['Multi-Engine Time (90 Days)', hourPhrase(experienceValue(ev, 'multiEngine90'))],
     ['Multi-Engine Time (12 Months)', hourPhrase(experienceValue(ev, 'multiEngine12'))],
-    ['PIC Time in Type', hourPhrase(experienceValue(ev, 'picTimeInType'))],
-    ['Total Time in Type', hourPhrase(experienceValue(ev, 'timeInType'))],
+    ['Time in Type', pairPhrase(experienceValue(ev, 'timeInType'), experienceValue(ev, 'picTimeInType'))],
     ['Instrument Time', hourPhrase(experienceValue(ev, 'instrument'))],
     ['Turbine Time', hourPhrase(experienceValue(ev, 'turbine'))],
-    ['Instrument Proficiency Check', checkPhrase(ev, 'instrumentCheck297')],
-    ['Line Check', checkPhrase(ev, 'lineCheck299')],
-    ['Aircraft Specific Check', checkPhrase(ev, 'aircraftKnowledge293')],
-    ['Recurrent Training', checkPhrase(ev, 'recurrentTraining351')],
-    ['Motion Based Simulator Training', motionPhrase(ev)],
   ];
   return {
     role: seat === 'SIC' ? 'Second-in-Command' : 'Pilot-in-Command',
     pilotName: String(ev?.pilotName || '').slice(0, 80),
     certificateType: certificatePhrase(ev?.certificate?.level),
-    country: ev?.certificate?.country || 'Not on file',
     typeRating: asStringList(ev?.certificate?.typeRatings).join(', ') || 'Not on file',
-    medicalClass: medicalClassPhrase(ev?.medical?.class),
-    lastMedical: prettyDate(ev?.medical?.lastDate) || 'Not on file',
     rows: rows.map(([label, value]) => ({ label, value: String(value || '—').slice(0, 80) })),
   };
 }
 
-function passesSeat(evaluation) {
-  return Boolean(evaluation && evaluation.tier && evaluation.tier !== TIER.DOES_NOT_MEET);
+function passesBrokerSeat(evaluation, seat) {
+  return Boolean(evaluation) && brokerGateFailures(evaluation, seat).length === 0;
 }
 
 /**
@@ -1520,14 +1511,16 @@ export function brokerPilotReport(evaluation, {
   let source = evaluation;
   if (bySeat) {
     const seats = ['PIC', 'SIC'].filter((seat) => bySeat[seat]);
-    if (!seats.length || seats.some((seat) => !passesSeat(bySeat[seat]))) return null;
+    if (!seats.length || seats.some((seat) => !passesBrokerSeat(bySeat[seat], seat))) return null;
     crew = seats.map((seat) => crewMember(bySeat[seat], seat)).filter((member) => member.pilotName);
     source = bySeat.PIC || bySeat.SIC;
   } else {
-    if (!passesSeat(evaluation)) return null;
-    const seat = evaluation?.role === 'SIC' || evaluation?.positions?.PIC?.tier === TIER.DOES_NOT_MEET
-      ? 'SIC'
-      : 'PIC';
+    const seat = passesBrokerSeat(evaluation, 'PIC')
+      ? 'PIC'
+      : passesBrokerSeat(evaluation, 'SIC')
+        ? 'SIC'
+        : null;
+    if (!seat) return null;
     const member = crewMember(evaluation, seat);
     if (!member.pilotName) return null;
     crew = [member];

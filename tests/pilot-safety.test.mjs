@@ -305,14 +305,34 @@ test('the broker report keeps vetting facts and drops personal data', () => {
   }
   assert.equal(report.crew[0].pilotName, 'Maxwell Hagberg');
   assert.equal(report.crew[0].certificateType, 'Airline Transport Pilot');
-  assert.equal(report.crew[0].medicalClass, 'Class 1');
-  assert.equal(report.crew[0].country, 'United States');
+  assert.equal(report.crew[0].typeRating, 'Citation XLS+');
+  assert.equal(report.crew[0].country, undefined);
+  assert.equal(report.crew[0].rows.find((row) => row.label === 'Medical').value, 'Class 1');
   assert.equal(report.crew[0].rows.find((row) => row.label === 'Total Flight Time').value, '4820 Hrs');
-  assert.equal(report.crew[0].rows.find((row) => row.label === 'Accident/Incident/Sanctions').value, 'No');
+  assert.equal(report.crew[0].rows.find((row) => row.label === 'Fixed-Wing Time').value, '4700 / 2310 Hrs');
+  assert.equal(report.crew[0].rows.find((row) => row.label === 'Time in Type').value, '860 / 400 Hrs');
+  assert.equal(report.crew[0].rows.some((row) => row.label === 'Line Check'), false);
+  assert.equal(report.crew[0].rows.some((row) => row.label === 'Employment Status'), false);
   assert.equal(report.generatedAt, '2026-09-27T15:00:00.000Z');
   assert.equal(report.gapAnalysis, undefined);
   assert.equal(report.chips, undefined);
   assert.equal(blob.includes('Does Not Meet'), false);
+});
+
+test('checks and training do not gate the broker report', () => {
+  const rating = evaluatePilot({
+    pilot,
+    logbook: logbook(),
+    currencyDoc: currency({
+      lineCheck299: { dueDate: ymd(-12) },
+      instrumentCheck297: { dueDate: ymd(-12) },
+    }),
+    todayMs: today,
+  });
+  assert.equal(rating.positions.PIC.tier, 'doesNotMeet');
+  const report = brokerPilotReport(rating, { generatedAt: '2026-09-27T15:00:00.000Z' });
+  assert.equal(report.crew[0].role, 'Pilot-in-Command');
+  assert.equal(brokerWithholdReasons(rating).some((line) => /Line check|Instrument proficiency|training/i.test(line)), false);
 });
 
 test('a crew that does not meet is omitted from the broker report', () => {
@@ -374,7 +394,8 @@ test('a trip share builds one PASS report and keeps the SIC on the SIC standard'
   assert.equal(reports[0].crew.length, 2);
   assert.equal(reports[0].crew[0].role, 'Pilot-in-Command');
   assert.equal(reports[0].crew[1].role, 'Second-in-Command');
-  assert.equal(reports[0].crew[1].rows.find((row) => row.label === 'Line Check').value, 'Not required');
+  assert.equal(reports[0].crew[1].rows.some((row) => row.label === 'Line Check'), false);
+  assert.equal(reports[0].crew[0].rows.find((row) => row.label === 'Medical').value.includes('Class 1'), true);
   assert.equal(reports[0].gapAnalysis, undefined);
   assert.equal(JSON.stringify(reports).includes('Does Not Meet'), false);
   assert.equal(JSON.stringify(reports).includes('Secret Street'), false);
