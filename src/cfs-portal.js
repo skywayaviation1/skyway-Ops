@@ -169,6 +169,10 @@ export function dashboardSummary(trips, now = new Date()) {
   const boundValueCents = confirmedMonth.reduce((sum, trip) => sum + (trip.coverageLimitCents || 0), 0);
   const upcomingFlights = trips.filter((trip) => trip.status === 'confirmed' && departMs(trip) >= now.getTime()).length;
   const needsAction = [...awaiting].sort((a, b) => departMs(a) - departMs(b));
+  const counts = { all: trips.length, awaiting: 0, confirmed: 0, flown: 0, cancelled: 0 };
+  for (const trip of trips) {
+    if (Object.hasOwn(counts, trip.status)) counts[trip.status] += 1;
+  }
   return {
     awaiting: awaiting.length,
     confirmedThisMonth: confirmedMonth.length,
@@ -176,6 +180,7 @@ export function dashboardSummary(trips, now = new Date()) {
     boundValueLabel: fmtMoney(boundValueCents / 100),
     upcomingFlights,
     needsAction,
+    counts,
   };
 }
 

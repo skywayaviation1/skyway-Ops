@@ -871,21 +871,32 @@ async function portalShots(page) {
   if (/premium|gifted|complimentary/i.test(await page.locator('body').innerText())) {
     throw new Error('CFS dashboard shows Skyway-only wording');
   }
+  await page.getByText('Signed in.').waitFor({ state: 'hidden', timeout: 8000 }).catch(() => {});
   await shot(page, 'cfs-dashboard-desktop');
+  await page.getByRole('button', { name: 'Dark mode' }).click();
+  await page.locator('.cfs-portal[data-theme="dark"]').waitFor();
+  await shot(page, 'cfs-dashboard-dark');
+  await page.getByRole('button', { name: 'Light mode' }).click();
+  await page.locator('.cfs-portal[data-theme="light"]').waitFor();
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.locator('.cfs-portal .sw-sheet-body').evaluate((el) => { el.scrollTop = 0; });
-  await shot(page, 'cfs-dashboard-iphone');
-  await page.setViewportSize({ width: 375, height: 667 });
   const portalBody = page.locator('.cfs-portal .sw-sheet-body');
-  const portalScrolled = await scrollSheetBody(portalBody);
-  const portalEnd = page.getByText('End of portal');
-  await portalEnd.waitFor();
-  const portalBox = await portalEnd.boundingBox();
-  const portalViewport = page.viewportSize();
-  console.log('portal scroll', JSON.stringify({ portalScrolled, portalBox, portalViewport }));
-  if (!portalBox || portalBox.y < 0 || portalBox.y + portalBox.height > portalViewport.height + 2) {
-    throw new Error(`CFS portal did not reach the bottom ${JSON.stringify({ portalScrolled, portalBox })}`);
+  await portalBody.evaluate((el) => { el.scrollTop = 0; });
+  await shot(page, 'cfs-dashboard-iphone');
+
+  async function assertPortalEnd(label) {
+    const portalScrolled = await scrollSheetBody(portalBody);
+    const portalEnd = page.getByText('End of portal');
+    await portalEnd.waitFor();
+    const portalBox = await portalEnd.boundingBox();
+    const portalViewport = page.viewportSize();
+    console.log(label, JSON.stringify({ portalScrolled, portalBox, portalViewport }));
+    if (!portalBox || portalBox.y < 0 || portalBox.y + portalBox.height > portalViewport.height + 2) {
+      throw new Error(`CFS portal did not reach the bottom at ${label} ${JSON.stringify({ portalScrolled, portalBox })}`);
+    }
   }
+  await assertPortalEnd('portal-390');
+  await page.setViewportSize({ width: 375, height: 667 });
+  await assertPortalEnd('portal-375');
   await portalBody.evaluate((el) => { el.scrollTop = 0; });
   await page.setViewportSize({ width: 390, height: 844 });
 
@@ -893,8 +904,17 @@ async function portalShots(page) {
   await page.getByLabel('Your name').waitFor({ timeout: 15000 });
   await page.getByText('Coverage: 100%').waitFor();
   await page.getByText(/Coverage value: up to \$40,000\.00/).waitFor();
+  await portalBody.evaluate((el) => { el.scrollTop = 0; });
+  await shot(page, 'cfs-trip-iphone-top');
   await page.getByLabel('Your name').evaluate((el) => el.scrollIntoView({ block: 'center' }));
   await shot(page, 'cfs-trip-acknowledge');
+  await page.getByLabel('Your name').fill('Casey Stone');
+  await page.getByLabel('Your email').fill('charter@charterflightsupport.com');
+  await page.getByLabel('CFS cost').fill('640.00');
+  await page.getByRole('button', { name: 'Acknowledge coverage' }).click();
+  await page.getByRole('heading', { name: 'Coverage acknowledged' }).waitFor({ timeout: 20000 });
+  await page.getByText('Signed in.').waitFor({ state: 'hidden', timeout: 1000 }).catch(() => {});
+  await shot(page, 'cfs-ack-success');
 
   await page.getByRole('button', { name: 'Back to trips' }).click();
   await page.getByLabel('Select V3K8QM').check();
@@ -907,16 +927,13 @@ async function portalShots(page) {
   await bulkCost.evaluate((el) => el.scrollIntoView({ block: 'center' }));
   await shot(page, 'cfs-bulk-acknowledge');
 
+  await page.setViewportSize({ width: 1280, height: 800 });
   await page.getByRole('button', { name: 'Monthly statement' }).click();
   await page.getByRole('button', { name: 'Show statement' }).click();
   await page.getByText('N6C2WT').waitFor({ timeout: 15000 });
   await page.getByText(/Coverage value total/).waitFor();
   await page.getByText('N6C2WT').evaluate((el) => el.scrollIntoView({ block: 'center' }));
   await shot(page, 'cfs-statement');
-
-  await page.getByRole('button', { name: 'Dark mode' }).click();
-  await page.locator('.cfs-portal[data-theme="dark"]').waitFor();
-  await shot(page, 'cfs-dark-mode');
 
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto(`http://127.0.0.1:${WEB_PORT}/aog-emulator`, { waitUntil: 'domcontentloaded' });

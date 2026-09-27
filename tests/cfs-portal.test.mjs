@@ -92,6 +92,9 @@ test('dashboard, filters, and the monthly statement use only CFS-visible trips',
   });
   const summary = dashboardSummary([awaiting, confirmed], new Date('2026-09-27T12:00:00.000Z'));
   assert.equal(summary.awaiting, 1);
+  assert.equal(summary.counts.all, 2);
+  assert.equal(summary.counts.awaiting, 1);
+  assert.equal(summary.counts.confirmed, 1);
   assert.equal(summary.confirmedThisMonth, 1);
   assert.equal(summary.boundValueCents, 4000000);
   const found = filterPortalTrips([awaiting, confirmed], { q: 'N6C2WT', status: 'confirmed' });

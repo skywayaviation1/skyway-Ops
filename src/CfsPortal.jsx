@@ -7,6 +7,14 @@ import React, { useEffect, useMemo, useState } from 'react';
 const SESSION_KEY = 'cfs-portal-session';
 const THEME_KEY = 'cfs-portal-theme';
 
+const TABS = [
+  ['all', 'All'],
+  ['awaiting', 'Awaiting'],
+  ['confirmed', 'Confirmed'],
+  ['flown', 'Flown'],
+  ['cancelled', 'Cancelled'],
+];
+
 function params() {
   return new URLSearchParams(window.location.search);
 }
@@ -31,7 +39,74 @@ function when(value) {
   if (!value) return '—';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return String(value).slice(0, 10);
-  return date.toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  return date.toLocaleString('en-US', {
+    timeZone: 'America/New_York',
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
+function dayStamp(value) {
+  if (!value) return '';
+  const raw = String(value);
+  const date = new Date(raw.length === 10 ? `${raw}T15:00:00.000Z` : raw);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleDateString('en-US', {
+    timeZone: 'America/New_York',
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  });
+}
+
+function dateRange(row) {
+  const start = dayStamp(row?.departAt);
+  const end = dayStamp(row?.returnAt);
+  if (start && end && start !== end) return `${start} - ${end}`;
+  if (start) return start;
+  return row?.datesLabel || 'Dates pending';
+}
+
+function airports(route) {
+  const parts = String(route || '').split(/\s*(?:→|->|—|–)\s*/).map((part) => part.trim()).filter(Boolean);
+  if (parts.length >= 2) return parts;
+  return parts.length ? parts : ['Route pending'];
+}
+
+function urgencyCopy(departAt) {
+  const ms = Date.parse(departAt || '');
+  if (!Number.isFinite(ms)) return { label: 'Departs within 72 hours', tone: 'soon' };
+  const hours = (ms - Date.now()) / 36e5;
+  if (hours < 24) return { label: hours < 1 ? 'Departs within the hour' : 'Departs today', tone: 'now' };
+  const days = Math.max(1, Math.round(hours / 24));
+  return { label: days === 1 ? 'Departs in 1 day' : `Departs in ${days} days`, tone: 'soon' };
+}
+
+function statusLabel(status) {
+  const name = String(status || 'awaiting');
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+function eventLabel(type) {
+  if (type === 'bound') return 'Coverage bound';
+  if (type === 'cfs_acknowledged') return 'Acknowledged';
+  if (type === 'cfs_reminder_sent') return 'Reminder sent';
+  if (type === 'cfs_portal_opened') return 'Opened in the portal';
+  return String(type || 'Update').replaceAll('_', ' ');
+}
+
+function costError(value) {
+  const raw = String(value ?? '').trim().replace(/[$,\s]/g, '');
+  if (!raw) return 'Enter the CFS cost.';
+  if (!/^\d+(\.\d{1,2})?$/.test(raw)) return 'Use a dollar amount like 640.00.';
+  return '';
+}
+
+function scrollPortal() {
+  document.querySelector('.cfs-portal .sw-sheet-body')?.scrollTo(0, 0);
 }
 
 export default function CfsPortal() {
@@ -58,6 +133,8 @@ export default function CfsPortal() {
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [sort, setSort] = useState('depart');
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
   const [trip, setTrip] = useState(null);
   const [events, setEvents] = useState([]);
   const [ackOnly, setAckOnly] = useState(null);
@@ -78,7 +155,7 @@ export default function CfsPortal() {
 
   useEffect(() => {
     if (!toast) return undefined;
-    const id = setTimeout(() => setToast(''), 4000);
+    const id = setTimeout(() => setToast(''), 3200);
     return () => clearTimeout(id);
   }, [toast]);
 
@@ -153,6 +230,8 @@ export default function CfsPortal() {
 
   const needsAction = summary?.needsAction || [];
   const selectedIds = useMemo(() => Object.keys(selected).filter((id) => selected[id]), [selected]);
+  const counts = summary?.counts || { all: 0, awaiting: summary?.awaiting || 0, confirmed: 0, flown: 0, cancelled: 0 };
+  const filterCount = [tail, aircraft, airport, broker, from, to].filter(Boolean).length;
 
   async function requestLink(event) {
     event.preventDefault();
@@ -169,8 +248,10 @@ export default function CfsPortal() {
   async function openTrip(row) {
     setError('');
     setConfirmed(null);
+    setAccountOpen(false);
     setView('trip');
     setLoading(true);
+    scrollPortal();
     try {
       const data = await post({ action: 'trip', sessionToken: session, id: row.id });
       setTrip(data.trip);
@@ -182,10 +263,10 @@ export default function CfsPortal() {
     }
   }
 
-  async function downloadContract() {
+  async function downloadContract(open) {
     try {
       const data = await post({ action: 'contract', sessionToken: session, id: trip.id });
-      window.open(data.url, '_blank', 'noopener');
+      window.open(data.url, '_blank', open ? 'noopener' : 'noopener');
     } catch (err) {
       setError(err.message);
     }
@@ -212,6 +293,7 @@ export default function CfsPortal() {
       const fresh = await post({ action: 'trip', sessionToken: session, id: trip.id });
       setTrip(fresh.trip);
       setEvents(fresh.events || []);
+      scrollPortal();
     } catch (err) {
       setError(err.message);
     }
@@ -252,7 +334,9 @@ export default function CfsPortal() {
   async function loadStatement(event) {
     event?.preventDefault();
     setView('statement');
+    setAccountOpen(false);
     setLoading(true);
+    scrollPortal();
     try {
       const data = await post({ action: 'statement', sessionToken: session, month });
       setStatement(data.statement);
@@ -317,6 +401,7 @@ export default function CfsPortal() {
     setAckOnly({ ...ackOnly, coverage: data.coverage });
     setConfirmed({ tripId: data.coverage?.tripId });
     setToast(data.emailError ? `Saved. Mail: ${data.emailError}` : 'Coverage acknowledged.');
+    scrollPortal();
   }
 
   function signOut() {
@@ -324,27 +409,54 @@ export default function CfsPortal() {
     setSession('');
     setTrip(null);
     setView('home');
+    setAccountOpen(false);
     window.history.replaceState({}, '', '/cfs');
   }
+
+  const logo = theme === 'dark' ? '/skyway-logo-nav-reverse.png' : '/skyway-logo-nav.png';
 
   return (
     <main className="cfs-portal sw-sheet" data-theme={theme}>
       <div className="sw-sheet-panel sw-sheet-fill">
         <header className="cfs-header">
-          <div>
-            <p className="cfs-kicker">Skyway Aviation × Charter Flight Support</p>
-            <h1>CFS portal</h1>
+          <div className="cfs-brand">
+            <img src={logo} alt="Skyway Aviation" />
+            <span className="cfs-brand-x" aria-hidden="true">×</span>
+            <h1>Charter Flight Support</h1>
           </div>
           <div className="cfs-header-actions">
-            <button type="button" className="cfs-btn cfs-btn-ghost" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} aria-pressed={theme === 'dark'}>
-              {theme === 'dark' ? 'Light mode' : 'Dark mode'}
+            <button
+              type="button"
+              className="cfs-icon-btn"
+              aria-label={theme === 'dark' ? 'Light mode' : 'Dark mode'}
+              aria-pressed={theme === 'dark'}
+              onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+            >
+              {theme === 'dark' ? <SunIcon /> : <MoonIcon />}
             </button>
-            {session && <button type="button" className="cfs-btn cfs-btn-ghost" onClick={signOut}>Sign out</button>}
+            {session && (
+              <div className="cfs-account">
+                <button
+                  type="button"
+                  className="cfs-icon-btn"
+                  aria-label="Account"
+                  aria-expanded={accountOpen}
+                  onClick={() => setAccountOpen((open) => !open)}
+                >
+                  <UserIcon />
+                </button>
+                {accountOpen && (
+                  <div className="cfs-account-menu" role="menu">
+                    <p>{me || 'Signed in'}</p>
+                    <button type="button" role="menuitem" onClick={signOut}>Sign out</button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </header>
         <div className="sw-sheet-body cfs-body">
           {preview && <p className="cfs-banner" role="status">Skyway preview. This view is read-only and matches what CFS sees.</p>}
-          {toast && <p className="cfs-toast" role="status">{toast}</p>}
           {error && <p className="cfs-error" role="alert">{error}</p>}
           {loading && <Skeleton />}
 
@@ -354,6 +466,7 @@ export default function CfsPortal() {
 
           {!loading && !ackOnly && !session && (
             <section className="cfs-card cfs-signin" aria-labelledby="cfs-signin-title">
+              <p className="cfs-kicker">Passwordless sign-in</p>
               <h2 id="cfs-signin-title">Sign in</h2>
               <p>Use the email Charter Flight Support has on file with Skyway. We will send a one-time link. No password.</p>
               <form onSubmit={requestLink}>
@@ -370,39 +483,65 @@ export default function CfsPortal() {
           {!loading && !ackOnly && session && view === 'home' && (
             <>
               <section className="cfs-cards" aria-label="Summary">
-                <Card label="Awaiting acknowledgement" value={summary ? String(summary.awaiting) : '—'} />
-                <Card label="Confirmed this month" value={summary ? String(summary.confirmedThisMonth) : '—'} />
-                <Card label="Coverage value bound this month" value={summary?.boundValueLabel || '—'} />
-                <Card label="Upcoming flights under coverage" value={summary ? String(summary.upcomingFlights) : '—'} />
+                <Stat icon={<ClockIcon />} label="Awaiting acknowledgement" value={summary ? String(summary.awaiting) : '—'} />
+                <Stat icon={<CheckIcon />} label="Confirmed this month" value={summary ? String(summary.confirmedThisMonth) : '—'} />
+                <Stat icon={<ShieldIcon />} label="Coverage value bound this month" value={summary?.boundValueLabel || '—'} />
+                <Stat icon={<PlaneIcon />} label="Upcoming flights under coverage" value={summary ? String(summary.upcomingFlights) : '—'} />
               </section>
 
-              <section className="cfs-card" aria-labelledby="needs-action-title">
-                <h2 id="needs-action-title">Needs action</h2>
-                {needsAction.length === 0 && <p className="cfs-empty">Nothing is waiting. New bind requests show up here, with departures inside 72 hours highlighted.</p>}
+              <section className="cfs-section" aria-labelledby="needs-action-title">
+                <div className="cfs-section-head">
+                  <h2 id="needs-action-title">Needs action</h2>
+                  <p>Sorted by departure. Flights inside 72 hours are marked.</p>
+                </div>
+                {needsAction.length === 0 && (
+                  <p className="cfs-empty">Nothing is waiting. New bind requests show up here, with departures inside 72 hours highlighted.</p>
+                )}
                 <ul className="cfs-queue">
                   {needsAction.slice(0, 6).map((row) => (
-                    <li key={row.id}>
-                      <button type="button" className={row.urgent ? 'cfs-urgent' : ''} onClick={() => openTrip(row)}>
-                        <strong>{row.tripId || 'Trip'}</strong>
-                        <span>{row.route || 'Route pending'} · {row.datesLabel || when(row.departAt)}</span>
-                        <span>{row.urgent ? 'Departs within 72 hours' : 'Awaiting acknowledgement'}</span>
-                      </button>
-                    </li>
+                    <TripRow key={row.id} row={row} onOpen={openTrip} />
                   ))}
                 </ul>
               </section>
 
-              <div className="cfs-toolbar" role="tablist" aria-label="Trip status">
-                {['all', 'awaiting', 'confirmed', 'flown', 'cancelled'].map((name) => (
-                  <button key={name} type="button" role="tab" aria-selected={tab === name} className={tab === name ? 'is-selected' : ''} onClick={() => { setTab(name); setPage(1); }}>
-                    {name[0].toUpperCase() + name.slice(1)}
-                  </button>
-                ))}
+              <div className="cfs-list-head">
+                <div className="cfs-toolbar" role="tablist" aria-label="Trip status">
+                  {TABS.map(([name, label]) => (
+                    <button
+                      key={name}
+                      type="button"
+                      role="tab"
+                      aria-selected={tab === name}
+                      className={tab === name ? 'is-selected' : ''}
+                      onClick={() => { setTab(name); setPage(1); }}
+                    >
+                      {label}
+                      <span className="cfs-count">{counts[name] ?? 0}</span>
+                    </button>
+                  ))}
+                </div>
                 <button type="button" className="cfs-btn cfs-btn-ghost" onClick={loadStatement}>Monthly statement</button>
               </div>
 
-              <form className="cfs-filters" onSubmit={(event) => { event.preventDefault(); setPage(1); }}>
-                <label>Search<input aria-label="Search trips" value={q} onChange={(event) => setQ(event.target.value)} placeholder="Trip ID, tail, route" /></label>
+              <div className="cfs-search-row">
+                <label className="cfs-search">
+                  Search
+                  <input aria-label="Search trips" value={q} onChange={(event) => setQ(event.target.value)} placeholder="Trip ID, tail, route" />
+                </label>
+                <button type="button" className="cfs-btn cfs-filter-toggle" onClick={() => setFiltersOpen(true)}>
+                  Filters{filterCount ? ` (${filterCount})` : ''}
+                </button>
+              </div>
+
+              <form
+                className={filtersOpen ? 'cfs-filter-sheet is-open' : 'cfs-filter-sheet'}
+                aria-label="Filters"
+                onSubmit={(event) => { event.preventDefault(); setPage(1); setFiltersOpen(false); }}
+              >
+                <div className="cfs-sheet-grab">
+                  <h2>Filters</h2>
+                  <button type="button" className="cfs-filter-done" onClick={() => setFiltersOpen(false)}>Done</button>
+                </div>
                 <label>Tail<input aria-label="Filter tail" value={tail} onChange={(event) => setTail(event.target.value)} /></label>
                 <label>Aircraft<input aria-label="Filter aircraft" value={aircraft} onChange={(event) => setAircraft(event.target.value)} /></label>
                 <label>Airport<input aria-label="Filter airport" value={airport} onChange={(event) => setAirport(event.target.value)} /></label>
@@ -416,56 +555,54 @@ export default function CfsPortal() {
                     <option value="status">Status</option>
                   </select>
                 </label>
+                <button type="submit" className="cfs-btn cfs-btn-primary cfs-filter-done">Apply filters</button>
               </form>
 
-              {rows.length === 0 && <p className="cfs-empty">No trips match these filters.</p>}
+              {rows.length === 0 && <p className="cfs-empty">No trips match these filters. Clear a filter or switch tabs to see the rest of the book.</p>}
               <ul className="cfs-list">
                 {rows.map((row) => (
-                  <li key={row.id} className="cfs-card">
-                    <label className="cfs-check">
-                      <input
-                        type="checkbox"
-                        aria-label={`Select ${row.tripId}`}
-                        checked={Boolean(selected[row.id])}
-                        disabled={preview || row.status === 'cancelled'}
-                        onChange={(event) => setSelected((current) => ({ ...current, [row.id]: event.target.checked }))}
-                      />
-                      Select
-                    </label>
-                    <button type="button" className="cfs-trip-link" onClick={() => openTrip(row)}>
-                      <strong>{row.tripId}</strong>
-                      <span>{row.tail} · {row.aircraftType}</span>
-                      <span>{row.route}</span>
-                      <span>{row.datesLabel}</span>
-                      <span>Coverage: 100% · Coverage value: {row.coverageValueLabel || '—'}</span>
-                      <span className={row.urgent ? 'cfs-pill cfs-pill-urgent' : 'cfs-pill'}>{row.status}{row.urgent ? ' · 72h' : ''}</span>
-                    </button>
-                  </li>
+                  <TripRow
+                    key={row.id}
+                    row={row}
+                    onOpen={openTrip}
+                    selected={Boolean(selected[row.id])}
+                    selectable={!preview && row.status !== 'cancelled'}
+                    onSelect={(checked) => setSelected((current) => ({ ...current, [row.id]: checked }))}
+                  />
                 ))}
               </ul>
               <div className="cfs-pager">
                 <button type="button" className="cfs-btn cfs-btn-ghost" disabled={page <= 1} onClick={() => setPage(page - 1)}>Previous</button>
-                <span>Page {page} of {pages}</span>
+                <span className="cfs-num">Page {page} of {pages}</span>
                 <button type="button" className="cfs-btn cfs-btn-ghost" disabled={page >= pages} onClick={() => setPage(page + 1)}>Next</button>
               </div>
 
               {selectedIds.length > 0 && (
-                <section className="cfs-card" aria-labelledby="bulk-title">
+                <section className="cfs-card cfs-bulk" aria-labelledby="bulk-title">
                   <h2 id="bulk-title">Acknowledge {selectedIds.length} selected</h2>
+                  <p>Each trip keeps its own CFS cost. Apply one amount, then adjust any row before you send.</p>
                   <label>Same CFS cost
-                    <input aria-label="Same CFS cost" inputMode="decimal" value={sameCost} onChange={(event) => setSameCost(event.target.value)} />
+                    <span className="cfs-money">
+                      <span aria-hidden="true">$</span>
+                      <input aria-label="Same CFS cost" inputMode="decimal" value={sameCost} onChange={(event) => setSameCost(event.target.value)} />
+                    </span>
                   </label>
-                  <button type="button" className="cfs-btn cfs-btn-ghost" onClick={applySameCost}>Apply same cost</button>
-                  <button type="button" className="cfs-btn cfs-btn-primary" onClick={() => setBulkOpen(true)}>Review bulk acknowledgement</button>
+                  <div className="cfs-actions">
+                    <button type="button" className="cfs-btn cfs-btn-ghost" onClick={applySameCost}>Apply same cost</button>
+                    <button type="button" className="cfs-btn cfs-btn-primary" onClick={() => setBulkOpen(true)}>Review bulk acknowledgement</button>
+                  </div>
                   {bulkOpen && (
-                    <form onSubmit={acknowledgeBulk} className="cfs-bulk">
+                    <form onSubmit={acknowledgeBulk} className="cfs-bulk-form">
                       <label>Your name<input aria-label="Bulk name" required value={bulkName} onChange={(event) => setBulkName(event.target.value)} /></label>
                       <label>Reference<input aria-label="Bulk reference" value={bulkReference} onChange={(event) => setBulkReference(event.target.value)} /></label>
                       {selectedIds.map((id) => {
                         const row = rows.find((item) => item.id === id) || needsAction.find((item) => item.id === id);
                         return (
                           <label key={id}>{row?.tripId || id} CFS cost
-                            <input aria-label={`CFS cost ${row?.tripId || id}`} required value={costs[id] || ''} onChange={(event) => setCosts((current) => ({ ...current, [id]: event.target.value }))} />
+                            <span className="cfs-money">
+                              <span aria-hidden="true">$</span>
+                              <input aria-label={`CFS cost ${row?.tripId || id}`} required value={costs[id] || ''} onChange={(event) => setCosts((current) => ({ ...current, [id]: event.target.value }))} />
+                            </span>
                           </label>
                         );
                       })}
@@ -484,8 +621,9 @@ export default function CfsPortal() {
               me={me}
               preview={preview}
               confirmed={confirmed}
-              onBack={() => { setView('home'); setTrip(null); }}
-              onDownload={downloadContract}
+              onBack={() => { setView('home'); setTrip(null); setConfirmed(null); scrollPortal(); }}
+              onDownload={() => downloadContract(false)}
+              onView={() => downloadContract(true)}
               onSubmit={acknowledgeOne}
             />
           )}
@@ -498,85 +636,179 @@ export default function CfsPortal() {
               onLoad={loadStatement}
               onCsv={() => downloadStatement('csv')}
               onPdf={() => downloadStatement('pdf')}
-              onBack={() => setView('home')}
+              onBack={() => { setView('home'); scrollPortal(); }}
             />
           )}
           <p className="cfs-end">End of portal</p>
         </div>
       </div>
+      {toast && <p className="cfs-toast" role="status">{toast}</p>}
     </main>
   );
 }
 
-function Card({ label, value }) {
+function Stat({ icon, label, value }) {
   return (
     <article className="cfs-card cfs-stat">
+      <div className="cfs-stat-icon" aria-hidden="true">{icon}</div>
       <p>{label}</p>
-      <strong>{value}</strong>
+      <strong className="cfs-num">{value}</strong>
     </article>
   );
+}
+
+function TripRow({ row, onOpen, selected = false, selectable = false, onSelect }) {
+  const urgent = row.urgent ? urgencyCopy(row.departAt) : null;
+  const codes = airports(row.route);
+  return (
+    <li className={row.urgent ? 'cfs-row is-urgent' : 'cfs-row'}>
+      {onSelect && (
+        <label className="cfs-check">
+          <input
+            type="checkbox"
+            aria-label={`Select ${row.tripId}`}
+            checked={selected}
+            disabled={!selectable}
+            onChange={(event) => onSelect(event.target.checked)}
+          />
+        </label>
+      )}
+      <button type="button" className="cfs-row-main" onClick={() => onOpen(row)}>
+        <span className="cfs-row-top">
+          <span className="cfs-trip-id">{row.tripId || 'Trip'}</span>
+          <StatusPill status={row.status} />
+        </span>
+        <span className="cfs-route">
+          {codes.map((code, index) => (
+            <React.Fragment key={`${code}-${index}`}>
+              {index > 0 && <ArrowIcon />}
+              <span>{code}</span>
+            </React.Fragment>
+          ))}
+        </span>
+        <span className="cfs-meta cfs-num">{dateRange(row)}</span>
+        <span className="cfs-meta">{[row.aircraftType, row.tail].filter(Boolean).join(' · ') || 'Aircraft pending'}</span>
+        <span className="cfs-meta">Coverage value: {row.coverageValueLabel || '—'}</span>
+        {urgent && <span className={urgent.tone === 'now' ? 'cfs-urgency is-now' : 'cfs-urgency'}>{urgent.label}</span>}
+        <ChevronIcon />
+      </button>
+    </li>
+  );
+}
+
+function StatusPill({ status }) {
+  return <span className={`cfs-pill cfs-pill-${status || 'awaiting'}`}>{statusLabel(status)}</span>;
 }
 
 function Skeleton() {
   return (
     <div className="cfs-skeleton" aria-hidden="true">
-      <span />
-      <span />
-      <span />
+      <span /><span /><span /><span />
+      <span className="cfs-skeleton-row" /><span className="cfs-skeleton-row" /><span className="cfs-skeleton-row" />
     </div>
   );
 }
 
-function TripView({ trip, events, me, preview, confirmed, onBack, onDownload, onSubmit }) {
+function TripView({ trip, events, me, preview, confirmed, onBack, onDownload, onView, onSubmit }) {
   return (
-    <article>
+    <article className="cfs-trip">
       <button type="button" className="cfs-btn cfs-btn-ghost" onClick={onBack}>Back to trips</button>
       <header className="cfs-trip-head">
-        <p className="cfs-kicker">Trip {trip.tripId}</p>
-        <h2>{trip.route || 'Route pending'}</h2>
-        <p>{trip.tail} · {trip.aircraftType} · {trip.brokerCompany}</p>
+        <p className="cfs-kicker">Trip <span className="cfs-trip-id">{trip.tripId}</span></p>
+        <h2 className="cfs-route cfs-route-lg">
+          {airports(trip.route).map((code, index) => (
+            <React.Fragment key={`${code}-${index}`}>
+              {index > 0 && <ArrowIcon />}
+              <span>{code}</span>
+            </React.Fragment>
+          ))}
+        </h2>
+        <p>{[trip.aircraftType, trip.tail, trip.brokerCompany].filter(Boolean).join(' · ')}</p>
       </header>
       <section className="cfs-card" aria-label="Coverage summary">
-        <h3>Coverage</h3>
-        <p>Coverage: 100%</p>
-        <p>Contract trip total: {trip.tripTotalLabel || '—'}</p>
-        <p>Coverage value: {trip.coverageValueLabel || '—'}</p>
-        <p>Bind requested: {when(trip.bindRequestedAt)}</p>
-        <p>Status: {trip.status}</p>
+        <div className="cfs-section-head">
+          <h3>Coverage</h3>
+          <StatusPill status={trip.status} />
+        </div>
+        <dl className="cfs-facts">
+          <div><dt>Coverage</dt><dd>Coverage: 100%</dd></div>
+          <div><dt>Contract trip total</dt><dd className="cfs-num">{trip.tripTotalLabel || '—'}</dd></div>
+          <div><dt>Coverage value</dt><dd className="cfs-num">Coverage value: {trip.coverageValueLabel || '—'}</dd></div>
+          <div><dt>Bind requested</dt><dd className="cfs-num">{when(trip.bindRequestedAt)}</dd></div>
+        </dl>
       </section>
       <section className="cfs-card" aria-label="Leg timeline">
         <h3>Legs</h3>
-        {(trip.legs || []).length === 0 && <p className="cfs-empty">No leg times are on file yet.</p>}
-        <ol className="cfs-timeline">
+        {(trip.legs || []).length === 0 && <p className="cfs-empty">No leg times are on file yet. Skyway will add them when the itinerary is final.</p>}
+        <ol className="cfs-legs">
           {(trip.legs || []).map((leg, index) => (
             <li key={`${leg.from}-${leg.departAt}-${index}`}>
-              <strong>{leg.from || '—'} → {leg.to || '—'}</strong>
-              <span>{when(leg.departAt)} – {when(leg.arriveAt)}</span>
-              {leg.tail && <span>{leg.tail}</span>}
+              <span className="cfs-leg-index">{index + 1}</span>
+              <div>
+                <p className="cfs-route">
+                  <span className="cfs-code">{leg.from || '—'}</span>
+                  <ArrowIcon />
+                  <span className="cfs-code">{leg.to || '—'}</span>
+                </p>
+                <p className="cfs-leg-time"><span>Departs</span><time className="cfs-num">{when(leg.departAt)}</time></p>
+                <p className="cfs-leg-time"><span>Arrives</span><time className="cfs-num">{when(leg.arriveAt)}</time></p>
+                <p className="cfs-meta">{[trip.aircraftType, leg.tail || trip.tail].filter(Boolean).join(' · ')}</p>
+              </div>
             </li>
           ))}
         </ol>
       </section>
       <section className="cfs-card">
         <h3>Charter contract</h3>
-        {trip.hasContract ? <button type="button" className="cfs-btn cfs-btn-primary" onClick={onDownload}>Download contract</button> : <p className="cfs-empty">No contract file is attached yet.</p>}
+        {trip.hasContract ? (
+          <div className="cfs-file">
+            <div>
+              <strong>Charter contract</strong>
+              <span>PDF</span>
+            </div>
+            <div className="cfs-actions">
+              <button type="button" className="cfs-btn cfs-btn-ghost" onClick={onView}>View</button>
+              <button type="button" className="cfs-btn cfs-btn-primary" onClick={onDownload}>Download</button>
+            </div>
+          </div>
+        ) : (
+          <div className="cfs-empty-file">
+            <FileIcon />
+            <p>No contract file is attached yet.</p>
+            <p>When Skyway attaches the signed charter, view and download it from this card.</p>
+          </div>
+        )}
       </section>
       <section className="cfs-card" aria-label="Event history">
         <h3>History</h3>
-        {events.length === 0 && <p className="cfs-empty">No portal history yet.</p>}
-        <ul>{events.map((event) => <li key={event.id}>{event.type} · {when(event.at)} {event.detail}</li>)}</ul>
+        {events.length === 0 && <p className="cfs-empty">No portal history yet. Bind requests, reminders, and acknowledgements will appear here.</p>}
+        <ol className="cfs-history">
+          {events.map((event) => (
+            <li key={event.id}>
+              <span className="cfs-history-dot" aria-hidden="true" />
+              <div>
+                <strong>{eventLabel(event.type)}</strong>
+                <time className="cfs-num">{when(event.at)}</time>
+                {event.detail && <p>{event.detail}</p>}
+              </div>
+            </li>
+          ))}
+        </ol>
       </section>
-      {confirmed && <p className="cfs-confirm" role="status">Coverage acknowledged for {trip.tripId}. Skyway ops has a new revision.</p>}
-      {!preview && (
-        <form className="cfs-card" onSubmit={onSubmit} aria-label="Acknowledge coverage">
-          <h3>{trip.acknowledgement ? 'Update acknowledgement' : 'Acknowledge coverage'}</h3>
-          <label>Your name<input aria-label="Your name" name="name" required defaultValue={trip.acknowledgement?.name || ''} /></label>
-          <label>Your email<input aria-label="Your email" name="email" type="email" required defaultValue={trip.acknowledgement?.email || me} /></label>
-          <label>CFS cost (USD)<input aria-label="CFS cost" name="cfsCost" inputMode="decimal" required defaultValue={trip.acknowledgement?.cfsCostCents != null ? (trip.acknowledgement.cfsCostCents / 100).toFixed(2) : ''} /></label>
-          <label>Policy or reference number (optional)<input aria-label="Policy or reference number" name="reference" defaultValue={trip.acknowledgement?.reference || ''} /></label>
-          <label>Notes (optional)<textarea aria-label="Notes" name="notes" rows={4} defaultValue={trip.acknowledgement?.notes || ''} /></label>
-          <button type="submit" className="cfs-btn cfs-btn-primary">{trip.acknowledgement ? 'Update acknowledgement' : 'Acknowledge coverage'}</button>
-        </form>
+      {confirmed && <Success trip={trip} onBack={onBack} />}
+      {!preview && !confirmed && (
+        <AckForm
+          heading={trip.acknowledgement ? 'Update acknowledgement' : 'Acknowledge coverage'}
+          submitLabel={trip.acknowledgement ? 'Update acknowledgement' : 'Acknowledge coverage'}
+          initial={{
+            name: trip.acknowledgement?.name || '',
+            email: trip.acknowledgement?.email || me || '',
+            cfsCost: trip.acknowledgement?.cfsCostCents != null ? (trip.acknowledgement.cfsCostCents / 100).toFixed(2) : '',
+            reference: trip.acknowledgement?.reference || '',
+            notes: trip.acknowledgement?.notes || '',
+          }}
+          onSubmit={onSubmit}
+        />
       )}
       {preview && <p className="cfs-empty">Preview cannot acknowledge coverage.</p>}
       <p className="cfs-end">End of trip</p>
@@ -584,29 +816,121 @@ function TripView({ trip, events, me, preview, confirmed, onBack, onDownload, on
   );
 }
 
-function AckTokenTrip({ coverage, onSubmit, confirmed }) {
-  if (!coverage) return <p className="cfs-empty">This link does not match a trip.</p>;
+function Success({ trip, onBack }) {
+  const cost = trip?.acknowledgement?.cfsCostLabel || '';
   return (
-    <article>
+    <section className="cfs-success" role="status">
+      <div className="cfs-success-mark" aria-hidden="true"><CheckIcon /></div>
+      <h2>Coverage acknowledged</h2>
+      <p>Coverage acknowledged for {trip?.tripId || 'this trip'}. Skyway ops has a new revision.</p>
+      <dl className="cfs-facts">
+        <div><dt>Trip</dt><dd className="cfs-trip-id">{trip?.tripId}</dd></div>
+        <div><dt>Coverage</dt><dd>100%</dd></div>
+        <div><dt>Coverage value</dt><dd className="cfs-num">{trip?.coverageValueLabel || '—'}</dd></div>
+        {cost && <div><dt>CFS cost</dt><dd className="cfs-num">{cost}</dd></div>}
+      </dl>
+      {onBack && <button type="button" className="cfs-btn cfs-btn-primary" onClick={onBack}>Done</button>}
+    </section>
+  );
+}
+
+function AckForm({ heading, submitLabel, initial, onSubmit }) {
+  const [name, setName] = useState(initial.name || '');
+  const [email, setEmail] = useState(initial.email || '');
+  const [cfsCost, setCfsCost] = useState(initial.cfsCost || '');
+  const [reference, setReference] = useState(initial.reference || '');
+  const [notes, setNotes] = useState(initial.notes || '');
+  const [errors, setErrors] = useState({});
+
+  function handle(event) {
+    const next = {
+      name: name.trim().length < 2 ? 'Enter your name.' : '',
+      email: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()) ? '' : 'Enter a valid email.',
+      cfsCost: costError(cfsCost),
+    };
+    setErrors(next);
+    if (next.name || next.email || next.cfsCost) {
+      event.preventDefault();
+      return;
+    }
+    onSubmit(event);
+  }
+
+  return (
+    <form className="cfs-card cfs-ack-form" onSubmit={handle} aria-label="Acknowledge coverage">
+      <h3>{heading}</h3>
+      <div className="cfs-fields">
+        <label>
+          Your name
+          <input aria-label="Your name" name="name" required value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" />
+          {errors.name && <span className="cfs-field-error" role="alert">{errors.name}</span>}
+        </label>
+        <label>
+          Your email
+          <input aria-label="Your email" name="email" type="email" required value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" />
+          {errors.email && <span className="cfs-field-error" role="alert">{errors.email}</span>}
+        </label>
+        <label>
+          CFS cost (USD)
+          <span className="cfs-money">
+            <span aria-hidden="true">$</span>
+            <input aria-label="CFS cost" name="cfsCost" inputMode="decimal" required value={cfsCost} onChange={(event) => setCfsCost(event.target.value)} />
+          </span>
+          {errors.cfsCost && <span className="cfs-field-error" role="alert">{errors.cfsCost}</span>}
+        </label>
+        <label>
+          Policy or reference number (optional)
+          <input aria-label="Policy or reference number" name="reference" value={reference} onChange={(event) => setReference(event.target.value)} />
+        </label>
+        <label className="cfs-span">
+          Notes (optional)
+          <textarea aria-label="Notes" name="notes" rows={4} value={notes} onChange={(event) => setNotes(event.target.value)} />
+        </label>
+      </div>
+      <div className="cfs-ack-bar">
+        <button type="submit" className="cfs-btn cfs-btn-primary">{submitLabel}</button>
+      </div>
+    </form>
+  );
+}
+
+function AckTokenTrip({ coverage, onSubmit, confirmed }) {
+  if (!coverage) return <p className="cfs-empty">This link does not match a trip. Ask Skyway to resend the bind email.</p>;
+  return (
+    <article className="cfs-trip">
       <p className="cfs-kicker">This link acknowledges one trip. No sign-in required.</p>
-      <h2>Trip {coverage.tripId}</h2>
-      <section className="cfs-card">
-        <p>{coverage.tail} · {coverage.aircraftType}</p>
-        <p>{coverage.route}</p>
-        <p>{coverage.datesLabel}</p>
-        <p>Coverage: 100%</p>
-        <p>Contract trip total: {coverage.tripTotal != null ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(Number(coverage.tripTotal)) : '—'}</p>
-        <p>Coverage value: {coverage.coverageValueLabel || '—'}</p>
+      <h2 className="cfs-route cfs-route-lg">
+        {airports(coverage.route).map((code, index) => (
+          <React.Fragment key={`${code}-${index}`}>
+            {index > 0 && <ArrowIcon />}
+            <span>{code}</span>
+          </React.Fragment>
+        ))}
+      </h2>
+      <p className="cfs-trip-id">Trip {coverage.tripId}</p>
+      <section className="cfs-card" aria-label="Coverage summary">
+        <dl className="cfs-facts">
+          <div><dt>Aircraft</dt><dd>{[coverage.tail, coverage.aircraftType].filter(Boolean).join(' · ') || '—'}</dd></div>
+          <div><dt>Dates</dt><dd className="cfs-num">{coverage.datesLabel || '—'}</dd></div>
+          <div><dt>Coverage</dt><dd>Coverage: 100%</dd></div>
+          <div><dt>Contract trip total</dt><dd className="cfs-num">{coverage.tripTotal != null ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(Number(coverage.tripTotal)) : '—'}</dd></div>
+          <div><dt>Coverage value</dt><dd className="cfs-num">Coverage value: {coverage.coverageValueLabel || '—'}</dd></div>
+        </dl>
       </section>
-      {confirmed && <p className="cfs-confirm" role="status">Coverage acknowledged.</p>}
-      <form className="cfs-card" onSubmit={onSubmit}>
-        <label>Your name<input aria-label="Your name" name="name" required defaultValue={coverage.acknowledgement?.name || ''} /></label>
-        <label>Your email<input aria-label="Your email" name="email" type="email" required defaultValue={coverage.acknowledgement?.email || ''} /></label>
-        <label>CFS cost (USD)<input aria-label="CFS cost" name="cfsCost" inputMode="decimal" required defaultValue={coverage.acknowledgement?.cfsCost || ''} /></label>
-        <label>Policy or reference number (optional)<input aria-label="Policy or reference number" name="reference" defaultValue={coverage.acknowledgement?.reference || ''} /></label>
-        <label>Notes (optional)<textarea aria-label="Notes" name="notes" rows={4} defaultValue={coverage.acknowledgement?.notes || ''} /></label>
-        <button type="submit" className="cfs-btn cfs-btn-primary">Acknowledge coverage</button>
-      </form>
+      {confirmed ? <Success trip={{ ...coverage, tripId: coverage.tripId, coverageValueLabel: coverage.coverageValueLabel }} /> : (
+        <AckForm
+          heading="Acknowledge coverage"
+          submitLabel="Acknowledge coverage"
+          initial={{
+            name: coverage.acknowledgement?.name || '',
+            email: coverage.acknowledgement?.email || '',
+            cfsCost: coverage.acknowledgement?.cfsCost || '',
+            reference: coverage.acknowledgement?.reference || '',
+            notes: coverage.acknowledgement?.notes || '',
+          }}
+          onSubmit={onSubmit}
+        />
+      )}
       <p><a href="/cfs">Open the CFS portal</a> for every other trip.</p>
     </article>
   );
@@ -614,38 +938,98 @@ function AckTokenTrip({ coverage, onSubmit, confirmed }) {
 
 function Statement({ month, setMonth, statement, onLoad, onCsv, onPdf, onBack }) {
   return (
-    <section>
+    <section className="cfs-statement">
       <button type="button" className="cfs-btn cfs-btn-ghost" onClick={onBack}>Back to trips</button>
       <h2>Monthly statement</h2>
       <p>Bound coverages CFS can invoice to Skyway. Coverage value and CFS cost only.</p>
-      <form onSubmit={onLoad} className="cfs-filters">
+      <form onSubmit={onLoad} className="cfs-statement-bar">
         <label>Month<input aria-label="Statement month" type="month" value={month} onChange={(event) => setMonth(event.target.value)} /></label>
         <button type="submit" className="cfs-btn cfs-btn-primary">Show statement</button>
       </form>
       {statement && (
         <>
+          {statement.rows.length === 0 && <p className="cfs-empty">Nothing was confirmed in this month. Pick another month or wait for the next acknowledgement.</p>}
           <table className="cfs-table">
             <thead>
               <tr><th>Trip</th><th>Route</th><th>Coverage value</th><th>CFS cost</th></tr>
             </thead>
             <tbody>
-              {statement.rows.length === 0 && <tr><td colSpan={4}>Nothing was confirmed in this month.</td></tr>}
               {statement.rows.map((row) => (
                 <tr key={row.id}>
-                  <td>{row.tripId}</td>
+                  <td className="cfs-trip-id">{row.tripId}</td>
                   <td>{row.route}</td>
-                  <td>{row.coverageValueLabel || money(row.coverageLimitCents)}</td>
-                  <td>{row.acknowledgement?.cfsCostLabel || '—'}</td>
+                  <td className="cfs-num">{row.coverageValueLabel || money(row.coverageLimitCents)}</td>
+                  <td className="cfs-num">{row.acknowledgement?.cfsCostLabel || '—'}</td>
                 </tr>
               ))}
             </tbody>
+            <tfoot>
+              <tr>
+                <th colSpan={2}>Totals</th>
+                <th className="cfs-num">{money(statement.coverageLimitCents)}</th>
+                <th className="cfs-num">{money(statement.cfsCostCents)}</th>
+              </tr>
+            </tfoot>
           </table>
-          <p>Coverage value total {money(statement.coverageLimitCents)}</p>
-          <p>CFS cost total {money(statement.cfsCostCents)}</p>
-          <button type="button" className="cfs-btn cfs-btn-ghost" onClick={onCsv}>Download CSV</button>
-          <button type="button" className="cfs-btn cfs-btn-primary" onClick={onPdf}>Download PDF</button>
+          <ul className="cfs-statement-cards">
+            {statement.rows.map((row) => (
+              <li key={row.id} className="cfs-card">
+                <strong className="cfs-trip-id">{row.tripId}</strong>
+                <span>{row.route}</span>
+                <span className="cfs-num">Coverage value {row.coverageValueLabel || money(row.coverageLimitCents)}</span>
+                <span className="cfs-num">CFS cost {row.acknowledgement?.cfsCostLabel || '—'}</span>
+              </li>
+            ))}
+          </ul>
+          <div className="cfs-totals">
+            <p>Coverage value total {money(statement.coverageLimitCents)}</p>
+            <p>CFS cost total {money(statement.cfsCostCents)}</p>
+          </div>
+          <div className="cfs-actions">
+            <button type="button" className="cfs-btn cfs-btn-ghost" onClick={onCsv}>Download CSV</button>
+            <button type="button" className="cfs-btn cfs-btn-primary" onClick={onPdf}>Download PDF</button>
+          </div>
         </>
       )}
     </section>
   );
+}
+
+function Icon({ children }) {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {children}
+    </svg>
+  );
+}
+
+function MoonIcon() {
+  return <Icon><path d="M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5z" /></Icon>;
+}
+function SunIcon() {
+  return <Icon><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></Icon>;
+}
+function UserIcon() {
+  return <Icon><circle cx="12" cy="8" r="3.2" /><path d="M5 19.2c1.4-3 3.8-4.5 7-4.5s5.6 1.5 7 4.5" /></Icon>;
+}
+function ClockIcon() {
+  return <Icon><circle cx="12" cy="12" r="8" /><path d="M12 8v4.5l3 2" /></Icon>;
+}
+function CheckIcon() {
+  return <Icon><circle cx="12" cy="12" r="8" /><path d="M8.5 12.5l2.2 2.2 4.8-5" /></Icon>;
+}
+function ShieldIcon() {
+  return <Icon><path d="M12 3l7 3v6c0 4.2-2.8 7.2-7 8.5C7.8 19.2 5 16.2 5 12V6l7-3z" /></Icon>;
+}
+function PlaneIcon() {
+  return <Icon><path d="M3 12l18-6-6 18-2.5-7.5L3 12z" /></Icon>;
+}
+function ArrowIcon() {
+  return <Icon><path d="M4 12h14M13 7l5 5-5 5" /></Icon>;
+}
+function ChevronIcon() {
+  return <span className="cfs-chevron" aria-hidden="true"><Icon><path d="M9 6l6 6-6 6" /></Icon></span>;
+}
+function FileIcon() {
+  return <Icon><path d="M7 3h7l5 5v13H7z" /><path d="M14 3v5h5" /></Icon>;
 }
