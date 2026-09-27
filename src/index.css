@@ -649,16 +649,27 @@ html[data-native] .sw-mobile-tab {
 .cfs-facts { display: grid; gap: 8px; margin: 12px 0 0; }
 .cfs-facts div { display: flex; justify-content: space-between; gap: 16px; padding-top: 8px; border-top: 1px solid var(--cfs-line); }
 .cfs-facts dt { color: var(--cfs-muted); font-size: 12px; font-weight: 600; }
-.cfs-facts dd { margin: 0; text-align: right; font-weight: 600; }
+.cfs-facts dd { margin: 0; text-align: right; font-weight: 600; white-space: nowrap; }
+.cfs-pending { color: var(--cfs-muted); font-weight: 500; }
 .cfs-legs, .cfs-history { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 12px; }
 .cfs-legs li, .cfs-history li { display: grid; grid-template-columns: 28px 1fr; gap: 8px; }
 .cfs-leg-index, .cfs-history-dot { width: 28px; height: 28px; border-radius: 999px; display: grid; place-items: center; background: var(--cfs-info-bg); color: var(--cfs-info); font-size: 12px; font-weight: 700; }
 .cfs-history-dot { width: 10px; height: 10px; margin: 6px auto 0; background: var(--cfs-accent); }
 .cfs-leg-time { display: flex; justify-content: space-between; gap: 12px; margin-top: 4px; font-size: 13px; }
 .cfs-leg-time span { color: var(--cfs-muted); }
-.cfs-file, .cfs-empty-file { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-top: 12px; }
-.cfs-empty-file { align-items: flex-start; color: var(--cfs-muted); }
-.cfs-empty-file p + p { margin-top: 4px; }
+.cfs-file { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-top: 12px; }
+.cfs-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 8px 8px 4px;
+}
+.cfs-empty-state svg { width: 32px; height: 32px; color: var(--cfs-accent); }
+.cfs-empty-state strong { font-size: 15px; font-weight: 600; }
+.cfs-empty-state p { color: var(--cfs-muted); font-size: 13px; line-height: 1.4; }
 .cfs-file span, .cfs-history time, .cfs-history p { display: block; color: var(--cfs-muted); font-size: 13px; }
 .cfs-fields { display: grid; gap: 0 16px; }
 .cfs-ack-bar { margin-top: 8px; }

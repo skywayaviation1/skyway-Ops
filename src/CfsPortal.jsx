@@ -30,6 +30,11 @@ async function post(body) {
   return data;
 }
 
+function upTo(label) {
+  if (!label) return '—';
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
 function money(cents) {
   if (!Number.isInteger(cents)) return '—';
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(cents / 100);
@@ -688,7 +693,9 @@ function TripRow({ row, onOpen, selected = false, selectable = false, onSelect }
         </span>
         <span className="cfs-meta cfs-num">{dateRange(row)}</span>
         <span className="cfs-meta">{[row.aircraftType, row.tail].filter(Boolean).join(' · ') || 'Aircraft pending'}</span>
-        <span className="cfs-meta">Coverage value: {row.coverageValueLabel || '—'}</span>
+        <span className={row.coverageValueLabel ? 'cfs-meta' : 'cfs-meta cfs-pending'}>
+          Coverage value: {row.coverageValueLabel || 'pending trip total'}
+        </span>
         {urgent && <span className={urgent.tone === 'now' ? 'cfs-urgency is-now' : 'cfs-urgency'}>{urgent.label}</span>}
         <ChevronIcon />
       </button>
@@ -731,9 +738,9 @@ function TripView({ trip, events, me, preview, confirmed, onBack, onDownload, on
           <StatusPill status={trip.status} />
         </div>
         <dl className="cfs-facts">
-          <div><dt>Coverage</dt><dd>Coverage: 100%</dd></div>
+          <div><dt>Coverage</dt><dd>100%</dd></div>
           <div><dt>Contract trip total</dt><dd className="cfs-num">{trip.tripTotalLabel || '—'}</dd></div>
-          <div><dt>Coverage value</dt><dd className="cfs-num">Coverage value: {trip.coverageValueLabel || '—'}</dd></div>
+          <div><dt>Coverage value</dt><dd className="cfs-num">{upTo(trip.coverageValueLabel)}</dd></div>
           <div><dt>Bind requested</dt><dd className="cfs-num">{when(trip.bindRequestedAt)}</dd></div>
         </dl>
       </section>
@@ -772,10 +779,10 @@ function TripView({ trip, events, me, preview, confirmed, onBack, onDownload, on
             </div>
           </div>
         ) : (
-          <div className="cfs-empty-file">
+          <div className="cfs-empty-state">
             <FileIcon />
-            <p>No contract file is attached yet.</p>
-            <p>When Skyway attaches the signed charter, view and download it from this card.</p>
+            <strong>No contract attached yet</strong>
+            <p>Skyway will attach the signed charter here.</p>
           </div>
         )}
       </section>
@@ -916,9 +923,9 @@ function AckTokenTrip({ coverage, onSubmit, confirmed }) {
         <dl className="cfs-facts">
           <div><dt>Aircraft</dt><dd>{[coverage.tail, coverage.aircraftType].filter(Boolean).join(' · ') || '—'}</dd></div>
           <div><dt>Dates</dt><dd className="cfs-num">{coverage.datesLabel || '—'}</dd></div>
-          <div><dt>Coverage</dt><dd>Coverage: 100%</dd></div>
+          <div><dt>Coverage</dt><dd>100%</dd></div>
           <div><dt>Contract trip total</dt><dd className="cfs-num">{coverage.tripTotal != null ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(Number(coverage.tripTotal)) : '—'}</dd></div>
-          <div><dt>Coverage value</dt><dd className="cfs-num">Coverage value: {coverage.coverageValueLabel || '—'}</dd></div>
+          <div><dt>Coverage value</dt><dd className="cfs-num">{upTo(coverage.coverageValueLabel)}</dd></div>
         </dl>
       </section>
       {confirmed ? <Success trip={{ ...coverage, tripId: coverage.tripId, coverageValueLabel: coverage.coverageValueLabel }} /> : (

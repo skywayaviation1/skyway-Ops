@@ -909,8 +909,21 @@ async function portalShots(page) {
 
   await page.getByRole('button', { name: /V3K8QM/ }).first().click();
   await page.getByLabel('Your name').waitFor({ timeout: 15000 });
-  await page.getByText('Coverage: 100%').waitFor();
-  await page.getByText(/Coverage value: up to \$40,000\.00/).waitFor();
+  const summary = page.locator('[aria-label="Coverage summary"]');
+  await summary.getByText('100%', { exact: true }).waitFor();
+  const coverageValue = summary.getByText('Up to $40,000.00');
+  await coverageValue.waitFor();
+  await page.getByText('No contract attached yet').waitFor();
+  await page.setViewportSize({ width: 375, height: 667 });
+  await portalBody.evaluate((el) => { el.scrollTop = 0; });
+  const valueLines = await coverageValue.evaluate((el) => {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    return range.getClientRects().length;
+  });
+  if (valueLines !== 1) throw new Error(`coverage value wrapped onto ${valueLines} lines at 375px`);
+  await shot(page, 'cfs-trip-iphone-top-v2');
+  await page.setViewportSize({ width: 390, height: 844 });
   await portalBody.evaluate((el) => { el.scrollTop = 0; });
   await shot(page, 'cfs-trip-iphone-top');
   await page.getByLabel('Your name').evaluate((el) => el.scrollIntoView({ block: 'center' }));
