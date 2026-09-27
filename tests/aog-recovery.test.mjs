@@ -27,6 +27,14 @@ import {
   tripRowCsv,
 } from '../src/aog-trip-rows.js';
 import { planBrokerBackfill } from '../src/broker-backfill.js';
+import {
+  ackTokenUsable,
+  bindLetterContent,
+  cfsBrokerLetter,
+  cfsOpsLetter,
+  planCfsAcknowledgement,
+  publicCfsView,
+} from '../src/aog-cfs.js';
 import { normalizeTripId } from '../src/trip-id.js';
 import {
   contractStoragePath,
@@ -729,4 +737,223 @@ test('broker backfill fills empty trip fields and keeps a different existing bro
   assert.equal(clash.patch.brokerPhone, '305-555-0199');
   assert.ok(clash.mismatches.some((row) => row.field === 'brokerEmail' && row.existing === 'kept@example-broker.test'));
   assert.ok(clash.mismatches.some((row) => row.field === 'brokerCompany'));
+});
+
+const cfsRecord = {
+  tripId: 'WEQVQD',
+  aircraftType: 'Citation CJ3',
+  tail: 'N100TS',
+  route: 'KTEB → KPBI',
+  datesLabel: '2026-11-02 – 2026-11-04',
+  legCount: 2,
+  brokerCompany: 'Example Charter Group',
+  coverageLevel: 'gifted_100',
+  tripTotal: 24000,
+  tripTotalCents: 2400000,
+  premium: 360,
+  premiumCents: 36000,
+  ratePercent: 1.5,
+  checkoutEmail: 'broker@example-charter.test',
+};
+
+test('CFS bind email omits the premium and rate and links to acknowledge coverage', () => {
+  const letter = bindLetterContent(cfsRecord, {
+    ackUrl: 'https://example.test/aog-cfs?token=synthetic-token',
+    attachmentNotes: 'Charter contract is attached.',
+  });
+  const body = `${letter.html}\n${letter.text}`;
+  assert.equal(/premium/i.test(body), false);
+  assert.equal(body.includes('1.5'), false);
+  assert.equal(body.includes('$360'), false);
+  assert.match(letter.html, /Acknowledge coverage/);
+  assert.match(body, /WEQVQD/);
+  assert.match(body, /Example Charter Group/);
+  assert.match(body, /24,000/);
+  assert.match(body, /N100TS/);
+  assert.match(body, /KTEB/);
+  assert.match(body, /2026-11-02/);
+  assert.match(body, /Legs/);
+  assert.match(body, /https:\/\/example\.test\/aog-cfs\?token=synthetic-token/);
+  assert.match(body, /Charter contract is attached/);
+});
+
+test('CFS acknowledgement tokens expire and a submit is an update, a retry, or a no-op', () => {
+  const now = Date.parse('2026-09-27T12:00:00.000Z');
+  assert.equal(ackTokenUsable({}, now).status, 404);
+  assert.equal(ackTokenUsable({
+    ackTokenHash: 'abc',
+    ackTokenExpiresAt: '2020-01-01T00:00:00.000Z',
+  }, now).status, 410);
+  assert.equal(ackTokenUsable({
+    ackTokenHash: 'abc',
+    ackTokenExpiresAt: '2027-01-01T00:00:00.000Z',
+  }, now).ok, true);
+
+  const input = {
+    name: 'Casey Stone',
+    email: 'Casey@CharterFlightSupport.com',
+    cfsCost: '640.00',
+    acceptedCoveragePercent: '80',
+    reference: 'CFS-4491',
+    notes: 'Bind note',
+  };
+  const first = planCfsAcknowledgement(cfsRecord, input, new Date(now));
+  assert.equal(first.ok, true);
+  assert.equal(first.kind, 'update');
+  assert.equal(first.revision, 1);
+  assert.equal(first.patch.cfsStatus, 'cfs_confirmed');
+  assert.equal(first.patch.cfsCostCents, 64000);
+  assert.equal(first.patch.cfsMarginCents, 36000 - 64000);
+  assert.equal(first.patch.acceptedCoveragePercent, 80);
+  assert.equal(first.patch.cfsConfirmedByEmail, 'casey@charterflightsupport.com');
+  assert.equal(first.patch.cfsShortfall, true);
+  assert.equal(first.fields.shortfallPercent, true);
+
+  const stored = {
+    ...cfsRecord,
+    ...first.patch,
+    cfsOpsNotifiedRevision: 1,
+    cfsBrokerNotifiedRevision: 1,
+  };
+  const same = planCfsAcknowledgement(stored, input, new Date(now + 1000));
+  assert.equal(same.kind, 'unchanged');
+  assert.equal(same.revision, 1);
+
+  const retry = planCfsAcknowledgement({ ...stored, cfsOpsNotifiedRevision: 0 }, input, new Date(now + 2000));
+  assert.equal(retry.kind, 'resend');
+  assert.equal(retry.revision, 1);
+  assert.equal(retry.patch, undefined);
+
+  const changed = planCfsAcknowledgement(stored, { ...input, cfsCost: '700.00' }, new Date(now + 3000));
+  assert.equal(changed.kind, 'update');
+  assert.equal(changed.revision, 2);
+  assert.equal(changed.patch.cfsCostCents, 70000);
+
+  assert.equal(planCfsAcknowledgement(cfsRecord, { ...input, name: 'A' }).ok, false);
+  assert.equal(planCfsAcknowledgement(cfsRecord, { ...input, email: 'not-an-email' }).ok, false);
+  assert.equal(planCfsAcknowledgement(cfsRecord, { ...input, cfsCost: '' }).ok, false);
+  assert.equal(planCfsAcknowledgement(cfsRecord, { ...input, acceptedCoveragePercent: '150' }).ok, false);
+});
+
+test('broker CFS mail omits cost and premium, and ops mail includes both the cost and a shortfall', () => {
+  const fields = {
+    name: 'Casey Stone',
+    email: 'casey@charterflightsupport.com',
+    cfsCostCents: 64000,
+    acceptedCoveragePercent: 80,
+    acceptedCoverageLimitCents: null,
+    reference: 'CFS-4491',
+    notes: '',
+    requestedCoveragePercent: 100,
+    shortfall: true,
+    shortfallPercent: true,
+    shortfallLimit: false,
+  };
+  const broker = cfsBrokerLetter(cfsRecord, fields);
+  const brokerBody = `${broker.html}\n${broker.text}`;
+  assert.equal(/premium/i.test(brokerBody), false);
+  assert.equal(brokerBody.includes('$640'), false);
+  assert.equal(brokerBody.includes('640.00'), false);
+  assert.equal(/CFS cost/i.test(brokerBody), false);
+  assert.match(brokerBody, /WEQVQD/);
+  assert.match(brokerBody, /KTEB/);
+  assert.match(brokerBody, /2026-11-02/);
+  assert.match(brokerBody, /80%/);
+  const ops = cfsOpsLetter(cfsRecord, fields);
+  const opsBody = `${ops.html}\n${ops.text}`;
+  assert.match(opsBody, /\$640\.00/);
+  assert.match(opsBody, /CFS cost/);
+  assert.match(opsBody, /below what was requested/);
+  assert.equal(/premium/i.test(opsBody), false);
+
+  const view = JSON.stringify(publicCfsView({ ...cfsRecord, cfsStatus: '' }));
+  assert.equal(/premium/i.test(view), false);
+  assert.equal(view.includes('360'), false);
+  assert.equal(view.includes('1.5'), false);
+  const acknowledged = publicCfsView({
+    ...cfsRecord,
+    cfsStatus: 'cfs_confirmed',
+    cfsConfirmedByName: 'Casey Stone',
+    cfsConfirmedByEmail: 'casey@charterflightsupport.com',
+    cfsCostCents: 64000,
+    acceptedCoveragePercent: 80,
+    cfsShortfall: true,
+  });
+  assert.equal(acknowledged.acknowledgement.cfsCost, '640.00');
+  assert.equal(Object.hasOwn(acknowledged, 'premium'), false);
+});
+
+test('trip rows filter bind-sent coverage that CFS has not confirmed, and CSV carries cost and margin cents', () => {
+  const legs = [{
+    uid: 'c1',
+    tripId: 'M8CFS2',
+    start: '2026-11-02T14:00:00.000Z',
+    tail: 'N318CS',
+    from: 'KTEB',
+    to: 'KPBI',
+    aircraft: 'Citation CJ3',
+    customer: 'Example Charter Group',
+    brokerEmail: 'broker@example-charter.test',
+  }, {
+    uid: 'w1',
+    tripId: 'WEQVQD',
+    start: '2026-11-03T14:00:00.000Z',
+    tail: 'N100TS',
+    from: 'KAPF',
+    to: 'KTEB',
+    aircraft: 'Citation CJ3',
+  }];
+  const rows = buildTripRows(legs, [{
+    id: 'cov-m8cfs2',
+    tripId: 'M8CFS2',
+    coverageLevel: 'gifted_100',
+    paymentStatus: 'gifted',
+    premiumCents: 36000,
+    premium: 360,
+    cfsStatus: 'cfs_confirmed',
+    cfsCostCents: 64000,
+    cfsMarginCents: -28000,
+    acceptedCoveragePercent: 80,
+    bindEmailSentAt: '2026-11-01T15:00:00.000Z',
+    cfsConfirmedAt: '2026-11-01T16:00:00.000Z',
+    cfsShortfall: true,
+  }, {
+    id: 'cov-weqvqd',
+    tripId: 'WEQVQD',
+    coverageLevel: 'gifted_100',
+    paymentStatus: 'gifted',
+    bindEmailSentAt: '2026-11-01T15:00:00.000Z',
+    cfsStatus: '',
+  }]);
+  const awaiting = filterTripRows(rows, { window: 'all', cfs: 'awaiting' });
+  assert.deepEqual(awaiting.map((row) => row.tripId), ['WEQVQD']);
+  const confirmed = filterTripRows(rows, { window: 'all', cfs: 'confirmed' });
+  assert.deepEqual(confirmed.map((row) => row.tripId), ['M8CFS2']);
+  const csv = tripRowCsv(confirmed);
+  assert.match(csv, /CFS cost cents,Margin cents/);
+  assert.match(csv, /64000,-28000/);
+});
+
+test('CFS acknowledgement is an Admin SDK write and mail is claimed once per change', async () => {
+  const api = await readFile(new URL('../api/aog-recovery-cfs.js', import.meta.url), 'utf8');
+  assert.match(api, /acknowledgeCfs/);
+  assert.doesNotMatch(api, /setDoc|updateDoc|addDoc/);
+  const server = await readFile(new URL('../api/_aog-recovery.js', import.meta.url), 'utf8');
+  const ackStart = server.indexOf('export async function acknowledgeCfs');
+  const ack = server.slice(ackStart, ackStart + 1800);
+  assert.match(ack, /runTransaction/);
+  assert.match(ack, /tx\.create/);
+  assert.match(ack, /cfs_acknowledged/);
+  const sendStart = server.indexOf('async function sendAckNotices');
+  const send = server.slice(sendStart, ackStart);
+  assert.ok(send.indexOf('claimNotice') < send.indexOf('sendRecoveryEmail'));
+  const event = coverageEvent({
+    type: 'cfs_acknowledged',
+    atUtc: '2026-09-27T12:00:00.001Z',
+    amountCents: 64000,
+    actor: 'casey@charterflightsupport.com',
+    tripId: 'WEQVQD',
+  });
+  assert.match(event.id, /^cfs_acknowledged_/);
+  assert.equal(event.amountCents, 64000);
 });

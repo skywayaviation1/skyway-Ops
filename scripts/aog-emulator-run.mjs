@@ -2,11 +2,13 @@
 // Run under: firebase emulators:exec --config firebase.emulator.json --project skyway-ops-app
 // Synthetic data only.
 
+import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright';
+import { bindLetterContent, cfsBrokerLetter, cfsOpsLetter } from '../src/aog-cfs.js';
 
 process.env.AOG_LOCAL_STORAGE = process.env.AOG_LOCAL_STORAGE || '/tmp/aog-emulator-storage';
 process.env.GCLOUD_PROJECT = process.env.GCLOUD_PROJECT || 'skyway-ops-app';
@@ -14,6 +16,7 @@ process.env.GOOGLE_CLOUD_PROJECT = process.env.GCLOUD_PROJECT;
 
 const EMAIL = 'ops@example-charter.test';
 const PASSWORD = 'synthetic-ops-pass';
+const CFS_ACK_TOKEN = 'synthetic-cfs-ack-token-0123456789abcd';
 const API_PORT = 8787;
 const WEB_PORT = 5199;
 const SHOT = '/opt/cursor/artifacts/screenshots';
@@ -106,6 +109,14 @@ async function seed() {
   writes.push(leg(db, {
     id: 'leg-k9', tripId: 'K9P2DX', start: '2026-10-19T14:00:00.000Z', end: '2026-10-19T16:00:00.000Z',
     from: 'KMIA', to: 'KTEB', tail: 'N444AM', aircraft: 'Citation CJ3', customer: 'Kept Broker Co', email: 'kept@example-broker.test',
+  }));
+  writes.push(leg(db, {
+    id: 'leg-cfs-a', tripId: 'M8CFS2', start: '2026-11-02T14:00:00.000Z', end: '2026-11-02T17:00:00.000Z',
+    from: 'KTEB', to: 'KPBI', tail: 'N318CS', aircraft: 'Citation CJ3', customer: 'Example Charter Group', email: 'broker@example-charter.test',
+  }));
+  writes.push(leg(db, {
+    id: 'leg-cfs-b', tripId: 'M8CFS2', start: '2026-11-04T18:00:00.000Z', end: '2026-11-04T21:00:00.000Z',
+    from: 'KPBI', to: 'KTEB', tail: 'N318CS', aircraft: 'Citation CJ3', customer: 'Example Charter Group', email: 'broker@example-charter.test',
   }));
   await Promise.all(writes);
   await db.collection('manual-trips').doc('leg-3007').set({
@@ -220,6 +231,36 @@ async function seed() {
     'Depart: 2026-10-19',
     'Charter total: $15,000.00',
   ]));
+  await db.collection('aogRecovery').doc('cov-m8cfs2').set({
+    source: 'gift',
+    tripId: 'M8CFS2',
+    brokerCompany: 'Example Charter Group',
+    checkoutEmail: 'broker@example-charter.test',
+    brokerEmail: 'broker@example-charter.test',
+    tail: 'N318CS',
+    aircraftType: 'Citation CJ3',
+    route: 'KTEB → KPBI',
+    datesLabel: '2026-11-02 – 2026-11-04',
+    departDate: '2026-11-02',
+    returnDate: '2026-11-04',
+    legCount: 2,
+    tripTotal: 24000,
+    tripTotalCents: 2400000,
+    premium: 360,
+    premiumCents: 36000,
+    ratePercent: 1.5,
+    coverageLevel: 'gifted_100',
+    paymentStatus: 'gifted',
+    electionSource: 'gifted',
+    currency: 'usd',
+    matchStatus: 'linked',
+    linkedTripUids: ['leg-cfs-a', 'leg-cfs-b'],
+    contractLegIds: ['leg-cfs-a', 'leg-cfs-b'],
+    bindEmailSentAt: '2026-11-01T15:00:00.000Z',
+    ackTokenHash: createHash('sha256').update(CFS_ACK_TOKEN).digest('hex'),
+    ackTokenExpiresAt: '2026-12-31T00:00:00.000Z',
+    charterContractPath: 'trip-contracts/M8CFS2/charter-contract.pdf',
+  });
   console.log('seeded synthetic trips');
 }
 
@@ -244,20 +285,24 @@ async function startApi() {
   const gift = (await import('../api/aog-recovery-gift.js')).default;
   const file = (await import('../api/aog-recovery-file.js')).default;
   const scan = (await import('../api/aog-recovery-inbox-scan.js')).default;
+  const cfs = (await import('../api/aog-recovery-cfs.js')).default;
   const routes = {
     '/api/aog-recovery-ops': ops,
     '/api/aog-recovery-settings': settings,
     '/api/aog-recovery-gift': gift,
     '/api/aog-recovery-file': file,
     '/api/aog-recovery-inbox-scan': scan,
+    '/api/aog-recovery-cfs': cfs,
   };
   const server = createServer((req, res) => {
     adapt(res);
-    if (req.url === '/health') {
+    const url = new URL(req.url, 'http://127.0.0.1');
+    req.query = Object.fromEntries(url.searchParams);
+    if (url.pathname === '/health') {
       res.status(200).end('ok');
       return;
     }
-    const handler = routes[req.url.split('?')[0]];
+    const handler = routes[url.pathname];
     if (!handler) {
       res.status(404).json({ error: 'not found' });
       return;
@@ -527,6 +572,110 @@ async function clickThrough() {
     await more.getByText('End of menu').waitFor();
     if (moreScrolled.max > 20 && moreScrolled.top < moreScrolled.max - 8) throw new Error(`more sheet did not reach the bottom ${JSON.stringify(moreScrolled)}`);
     await shot(page, 'more-sheet-scrolled-iphone');
+
+    const cfsRecord = {
+      tripId: 'M8CFS2',
+      aircraftType: 'Citation CJ3',
+      tail: 'N318CS',
+      route: 'KTEB → KPBI',
+      datesLabel: '2026-11-02 – 2026-11-04',
+      legCount: 2,
+      brokerCompany: 'Example Charter Group',
+      coverageLevel: 'gifted_100',
+      tripTotal: 24000,
+      tripTotalCents: 2400000,
+      premium: 360,
+      premiumCents: 36000,
+      ratePercent: 1.5,
+    };
+    const ackUrl = `http://127.0.0.1:${WEB_PORT}/aog-cfs?token=${encodeURIComponent(CFS_ACK_TOKEN)}`;
+    const bind = bindLetterContent(cfsRecord, { ackUrl, attachmentNotes: 'Charter contract is attached.' });
+    const bindBody = `${bind.html}\n${bind.text}`;
+    if (/premium/i.test(bindBody)) throw new Error('bind email still names the premium');
+    if (bindBody.includes('1.5') || bindBody.includes('$360')) throw new Error('bind email still names the rate or premium amount');
+    if (!bind.html.includes('Acknowledge coverage')) throw new Error('bind email is missing the acknowledge button');
+    await page.setViewportSize({ width: 720, height: 900 });
+    await page.setContent(`<!doctype html><html><body style="margin:0;background:#fff">${bind.html}</body></html>`);
+    await shot(page, 'aog-bind-email');
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(ackUrl, { waitUntil: 'domcontentloaded' });
+    await page.getByLabel('Your name').waitFor({ timeout: 20000 });
+    const formText = await page.locator('body').innerText();
+    if (/premium/i.test(formText)) throw new Error('acknowledgement page shows the premium');
+    if ((await page.getByLabel('Accepted coverage percent').inputValue()) !== '100') {
+      throw new Error('accepted coverage was not prefilled with the requested percent');
+    }
+    await page.getByLabel('Your name').fill('Casey Stone');
+    await page.getByLabel('Your email').fill('casey@charterflightsupport.com');
+    await page.getByLabel('CFS cost').fill('640.00');
+    await page.getByLabel('Accepted coverage percent').fill('80');
+    await page.getByLabel('Policy or reference number').fill('CFS-4491');
+    await shot(page, 'aog-cfs-form-iphone');
+    await page.getByRole('button', { name: 'Acknowledge coverage' }).click();
+    await page.getByText('Coverage acknowledged').waitFor({ timeout: 20000 });
+    await page.getByText('Already acknowledged by Casey Stone').waitFor();
+
+    await page.setViewportSize({ width: 375, height: 667 });
+    const ackBody = page.locator('.sw-sheet-body');
+    const ackScrolled = await scrollSheetBody(ackBody);
+    await page.getByText('End of acknowledgement').waitFor();
+    if (ackScrolled.max > 20 && ackScrolled.top < ackScrolled.max - 8) {
+      throw new Error(`acknowledgement page did not reach the bottom ${JSON.stringify(ackScrolled)}`);
+    }
+    await shot(page, 'aog-cfs-form-iphone-375');
+
+    const ackFields = {
+      name: 'Casey Stone',
+      email: 'casey@charterflightsupport.com',
+      cfsCostCents: 64000,
+      acceptedCoveragePercent: 80,
+      acceptedCoverageLimitCents: null,
+      reference: 'CFS-4491',
+      notes: '',
+      requestedCoveragePercent: 100,
+      shortfall: true,
+      shortfallPercent: true,
+      shortfallLimit: false,
+    };
+    const opsLetter = cfsOpsLetter(cfsRecord, ackFields);
+    const opsBody = `${opsLetter.html}\n${opsLetter.text}`;
+    if (!/640/.test(opsBody) || !/CFS cost/i.test(opsBody)) throw new Error('ops email is missing the CFS cost');
+    if (!/below what was requested/i.test(opsBody)) throw new Error('ops email is missing the shortfall flag');
+    const brokerLetter = cfsBrokerLetter(cfsRecord, ackFields);
+    const brokerBody = `${brokerLetter.html}\n${brokerLetter.text}`;
+    if (/premium/i.test(brokerBody) || /\$640|640\.00|CFS cost/i.test(brokerBody)) {
+      throw new Error('broker email includes the CFS cost or the premium');
+    }
+    await page.setViewportSize({ width: 720, height: 900 });
+    await page.setContent(`<!doctype html><html><body style="margin:0;background:#fff">${opsLetter.html}</body></html>`);
+    await shot(page, 'aog-cfs-ops-email');
+    await page.setContent(`<!doctype html><html><body style="margin:0;background:#fff">${brokerLetter.html}</body></html>`);
+    await shot(page, 'aog-cfs-broker-email');
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`http://127.0.0.1:${WEB_PORT}/aog-emulator`, { waitUntil: 'domcontentloaded' });
+    await page.getByRole('region', { name: 'Trip detail' }).getByText('AOG coverage confirmed by Charter Flight Support').first().waitFor({ timeout: 25000 });
+    await page.getByText('Accepted 80%').first().waitFor();
+    await page.getByText('This leg: KTEB → KPBI').waitFor();
+    await page.getByText('This leg: KPBI → KTEB').waitFor();
+    await page.getByText('below what was requested').first().waitFor();
+    await shot(page, 'aog-trip-detail-cfs');
+
+    await page.getByLabel('Search trips').fill('M8CFS2');
+    await page.getByLabel('CFS confirmation').selectOption('confirmed');
+    const badge = page.getByText('Confirmed · short');
+    await badge.waitFor({ timeout: 15000 });
+    await badge.scrollIntoViewIfNeeded();
+    await shot(page, 'aog-cfs-confirmed-badge');
+    await page.getByRole('cell', { name: 'M8CFS2' }).click();
+    await page.getByText('CFS cost').waitFor();
+    await page.getByText('$640.00').waitFor();
+    await page.getByRole('button', { name: 'Resend bind email' }).waitFor();
+    const cfsDrawer = page.locator('.sw-sheet-body').last();
+    await scrollSheetBody(cfsDrawer);
+    await page.getByText('End of trip details').waitFor();
+    await shot(page, 'aog-cfs-drawer-iphone');
     console.log('click-through ok');
   } catch (err) {
     await shot(page, 'aog-failure').catch(() => {});

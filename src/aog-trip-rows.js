@@ -176,6 +176,17 @@ export function buildTripRows(legs, records = []) {
       paymentStatus: 'not_required',
       offerSentAt: '',
       bindEmailSentAt: '',
+      cfsStatus: '',
+      cfsConfirmedAt: '',
+      cfsConfirmedByName: '',
+      cfsConfirmedByEmail: '',
+      cfsCostCents: null,
+      cfsMarginCents: null,
+      acceptedCoveragePercent: null,
+      acceptedCoverageLimitCents: null,
+      cfsReference: '',
+      cfsShortfall: false,
+      premiumCents: null,
       coverageId: '',
       electionContractPath: '',
       charterContractPath: '',
@@ -200,6 +211,19 @@ export function buildTripRows(legs, records = []) {
       row.paymentStatus = coverage.paymentStatus || 'not_required';
       row.offerSentAt = coverage.offerSentAt || coverage.coveredNoticeSentAt || coverage.includedNoticeSentAt || '';
       row.bindEmailSentAt = coverage.bindEmailSentAt || '';
+      row.cfsStatus = coverage.cfsStatus || '';
+      row.cfsConfirmedAt = coverage.cfsConfirmedAt || '';
+      row.cfsConfirmedByName = coverage.cfsConfirmedByName || '';
+      row.cfsConfirmedByEmail = coverage.cfsConfirmedByEmail || '';
+      row.cfsCostCents = Number.isInteger(coverage.cfsCostCents) ? coverage.cfsCostCents : null;
+      row.premiumCents = Number.isInteger(coverage.premiumCents) ? coverage.premiumCents : null;
+      row.cfsMarginCents = Number.isInteger(coverage.cfsMarginCents)
+        ? coverage.cfsMarginCents
+        : (row.premiumCents != null && row.cfsCostCents != null ? row.premiumCents - row.cfsCostCents : null);
+      row.acceptedCoveragePercent = coverage.acceptedCoveragePercent ?? null;
+      row.acceptedCoverageLimitCents = Number.isInteger(coverage.acceptedCoverageLimitCents) ? coverage.acceptedCoverageLimitCents : null;
+      row.cfsReference = coverage.cfsReference || '';
+      row.cfsShortfall = coverage.cfsShortfall === true;
       row.electionContractPath = coverage.electionContractPath || '';
       row.charterContractPath = coverage.charterContractPath || '';
       row.upgradeAvailable = coverage.upgradeAvailable === true;
@@ -243,6 +267,7 @@ export function filterTripRows(rows, {
   payment = '',
   aircraft = '',
   broker = '',
+  cfs = '',
   now = new Date(),
 } = {}) {
   const needle = String(search || '').trim().toLowerCase();
@@ -251,6 +276,8 @@ export function filterTripRows(rows, {
     if (contract && row.contractStatus !== contract) return false;
     if (level && row.coverageLevel !== level) return false;
     if (payment && row.paymentStatus !== payment) return false;
+    if (cfs === 'awaiting' && !(row.bindEmailSentAt && row.cfsStatus !== 'cfs_confirmed')) return false;
+    if (cfs === 'confirmed' && row.cfsStatus !== 'cfs_confirmed') return false;
     if (aircraft && row.aircraft !== aircraft) return false;
     if (broker && row.brokerCompany !== broker) return false;
     if (!needle) return true;
@@ -298,7 +325,8 @@ export function tripRowCsv(rows) {
   const header = [
     'Trip ID', 'Dates', 'Route', 'Tail', 'Aircraft', 'Broker company', 'Broker email',
     'Charter contract', 'Trip total', 'Coverage level', 'Premium', 'Payment status',
-    'Offer sent', 'Bound to CFS',
+    'Offer sent', 'Bound to CFS', 'CFS confirmed', 'Accepted coverage percent',
+    'CFS cost cents', 'Margin cents',
   ];
   const lines = (rows || []).map((row) => [
     row.tripId,
@@ -315,6 +343,10 @@ export function tripRowCsv(rows) {
     paymentStatusLabel(row.paymentStatus),
     row.offerSentAt || '',
     row.bindEmailSentAt || '',
+    row.cfsStatus === 'cfs_confirmed' ? (row.cfsConfirmedAt || 'confirmed') : '',
+    row.acceptedCoveragePercent ?? '',
+    row.cfsCostCents ?? '',
+    row.cfsMarginCents ?? '',
   ].map(csvCell).join(','));
   return [header.join(','), ...lines].join('\n');
 }

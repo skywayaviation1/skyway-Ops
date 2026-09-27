@@ -11,6 +11,7 @@ import {
   DEFAULT_RATES,
   classifyCheckout,
   coverageLevelLabel,
+  fmtMoney,
   paymentStatusLabel,
   premiumLabel,
 } from './aog-recovery.js';
@@ -102,6 +103,18 @@ async function readPdfFile(file) {
   return { pdfBase64: btoa(binary), text, filename: file.name || 'charter-contract.pdf' };
 }
 
+function CfsBadge({ row }) {
+  if (row.cfsStatus === 'cfs_confirmed') {
+    return (
+      <span className={row.cfsShortfall ? 'font-semibold text-warning' : 'font-semibold text-success'}>
+        {row.cfsShortfall ? 'Confirmed · short' : 'Confirmed'}
+      </span>
+    );
+  }
+  if (row.bindEmailSentAt) return <span className="text-content-muted">Awaiting</span>;
+  return '—';
+}
+
 function proposalText(plan) {
   if (!plan) return '';
   if (plan.coverageLevel === 'complimentary_100') {
@@ -128,6 +141,7 @@ export default function AogRecoveryTab({ currentUser, scheduleTrips = [] }) {
   const [payment, setPayment] = useState('');
   const [aircraft, setAircraft] = useState('');
   const [broker, setBroker] = useState('');
+  const [cfs, setCfs] = useState('');
   const [page, setPage] = useState(0);
   const [panel, setPanel] = useState('trips');
   const [selectedKey, setSelectedKey] = useState('');
@@ -167,15 +181,15 @@ export default function AogRecoveryTab({ currentUser, scheduleTrips = [] }) {
   );
   const tripRows = useMemo(() => buildTripRows(legs, records), [legs, records]);
   const filtered = useMemo(() => filterTripRows(tripRows, {
-    search, window: windowName, from, to, contract, level, payment, aircraft, broker, now: new Date(),
-  }), [tripRows, search, windowName, from, to, contract, level, payment, aircraft, broker]);
+    search, window: windowName, from, to, contract, level, payment, aircraft, broker, cfs, now: new Date(),
+  }), [tripRows, search, windowName, from, to, contract, level, payment, aircraft, broker, cfs]);
   const paged = pageOfRows(filtered, page);
   const selected = tripRows.find((row) => row.groupKey === selectedKey) || null;
   const unmatched = useMemo(() => records.filter(isUnmatchedContract), [records]);
   const aircraftOptions = distinctValues(tripRows, 'aircraft');
   const brokerOptions = distinctValues(tripRows, 'brokerCompany');
 
-  useEffect(() => { setPage(0); }, [search, windowName, from, to, contract, level, payment, aircraft, broker]);
+  useEffect(() => { setPage(0); }, [search, windowName, from, to, contract, level, payment, aircraft, broker, cfs]);
 
   function exportCsv() {
     const blob = new Blob([tripRowCsv(filtered)], { type: 'text/csv;charset=utf-8' });
@@ -337,20 +351,25 @@ export default function AogRecoveryTab({ currentUser, scheduleTrips = [] }) {
               <option value="">All brokers</option>
               {brokerOptions.map((option) => <option key={option} value={option}>{option}</option>)}
             </select>
+            <select aria-label="CFS confirmation" value={cfs} onChange={(event) => setCfs(event.target.value)} className="h-8 rounded border border-edge bg-surface px-2 text-sm">
+              <option value="">All CFS states</option>
+              <option value="awaiting">Bind sent, not confirmed</option>
+              <option value="confirmed">CFS confirmed</option>
+            </select>
           </div>
 
           <div className="overflow-x-auto rounded-xl border border-edge">
             <table className="min-w-[1200px] w-full text-left text-xs">
               <thead className="bg-surface-raised text-content-muted">
                 <tr>
-                  {['Trip ID', 'Dates', 'Route', 'Tail', 'Aircraft', 'Broker', 'Contract', 'Trip total', 'Coverage', 'Premium', 'Payment', 'Offer sent', 'Bound to CFS'].map((heading) => (
+                  {['Trip ID', 'Dates', 'Route', 'Tail', 'Aircraft', 'Broker', 'Contract', 'Trip total', 'Coverage', 'Premium', 'Payment', 'Offer sent', 'Bound to CFS', 'CFS'].map((heading) => (
                     <th key={heading} className="px-2 py-2 font-medium">{heading}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {paged.rows.length === 0 && (
-                  <tr><td colSpan={13} className="px-3 py-8 text-center text-content-muted">No trips in this view.</td></tr>
+                  <tr><td colSpan={14} className="px-3 py-8 text-center text-content-muted">No trips in this view.</td></tr>
                 )}
                 {paged.rows.map((row) => (
                   <tr
@@ -377,6 +396,7 @@ export default function AogRecoveryTab({ currentUser, scheduleTrips = [] }) {
                     <td className="px-2 py-2">{paymentStatusLabel(row.paymentStatus)}</td>
                     <td className="px-2 py-2">{stamp(row.offerSentAt)}</td>
                     <td className="px-2 py-2">{stamp(row.bindEmailSentAt)}</td>
+                    <td className="px-2 py-2"><CfsBadge row={row} /></td>
                   </tr>
                 ))}
               </tbody>
@@ -480,7 +500,7 @@ function TripDrawer({ row, settings, busy, setBusy, setError, setBanner, onClose
       .then((data) => { if (!cancelled) setEvents(data.events || []); })
       .catch((err) => { if (!cancelled) setError(err.message); });
     return () => { cancelled = true; };
-  }, [row.coverageId, row.offerSentAt, row.bindEmailSentAt, setError]);
+  }, [row.coverageId, row.offerSentAt, row.bindEmailSentAt, row.cfsStatus, row.cfsConfirmedAt, setError]);
 
   async function onFile(event) {
     const file = event.target.files?.[0];
@@ -557,6 +577,20 @@ function TripDrawer({ row, settings, busy, setBusy, setError, setBanner, onClose
         },
       });
       setBanner('Corrections saved.');
+      await onSaved();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resendBind() {
+    setBusy(true);
+    setError('');
+    try {
+      const data = await authPost('/api/aog-recovery-ops', { action: 'resend-bind', coverageId: row.coverageId });
+      setBanner(data.error ? `Bind resend: ${data.error}` : 'Bind email resent to Charter Flight Support.');
       await onSaved();
     } catch (err) {
       setError(err.message);
@@ -664,6 +698,7 @@ function TripDrawer({ row, settings, busy, setBusy, setError, setBanner, onClose
           {row.charterContractPath && <Button size="sm" variant="outline" onClick={() => download('charter')}>View charter</Button>}
           {row.electionContractPath && <Button size="sm" variant="outline" onClick={() => download('election')}>View election</Button>}
           <Button size="sm" variant="outline" disabled={!row.upgradeAvailable} onClick={resendOffer}>Resend offer</Button>
+          {HUNDRED.has(row.coverageLevel) && <Button size="sm" variant="outline" onClick={resendBind}>Resend bind email</Button>}
           {!HUNDRED.has(row.coverageLevel) && !giftArmed && (
             <Button size="sm" variant="secondary" onClick={() => setGiftArmed(true)}>Gift 100%</Button>
           )}
@@ -694,6 +729,21 @@ function TripDrawer({ row, settings, busy, setBusy, setError, setBanner, onClose
         )}
 
         {locked && <p className="mt-2 text-2xs text-content-muted">Paid coverage keeps its premium. Replacing the PDF does not change the amount that was charged.</p>}
+
+        <h3 className="mt-5 text-xs font-semibold uppercase tracking-wide text-content-muted">Charter Flight Support</h3>
+        {row.cfsStatus === 'cfs_confirmed' ? (
+          <div className="mt-2 rounded border border-edge p-2 text-xs">
+            <p className="font-medium">CFS confirmed</p>
+            <p className="mt-1 text-content-muted">{row.cfsConfirmedByName || '—'}{row.cfsConfirmedByEmail ? ` · ${row.cfsConfirmedByEmail}` : ''} · {stamp(row.cfsConfirmedAt)}</p>
+            <p className="mt-1">Accepted coverage: {row.acceptedCoveragePercent ?? '—'}%{Number.isInteger(row.acceptedCoverageLimitCents) ? ` up to ${fmtMoney(row.acceptedCoverageLimitCents / 100)}` : ''}</p>
+            <p className="mt-1">Reference: {row.cfsReference || '—'}</p>
+            <p className="mt-1">CFS cost: {Number.isInteger(row.cfsCostCents) ? fmtMoney(row.cfsCostCents / 100) : '—'}</p>
+            <p className="mt-1">Margin: {Number.isInteger(row.cfsMarginCents) ? fmtMoney(row.cfsMarginCents / 100) : '—'}</p>
+            {row.cfsShortfall && <p className="mt-2 font-medium text-warning">Accepted coverage is below what was requested.</p>}
+          </div>
+        ) : (
+          <p className="mt-1 text-xs text-content-muted">{row.bindEmailSentAt ? 'Bind email sent. Charter Flight Support has not confirmed yet.' : 'CFS is notified when coverage is purchased, gifted, or complimentary.'}</p>
+        )}
 
         <h3 className="mt-5 text-xs font-semibold uppercase tracking-wide text-content-muted">Event history</h3>
         {events.length === 0 && <p className="mt-1 text-xs text-content-muted">No events yet.</p>}

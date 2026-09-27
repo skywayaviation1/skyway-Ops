@@ -122,6 +122,17 @@ export function subscribeToTripState(tripId, onUpdate) {
           // FBO names parsed from the trip sheet for THIS leg's two airports.
           fromFbo: data.fromFbo || null,
           toFbo: data.toFbo || null,
+          aogCfs: data.aogCfs?.status === 'cfs_confirmed' ? {
+            status: 'cfs_confirmed',
+            confirmedAt: data.aogCfs.confirmedAt || '',
+            tripId: data.aogCfs.tripId || '',
+            acceptedCoveragePercent: data.aogCfs.acceptedCoveragePercent ?? null,
+            acceptedCoverageLimitCents: Number.isInteger(data.aogCfs.acceptedCoverageLimitCents) ? data.aogCfs.acceptedCoverageLimitCents : null,
+            reference: data.aogCfs.reference || '',
+            shortfall: data.aogCfs.shortfall === true,
+            requestedCoveragePercent: data.aogCfs.requestedCoveragePercent ?? null,
+            legIds: Array.isArray(data.aogCfs.legIds) ? data.aogCfs.legIds : [],
+          } : null,
         });
       } else {
         // No state yet — emit empty defaults
@@ -137,6 +148,7 @@ export function subscribeToTripState(tripId, onUpdate) {
           tripSheetNotesEditedByName: null,
           fromFbo: null,
           toFbo: null,
+          aogCfs: null,
         });
       }
     },

@@ -18,6 +18,17 @@ import {
   AOG_COVERAGE_TERMS_VERSION,
 } from '../src/aog-recovery-terms.js';
 import {
+  ACK_TOKEN_TTL_MS,
+  OPS_ACK_TO,
+  ackTokenUsable,
+  bindLetterContent,
+  cfsBrokerLetter,
+  cfsOpsLetter,
+  legStamp,
+  planCfsAcknowledgement,
+  publicCfsView,
+} from '../src/aog-cfs.js';
+import {
   CFS_BIND_CC,
   CFS_BIND_TO,
   DEFAULT_RATES,
@@ -412,30 +423,8 @@ export function coveredLetter(record) {
   return { subject, html, text };
 }
 
-export function bindLetter(record, attachmentNotes) {
-  const subject = `AOG coverage bind request — ${record.tripId || 'trip'} ${record.tail || ''}`.trim();
-  const html = shell('Bind request', `
-    <p>Please bind 100% AOG mechanical recovery coverage for the trip below.</p>
-    <table style="border-collapse:collapse;font-size:14px;margin:16px 0">
-      ${detailRows(record)}
-      <tr><td style="padding:4px 12px 4px 0;color:#64748b">Who elected it</td><td>${escapeHtml(record.electedBy || '—')}</td></tr>
-    </table>
-    <p style="font-size:13px;color:#334155">${escapeHtml(attachmentNotes || '')}</p>
-  `);
-  const text = [
-    'AOG coverage bind request',
-    `Trip ID: ${record.tripId || '—'}`,
-    `Tail: ${record.tail || '—'}`,
-    `Aircraft: ${record.aircraftType || '—'}`,
-    `Dates: ${record.datesLabel || '—'}`,
-    `Route: ${record.route || '—'}`,
-    `Trip total: ${fmtMoney(record.tripTotal)}`,
-    `Coverage: ${coverageLevelLabel(record.coverageLevel)}`,
-    `Premium: ${premiumLabel(record)}`,
-    `Who elected it: ${record.electedBy || '—'}`,
-    attachmentNotes || '',
-  ].join('\n');
-  return { subject, html, text };
+export function bindLetter(record, attachmentNotes, ackUrl) {
+  return bindLetterContent(record, { ackUrl, attachmentNotes });
 }
 
 export function brokerPaidLetter(record) {
@@ -859,6 +848,18 @@ export function serializeCoverage(id, data = {}) {
     stripePaymentIntentId: data.stripePaymentIntentId || '',
     stripeEventId: data.stripeEventId || '',
     stripeRefundId: data.stripeRefundId || '',
+    cfsStatus: data.cfsStatus || '',
+    cfsConfirmedAt: data.cfsConfirmedAt || '',
+    cfsConfirmedByName: data.cfsConfirmedByName || '',
+    cfsConfirmedByEmail: data.cfsConfirmedByEmail || '',
+    cfsCostCents: Number.isInteger(data.cfsCostCents) ? data.cfsCostCents : null,
+    cfsMarginCents: Number.isInteger(data.cfsMarginCents) ? data.cfsMarginCents : null,
+    acceptedCoveragePercent: data.acceptedCoveragePercent ?? null,
+    acceptedCoverageLimitCents: Number.isInteger(data.acceptedCoverageLimitCents) ? data.acceptedCoverageLimitCents : null,
+    cfsReference: data.cfsReference || '',
+    cfsNotes: data.cfsNotes || '',
+    cfsShortfall: data.cfsShortfall === true,
+    cfsRevision: Number(data.cfsRevision) || 0,
   };
 }
 
@@ -866,6 +867,15 @@ export async function findByToken(db, token) {
   const hash = hashOfferToken(token);
   if (!hash) return null;
   const snap = await db.collection(COLLECTION).where('offerTokenHash', '==', hash).limit(1).get();
+  if (snap.empty) return null;
+  const docSnap = snap.docs[0];
+  return { id: docSnap.id, ref: docSnap.ref, data: docSnap.data() || {} };
+}
+
+export async function findByAckToken(db, token) {
+  const hash = hashOfferToken(token);
+  if (!hash) return null;
+  const snap = await db.collection(COLLECTION).where('ackTokenHash', '==', hash).limit(1).get();
   if (snap.empty) return null;
   const docSnap = snap.docs[0];
   return { id: docSnap.id, ref: docSnap.ref, data: docSnap.data() || {} };
@@ -920,7 +930,10 @@ export async function dispatchCoverageEmails(db, id, record, { baseUrl, force = 
     const notes = [election.note, charter.note].filter(Boolean);
     if (!record.electionContractPath) notes.push('Signed election contract: not signed (complimentary or gifted by Skyway).');
     if (!record.charterContractPath) notes.push('Charter contract: not on file.');
-    const letter = bindLetter(record, notes.join(' '));
+    else notes.push('Charter contract is attached.');
+    const token = newOfferToken();
+    const ackUrl = `${String(baseUrl || '').replace(/\/$/, '')}/aog-cfs?token=${encodeURIComponent(token)}`;
+    const letter = bindLetter(record, notes.join(' '), ackUrl);
     const sent = await sendRecoveryEmail({
       to: CFS_BIND_TO,
       cc: CFS_BIND_CC,
@@ -931,6 +944,8 @@ export async function dispatchCoverageEmails(db, id, record, { baseUrl, force = 
     });
     if (sent.ok) {
       patch.bindEmailSentAt = new Date().toISOString();
+      patch.ackTokenHash = hashOfferToken(token);
+      patch.ackTokenExpiresAt = new Date(Date.now() + ACK_TOKEN_TTL_MS).toISOString();
       await appendCoverageEvent(db, id, {
         type: 'bound',
         force,
@@ -951,6 +966,166 @@ export async function dispatchCoverageEmails(db, id, record, { baseUrl, force = 
   patch.emailError = errors.join('; ');
   await ref.set(patch, { merge: true });
   return { ok: errors.length === 0, error: patch.emailError, patch };
+}
+
+async function claimNotice(db, ref, revision, field, previous) {
+  let claimed = false;
+  await db.runTransaction(async (tx) => {
+    const current = (await tx.get(ref)).data() || {};
+    if (Number(current.cfsRevision) !== revision) return;
+    if (Number(current[field]) === revision) return;
+    claimed = true;
+    tx.set(ref, { [field]: revision }, { merge: true });
+  });
+  return {
+    claimed,
+    async rollback() {
+      if (!claimed) return;
+      await db.runTransaction(async (tx) => {
+        const current = (await tx.get(ref)).data() || {};
+        if (Number(current.cfsRevision) === revision && Number(current[field]) === revision) {
+          tx.set(ref, { [field]: previous }, { merge: true });
+        }
+      });
+    },
+  };
+}
+
+async function stampConfirmedLegs(db, record, fields, confirmedAt) {
+  const ids = new Set([...(record.contractLegIds || []), ...(record.linkedTripUids || [])].map((id) => String(id || '')).filter(Boolean));
+  const code = normalizeTripId(record.tripId);
+  if (code) {
+    try {
+      const snap = await db.collection('trip-state').where('tripSheetData.tripCode', '==', code).limit(40).get();
+      snap.docs.forEach((docSnap) => ids.add(docSnap.id));
+    } catch (err) {
+      console.warn('[aog-recovery] trip legs for CFS confirmation were not listed:', err.message);
+    }
+  }
+  const payload = legStamp(fields, confirmedAt, [...ids], normalizeTripId(record.tripId));
+  await Promise.all([...ids].map((id) => db.collection('trip-state').doc(id).set({ aogCfs: payload }, { merge: true })));
+}
+
+async function sendAckNotices(db, ref, revision) {
+  const data = (await ref.get()).data() || {};
+  if (Number(data.cfsRevision) !== revision) return { ok: true, skipped: true };
+  const fields = {
+    name: data.cfsConfirmedByName,
+    email: data.cfsConfirmedByEmail,
+    cfsCostCents: data.cfsCostCents,
+    acceptedCoveragePercent: data.acceptedCoveragePercent,
+    acceptedCoverageLimitCents: Number.isInteger(data.acceptedCoverageLimitCents) ? data.acceptedCoverageLimitCents : null,
+    reference: data.cfsReference || '',
+    notes: data.cfsNotes || '',
+    requestedCoveragePercent: data.cfsRequestedPercent,
+    shortfall: data.cfsShortfall === true,
+    shortfallPercent: data.cfsShortfallPercent === true,
+    shortfallLimit: data.cfsShortfallLimit === true,
+  };
+  const errors = [];
+  if (Number(data.cfsOpsNotifiedRevision) !== revision) {
+    const claim = await claimNotice(db, ref, revision, 'cfsOpsNotifiedRevision', Number(data.cfsOpsNotifiedRevision) || 0);
+    if (claim.claimed) {
+      const letter = cfsOpsLetter(data, fields);
+      let sent;
+      try {
+        sent = await sendRecoveryEmail({ to: OPS_ACK_TO, subject: letter.subject, html: letter.html, text: letter.text });
+      } catch (err) {
+        sent = { ok: false, error: err.message || 'ops notice failed' };
+      }
+      if (!sent.ok) {
+        await claim.rollback();
+        errors.push(sent.error || 'ops notice failed');
+      }
+    }
+  }
+  const broker = data.brokerEmail || data.checkoutEmail || '';
+  if (!broker) {
+    if (Number(data.cfsBrokerNotifiedRevision) !== revision) {
+      await claimNotice(db, ref, revision, 'cfsBrokerNotifiedRevision', Number(data.cfsBrokerNotifiedRevision) || 0);
+    }
+  } else if (Number(data.cfsBrokerNotifiedRevision) !== revision) {
+    const claim = await claimNotice(db, ref, revision, 'cfsBrokerNotifiedRevision', Number(data.cfsBrokerNotifiedRevision) || 0);
+    if (claim.claimed) {
+      const letter = cfsBrokerLetter(data, fields);
+      let sent;
+      try {
+        sent = await sendRecoveryEmail({ to: broker, subject: letter.subject, html: letter.html, text: letter.text });
+      } catch (err) {
+        sent = { ok: false, error: err.message || 'broker notice failed' };
+      }
+      if (!sent.ok) {
+        await claim.rollback();
+        errors.push(sent.error || 'broker notice failed');
+      }
+    }
+  }
+  const error = errors.join('; ');
+  if (error) await ref.set({ cfsEmailError: error }, { merge: true });
+  else await ref.set({ cfsEmailError: '' }, { merge: true });
+  return { ok: errors.length === 0, error };
+}
+
+export async function acknowledgeCfs(db, ref, input, now = new Date()) {
+  let outcome;
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) {
+      const error = new Error('This acknowledgement link is not valid');
+      error.status = 404;
+      throw error;
+    }
+    const data = snap.data() || {};
+    const usable = ackTokenUsable(data, now.getTime());
+    if (!usable.ok) {
+      const error = new Error(usable.error);
+      error.status = usable.status;
+      throw error;
+    }
+    const plan = planCfsAcknowledgement(data, input, now);
+    if (!plan.ok) {
+      const error = new Error(plan.error);
+      error.status = 400;
+      throw error;
+    }
+    outcome = plan;
+    if (plan.kind !== 'update') return;
+    tx.set(ref, plan.patch, { merge: true });
+    const event = coverageEvent({
+      type: 'cfs_acknowledged',
+      atUtc: new Date(now.getTime() + plan.revision).toISOString(),
+      amountCents: plan.fields.cfsCostCents,
+      actor: plan.fields.email,
+      detail: plan.detail,
+      tripId: data.tripId,
+      brokerEmail: data.brokerEmail || data.checkoutEmail,
+      aircraftType: data.aircraftType,
+      tail: data.tail,
+      coverageLevel: data.coverageLevel,
+      paymentStatus: data.paymentStatus,
+    });
+    tx.create(ref.collection('coverageEvents').doc(event.id), {
+      ...event,
+      coverageId: ref.id,
+      at: Timestamp.fromDate(new Date(event.atUtc)),
+    });
+  });
+  if (outcome.kind === 'update') {
+    const fresh = (await ref.get()).data() || {};
+    await stampConfirmedLegs(db, fresh, outcome.fields, outcome.confirmedAt);
+  }
+  let email = { ok: true, error: '' };
+  if (outcome.kind === 'update' || outcome.kind === 'resend') {
+    email = await sendAckNotices(db, ref, outcome.revision);
+  }
+  const saved = (await ref.get()).data() || {};
+  return {
+    ok: true,
+    unchanged: outcome.kind === 'unchanged',
+    updated: outcome.kind === 'update',
+    emailError: email.error || '',
+    coverage: publicCfsView(saved),
+  };
 }
 
 export async function ingestParsedCheckout(db, { messageId, parsed, pdfBuffer, pdfFilename, settings, baseUrl, source }) {

@@ -131,6 +131,7 @@ const AdminDutyReportLazy = lazy(() => import('./AdminDutyReport.jsx'));
 const AogRecoveryTabLazy = lazy(() => import('./AogRecoveryTab.jsx'));
 const AogRecoveryGiftButtonLazy = lazy(() => import('./AogRecoveryGiftButton.jsx'));
 import TripCharterContract from './TripCharterContract.jsx';
+import AogCfsConfirmedMark from './AogCfsConfirmed.jsx';
 import AppTimezoneSwitch from './AppTimezoneSwitch.jsx';
 import { todayInAppTz } from './app-timezone.js';
 import { createPortal } from 'react-dom';
@@ -5236,6 +5237,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   const [brokerEmail, setBrokerEmail] = useState(trip.info.broker || '');
   const [brokerCompany, setBrokerCompany] = useState('');
   const [brokerPhone, setBrokerPhone] = useState('');
+  const [aogCfs, setAogCfs] = useState(null);
   const [autoNotify, setAutoNotify] = useState(false);
   const [hasCatering, setHasCatering] = useState(true);
   const [paxOverride, setPaxOverride] = useState(null);
@@ -5465,6 +5467,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
           setBrokerEmail(state.brokerEmail || trip.info.broker || '');
           setBrokerCompany(state.brokerCompany || '');
           setBrokerPhone(state.brokerPhone || '');
+          setAogCfs(state.aogCfs || null);
           setAutoNotify(state.autoNotify);
           setHasCatering(state.hasCatering !== false);
           setPaxOverride(typeof state.paxOverride === 'number' ? state.paxOverride : null);
@@ -6489,6 +6492,15 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
               <Suspense fallback={null}>
                 <AogRecoveryGiftButtonLazy trip={trip} brokerEmail={brokerEmail} />
               </Suspense>
+            )}
+            {aogCfs?.status === 'cfs_confirmed' && (
+              <div className="basis-full">
+                <AogCfsConfirmedMark
+                  acknowledgement={aogCfs}
+                  tripId={aogCfs.tripId || ''}
+                  legLabel={[trip.info?.from, trip.info?.to].filter(Boolean).join(' → ')}
+                />
+              </div>
             )}
             {fromFbo && <StatusChip tone="neutral">{trip.info.from}: {fromFbo}</StatusChip>}
             {toFbo && <StatusChip tone="neutral">{trip.info.to}: {toFbo}</StatusChip>}

@@ -15,6 +15,7 @@ export const EVENT_TYPES = Object.freeze([
   'refunded',
   'broker_backfilled',
   'broker_mismatch',
+  'cfs_acknowledged',
 ]);
 
 /** 100% was chosen by a purchase, a Skyway gift, or a complimentary domain. Included 50% is not an election. */
@@ -124,7 +125,7 @@ export function eventDocId(type, { stripePaymentIntentId, stripeEventId, stripeR
   if (type === 'paid') return `paid_${stripePaymentIntentId || stripeEventId || atUtc || 'unknown'}`;
   if (type === 'refunded') return `refunded_${stripeRefundId || stripeEventId || atUtc || 'unknown'}`;
   if (type === 'contract_signed') return 'contract_signed';
-  if (type === 'broker_backfilled' || type === 'broker_mismatch') {
+  if (type === 'broker_backfilled' || type === 'broker_mismatch' || type === 'cfs_acknowledged') {
     return `${type}_${String(atUtc || '').replace(/[:.]/g, '')}`;
   }
   if (force) return `${type}_${String(atUtc || '').replace(/[:.]/g, '')}`;
