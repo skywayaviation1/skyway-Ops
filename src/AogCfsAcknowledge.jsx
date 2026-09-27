@@ -28,20 +28,16 @@ export default function AogCfsAcknowledge() {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [cfsCost, setCfsCost] = useState('');
-  const [percent, setPercent] = useState('');
-  const [limit, setLimit] = useState('');
   const [reference, setReference] = useState('');
   const [notes, setNotes] = useState('');
 
   function applyCoverage(next) {
     setCoverage(next);
     const ack = next?.acknowledgement;
-    setPercent(String(ack?.acceptedCoveragePercent ?? next?.requestedCoveragePercent ?? ''));
     if (!ack) return;
     setName(ack.name || '');
     setEmail(ack.email || '');
     setCfsCost(ack.cfsCost || '');
-    setLimit(ack.coverageLimit || '');
     setReference(ack.reference || '');
     setNotes(ack.notes || '');
   }
@@ -85,8 +81,6 @@ export default function AogCfsAcknowledge() {
           name,
           email,
           cfsCost,
-          acceptedCoveragePercent: percent,
-          coverageLimit: limit,
           reference,
           notes,
         }),
@@ -126,19 +120,18 @@ export default function AogCfsAcknowledge() {
               <Row label="Route" value={coverage.route} />
               <Row label="Dates" value={coverage.datesLabel} />
               <Row label="Legs" value={coverage.legCount ? String(coverage.legCount) : ''} />
-              <Row label="Coverage requested" value={coverage.coverageLabel} />
+              <Row label="Coverage" value="100%" />
               <Row label="Contract trip total" value={fmtMoney(coverage.tripTotal)} />
+              <Row label="Coverage value" value={coverage.coverageValueLabel || '—'} />
 
               {existing && (
                 <div role="status" className="mt-4 rounded-lg border border-edge bg-surface px-3 py-2 text-sm">
                   <p className="font-medium">Already acknowledged by {existing.name}</p>
                   <p className="mt-1 text-xs text-content-muted">
-                    Accepted {existing.acceptedCoveragePercent}%
+                    Coverage: 100%
+                    {coverage.coverageValueLabel ? ` · Coverage value: ${coverage.coverageValueLabel}` : ''}
                     {existing.confirmedAt ? ` · ${new Date(existing.confirmedAt).toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : ''}
                   </p>
-                  {existing.shortfall && (
-                    <p className="mt-1 text-xs font-medium text-warning">Accepted coverage is below what was requested.</p>
-                  )}
                   <p className="mt-1 text-xs text-content-muted">Submitting again updates the acknowledgement and notifies Skyway ops.</p>
                 </div>
               )}
@@ -155,14 +148,6 @@ export default function AogCfsAcknowledge() {
                 <label className="block text-sm">
                   <span className="mb-1 block text-content-muted">CFS cost (USD)</span>
                   <input aria-label="CFS cost" inputMode="decimal" value={cfsCost} onChange={(event) => setCfsCost(event.target.value)} required className="w-full rounded-lg border border-edge bg-surface px-3 py-2 text-sm outline-none focus:border-accent" />
-                </label>
-                <label className="block text-sm">
-                  <span className="mb-1 block text-content-muted">Accepted coverage percent</span>
-                  <input aria-label="Accepted coverage percent" inputMode="decimal" value={percent} onChange={(event) => setPercent(event.target.value)} required className="w-full rounded-lg border border-edge bg-surface px-3 py-2 text-sm outline-none focus:border-accent" />
-                </label>
-                <label className="block text-sm">
-                  <span className="mb-1 block text-content-muted">Coverage limit, USD (optional)</span>
-                  <input aria-label="Coverage limit" inputMode="decimal" value={limit} onChange={(event) => setLimit(event.target.value)} className="w-full rounded-lg border border-edge bg-surface px-3 py-2 text-sm outline-none focus:border-accent" />
                 </label>
                 <label className="block text-sm">
                   <span className="mb-1 block text-content-muted">Policy or reference number (optional)</span>

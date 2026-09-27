@@ -126,11 +126,9 @@ export function subscribeToTripState(tripId, onUpdate) {
             status: 'cfs_confirmed',
             confirmedAt: data.aogCfs.confirmedAt || '',
             tripId: data.aogCfs.tripId || '',
-            acceptedCoveragePercent: data.aogCfs.acceptedCoveragePercent ?? null,
-            acceptedCoverageLimitCents: Number.isInteger(data.aogCfs.acceptedCoverageLimitCents) ? data.aogCfs.acceptedCoverageLimitCents : null,
+            acceptedCoveragePercent: 100,
+            coverageLimitCents: Number.isInteger(data.aogCfs.coverageLimitCents) ? data.aogCfs.coverageLimitCents : null,
             reference: data.aogCfs.reference || '',
-            shortfall: data.aogCfs.shortfall === true,
-            requestedCoveragePercent: data.aogCfs.requestedCoveragePercent ?? null,
             legIds: Array.isArray(data.aogCfs.legIds) ? data.aogCfs.legIds : [],
           } : null,
         });

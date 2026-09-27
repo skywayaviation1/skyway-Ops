@@ -244,11 +244,13 @@ async function seed() {
     departDate: '2026-11-02',
     returnDate: '2026-11-04',
     legCount: 2,
-    tripTotal: 24000,
-    tripTotalCents: 2400000,
-    premium: 360,
-    premiumCents: 36000,
+    tripTotal: 20000,
+    tripTotalCents: 2000000,
+    premium: 300,
+    premiumCents: 30000,
     ratePercent: 1.5,
+    coverageLimitCents: 4000000,
+    coverageMultiplier: 2,
     coverageLevel: 'gifted_100',
     paymentStatus: 'gifted',
     electionSource: 'gifted',
@@ -587,18 +589,20 @@ async function clickThrough() {
       legCount: 2,
       brokerCompany: 'Example Charter Group',
       coverageLevel: 'gifted_100',
-      tripTotal: 24000,
-      tripTotalCents: 2400000,
-      premium: 360,
-      premiumCents: 36000,
+      tripTotal: 20000,
+      tripTotalCents: 2000000,
+      premium: 300,
+      premiumCents: 30000,
       ratePercent: 1.5,
     };
     const ackUrl = `http://127.0.0.1:${WEB_PORT}/aog-cfs?token=${encodeURIComponent(CFS_ACK_TOKEN)}`;
     const bind = bindLetterContent(cfsRecord, { ackUrl, attachmentNotes: 'Charter contract is attached.' });
     const bindBody = `${bind.html}\n${bind.text}`;
     if (/premium/i.test(bindBody)) throw new Error('bind email still names the premium');
-    if (bindBody.includes('1.5') || bindBody.includes('$360')) throw new Error('bind email still names the rate or premium amount');
+    if (bindBody.includes('1.5') || bindBody.includes('$300') || bindBody.includes('$360')) throw new Error('bind email still names the rate or premium amount');
     if (!bind.html.includes('Acknowledge coverage')) throw new Error('bind email is missing the acknowledge button');
+    if (!bindBody.includes('Coverage value: up to $40,000.00')) throw new Error('bind email is missing the coverage value');
+    if (!bindBody.includes('$20,000.00')) throw new Error('bind email is missing the trip total');
     await page.setViewportSize({ width: 720, height: 900 });
     await page.setContent(`<!doctype html><html><body style="margin:0;background:#fff">${bind.html}</body></html>`);
     await shot(page, 'aog-bind-email');
@@ -608,14 +612,18 @@ async function clickThrough() {
     await page.getByLabel('Your name').waitFor({ timeout: 20000 });
     const formText = await page.locator('body').innerText();
     if (/premium/i.test(formText)) throw new Error('acknowledgement page shows the premium');
-    if ((await page.getByLabel('Accepted coverage percent').inputValue()) !== '100') {
-      throw new Error('accepted coverage was not prefilled with the requested percent');
+    if (!formText.includes('100%') || !formText.includes('$20,000.00') || !formText.includes('up to $40,000.00')) {
+      throw new Error(`acknowledgement page is missing the fixed coverage value: ${formText.slice(0, 500)}`);
     }
+    if (await page.getByLabel('Accepted coverage percent').count()) throw new Error('percent field is still on the form');
+    if (await page.getByLabel('Coverage limit').count()) throw new Error('coverage limit field is still on the form');
     await page.getByLabel('Your name').fill('Casey Stone');
     await page.getByLabel('Your email').fill('casey@charterflightsupport.com');
     await page.getByLabel('CFS cost').fill('640.00');
-    await page.getByLabel('Accepted coverage percent').fill('80');
     await page.getByLabel('Policy or reference number').fill('CFS-4491');
+    await page.locator('.sw-sheet-body').evaluate((el) => { el.scrollTop = 0; });
+    await page.getByText('Coverage', { exact: true }).first().waitFor();
+    await page.getByText('up to $40,000.00').first().waitFor();
     await shot(page, 'aog-cfs-form-iphone');
     await page.getByRole('button', { name: 'Acknowledge coverage' }).click();
     await page.getByText('Coverage acknowledged').waitFor({ timeout: 20000 });
@@ -638,23 +646,21 @@ async function clickThrough() {
       name: 'Casey Stone',
       email: 'casey@charterflightsupport.com',
       cfsCostCents: 64000,
-      acceptedCoveragePercent: 80,
-      acceptedCoverageLimitCents: null,
       reference: 'CFS-4491',
       notes: '',
-      requestedCoveragePercent: 100,
-      shortfall: true,
-      shortfallPercent: true,
-      shortfallLimit: false,
     };
     const opsLetter = cfsOpsLetter(cfsRecord, ackFields);
     const opsBody = `${opsLetter.html}\n${opsLetter.text}`;
     if (!/640/.test(opsBody) || !/CFS cost/i.test(opsBody)) throw new Error('ops email is missing the CFS cost');
-    if (!/below what was requested/i.test(opsBody)) throw new Error('ops email is missing the shortfall flag');
-    const brokerLetter = cfsBrokerLetter(cfsRecord, ackFields);
+    if (!/up to \$40,000\.00/.test(opsBody)) throw new Error('ops email is missing the coverage value');
+    if (/below what was requested/i.test(opsBody)) throw new Error('ops email still flags a shortfall');
+    const brokerLetter = cfsBrokerLetter(cfsRecord);
     const brokerBody = `${brokerLetter.html}\n${brokerLetter.text}`;
     if (/premium/i.test(brokerBody) || /\$640|640\.00|CFS cost/i.test(brokerBody)) {
       throw new Error('broker email includes the CFS cost or the premium');
+    }
+    if (!/up to \$40,000\.00/.test(brokerBody) || !/100%/.test(brokerBody)) {
+      throw new Error('broker email is missing 100% coverage value');
     }
     await page.setViewportSize({ width: 720, height: 900 });
     await page.setContent(`<!doctype html><html><body style="margin:0;background:#fff">${opsLetter.html}</body></html>`);
@@ -665,16 +671,15 @@ async function clickThrough() {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`http://127.0.0.1:${WEB_PORT}/aog-emulator`, { waitUntil: 'domcontentloaded' });
     await page.getByRole('region', { name: 'Trip detail' }).getByText('AOG coverage confirmed by Charter Flight Support').first().waitFor({ timeout: 25000 });
-    await page.getByText('Accepted 80%').first().waitFor();
+    await page.getByText('Coverage value: up to $40,000.00').first().waitFor();
     await page.getByText('This leg: KTEB → KPBI').waitFor();
     await page.getByText('This leg: KPBI → KTEB').waitFor();
-    await page.getByText('below what was requested').first().waitFor();
     await shot(page, 'aog-trip-detail-cfs');
 
     await page.getByLabel('Search trips').fill('M8CFS2');
     await page.getByRole('cell', { name: /100% gifted by Skyway/ }).waitFor({ timeout: 15000 });
     await page.getByLabel('CFS confirmation').selectOption('confirmed');
-    const badge = page.getByText('Confirmed · short');
+    const badge = page.getByText('Confirmed', { exact: true });
     await badge.waitFor({ timeout: 15000 });
     await badge.evaluate((el) => {
       const scroller = el.closest('.overflow-x-auto') || el.parentElement;
@@ -683,12 +688,15 @@ async function clickThrough() {
     });
     await shot(page, 'aog-cfs-confirmed-badge');
     await page.getByRole('cell', { name: 'M8CFS2' }).click();
-    await page.getByText('CFS cost').waitFor();
-    await page.getByText('$640.00').waitFor();
-    await page.getByRole('button', { name: 'Resend bind email' }).waitFor();
     const cfsDrawer = page.locator('.sw-sheet-body').last();
+    await cfsDrawer.getByText('CFS cost').waitFor();
+    await cfsDrawer.getByText('$640.00').waitFor();
+    const coverageValue = cfsDrawer.getByText('Coverage value: up to $40,000.00').first();
+    await coverageValue.waitFor();
+    await page.getByRole('button', { name: 'Resend bind email' }).waitFor();
     await scrollSheetBody(cfsDrawer);
     await page.getByText('End of trip details').waitFor();
+    await coverageValue.evaluate((el) => el.scrollIntoView({ block: 'center' }));
     await shot(page, 'aog-cfs-drawer-iphone');
     console.log('click-through ok');
   } catch (err) {

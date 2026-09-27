@@ -44,8 +44,10 @@ import {
   planContractWrite,
   shouldAttachCharterContract,
 } from '../src/charter-contract.js';
+import { offerLetter } from '../api/_aog-recovery.js';
 import {
   coverageEvent,
+  coverageLimitCentsFor,
   dollarsFromCents,
   electionSourceFor,
   eventDocId,
@@ -346,6 +348,15 @@ test('reporting fields are typed cents, ICAO, and an append-only event id', () =
   assert.equal(facts.returnAtUtc, '2026-10-14T00:00:00.000Z');
   assert.equal(facts.electionSource, null);
   assert.equal(facts.ratePercent, 1.5);
+  assert.equal(facts.coverageLimitCents, null);
+  assert.equal(facts.coverageMultiplier, null);
+  const hundred = reportingFacts({ tripTotal: 20000, coverageLevel: 'gifted_100', premiumCents: 30000 });
+  assert.equal(hundred.coverageLimitCents, 4000000);
+  assert.equal(hundred.coverageMultiplier, 2);
+  const corrected = reportingFacts({ tripTotalCents: 2500000, coverageLevel: 'purchased_100' });
+  assert.equal(corrected.coverageLimitCents, 5000000);
+  assert.equal(corrected.coverageMultiplier, 2);
+  assert.equal(coverageLimitCentsFor(2000000, 'included_50'), null);
   assert.equal(electionSourceFor('purchased_100'), 'purchased');
   assert.equal(electionSourceFor('gifted_100'), 'gifted');
   assert.equal(electionSourceFor('complimentary_100'), 'complimentary_domain');
@@ -748,8 +759,8 @@ const cfsRecord = {
   legCount: 2,
   brokerCompany: 'Example Charter Group',
   coverageLevel: 'gifted_100',
-  tripTotal: 24000,
-  tripTotalCents: 2400000,
+  tripTotal: 20000,
+  tripTotalCents: 2000000,
   premium: 360,
   premiumCents: 36000,
   ratePercent: 1.5,
@@ -768,7 +779,9 @@ test('CFS bind email omits the premium and rate and links to acknowledge coverag
   assert.match(letter.html, /Acknowledge coverage/);
   assert.match(body, /WEQVQD/);
   assert.match(body, /Example Charter Group/);
-  assert.match(body, /24,000/);
+  assert.match(body, /\$20,000\.00/);
+  assert.match(body, /Coverage value: up to \$40,000\.00/);
+  assert.match(body, /Coverage: 100%/);
   assert.match(body, /N100TS/);
   assert.match(body, /KTEB/);
   assert.match(body, /2026-11-02/);
@@ -794,6 +807,7 @@ test('CFS acknowledgement tokens expire and a submit is an update, a retry, or a
     email: 'Casey@CharterFlightSupport.com',
     cfsCost: '640.00',
     acceptedCoveragePercent: '80',
+    coverageLimit: '1000',
     reference: 'CFS-4491',
     notes: 'Bind note',
   };
@@ -804,10 +818,13 @@ test('CFS acknowledgement tokens expire and a submit is an update, a retry, or a
   assert.equal(first.patch.cfsStatus, 'cfs_confirmed');
   assert.equal(first.patch.cfsCostCents, 64000);
   assert.equal(first.patch.cfsMarginCents, 36000 - 64000);
-  assert.equal(first.patch.acceptedCoveragePercent, 80);
+  assert.equal(first.patch.acceptedCoveragePercent, 100);
+  assert.equal(first.patch.coverageLimitCents, 4000000);
+  assert.equal(first.patch.coverageMultiplier, 2);
+  assert.equal(first.patch.cfsShortfall, false);
   assert.equal(first.patch.cfsConfirmedByEmail, 'casey@charterflightsupport.com');
-  assert.equal(first.patch.cfsShortfall, true);
-  assert.equal(first.fields.shortfallPercent, true);
+  const correctedAck = planCfsAcknowledgement({ ...cfsRecord, tripTotal: 25000, tripTotalCents: 2500000 }, input, new Date(now));
+  assert.equal(correctedAck.patch.coverageLimitCents, 5000000);
 
   const stored = {
     ...cfsRecord,
@@ -832,22 +849,16 @@ test('CFS acknowledgement tokens expire and a submit is an update, a retry, or a
   assert.equal(planCfsAcknowledgement(cfsRecord, { ...input, name: 'A' }).ok, false);
   assert.equal(planCfsAcknowledgement(cfsRecord, { ...input, email: 'not-an-email' }).ok, false);
   assert.equal(planCfsAcknowledgement(cfsRecord, { ...input, cfsCost: '' }).ok, false);
-  assert.equal(planCfsAcknowledgement(cfsRecord, { ...input, acceptedCoveragePercent: '150' }).ok, false);
+  assert.equal(planCfsAcknowledgement(cfsRecord, { ...input, acceptedCoveragePercent: '150' }).patch.acceptedCoveragePercent, 100);
 });
 
-test('broker CFS mail omits cost and premium, and ops mail includes both the cost and a shortfall', () => {
+test('broker CFS mail omits cost and premium, and both notices show the 2x coverage value', () => {
   const fields = {
     name: 'Casey Stone',
     email: 'casey@charterflightsupport.com',
     cfsCostCents: 64000,
-    acceptedCoveragePercent: 80,
-    acceptedCoverageLimitCents: null,
     reference: 'CFS-4491',
     notes: '',
-    requestedCoveragePercent: 100,
-    shortfall: true,
-    shortfallPercent: true,
-    shortfallLimit: false,
   };
   const broker = cfsBrokerLetter(cfsRecord, fields);
   const brokerBody = `${broker.html}\n${broker.text}`;
@@ -855,16 +866,23 @@ test('broker CFS mail omits cost and premium, and ops mail includes both the cos
   assert.equal(brokerBody.includes('$640'), false);
   assert.equal(brokerBody.includes('640.00'), false);
   assert.equal(/CFS cost/i.test(brokerBody), false);
+  assert.equal(/below what was requested/i.test(brokerBody), false);
   assert.match(brokerBody, /WEQVQD/);
   assert.match(brokerBody, /KTEB/);
   assert.match(brokerBody, /2026-11-02/);
-  assert.match(brokerBody, /80%/);
+  assert.match(brokerBody, /Coverage: 100%/);
+  assert.match(brokerBody, /Coverage value: up to \$40,000\.00/);
   const ops = cfsOpsLetter(cfsRecord, fields);
   const opsBody = `${ops.html}\n${ops.text}`;
   assert.match(opsBody, /\$640\.00/);
   assert.match(opsBody, /CFS cost/);
-  assert.match(opsBody, /below what was requested/);
+  assert.match(opsBody, /Coverage value: up to \$40,000\.00/);
+  assert.equal(/below what was requested/i.test(opsBody), false);
   assert.equal(/premium/i.test(opsBody), false);
+  const offer = offerLetter({ ...cfsRecord, coverageLevel: 'included_50', premium: 300, ratePercent: 1.5 }, 'https://example.test/aog-coverage');
+  const offerBody = `${offer.html}\n${offer.text}`;
+  assert.match(offerBody, /50%/);
+  assert.match(offerBody, /Coverage value: up to \$40,000\.00/);
 
   const view = JSON.stringify(publicCfsView({ ...cfsRecord, cfsStatus: '' }));
   assert.equal(/premium/i.test(view), false);
@@ -879,6 +897,8 @@ test('broker CFS mail omits cost and premium, and ops mail includes both the cos
     acceptedCoveragePercent: 80,
     cfsShortfall: true,
   });
+  assert.equal(acknowledged.acknowledgement.acceptedCoveragePercent, 100);
+  assert.equal(acknowledged.coverageValueLabel, 'up to $40,000.00');
   assert.equal(acknowledged.acknowledgement.cfsCost, '640.00');
   assert.equal(Object.hasOwn(acknowledged, 'premium'), false);
 });
@@ -908,12 +928,14 @@ test('trip rows filter bind-sent coverage that CFS has not confirmed, and CSV ca
     tripId: 'M8CFS2',
     coverageLevel: 'gifted_100',
     paymentStatus: 'gifted',
+    tripTotal: 20000,
+    tripTotalCents: 2000000,
     premiumCents: 36000,
     premium: 360,
     cfsStatus: 'cfs_confirmed',
     cfsCostCents: 64000,
     cfsMarginCents: -28000,
-    acceptedCoveragePercent: 80,
+    acceptedCoveragePercent: 100,
     bindEmailSentAt: '2026-11-01T15:00:00.000Z',
     cfsConfirmedAt: '2026-11-01T16:00:00.000Z',
     cfsShortfall: true,
@@ -930,14 +952,19 @@ test('trip rows filter bind-sent coverage that CFS has not confirmed, and CSV ca
   const confirmed = filterTripRows(rows, { window: 'all', cfs: 'confirmed' });
   assert.deepEqual(confirmed.map((row) => row.tripId), ['M8CFS2']);
   const csv = tripRowCsv(confirmed);
-  assert.match(csv, /CFS cost cents,Margin cents/);
-  assert.match(csv, /64000,-28000/);
+  assert.match(csv, /Coverage limit cents,CFS cost cents,Margin cents/);
+  assert.match(csv, /4000000,64000,-28000/);
+  assert.equal(rows.find((row) => row.tripId === 'WEQVQD').coverageLimitCents, null);
 });
 
 test('CFS acknowledgement is an Admin SDK write and mail is claimed once per change', async () => {
   const api = await readFile(new URL('../api/aog-recovery-cfs.js', import.meta.url), 'utf8');
   assert.match(api, /acknowledgeCfs/);
   assert.doesNotMatch(api, /setDoc|updateDoc|addDoc/);
+  assert.doesNotMatch(api, /acceptedCoveragePercent|coverageLimit/);
+  const form = await readFile(new URL('../src/AogCfsAcknowledge.jsx', import.meta.url), 'utf8');
+  assert.doesNotMatch(form, /Accepted coverage percent|Coverage limit/);
+  assert.match(form, /Coverage value/);
   const server = await readFile(new URL('../api/_aog-recovery.js', import.meta.url), 'utf8');
   const ackStart = server.indexOf('export async function acknowledgeCfs');
   const ack = server.slice(ackStart, ackStart + 1800);

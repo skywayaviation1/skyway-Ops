@@ -4,17 +4,18 @@
 // send another email once both notices for that revision have been recorded.
 
 import { coverageLevelLabel, fmtMoney } from './aog-recovery.js';
+import { hundredCoverageLimitCents, tripTotalCentsOf } from './aog-reporting.js';
 import { normalizeTripId } from './trip-id.js';
 
 export const ACK_TOKEN_TTL_MS = 45 * 24 * 60 * 60 * 1000;
 export const OPS_ACK_TO = 'charters@flyskyway.com';
+export const ACCEPTED_COVERAGE_PERCENT = 100;
 
-const HUNDRED = new Set(['purchased_100', 'gifted_100', 'complimentary_100']);
-
-export function requestedCoveragePercent(level) {
-  if (level === 'included_50') return 50;
-  if (HUNDRED.has(level)) return 100;
-  return null;
+/** "up to $40,000.00" for a $20,000 contract. Empty when the trip total is unknown. */
+export function coverageValueText(record) {
+  const cents = hundredCoverageLimitCents(tripTotalCentsOf(record));
+  if (!Number.isInteger(cents)) return '';
+  return `up to ${fmtMoney(cents / 100)}`;
 }
 
 export function ackTokenUsable(record, nowMs = Date.now()) {
@@ -70,16 +71,6 @@ function parseDollars(value, { required, label }) {
   return { ok: true, cents };
 }
 
-function parsePercent(value) {
-  const raw = String(value ?? '').trim().replace(/%$/, '');
-  if (!/^\d+(\.\d{1,2})?$/.test(raw)) return { ok: false, error: 'Accepted coverage percent is required' };
-  const percent = Number(raw);
-  if (!Number.isFinite(percent) || percent < 0 || percent > 100) {
-    return { ok: false, error: 'Accepted coverage percent must be from 0 to 100' };
-  }
-  return { ok: true, percent };
-}
-
 export function validateAcknowledgement(input = {}, record = {}) {
   const name = String(input.name || '').replace(/\s+/g, ' ').trim();
   if (name.length < 2 || name.length > 120) {
@@ -91,31 +82,19 @@ export function validateAcknowledgement(input = {}, record = {}) {
   }
   const cost = parseDollars(input.cfsCost, { required: true, label: 'CFS cost' });
   if (!cost.ok) return cost;
-  const percent = parsePercent(input.acceptedCoveragePercent);
-  if (!percent.ok) return percent;
-  const limit = parseDollars(input.coverageLimit, { required: false, label: 'Coverage limit' });
-  if (!limit.ok) return limit;
   const reference = String(input.reference || '').replace(/\s+/g, ' ').trim().slice(0, 80);
   const notes = String(input.notes || '').trim().slice(0, 1000);
-  const requested = requestedCoveragePercent(record.coverageLevel);
-  const tripTotalCents = Number.isInteger(record.tripTotalCents)
-    ? record.tripTotalCents
-    : (Number.isFinite(Number(record.tripTotal)) ? Math.round(Number(record.tripTotal) * 100) : null);
+  const tripTotalCents = tripTotalCentsOf(record);
   const premiumCents = Number.isInteger(record.premiumCents) ? record.premiumCents : null;
-  const shortfallPercent = requested != null && percent.percent < requested;
-  const shortfallLimit = limit.cents != null && tripTotalCents != null && limit.cents < tripTotalCents;
+  const coverageLimitCents = hundredCoverageLimitCents(tripTotalCents);
   const fields = {
     name,
     email,
     cfsCostCents: cost.cents,
-    acceptedCoveragePercent: percent.percent,
-    acceptedCoverageLimitCents: limit.cents,
+    acceptedCoveragePercent: ACCEPTED_COVERAGE_PERCENT,
+    coverageLimitCents,
     reference,
     notes,
-    requestedCoveragePercent: requested,
-    shortfallPercent,
-    shortfallLimit,
-    shortfall: shortfallPercent || shortfallLimit,
     cfsMarginCents: premiumCents == null ? null : premiumCents - cost.cents,
     tripTotalCents,
   };
@@ -127,8 +106,6 @@ export function acknowledgementFingerprint(fields) {
     fields.name,
     fields.email,
     fields.cfsCostCents,
-    fields.acceptedCoveragePercent,
-    fields.acceptedCoverageLimitCents ?? '',
     fields.reference,
     fields.notes,
   ].join('|');
@@ -139,14 +116,12 @@ function storedFields(existing) {
     name: existing.cfsConfirmedByName || '',
     email: existing.cfsConfirmedByEmail || '',
     cfsCostCents: existing.cfsCostCents,
-    acceptedCoveragePercent: existing.acceptedCoveragePercent,
-    acceptedCoverageLimitCents: Number.isInteger(existing.acceptedCoverageLimitCents) ? existing.acceptedCoverageLimitCents : null,
+    acceptedCoveragePercent: ACCEPTED_COVERAGE_PERCENT,
+    coverageLimitCents: Number.isInteger(existing.coverageLimitCents)
+      ? existing.coverageLimitCents
+      : hundredCoverageLimitCents(tripTotalCentsOf(existing)),
     reference: existing.cfsReference || '',
     notes: existing.cfsNotes || '',
-    requestedCoveragePercent: existing.cfsRequestedPercent ?? requestedCoveragePercent(existing.coverageLevel),
-    shortfall: existing.cfsShortfall === true,
-    shortfallPercent: existing.cfsShortfallPercent === true,
-    shortfallLimit: existing.cfsShortfallLimit === true,
     cfsMarginCents: Number.isInteger(existing.cfsMarginCents) ? existing.cfsMarginCents : null,
   };
 }
@@ -191,14 +166,12 @@ export function planCfsAcknowledgement(existing = {}, input = {}, now = new Date
       cfsConfirmedByEmail: fields.email,
       cfsCostCents: fields.cfsCostCents,
       cfsMarginCents: fields.cfsMarginCents,
-      acceptedCoveragePercent: fields.acceptedCoveragePercent,
-      acceptedCoverageLimitCents: fields.acceptedCoverageLimitCents,
+      acceptedCoveragePercent: ACCEPTED_COVERAGE_PERCENT,
+      coverageLimitCents: fields.coverageLimitCents,
+      coverageMultiplier: fields.coverageLimitCents == null ? null : 2,
       cfsReference: fields.reference,
       cfsNotes: fields.notes,
-      cfsRequestedPercent: fields.requestedCoveragePercent,
-      cfsShortfall: fields.shortfall,
-      cfsShortfallPercent: fields.shortfallPercent,
-      cfsShortfallLimit: fields.shortfallLimit,
+      cfsShortfall: false,
       cfsRevision: next,
       cfsFingerprint: validated.fingerprint,
     },
@@ -206,9 +179,8 @@ export function planCfsAcknowledgement(existing = {}, input = {}, now = new Date
 }
 
 export function acknowledgementDetail(fields) {
-  const limit = fields.acceptedCoverageLimitCents == null ? '' : ` Limit ${moneyFromCents(fields.acceptedCoverageLimitCents)}.`;
-  const short = fields.shortfall ? ' Accepted coverage is below what was requested.' : '';
-  return `Accepted ${fields.acceptedCoveragePercent}% (requested ${fields.requestedCoveragePercent ?? '—'}%). CFS cost ${moneyFromCents(fields.cfsCostCents)}.${limit}${short}`.slice(0, 500);
+  const limit = fields.coverageLimitCents == null ? '' : ` Coverage value: up to ${moneyFromCents(fields.coverageLimitCents)}.`;
+  return `Accepted 100%.${limit} CFS cost ${moneyFromCents(fields.cfsCostCents)}.`.slice(0, 500);
 }
 
 export function legStamp(fields, confirmedAt, legIds, tripId) {
@@ -216,11 +188,9 @@ export function legStamp(fields, confirmedAt, legIds, tripId) {
     status: 'cfs_confirmed',
     confirmedAt,
     tripId: tripId || '',
-    acceptedCoveragePercent: fields.acceptedCoveragePercent,
-    acceptedCoverageLimitCents: fields.acceptedCoverageLimitCents,
+    acceptedCoveragePercent: ACCEPTED_COVERAGE_PERCENT,
+    coverageLimitCents: Number.isInteger(fields.coverageLimitCents) ? fields.coverageLimitCents : null,
     reference: fields.reference || '',
-    shortfall: fields.shortfall === true,
-    requestedCoveragePercent: fields.requestedCoveragePercent,
     legIds: legIds || [],
   };
 }
@@ -235,8 +205,9 @@ function tripRows(record) {
     row('Dates', dates),
     row('Legs', record.legCount ? String(record.legCount) : ''),
     row('Broker', record.brokerCompany),
-    row('Coverage requested', coverageLevelLabel(record.coverageLevel)),
+    row('Coverage', '100%'),
     row('Contract trip total', fmtMoney(record.tripTotal)),
+    row('Coverage value', coverageValueText(record)),
   ].join('');
 }
 
@@ -258,57 +229,44 @@ export function bindLetterContent(record, { ackUrl, attachmentNotes } = {}) {
     `Dates: ${record.datesLabel || '—'}`,
     `Legs: ${record.legCount || '—'}`,
     `Broker: ${record.brokerCompany || '—'}`,
-    `Coverage requested: ${coverageLevelLabel(record.coverageLevel)}`,
+    'Coverage: 100%',
     `Contract trip total: ${fmtMoney(record.tripTotal)}`,
+    `Coverage value: ${coverageValueText(record) || '—'}`,
     attachmentNotes || '',
     `Acknowledge coverage: ${ackUrl || ''}`,
   ].join('\n');
   return { subject, html, text };
 }
 
-function acceptedLine(fields) {
-  const limit = fields.acceptedCoverageLimitCents == null
-    ? ''
-    : ` up to ${moneyFromCents(fields.acceptedCoverageLimitCents)}`;
-  return `${fields.acceptedCoveragePercent}%${limit}`;
-}
-
 export function cfsOpsLetter(record, fields) {
   const tripId = normalizeTripId(record.tripId) || record.tripId || 'trip';
   const subject = `CFS acknowledged AOG coverage — ${tripId}`;
-  const flags = [];
-  if (fields.shortfallPercent) flags.push(`Accepted coverage is below the requested ${fields.requestedCoveragePercent}%.`);
-  if (fields.shortfallLimit) flags.push('The dollar coverage limit is below the contract trip total.');
-  const flagHtml = flags.length
-    ? `<p style="background:#fef3c7;border:1px solid #f59e0b;padding:10px 12px"><strong>Accepted coverage is below what was requested.</strong> ${escapeHtml(flags.join(' '))}</p>`
-    : '';
   const html = shell('Charter Flight Support acknowledged coverage', `
-    ${flagHtml}
     <table style="border-collapse:collapse;font-size:14px;margin:16px 0">
       ${tripRows(record)}
       ${row('Confirmed by', `${fields.name} · ${fields.email}`)}
       ${row('CFS cost', moneyFromCents(fields.cfsCostCents))}
-      ${row('Accepted coverage', acceptedLine(fields))}
       ${row('Reference', fields.reference)}
       ${row('Notes', fields.notes)}
     </table>
   `);
   const text = [
     'Charter Flight Support acknowledged AOG coverage.',
-    flags.length ? `Accepted coverage is below what was requested. ${flags.join(' ')}` : '',
     `Trip ID: ${tripId}`,
     `Route: ${record.route || '—'}`,
     `Dates: ${record.datesLabel || '—'}`,
+    'Coverage: 100%',
+    `Contract trip total: ${fmtMoney(record.tripTotal)}`,
+    `Coverage value: ${coverageValueText(record) || '—'}`,
     `Confirmed by: ${fields.name} <${fields.email}>`,
     `CFS cost: ${moneyFromCents(fields.cfsCostCents)}`,
-    `Accepted coverage: ${acceptedLine(fields)}`,
     fields.reference ? `Reference: ${fields.reference}` : '',
     fields.notes ? `Notes: ${fields.notes}` : '',
   ].filter(Boolean).join('\n');
   return { subject, html, text };
 }
 
-export function cfsBrokerLetter(record, fields) {
+export function cfsBrokerLetter(record) {
   const tripId = normalizeTripId(record.tripId) || record.tripId || 'trip';
   const subject = `AOG recovery coverage accepted — trip ${tripId}`;
   const html = shell('AOG recovery coverage has been accepted', `
@@ -317,7 +275,9 @@ export function cfsBrokerLetter(record, fields) {
       ${row('Trip ID', tripId)}
       ${row('Route', record.route)}
       ${row('Dates', record.datesLabel || [record.departDate, record.returnDate].filter(Boolean).join(' – '))}
-      ${row('Accepted coverage', acceptedLine(fields))}
+      ${row('Coverage', '100%')}
+      ${row('Contract trip total', fmtMoney(record.tripTotal))}
+      ${row('Coverage value', coverageValueText(record))}
     </table>
   `);
   const text = [
@@ -325,7 +285,9 @@ export function cfsBrokerLetter(record, fields) {
     `Trip ID: ${tripId}`,
     `Route: ${record.route || '—'}`,
     `Dates: ${record.datesLabel || '—'}`,
-    `Accepted coverage: ${acceptedLine(fields)}`,
+    'Coverage: 100%',
+    `Contract trip total: ${fmtMoney(record.tripTotal)}`,
+    `Coverage value: ${coverageValueText(record) || '—'}`,
   ].join('\n');
   return { subject, html, text };
 }
@@ -344,18 +306,16 @@ export function publicCfsView(record = {}) {
     tripTotal: record.tripTotal ?? null,
     coverageLevel: record.coverageLevel || '',
     coverageLabel: coverageLevelLabel(record.coverageLevel),
-    requestedCoveragePercent: requestedCoveragePercent(record.coverageLevel),
+    acceptedCoveragePercent: ACCEPTED_COVERAGE_PERCENT,
+    coverageValueLabel: coverageValueText(record),
     acknowledgement: acknowledged ? {
       name: record.cfsConfirmedByName || '',
       email: record.cfsConfirmedByEmail || '',
       cfsCost: Number.isInteger(record.cfsCostCents) ? (record.cfsCostCents / 100).toFixed(2) : '',
-      acceptedCoveragePercent: record.acceptedCoveragePercent,
-      coverageLimit: Number.isInteger(record.acceptedCoverageLimitCents) ? (record.acceptedCoverageLimitCents / 100).toFixed(2) : '',
+      acceptedCoveragePercent: ACCEPTED_COVERAGE_PERCENT,
       reference: record.cfsReference || '',
       notes: record.cfsNotes || '',
       confirmedAt: record.cfsConfirmedAt || '',
-      shortfall: record.cfsShortfall === true,
-      requestedCoveragePercent: record.cfsRequestedPercent ?? requestedCoveragePercent(record.coverageLevel),
     } : null,
   };
 }

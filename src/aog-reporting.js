@@ -6,6 +6,31 @@ import { emailDomain } from './aog-recovery.js';
 import { normalizeTripId } from './trip-id.js';
 
 export const COVERAGE_CURRENCY = 'usd';
+export const COVERAGE_VALUE_MULTIPLIER = 2;
+
+const HUNDRED_COVERAGE = new Set(['purchased_100', 'gifted_100', 'complimentary_100']);
+
+export function isHundredCoverage(level) {
+  return HUNDRED_COVERAGE.has(level);
+}
+
+/** 100% coverage is twice the contract trip total. Included 50% has no dollar limit here. */
+export function coverageLimitCentsFor(tripTotalCents, coverageLevel) {
+  if (!isHundredCoverage(coverageLevel)) return null;
+  return hundredCoverageLimitCents(tripTotalCents);
+}
+
+/** Dollar limit of the 100% option, from the contract trip total. */
+export function hundredCoverageLimitCents(tripTotalCents) {
+  if (!Number.isInteger(tripTotalCents)) return null;
+  const limit = tripTotalCents * COVERAGE_VALUE_MULTIPLIER;
+  return Number.isSafeInteger(limit) ? limit : null;
+}
+
+export function tripTotalCentsOf(record = {}) {
+  if (Number.isInteger(record.tripTotalCents)) return record.tripTotalCents;
+  return dollarsToCents(record.tripTotal);
+}
 
 export const EVENT_TYPES = Object.freeze([
   'offer_sent',
@@ -82,6 +107,7 @@ export function reportingFacts(input = {}) {
     : dollarsToCents(input.premium);
   const rate = input.ratePercent == null || input.ratePercent === '' ? null : Number(input.ratePercent);
   const coverageLevel = input.coverageLevel || 'included_50';
+  const coverageLimitCents = coverageLimitCentsFor(tripTotalCents, coverageLevel);
   return {
     currency: COVERAGE_CURRENCY,
     tripTotalCents,
@@ -97,6 +123,8 @@ export function reportingFacts(input = {}) {
     destination: toIcao(input.destination || input.routeTo),
     legCount: legCountFromRoute(input.itinerary || input.route, input.legCount),
     coverageLevel,
+    coverageLimitCents,
+    coverageMultiplier: coverageLimitCents == null ? null : COVERAGE_VALUE_MULTIPLIER,
     electionSource: input.electionSource === undefined ? electionSourceFor(coverageLevel) : input.electionSource,
     paymentStatus: String(input.paymentStatus || ''),
     stripeCheckoutSessionId: String(input.stripeCheckoutSessionId || '').slice(0, 120),

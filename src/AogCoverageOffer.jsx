@@ -122,6 +122,7 @@ export default function AogCoverageOffer() {
             <Row label="Route" value={coverage.route} />
             <Row label="Dates" value={coverage.datesLabel} />
             <Row label="Trip total" value={fmtMoney(coverage.tripTotal)} />
+            {coverage.coverageValueLabel && <Row label="Coverage value" value={coverage.coverageValueLabel} />}
             <Row label="100% premium" value={coverage.upgradeAvailable || coverage.paymentStatus === 'paid' ? fmtMoney(coverage.premium) : '—'} />
 
             {coverage.paymentStatus === 'paid' && (

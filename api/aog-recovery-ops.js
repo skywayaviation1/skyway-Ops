@@ -22,6 +22,7 @@ import {
   resolveTripLegs,
   saveUploadedContract,
   serializeCoverage,
+  syncConfirmedCoverageValue,
   writeCharterContract,
 } from './_aog-recovery.js';
 
@@ -262,6 +263,7 @@ export default async function handler(req, res) {
       }));
       await ref.set(patch, { merge: true });
       const saved = { ...next, ...patch };
+      await syncConfirmedCoverageValue(db, saved);
       if (patch.coverageLevel === 'complimentary_100') {
         await dispatchCoverageEmails(db, id, { ...saved, coveredNoticeSentAt: '', bindEmailSentAt: record.bindEmailSentAt || '' }, {
           baseUrl: publicBaseUrl(req),

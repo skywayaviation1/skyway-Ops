@@ -105,14 +105,15 @@ async function readPdfFile(file) {
 
 function CfsBadge({ row }) {
   if (row.cfsStatus === 'cfs_confirmed') {
-    return (
-      <span className={row.cfsShortfall ? 'font-semibold text-warning' : 'font-semibold text-success'}>
-        {row.cfsShortfall ? 'Confirmed · short' : 'Confirmed'}
-      </span>
-    );
+    return <span className="font-semibold text-success">Confirmed</span>;
   }
   if (row.bindEmailSentAt) return <span className="text-content-muted">Awaiting</span>;
   return '—';
+}
+
+function coverageValueLabel(row) {
+  if (!Number.isInteger(row.coverageLimitCents)) return '—';
+  return `up to ${fmtMoney(row.coverageLimitCents / 100)}`;
 }
 
 function proposalText(plan) {
@@ -362,14 +363,14 @@ export default function AogRecoveryTab({ currentUser, scheduleTrips = [] }) {
             <table className="min-w-[1200px] w-full text-left text-xs">
               <thead className="bg-surface-raised text-content-muted">
                 <tr>
-                  {['Trip ID', 'Dates', 'Route', 'Tail', 'Aircraft', 'Broker', 'Contract', 'Trip total', 'Coverage', 'Premium', 'Payment', 'Offer sent', 'Bound to CFS', 'CFS'].map((heading) => (
+                  {['Trip ID', 'Dates', 'Route', 'Tail', 'Aircraft', 'Broker', 'Contract', 'Trip total', 'Coverage', 'Coverage value', 'Premium', 'Payment', 'Offer sent', 'Bound to CFS', 'CFS'].map((heading) => (
                     <th key={heading} className="px-2 py-2 font-medium">{heading}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {paged.rows.length === 0 && (
-                  <tr><td colSpan={14} className="px-3 py-8 text-center text-content-muted">No trips in this view.</td></tr>
+                  <tr><td colSpan={15} className="px-3 py-8 text-center text-content-muted">No trips in this view.</td></tr>
                 )}
                 {paged.rows.map((row) => (
                   <tr
@@ -392,6 +393,7 @@ export default function AogRecoveryTab({ currentUser, scheduleTrips = [] }) {
                     <td className="px-2 py-2">{row.contractStatus === 'attached' ? 'attached' : 'missing'}</td>
                     <td className="px-2 py-2">{moneyOrDash(row.tripTotal)}</td>
                     <td className="px-2 py-2">{coverageLevelLabel(row.coverageLevel)}{row.needsReview ? ' · review' : ''}</td>
+                    <td className="px-2 py-2">{coverageValueLabel(row)}</td>
                     <td className="px-2 py-2">{premiumLabel({ coverageLevel: row.coverageLevel, premium: row.premium })}</td>
                     <td className="px-2 py-2">{paymentStatusLabel(row.paymentStatus)}</td>
                     <td className="px-2 py-2">{stamp(row.offerSentAt)}</td>
@@ -731,15 +733,18 @@ function TripDrawer({ row, settings, busy, setBusy, setError, setBanner, onClose
         {locked && <p className="mt-2 text-2xs text-content-muted">Paid coverage keeps its premium. Replacing the PDF does not change the amount that was charged.</p>}
 
         <h3 className="mt-5 text-xs font-semibold uppercase tracking-wide text-content-muted">Charter Flight Support</h3>
+        {Number.isInteger(row.coverageLimitCents) && (
+          <p className="mt-1 text-xs">Coverage value: up to {fmtMoney(row.coverageLimitCents / 100)}</p>
+        )}
         {row.cfsStatus === 'cfs_confirmed' ? (
           <div className="mt-2 rounded border border-edge p-2 text-xs">
             <p className="font-medium">CFS confirmed</p>
             <p className="mt-1 text-content-muted">{row.cfsConfirmedByName || '—'}{row.cfsConfirmedByEmail ? ` · ${row.cfsConfirmedByEmail}` : ''} · {stamp(row.cfsConfirmedAt)}</p>
-            <p className="mt-1">Accepted coverage: {row.acceptedCoveragePercent ?? '—'}%{Number.isInteger(row.acceptedCoverageLimitCents) ? ` up to ${fmtMoney(row.acceptedCoverageLimitCents / 100)}` : ''}</p>
+            <p className="mt-1">Coverage: 100%</p>
+            <p className="mt-1">Coverage value: {coverageValueLabel(row)}</p>
             <p className="mt-1">Reference: {row.cfsReference || '—'}</p>
             <p className="mt-1">CFS cost: {Number.isInteger(row.cfsCostCents) ? fmtMoney(row.cfsCostCents / 100) : '—'}</p>
             <p className="mt-1">Margin: {Number.isInteger(row.cfsMarginCents) ? fmtMoney(row.cfsMarginCents / 100) : '—'}</p>
-            {row.cfsShortfall && <p className="mt-2 font-medium text-warning">Accepted coverage is below what was requested.</p>}
           </div>
         ) : (
           <p className="mt-1 text-xs text-content-muted">{row.bindEmailSentAt ? 'Bind email sent. Charter Flight Support has not confirmed yet.' : 'CFS is notified when coverage is purchased, gifted, or complimentary.'}</p>

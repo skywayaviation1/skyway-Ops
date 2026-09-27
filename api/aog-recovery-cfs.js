@@ -58,8 +58,6 @@ export default async function handler(req, res) {
       name: body.name,
       email: body.email,
       cfsCost: body.cfsCost,
-      acceptedCoveragePercent: body.acceptedCoveragePercent,
-      coverageLimit: body.coverageLimit,
       reference: body.reference,
       notes: body.notes,
     });

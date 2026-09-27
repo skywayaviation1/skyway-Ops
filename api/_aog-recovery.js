@@ -24,6 +24,7 @@ import {
   bindLetterContent,
   cfsBrokerLetter,
   cfsOpsLetter,
+  coverageValueText,
   legStamp,
   planCfsAcknowledgement,
   publicCfsView,
@@ -58,7 +59,7 @@ import {
   planContractWrite,
   shouldAttachCharterContract,
 } from '../src/charter-contract.js';
-import { coverageEvent, dollarsFromCents, reportingFacts } from '../src/aog-reporting.js';
+import { coverageEvent, coverageLimitCentsFor, dollarsFromCents, isHundredCoverage, reportingFacts, tripTotalCentsOf } from '../src/aog-reporting.js';
 
 const COLLECTION = 'aogRecovery';
 const CONFIG_DOC = ['aogRecoveryConfig', 'settings'];
@@ -390,14 +391,16 @@ function shell(title, inner) {
 
 export function offerLetter(record, url) {
   const subject = `AOG coverage for trip ${record.tripId || record.tail || ''}`.trim();
+  const value = coverageValueText(record);
+  const valueSentence = value ? ` Coverage value: ${escapeHtml(value)}.` : '';
   const html = shell('50% is included. 100% is available.', `
     <p>Your charter includes <strong>50%</strong> AOG mechanical recovery coverage at no charge. No action is required to keep that coverage.</p>
-    <p><strong>100%</strong> coverage is available for <strong>${escapeHtml(fmtMoney(record.premium))}</strong> (${escapeHtml(String(record.ratePercent))}% of the trip total). That amount is the premium only. The trip itself is not charged.</p>
+    <p><strong>100%</strong> coverage is available for <strong>${escapeHtml(fmtMoney(record.premium))}</strong> (${escapeHtml(String(record.ratePercent))}% of the trip total). That amount is the premium only. The trip itself is not charged.${valueSentence}</p>
     <table style="border-collapse:collapse;font-size:14px;margin:16px 0">${detailRows(record)}</table>
     <p><a href="${escapeHtml(url)}" style="display:inline-block;background:#0f766e;color:#ffffff;text-decoration:none;padding:12px 18px;border-radius:6px">Review and elect 100% coverage</a></p>
     <p style="font-size:12px;color:#64748b">This link is unique to this trip. If you do nothing, you stay at the included 50%.</p>
   `);
-  const text = `50% AOG coverage is included.\n100% is available for ${fmtMoney(record.premium)}.\nThe premium is the only amount charged.\n\n${url}\n`;
+  const text = `50% AOG coverage is included.\n100% is available for ${fmtMoney(record.premium)}.${value ? ` Coverage value: ${value}.` : ''}\nThe premium is the only amount charged.\n\n${url}\n`;
   return { subject, html, text };
 }
 
@@ -414,12 +417,14 @@ export function includedOnlyLetter(record) {
 
 export function coveredLetter(record) {
   const subject = `You are covered at 100% AOG — trip ${record.tripId || record.tail || ''}`.trim();
+  const value = coverageValueText(record);
   const html = shell('You are covered at 100%', `
     <p>This trip is recorded at <strong>100%</strong> AOG mechanical recovery coverage at no charge to you.</p>
+    ${value ? `<p>Coverage value: ${escapeHtml(value)}.</p>` : ''}
     <table style="border-collapse:collapse;font-size:14px;margin:16px 0">${detailRows(record)}</table>
     <p style="font-size:12px;color:#64748b">Coverage level: ${escapeHtml(coverageLevelLabel(record.coverageLevel))}. Premium: complimentary.</p>
   `);
-  const text = `You are covered at 100% AOG mechanical recovery coverage for this trip. Premium: complimentary.\n`;
+  const text = `You are covered at 100% AOG mechanical recovery coverage for this trip.${value ? ` Coverage value: ${value}.` : ''} Premium: complimentary.\n`;
   return { subject, html, text };
 }
 
@@ -429,11 +434,13 @@ export function bindLetter(record, attachmentNotes, ackUrl) {
 
 export function brokerPaidLetter(record) {
   const subject = `AOG coverage confirmed — trip ${record.tripId || record.tail || ''}`.trim();
+  const value = coverageValueText(record);
   const html = shell('100% coverage is confirmed', `
     <p>Payment of the premium was received. This trip is covered at <strong>100%</strong>. The amount paid was the premium only.</p>
+    ${value ? `<p>Coverage value: ${escapeHtml(value)}.</p>` : ''}
     <table style="border-collapse:collapse;font-size:14px;margin:16px 0">${detailRows(record)}</table>
   `);
-  const text = `Your 100% AOG coverage is confirmed. Premium paid: ${fmtMoney(record.premium)}. The trip total was not charged.\n`;
+  const text = `Your 100% AOG coverage is confirmed.${value ? ` Coverage value: ${value}.` : ''} Premium paid: ${fmtMoney(record.premium)}. The trip total was not charged.\n`;
   return { subject, html, text };
 }
 
@@ -764,6 +771,7 @@ export function publicCoverageView(record) {
     departDate: record.departDate || '',
     returnDate: record.returnDate || '',
     tripTotal: record.tripTotal ?? null,
+    coverageValueLabel: (payable || isHundredCoverage(record.coverageLevel)) ? coverageValueText(record) : '',
     premium: record.premium ?? null,
     ratePercent: record.ratePercent ?? null,
     coverageLevel: record.coverageLevel || 'included_50',
@@ -779,6 +787,9 @@ export function publicCoverageView(record) {
 }
 
 export function serializeCoverage(id, data = {}) {
+  const coverageLimitCents = Number.isInteger(data.coverageLimitCents)
+    ? data.coverageLimitCents
+    : coverageLimitCentsFor(tripTotalCentsOf(data), data.coverageLevel);
   return {
     id,
     source: data.source || '',
@@ -836,6 +847,8 @@ export function serializeCoverage(id, data = {}) {
     contractAttachError: data.contractAttachError || '',
     currency: data.currency || 'usd',
     tripTotalCents: Number.isInteger(data.tripTotalCents) ? data.tripTotalCents : null,
+    coverageLimitCents,
+    coverageMultiplier: coverageLimitCents == null ? null : 2,
     brokerEmail: data.brokerEmail || data.checkoutEmail || '',
     brokerDomain: data.brokerDomain || '',
     origin: data.origin || data.routeFrom || '',
@@ -854,11 +867,9 @@ export function serializeCoverage(id, data = {}) {
     cfsConfirmedByEmail: data.cfsConfirmedByEmail || '',
     cfsCostCents: Number.isInteger(data.cfsCostCents) ? data.cfsCostCents : null,
     cfsMarginCents: Number.isInteger(data.cfsMarginCents) ? data.cfsMarginCents : null,
-    acceptedCoveragePercent: data.acceptedCoveragePercent ?? null,
-    acceptedCoverageLimitCents: Number.isInteger(data.acceptedCoverageLimitCents) ? data.acceptedCoverageLimitCents : null,
+    acceptedCoveragePercent: data.cfsStatus === 'cfs_confirmed' ? 100 : (data.acceptedCoveragePercent ?? null),
     cfsReference: data.cfsReference || '',
     cfsNotes: data.cfsNotes || '',
-    cfsShortfall: data.cfsShortfall === true,
     cfsRevision: Number(data.cfsRevision) || 0,
   };
 }
@@ -1006,6 +1017,18 @@ async function stampConfirmedLegs(db, record, fields, confirmedAt) {
   await Promise.all([...ids].map((id) => db.collection('trip-state').doc(id).set({ aogCfs: payload }, { merge: true })));
 }
 
+export async function syncConfirmedCoverageValue(db, record) {
+  if (record?.cfsStatus !== 'cfs_confirmed') return;
+  const coverageLimitCents = Number.isInteger(record.coverageLimitCents)
+    ? record.coverageLimitCents
+    : coverageLimitCentsFor(tripTotalCentsOf(record), record.coverageLevel);
+  await stampConfirmedLegs(db, record, {
+    acceptedCoveragePercent: 100,
+    coverageLimitCents,
+    reference: record.cfsReference || '',
+  }, record.cfsConfirmedAt || new Date().toISOString());
+}
+
 async function sendAckNotices(db, ref, revision) {
   const data = (await ref.get()).data() || {};
   if (Number(data.cfsRevision) !== revision) return { ok: true, skipped: true };
@@ -1013,14 +1036,12 @@ async function sendAckNotices(db, ref, revision) {
     name: data.cfsConfirmedByName,
     email: data.cfsConfirmedByEmail,
     cfsCostCents: data.cfsCostCents,
-    acceptedCoveragePercent: data.acceptedCoveragePercent,
-    acceptedCoverageLimitCents: Number.isInteger(data.acceptedCoverageLimitCents) ? data.acceptedCoverageLimitCents : null,
+    acceptedCoveragePercent: 100,
+    coverageLimitCents: Number.isInteger(data.coverageLimitCents)
+      ? data.coverageLimitCents
+      : coverageLimitCentsFor(tripTotalCentsOf(data), data.coverageLevel),
     reference: data.cfsReference || '',
     notes: data.cfsNotes || '',
-    requestedCoveragePercent: data.cfsRequestedPercent,
-    shortfall: data.cfsShortfall === true,
-    shortfallPercent: data.cfsShortfallPercent === true,
-    shortfallLimit: data.cfsShortfallLimit === true,
   };
   const errors = [];
   if (Number(data.cfsOpsNotifiedRevision) !== revision) {
@@ -1047,7 +1068,7 @@ async function sendAckNotices(db, ref, revision) {
   } else if (Number(data.cfsBrokerNotifiedRevision) !== revision) {
     const claim = await claimNotice(db, ref, revision, 'cfsBrokerNotifiedRevision', Number(data.cfsBrokerNotifiedRevision) || 0);
     if (claim.claimed) {
-      const letter = cfsBrokerLetter(data, fields);
+      const letter = cfsBrokerLetter(data);
       let sent;
       try {
         sent = await sendRecoveryEmail({ to: broker, subject: letter.subject, html: letter.html, text: letter.text });

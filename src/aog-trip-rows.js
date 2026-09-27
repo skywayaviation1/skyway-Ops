@@ -3,6 +3,7 @@
 // records are overlaid. A trip with no coverage row is 50% included.
 
 import { contractIsOnTrip } from './charter-contract.js';
+import { coverageLimitCentsFor, tripTotalCentsOf } from './aog-reporting.js';
 import { normalizeTripId } from './trip-id.js';
 import {
   coverageLevelLabel,
@@ -183,9 +184,9 @@ export function buildTripRows(legs, records = []) {
       cfsCostCents: null,
       cfsMarginCents: null,
       acceptedCoveragePercent: null,
-      acceptedCoverageLimitCents: null,
+      coverageLimitCents: null,
+      coverageMultiplier: null,
       cfsReference: '',
-      cfsShortfall: false,
       premiumCents: null,
       coverageId: '',
       electionContractPath: '',
@@ -220,10 +221,12 @@ export function buildTripRows(legs, records = []) {
       row.cfsMarginCents = Number.isInteger(coverage.cfsMarginCents)
         ? coverage.cfsMarginCents
         : (row.premiumCents != null && row.cfsCostCents != null ? row.premiumCents - row.cfsCostCents : null);
-      row.acceptedCoveragePercent = coverage.acceptedCoveragePercent ?? null;
-      row.acceptedCoverageLimitCents = Number.isInteger(coverage.acceptedCoverageLimitCents) ? coverage.acceptedCoverageLimitCents : null;
+      row.acceptedCoveragePercent = coverage.cfsStatus === 'cfs_confirmed' ? 100 : (coverage.acceptedCoveragePercent ?? null);
+      row.coverageLimitCents = Number.isInteger(coverage.coverageLimitCents)
+        ? coverage.coverageLimitCents
+        : coverageLimitCentsFor(tripTotalCentsOf(coverage), coverage.coverageLevel);
+      row.coverageMultiplier = row.coverageLimitCents == null ? null : 2;
       row.cfsReference = coverage.cfsReference || '';
-      row.cfsShortfall = coverage.cfsShortfall === true;
       row.electionContractPath = coverage.electionContractPath || '';
       row.charterContractPath = coverage.charterContractPath || '';
       row.upgradeAvailable = coverage.upgradeAvailable === true;
@@ -326,7 +329,7 @@ export function tripRowCsv(rows) {
     'Trip ID', 'Dates', 'Route', 'Tail', 'Aircraft', 'Broker company', 'Broker email',
     'Charter contract', 'Trip total', 'Coverage level', 'Premium', 'Payment status',
     'Offer sent', 'Bound to CFS', 'CFS confirmed', 'Accepted coverage percent',
-    'CFS cost cents', 'Margin cents',
+    'Coverage limit cents', 'CFS cost cents', 'Margin cents',
   ];
   const lines = (rows || []).map((row) => [
     row.tripId,
@@ -345,6 +348,7 @@ export function tripRowCsv(rows) {
     row.bindEmailSentAt || '',
     row.cfsStatus === 'cfs_confirmed' ? (row.cfsConfirmedAt || 'confirmed') : '',
     row.acceptedCoveragePercent ?? '',
+    row.coverageLimitCents ?? '',
     row.cfsCostCents ?? '',
     row.cfsMarginCents ?? '',
   ].map(csvCell).join(','));

@@ -13,9 +13,8 @@ function when(value) {
 
 export default function AogCfsConfirmedMark({ acknowledgement, legLabel, tripId }) {
   if (!acknowledgement || acknowledgement.status !== 'cfs_confirmed') return null;
-  const percent = acknowledgement.acceptedCoveragePercent;
-  const limit = Number.isInteger(acknowledgement.acceptedCoverageLimitCents)
-    ? fmtMoney(acknowledgement.acceptedCoverageLimitCents / 100)
+  const limit = Number.isInteger(acknowledgement.coverageLimitCents)
+    ? fmtMoney(acknowledgement.coverageLimitCents / 100)
     : '';
   const date = when(acknowledgement.confirmedAt);
   return (
@@ -23,13 +22,11 @@ export default function AogCfsConfirmedMark({ acknowledgement, legLabel, tripId 
       <p className="font-semibold text-success">AOG coverage confirmed by Charter Flight Support</p>
       <p className="mt-1 text-xs text-content-muted">
         {tripId ? `Trip ${tripId} · ` : ''}
-        Accepted {percent}%{limit ? ` up to ${limit}` : ''}
+        Coverage: 100%
+        {limit ? ` · Coverage value: up to ${limit}` : ''}
         {date ? ` · ${date}` : ''}
       </p>
       {legLabel && <p className="mt-1 text-xs text-content-muted">This leg: {legLabel}</p>}
-      {acknowledgement.shortfall && (
-        <p className="mt-1 text-xs font-medium text-warning">Accepted coverage is below what was requested.</p>
-      )}
     </div>
   );
 }
