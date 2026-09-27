@@ -57,6 +57,8 @@ const OpsConsole = lazy(() => import('../src/OpsConsole.jsx'));
 const FlightBoard = lazy(() => import('../src/FlightBoard.jsx'));
 const AdminDutyReport = lazy(() => import('../src/AdminDutyReport.jsx'));
 const TripTrackPage = lazy(() => import('../src/TripTrack.jsx'));
+const PilotSafety = lazy(() => import('../src/PilotSafety.jsx'));
+const AdminSettings = lazy(() => import('../src/AdminSettings.jsx'));
 
 const SURFACES = {
   dashboard: {
@@ -137,6 +139,24 @@ const SURFACES = {
   broker: {
     label: 'Broker live tracking link',
     render: () => <TripTrackPage token="preview-token" />,
+  },
+
+  'pilot-rating': {
+    label: 'Pilot safety rating',
+    render: () => (
+      <div style={{ overflowY: 'auto', height: '100%' }}>
+        <PilotSafety currentUser={CURRENT_USER} users={USERS} />
+      </div>
+    ),
+  },
+
+  'pilot-settings': {
+    label: 'Pilot safety rating settings',
+    render: () => (
+      <div style={{ overflowY: 'auto', height: '100%', padding: 24 }}>
+        <AdminSettings currentUser={CURRENT_USER} config={{}} />
+      </div>
+    ),
   },
 
   dutyreport: {

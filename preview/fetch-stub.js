@@ -3,9 +3,11 @@
 // their genuine loaded state.
 
 import {
-  BASE, CHARTER_INBOX, COMPANY, COMPANY_LEGAL, DOMAIN, SCHEDULE, TENANT,
-  brokerEmailFor, emailFor, tripStates,
+  BASE, CHARTER_INBOX, COMPANY, COMPANY_LEGAL, DOMAIN, SCHEDULE, TENANT, USERS,
+  brokerEmailFor, emailFor, pilotSafetySeed, tripStates,
 } from './sample-data.js';
+import { brand } from '../src/brand.js';
+import { buildBrokerCrewReports } from '../src/pilot-safety.js';
 
 const T = TENANT;
 
@@ -418,7 +420,34 @@ function brokerTrip() {
       },
     ],
     statuses: {},
+    crewReports: previewCrewReports(),
   };
+}
+
+function previewCrewReports() {
+  const seed = pilotSafetySeed();
+  const logbooksByUid = Object.fromEntries(seed.logbooks.map((book) => [book.uid, book]));
+  const currenciesByUid = Object.fromEntries(seed.currencies.map((currency) => [currency.uid, currency]));
+  const pilotDocsByUid = {};
+  for (const record of seed.pilotDocs) {
+    if (!pilotDocsByUid[record.uid]) pilotDocsByUid[record.uid] = [];
+    pilotDocsByUid[record.uid].push(record);
+  }
+  const operator = brand();
+  return buildBrokerCrewReports({
+    legs: [
+      { pic: LEAD.pic, sic: LEAD.sic, aircraftType: AIRCRAFT_TYPE[LEAD.tail] || '' },
+      { pic: NEXT_LEG.pic, sic: NEXT_LEG.sic, aircraftType: AIRCRAFT_TYPE[NEXT_LEG.tail] || '' },
+    ],
+    aircraftType: AIRCRAFT_TYPE[LEAD.tail] || '',
+    users: USERS,
+    logbooksByUid,
+    currenciesByUid,
+    pilotDocsByUid,
+    standards: null,
+    operator: { name: operator.name, legalName: operator.legalName },
+    generatedAt: new Date().toISOString(),
+  });
 }
 
 function sampleTrackLog(ident) {
@@ -557,6 +586,9 @@ export function installFetchStub() {
     }
 
     if (path === '/api/trip-public') return json(brokerPayload());
+    if (path === '/api/pilot-report-email') {
+      return json({ ok: true, recipients: body.to || [], emailId: 'preview-email' });
+    }
     if (path === '/api/user-mail') return json(mailResponse(action, true));
     if (path === '/api/charter-mail') return json(mailResponse(action, false));
     if (path === '/api/teams') return json(teamsResponse(action));

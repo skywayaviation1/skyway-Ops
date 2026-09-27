@@ -473,3 +473,116 @@ export const PILOT_USER = {
   role: 'crew', approved: true, active: true, email: emailFor(LEAD_PILOT),
   certType: 'ATP', certNumber: '3458291', jetinsightName: LEAD_PILOT.name,
 };
+
+function ymd(offsetDays) {
+  return new Date(Date.now() + offsetDays * 86400000).toISOString().slice(0, 10);
+}
+
+const currentCheck = (daysAgo = 80) => ({ lastDate: ymd(-daysAgo) });
+const dueOn = (daysAhead) => ({ dueDate: ymd(daysAhead) });
+const notApplicable = () => ({ notApplicable: true });
+
+/**
+ * Logbooks and currency records for the preview harness.
+ * Profiles are assigned by crew index so every tenant shows a mix:
+ * meets standard, expiring soon, and does not meet.
+ */
+export function pilotSafetySeed() {
+  const primary = T.fleet[0]?.displayName || 'Aircraft';
+  const secondary = T.fleet[1]?.displayName || 'Aircraft 2';
+  const baseHours = {
+    totalTime: 4820,
+    pic: 2310,
+    sic: 2510,
+    multiEngine: 4100,
+    turbine: 3600,
+    night: 640,
+    instrument: 410,
+    last90Days: 48,
+    last12Months: 312,
+    timeInType: [
+      { type: primary, hours: 860 },
+      { type: secondary, hours: 240 },
+    ],
+  };
+  const checks = () => ({
+    medical: { class: 'First', expirationDate: ymd(420) },
+    groundOralGeneral293a: currentCheck(60),
+    groundOral293a_CE525: currentCheck(60),
+    groundOral293a_LR60: notApplicable(),
+    groundOral293a_SF50: notApplicable(),
+    groundOral293a_untyped: notApplicable(),
+    sim293b_CE525: currentCheck(50),
+    sim293b_LR60: notApplicable(),
+    sim293b_SF50: notApplicable(),
+    sim293b_untyped: notApplicable(),
+    competencyCheck293: notApplicable(),
+    instrumentCheck297: currentCheck(40),
+    lineCheck299: currentCheck(70),
+    recurrentTraining351: currentCheck(90),
+    crmTraining330: dueOn(220),
+    hazmatTraining: currentCheck(30),
+    tfsspTraining: dueOn(180),
+  });
+  const profiles = ['meets', 'caution', 'short', 'from-certificate', 'meets', 'meets', 'meets', 'unenrolled'];
+
+  const logbooks = [];
+  const currencies = [];
+  const pilotDocs = [];
+
+  T.crew.forEach((person, index) => {
+    const profile = profiles[index] || 'meets';
+    const hours = { ...baseHours, timeInType: baseHours.timeInType.map((entry) => ({ ...entry })) };
+    const currency = { uid: person.uid, pilotName: person.name, ...checks() };
+    const certificate = {
+      level: 'ATP',
+      instrument: true,
+      multiEngine: true,
+      typeRatings: [primary],
+    };
+    let drugAlcohol = {
+      enrolled: true,
+      enrolledDate: ymd(-800),
+      programName: 'Company DOT/FAA program',
+    };
+    if (profile === 'caution') {
+      currency.hazmatTraining = dueOn(18);
+      certificate.level = 'Commercial';
+    } else if (profile === 'short') {
+      hours.turbine = 180;
+      hours.timeInType = [{ type: primary, hours: 40 }];
+      currency.lineCheck299 = dueOn(-12);
+      certificate.level = 'Commercial';
+    } else if (profile === 'from-certificate') {
+      certificate.level = '';
+      certificate.instrument = null;
+      certificate.multiEngine = null;
+      certificate.typeRatings = [];
+      pilotDocs.push({
+        id: `pdoc-${person.uid}`,
+        uid: person.uid,
+        docType: 'certificate',
+        certType: 'ATP',
+        ratings: `Instrument, Multi-engine, ${primary}`,
+        documentNumber: 'DO-NOT-SHOW-4491',
+        dob: '1981-04-02',
+        holderName: person.name,
+        uploadedAt: Date.now() - 86400000,
+      });
+    } else if (profile === 'unenrolled') {
+      drugAlcohol = { enrolled: false, enrolledDate: '', programName: '' };
+    }
+    logbooks.push({
+      uid: person.uid,
+      pilotName: person.name,
+      hours,
+      certificate,
+      drugAlcohol,
+      internalNotes: profile === 'meets' && index === 0 ? 'Home address must never reach a broker.' : '',
+      updatedAt: Date.now(),
+    });
+    currencies.push(currency);
+  });
+
+  return { logbooks, currencies, pilotDocs };
+}

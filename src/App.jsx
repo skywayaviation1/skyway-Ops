@@ -93,6 +93,7 @@ const MELLookupLazy = lazy(() => import('./MELLookup.jsx'));
 // it (sees their own data only — useful but not daily) and ops/admin
 // use it on a weekly compliance cadence rather than every load.
 const PilotCurrencyLazy = lazy(() => import('./PilotCurrency.jsx'));
+const PilotSafetyLazy = lazy(() => import('./PilotSafety.jsx'));
 const PilotDocsTabLazy = lazy(() => import('./PilotDocs.jsx').then(m => ({ default: m.PilotDocsTab })));
 const AllCrewDocsLazy = lazy(() => import('./PilotDocs.jsx').then(m => ({ default: m.AllCrewDocs })));
 // Wear Watch — tire + brake preflight tracking. Modal + badge are
@@ -139,7 +140,7 @@ import {
   Mail, Navigation, Loader2, Wifi, WifiOff, Settings as SettingsIcon,
   Download, Trash2, Plus, FileText, Zap, Radio, AlertCircle, Upload,
   Check, CheckCheck, UserCheck, Sparkles, Hash, Cloud, Wrench, Hotel, BookOpen, Search,
-  Activity, Palette, ShieldCheck, Edit2, Home, CreditCard, Fuel, Building2,
+  Activity, Palette, ShieldCheck, Award, Edit2, Home, CreditCard, Fuel, Building2,
   MoreHorizontal, LogOut, ChevronRight,
 } from 'lucide-react';
 // Shared design-system primitives. New UI should compose these rather than
@@ -21793,6 +21794,7 @@ const NAV_SECTIONS = [
 
   { id: 'duty',      label: 'Duty',        icon: Clock,         roles: ['admin'] },
   { id: 'currency',  label: 'Currency',    icon: ShieldCheck,   roles: ['crew', 'ops', 'admin'] },
+  { id: 'pilot-rating', label: 'Pilot rating', icon: Award, roles: ['crew', 'ops', 'sales', 'admin'] },
   { id: 'wear',      label: 'Wear',        icon: Activity,      roles: ['crew', 'maint', 'ops', 'admin'] },
   { id: 'reports',   label: 'Reports',     icon: AlertCircle,   roles: ['crew', 'ops', 'admin'] },
 
@@ -21812,7 +21814,7 @@ const NAV_GROUPS = [
   { id: 'comms',    label: 'Comms',    icon: MessageSquare, children: ['comms'] },
   { id: 'teams',    label: 'Teams',    icon: Users,         children: ['teams'] },
   { id: 'email',    label: 'Email',    icon: Mail,          children: ['mailbox', 'inbox'] },
-  { id: 'crew',     label: 'Crew',     icon: Users,         children: ['duty', 'currency', 'wear', 'reports', 'expenses'] },
+  { id: 'crew',     label: 'Crew',     icon: Users,         children: ['duty', 'currency', 'pilot-rating', 'wear', 'reports', 'expenses'] },
   { id: 'aircraft', label: 'Aircraft', icon: Wrench,        children: ['maint', 'aog'] },
   // Labelled "Finance" for roles without user administration.
   { id: 'admin',    label: 'Admin',    icon: Building2,     altLabel: 'Finance', children: ['accounting', 'wallet', 'users', 'settings'] },
@@ -29335,6 +29337,12 @@ export default function CharterOps() {
         {section === 'currency' && (
           <Suspense fallback={<div className="flex-1 flex items-center justify-center text-slate-500"><Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading currency dashboard...</div>}>
             <PilotCurrencyLazy currentUser={currentUser} users={users} allTrips={allTrips} />
+          </Suspense>
+        )}
+
+        {section === 'pilot-rating' && (
+          <Suspense fallback={<div className="flex-1 flex items-center justify-center text-slate-500"><Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading pilot ratings...</div>}>
+            <PilotSafetyLazy currentUser={currentUser} users={users} />
           </Suspense>
         )}
 

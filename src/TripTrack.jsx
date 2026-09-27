@@ -37,6 +37,7 @@ import { flightCategoryStyle, normalizeTrail, distanceNm } from './tracking-map.
 // no getIdToken since the broker page is anonymous; the endpoint accepts
 // unauthenticated reads for now (NOTAM data is public FAA info).
 import FAANotamBadge from './FAANotamBadge.jsx';
+import BrokerPilotReport from './BrokerPilotReport.jsx';
 import { showsCateringStatus } from './ops-readiness.js';
 
 const POLL_MS = 120000; // refresh live position every 2 minutes
@@ -955,6 +956,17 @@ export default function TripTrackPage({ token }) {
             / completed) instead of going blank when the aircraft is on
             the ground. */}
         <HeroCard trip={trip} position={position} />
+
+        {Array.isArray(trip.crewReports) && trip.crewReports.length > 0 && (
+          <section>
+            <h2 className="text-lg tracking-wider mb-2" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>CREW SAFETY REPORTS</h2>
+            <div className="space-y-3">
+              {trip.crewReports.map((report) => (
+                <BrokerPilotReport key={`${report.role}-${report.pilotName}`} report={report} />
+              ))}
+            </div>
+          </section>
+        )}
 
         {/* Map opens on the aircraft's full flown trail. Basemap, weather radar
             and fullscreen controls live inside the map frame. */}

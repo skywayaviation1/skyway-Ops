@@ -52,6 +52,8 @@ import {
   subscribeMyPilotCurrency,
   savePilotCurrency,
 } from './firebase-currency.js';
+import { PilotRatingBadge } from './BrokerPilotReport.jsx';
+import { usePilotSafetyData } from './use-pilot-safety-data.js';
 
 // Lazy-loaded bulk importer modal. Only pulled in when admin clicks
 // IMPORT — keeps the dashboard load light for everyone else.
@@ -110,6 +112,15 @@ export default function PilotCurrencyScreen({ currentUser, users, allTrips }) {
     return () => { if (unsub) unsub(); };
   }, [currentUser, isAdminOrOps, isCrew]);
 
+  const safety = usePilotSafetyData(currentUser);
+  const ratingByUid = useMemo(() => {
+    const map = {};
+    for (const pilot of users || []) {
+      if (!pilot?.uid) continue;
+      map[pilot.uid] = safety.rate(pilot);
+    }
+    return map;
+  }, [users, safety]);
   const todayMs = Date.now();
   // Do not infer §135.247/§61.57 landing currency from schedule assignment:
   // being listed as PIC/SIC does not prove sole manipulation or that the
@@ -226,10 +237,10 @@ export default function PilotCurrencyScreen({ currentUser, users, allTrips }) {
 
       <main className="flex-1 min-h-0 overflow-auto">
         {view === 'matrix' && (
-          <MatrixView pilots={filteredPilots} currencies={currenciesEnriched} todayMs={todayMs} canEdit={isAdminOrOps} onEdit={(uid, focusKey) => setEditTarget({ pilotUid: uid, focusKey })} />
+          <MatrixView pilots={filteredPilots} currencies={currenciesEnriched} todayMs={todayMs} canEdit={isAdminOrOps} ratingByUid={ratingByUid} onEdit={(uid, focusKey) => setEditTarget({ pilotUid: uid, focusKey })} />
         )}
         {view === 'cards' && (
-          <CardsView pilots={filteredPilots} currencies={currenciesEnriched} todayMs={todayMs} canEdit={isAdminOrOps} onEdit={(uid, focusKey) => setEditTarget({ pilotUid: uid, focusKey })} />
+          <CardsView pilots={filteredPilots} currencies={currenciesEnriched} todayMs={todayMs} canEdit={isAdminOrOps} ratingByUid={ratingByUid} onEdit={(uid, focusKey) => setEditTarget({ pilotUid: uid, focusKey })} />
         )}
         {view === 'agenda' && (
           <AgendaView pilots={filteredPilots} currencies={currenciesEnriched} todayMs={todayMs} canEdit={isAdminOrOps} onEdit={(uid, focusKey) => setEditTarget({ pilotUid: uid, focusKey })} />
@@ -337,7 +348,7 @@ function StatusPill({ status, daysUntil, compact = false }) {
    MATRIX
    ═══════════════════════════════════════════════════════════════════ */
 
-function MatrixView({ pilots, currencies, todayMs, canEdit, onEdit }) {
+function MatrixView({ pilots, currencies, todayMs, canEdit, onEdit, ratingByUid = {} }) {
   const cellClick = (uid, key) => { if (canEdit) onEdit(uid, key); };
   return (
     <div className="overflow-auto">
@@ -390,6 +401,9 @@ function MatrixView({ pilots, currencies, todayMs, canEdit, onEdit }) {
                   onClick={() => canEdit && onEdit(pilot.uid)}
                 >
                   <div className="text-slate-100 leading-tight">{pilot.name || pilot.email}</div>
+                  <div className="mt-0.5 flex items-center gap-1">
+                    <PilotRatingBadge rating={ratingByUid[pilot.uid]} />
+                  </div>
                   <div className="text-[9px] text-slate-500 leading-tight" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
                     {(pilot.role || 'crew').toUpperCase()}
                   </div>
@@ -451,7 +465,7 @@ function MatrixCell({ result }) {
    CARDS
    ═══════════════════════════════════════════════════════════════════ */
 
-function CardsView({ pilots, currencies, todayMs, canEdit, onEdit }) {
+function CardsView({ pilots, currencies, todayMs, canEdit, onEdit, ratingByUid = {} }) {
   const [expandedUid, setExpandedUid] = useState(null);
   return (
     <div className="p-4 space-y-3">
@@ -469,7 +483,10 @@ function CardsView({ pilots, currencies, todayMs, canEdit, onEdit }) {
               <div className="flex items-center gap-3 min-w-0">
                 <div className={`w-1 h-10 ${c.bg.replace('/15', '/40').replace('/30', '/40')}`}></div>
                 <div className="min-w-0 text-left">
-                  <div className="text-sm text-slate-100 truncate">{p.name || p.email}</div>
+                  <div className="flex items-center gap-2">
+                    <div className="text-sm text-slate-100 truncate">{p.name || p.email}</div>
+                    <PilotRatingBadge rating={ratingByUid[p.uid]} />
+                  </div>
                   <div className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
                     {(p.role || 'crew').toUpperCase()}
                     {rollup.expiredCount > 0 && <span className="text-red-300 ml-2">· {rollup.expiredCount} EXPIRED</span>}
