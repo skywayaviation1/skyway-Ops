@@ -7,7 +7,12 @@ import {
   assertMutable,
   authorizeOps,
   dispatchCoverageEmails,
+  listCoverageEvents,
+  listCoverageRecords,
+  listScheduleLegs,
   loadSettings,
+  pdfBufferFromBody,
+  previewUploadedContract,
   publicBaseUrl,
   readJson,
   readPdf,
@@ -15,6 +20,7 @@ import {
   recomputeOffer,
   reportingPatch,
   resolveTripLegs,
+  saveUploadedContract,
   serializeCoverage,
   writeCharterContract,
 } from './_aog-recovery.js';
@@ -50,16 +56,71 @@ export default async function handler(req, res) {
   }
   try {
     const body = readJson(req);
-    await authorizeOps(body.idToken);
+    const actor = await authorizeOps(body.idToken);
     const db = recoveryDb();
     const action = String(body.action || 'list');
 
     if (action === 'list') {
-      const snap = await db.collection(COLLECTION).orderBy('createdAt', 'desc').limit(500).get();
+      const records = await listCoverageRecords(db);
+      res.status(200).json({ ok: true, records });
+      return;
+    }
+
+    if (action === 'schedule') {
+      const schedule = await listScheduleLegs(db);
+      res.status(200).json({ ok: true, ...schedule });
+      return;
+    }
+
+    if (action === 'preview-contract') {
+      const pdfBuffer = pdfBufferFromBody(body);
+      const parsed = previewUploadedContract({
+        pdfBuffer,
+        filename: String(body.filename || 'charter-contract.pdf'),
+        text: String(body.text || ''),
+      });
+      const settings = await loadSettings(db);
+      const proposal = classifyCheckout(parsed, settings);
       res.status(200).json({
         ok: true,
-        records: snap.docs.map((docSnap) => serializeCoverage(docSnap.id, docSnap.data())),
+        parsed: {
+          tripId: parsed.tripId || '',
+          brokerCompany: parsed.brokerCompany || '',
+          checkoutEmail: parsed.checkoutEmail || '',
+          tail: parsed.tail || '',
+          aircraftType: parsed.aircraftType || '',
+          route: parsed.route || '',
+          routeFrom: parsed.routeFrom || '',
+          routeTo: parsed.routeTo || '',
+          departDate: parsed.departDate || '',
+          returnDate: parsed.returnDate || '',
+          tripTotal: parsed.tripTotal ?? null,
+          uncertainFields: parsed.uncertainFields || [],
+          notes: parsed.notes || [],
+          isCheckout: parsed.isCheckout === true,
+        },
+        proposal: {
+          coverageLevel: proposal.coverageLevel,
+          paymentStatus: proposal.paymentStatus,
+          premium: proposal.premium,
+          emails: proposal.emails,
+        },
       });
+      return;
+    }
+
+    if (action === 'save-contract') {
+      const pdfBuffer = pdfBufferFromBody(body);
+      const saved = await saveUploadedContract(db, {
+        pdfBuffer,
+        filename: String(body.filename || 'charter-contract.pdf').slice(0, 180),
+        tripId: body.tripId,
+        legUids: Array.isArray(body.legUids) ? body.legUids : [],
+        fields: body.fields || {},
+        actor,
+        baseUrl: publicBaseUrl(req),
+      });
+      res.status(200).json({ ok: true, ...saved });
       return;
     }
 
@@ -75,6 +136,12 @@ export default async function handler(req, res) {
       return;
     }
     let record = { id, ...snap.data() };
+
+    if (action === 'events') {
+      const events = await listCoverageEvents(db, id);
+      res.status(200).json({ ok: true, events });
+      return;
+    }
 
     if (action === 'link' || action === 'attach-contract') {
       const tripUid = String(body.tripUid || '').trim();

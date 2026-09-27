@@ -3,13 +3,15 @@
 // Card charges go through api/_aog-stripe.js. This file never sees card data.
 
 import crypto from 'crypto';
+import { promises as fs } from 'fs';
+import path from 'path';
 import admin from 'firebase-admin';
 import { getFirestore, Timestamp } from 'firebase-admin/firestore';
 import { getStorage } from 'firebase-admin/storage';
 import { applyNotifyTestMode } from './_notify-test-mode.js';
 import { deliverNotification, isInternalAddress } from './_email-transport.js';
 import { graphRequest, isSharedMailConfigured, mailboxUpn } from './_charter-mail.js';
-import { parseCheckoutEmail } from './_aog-checkout-parser.js';
+import { extractUncompressedPdfText, parseCheckoutEmail } from './_aog-checkout-parser.js';
 import { renderElectionPdf } from './_aog-election-pdf.js';
 import {
   AOG_COVERAGE_TERMS_TEXT,
@@ -22,13 +24,16 @@ import {
   buildCoverageDraft,
   classifyCheckout,
   coverageLevelLabel,
+  domainRecordsFromList,
   fmtMoney,
+  isComplimentaryDomain,
   matchCoverageToTrips,
-  normalizeDomains,
   normalizeRateTable,
   premiumLabel,
   quotePremium,
+  readDomainRecords,
 } from '../src/aog-recovery.js';
+import { buildTripRows, nyDay, rowsEligibleForComplimentary } from '../src/aog-trip-rows.js';
 import {
   contractStoragePath,
   contractVersionPath,
@@ -51,7 +56,15 @@ export function getAdmin() {
     appSingleton = admin.app();
     return appSingleton;
   }
+  const usingEmulator = Boolean(process.env.FIRESTORE_EMULATOR_HOST || process.env.FIREBASE_AUTH_EMULATOR_HOST);
   const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+  if (!raw && usingEmulator) {
+    appSingleton = admin.initializeApp({
+      projectId: process.env.GCLOUD_PROJECT || process.env.GOOGLE_CLOUD_PROJECT || 'skyway-ops-app',
+      storageBucket: process.env.FIREBASE_STORAGE_BUCKET || BUCKET_FALLBACK,
+    });
+    return appSingleton;
+  }
   if (!raw) throw new Error('FIREBASE_SERVICE_ACCOUNT_JSON not configured');
   appSingleton = admin.initializeApp({
     credential: admin.credential.cert(JSON.parse(raw)),
@@ -67,6 +80,20 @@ export function recoveryDb() {
 function storageBucket() {
   const name = process.env.FIREBASE_STORAGE_BUCKET || BUCKET_FALLBACK;
   return getStorage(getAdmin()).bucket(name);
+}
+
+function localStorageRoot() {
+  return process.env.AOG_LOCAL_STORAGE || '';
+}
+
+async function writeLocal(storagePath, buffer) {
+  const full = path.join(localStorageRoot(), storagePath);
+  await fs.mkdir(path.dirname(full), { recursive: true });
+  await fs.writeFile(full, buffer);
+}
+
+async function readLocal(storagePath) {
+  return fs.readFile(path.join(localStorageRoot(), storagePath));
 }
 
 export function readJson(req) {
@@ -104,7 +131,8 @@ export async function authorizeOps(idToken) {
   }
   let decoded;
   try {
-    decoded = await admin.auth(getAdmin()).verifyIdToken(idToken, true);
+    const checkRevoked = !process.env.FIREBASE_AUTH_EMULATOR_HOST;
+    decoded = await admin.auth(getAdmin()).verifyIdToken(idToken, checkRevoked);
   } catch {
     const error = new Error('Invalid or revoked session');
     error.status = 401;
@@ -228,23 +256,36 @@ export async function appendCoverageEvent(db, coverageId, input) {
 export async function loadSettings(db = recoveryDb()) {
   const snap = await db.collection(CONFIG_DOC[0]).doc(CONFIG_DOC[1]).get();
   const data = snap.exists ? snap.data() || {} : {};
+  const domainRecords = readDomainRecords(data);
   return {
     rates: Array.isArray(data.rates) && data.rates.length ? data.rates : DEFAULT_RATES.map((row) => ({ ...row })),
-    complimentaryDomains: Array.isArray(data.complimentaryDomains) ? data.complimentaryDomains : [],
+    complimentaryDomains: domainRecords.map((row) => row.domain),
+    domainRecords,
     updatedAt: data.updatedAt || '',
     updatedBy: data.updatedBy || '',
   };
 }
 
-export async function saveSettings(db, { rates, complimentaryDomains, actor }) {
+export async function saveSettings(db, { rates, complimentaryDomains, complimentaryDomainRecords, actor } = {}) {
+  const existing = await loadSettings(db);
+  const now = new Date().toISOString();
+  const domainInput = complimentaryDomainRecords || complimentaryDomains;
+  const domainRecords = domainInput
+    ? domainRecordsFromList(domainInput, {
+      previous: existing.domainRecords,
+      actorEmail: actor?.email || '',
+      now,
+    })
+    : existing.domainRecords;
   const next = {
-    rates: normalizeRateTable(rates),
-    complimentaryDomains: normalizeDomains(complimentaryDomains),
-    updatedAt: new Date().toISOString(),
+    rates: rates ? normalizeRateTable(rates) : existing.rates,
+    complimentaryDomains: domainRecords.map((row) => row.domain),
+    complimentaryDomainRecords: domainRecords,
+    updatedAt: now,
     updatedBy: actor?.email || '',
   };
   await db.collection(CONFIG_DOC[0]).doc(CONFIG_DOC[1]).set(next, { merge: true });
-  return next;
+  return { ...next, domainRecords };
 }
 
 function tripFromState(docSnap) {
@@ -508,8 +549,12 @@ export async function sendRecoveryEmail({ to, cc, bcc, subject, text, html, atta
   };
 }
 
-export async function savePdf(path, buffer) {
-  await storageBucket().file(path).save(buffer, {
+export async function savePdf(storagePath, buffer) {
+  if (localStorageRoot()) {
+    await writeLocal(storagePath, buffer);
+    return;
+  }
+  await storageBucket().file(storagePath).save(buffer, {
     resumable: false,
     contentType: 'application/pdf',
     metadata: { contentType: 'application/pdf', cacheControl: 'private, max-age=0' },
@@ -521,9 +566,13 @@ function storageDownloadUrl(path, token) {
   return `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodeURIComponent(path)}?alt=media&token=${token}`;
 }
 
-async function saveContractPdf(path, buffer) {
+async function saveContractPdf(storagePath, buffer) {
+  if (localStorageRoot()) {
+    await writeLocal(storagePath, buffer);
+    return `local://${encodeURIComponent(storagePath)}`;
+  }
   const token = crypto.randomUUID();
-  await storageBucket().file(path).save(buffer, {
+  await storageBucket().file(storagePath).save(buffer, {
     resumable: false,
     contentType: 'application/pdf',
     metadata: {
@@ -532,7 +581,7 @@ async function saveContractPdf(path, buffer) {
       metadata: { firebaseStorageDownloadTokens: token },
     },
   });
-  return storageDownloadUrl(path, token);
+  return storageDownloadUrl(storagePath, token);
 }
 
 async function legsSharingTripCode(db, matches) {
@@ -590,7 +639,8 @@ export async function writeCharterContract(db, { legs, pdfBuffer, filename, sour
   let contract = plan.contract;
   if (plan.action === 'replaced' && existing?.path && versionPath && existing.path !== versionPath) {
     try {
-      await storageBucket().file(existing.path).copy(storageBucket().file(versionPath));
+      if (localStorageRoot()) await writeLocal(versionPath, await readLocal(existing.path));
+      else await storageBucket().file(existing.path).copy(storageBucket().file(versionPath));
     } catch (err) {
       console.warn('[aog-recovery] previous charter contract was not copied:', err.message);
       const versions = contract.versions || [];
@@ -681,8 +731,9 @@ export async function resolveTripLegs(db, tripUid) {
   return [...found.values()];
 }
 
-export async function readPdf(path) {
-  const [buffer] = await storageBucket().file(path).download();
+export async function readPdf(storagePath) {
+  if (localStorageRoot()) return readLocal(storagePath);
+  const [buffer] = await storageBucket().file(storagePath).download();
   return buffer;
 }
 
@@ -1069,6 +1120,380 @@ export function assertMutable(record) {
     error.status = 409;
     throw error;
   }
+}
+
+function httpError(message, status) {
+  const error = new Error(message);
+  error.status = status;
+  return error;
+}
+
+export function pdfBufferFromBody(body) {
+  const raw = String(body?.pdfBase64 || '');
+  const b64 = raw.includes(',') ? raw.split(',').pop() : raw;
+  const buffer = Buffer.from(b64, 'base64');
+  if (buffer.length < 5 || buffer.subarray(0, 5).toString() !== '%PDF-') {
+    throw httpError('Upload a PDF charter contract', 400);
+  }
+  if (buffer.length > 6_000_000) throw httpError('Contract PDF must be under 6 MB', 400);
+  return buffer;
+}
+
+export function previewUploadedContract({ pdfBuffer, filename, text }) {
+  const extracted = extractUncompressedPdfText(pdfBuffer);
+  const clientText = String(text || '').trim();
+  const body = /trip\s*total|charter\s*total|trip\s*id/i.test(extracted) ? extracted : (clientText || extracted);
+  const parsed = parseCheckoutEmail({
+    subject: 'Charter contract',
+    from: '',
+    bodyText: body,
+    attachmentText: body,
+    attachmentNames: [filename || 'charter-contract.pdf'],
+    hasPdf: true,
+  });
+  return parsed;
+}
+
+export async function listScheduleLegs(db) {
+  const legs = [];
+  const state = await db.collection('trip-state').limit(2000).get();
+  state.docs.forEach((docSnap) => {
+    const data = docSnap.data() || {};
+    const meta = data.tripMeta || {};
+    const sheet = data.tripSheetData || {};
+    const facts = data.charterContractData || {};
+    const contract = data.charterContract || {};
+    legs.push({
+      uid: docSnap.id,
+      tripId: String(sheet.tripCode || facts.tripId || '').trim(),
+      start: meta.start || facts.departAtUtc || asUtc(facts.departAt) || '',
+      end: facts.returnAtUtc || asUtc(facts.returnAt) || '',
+      tail: String(meta.tail || facts.tail || sheet.tail || '').trim().toUpperCase(),
+      from: String(meta.from || facts.origin || '').trim().toUpperCase(),
+      to: String(meta.to || facts.destination || '').trim().toUpperCase(),
+      aircraft: String(facts.aircraftType || sheet.aircraftType || '').trim(),
+      customer: String(sheet.client || facts.brokerCompany || data.customer || '').trim(),
+      brokerEmail: String(data.brokerEmail || facts.brokerEmail || '').trim().toLowerCase(),
+      contractAttached: Boolean(contract.path || contract.fingerprint),
+    });
+  });
+  const manual = await db.collection('manual-trips').limit(500).get();
+  manual.docs.forEach((docSnap) => {
+    const data = docSnap.data() || {};
+    const info = data.info || {};
+    legs.push({
+      uid: String(data.uid || docSnap.id),
+      tripId: String(data.tripCode || info.tripCode || info.tripId || '').trim(),
+      start: data.start || '',
+      end: data.end || '',
+      tail: String(info.tail || data.tail || '').trim().toUpperCase(),
+      from: String(info.from || '').trim().toUpperCase(),
+      to: String(info.to || '').trim().toUpperCase(),
+      aircraft: String(info.aircraft || info.aircraftType || '').trim(),
+      customer: String(info.customer || info.broker || '').trim(),
+      brokerEmail: String(info.brokerEmail || data.brokerEmail || '').trim().toLowerCase(),
+      contractAttached: false,
+    });
+  });
+  return { legs, truncated: state.size >= 2000 };
+}
+
+export async function listCoverageRecords(db, limit = 500) {
+  const snap = await db.collection(COLLECTION).orderBy('createdAt', 'desc').limit(limit).get();
+  return snap.docs.map((docSnap) => serializeCoverage(docSnap.id, docSnap.data()));
+}
+
+async function findCoverageForTrip(db, tripId, legUids) {
+  const id = String(tripId || '').trim().toUpperCase();
+  if (id) {
+    const byTrip = await db.collection(COLLECTION).where('tripId', '==', id).limit(5).get();
+    if (!byTrip.empty) return byTrip.docs[0];
+  }
+  for (const uid of (legUids || []).slice(0, 8)) {
+    // eslint-disable-next-line no-await-in-loop
+    const linked = await db.collection(COLLECTION).where('linkedTripUid', '==', uid).limit(1).get();
+    if (!linked.empty) return linked.docs[0];
+  }
+  return null;
+}
+
+export async function ensureTripLegs(db, tripId, legUids, fields = {}) {
+  const code = String(tripId || '').trim();
+  let legs = await resolveTripLegs(db, code);
+  if (legs.length) return legs;
+  const ids = [...new Set((legUids || []).map((id) => sanitizeKey(id)).filter(Boolean))].slice(0, 30);
+  const targets = ids.length ? ids : [sanitizeKey(code)].filter(Boolean);
+  if (!targets.length) return [];
+  await Promise.all(targets.map((id) => db.collection('trip-state').doc(id).set({
+    tripSheetData: {
+      tripCode: code,
+      tail: fields.tail || '',
+      client: fields.brokerCompany || '',
+    },
+    tripMeta: {
+      tail: fields.tail || '',
+      from: fields.routeFrom || '',
+      to: fields.routeTo || '',
+      start: fields.departDate || '',
+    },
+    brokerEmail: fields.checkoutEmail || '',
+  }, { merge: true })));
+  return resolveTripLegs(db, code);
+}
+
+function reviewedParsed(fields, tripId) {
+  const totalRaw = fields?.tripTotal;
+  const tripTotal = totalRaw === '' || totalRaw == null ? null : Number(totalRaw);
+  const routeFrom = String(fields?.routeFrom || '').trim().toUpperCase().slice(0, 8);
+  const routeTo = String(fields?.routeTo || '').trim().toUpperCase().slice(0, 8);
+  const departDate = String(fields?.departDate || '').trim().slice(0, 40);
+  const returnDate = String(fields?.returnDate || '').trim().slice(0, 40);
+  return {
+    isCheckout: true,
+    parserVersion: 'provisional-1',
+    tripId: String(fields?.tripId || tripId || '').trim().slice(0, 80),
+    brokerCompany: String(fields?.brokerCompany || '').trim().slice(0, 120),
+    checkoutEmail: String(fields?.checkoutEmail || fields?.brokerEmail || '').trim().toLowerCase().slice(0, 160),
+    tail: String(fields?.tail || '').trim().toUpperCase().slice(0, 16),
+    aircraftType: String(fields?.aircraftType || '').trim().slice(0, 80),
+    routeFrom,
+    routeTo,
+    route: [routeFrom, routeTo].filter(Boolean).join(' → '),
+    departDate,
+    returnDate,
+    datesLabel: [departDate, returnDate].filter(Boolean).join(' – '),
+    tripTotal: Number.isFinite(tripTotal) ? Math.round(tripTotal * 100) / 100 : null,
+    uncertainFields: Array.isArray(fields?.uncertainFields) ? fields.uncertainFields : [],
+    notes: ['Uploaded by ops'],
+  };
+}
+
+export async function saveUploadedContract(db, { pdfBuffer, filename, tripId, legUids, fields, actor, baseUrl }) {
+  const code = String(tripId || fields?.tripId || '').trim();
+  if (!code) throw httpError('Trip id is required', 400);
+  const parsed = reviewedParsed(fields, code);
+  const legs = await ensureTripLegs(db, code, legUids, parsed);
+  if (!legs.length) throw httpError('No legs found for that trip', 404);
+  const settings = await loadSettings(db);
+  const existing = await findCoverageForTrip(db, code, legs.map((leg) => leg.id));
+  const existingData = existing?.data() || {};
+  const paid = existingData.paymentStatus === 'paid' || existingData.coverageLevel === 'purchased_100';
+  const source = {
+    messageId: '',
+    receivedAt: new Date().toISOString(),
+    sender: parsed.checkoutEmail || actor?.email || '',
+    uploadedBy: actor?.email || '',
+    origin: 'ops-upload',
+  };
+  const attached = await writeCharterContract(db, {
+    legs,
+    pdfBuffer,
+    filename: filename || 'charter-contract.pdf',
+    source,
+    tripKey: code,
+    facts: { ...parsed, legCount: legs.length },
+  });
+  const coverageId = existing?.id || `up_${crypto.createHash('sha256').update(code.toUpperCase()).digest('hex').slice(0, 24)}`;
+  const ref = db.collection(COLLECTION).doc(coverageId);
+  const storagePath = `aog-recovery/${coverageId}/charter-contract.pdf`;
+  await savePdf(storagePath, pdfBuffer);
+
+  if (paid) {
+    const patch = {
+      charterContractPath: storagePath,
+      charterContractFilename: filename || 'charter-contract.pdf',
+      contractAttachStatus: attached.contractAttachStatus || '',
+      contractLegIds: attached.contractLegIds || [],
+      contractFingerprint: attached.contractFingerprint || '',
+      contractSource: source,
+      contractCandidateTripUids: [],
+      contractAmbiguous: false,
+      updatedAt: new Date().toISOString(),
+    };
+    await ref.set(patch, { merge: true });
+    const saved = { ...existingData, ...patch, id: coverageId };
+    return { record: serializeCoverage(coverageId, saved), contractOnly: true, emailError: '' };
+  }
+
+  const match = { status: 'linked', matches: legs, ambiguous: false };
+  const draft = buildCoverageDraft({ parsed, settings, match, messageId: '' });
+  draft.source = existingData.source || 'ops_upload';
+  draft.addedBy = actor?.email || '';
+  const now = new Date().toISOString();
+  const record = {
+    ...existingData,
+    ...draft,
+    ...reportingPatch({
+      ...draft,
+      legCount: legs.length,
+      brokerEmail: draft.checkoutEmail,
+      createdAt: existingData.createdAt || now,
+    }),
+    charterContractPath: storagePath,
+    charterContractFilename: filename || 'charter-contract.pdf',
+    contractAttachStatus: attached.contractAttachStatus || '',
+    contractLegIds: attached.contractLegIds || [],
+    contractFingerprint: attached.contractFingerprint || '',
+    contractSource: source,
+    contractCandidateTripUids: [],
+    contractAmbiguous: false,
+    contractAttachError: '',
+    emailsToSend: draft.emailsToSend,
+  };
+  await ref.set(record, { merge: true });
+  const sent = await dispatchCoverageEmails(db, coverageId, {
+    ...record,
+    offerSentAt: '',
+    includedNoticeSentAt: '',
+    coveredNoticeSentAt: '',
+    bindEmailSentAt: existingData.bindEmailSentAt && record.coverageLevel !== 'complimentary_100' ? existingData.bindEmailSentAt : '',
+  }, { baseUrl });
+  const fresh = await ref.get();
+  return {
+    record: serializeCoverage(coverageId, fresh.data() || record),
+    contractOnly: false,
+    emailError: sent.error || '',
+  };
+}
+
+export async function listCoverageEvents(db, coverageId) {
+  const snap = await db.collection(COLLECTION).doc(String(coverageId)).collection('coverageEvents').orderBy('at', 'desc').limit(50).get();
+  return snap.docs.map((docSnap) => {
+    const data = docSnap.data() || {};
+    return {
+      id: docSnap.id,
+      type: data.type || '',
+      at: data.atUtc || asUtc(data.at),
+      amountCents: Number.isInteger(data.amountCents) ? data.amountCents : null,
+      currency: data.currency || 'usd',
+      actor: data.actor || '',
+      coverageLevel: data.coverageLevel || '',
+      paymentStatus: data.paymentStatus || '',
+    };
+  });
+}
+
+const AT_HUNDRED = new Set(['purchased_100', 'gifted_100', 'complimentary_100']);
+
+export async function complimentaryCandidates(db, domain, now = new Date()) {
+  const { legs } = await listScheduleLegs(db);
+  const records = await listCoverageRecords(db);
+  const rows = buildTripRows(legs, records);
+  return rowsEligibleForComplimentary(rows, domain, now).map((row) => ({
+    tripId: row.tripId,
+    datesLabel: row.datesLabel,
+    route: row.route,
+    tail: row.tail,
+    brokerEmail: row.brokerEmail,
+    coverageLevel: row.coverageLevel,
+  }));
+}
+
+export async function applyComplimentaryDomain(db, { domain, tripIds, actor, baseUrl, now = new Date() }) {
+  const settings = await loadSettings(db);
+  if (!settings.complimentaryDomains.includes(domain)) {
+    throw httpError('Add the domain before applying it', 400);
+  }
+  const today = nyDay(now);
+  const { legs } = await listScheduleLegs(db);
+  const wanted = [...new Set((tripIds || []).map((id) => String(id || '').trim().toUpperCase()).filter(Boolean))].slice(0, 40);
+  const applied = [];
+  const skipped = [];
+  for (const tripId of wanted) {
+    const rowLegs = legs.filter((leg) => String(leg.tripId || '').trim().toUpperCase() === tripId);
+    const email = String(rowLegs.find((leg) => leg.brokerEmail)?.brokerEmail || '').toLowerCase();
+    const depart = rowLegs.map((leg) => leg.start).filter(Boolean).sort()[0] || '';
+    const departDay = nyDay(depart);
+    if (!rowLegs.length) {
+      skipped.push({ tripId, reason: 'Trip is not on the schedule' });
+      continue;
+    }
+    if (!isComplimentaryDomain(email, [domain])) {
+      skipped.push({ tripId, reason: 'Broker email is not on that domain' });
+      continue;
+    }
+    if (!departDay || departDay < today) {
+      skipped.push({ tripId, reason: 'Trip is not upcoming' });
+      continue;
+    }
+    // eslint-disable-next-line no-await-in-loop
+    const existing = await findCoverageForTrip(db, tripId, rowLegs.map((leg) => leg.uid));
+    const data = existing?.data() || {};
+    if (AT_HUNDRED.has(data.coverageLevel) || data.paymentStatus === 'paid') {
+      skipped.push({ tripId, reason: 'Already at 100%' });
+      continue;
+    }
+    const first = rowLegs[0];
+    const last = rowLegs[rowLegs.length - 1];
+    const parsed = reviewedParsed({
+      tripId,
+      brokerCompany: data.brokerCompany || first.customer || '',
+      checkoutEmail: email,
+      tail: data.tail || first.tail || '',
+      aircraftType: data.aircraftType || first.aircraft || '',
+      routeFrom: data.routeFrom || first.from || '',
+      routeTo: data.routeTo || last.to || '',
+      departDate: departDay,
+      returnDate: nyDay(last.end || last.start),
+      tripTotal: data.tripTotal ?? null,
+    }, tripId);
+    const action = classifyCheckout(parsed, settings);
+    if (action.coverageLevel !== 'complimentary_100') {
+      skipped.push({ tripId, reason: 'Domain did not classify as complimentary' });
+      continue;
+    }
+    const coverageId = existing?.id || `up_${crypto.createHash('sha256').update(tripId).digest('hex').slice(0, 24)}`;
+    const record = {
+      ...data,
+      source: data.source || 'complimentary_domain',
+      ...actionFields(parsed, action, actor),
+      linkedTripUid: rowLegs[0].uid,
+      linkedTripUids: rowLegs.map((leg) => leg.uid),
+      matchStatus: 'linked',
+      emailsToSend: action.emails,
+      charterContractPath: data.charterContractPath || '',
+      charterContractFilename: data.charterContractFilename || '',
+      electionContractPath: data.electionContractPath || '',
+      createdAt: data.createdAt || new Date().toISOString(),
+    };
+    Object.assign(record, reportingPatch({ ...record, legCount: rowLegs.length, brokerEmail: email }));
+    // eslint-disable-next-line no-await-in-loop
+    await db.collection(COLLECTION).doc(coverageId).set(record, { merge: true });
+    // eslint-disable-next-line no-await-in-loop
+    const sent = await dispatchCoverageEmails(db, coverageId, {
+      ...record,
+      coveredNoticeSentAt: '',
+      bindEmailSentAt: '',
+    }, { baseUrl });
+    applied.push({ tripId, coverageId, emailError: sent.error || '' });
+  }
+  return { applied, skipped };
+}
+
+function actionFields(parsed, action, actor) {
+  return {
+    tripId: parsed.tripId,
+    brokerCompany: parsed.brokerCompany,
+    checkoutEmail: parsed.checkoutEmail,
+    tail: parsed.tail,
+    aircraftType: action.matchedAircraftType || parsed.aircraftType,
+    route: parsed.route,
+    routeFrom: parsed.routeFrom,
+    routeTo: parsed.routeTo,
+    departDate: parsed.departDate,
+    returnDate: parsed.returnDate,
+    datesLabel: parsed.datesLabel,
+    tripTotal: parsed.tripTotal,
+    coverageLevel: action.coverageLevel,
+    paymentStatus: action.paymentStatus,
+    premium: action.premium,
+    premiumCents: action.premiumCents,
+    ratePercent: action.ratePercent,
+    upgradeAvailable: false,
+    electedBy: action.electedBy || '',
+    addedBy: actor?.email || '',
+    needsReview: parsed.tripTotal == null,
+  };
 }
 
 export { COLLECTION, PROCESSED, classifyCheckout };

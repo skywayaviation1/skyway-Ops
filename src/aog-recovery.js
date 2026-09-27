@@ -88,11 +88,61 @@ export function normalizeDomains(input) {
     domain = domain.replace(/^https?:\/\//, '').split('/')[0].replace(/\.$/, '');
     if (!domain) continue;
     if (!/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)+$/.test(domain)) {
-      throw new Error(`Invalid complimentary domain: ${raw}`);
+      const error = new Error(`Invalid complimentary domain: ${raw}`);
+      error.status = 400;
+      throw error;
     }
     domains.push(domain);
   }
   return [...new Set(domains)].slice(0, 100);
+}
+
+/** Stored domains, including ones saved before added-by was recorded. Invalid rows are skipped. */
+export function readDomainRecords(data = {}) {
+  const raw = Array.isArray(data.complimentaryDomainRecords) && data.complimentaryDomainRecords.length
+    ? data.complimentaryDomainRecords
+    : (Array.isArray(data.complimentaryDomains) ? data.complimentaryDomains : []);
+  const records = [];
+  for (const item of raw) {
+    try {
+      const source = typeof item === 'string' ? item : item?.domain;
+      const [domain] = normalizeDomains([source]);
+      if (!domain || records.some((row) => row.domain === domain)) continue;
+      records.push({
+        domain,
+        addedBy: item && typeof item === 'object' ? String(item.addedBy || '').slice(0, 160) : '',
+        addedAt: item && typeof item === 'object' ? String(item.addedAt || '').slice(0, 40) : '',
+      });
+    } catch {
+      // A stored value that no longer matches the domain format is left out.
+    }
+  }
+  return records.slice(0, 100);
+}
+
+/**
+ * Normalize an edited domain list. Existing rows keep who added them and when.
+ * A domain that was not on the list before is stamped with the actor and now.
+ */
+export function domainRecordsFromList(input, { previous = [], actorEmail = '', now = '' } = {}) {
+  const prior = new Map((previous || []).map((row) => [row.domain, row]));
+  const incoming = new Map();
+  const list = Array.isArray(input) ? input : String(input || '').split(/[\s,;]+/);
+  for (const item of list) {
+    if (item && typeof item === 'object') {
+      incoming.set(String(item.domain || '').trim().toLowerCase().replace(/^@/, ''), item);
+    }
+  }
+  const names = normalizeDomains(list.map((item) => (typeof item === 'string' ? item : item?.domain)));
+  return names.map((domain) => {
+    const old = prior.get(domain);
+    const extra = incoming.get(domain);
+    return {
+      domain,
+      addedBy: String((old && old.addedBy) || extra?.addedBy || (!old ? actorEmail : '') || '').slice(0, 160),
+      addedAt: String((old && old.addedAt) || extra?.addedAt || (!old ? now : '') || '').slice(0, 40),
+    };
+  });
 }
 
 export function normalizeRateTable(input) {

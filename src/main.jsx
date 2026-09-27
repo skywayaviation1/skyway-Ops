@@ -116,6 +116,12 @@ const isAogCoverageRoute =
   typeof window !== 'undefined'
   && window.location.pathname.replace(/\/+$/, '') === '/aog-coverage';
 
+// Emulator click-through for the ops AOG page. Dead in production builds
+// because VITE_FIREBASE_EMULATORS is unset and Vite folds this to false.
+const isAogEmulatorRoute = import.meta.env.VITE_FIREBASE_EMULATORS === '1'
+  && typeof window !== 'undefined'
+  && window.location.pathname.replace(/\/+$/, '') === '/aog-emulator';
+
 /* ============================================================
    PWA SERVICE WORKER REGISTRATION
    ------------------------------------------------------------
@@ -134,7 +140,7 @@ const isAogCoverageRoute =
    ============================================================ */
 if (!isNativeApp() && typeof window !== 'undefined' && 'serviceWorker' in navigator
     && !isExternalTechRoute && !isServiceTechRoute && !isTripTrackRoute
-    && !isOperatorFlightRoute && !isAogCoverageRoute) {
+    && !isOperatorFlightRoute && !isAogCoverageRoute && !isAogEmulatorRoute) {
   // Register after the page has finished loading so we don't compete
   // with initial render for the network.
   window.addEventListener('load', () => {
@@ -200,6 +206,10 @@ if (isExternalTechRoute) {
       <AogCoverageOffer />
     </React.StrictMode>
   );
+} else if (isAogEmulatorRoute) {
+  import('./AogEmulatorHarness.jsx').then(({ default: Harness }) => {
+    rootEl.render(React.createElement(React.StrictMode, null, React.createElement(Harness)));
+  });
 } else {
   rootEl.render(
     <React.StrictMode>

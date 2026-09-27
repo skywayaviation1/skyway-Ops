@@ -292,3 +292,25 @@ export function parseCheckoutEmail(input = {}, options = {}) {
     notes: isCheckout ? notes : (skipReason ? [skipReason] : []),
   };
 }
+
+/**
+ * Pull literal strings out of an uncompressed PDF. Compressed contracts are
+ * extracted in the browser and sent along as text; this covers simple PDFs
+ * and the synthetic fixtures.
+ */
+export function extractUncompressedPdfText(buffer) {
+  const raw = Buffer.isBuffer(buffer) ? buffer.toString('latin1') : String(buffer || '');
+  const parts = [];
+  const re = /\(((?:\\\)|[^)]){1,400})\)/g;
+  let match = re.exec(raw);
+  while (match) {
+    const text = match[1]
+      .replace(/\\n/g, '\n')
+      .replace(/\\r/g, '')
+      .replace(/\\([()\\])/g, '$1')
+      .trim();
+    if (/[A-Za-z0-9]/.test(text)) parts.push(text);
+    match = re.exec(raw);
+  }
+  return parts.join('\n');
+}

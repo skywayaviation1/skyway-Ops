@@ -29296,7 +29296,7 @@ export default function CharterOps() {
         {section === 'aog' && (currentUser.role === 'ops' || currentUser.role === 'admin') && (
           <div className="flex-1 overflow-y-auto scroll-area">
             <Suspense fallback={<div className="flex items-center justify-center py-16 text-slate-500"><Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading AOG coverage...</div>}>
-              <AogRecoveryTabLazy currentUser={currentUser} />
+              <AogRecoveryTabLazy currentUser={currentUser} scheduleTrips={allTrips} />
             </Suspense>
           </div>
         )}

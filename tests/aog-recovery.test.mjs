@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
-import { parseCheckoutEmail } from '../api/_aog-checkout-parser.js';
+import { extractUncompressedPdfText, parseCheckoutEmail } from '../api/_aog-checkout-parser.js';
 import { renderElectionPdf } from '../api/_aog-election-pdf.js';
 import { applyNotifyTestMode, notifyTestModeEnabled, notifyTestRecipient } from '../api/_notify-test-mode.js';
 import { assertStripeTestKey, buildCheckoutSessionParams, stripeClient } from '../api/_aog-stripe.js';
@@ -10,12 +10,22 @@ import {
   buildCoverageDraft,
   classifyCheckout,
   coverageCsv,
+  domainRecordsFromList,
   findRate,
   isComplimentaryDomain,
   matchCoverageToTrips,
   paymentDecision,
   quotePremium,
+  readDomainRecords,
 } from '../src/aog-recovery.js';
+import {
+  TRIP_PAGE_SIZE,
+  buildTripRows,
+  filterTripRows,
+  pageOfRows,
+  rowsEligibleForComplimentary,
+  tripRowCsv,
+} from '../src/aog-trip-rows.js';
 import {
   contractStoragePath,
   contractVersionPath,
@@ -537,6 +547,16 @@ test('recovery mail and stripe routes are wired, and test mode is centralized', 
   assert.match(mailer, /attachCheckoutContract/);
   const tab = await readFile(path.join(root, 'src/AogRecoveryTab.jsx'), 'utf8');
   assert.match(tab, /Unmatched contracts/);
+  assert.match(tab, /Upcoming and recent/);
+  assert.match(tab, /Add domain/);
+  assert.match(tab, /Save contract/);
+  assert.match(tab, /preview-contract/);
+  assert.doesNotMatch(tab, /\b(setDoc|updateDoc|addDoc)\b/);
+  assert.match(app, /scheduleTrips=\{allTrips\}/);
+  const ops = await readFile(path.join(root, 'api/aog-recovery-ops.js'), 'utf8');
+  assert.match(ops, /preview-contract/);
+  assert.match(ops, /save-contract/);
+  assert.match(ops, /authorizeOps/);
   const scan = await readFile(path.join(root, 'api/aog-recovery-inbox-scan.js'), 'utf8');
   assert.match(scan, /receivedAt/);
   const indexes = await readFile(path.join(root, 'firestore.indexes.json'), 'utf8');
@@ -552,4 +572,91 @@ test('recovery mail and stripe routes are wired, and test mode is centralized', 
   assert.match(stripeRoute, /bodyParser: false/);
   const checkout = await readFile(path.join(root, 'api/_aog-stripe.js'), 'utf8');
   assert.doesNotMatch(checkout, /payment_method_types/);
+});
+
+test('trip rows group legs and default to upcoming plus recent', () => {
+  const now = new Date('2026-09-27T15:00:00.000Z');
+  const legs = [
+    { uid: 'a1', tripId: 'SKY-TEST-1001', start: '2026-10-12T14:00:00.000Z', end: '2026-10-12T16:00:00.000Z', tail: 'N100TS', from: 'KAPF', to: 'KTEB', aircraft: 'Citation CJ3', customer: 'Example Charter Group', brokerEmail: 'broker@example-charter.test', contractAttached: false },
+    { uid: 'a2', tripId: 'SKY-TEST-1001', start: '2026-10-14T14:00:00.000Z', end: '2026-10-14T17:00:00.000Z', tail: 'N100TS', from: 'KTEB', to: 'KAPF', aircraft: 'Citation CJ3', customer: 'Example Charter Group', brokerEmail: 'broker@example-charter.test', contractAttached: false },
+    { uid: 'past', tripId: 'SKY-TEST-OLD', start: '2026-08-01T14:00:00.000Z', end: '2026-08-01T16:00:00.000Z', tail: 'N200TS', from: 'KTEB', to: 'KMIA', aircraft: 'Learjet 60', customer: 'Northwind Example Jets', brokerEmail: 'dispatch@example-lear.test', contractAttached: false },
+  ];
+  const rows = buildTripRows(legs, []);
+  const grouped = rows.find((row) => row.tripId === 'SKY-TEST-1001');
+  assert.equal(grouped.legCount, 2);
+  assert.equal(grouped.route, 'KAPF → KTEB → KAPF');
+  assert.equal(grouped.coverageLevel, 'included_50');
+  assert.equal(grouped.contractStatus, 'missing');
+  assert.equal(grouped.paymentStatus, 'not_required');
+  const current = filterTripRows(rows, { now, window: 'current' });
+  assert.deepEqual(current.map((row) => row.tripId), ['SKY-TEST-1001']);
+  const past = filterTripRows(rows, { now, window: 'past' });
+  assert.deepEqual(past.map((row) => row.tripId), ['SKY-TEST-OLD']);
+  const missing = filterTripRows(rows, { now, window: 'all', contract: 'missing' });
+  assert.equal(missing.length, 2);
+  const many = buildTripRows(Array.from({ length: TRIP_PAGE_SIZE + 5 }, (_, i) => ({
+    uid: `f${i}`, tripId: `SKY-FILL-${i}`, start: '2026-10-15T12:00:00.000Z', tail: 'N100TS', from: 'KAPF', to: 'KTEB',
+  })), []);
+  const paged = pageOfRows(filterTripRows(many, { now, window: 'all' }), 1);
+  assert.equal(paged.page, 1);
+  assert.equal(paged.rows.length, 5);
+  const csv = tripRowCsv(current);
+  assert.match(csv, /Trip ID,Dates,Route/);
+  assert.match(csv, /missing/);
+  assert.match(csv, /50% included/);
+});
+
+test('complimentary domain records keep who added them', () => {
+  assert.throws(() => domainRecordsFromList(['not a domain']), /Invalid complimentary domain/);
+  const first = domainRecordsFromList(['example-charter.test'], {
+    actorEmail: 'ops@example-charter.test',
+    now: '2026-09-27T15:00:00.000Z',
+  });
+  assert.equal(first[0].addedBy, 'ops@example-charter.test');
+  const second = domainRecordsFromList(['example-charter.test', 'example-lear.test'], {
+    previous: first,
+    actorEmail: 'other@example-charter.test',
+    now: '2026-10-01T15:00:00.000Z',
+  });
+  assert.equal(second[0].addedBy, 'ops@example-charter.test');
+  assert.equal(second[0].addedAt, '2026-09-27T15:00:00.000Z');
+  assert.equal(second[1].addedBy, 'other@example-charter.test');
+  const loaded = readDomainRecords({ complimentaryDomainRecords: second });
+  assert.equal(loaded.length, 2);
+  const rows = buildTripRows([
+    { uid: 'up', tripId: 'SKY-TEST-1001', start: '2026-10-12T14:00:00.000Z', brokerEmail: 'broker@example-charter.test', customer: 'Example Charter Group' },
+    { uid: 'done', tripId: 'SKY-TEST-1002', start: '2026-10-12T14:00:00.000Z', brokerEmail: 'broker@example-charter.test', customer: 'Example Charter Group' },
+  ], [{ id: 'c2', tripId: 'SKY-TEST-1002', coverageLevel: 'purchased_100', brokerEmail: 'broker@example-charter.test' }]);
+  const eligible = rowsEligibleForComplimentary(rows, 'example-charter.test', new Date('2026-09-27T15:00:00.000Z'));
+  assert.deepEqual(eligible.map((row) => row.tripId), ['SKY-TEST-1001']);
+});
+
+test('uncompressed charter PDF text uses the checkout parser', () => {
+  const lines = [
+    'Charter contract',
+    'Trip ID: SKY-TEST-1001',
+    'Company: Example Charter Group',
+    'Checkout email: broker@example-charter.test',
+    'Aircraft type: Citation CJ3',
+    'Registration: N100TS',
+    'Itinerary: KAPF → KTEB',
+    'Depart: 2026-10-12',
+    'Return: 2026-10-14',
+    'Charter total: $18,500.00',
+  ];
+  const body = `%PDF-1.4\n${lines.map((line) => `(${line}) Tj`).join('\n')}\n%%EOF`;
+  const text = extractUncompressedPdfText(Buffer.from(body));
+  const parsed = parseCheckoutEmail({
+    subject: 'Charter contract',
+    from: '',
+    bodyText: text,
+    attachmentText: text,
+    attachmentNames: ['synthetic-charter.pdf'],
+    hasPdf: true,
+  });
+  assert.equal(parsed.isCheckout, true);
+  assert.equal(parsed.tripId, 'SKY-TEST-1001');
+  assert.equal(parsed.tripTotal, 18500);
+  assert.equal(parsed.checkoutEmail, 'broker@example-charter.test');
+  assert.equal(parsed.tail, 'N100TS');
 });

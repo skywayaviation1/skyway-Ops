@@ -1,7 +1,7 @@
 // Firebase initialization. Public client config - safe to commit.
 import { initializeApp } from 'firebase/app';
-import { initializeFirestore } from 'firebase/firestore';
-import { getAuth, indexedDBLocalPersistence, initializeAuth } from 'firebase/auth';
+import { connectFirestoreEmulator, initializeFirestore } from 'firebase/firestore';
+import { connectAuthEmulator, getAuth, indexedDBLocalPersistence, initializeAuth } from 'firebase/auth';
 import { Capacitor } from '@capacitor/core';
 
 // signInWithRedirect sends the browser to `authDomain` to run the sign-in
@@ -64,3 +64,10 @@ export const db = initializeFirestore(
 export const auth = Capacitor.isNativePlatform()
   ? initializeAuth(app, { persistence: indexedDBLocalPersistence })
   : getAuth(app);
+
+// Local verification only. Production builds leave VITE_FIREBASE_EMULATORS unset,
+// so the client keeps talking to the named appusers database in the cloud.
+if (import.meta.env.VITE_FIREBASE_EMULATORS === '1') {
+  connectFirestoreEmulator(db, '127.0.0.1', Number(import.meta.env.VITE_FIRESTORE_EMULATOR_PORT || 8080));
+  connectAuthEmulator(auth, import.meta.env.VITE_AUTH_EMULATOR_URL || 'http://127.0.0.1:9099', { disableWarnings: true });
+}

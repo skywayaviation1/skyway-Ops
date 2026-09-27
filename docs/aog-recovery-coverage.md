@@ -75,9 +75,17 @@ The terms on the page and in the PDF are a placeholder marked for Jake. Replace 
 
 ## Ops tab
 
-Aircraft → **AOG Coverage** (roles `ops` and `admin`, same gate as the previous AOG entry). The table lists trip id, broker, checkout email, tail, aircraft, dates, route, trip total, coverage level, premium, payment status, Stripe reference, contract links, offer time, and bind time. Filters and CSV export are on the page. Rates and complimentary domains are edited there and saved by `/api/aog-recovery-settings`.
+Aircraft → **AOG Coverage** (roles `ops` and `admin`). The page lists every trip from the schedule the app already has: iCal legs plus manual trips, grouped to one row per trip id, with `trip-state` contract flags overlaid. A trip that has never been through the inbox still appears as **50% included** and **contract missing**.
 
-The trip page has **Add 100% AOG** for ops and admin (`POST /api/aog-recovery-gift`).
+Columns: trip id, dates, route, tail, aircraft, broker company and email, charter contract (attached or missing), contract trip total, coverage level, premium, payment status, offer sent, bound to CFS. The default window is upcoming trips plus the last 14 days. Filters cover upcoming, past, and a date range, plus contract missing, coverage level, payment status, aircraft, and broker. Search and CSV export stay. The table pages 40 rows at a time.
+
+The row drawer uploads or replaces the signed charter PDF. The same provisional parser reads it and the fields (broker email, trip total, aircraft, tail, route, dates) are editable before save. Save attaches the PDF to every leg of that trip (same storage path, dedupe, and versioning as the inbox) and creates or updates the coverage record the same way a checkout does: a complimentary domain gets 100% complimentary, the broker covered email, and the CFS bind; any other domain gets the 100% offer email. Paid rows can still replace the PDF. The drawer also corrects trip total and broker email, resends the offer, gifts 100%, downloads the charter contract and signed election, and lists the append-only event history.
+
+**Unmatched contracts** and **Settings** are tabs on this page. Settings edits the aircraft rate table (Citation CJ3 1.5%, Learjet 60 2%) and the complimentary domain list. Each domain stores who added it and when. Adding a domain offers to apply complimentary 100% to that domain’s upcoming trips that are not yet at 100%. The test-mode banner and **Scan inbox** stay on the page.
+
+Every write is `POST` with a Firebase ID token, checked server-side for an active approved ops or admin user, and written with the Admin SDK. The browser does not write coverage, rates, domains, or contracts.
+
+The trip page still has **Add 100% AOG** for ops and admin (`POST /api/aog-recovery-gift`).
 
 The earlier accept/decline log (JetInsight invoice offers) is still available at the bottom of the tab. New checkouts do not use that flow.
 
@@ -107,6 +115,8 @@ Collection `aogRecovery` (database `appusers`):
 | `stripeCheckoutSessionId`, `stripePaymentIntentId`, `stripeEventId`, `stripeRefundId` | strings |
 | `departAt`, `returnAt`, `createdAt`, `updatedAt` | Firestore Timestamp |
 | `departAtUtc`, `returnAtUtc`, `createdAtUtc`, `updatedAtUtc` | UTC ISO strings for the same instants. A date with no time is UTC midnight. |
+
+`aogRecoveryConfig/settings.complimentaryDomainRecords` is `{ domain, addedBy, addedAt }`. `complimentaryDomains` stays the string list the classifier reads.
 
 Event history is append-only at `aogRecovery/{id}/coverageEvents/{eventId}`. Writers use create, so an existing event is never updated. Document id is `offer_sent`, `contract_signed`, or `bound` the first time, and `paid_{paymentIntent}` or `refunded_{refundId}` so a repeat webhook does not add a second row. A forced resend uses a new id. Event types: `offer_sent`, `contract_signed`, `paid`, `bound`, `refunded`. Each event stores `type`, `at` (Timestamp), `atUtc`, `amountCents`, `currency`, trip id, broker domain, aircraft, tail, coverage level, election source, payment status, and the Stripe ids known at that time.
 
@@ -163,7 +173,8 @@ Merge `firestore/aog-recovery.rules` into the **appusers** database rules. Do no
 3. Open the offer link while signed out. Sign as a fake name, then pay with Stripe test card `4242 4242 4242 4242`. The webhook should mark the row paid.
 4. Mail to the broker and to CFS should arrive only at the test recipient, subject starting with `[TEST]`, body listing the real To and Cc.
 5. Gift 100% from a trip page and confirm a bind email is queued the same way, with premium `complimentary`.
-6. Add a domain under Rates, re-scan a checkout from that domain, and confirm coverage becomes 100% complimentary without a card charge.
-7. On a matched trip, open any leg and confirm Documents shows the signed charter contract, the sender, and the received time. Send the same PDF again and confirm the trip still has one current file. A checkout that matches no trip stays under Unmatched contracts until ops attaches it.
+6. On AOG Coverage → Settings, add a broker domain. Confirm who added it and when are shown, and that upcoming trips on that domain which are not yet at 100% can be applied in the same step. A checkout from that domain on the next scan is 100% complimentary with no card charge.
+7. On a matched trip, open any leg and confirm Documents shows the signed charter contract, the sender, and the received time. Send the same PDF again and confirm the trip still has one current file. A checkout that matches no trip stays under Unmatched contracts until ops picks the trip.
+8. On a trip row with contract missing, upload a synthetic charter PDF, review the parsed broker email, trip total, aircraft, tail, route, and dates, then save. Gift 100% from the row, resend the offer, and export CSV. The default list includes trips that never came from the inbox.
 
 `npm test` uses synthetic fixtures only. It does not call Graph or Stripe.

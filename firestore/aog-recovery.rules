@@ -2,7 +2,8 @@
 // Merge these matches into the existing ruleset. Do not deploy this file
 // by itself — it is not a complete ruleset and would lock every other
 // collection. The Admin SDK (inbox scan, Stripe webhook, public election,
-// gift, settings) bypasses these rules. Browsers may only read.
+// gift, contract upload, rates, and complimentary domains) bypasses these
+// rules. Browsers may only read.
 
 rules_version = '2';
 service cloud.firestore {
@@ -22,7 +23,7 @@ service cloud.firestore {
     }
 
     // Coverage rows. Ops reads them in the AOG Coverage tab. All writes
-    // (premium, payment, signature, contracts) are server-side.
+    // (premium, payment, signature, contracts, uploads, rates, domains) are server-side.
     match /aogRecovery/{coverageId} {
       allow read: if isOpsOrAdmin();
       allow create, update, delete: if false;
