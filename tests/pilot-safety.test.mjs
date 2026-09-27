@@ -342,6 +342,7 @@ test('a trip share builds one PASS report and keeps the SIC on the SIC standard'
   });
   assert.equal(reports.length, 1);
   assert.equal(reports[0].crew.length, 2);
+  assert.equal(reports[0].chips.find((chip) => chip.id === 'aircraft').status, 'Meets');
   assert.equal(reports[0].chips.find((chip) => chip.id === 'pic').status, 'Meets');
   assert.equal(reports[0].chips.find((chip) => chip.id === 'sic').status, 'Meets');
   assert.equal(reports[0].itinerary.from, 'TVC');

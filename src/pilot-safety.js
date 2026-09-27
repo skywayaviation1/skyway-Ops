@@ -1448,7 +1448,7 @@ export function brokerPilotReport(evaluation, {
     waivers: [],
     chips: [
       { id: 'operator', label: 'Operator', status: operatorName ? 'Meets' : 'Does Not Meet' },
-      { id: 'aircraft', label: 'Aircraft', status: hasAircraft ? 'Meets' : 'Does Not Meet' },
+      ...(hasAircraft ? [{ id: 'aircraft', label: 'Aircraft', status: 'Meets' }] : []),
       { id: 'pic', label: 'PIC', status: chipLabel(bySeat?.PIC?.tier || ev.positions?.PIC?.tier || (ev.role === 'SIC' ? null : ev.tier)) },
       { id: 'sic', label: 'SIC', status: chipLabel(bySeat?.SIC?.tier || ev.positions?.SIC?.tier || (ev.role === 'SIC' ? ev.tier : null)) },
     ],
