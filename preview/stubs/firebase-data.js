@@ -35,4 +35,8 @@ export const saveUserTabOrder = noop;
 export const clearUserTabOrder = noop;
 export const publishDefaultTabOrder = noop;
 
+export const subscribeFratConfig = (cb) => emit(null)(cb);
+export const fetchFratConfig = async () => null;
+export const saveFratConfig = noop;
+
 export const SAMPLE_TRIPS = TRIPS;

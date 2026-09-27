@@ -247,8 +247,10 @@ async function fetchTailState(ident, apiKey) {
       destinationLon: active.destination?.longitude ?? null,
       destinationCity: active.destination?.city || null,
       destinationTz: active.destination?.timezone || null,
+      actualOut: active.actual_out || null,
       actualOff: active.actual_off,
       actualOn: null,
+      actualIn: null,
       estimatedOn: active.estimated_on || null,
       scheduledOn: active.scheduled_on || null,
       scheduledIn: active.scheduled_in || null,
@@ -289,8 +291,10 @@ async function fetchTailState(ident, apiKey) {
       destination: destCode,
       destinationCity: dest.city || null,
       destinationTz: dest.timezone || null,
+      actualOut: lastLanded.actual_out || null,
       actualOff: lastLanded.actual_off || null,
       actualOn: lastLanded.actual_on,
+      actualIn: lastLanded.actual_in || null,
       estimatedOn: null,
       scheduledOn: lastLanded.scheduled_on || null,
       scheduledIn: lastLanded.scheduled_in || null,
@@ -490,6 +494,19 @@ function buildBrokerEmail({ tail, eventType, originCode, destCode, originTz, des
 async function fireStatus({ db, host, tripUid, tripState, stepId, eventTimeMs, eventState, eventType }) {
   const existingStatuses = tripState.statuses || {};
   const autoFiredEvents = tripState.autoFiredEvents || {};
+
+  try {
+    const { mergeTripOooi } = await import('./_trip-oooi.js');
+    await mergeTripOooi(db, tripUid, tripState.oooi, {
+      actualOut: eventState?.actualOut,
+      actualOff: eventState?.actualOff,
+      actualOn: eventState?.actualOn,
+      actualIn: eventState?.actualIn,
+      faFlightId: eventState?.faFlightId,
+    });
+  } catch (err) {
+    console.warn('[fa-cron-poll] could not store OOOI:', err?.message || err);
+  }
 
   // Idempotent: if this step was auto-fired before, skip
   if (autoFiredEvents[stepId]) {

@@ -129,6 +129,9 @@ const AdminDutyReportLazy = lazy(() => import('./AdminDutyReport.jsx'));
 // it and even ops only opens it when new coverage records need
 // creating or reviewing.
 const AogTabLazy = lazy(() => import('./AogTab.jsx'));
+import { PilotRatingBadge } from './BrokerPilotReport.jsx';
+import { usePilotSafetyData } from './use-pilot-safety-data.js';
+import { picAtpWarning } from './pilot-safety.js';
 import AppTimezoneSwitch from './AppTimezoneSwitch.jsx';
 import { todayInAppTz } from './app-timezone.js';
 import { createPortal } from 'react-dom';
@@ -4872,7 +4875,24 @@ function DutyCard({ currentUser, config, myTrips, users }) {
    audited adminEditDuty / forceCloseDuty data layer).
    ============================================================ */
 
-function PilotHomeScreen({ currentUser, trips, tripStates, config, users, onSelectTrip, onSwitchSection }) {
+function SafetyRatingLink({ rating, uid, onOpen }) {
+  if (!rating || !uid || typeof onOpen !== 'function') return null;
+  return (
+    <button
+      type="button"
+      data-testid="safety-rating-link"
+      title="Open in Compliance · Currency"
+      className="shrink-0"
+      onClick={() => onOpen(uid)}
+    >
+      <PilotRatingBadge rating={rating} />
+    </button>
+  );
+}
+
+function PilotHomeScreen({ currentUser, trips, tripStates, config, users, onSelectTrip, onSwitchSection, onOpenCompliance }) {
+  const safety = usePilotSafetyData(currentUser);
+  const myRating = currentUser?.uid ? safety.rate(currentUser) : null;
   // Filter to MY trips (PIC/SIC match)
   const myTrips = useMemo(() => {
     if (!Array.isArray(trips)) return [];
@@ -4923,6 +4943,9 @@ function PilotHomeScreen({ currentUser, trips, tripStates, config, users, onSele
             <p className="mt-1 font-mono text-2xs text-content-muted">
               <LocalClock />
             </p>
+            <div className="mt-2">
+              <SafetyRatingLink rating={myRating} uid={currentUser?.uid} onOpen={onOpenCompliance} />
+            </div>
           </div>
           <Button
             variant="outline"
@@ -5207,7 +5230,18 @@ function QuickActionButton({ icon: Icon, label, onClick }) {
 /* ============================================================
    Trip detail view
    ============================================================ */
-function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], allTrips, config, opsEmail, onBack, onArchive, tripDetailOrder, onReorderTripDetail }) {
+function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], allTrips, config, opsEmail, onBack, onArchive, tripDetailOrder, onReorderTripDetail, onOpenCompliance = null }) {
+  const safety = usePilotSafetyData(currentUser);
+  const crewRating = (name) => {
+    if (!name) return null;
+    const person = (users || []).find((candidate) => (
+      nameMatchesPilot(name, candidate.jetinsightName || '')
+      || nameMatchesPilot(name, candidate.name || '')
+    ));
+    if (!person?.uid) return null;
+    return { uid: person.uid, rating: safety.rate(person) };
+  };
+  const picSeatWarning = picAtpWarning(crewRating(trip.info?.pic)?.rating, safety.standards);
   const requestedTripTab = () => {
     if (typeof window === 'undefined') return null;
     const id = window.location.hash.replace(/^#/, '').toLowerCase();
@@ -6417,8 +6451,21 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
                   <span className="flex items-center gap-1.5">
                     <Users className="h-3.5 w-3.5" /> {effectivePax} passengers
                   </span>
-                  {trip.info.pic && <span><strong className="text-content-subtle">PIC</strong> {trip.info.pic}</span>}
-                  {trip.info.sic && <span><strong className="text-content-subtle">SIC</strong> {trip.info.sic}</span>}
+                  {trip.info.pic && (
+                    <span className="flex items-center gap-1.5">
+                      <strong className="text-content-subtle">PIC</strong> {trip.info.pic}
+                      <SafetyRatingLink {...(crewRating(trip.info.pic) || {})} onOpen={onOpenCompliance} />
+                      {picSeatWarning && (
+                        <span data-testid="pic-atp-warning" className="font-medium text-amber-300">{picSeatWarning}</span>
+                      )}
+                    </span>
+                  )}
+                  {trip.info.sic && (
+                    <span className="flex items-center gap-1.5">
+                      <strong className="text-content-subtle">SIC</strong> {trip.info.sic}
+                      <SafetyRatingLink {...(crewRating(trip.info.sic) || {})} onOpen={onOpenCompliance} />
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
@@ -6857,12 +6904,14 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
               <span className="flex items-center gap-1.5">
                 <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>PIC</span>
                 <span className="text-slate-300" style={{ fontFamily: 'DM Sans, sans-serif' }}>{trip.info.pic}</span>
+                <SafetyRatingLink {...(crewRating(trip.info.pic) || {})} onOpen={onOpenCompliance} />
               </span>
             )}
             {trip.info.sic && (
               <span className="flex items-center gap-1.5">
                 <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>SIC</span>
                 <span className="text-slate-300" style={{ fontFamily: 'DM Sans, sans-serif' }}>{trip.info.sic}</span>
+                <SafetyRatingLink {...(crewRating(trip.info.sic) || {})} onOpen={onOpenCompliance} />
               </span>
             )}
           </div>
@@ -7175,17 +7224,26 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
                   {[
                     { role: 'PIC', name: trip.info.pic },
                     { role: 'SIC', name: trip.info.sic },
-                  ].filter((member) => member.name).map((member) => (
+                  ].filter((member) => member.name).map((member) => {
+                    const linked = crewRating(member.name);
+                    return (
                     <div key={member.role} className="flex items-center gap-3">
                       <span className="flex h-9 w-9 items-center justify-center rounded-full border border-accent-border bg-accent-soft text-sm font-semibold text-accent">
                         {member.name.split(/\s+/).map((part) => part[0]).slice(0, 2).join('').toUpperCase()}
                       </span>
-                      <div>
-                        <div className="text-sm font-semibold text-content">{member.name}</div>
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <div className="text-sm font-semibold text-content">{member.name}</div>
+                          {linked && <SafetyRatingLink rating={linked.rating} uid={linked.uid} onOpen={onOpenCompliance} />}
+                        </div>
                         <div className="text-2xs text-content-subtle">{member.role}</div>
+                        {member.role === 'PIC' && picSeatWarning && (
+                          <div data-testid="pic-atp-warning" className="text-[11px] font-medium text-amber-300">{picSeatWarning}</div>
+                        )}
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
                   {!trip.info.pic && !trip.info.sic && (
                     <p className="text-2xs text-content-muted">Crew has not been assigned.</p>
                   )}
@@ -14432,7 +14490,9 @@ function ReviewField({ label, value, onChange, mono }) {
   );
 }
 
-function MyProfileModal({ currentUser, onClose, onSave }) {
+function MyProfileModal({ currentUser, onClose, onSave, onOpenCompliance }) {
+  const safety = usePilotSafetyData(currentUser);
+  const myRating = currentUser?.uid ? safety.rate(currentUser) : null;
   const [name, setName] = useState(currentUser?.name || '');
   const [callsign, setCallsign] = useState(currentUser?.callsign || '');
   const [jetinsightName, setJetinsightName] = useState(currentUser?.jetinsightName || '');
@@ -14482,6 +14542,17 @@ function MyProfileModal({ currentUser, onClose, onSave }) {
             <div className="flex items-baseline gap-3">
               <div className="w-24 text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>ROLE</div>
               <div className="text-sm text-slate-300">{USER_ROLES[currentUser?.role]?.label || (currentUser?.role || '').toUpperCase()}</div>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="w-24 text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>RATING</div>
+              <SafetyRatingLink
+                rating={myRating}
+                uid={currentUser?.uid}
+                onOpen={(uid) => {
+                  onClose?.();
+                  onOpenCompliance?.(uid);
+                }}
+              />
             </div>
           </div>
 
@@ -15464,7 +15535,7 @@ function TabOrderPanel({ currentUser }) {
   );
 }
 
-function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, onLoadFromText, syncStatus, currentUser, allTrips, users = [] }) {
+function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, onLoadFromText, syncStatus, currentUser, allTrips, users = [], onOpenCompliance = null }) {
   const [icalUrl, setIcalUrl] = useState(config.icalUrl || '');
   const [icalText, setIcalText] = useState('');
   const [crewName, setCrewName] = useState(config.crewName || '');
@@ -15720,7 +15791,15 @@ function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, 
                     CREW · LOADING…
                   </div>
                 }>
-                  <CrewBoardV2Lazy currentUser={currentUser} users={users} trips={allTrips} />
+                  <CrewBoardV2Lazy
+                    currentUser={currentUser}
+                    users={users}
+                    trips={allTrips}
+                    onOpenCompliance={(uid) => {
+                      onClose?.();
+                      onOpenCompliance?.(uid);
+                    }}
+                  />
                 </Suspense>
               </div>
             </section>
@@ -21792,7 +21871,7 @@ const NAV_SECTIONS = [
   { id: 'inbox',     label: 'Shared inbox', icon: Mail,          roles: ['sales', 'admin'] },
 
   { id: 'duty',      label: 'Duty',        icon: Clock,         roles: ['admin'] },
-  { id: 'currency',  label: 'Currency',    icon: ShieldCheck,   roles: ['crew', 'ops', 'admin'] },
+  { id: 'currency',  label: 'Currency',    icon: ShieldCheck,   roles: ['crew', 'sales', 'ops', 'admin'] },
   { id: 'wear',      label: 'Wear',        icon: Activity,      roles: ['crew', 'maint', 'ops', 'admin'] },
   { id: 'reports',   label: 'Reports',     icon: AlertCircle,   roles: ['crew', 'ops', 'admin'] },
 
@@ -27720,10 +27799,23 @@ export default function CharterOps() {
     if (typeof window === 'undefined') return 'home';
     const params = new URLSearchParams(window.location.search);
     if (params.get('trip')) return 'schedule';
-    if (params.get('section') === 'accounting' || params.has('qbo')) return 'accounting';
-    if (params.get('section') === 'mailbox' || params.has('userMail')) return 'mailbox';
+    const requested = params.get('section');
+    if (requested === 'accounting' || params.has('qbo')) return 'accounting';
+    if (requested === 'mailbox' || params.has('userMail')) return 'mailbox';
+    if (requested === 'currency' || requested === 'pilot-rating') return 'currency';
     return params.get('channel') || window.location.hash === '#comms' ? 'comms' : 'home';
   });
+  const [complianceFocus, setComplianceFocus] = useState(null);
+  const openCompliance = (uid) => {
+    setComplianceFocus({ uid: uid || null, token: Date.now() });
+    setSelectedId(null);
+    setSection('currency');
+  };
+  const selectSection = (id) => {
+    if (id === 'currency') setComplianceFocus(null);
+    setSection(id);
+    setSelectedId(null);
+  };
   // FlightAware live tracking kill switch — synced from Firestore so admin can
   // disable it cluster-wide if costs spike. Default: enabled.
   const [trackingEnabled, setTrackingEnabled] = useState(true);
@@ -28711,7 +28803,7 @@ export default function CharterOps() {
         )}
         <TopNav
           currentSection={section}
-          setCurrentSection={(s) => { setSection(s); setSelectedId(null); }}
+          setCurrentSection={selectSection}
           currentUser={currentUser}
           onLogout={signOut}
           syncStatus={syncStatus}
@@ -28794,6 +28886,7 @@ export default function CharterOps() {
               users={users}
               onSelectTrip={(uid) => { setSelectedId(uid); setSection('schedule'); }}
               onSwitchSection={(id) => setSection(id)}
+              onOpenCompliance={openCompliance}
             />
           )
         )}
@@ -28993,6 +29086,7 @@ export default function CharterOps() {
                       || null
                   }
                   onReorderTripDetail={reorderTripDetail}
+                  onOpenCompliance={openCompliance}
                 />
               ) : (
                 <div className="h-full flex items-center justify-center p-8 grid-bg">
@@ -29107,6 +29201,7 @@ export default function CharterOps() {
                       || null
                   }
                   onReorderTripDetail={reorderTripDetail}
+                  onOpenCompliance={openCompliance}
                 />
               ) : (
                 <div className="h-full flex items-center justify-center p-8 grid-bg">
@@ -29334,7 +29429,14 @@ export default function CharterOps() {
             61.57(b) Night currencies from actual flight history. */}
         {section === 'currency' && (
           <Suspense fallback={<div className="flex-1 flex items-center justify-center text-slate-500"><Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading currency dashboard...</div>}>
-            <PilotCurrencyLazy currentUser={currentUser} users={users} allTrips={allTrips} />
+            <PilotCurrencyLazy
+              currentUser={currentUser}
+              users={users}
+              allTrips={allTrips}
+              aircraftByTail={config?.aircraftByTail || {}}
+              focusUid={complianceFocus?.uid || null}
+              focusToken={complianceFocus?.token || 0}
+            />
           </Suspense>
         )}
 
@@ -29483,7 +29585,7 @@ export default function CharterOps() {
         )}
         <MobileNav
           currentSection={section}
-          setCurrentSection={(s) => { setSection(s); setSelectedId(null); }}
+          setCurrentSection={selectSection}
           currentUser={currentUser}
           onOpenSettings={() => {
             if (currentUser?.role === 'admin') {
@@ -29507,6 +29609,7 @@ export default function CharterOps() {
           currentUser={currentUser}
           allTrips={allTrips}
           users={users}
+          onOpenCompliance={openCompliance}
           onClose={() => setShowSettings(false)}
           onLoadDemo={loadDemo}
           onLoadFromUrl={loadFromUrl}
@@ -29517,6 +29620,7 @@ export default function CharterOps() {
       {showProfile && currentUser && (
         <MyProfileModal
           currentUser={currentUser}
+          onOpenCompliance={openCompliance}
           onClose={() => setShowProfile(false)}
           onSave={async (patch) => {
             await updateUser(currentUser.uid || currentUser.id, patch);

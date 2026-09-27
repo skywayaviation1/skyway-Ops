@@ -57,6 +57,7 @@ const OpsConsole = lazy(() => import('../src/OpsConsole.jsx'));
 const FlightBoard = lazy(() => import('../src/FlightBoard.jsx'));
 const AdminDutyReport = lazy(() => import('../src/AdminDutyReport.jsx'));
 const TripTrackPage = lazy(() => import('../src/TripTrack.jsx'));
+const PilotCurrency = lazy(() => import('../src/PilotCurrency.jsx'));
 
 const SURFACES = {
   dashboard: {
@@ -137,6 +138,45 @@ const SURFACES = {
   broker: {
     label: 'Broker live tracking link',
     render: () => <TripTrackPage token="preview-token" />,
+  },
+
+  currency: {
+    label: 'Compliance and currency',
+    render: () => (
+      <PilotCurrency
+        currentUser={CURRENT_USER}
+        users={USERS}
+        allTrips={TRIPS}
+        aircraftByTail={CONFIG.aircraftByTail}
+      />
+    ),
+  },
+
+  'pilot-rating': {
+    label: 'Hours and rating inside Compliance',
+    render: () => (
+      <PilotCurrency
+        currentUser={CURRENT_USER}
+        users={USERS}
+        allTrips={TRIPS}
+        aircraftByTail={CONFIG.aircraftByTail}
+        initialView="rating"
+        focusUid="pilot-cade"
+      />
+    ),
+  },
+
+  'pilot-settings': {
+    label: 'Rating minimums inside Compliance',
+    render: () => (
+      <PilotCurrency
+        currentUser={CURRENT_USER}
+        users={USERS}
+        allTrips={TRIPS}
+        aircraftByTail={CONFIG.aircraftByTail}
+        initialStandards
+      />
+    ),
   },
 
   dutyreport: {

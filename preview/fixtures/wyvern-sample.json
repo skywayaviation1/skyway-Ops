@@ -1,0 +1,120 @@
+{
+  "source": "Fictitious Wyvern ACES sample for the preview harness. Not a real roster.",
+  "pilots": [
+    {
+      "pilotName": "Cade Kaftel",
+      "emailAddress": "cade@flyskyway.com",
+      "phone": "(555) 010-0142",
+      "wyvernId": "ACES-SAMPLE-1001",
+      "status": "Active",
+      "position": "PIC",
+      "verificationStatus": "Verified",
+      "aircraftTypes": ["Citation XLS+", "Citation CJ3"],
+      "certificate": {
+        "grade": "ATP",
+        "ratings": "Instrument, Multi-engine",
+        "typeRatings": ["Citation XLS+"],
+        "certificateNumber": "DO-NOT-IMPORT-1001"
+      },
+      "flightHours": {
+        "totalTime": 4820,
+        "pic": 2310,
+        "sic": 2510,
+        "multiEngine": 4100,
+        "turbine": 3600,
+        "night": 640,
+        "instrument": 410,
+        "last90Days": 48,
+        "last12Months": 312,
+        "asOf": "2026-09-01",
+        "timeInType": [
+          { "type": "Citation XLS+", "hours": 860 },
+          { "type": "Citation CJ3", "hours": 240 }
+        ]
+      }
+    },
+    {
+      "pilotName": "Maxwell Hagberg",
+      "emailAddress": "maxwell@flyskyway.com",
+      "phone": "(555) 010-0199",
+      "wyvernId": "ACES-SAMPLE-1002",
+      "status": "Active",
+      "position": "PIC",
+      "verificationStatus": "Verified",
+      "certificate": {
+        "grade": "Airline Transport Pilot",
+        "ratings": "Instrument, Multi-engine",
+        "typeRatings": ["Citation XLS+"],
+        "certificateNumber": "DO-NOT-IMPORT-1002"
+      },
+      "medical": { "class": "First", "issued": "2025-06-01", "expiration": "2027-06-30" },
+      "flightHours": {
+        "totalTime": 4820,
+        "PIC": 2310,
+        "turbine": 4100,
+        "asOf": "2026-09-01",
+        "timeInType": [{ "type": "Citation XLS+", "hours": 860 }]
+      },
+      "training": [
+        { "name": "§135.299 line check", "completed": "2025-11-01", "due": "2026-11-30" },
+        { "name": "§135.297 IPC", "completed": "2026-03-01", "due": "2026-09-30" }
+      ],
+      "documents": [
+        { "type": "Medical", "expiry": "2027-06-30", "documentNumber": "DO-NOT-IMPORT-MED" },
+        { "type": "Passport", "expiry": "2030-01-01", "documentNumber": "DO-NOT-IMPORT-PPT" }
+      ]
+    },
+    {
+      "name": "Woods, Timothy",
+      "wyvernId": "ACES-SAMPLE-1003",
+      "status": "Active",
+      "position": "SIC",
+      "flightHours": {
+        "totalTime": 4820,
+        "pic": 2310,
+        "sic": 2510,
+        "multiEngine": 4100,
+        "turbine": 3600,
+        "night": 640,
+        "instrument": 410,
+        "last90Days": 48,
+        "last12Months": 312
+      }
+    },
+    {
+      "pilotName": "Melissa Rippy",
+      "email": "melissa@flyskyway.com",
+      "wyvernId": "ACES-SAMPLE-1004",
+      "status": "Active Pilot",
+      "certificate": { "level": "Commercial" },
+      "flightHours": { "turbine": 900, "totalTime": 4820 },
+      "checks": [
+        { "code": "135.299", "name": "Line check", "completedOn": "2024-01-15", "dueDate": "2025-01-31" }
+      ]
+    },
+    {
+      "name": "Nora Pell",
+      "email": "nora.pell@example.test",
+      "phone": "(555) 010-0177",
+      "wyvernId": "ACES-SAMPLE-1005",
+      "status": "Active",
+      "position": "SIC",
+      "certificate": { "grade": "Commercial", "instrumentRating": true },
+      "flightHours": { "totalTime": 1800, "pic": 400, "turbine": 220, "asOf": "2026-08-01" }
+    },
+    {
+      "name": "Riley Quinn",
+      "email": "riley.quinn@example.test",
+      "wyvernId": "ACES-SAMPLE-1006",
+      "status": "Inactive",
+      "flightHours": { "totalTime": 9000, "pic": 7000 }
+    },
+    {
+      "name": "Pat Example",
+      "email": "pat.example@example.test",
+      "wyvernId": "ACES-SAMPLE-1007",
+      "status": "",
+      "flightHours": { "totalTime": 3000 }
+    }
+  ]
+}

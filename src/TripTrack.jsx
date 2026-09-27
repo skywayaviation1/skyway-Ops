@@ -37,6 +37,7 @@ import { flightCategoryStyle, normalizeTrail, distanceNm } from './tracking-map.
 // no getIdToken since the broker page is anonymous; the endpoint accepts
 // unauthenticated reads for now (NOTAM data is public FAA info).
 import FAANotamBadge from './FAANotamBadge.jsx';
+import BrokerPilotReport from './BrokerPilotReport.jsx';
 import { showsCateringStatus } from './ops-readiness.js';
 
 const POLL_MS = 120000; // refresh live position every 2 minutes
@@ -986,6 +987,14 @@ export default function TripTrackPage({ token }) {
             );
           })}
         </section>
+
+        {Array.isArray(trip.crewReports) && trip.crewReports.length > 0 && (
+          <section data-testid="broker-crew">
+            {trip.crewReports.map((report) => (
+              <BrokerPilotReport key={report.generatedAt || report.crew?.[0]?.pilotName} report={report} />
+            ))}
+          </section>
+        )}
 
         <footer className="text-[10px] text-slate-600 text-center py-6 border-t border-slate-800" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
           QUESTIONS? · CHARTERS@FLYSKYWAY.COM · 727-605-5000

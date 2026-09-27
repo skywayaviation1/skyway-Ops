@@ -26,6 +26,7 @@
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import { verifyTripToken } from './_trip-token.js';
+import { crewReportsForTrip } from './_pilot-report-data.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -554,11 +555,16 @@ export default async function handler(req, res) {
   const hasDepartedLeg = sanitized.legs.some((l) => l.status?.wheels_up);
   const hasAirborneLeg = sanitized.legs.some((l) => l.status?.wheels_up && !l.status?.landed);
 
-  const [position, trail, weather] = await Promise.all([
+  const [position, trail, weather, crewReports] = await Promise.all([
     fetchPosition(sanitized.tail),
     hasDepartedLeg && sanitized.tail ? fetchActualPath(sanitized.tail) : Promise.resolve(null),
     fetchWeather(airportCodes),
+    crewReportsForTrip(db(), sanitized).catch((err) => {
+      console.warn('[trip-public] crew reports failed:', err?.message || err);
+      return [];
+    }),
   ]);
+  sanitized.crewReports = Array.isArray(crewReports) ? crewReports : [];
 
   return res.status(200).json({
     ok: true,

@@ -17,6 +17,8 @@
 
 import React, { useEffect, useMemo, useState, lazy, Suspense } from 'react';
 import { AlertTriangle, Clock, CheckCircle2, Shield, Users, Download, Settings, Calendar } from 'lucide-react';
+import { PilotRatingBadge } from './BrokerPilotReport.jsx';
+import { usePilotSafetyData } from './use-pilot-safety-data.js';
 import { subscribeRecentForAllPilots, subscribePeriodsForPilot, fetchOutsideFlyingForPilot } from './firebase-duty-v2.js';
 import { evaluateCurrent, evaluateProposed } from './duty-legality.js';
 import { DutyExportModal } from './DutyExport.jsx';
@@ -45,7 +47,30 @@ function fmtTime(t) {
   return d.toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' });
 }
 
-export default function CrewBoardV2({ currentUser, users = [], trips = [] } = {}) {
+function BoardRatingLink({ uid, rating, onOpenCompliance }) {
+  if (!rating || !uid || typeof onOpenCompliance !== 'function') return null;
+  return (
+    <button
+      type="button"
+      data-testid="safety-rating-link"
+      title="Open in Compliance · Currency"
+      className="shrink-0"
+      onClick={(event) => {
+        event.stopPropagation();
+        onOpenCompliance(uid);
+      }}
+    >
+      <PilotRatingBadge rating={rating} />
+    </button>
+  );
+}
+
+export default function CrewBoardV2({ currentUser, users = [], trips = [], onOpenCompliance = null } = {}) {
+  const safety = usePilotSafetyData(currentUser);
+  const ratingFor = (uid) => {
+    const pilot = (users || []).find((person) => person.uid === uid);
+    return pilot ? safety.rate(pilot) : null;
+  };
   const [periods, setPeriods] = useState([]);
   const [loading, setLoading] = useState(true);
   const [now, setNow] = useState(Date.now());
@@ -286,6 +311,8 @@ export default function CrewBoardV2({ currentUser, users = [], trips = [] } = {}
                       expandedUid={managePilotUid}
                       onToggle={(uid) => setManagePilotUid(managePilotUid === uid ? null : uid)}
                       allPeriods={periods}
+                      ratingFor={ratingFor}
+                      onOpenCompliance={onOpenCompliance}
                     />
                   );
                   continue;
@@ -306,6 +333,8 @@ export default function CrewBoardV2({ currentUser, users = [], trips = [] } = {}
                 expanded={managePilotUid === row.uid}
                 onToggle={() => setManagePilotUid(managePilotUid === row.uid ? null : row.uid)}
                 allPeriods={periods}
+                ratingFor={ratingFor}
+                onOpenCompliance={onOpenCompliance}
               />
             );
           }
@@ -345,7 +374,7 @@ export default function CrewBoardV2({ currentUser, users = [], trips = [] } = {}
   );
 }
 
-function CrewRow({ row, now, canManage, currentUser, crewUsers, expanded, onToggle, allPeriods }) {
+function CrewRow({ row, now, canManage, currentUser, crewUsers, expanded, onToggle, allPeriods, ratingFor, onOpenCompliance }) {
   const { name, active, sorted, state, legality, uid } = row;
   const elapsed = active?.dutyOnAt ? now - active.dutyOnAt : 0;
   const elapsedHrs = elapsed / MS_HR;
@@ -398,8 +427,9 @@ function CrewRow({ row, now, canManage, currentUser, crewUsers, expanded, onTogg
     <div>
       <div className="grid items-center gap-3 px-3 py-2"
         style={{ gridTemplateColumns: gridCols }}>
-        <div className="text-sm text-slate-200 truncate" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-          {name}
+        <div className="flex min-w-0 items-center gap-1.5 text-sm text-slate-200" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+          <span className="truncate">{name}</span>
+          <BoardRatingLink uid={uid} rating={ratingFor?.(uid)} onOpenCompliance={onOpenCompliance} />
         </div>
         <div className={`text-[11px] tracking-widest ${stateTone}`}
           style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
@@ -529,7 +559,7 @@ function CrewRow({ row, now, canManage, currentUser, crewUsers, expanded, onTogg
 // admins can drill into either pilot's record. Clicking one expands the
 // existing CrewManagePanel below the row.
 
-function CrewPairRow({ pic, sic, sicPending, now, canManage, currentUser, crewUsers, expandedUid, onToggle, allPeriods }) {
+function CrewPairRow({ pic, sic, sicPending, now, canManage, currentUser, crewUsers, expandedUid, onToggle, allPeriods, ratingFor, onOpenCompliance }) {
   // Use the earlier dutyOnAt for shared elapsed (conservative)
   const dutyOnAt = Math.min(
     pic.active?.dutyOnAt || Number.POSITIVE_INFINITY,
@@ -588,11 +618,13 @@ function CrewPairRow({ pic, sic, sicPending, now, canManage, currentUser, crewUs
             style={{ fontFamily: 'DM Sans, sans-serif' }}>
             <span className="text-[9px] tracking-widest text-cyan-500 shrink-0">PIC</span>
             <span className="truncate">{pic.name}</span>
+            <BoardRatingLink uid={pic.uid} rating={ratingFor?.(pic.uid)} onOpenCompliance={onOpenCompliance} />
           </div>
           <div className="text-sm text-slate-300 truncate flex items-center gap-1.5"
             style={{ fontFamily: 'DM Sans, sans-serif' }}>
             <span className="text-[9px] tracking-widest text-cyan-500 shrink-0">SIC</span>
             <span className="truncate">{sic.name}</span>
+            <BoardRatingLink uid={sic.uid} rating={ratingFor?.(sic.uid)} onOpenCompliance={onOpenCompliance} />
             {sicPending && (
               <span className="text-[9px] tracking-widest text-amber-400 shrink-0"
                 style={{ fontFamily: 'JetBrains Mono, monospace' }}>

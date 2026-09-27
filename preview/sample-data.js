@@ -274,8 +274,17 @@ export function tripStates(now = Date.now()) {
   }));
 
   const flown = LEG.flownEarlier;
+  const flownOut = at(flown.startH);
+  const flownIn = at(flown.endH);
   map.set(flown.uid, tripState({
     tripId: flown.uid,
+    oooi: {
+      actualOut: flownOut.toISOString(),
+      actualOff: new Date(flownOut.getTime() + 6 * MIN).toISOString(),
+      actualOn: new Date(flownIn.getTime() - 8 * MIN).toISOString(),
+      actualIn: flownIn.toISOString(),
+      faFlightId: 'preview-sky-1003',
+    },
     statuses: {
       crew_onsite: step(now - 11 * HOUR, flown.pic),
       aircraft_ready: step(now - 10.6 * HOUR, flown.pic),
@@ -473,3 +482,141 @@ export const PILOT_USER = {
   role: 'crew', approved: true, active: true, email: emailFor(LEAD_PILOT),
   certType: 'ATP', certNumber: '3458291', jetinsightName: LEAD_PILOT.name,
 };
+
+function ymd(offsetDays) {
+  return new Date(Date.now() + offsetDays * 86400000).toISOString().slice(0, 10);
+}
+
+const currentCheck = (daysAgo = 80) => ({ lastDate: ymd(-daysAgo) });
+const dueOn = (daysAhead) => ({ dueDate: ymd(daysAhead) });
+const notApplicable = () => ({ notApplicable: true });
+
+/**
+ * Logbooks and currency records for the preview harness.
+ * Profiles are assigned by crew index so every tenant shows a mix:
+ * meets standard, expiring soon, and does not meet.
+ */
+export function pilotSafetySeed() {
+  const primary = T.fleet[0]?.displayName || 'Aircraft';
+  const secondary = T.fleet[1]?.displayName || 'Aircraft 2';
+  const baseHours = {
+    totalTime: 4820,
+    pic: 2310,
+    sic: 2510,
+    fixedWing: 4700,
+    picFixedWing: 2280,
+    rotorWing: 0,
+    singleEngine: 120,
+    multiEngine: 4100,
+    picMultiEngine: 2050,
+    multiEngine90: 42,
+    multiEngine12: 210,
+    turbine: 3600,
+    night: 640,
+    instrument: 410,
+    last90Days: 48,
+    last12Months: 312,
+    timeInType: [
+      { type: primary, hours: 860, picHours: 410 },
+      { type: secondary, hours: 240, picHours: 80 },
+    ],
+  };
+  const checks = () => ({
+    medical: { class: 'First', expirationDate: ymd(420), lastDate: ymd(-50) },
+    basicIndoctrination: currentCheck(200),
+    groundOralGeneral293a: currentCheck(60),
+    groundOral293a_CE525: currentCheck(60),
+    groundOral293a_LR60: notApplicable(),
+    groundOral293a_SF50: notApplicable(),
+    groundOral293a_untyped: notApplicable(),
+    sim293b_CE525: currentCheck(50),
+    sim293b_LR60: notApplicable(),
+    sim293b_SF50: notApplicable(),
+    sim293b_untyped: notApplicable(),
+    competencyCheck293: notApplicable(),
+    instrumentCheck297: currentCheck(40),
+    lineCheck299: currentCheck(70),
+    recurrentTraining351: currentCheck(90),
+    crmTraining330: dueOn(220),
+    hazmatTraining: currentCheck(30),
+    tfsspTraining: dueOn(180),
+  });
+  const profiles = ['meets', 'caution', 'short', 'from-certificate', 'meets', 'meets', 'meets', 'unenrolled'];
+
+  const logbooks = [];
+  const currencies = [];
+  const pilotDocs = [];
+
+  T.crew.forEach((person, index) => {
+    const profile = profiles[index] || 'meets';
+    const hours = { ...baseHours, timeInType: baseHours.timeInType.map((entry) => ({ ...entry })) };
+    const currency = { uid: person.uid, pilotName: person.name, ...checks() };
+    const certificate = {
+      level: 'ATP',
+      instrument: true,
+      multiEngine: true,
+      typeRatings: ['CE-525', 'LR-60'],
+      typeVerified: true,
+      country: 'United States',
+    };
+    const background = { employment: 'Full Time', accident: false, enforcement: false };
+    let drugAlcohol = {
+      enrolled: true,
+      enrolledDate: ymd(-800),
+      programName: 'Company DOT/FAA program',
+    };
+    if (profile === 'caution') {
+      currency.recurrentTraining351 = dueOn(18);
+      certificate.level = 'Commercial';
+    } else if (profile === 'short') {
+      hours.turbine = 180;
+      hours.timeInType = [{ type: primary, hours: 40, picHours: 12 }];
+      currency.lineCheck299 = dueOn(-12);
+      certificate.level = 'Commercial';
+      certificate.typeVerified = false;
+    } else if (profile === 'from-certificate') {
+      certificate.level = '';
+      certificate.instrument = null;
+      certificate.multiEngine = null;
+      certificate.typeRatings = [];
+      pilotDocs.push({
+        id: `pdoc-${person.uid}`,
+        uid: person.uid,
+        docType: 'certificate',
+        certType: 'ATP',
+        ratings: `Instrument, Multi-engine, ${primary}`,
+        documentNumber: 'DO-NOT-SHOW-4491',
+        dob: '1981-04-02',
+        holderName: person.name,
+        uploadedAt: Date.now() - 86400000,
+      });
+    } else if (profile === 'unenrolled') {
+      drugAlcohol = { enrolled: false, enrolledDate: '', programName: '' };
+    }
+    const snapshot = {
+      ...hours,
+      timeInType: hours.timeInType.map((entry) => ({ ...entry })),
+    };
+    logbooks.push({
+      uid: person.uid,
+      pilotName: person.name,
+      hours: snapshot,
+      baseline: {
+        asOf: ymd(-2),
+        source: index === 4 ? 'Wyvern' : 'manual',
+        hours: {
+          ...snapshot,
+          timeInType: snapshot.timeInType.map((entry) => ({ ...entry })),
+        },
+      },
+      certificate,
+      background,
+      drugAlcohol,
+      internalNotes: profile === 'meets' && index === 0 ? 'Home address must never reach a broker.' : '',
+      updatedAt: Date.now(),
+    });
+    currencies.push(currency);
+  });
+
+  return { logbooks, currencies, pilotDocs };
+}
