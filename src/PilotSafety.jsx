@@ -25,7 +25,7 @@ import {
   emptyLogbook,
   evaluatePilot,
   itemStatusLabel,
-  normalizeCertificateLevel,
+  parseAirmanCertificate,
   normalizeLogbook,
   summarizeDutyFlightHours,
 } from './pilot-safety.js';
@@ -288,14 +288,14 @@ function PilotSafetyView({
                 <h3 className="text-[10px] tracking-widest text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>BROKER REPORT</h3>
                 {withhold.length === 0 ? (
                   <p className="mt-2 text-sm text-slate-300">
-                    Shown to brokers when every assigned pilot’s hours and medical meet that seat. Checks, training, and background stay on this screen.
+                    Shown to brokers when every assigned pilot’s hours, medical, and required ATP certificate meet that seat. Checks, training, and background stay on this screen.
                   </p>
                 ) : (
                   <>
                     <p className="mt-2 text-sm text-amber-100">
                       {report
-                        ? 'Hidden from brokers on any trip that assigns this pilot to a seat whose hours or medical do not meet. That share page leaves the crew report off.'
-                        : 'Hidden from brokers. The share page leaves the crew report off, and email is blocked, until this pilot’s hours and medical meet a seat.'}
+                        ? 'Hidden from brokers on any trip that assigns this pilot to a seat whose hours, medical, or ATP certificate do not meet. That share page leaves the crew report off.'
+                        : 'Hidden from brokers. The share page leaves the crew report off, and email is blocked, until this pilot’s hours, medical, and required ATP certificate meet a seat.'}
                     </p>
                     <ul className="mt-2 list-disc space-y-1 pl-4 text-xs text-slate-300">
                       {withhold.map((line) => <li key={line}>{line}</li>)}
@@ -597,7 +597,7 @@ function PilotSafetyView({
         <Modal title={report ? 'Crew report' : 'Not sent to brokers'} onClose={() => setShowReport(false)}>
           {report ? <BrokerPilotReport report={report} /> : (
             <div className="border border-slate-700 bg-slate-950 p-4 text-sm text-slate-200">
-              <p>This crew report is hidden from brokers. The share page omits it, and email is blocked, until the assigned pilot’s hours and medical meet the seat.</p>
+              <p>This crew report is hidden from brokers. The share page omits it, and email is blocked, until the assigned pilot’s hours, medical, and required ATP certificate meet the seat.</p>
               <ul className="mt-3 list-disc space-y-1 pl-4 text-xs text-slate-300">
                 {withhold.map((line) => <li key={line}>{line}</li>)}
               </ul>
@@ -718,9 +718,11 @@ function CertificateBlock({ draft, canEdit, docs, rating, onChange, onDrugChange
     ? `Airman certificate on file lists ${certificate.certType || 'a grade'}${certificate.ratings ? ` (${certificate.ratings})` : ''}. The certificate number stays on Pilot Docs.`
     : '';
   const applyHint = () => {
+    const parsed = parseAirmanCertificate(certificate?.certType);
     onChange({
       ...draft.certificate,
-      level: normalizeCertificateLevel(certificate?.certType) || draft.certificate.level,
+      level: parsed.fixedWing || draft.certificate.level,
+      rotorLevel: parsed.rotorWing || draft.certificate.rotorLevel,
       typeRatings: draft.certificate.typeRatings.length
         ? draft.certificate.typeRatings
         : String(certificate?.ratings || '').split(/[,;\n]/).map((part) => part.trim()).filter(Boolean),
@@ -756,6 +758,9 @@ function CertificateBlock({ draft, canEdit, docs, rating, onChange, onDrugChange
             <option value="">Not recorded</option>
             {CERTIFICATE_LEVELS.map((level) => <option key={level.id} value={level.id}>{level.label}</option>)}
           </select>
+          {draft.certificate.rotorLevel === 'ATP' && draft.certificate.level !== 'ATP' && (
+            <span className="mt-1 block text-[11px] text-amber-200">Rotor-wing ATP does not meet the PIC fixed-wing ATP requirement.</span>
+          )}
         </label>
         <TriState
           label="Instrument rating"
@@ -967,7 +972,7 @@ function EmailPilotReport({ pilot, onClose }) {
     <Modal title="Email pilot report" onClose={onClose}>
       <div className="space-y-3 border border-slate-700 bg-slate-950 p-4 text-slate-100">
         <p className="text-sm text-slate-300">
-          Sends {pilot.name}’s crew summary as a PDF. It goes out only when this pilot’s hours and medical meet a seat. Certificate numbers, date of birth, and addresses are not included.
+          Sends {pilot.name}’s crew summary as a PDF. It goes out only when this pilot’s hours, medical, and required ATP certificate meet a seat. Certificate numbers, date of birth, and addresses are not included.
         </p>
         <label className="block text-[11px] text-slate-400">
           Broker email

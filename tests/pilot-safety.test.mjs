@@ -9,7 +9,11 @@ import {
   brokerWithholdReasons,
   buildBrokerCrewReports,
   evaluatePilot,
+  normalizeCertificateLevel,
+  normalizeLogbook,
   normalizeStandards,
+  parseAirmanCertificate,
+  picAtpWarning,
   summarizeDutyFlightHours,
 } from '../src/pilot-safety.js';
 
@@ -112,6 +116,8 @@ test('shipped standards are the Wyvern Registered Standard by position', () => {
   assert.equal(standards.positions.SIC.medicalClass, 'Second');
   assert.equal(standards.positions.PIC.medicalMonths, 12);
   assert.equal(standards.positions.SIC.medicalMonths, 12);
+  assert.equal(standards.positions.PIC.atpCertificate, true);
+  assert.equal(standards.positions.SIC.atpCertificate, false);
   assert.equal(standards.positions.PIC.indoctrination, true);
   assert.equal(standards.positions.SIC.indoctrination, true);
   assert.equal(standards.positions.PIC.lineCheck, true);
@@ -304,6 +310,8 @@ test('the broker report keeps vetting facts and drops personal data', () => {
     assert.equal(blob.includes(banned), false, banned);
   }
   assert.equal(report.crew[0].pilotName, 'Maxwell Hagberg');
+  assert.equal(report.crew[0].rows[0].label, 'ATP Certificate');
+  assert.equal(report.crew[0].rows[0].value, 'ATP');
   assert.equal(report.crew[0].certificateType, 'Airline Transport Pilot');
   assert.equal(report.crew[0].typeRating, 'Citation XLS+');
   assert.equal(report.crew[0].country, undefined);
@@ -394,6 +402,9 @@ test('a trip share builds one PASS report and keeps the SIC on the SIC standard'
   assert.equal(reports[0].crew.length, 2);
   assert.equal(reports[0].crew[0].role, 'Pilot-in-Command');
   assert.equal(reports[0].crew[1].role, 'Second-in-Command');
+  assert.equal(reports[0].crew[0].rows[0].label, 'ATP Certificate');
+  assert.equal(reports[0].crew[0].rows[0].value, 'ATP');
+  assert.equal(reports[0].crew[1].rows.some((row) => row.label === 'ATP Certificate'), false);
   assert.equal(reports[0].crew[1].rows.some((row) => row.label === 'Line Check'), false);
   assert.equal(reports[0].crew[0].rows.find((row) => row.label === 'Medical').value.includes('Class 1'), true);
   assert.equal(reports[0].gapAnalysis, undefined);
@@ -410,6 +421,82 @@ test('the broker share and the email route are wired to the sanitized report', a
   assert.match(email, /blocked/);
   assert.match(screen, /broker-withhold/);
   assert.match(screen, /\/api\/pilot-report-email/);
+});
+
+test('a PIC without a fixed-wing ATP is withheld and a rotor-wing ATP does not count', () => {
+  const commercial = evaluatePilot({
+    pilot,
+    logbook: logbook({ certificate: { ...logbook().certificate, level: 'Commercial' } }),
+    currencyDoc: currency(),
+    todayMs: today,
+  });
+  assert.equal(commercial.positions.PIC.tier, 'doesNotMeet');
+  assert.equal(commercial.positions.SIC.tier, 'meets');
+  assert.equal(brokerPilotReport(commercial, { generatedAt: '2026-09-27T15:00:00.000Z' }).crew[0].role, 'Second-in-Command');
+  assert.equal(brokerWithholdReasons(commercial).includes('PIC does not hold ATP'), true);
+  assert.equal(picAtpWarning(commercial), 'PIC does not hold ATP');
+
+  const rotor = normalizeLogbook(logbook({
+    certificate: {
+      ...logbook().certificate,
+      level: 'Commercial / Instrument; Rotor-Wing Airline Transport Pilot',
+    },
+  }));
+  assert.equal(rotor.certificate.level, 'Commercial');
+  assert.equal(rotor.certificate.rotorLevel, 'ATP');
+  const rotorRating = evaluatePilot({
+    pilot,
+    logbook: rotor,
+    currencyDoc: currency(),
+    todayMs: today,
+  });
+  assert.equal(rotorRating.certificate.level, 'Commercial');
+  assert.equal(brokerWithholdReasons(rotorRating).includes('PIC does not hold ATP'), true);
+  const hidden = buildBrokerCrewReports({
+    legs: [{ pic: 'Maxwell Hagberg', sic: 'Timothy Woods', aircraftType: 'Citation XLS+' }],
+    users: [
+      { uid: 'pilot-1', name: 'Maxwell Hagberg' },
+      { uid: 'pilot-2', name: 'Timothy Woods' },
+    ],
+    logbooksByUid: {
+      'pilot-1': rotor,
+      'pilot-2': logbook(),
+    },
+    currenciesByUid: {
+      'pilot-1': currency(),
+      'pilot-2': currency(),
+    },
+    generatedAt: '2026-09-27T15:00:00.000Z',
+    todayMs: today,
+  });
+  assert.deepEqual(hidden, []);
+
+  const waived = normalizeStandards({ positions: { PIC: { atpCertificate: false } } });
+  const allowed = evaluatePilot({
+    pilot,
+    logbook: logbook({ certificate: { ...logbook().certificate, level: 'Commercial' } }),
+    currencyDoc: currency(),
+    standards: waived,
+    todayMs: today,
+  });
+  assert.equal(allowed.positions.PIC.tier, 'meets');
+  assert.equal(brokerPilotReport(allowed, { generatedAt: '2026-09-27T15:00:00.000Z' }).crew[0].role, 'Pilot-in-Command');
+  assert.equal(brokerPilotReport(allowed).crew[0].rows.some((row) => row.label === 'ATP Certificate'), false);
+  assert.equal(picAtpWarning(allowed, waived), '');
+  assert.equal(normalizeCertificateLevel('Airline Transport Pilot'), 'ATP');
+  assert.equal(normalizeCertificateLevel('Rotor-Wing Airline Transport Pilot'), '');
+  assert.deepEqual(parseAirmanCertificate('Commercial / Instrument; Rotor-Wing Airline Transport Pilot'), {
+    fixedWing: 'Commercial',
+    rotorWing: 'ATP',
+  });
+});
+
+test('the trip screen warns when a non-ATP pilot is assigned as PIC', async () => {
+  const app = await readFile(path.join(root, 'src/App.jsx'), 'utf8');
+  const settings = await readFile(path.join(root, 'src/PilotSafetySettings.jsx'), 'utf8');
+  assert.match(app, /pic-atp-warning/);
+  assert.match(app, /picAtpWarning/);
+  assert.match(settings, /ATP certificate required/);
 });
 
 test('rating editors live in Compliance / Currency', async () => {

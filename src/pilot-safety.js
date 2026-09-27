@@ -256,6 +256,7 @@ function defaultPosition(seat) {
     recurrentMonths: 12,
     simulatorMonths: 12,
     motionSimulator: true,
+    atpCertificate: pic,
   };
 }
 
@@ -323,7 +324,7 @@ function readPosition(raw, seat, fallback) {
     const value = finiteNumber(source[key]);
     if (value != null) next[key] = value;
   }
-  for (const key of ['indoctrination', 'lineCheck', 'ipc', 'confirmedType', 'motionSimulator']) {
+  for (const key of ['indoctrination', 'lineCheck', 'ipc', 'confirmedType', 'motionSimulator', 'atpCertificate']) {
     if (typeof source[key] === 'boolean') next[key] = source[key];
   }
   return next;
@@ -428,6 +429,7 @@ export function emptyLogbook(uid = '', pilotName = '') {
     },
     certificate: {
       level: '',
+      rotorLevel: '',
       instrument: null,
       multiEngine: null,
       typeRatings: [],
@@ -555,7 +557,15 @@ export function normalizeLogbook(raw, uid = '') {
   book.uid = uid || raw.uid || book.uid;
   book.pilotName = String(raw.pilotName || '').slice(0, 80);
   book.hours = copyHourBag(raw.hours);
-  book.certificate.level = normalizeCertificateLevel(raw.certificate?.level);
+  const parsedCertificate = parseAirmanCertificate(raw.certificate?.level);
+  const storedLevel = String(raw.certificate?.level || '').trim();
+  book.certificate.level = CERTIFICATE_LEVELS.some((level) => level.id === storedLevel)
+    ? storedLevel
+    : parsedCertificate.fixedWing;
+  const storedRotor = String(raw.certificate?.rotorLevel || '').trim();
+  book.certificate.rotorLevel = CERTIFICATE_LEVELS.some((level) => level.id === storedRotor)
+    ? storedRotor
+    : parsedCertificate.rotorWing;
   book.certificate.instrument = raw.certificate?.instrument === true
     ? true
     : raw.certificate?.instrument === false
@@ -591,13 +601,48 @@ export function normalizeLogbook(raw, uid = '') {
   return book;
 }
 
-export function normalizeCertificateLevel(value) {
-  const text = String(value || '').trim().toLowerCase();
-  if (!text) return '';
-  if (text === 'atp' || text.includes('airline transport')) return 'ATP';
-  if (text.startsWith('comm')) return 'Commercial';
-  if (text.startsWith('priv')) return 'Private';
+function certificateGrade(text) {
+  const value = String(text || '').trim().toLowerCase();
+  if (!value) return '';
+  if (value === 'atp' || /\batp\b/.test(value) || value.includes('airline transport')) return 'ATP';
+  if (value.includes('commercial')) return 'Commercial';
+  if (value.includes('private')) return 'Private';
   return '';
+}
+
+function higherGrade(current, next) {
+  return levelRank(next) > levelRank(current) ? next : current;
+}
+
+/**
+ * Wyvern certificate type strings name fixed-wing and rotor-wing grades in
+ * one field. A rotor-wing ATP does not satisfy a fixed-wing ATP.
+ * "Commercial / Instrument; Rotor-Wing Airline Transport Pilot" is
+ * fixed-wing Commercial and rotor-wing ATP.
+ */
+export function parseAirmanCertificate(value) {
+  const text = String(value || '').trim();
+  if (!text) return { fixedWing: '', rotorWing: '' };
+  const segments = text
+    .split(/\s*(?:;|\|)\s*|\s+(?=(?:rotor[-\s]?wing|helicopter)\b)/i)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  let fixedWing = '';
+  let rotorWing = '';
+  for (const part of segments) {
+    const grade = certificateGrade(part);
+    if (!grade) continue;
+    if (/rotor[-\s]?wing|helicopter|\brotor\b/i.test(part)) rotorWing = higherGrade(rotorWing, grade);
+    else fixedWing = higherGrade(fixedWing, grade);
+  }
+  return { fixedWing, rotorWing };
+}
+
+/** Fixed-wing grade only. A rotor-wing ATP returns blank. */
+export function normalizeCertificateLevel(value) {
+  const stored = String(value || '').trim();
+  if (CERTIFICATE_LEVELS.some((level) => level.id === stored)) return stored;
+  return parseAirmanCertificate(value).fixedWing;
 }
 
 function levelRank(id) {
@@ -774,6 +819,7 @@ function resolveCertificate(logbook, pilotDocs) {
   }
   return {
     level,
+    rotorLevel: stored.rotorLevel || '',
     instrument,
     multiEngine,
     typeRatings,
@@ -938,6 +984,19 @@ function scorePosition(seat, position, ctx) {
     gaps.push({ ...row, met: ok });
     if (!ok && failure) hardFailures.push(failure);
   };
+
+  const holdsAtp = ctx.certificate.level === 'ATP';
+  const atpRequired = position.atpCertificate === true;
+  noteGap(
+    {
+      id: `${seat}:atp`,
+      label: 'ATP certificate',
+      pilotValue: holdsAtp ? 'ATP' : (ctx.certificate.level || 'Not on file'),
+      criterion: atpRequired ? 'ATP' : 'Not required',
+    },
+    !atpRequired || holdsAtp,
+    atpRequired && !holdsAtp ? `${seat} does not hold ATP` : '',
+  );
 
   for (const field of POSITION_HOUR_FIELDS) {
     const minimum = Number(position.hours[field.key]) || 0;
@@ -1264,6 +1323,7 @@ export function evaluatePilot({
     requirements: active.requirements,
     certificate: {
       level: certificate.level,
+      rotorLevel: certificate.rotorLevel || '',
       instrument: certificate.instrument,
       multiEngine: certificate.multiEngine,
       typeRatings: certificate.typeRatings,
@@ -1349,10 +1409,12 @@ function seatCriterion(row, seat) {
 }
 
 /**
- * Hours and medical are the only items a broker report is allowed to depend on.
- * Checks, training, and background stay on the internal rating.
+ * Hours, medical, and a required fixed-wing ATP are the only items a broker
+ * report is allowed to depend on. Checks, training, and background stay on
+ * the internal rating.
  */
 const BROKER_GATE_LABELS = new Set([
+  'ATP certificate',
   'Total time',
   'PIC time',
   'Fixed-wing',
@@ -1371,16 +1433,27 @@ function brokerGateFailures(evaluation, seat) {
   return (evaluation?.gapAnalysis || []).filter((row) => BROKER_GATE_LABELS.has(row.label) && !seatMet(row, seat));
 }
 
-/** Internal only. Explains a seat whose hours or medical miss the broker gate. */
+/** Internal only. Explains a seat whose hours, medical, or ATP miss the broker gate. */
 export function brokerWithholdReasons(evaluation, seat = null) {
   const seats = seat ? [seat] : ['PIC', 'SIC'];
   const lines = [];
   for (const name of seats) {
     for (const row of brokerGateFailures(evaluation, name)) {
+      if (row.label === 'ATP certificate') {
+        lines.push(`${name} does not hold ATP`);
+        continue;
+      }
       lines.push(`${name}: ${row.label} is ${row.pilotValue} (${seatCriterion(row, name)}).`);
     }
   }
   return lines;
+}
+
+/** Internal trip warning when the assigned PIC lacks a fixed-wing ATP. */
+export function picAtpWarning(rating, standards = null) {
+  if (standards?.positions?.PIC?.atpCertificate === false) return '';
+  if (!rating || rating.certificate?.level === 'ATP') return '';
+  return 'PIC does not hold ATP';
 }
 
 function prettyDate(value) {
@@ -1453,6 +1526,7 @@ function medicalRowValue(ev) {
 }
 
 export const BROKER_CREW_ROWS = Object.freeze([
+  'ATP Certificate',
   'Medical',
   'Total Flight Time',
   'Total PIC Time',
@@ -1468,6 +1542,7 @@ export const BROKER_CREW_ROWS = Object.freeze([
 
 function crewMember(ev, seat) {
   const rows = [
+    ...(seat === 'PIC' && ev?.certificate?.level === 'ATP' ? [['ATP Certificate', 'ATP']] : []),
     ['Medical', medicalRowValue(ev)],
     ['Total Flight Time', hourPhrase(experienceValue(ev, 'totalTime'))],
     ['Total PIC Time', hourPhrase(experienceValue(ev, 'pic'))],

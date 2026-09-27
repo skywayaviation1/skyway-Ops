@@ -131,6 +131,7 @@ const AdminDutyReportLazy = lazy(() => import('./AdminDutyReport.jsx'));
 const AogTabLazy = lazy(() => import('./AogTab.jsx'));
 import { PilotRatingBadge } from './BrokerPilotReport.jsx';
 import { usePilotSafetyData } from './use-pilot-safety-data.js';
+import { picAtpWarning } from './pilot-safety.js';
 import AppTimezoneSwitch from './AppTimezoneSwitch.jsx';
 import { todayInAppTz } from './app-timezone.js';
 import { createPortal } from 'react-dom';
@@ -5240,6 +5241,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
     if (!person?.uid) return null;
     return { uid: person.uid, rating: safety.rate(person) };
   };
+  const picSeatWarning = picAtpWarning(crewRating(trip.info?.pic)?.rating, safety.standards);
   const requestedTripTab = () => {
     if (typeof window === 'undefined') return null;
     const id = window.location.hash.replace(/^#/, '').toLowerCase();
@@ -6453,6 +6455,9 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
                     <span className="flex items-center gap-1.5">
                       <strong className="text-content-subtle">PIC</strong> {trip.info.pic}
                       <SafetyRatingLink {...(crewRating(trip.info.pic) || {})} onOpen={onOpenCompliance} />
+                      {picSeatWarning && (
+                        <span data-testid="pic-atp-warning" className="font-medium text-amber-300">{picSeatWarning}</span>
+                      )}
                     </span>
                   )}
                   {trip.info.sic && (
@@ -7232,6 +7237,9 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
                           {linked && <SafetyRatingLink rating={linked.rating} uid={linked.uid} onOpen={onOpenCompliance} />}
                         </div>
                         <div className="text-2xs text-content-subtle">{member.role}</div>
+                        {member.role === 'PIC' && picSeatWarning && (
+                          <div data-testid="pic-atp-warning" className="text-[11px] font-medium text-amber-300">{picSeatWarning}</div>
+                        )}
                       </div>
                     </div>
                     );

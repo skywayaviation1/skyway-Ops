@@ -88,7 +88,7 @@ export default async function handler(req, res) {
       return res.status(409).json({
         ok: false,
         blocked: true,
-        error: 'This report was not sent. The pilot’s hours or medical do not meet the seat, so nothing was emailed to the broker.',
+        error: 'This report was not sent. The pilot’s hours, medical, or ATP certificate do not meet the seat, so nothing was emailed to the broker.',
         reasons,
       });
     }

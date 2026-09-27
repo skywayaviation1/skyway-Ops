@@ -26,6 +26,7 @@ const RULES = [
 ];
 
 const FLAGS = [
+  { key: 'atpCertificate', label: 'ATP certificate required' },
   { key: 'indoctrination', label: 'Indoctrination required' },
   { key: 'lineCheck', label: 'Line check required' },
   { key: 'ipc', label: 'Instrument proficiency check required' },

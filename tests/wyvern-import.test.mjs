@@ -475,6 +475,29 @@ test('the active-pilot JSON maps hours, intervals, and warnings without storing 
   assert.equal(JSON.stringify(currency).includes('SAMPLE-99'), false);
 });
 
+test('a rotor-wing ATP is not stored as a fixed-wing ATP', () => {
+  const parsed = parseWyvernText(JSON.stringify([{
+    wyvern_name: 'Rotor Example',
+    roster_status: 'Active on Roster',
+    certificate: { type: 'Commercial / Instrument; Rotor-Wing Airline Transport Pilot' },
+    experience: { total: 2000, pic: 800 },
+  }]));
+  const record = parsed.records[0];
+  assert.equal(record.certificate.level, 'Commercial');
+  assert.equal(record.certificate.rotorLevel, 'ATP');
+  assert.equal(record.warnings.includes('Certificate type was not recognized'), false);
+  const draft = wyvernLogbookDraft(null, record, { uid: 'rotor', pilotName: 'Rotor Example', now: 20 });
+  assert.equal(draft.certificate.level, 'Commercial');
+  assert.equal(draft.certificate.rotorLevel, 'ATP');
+  const rating = evaluatePilot({
+    pilot: { uid: 'rotor', name: 'Rotor Example' },
+    logbook: draft,
+    todayMs: Date.UTC(2026, 8, 27),
+  });
+  assert.equal(rating.certificate.level, 'Commercial');
+  assert.equal(brokerPilotReport(rating), null);
+});
+
 test('a future Wyvern hours push is shaped but not connected', () => {
   const status = wyvernOutboundStatus();
   assert.equal(status.ready, false);

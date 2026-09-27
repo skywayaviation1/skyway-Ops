@@ -6,7 +6,7 @@
 // Certificate numbers, dates of birth, addresses, and document files are never
 // copied onto the logbook or the currency record.
 
-import { normalizeCertificateLevel, normalizeLogbook } from './pilot-safety.js';
+import { parseAirmanCertificate, normalizeLogbook } from './pilot-safety.js';
 
 export const WYVERN_SOURCE = 'Wyvern';
 
@@ -626,7 +626,9 @@ function applyPassExtract(raw, record) {
   if (capture === false || ['false', 'no', 'n'].includes(String(capture ?? '').trim().toLowerCase())) {
     warnings.push('Wyvern marked this capture incomplete');
   }
-  if (certificateTypeText.trim() && !record.certificate.level) warnings.push('Certificate type was not recognized');
+  if (certificateTypeText.trim() && !record.certificate.level && !record.certificate.rotorLevel) {
+    warnings.push('Certificate type was not recognized');
+  }
   record.warnings = [...new Set(warnings)];
 }
 
@@ -678,7 +680,8 @@ export function normalizeWyvernRecord(raw) {
   const certificateTypeText = String(pick(certificateSource, [
     'level', 'grade', 'certificatetype', 'certtype', 'airmancertificate', 'certificategrade', 'category', 'type',
   ]) || (typeof certificateBag === 'string' ? certificateBag : ''));
-  const level = normalizeCertificateLevel(certificateTypeText);
+  const parsedCertificate = parseAirmanCertificate(certificateTypeText);
+  const level = parsedCertificate.fixedWing;
   const blob = `${ratingsBlob(certificateSource)} ${ratingsBlob(raw)}`;
   let instrument = parseBool(pick(certificateSource, ['instrument', 'instrumentrating', 'instrumentrated']));
   let multiEngine = parseBool(pick(certificateSource, ['multiengine', 'multienginerating', 'multirated']));
@@ -741,6 +744,7 @@ export function normalizeWyvernRecord(raw) {
     hoursAsOf,
     certificate: {
       level,
+      rotorLevel: parsedCertificate.rotorWing,
       instrument,
       multiEngine,
       typeRatings,
@@ -1046,6 +1050,7 @@ export function wyvernLogbookDraft(existing, record, { uid, pilotName, now = Dat
     hours: book.hours,
   };
   if (record?.certificate?.level) book.certificate.level = record.certificate.level;
+  if (record?.certificate?.rotorLevel) book.certificate.rotorLevel = record.certificate.rotorLevel;
   if (record?.certificate?.instrument != null) book.certificate.instrument = record.certificate.instrument;
   if (record?.certificate?.multiEngine != null) book.certificate.multiEngine = record.certificate.multiEngine;
   if (record?.certificate?.typeRatings?.length) {
