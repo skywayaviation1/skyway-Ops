@@ -418,8 +418,15 @@ html[data-native] .sw-mobile-tab {
   min-height: 48px;
 }
 
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("/fonts/inter-latin.woff2") format("woff2");
+}
 .cfs-portal {
-  --cfs-font: "DM Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --cfs-font: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --cfs-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --cfs-bg: #f3f4f6;
   --cfs-surface: #ffffff;
@@ -479,9 +486,9 @@ html[data-native] .sw-mobile-tab {
 .cfs-portal .sw-sheet-body,
 .aog-public-sheet .sw-sheet-body { padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 28px); }
 .cfs-portal h1, .cfs-portal h2, .cfs-portal h3, .cfs-portal p { margin: 0; }
-.cfs-portal h1 { font-size: 15px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.2; }
-.cfs-portal h2 { font-size: 18px; font-weight: 650; letter-spacing: -0.02em; }
-.cfs-portal h3 { font-size: 15px; font-weight: 650; }
+.cfs-portal h1 { font-size: 15px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.2; }
+.cfs-portal h2 { font-size: 18px; font-weight: 600; letter-spacing: -0.02em; }
+.cfs-portal h3 { font-size: 15px; font-weight: 600; }
 .cfs-kicker { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--cfs-muted); }
 .cfs-num { font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1; }
 .cfs-trip-id { font-family: var(--cfs-mono); font-weight: 600; font-size: 15px; letter-spacing: -0.03em; }
@@ -627,11 +634,11 @@ html[data-native] .sw-mobile-tab {
 }
 .cfs-row-main:hover { background: var(--cfs-hover); }
 .cfs-row-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.cfs-route { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-weight: 650; }
+.cfs-route { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-weight: 600; }
 .cfs-route-lg { font-size: 26px; letter-spacing: -0.03em; }
 .cfs-code { font-family: var(--cfs-mono); font-size: 16px; }
 .cfs-chevron { position: absolute; right: 0; top: 8px; color: var(--cfs-muted); }
-.cfs-pill { display: inline-flex; align-items: center; border-radius: 999px; padding: 2px 8px; font-size: 12px; font-weight: 650; background: var(--cfs-sunken); color: var(--cfs-ink); }
+.cfs-pill { display: inline-flex; align-items: center; border-radius: 999px; padding: 2px 8px; font-size: 12px; font-weight: 600; background: var(--cfs-sunken); color: var(--cfs-ink); }
 .cfs-pill-awaiting { background: var(--cfs-warn-bg); color: var(--cfs-warn); }
 .cfs-pill-confirmed { background: var(--cfs-ok-bg); color: var(--cfs-ok); }
 .cfs-pill-flown { background: var(--cfs-info-bg); color: var(--cfs-info); }
@@ -686,7 +693,7 @@ html[data-native] .sw-mobile-tab {
 .cfs-skeleton { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .cfs-skeleton span { display: block; height: 84px; border-radius: 12px; background: linear-gradient(90deg, var(--cfs-sunken), var(--cfs-surface), var(--cfs-sunken)); background-size: 200% 100%; animation: cfs-shimmer 1.2s ease infinite; }
 .cfs-skeleton-row { grid-column: 1 / -1; height: 96px; }
-.cfs-portal a { color: var(--cfs-accent); font-weight: 650; }
+.cfs-portal a { color: var(--cfs-accent); font-weight: 600; }
 @keyframes cfs-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 @media (min-width: 900px) {
   .cfs-cards { grid-template-columns: repeat(4, 1fr); gap: 16px; }

@@ -843,14 +843,18 @@ function AckForm({ heading, submitLabel, initial, onSubmit }) {
   const [errors, setErrors] = useState({});
 
   function handle(event) {
+    const data = new FormData(event.target);
+    const nextName = String(data.get('name') || '');
+    const nextEmail = String(data.get('email') || '');
+    const nextCost = String(data.get('cfsCost') || '');
     const next = {
-      name: name.trim().length < 2 ? 'Enter your name.' : '',
-      email: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()) ? '' : 'Enter a valid email.',
-      cfsCost: costError(cfsCost),
+      name: nextName.trim().length < 2 ? 'Enter your name.' : '',
+      email: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(nextEmail.trim()) ? '' : 'Enter a valid email.',
+      cfsCost: costError(nextCost),
     };
-    setErrors(next);
     if (next.name || next.email || next.cfsCost) {
       event.preventDefault();
+      setErrors(next);
       return;
     }
     onSubmit(event);
