@@ -254,9 +254,12 @@ async function seed() {
     electionSource: 'gifted',
     currency: 'usd',
     matchStatus: 'linked',
+    contractAttachStatus: 'attached',
     linkedTripUids: ['leg-cfs-a', 'leg-cfs-b'],
     contractLegIds: ['leg-cfs-a', 'leg-cfs-b'],
     bindEmailSentAt: '2026-11-01T15:00:00.000Z',
+    createdAt: Timestamp.fromDate(new Date('2026-11-01T15:00:00.000Z')),
+    updatedAt: '2026-11-01T15:00:00.000Z',
     ackTokenHash: createHash('sha256').update(CFS_ACK_TOKEN).digest('hex'),
     ackTokenExpiresAt: '2026-12-31T00:00:00.000Z',
     charterContractPath: 'trip-contracts/M8CFS2/charter-contract.pdf',
@@ -419,14 +422,16 @@ async function clickThrough() {
     await page.getByLabel('Contract').selectOption('');
     await page.getByText('R2K8LM').click();
     await page.getByRole('button', { name: 'Gift 100%' }).click();
-    const confirmGift = page.getByRole('button', { name: 'Confirm gift' });
-    await confirmGift.waitFor();
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const confirmGift = page.getByRole('button', { name: 'Confirm gift' });
       try {
-        await confirmGift.click({ timeout: 8000 });
+        await confirmGift.waitFor({ timeout: 4000 });
+        await confirmGift.click({ timeout: 5000 });
         break;
       } catch (err) {
-        if (attempt === 2) throw err;
+        if (attempt === 4) throw err;
+        const arm = page.getByRole('button', { name: 'Gift 100%' });
+        if (await arm.count()) await arm.click().catch(() => {});
       }
     }
     await page.getByText(/Gifted 100%/).waitFor({ timeout: 20000 });
@@ -619,9 +624,13 @@ async function clickThrough() {
     await page.setViewportSize({ width: 375, height: 667 });
     const ackBody = page.locator('.sw-sheet-body');
     const ackScrolled = await scrollSheetBody(ackBody);
-    await page.getByText('End of acknowledgement').waitFor();
-    if (ackScrolled.max > 20 && ackScrolled.top < ackScrolled.max - 8) {
-      throw new Error(`acknowledgement page did not reach the bottom ${JSON.stringify(ackScrolled)}`);
+    const ackEnd = page.getByText('End of acknowledgement');
+    await ackEnd.waitFor();
+    const ackBox = await ackEnd.boundingBox();
+    const ackViewport = page.viewportSize();
+    console.log('ack scroll', JSON.stringify({ ackScrolled, ackBox, ackViewport }));
+    if (!ackBox || ackBox.y < 0 || ackBox.y + ackBox.height > ackViewport.height + 2) {
+      throw new Error(`acknowledgement page did not reach the bottom ${JSON.stringify({ ackScrolled, ackBox })}`);
     }
     await shot(page, 'aog-cfs-form-iphone-375');
 
@@ -663,10 +672,15 @@ async function clickThrough() {
     await shot(page, 'aog-trip-detail-cfs');
 
     await page.getByLabel('Search trips').fill('M8CFS2');
+    await page.getByRole('cell', { name: /100% gifted by Skyway/ }).waitFor({ timeout: 15000 });
     await page.getByLabel('CFS confirmation').selectOption('confirmed');
     const badge = page.getByText('Confirmed · short');
     await badge.waitFor({ timeout: 15000 });
-    await badge.scrollIntoViewIfNeeded();
+    await badge.evaluate((el) => {
+      const scroller = el.closest('.overflow-x-auto') || el.parentElement;
+      if (scroller) scroller.scrollLeft = scroller.scrollWidth;
+      el.scrollIntoView({ block: 'center', inline: 'center' });
+    });
     await shot(page, 'aog-cfs-confirmed-badge');
     await page.getByRole('cell', { name: 'M8CFS2' }).click();
     await page.getByText('CFS cost').waitFor();
