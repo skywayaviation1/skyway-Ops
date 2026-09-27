@@ -286,8 +286,13 @@ async function seed() {
     currency: 'usd',
     bindEmailSentAt: '2026-09-25T12:00:00.000Z',
   };
+  const portalAck = (label) => ({
+    ackTokenHash: createHash('sha256').update(`synthetic-portal-ack-${label}`).digest('hex'),
+    ackTokenExpiresAt: '2026-12-31T00:00:00.000Z',
+  });
   await db.collection('aogRecovery').doc('cov-urgent').set({
     ...portalBase,
+    ...portalAck('V3K8QM'),
     tripId: 'V3K8QM',
     datesLabel: '2026-09-29 – 2026-09-30',
     departDate: '2026-09-29',
@@ -297,6 +302,7 @@ async function seed() {
   });
   await db.collection('aogRecovery').doc('cov-bulk').set({
     ...portalBase,
+    ...portalAck('L4P9HX'),
     tripId: 'L4P9HX',
     datesLabel: '2026-10-08 – 2026-10-09',
     departDate: '2026-10-08',
@@ -306,6 +312,7 @@ async function seed() {
   });
   await db.collection('aogRecovery').doc('cov-bound').set({
     ...portalBase,
+    ...portalAck('N6C2WT'),
     tripId: 'N6C2WT',
     datesLabel: '2026-10-02 – 2026-10-03',
     departDate: '2026-10-02',
@@ -911,8 +918,16 @@ async function portalShots(page) {
   await page.getByLabel('Your name').fill('Casey Stone');
   await page.getByLabel('Your email').fill('charter@charterflightsupport.com');
   await page.getByLabel('CFS cost').fill('640.00');
+  page.on('response', async (response) => {
+    const posted = response.request().postData() || '';
+    if (response.request().method() !== 'POST' || !posted.includes('"acknowledge"')) return;
+    const text = await response.text().catch(() => '');
+    console.log('ACK', response.status(), text.slice(0, 500));
+  });
   await page.getByRole('button', { name: 'Acknowledge coverage' }).click();
-  await page.getByRole('heading', { name: 'Coverage acknowledged' }).waitFor({ timeout: 20000 });
+  const acknowledged = page.getByRole('heading', { name: 'Coverage acknowledged' });
+  await acknowledged.waitFor({ timeout: 20000 });
+  await acknowledged.evaluate((el) => el.scrollIntoView({ block: 'center' }));
   await page.getByText('Signed in.').waitFor({ state: 'hidden', timeout: 1000 }).catch(() => {});
   await shot(page, 'cfs-ack-success');
 
