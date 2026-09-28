@@ -30,6 +30,14 @@ async function post(body) {
   return data;
 }
 
+// A magic link is single use. React's dev double-render would redeem it
+// twice and the second call would fail, so one in-flight redeem is shared.
+const linkRedeems = new Map();
+function redeemLink(token) {
+  if (!linkRedeems.has(token)) linkRedeems.set(token, post({ action: 'redeem', token }));
+  return linkRedeems.get(token);
+}
+
 function upTo(label) {
   if (!label) return '—';
   return label.charAt(0).toUpperCase() + label.slice(1);
@@ -214,7 +222,7 @@ export default function CfsPortal() {
       const aog = query.get('aog');
       if (link) {
         try {
-          const data = await post({ action: 'redeem', token: link });
+          const data = await redeemLink(link);
           sessionStorage.setItem(SESSION_KEY, data.sessionToken);
           if (!cancelled) {
             setSession(data.sessionToken);
