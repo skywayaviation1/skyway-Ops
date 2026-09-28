@@ -8,7 +8,7 @@ A parallel workstream (open pull request [#33](https://github.com/skywayaviation
 
 ## Recommendation in one paragraph
 
-Replatform the system of record to Postgres with row-level security. Keep the Vite/React app, the Vercel project `skyway-ops`, and the Capacitor shells. Do not start by rewriting `src/App.jsx` (about 29,500 lines) into Next.js. New customer companies are born in Postgres and never written into the shared Firestore database. Skyway’s existing Firestore data stays where it is until each collection is moved, with www.skyway.app and 135ops.app pinned to Skyway so a routing mistake cannot show another company or take the live site down. Staying on Firestore as the long-term store cannot meet the isolation requirement: the Firebase Admin SDK, which almost every API route uses, ignores security rules, and those rules are not in this repository.
+Replatform the system of record to Postgres with row-level security. Keep the Vite/React app, the Vercel project `skyway-ops`, and the Capacitor shells. Do not start by rewriting `src/App.jsx` (about 29,500 lines) into Next.js. New customer companies are born in Postgres and never written into the shared Firestore database. Skyway’s existing Firestore data stays where it is until each collection is moved, with www.skyway.app and 135ops.app pinned to Skyway so a routing mistake cannot show another company or take the live site down. Staying on Firestore as the long-term store cannot meet the isolation requirement: the Firebase Admin SDK, which almost every API route uses, ignores security rules, and those rules are not in this repository. Which modules a company has are a separate control: a catalog keyed to today’s screens, defaults from the Stripe tier, and a per-tenant override (force on, force off, or a trial that expires). The server blocks the API and the data, and the nav item is removed rather than shown as disabled.
 
 ## Current stack
 
@@ -353,12 +353,146 @@ Use Stripe Billing. Do not build an invoice engine.
 - One Stripe Customer per tenant. Store `stripe_customer_id` on `tenants`.
 - Products and Prices are the tiers Jake defines. Seat count is the subscription item quantity. Aircraft count or module add-ons are additional items if the pricing needs them.
 - Checkout creates the subscription. The Customer Portal updates the card and the seat count.
-- Webhooks (`customer.subscription.updated`, `invoice.paid`, `invoice.payment_failed`, `customer.subscription.deleted`) write `subscriptions` and `subscription_items`. The app reads that table. It does not trust the browser’s claim about the plan.
-- Feature flags live on the Price metadata and are copied onto `tenant_entitlements` by the webhook (`quickbooks`, `foreflight`, `charter_inbox`, `safety_rating`, `custom_domain`, `saml`, `audit_export`). Screens hide entry points. API routes return 402 when the entitlement is off.
-- Trial is a Stripe subscription status `trialing` with a timestamp. Expiry flips the tenant to read-only or suspended, according to Jake’s choice.
+- Webhooks (`customer.subscription.updated`, `invoice.paid`, `invoice.payment_failed`, `customer.subscription.deleted`) write `subscriptions` and `subscription_items`, then rebuild that tenant’s effective features from the Price’s row in `plan_features`. The app reads the effective table. It does not trust the browser’s claim about the plan.
+- A Stripe subscription status of `trialing` is the whole-account trial. It is separate from a per-feature trial, which the super-admin sets on one module. Account-trial expiry follows the past-due / suspend choice below. Feature-trial expiry turns that module off and leaves the rest of the subscription alone.
+- Which modules a Price includes is the catalog in the next section, not a free-form metadata string.
 - Skyway Aviation is an internal subscription with no card, marked `billing_exempt`. A failed webhook must not suspend tenant #1.
 - The super-admin panel can comp, extend a trial, or suspend. Suspend sets `tenants.status = suspended`. The resolver still returns the brand, and the app shows a suspended screen. Data stays. Crons skip suspended tenants.
 - Stripe secrets (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`) are platform env vars. They are not per tenant.
+
+### Feature entitlements
+
+Jake’s super-admin panel turns individual modules on or off per company. A module the tenant has not paid for, and that no override has opened, is absent from that company’s app. It is not shown as a locked or greyed-out item. Crews, dispatchers, and the tenant’s own admins do not see the nav entry, the page, or an “upgrade” prompt. The only place the full catalog is listed is the platform panel.
+
+Enforcement is on the server. Hiding a button is the visible half. The API and the data access for that module refuse the call even if a modified client asks for it.
+
+#### Catalog
+
+Keys match the navigation in `src/App.jsx` (`NAV_SECTIONS` / `NAV_GROUPS`) plus the modules that live inside a screen rather than as their own tab. A child is on only when it resolves on and every ancestor resolves on. Force-on on a child does not punch through a parent that is off. Turning a parent off hides the whole group, because `useNavGroups` already drops a group whose children are all gone.
+
+`always_on` keys are the product shell. They are not priced and the panel does not offer a switch. A company that cannot manage its own users is not a tenant.
+
+| Key | Always on | What the user sees today | What the server must refuse when off |
+| --- | --- | --- | --- |
+| `core.home` | yes | Nav `home` | — |
+| `core.users` | yes | Nav `users`. Invites, roles, disable. | `api/delete-user.js` stays available to tenant owners. It is not a paid module. |
+| `core.settings` | yes | Nav `settings`. Fleet and org settings the tenant is allowed to edit. | `api/admin-settings.js` for that tenant’s own fleet. |
+| `flights.schedule` | | Nav `schedule`, `archive`. JetInsight feed and manual trips. | `api/ical.js` for that tenant’s feed URL. Reads of `manual-trips` and the schedule slice of `trip-state`. |
+| `flights.availability` | | Nav `availability`. | Availability records. |
+| `flights.airport_data` | | Nav `airport-data` (Airport & Fuel). | `api/iflightplanner-fbos.js` and the fuel/FBO writes. Public airport reference data stays global. |
+| `dispatch` | | Nav `ops` (labeled Dispatch). Trip board, status steps, FRAT on the trip (`TripFrat.jsx`, `app-config/frat`). | `api/ops-control-action.js`. Trip-state mutations. FRAT settings writes. |
+| `dispatch.tracking` | | Nav `tracking`. Live fleet map. | `api/flightaware-*`, the minute poll for this tenant, `flightaware-state` for its tails. |
+| `dispatch.manifests` | | Nav `manifests`. Passenger names and ID capture. | `manifests`, `api/generate-manifest.js`, `api/parse-id.js`, `api/cleanup-pax-ids.js` for this tenant. |
+| `dispatch.lodging` | | Nav `lodging`. | `travel-bookings`, `tripHotelBookings`. |
+| `dispatch.broker_share` | | “Share with broker” on a trip. Not its own tab. | `api/trip-share.js` minting, and `api/trip-public.js` resolution. Existing links stop opening when the feature goes off. |
+| `dispatch.broker_report` | | Crew block on the broker page, and the email/PDF from the safety workstream (pull request #33). Not its own tab. Depends on `dispatch`. | `api/pilot-report-email`. `trip.crewReports` is omitted. The public page still loads the itinerary when `dispatch.broker_share` is on. |
+| `crew.duty` | | Nav `duty`. | `duty-periods-v2`, `duty-outside-flying-v2`, `api/duty-start-pair.js`, `api/duty-end-pair.js`, `api/duty-admin-action.js`, `api/duty-backfill-pairs.js`. |
+| `crew.currency` | | Nav `currency`. | `pilot-currencies`, `api/currency-alerts.js`. |
+| `crew.safety_rating` | | Inside Currency: hours, rating, minimums, Import from Wyvern. Pull request #33. Parent `crew.currency`. | `pilot-logbooks`, `pilot-flight-log`, `app-config/pilot-safety`, `scripts/import-wyvern.mjs`. |
+| `crew.pilot_docs` | | Pilot certificates, medicals, passports (`PilotDocs.jsx`, `pilot-docs`). | `pilot-docs` reads and writes, `api/parse-pilot-doc.js`, `api/bulk-download-pilot-docs.js`, storage prefix `pilot-docs/`. |
+| `crew.reports` | | Nav `reports`. | `reports`. |
+| `crew.wear` | | Nav `wear`. | `wear-*` collections and `api/wear-notify.js`, `api/wear-vision-check.js`. |
+| `maintenance` | | Nav `maint`. Squawks, MEL, AML, due list, Veryon. | `maint-*`, `mel-*`, `aml-*`, `mx-projects`, `mxDueItems`, `api/mel-ingest.js`, `api/mel-search.js`, `api/mx-due-list-parse.js`, `api/veryon-*`. |
+| `maintenance.aog` | | Nav `aog`, plus service requests. | `aog-events`, `aogCoverage`, `service-requests`, `api/aog-*`, `api/service-*`. Public tech links stop resolving. |
+| `comms` | | Nav `comms`. Stream and legacy trip chat. | `api/stream-token.js` (do not upsert the user), `conversations`, `trips/{id}/messages`. |
+| `comms.teams` | | Nav `teams`. | `api/teams.js`. |
+| `email.mailbox` | | Nav `mailbox`. | `api/user-mail*.js`, `user-mailboxes`. |
+| `email.charter_inbox` | | Nav `inbox` (shared charter mailbox). | `api/charter-mail.js` and the charter-mail collections. |
+| `finance.expenses` | | Nav `expenses`. | `expenses` and receipt storage. |
+| `finance.wallet` | | Nav `wallet`. | `wallet-cards`. |
+| `finance.accounting` | | Nav `accounting`. QuickBooks. | `api/quickbooks-*`. Do not start OAuth. Ignore the singleton `quickbooks/connection` for this tenant. |
+| `integrations.foreflight` | | ForeFlight panel on the trip and in settings. Parent `dispatch`. | `api/foreflight-*`. |
+| `platform.custom_domain` | | No nav item. Branding settings gain the custom-domain form only when this is on. | Custom-domain verify and attach. |
+| `platform.saml` | | No nav item. | Saving an IdP of kind `saml`. |
+| `platform.audit_export` | | No nav item. Tenant admins get an export action only when this is on. | The export query. Inserts into `audit_events` still happen either way. |
+
+`crew.safety_rating` and `dispatch.broker_report` are separate switches. A company can track currency without the Wyvern rating, and can share a trip link without the crew vetting block. The rating workstream’s code is not edited by this plan. When that pull request merges, those screens check these two keys.
+
+#### How a feature becomes on
+
+For one tenant and one key, at time `now`:
+
+1. If the catalog row is `always_on`, it is on.
+2. If it has a parent and the parent is off, it is off.
+3. Else if an override exists and (`expires_at` is null or `expires_at` is still in the future):
+   - `force_off` → off
+   - `force_on` → on
+   - `trial` → on (`expires_at` is required)
+4. Else the key is on when any **active** subscription item’s Price has that key in `plan_features`. Expired overrides fall through to this step. They are not a hidden force-off.
+5. A `billing_exempt` tenant (Skyway) uses plan `internal`, which contains every key, unless a `force_off` override says otherwise.
+
+There is no override row for “inherit”. Deleting the row returns the tenant to the plan. New tenants with no subscription and no exempt flag get plan `none`, which contains only the `always_on` keys, until Jake force-ons a module, starts a feature trial, or Stripe attaches a Price.
+
+Add-on Prices are extra subscription items. The plan set is the union of every active item. Safety rating can be a line item without being bundled into the base tier.
+
+The whole-account Stripe status `trialing` does not, by itself, turn every module on. The trial Price has its own `plan_features` rows. Jake picks that list (decision below). A feature trial is the override mode `trial` and can outlive or sit beside the account trial.
+
+#### Effective rows, so a toggle is the next request
+
+Do not cache entitlements in the serverless function, and do not wait for the client to redeploy. `tenant_feature_effective` is the read model.
+
+The same database transaction that saves an override, or applies a Stripe Price change:
+
+1. Upserts or deletes `tenant_feature_overrides`.
+2. Recomputes every row in `tenant_feature_effective` for that tenant.
+3. Increments `tenants.entitlements_version`.
+4. Inserts the audit row.
+
+API handlers read `tenant_feature_effective` from the primary on each request. A toggle Jake saves is in force on the next request after the commit. Feature-trial expiry needs no job to take effect: the resolver compares `expires_at` to `now` during the recompute, and a one-minute job recomputes tenants whose `expires_at` has passed so the effective table and the version bump happen even if nobody clicks. Until that minute runs, the API still treats `expires_at <= now` as expired when it reads, so the off switch does not wait for the job. The job exists so the version bumps and open browsers drop the nav.
+
+#### Super-admin toggles
+
+On the tenant’s page in `platform.skyway.app`, each catalog row shows the plan default, the current source (`plan`, `force_on`, `force_off`, `trial`), and the expiry. The control is three actions plus clear:
+
+- **Force on.** Optional end time. Use this to comp a module.
+- **Force off.** Optional end time. Wins over the Price. Use this when a customer must lose a module before the billing period ends.
+- **Trial.** End time required. The module is on until that timestamp, then the plan applies again.
+- **Clear.** Removes the override.
+
+The panel shows the tree. Children sit under the parent. A child control is disabled in the panel when the parent is off, with the reason visible to Jake only (“parent dispatch is off”). Tenant users never see that sentence.
+
+Skyway is seeded to plan `internal` with every key and zero overrides. Saving a `force_off` for Skyway is allowed, and it is the one way the live company loses a module. Do not seed any `force_off`.
+
+#### Server enforcement
+
+One helper, `requireFeature(ctx, key)`, used at the top of every route in the catalog table. `ctx` is the membership already resolved for the host. The helper reads the effective row.
+
+- Missing or `enabled = false`: respond **404** with the same body as an unknown route (`{ "error": "Not found" }`). Do not return 402, and do not name the feature. A 402 tells the caller a paid module exists.
+- Crons do not 404. They skip that tenant for that job and continue the others. The FlightAware poll does not call AeroAPI for a tenant with `dispatch.tracking` off. Currency alerts skip `crew.currency` off.
+- Public token routes (`trip-public`, `aog-public`, `service-public`, `operator-flight`) check the feature for the tenant inside the token. A link minted yesterday dies as soon as the feature is off.
+- Repository methods declare the key they serve and call the same helper before the query. Postgres policies on those tables also call `feature_enabled(tenant_id, key)`, a `SECURITY DEFINER` function over `tenant_feature_effective`, so a route that forgot the helper still cannot read the rows. The function is false when the row is missing.
+- Break-glass support access can read a module that is off. That path sets a transaction flag the policy allows, and it writes `entitlement.bypass` to the audit log. Tenant sessions cannot set the flag.
+- Platform operators toggling features use the migration/platform role on the control-plane tables only. They do not run the query as the tenant.
+
+**Firestore gap, stated plainly.** New tenants never use Firestore, so the helper and the policy are the whole gate. Skyway’s data stays in Firestore until its wave in phase 6, and the browser writes those collections with the client SDK, which the helper cannot see. Hiding the nav still happens immediately, and that is what crews use. A hand-built client could still write a Skyway collection that has not moved. Do not treat `force_off` as a hard stop for a Skyway module until that collection’s read source is Postgres. After the wave, the same 404 and the same policy apply to Skyway on the next request.
+
+#### UI: hidden, not disabled
+
+`NAV_SECTIONS` gains a `feature` field (the key in the table above). `useAllowedSections` keeps the role check and adds `features.has(section.feature)`. `useNavGroups` already removes empty groups, so a company with no crew modules loses the Crew group entirely, on desktop and on the phone bottom bar.
+
+In-page tabs that are not leaves use the same set. On a trip, passengers check `dispatch.manifests`, FRAT and the status board check `dispatch`, lodging checks `dispatch.lodging`, the flight-plan panel checks `integrations.foreflight`, and the email tab checks `email.charter_inbox`. Currency renders hours, rating, minimums, and Wyvern import only when `crew.safety_rating` is on. The broker email action renders only when `dispatch.broker_report` is on.
+
+`GET /api/tenant-context` returns `features` (the enabled keys) and `entitlementsVersion`. The client keeps that list in memory. It also watches the version: Supabase realtime on the tenant row, or a poll on focus and every few seconds if realtime is not the provider. When the version changes, replace the list. If the open section’s key is no longer present, set the section to `home`. Do not toast the feature name. Do not leave the old screen mounted behind an overlay.
+
+There is no client-side “disabled” style, no lock icon, and no in-app catalog of unpurchased modules. Stripe Customer Portal will show the Price names Jake configures in Stripe. That is outside the ops UI. Name those Prices the way a customer should see them on an invoice.
+
+A direct attempt to open a hidden section (saved tab-order, old `localStorage`, a query string) is treated as an unknown section and lands on home.
+
+#### Audit
+
+Every override write, clear, plan rebuild, and observed trial expiry appends `audit_events`. The app role can insert and cannot update or delete.
+
+| Action | When | `metadata` |
+| --- | --- | --- |
+| `entitlement.override.upsert` | Jake saves force on, force off, or trial | `feature`, `mode`, `expiresAt`, `previous`, `reason` |
+| `entitlement.override.clear` | Jake clears the override | `feature`, `previous` |
+| `entitlement.plan.applied` | Stripe webhook changes the Price set | `priceIds`, `enabled`, `disabled` (keys that flipped) |
+| `entitlement.trial.expired` | The minute job sees a trial or a dated force that just lapsed | `feature`, `mode`, `expiresAt` |
+| `entitlement.bypass` | Break-glass read of a module that is off | `feature`, `ticket` or reason |
+
+`actor_user_id` is the platform operator for the first two. It is null for the webhook and the expiry job, with `actor_role = 'system'`. `entity_type` is `feature`. `entity_id` is the key. Do not put customer operational records in `metadata`.
+
+The tenant’s own admins can read these rows only when `platform.audit_export` is on, and only their tenant’s rows. They cannot read another company’s toggles. Jake sees them on the platform panel without that entitlement.
 
 ### Super-admin panel
 
@@ -368,6 +502,7 @@ It can:
 
 - Create a tenant (name, slug, primary domain, plan, trial end).
 - Create the first owner invite.
+- Turn each feature on or off for that tenant (force on, force off, or a feature trial with an expiry), overriding the Stripe tier. This is the first screen of the panel, and it ships as soon as enforcement exists, before the health widgets.
 - See subscription status, seat count, and last invoice state from the local `subscriptions` table.
 - Suspend, reinstate, and schedule deletion.
 - See platform health: cron last success, email queue depth, webhook failures, auth errors.
@@ -379,7 +514,7 @@ It cannot run a Firestore query that returns two tenants. The panel’s data sou
 
 `audit_events` is append-only: `id`, `tenant_id` (null for platform events), `actor_user_id`, `actor_role`, `action`, `entity_type`, `entity_id`, `metadata` (no document bodies, no tokens), `ip`, `user_agent`, `created_at`.
 
-Write a row for: invite, role change, disable, sign-in success and failure, break-glass, subscription change, integration connect and disconnect, export, broker-report email, Wyvern import, and suspend.
+Write a row for: invite, role change, disable, sign-in success and failure, break-glass, subscription change, feature override, feature-trial expiry, integration connect and disconnect, export, broker-report email, Wyvern import, and suspend. Feature toggles are specified in the entitlements section.
 
 Postgres privileges: the app role can `INSERT` and `SELECT` its own tenant. It cannot `UPDATE` or `DELETE`. Exports are an entitlement.
 
@@ -458,16 +593,51 @@ subscriptions
   tenant_id uuid pk
   stripe_customer_id text
   stripe_subscription_id text
+  plan_id uuid null
   status text
   seat_quantity int
   trial_ends_at timestamptz
   current_period_end timestamptz
 
-tenant_entitlements
+features
+  key text pk                 -- 'dispatch', 'crew.safety_rating', ...
+  parent_key text null        -- null, or another features.key
+  label text
+  always_on boolean           -- core shell, user admin, settings
+  nav_section text null       -- NAV_SECTIONS id when this key is a leaf
+  sort int
+
+plans
+  id uuid pk
+  code text unique            -- 'internal', 'none', plus Jake's tier codes
+  stripe_price_id text unique null
+  name text
+
+plan_features
+  plan_id uuid
+  feature_key text
+  primary key (plan_id, feature_key)
+
+tenant_feature_overrides
   tenant_id uuid
-  feature text
+  feature_key text
+  mode text                   -- force_on | force_off | trial
+  expires_at timestamptz null -- required for trial; optional end for force_*
+  reason text
+  updated_by uuid
+  updated_at timestamptz
+  primary key (tenant_id, feature_key)
+
+tenant_feature_effective
+  tenant_id uuid
+  feature_key text
   enabled boolean
-  primary key (tenant_id, feature)
+  source text                 -- always_on | plan | force_on | force_off | trial
+  expires_at timestamptz null
+  primary key (tenant_id, feature_key)
+
+-- tenants.entitlements_version int not null default 1
+-- bumped in the same transaction as any override or plan rebuild
 
 tenant_secrets
   tenant_id uuid
@@ -550,12 +720,13 @@ Scope:
 - Insert tenant `skyway`, branding copied from `src/brand.js`, and pinned domains `www.skyway.app`, `skyway.app`, `135ops.app`.
 - Shadow-copy `users` into `users` + `memberships`. Read-only. Login stays on Firebase.
 - Edge route `api/tenant-context.js`. For the three pinned hosts, return Skyway. For any other host, return 404. Do not branch the UI on it yet, except a log line, so a bad deploy cannot theme the live site as someone else.
+- Feature catalog, plan `internal` (every key) and plan `none` (always-on keys only), empty override table, and `tenant_feature_effective` computed for Skyway as all on. `requireFeature` exists and is covered by tests. It is not yet called by the live routes, so Skyway’s screens do not change.
 - `job_runs` and `audit_events` tables, unused by product code except a nightly row that says the shadow copy matched.
-- Isolation tests: with the app role, a transaction scoped to a fake tenant id returns zero Skyway rows; a transaction with no `app.tenant_id` returns zero rows; the migration role is not used by any `api/` handler.
+- Isolation tests: with the app role, a transaction scoped to a fake tenant id returns zero Skyway rows; a transaction with no `app.tenant_id` returns zero rows; the migration role is not used by any `api/` handler. Entitlement tests: plan `none` resolves only `core.*`; a `trial` override is on before `expires_at` and off after; `force_off` beats the internal plan; a child stays off when its parent is off.
 - Export Firestore `appusers` once and record where the export lives.
 - Check the live Firestore rules into git as a snapshot (`firestore.rules`) so the current boundary is reviewable. That snapshot is documentation of the gap. Shipping it to Firebase is a separate, explicit apply, not an accidental rules change.
 
-Does not include Stripe, subdomains for customers, or moving trips.
+Does not include Stripe, the super-admin toggle screen, subdomains for customers, or moving trips. The catalog and the resolver are here because billing and the panel both call them.
 
 Risk: a shadow copy that writes back into Firestore. The job must be select-from-Firestore, insert-into-Postgres only. Risk: the Edge route accidentally becoming the source of brand on production. Keep the UI on `src/brand.js` until phase 3.
 
@@ -571,6 +742,8 @@ Scope:
 - Identity provider row for Skyway’s Entra tenant. Domain allow-list `flyskyway.com`.
 - New-tenant users created only in the new auth provider. Skyway’s flag stays on Firebase until the shadow memberships match and Jake signs off on one rehearsal login.
 - Mobile: Skyway build unchanged. The tenant-code screen exists behind a flag for non-Skyway builds.
+- Call `requireFeature` from the routes in the catalog. Extend `useAllowedSections` with the feature key. Hidden sections unmount to home when `entitlements_version` changes. Skyway resolves every key, so the live nav does not lose a tab.
+- First platform screen, on `platform.skyway.app`: the feature tree for a tenant (force on, force off, trial with expiry, clear), writing the audit row in the same transaction. The rest of the panel (health, suspend, break-glass) stays in phase 5. Until this screen exists, overrides are not edited by hand in production.
 
 Depends on phase 1.
 
@@ -599,15 +772,16 @@ Effort: medium for the web theme. Medium again for email and OAuth. Native white
 
 Scope:
 
-- Products, Prices, Checkout, Customer Portal, webhooks, `subscriptions`, `tenant_entitlements`.
+- Products, Prices, Checkout, Customer Portal, webhooks, `subscriptions`.
+- Each Price gets a `plans` row and the `plan_features` Jake chose. The webhook rebuilds `tenant_feature_effective` and bumps `entitlements_version` in that transaction. Overrides are left in place, so a force-off still wins after an upgrade.
 - Seat quantity enforced at invite time (cannot invite past the quantity).
-- Skyway `billing_exempt`.
-- Suspended and `past_due` behavior: read-only versus hard block. Default in this plan is read-only for `past_due` and hard block for `suspended`, so a failed card does not strand a crew mid-trip. Jake can choose otherwise.
-- Feature gate on the modules that are expensive per tenant: QuickBooks, ForeFlight, charter inbox, safety rating, custom domain, SAML.
+- Skyway `billing_exempt` on plan `internal`.
+- Suspended and `past_due` behavior: read-only versus hard block. Default in this plan is read-only for `past_due` and hard block for `suspended`, so a failed card does not strand a crew mid-trip. Jake can choose otherwise. A hard block is the tenant status, not a feature toggle. It does not flip every key to off in the catalog.
+- Account trial is the trial Price’s feature list. Per-feature trials stay on the override row from phase 2.
 
-Depends on phase 1. Invites in phase 2 should already call a single `assertSeatAvailable()` that returns “allowed” until Stripe is on.
+Depends on phases 1 and 2. Invites in phase 2 should already call a single `assertSeatAvailable()` that returns “allowed” until Stripe is on.
 
-Risk: webhook delay. Entitlements change only from webhooks, and the portal can be ahead of the app for a few seconds. Invite checks should re-read Stripe if the local period end is stale, for the seat count only.
+Risk: webhook delay of a few seconds before the effective table updates. The API reads that table, not a stale copy of Stripe. Invite checks should re-read Stripe if the local period end is stale, for the seat count only. A force-off must not be cleared by the webhook.
 
 Effort: medium, and it is new code rather than a rewrite of `App.jsx`.
 
@@ -615,13 +789,13 @@ Effort: medium, and it is new code rather than a rewrite of `App.jsx`.
 
 Scope:
 
-- `platform.skyway.app`.
+- `platform.skyway.app`, extending the feature screen from phase 2.
 - Create tenant, send owner invite, set plan, suspend, reinstate.
 - Health from `job_runs`, email queue, Stripe status.
 - Break-glass with an audit row.
 - No mixed-tenant lists of trips, passengers, or pilot documents.
 
-Depends on phases 1, 2, and 4.
+Depends on phases 1, 2, and 4. Feature toggles themselves do not wait for this phase.
 
 Risk: building this as a hidden route inside `App.jsx` and reusing the Firebase admin token. Keep it a separate entry point with `platform_operators`.
 
@@ -657,7 +831,7 @@ Scope:
 - SAML connection UI, behind the entitlement.
 - Audit export.
 - Restore drill from PITR, documented.
-- Pen-test checklist: cross-tenant read on every repository, token for tenant A against tenant B’s trip id, Storage signed URL from another tenant, Stream channel id guessed, cron running with an empty tenant id.
+- Pen-test checklist: cross-tenant read on every repository, token for tenant A against tenant B’s trip id, Storage signed URL from another tenant, Stream channel id guessed, cron running with an empty tenant id, and a tenant with `crew.safety_rating` off calling the logbook and broker-report routes (expect the same 404 as an unknown path, and zero rows).
 - Remove the Firebase service account from the runtime after wave J.
 - Dedicated-database option for a single enterprise contract, using the same schema, only if a customer requires it.
 
@@ -671,7 +845,7 @@ Depends on phase 6 for the Firebase retirement. SAML can start as soon as phase 
 
 3. **Postgres and auth vendors.** Supabase (database, auth, storage, realtime in one place) or Neon plus Clerk (or equivalent). This plan’s schema fits both. The Firebase project stays until wave J regardless.
 
-4. **Pricing.** Tier names, monthly price, what a seat is (every login, or pilots only), whether aircraft count is priced, trial length, and which modules are gated (QuickBooks, ForeFlight, charter inbox, safety rating, custom domain, SAML). Skyway stays exempt.
+4. **Pricing and packaging.** Tier names, monthly price, what a seat is (every login, or pilots only), whether aircraft count is priced, and the account-trial length. For each Price, which catalog keys are included. The catalog in this document is the switch list. Skyway stays on plan `internal` (every key) unless Jake force-offs one. Confirm there is no in-app upgrade page. Unpaid modules stay hidden, and Stripe invoices are the place a customer sees a product name.
 
 5. **Past-due behavior.** This plan uses read-only when a card fails, and a hard block only when the platform suspends the tenant. Confirm that a crew on a live trip is never locked out by Stripe.
 
@@ -697,8 +871,8 @@ Depends on phase 6 for the Firebase retirement. SAML can start as soon as phase 
 
 Phase 1 only, on a branch that does not touch `src/App.jsx` behavior:
 
-- Postgres project and the control-plane SQL, including RLS tests.
-- Skyway tenant row and pinned domains.
+- Postgres project and the control-plane SQL, including RLS tests and entitlement resolver tests.
+- Skyway tenant row, pinned domains, plan `internal` with every feature key, and an effective table that matches. No overrides.
 - A one-way shadow copy of `users`.
 - Edge tenant context that 404s unknown hosts and returns Skyway for the pinned hosts, unused by the UI.
 - Firestore rules snapshot committed, not applied.
