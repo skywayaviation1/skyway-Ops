@@ -747,7 +747,7 @@ Scope:
 
 Depends on phase 1.
 
-Risk: locking crews out. Ship the server role check in shadow mode (log disagreements with the Firestore profile, do not enforce) before enforcing. The rehearsal is a single admin account, then a crew account, on a preview host that is not `www.skyway.app`.
+Risk: locking crews out. Ship the server role check in shadow mode (log disagreements with the Firestore profile, do not enforce) before enforcing. The rehearsal is a single admin account, then a crew account, on a preview host that is not `www.skyway.app`. A second risk is turning a Skyway module off before that collection has moved to Postgres: the nav hides immediately, and a crafted client can still write Firestore until the phase 6 wave. Use the toggle on Skyway only for modules whose read source is already Postgres, or accept that the hide is what crews see.
 
 Effort: large. Every `verifyIdToken` helper (`api/_quickbooks.js`, `api/_charter-mail.js`, `api/_foreflight.js`, `api/_user-mail.js`, duty routes, and the rest) needs one shared `requireMembership()` instead of a fresh Firebase init and a one-off role string.
 
