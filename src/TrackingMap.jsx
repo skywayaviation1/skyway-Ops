@@ -25,15 +25,16 @@ import {
   Layers, CloudRain, Maximize2, Minimize2, Crosshair, Loader2, Route, Check,
 } from 'lucide-react';
 import {
-  loadLeaflet, BASEMAPS, BASEMAP_ORDER, applyBasemap, createRadarLayer,
-  drawAltitudeTrail, ALTITUDE_LEGEND, altitudeColor, aircraftIcon, airportIcon,
-  groundedIcon,
+  loadLeaflet, BASEMAP_ORDER, applyBasemap, clearBasemap, createRadarLayer,
+  currentMapTheme, drawAltitudeTrail, ALTITUDE_LEGEND, altitudeColor, aircraftIcon,
+  airportIcon, groundedIcon, standardBasemapSpec,
 } from './tracking-map.js';
 import {
   APPLE_BASEMAP_LABELS,
   appleMapType,
   loadAppleMapKit,
 } from './apple-mapkit.js';
+import { watchAppleMapKit } from './mapkit-fallback.js';
 import {
   GOOGLE_BASEMAP_LABELS,
   GOOGLE_DARK_STYLES,
@@ -76,7 +77,7 @@ export default function TrackingMap({
   const googleMapRef = useRef(null);
   const googleAuthCleanupRef = useRef(null);
   const appleMapRef = useRef(null);
-  const appleErrorHandlerRef = useRef(null);
+  const appleWatchRef = useRef(null);
   const overlayGroupRef = useRef(null);
   const radarRef = useRef(null);
 
@@ -89,6 +90,7 @@ export default function TrackingMap({
   const [fullscreen, setFullscreen] = useState(false);
   const [layersOpen, setLayersOpen] = useState(false);
   const [mapProvider, setMapProvider] = useState('checking');
+  const [theme, setTheme] = useState(currentMapTheme);
 
   const aircraft = Array.isArray(scene.aircraft) ? scene.aircraft : [];
   const airports = Array.isArray(scene.airports) ? scene.airports : [];
@@ -121,26 +123,41 @@ export default function TrackingMap({
           minZoom: 2,
           maxZoom: 17,
           zoomControl: false,
-          attributionControl: !apple && !firstGoogle,
+          attributionControl: true,
           worldCopyJump: false,
         });
         L.control.zoom({ position: 'bottomright' }).addTo(map);
         if (map.attributionControl) map.attributionControl.setPrefix(false);
 
-        const hideVendorBasemaps = ({ apple = true, google = true } = {}) => {
-          if (apple && appleContainerRef.current) appleContainerRef.current.style.display = 'none';
-          if (google && googleContainerRef.current) googleContainerRef.current.style.display = 'none';
+        const hideApple = () => {
+          const el = appleContainerRef.current;
+          if (!el) return;
+          el.style.visibility = 'hidden';
+          el.style.pointerEvents = 'none';
+        };
+        const hideGoogle = () => {
+          if (googleContainerRef.current) googleContainerRef.current.style.display = 'none';
         };
 
         const useStandardBasemap = () => {
-          hideVendorBasemaps();
-          applyBasemap(L, map, basemapDefault);
+          hideApple();
+          hideGoogle();
+          applyBasemap(L, map, basemapDefault, currentMapTheme());
+          if (map.attributionControl && !map.attributionControl._map) {
+            try { map.attributionControl.addTo(map); } catch { /* already attached */ }
+          }
           if (!cancelled) setMapProvider('standard');
         };
 
+        // Tiles first. Apple stays hidden until it proves it painted, so a
+        // rejected token or a silent bootstrap failure cannot leave the cream grid up.
+        useStandardBasemap();
+
         const useGoogleBasemap = (google) => {
           if (!google || !googleContainerRef.current || cancelled) return false;
-          hideVendorBasemaps({ apple: true, google: false });
+          hideApple();
+          clearBasemap(map);
+          try { map.attributionControl?.remove(); } catch { /* already gone */ }
           googleContainerRef.current.style.display = '';
           const googleMap = new google.Map(googleContainerRef.current, {
             center: { lat: 39, lng: -96 },
@@ -173,10 +190,15 @@ export default function TrackingMap({
         };
 
         const useAppleBasemap = (kit) => {
-          if (!kit || !appleContainerRef.current || cancelled) return false;
-          hideVendorBasemaps({ apple: false, google: true });
-          appleContainerRef.current.style.display = '';
-          const appleMap = new kit.Map(appleContainerRef.current, {
+          if (!kit || !appleContainerRef.current || cancelled || kit.__skywayAuthFailure) return false;
+          hideGoogle();
+          const el = appleContainerRef.current;
+          // Keep the element laid out (not display:none) so MapKit can paint,
+          // but invisible until tiles are confirmed. Esri covers it until then.
+          el.style.display = '';
+          el.style.visibility = 'hidden';
+          el.style.pointerEvents = 'none';
+          const appleMap = new kit.Map(el, {
             mapType: appleMapType(kit, basemapDefault),
             showsCompass: kit.FeatureVisibility?.Hidden,
             showsMapTypeControl: false,
@@ -209,25 +231,40 @@ export default function TrackingMap({
           };
           map.on('move zoom resize', syncAppleRegion);
           map.__swAppleSync = syncAppleRegion;
+          const revealApple = () => {
+            if (cancelled || !appleMapRef.current) return;
+            clearBasemap(map);
+            try { map.attributionControl?.remove(); } catch { /* already gone */ }
+            el.style.display = '';
+            el.style.visibility = 'visible';
+            syncAppleRegion();
+            if (!cancelled) setMapProvider('apple');
+          };
           const fallBackFromApple = async (event) => {
             console.warn('[tracking-map] Apple Maps runtime error; trying next basemap', event);
+            appleWatchRef.current?.cancel();
+            appleWatchRef.current = null;
             try { appleMap.destroy(); } catch { /* already torn down */ }
             appleMapRef.current = null;
-            if (appleContainerRef.current) appleContainerRef.current.style.display = 'none';
+            hideApple();
+            if (cancelled) return;
             const google = await loadGoogleMaps().catch(() => null);
             if (!useGoogleBasemap(google)) useStandardBasemap();
           };
-          if (typeof kit.addEventListener === 'function') {
-            kit.addEventListener('error', fallBackFromApple);
-            appleErrorHandlerRef.current = fallBackFromApple;
-          }
+          appleWatchRef.current = watchAppleMapKit(kit, {
+            onReady: revealApple,
+            onFailure: fallBackFromApple,
+          });
           setTimeout(syncAppleRegion, 0);
-          if (!cancelled) setMapProvider('apple');
           return true;
         };
 
-        if (!useAppleBasemap(apple) && !useGoogleBasemap(firstGoogle)) {
-          useStandardBasemap();
+        if (!useAppleBasemap(apple)) {
+          const google = firstGoogle || await loadGoogleMaps().catch((googleError) => {
+            console.info('[tracking-map] Google Maps unavailable; using standard basemap:', googleError.message);
+            return null;
+          });
+          if (!useGoogleBasemap(google)) useStandardBasemap();
         }
         overlayGroupRef.current = L.layerGroup().addTo(map);
         mapRef.current = map;
@@ -256,17 +293,13 @@ export default function TrackingMap({
       }
       googleMapRef.current = null;
       if (googleContainerRef.current) googleContainerRef.current.replaceChildren();
+      if (appleWatchRef.current) {
+        appleWatchRef.current.cancel();
+        appleWatchRef.current = null;
+      }
       if (appleMapRef.current) {
         try { appleMapRef.current.destroy(); } catch { /* already torn down */ }
         appleMapRef.current = null;
-      }
-      if (
-        appleErrorHandlerRef.current
-        && window.mapkit
-        && typeof window.mapkit.removeEventListener === 'function'
-      ) {
-        window.mapkit.removeEventListener('error', appleErrorHandlerRef.current);
-        appleErrorHandlerRef.current = null;
       }
     };
     // basemapDefault is an initial value only; switching is handled below.
@@ -284,9 +317,17 @@ export default function TrackingMap({
     } else if (mapProvider === 'apple' && appleMapRef.current && window.mapkit) {
       appleMapRef.current.mapType = appleMapType(window.mapkit, basemap);
     } else if (mapProvider === 'standard') {
-      applyBasemap(window.L, mapRef.current, basemap);
+      applyBasemap(window.L, mapRef.current, basemap, theme);
     }
-  }, [ready, basemap, mapProvider]);
+  }, [ready, basemap, mapProvider, theme]);
+
+  useEffect(() => {
+    const el = document.documentElement;
+    const sync = () => setTheme(currentMapTheme());
+    const observer = new MutationObserver(sync);
+    observer.observe(el, { attributes: true, attributeFilter: ['data-theme'] });
+    return () => observer.disconnect();
+  }, []);
 
   /* ─── Weather radar ───────────────────────────────────────────────────── */
   useEffect(() => {
@@ -489,7 +530,7 @@ export default function TrackingMap({
       <div
         ref={appleContainerRef}
         className="absolute inset-0 h-full w-full"
-        style={{ background: '#060c16' }}
+        style={{ background: '#060c16', visibility: 'hidden', pointerEvents: 'none' }}
       />
       <div
         ref={containerRef}
@@ -547,7 +588,7 @@ export default function TrackingMap({
                   ? GOOGLE_BASEMAP_LABELS[id]
                   : mapProvider === 'apple'
                     ? APPLE_BASEMAP_LABELS[id]
-                    : BASEMAPS[id].label}
+                    : standardBasemapSpec(id, theme).label}
                 {basemap === id && <Check className="h-3.5 w-3.5" />}
               </button>
             ))}

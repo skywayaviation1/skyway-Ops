@@ -565,6 +565,17 @@ export function installFetchStub() {
     if (path === '/api/faa-notams') return json({ ok: true, notams: [] });
     if (path.startsWith('/api/airport-weather')) return json({ ok: true, parsed: null });
     if (path === '/api/apple-mapkit-token') {
+      // ?mapkit=fail mounts MapKit with a token Apple will reject, so the
+      // screenshot harness can prove the cream grid is replaced by tiles.
+      const mode = new URLSearchParams(window.location.search).get('mapkit');
+      if (mode === 'fail') {
+        const part = (value) => btoa(JSON.stringify(value))
+          .replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+        const token = `${part({ alg: 'ES256', kid: 'PREVIEW', typ: 'JWT' })}.`
+          + `${part({ iss: 'PREVIEW', iat: 1, exp: 4_000_000_000, origin: 'https://skyway.app', scope: 'mapkit_js' })}.`
+          + part({ sig: 'preview' });
+        return json({ configured: true, token, source: 'preview-failure' });
+      }
       return new Response(JSON.stringify({
         error: 'Apple Maps is not configured in preview',
         missing: ['APPLE_MAPKIT_TOKEN'],

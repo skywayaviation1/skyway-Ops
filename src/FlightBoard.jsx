@@ -31,6 +31,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { lookupCoords } from './airport-coords.js';
 import { appleMapType, loadAppleMapKit } from './apple-mapkit.js';
+import { watchAppleMapKit } from './mapkit-fallback.js';
 import { statusEventAt } from './trip-status.js';
 import { Wordmark } from './ui.jsx';
 
@@ -349,7 +350,7 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
   const appleContainerRef = useRef(null);
   const mapRef = useRef(null);
   const appleMapRef = useRef(null);
-  const appleErrorHandlerRef = useRef(null);
+  const appleWatchRef = useRef(null);
   const layerRef = useRef(null);
   const weatherLayerRef = useRef(null);   // holds the current RainViewer tile layer when on
   const [ready, setReady] = useState(false);
@@ -504,8 +505,20 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
           keyboard: false,
         });
 
+        const removeStandardBasemap = () => {
+          if (!map.__swStandardBasemap) return;
+          try { map.removeLayer(map.__swStandardBasemap); } catch { /* already gone */ }
+          map.__swStandardBasemap = null;
+          const tilePane = map.getPane('tilePane');
+          if (tilePane) tilePane.style.filter = '';
+        };
+
         const addStandardBasemap = () => {
           if (map.__swStandardBasemap) return;
+          if (appleContainerRef.current) {
+            appleContainerRef.current.style.visibility = 'hidden';
+            appleContainerRef.current.style.pointerEvents = 'none';
+          }
           map.__swStandardBasemap = L.layerGroup([
             L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
               maxZoom: 12,
@@ -520,8 +533,14 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
           setMapProvider('standard');
         };
 
-        if (apple && appleContainerRef.current) {
-          const appleMap = new apple.Map(appleContainerRef.current, {
+        // Imagery first. The Apple layer stays invisible until its tiles paint.
+        addStandardBasemap();
+
+        if (apple && appleContainerRef.current && !apple.__skywayAuthFailure) {
+          const appleEl = appleContainerRef.current;
+          appleEl.style.visibility = 'hidden';
+          appleEl.style.pointerEvents = 'none';
+          const appleMap = new apple.Map(appleEl, {
             mapType: appleMapType(apple, 'terrain'),
             showsCompass: apple.FeatureVisibility?.Hidden,
             showsMapTypeControl: false,
@@ -553,21 +572,30 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
           };
           map.on('move zoom resize', syncAppleRegion);
           map.__swAppleSync = syncAppleRegion;
+          const revealApple = () => {
+            if (cancelled || !appleMapRef.current) return;
+            removeStandardBasemap();
+            appleEl.style.visibility = 'visible';
+            syncAppleRegion();
+            setMapProvider('apple');
+          };
           const fallBackToStandard = (event) => {
             console.warn('[board] Apple Maps runtime error; using standard basemap', event);
+            appleWatchRef.current?.cancel();
+            appleWatchRef.current = null;
             try { appleMap.destroy(); } catch { /* already torn down */ }
             appleMapRef.current = null;
-            if (appleContainerRef.current) appleContainerRef.current.style.display = 'none';
+            if (appleContainerRef.current) {
+              appleContainerRef.current.style.visibility = 'hidden';
+              appleContainerRef.current.style.pointerEvents = 'none';
+            }
             addStandardBasemap();
           };
-          if (typeof apple.addEventListener === 'function') {
-            apple.addEventListener('error', fallBackToStandard);
-            appleErrorHandlerRef.current = fallBackToStandard;
-          }
+          appleWatchRef.current = watchAppleMapKit(apple, {
+            onReady: revealApple,
+            onFailure: fallBackToStandard,
+          });
           setTimeout(syncAppleRegion, 0);
-          setMapProvider('apple');
-        } else {
-          addStandardBasemap();
         }
         // Layer group for our route/marker overlays so we can clear and
         // redraw without disturbing the tile layers.
@@ -589,17 +617,13 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
         mapRef.current = null;
         layerRef.current = null;
       }
+      if (appleWatchRef.current) {
+        appleWatchRef.current.cancel();
+        appleWatchRef.current = null;
+      }
       if (appleMapRef.current) {
         try { appleMapRef.current.destroy(); } catch (_) {}
         appleMapRef.current = null;
-      }
-      if (
-        appleErrorHandlerRef.current
-        && window.mapkit
-        && typeof window.mapkit.removeEventListener === 'function'
-      ) {
-        window.mapkit.removeEventListener('error', appleErrorHandlerRef.current);
-        appleErrorHandlerRef.current = null;
       }
     };
   }, []);
@@ -862,7 +886,7 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
       <div
         ref={appleContainerRef}
         className="absolute inset-0 h-full w-full"
-        style={{ background: '#020617' }}
+        style={{ background: '#020617', visibility: 'hidden', pointerEvents: 'none' }}
       />
       <div
         ref={containerRef}
