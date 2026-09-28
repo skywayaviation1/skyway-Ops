@@ -1,0 +1,47 @@
+SUBJECT: Signed charter contract
+FROM: charters@flyskyway.com
+ATTACHMENTS: signed-charter-contract.pdf
+
+Skyway Aviation Services, Inc
+4751 Jim Walter Blvd, Hangar 6
+Tampa, FL 33607
+Customer
+Jordan Hale
+100 Market Street
+Austin, TX 78701
+5125550148
+Trip locator: TBAE0L-01
+DEPART ARRIVE PASSENGERS
+09/28/2026  01:00pm
+CDT
+Des Moines Intl
+DSM (Des Moines, IA)
+757 NM
+2:18
+09/28/2026  04:18pm
+EDT
+Dulles Intl
+IAD (Washington, DC)
+2
+Aircraft: Cessna Citation CJ3 (N525CR)
+ Passengers: 2
+Charter pricing
+Subtotal $15,000
+$15,000Total:
+Complimentary Starlink WIFI, Pet-friendly, No OA required
+Page 1/5TBAE0L
+Terms and Conditions
+TRIP CHARGES
+Quote reflects estimated trip times.
+Any change requested within 7 days of first departure if available + $500 rebooking fee.
+Cabin waste fee Immediate $25,000.
+Chargeback processing fee $5,000.
+Penalties exceeding $250,000.
+Trip total: $500.00
+Page 5/5TBAE0L
+Checkout metadata
+Customer name: Jordan Hale
+Customer email: jordan.hale@example-charter.test
+Signed at: 2026-09-25 13:27:52 UTC
+Contract e-signature: present
+Jordan Hale (jordan.hale@example-charter.test)

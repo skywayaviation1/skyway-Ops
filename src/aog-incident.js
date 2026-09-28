@@ -1,6 +1,7 @@
 // Report AOG. Pure helpers shared by the ops API and tests.
-// Charter Flight Support is notified only when the trip is already at 100%.
-// The CFS view never includes premiums, margins, broker contacts, or passenger names.
+// Every reported AOG notifies Charter Flight Support, including 50% trips.
+// The CFS view never includes premiums, margins, broker contacts, passenger
+// names, or a coverage percentage unless 100% is already bound.
 
 import { isHundredCoverage } from './aog-reporting.js';
 import { emailButton, emailShell, factTable } from './aog-mail-layout.js';
@@ -51,12 +52,12 @@ export function validateAogReport(input = {}) {
   };
 }
 
-export function cfsShouldBeNotified(records) {
+export function coverageIsBound(records) {
   return (records || []).some((record) => isHundredCoverage(record?.coverageLevel));
 }
 
 export function cfsIncidentView(incident = {}) {
-  return {
+  const view = {
     id: incident.id || '',
     tripId: incident.tripId || '',
     tail: incident.tail || '',
@@ -75,35 +76,40 @@ export function cfsIncidentView(incident = {}) {
     notes: incident.notes || '',
     contact: incident.contact || '',
     status: incident.status || 'active',
-    coverage: '100%',
     updates: (incident.updates || []).map((row) => ({
       at: row.at || '',
       text: row.text || '',
       by: row.by || '',
     })),
   };
+  if (incident.coverageBound === true) view.coverage = '100%';
+  return view;
 }
 
 export function incidentCfsLetter(incident, url) {
+  const bound = incident.coverageBound === true || incident.coverage === '100%';
   const subject = `AOG incident — trip ${incident.tripId || ''}`.trim();
-  const lede = `An aircraft on trip ${incident.tripId || 'this trip'} is AOG. Coverage for this trip is 100%.`;
+  const lede = bound
+    ? `An aircraft on trip ${incident.tripId || 'this trip'} is AOG. Coverage for this trip is 100%.`
+    : `An aircraft on trip ${incident.tripId || 'this trip'} is AOG.`;
+  const facts = [
+    ['Trip ID', incident.tripId],
+    ['Tail', incident.tail],
+    ['Aircraft', incident.aircraftType],
+    ['Route', incident.route],
+    ['Location', incident.location],
+    ['AOG time', incident.aogAt],
+    ['Issue', incident.issue],
+    ['Notes', incident.notes],
+    ['Contact', incident.contact],
+  ];
+  if (bound) facts.push(['Coverage', '100%']);
   const html = emailShell({
     coBrand: true,
     preheader: `Active AOG on trip ${incident.tripId || ''}.`,
     headline: 'Active AOG — response needed',
     lede,
-    body: `${factTable([
-      ['Trip ID', incident.tripId],
-      ['Tail', incident.tail],
-      ['Aircraft', incident.aircraftType],
-      ['Route', incident.route],
-      ['Location', incident.location],
-      ['AOG time', incident.aogAt],
-      ['Issue', incident.issue],
-      ['Notes', incident.notes],
-      ['Contact', incident.contact],
-      ['Coverage', '100%'],
-    ])}${emailButton(url, 'Open the active AOG')}`,
+    body: `${factTable(facts)}${emailButton(url, 'Open the active AOG')}`,
   });
   const text = [
     lede,
@@ -111,27 +117,8 @@ export function incidentCfsLetter(incident, url) {
     `Location: ${incident.location || ''}`,
     `AOG time: ${incident.aogAt || ''}`,
     `Issue: ${incident.issue || ''}`,
-    `Coverage: 100%`,
+    bound ? 'Coverage: 100%' : '',
     `Open the active AOG: ${url || ''}`,
-  ].join('\n');
-  return { subject, html, text };
-}
-
-export function incidentInternalLetter(incident) {
-  const subject = `AOG recorded internally — trip ${incident.tripId || ''}`.trim();
-  const lede = 'This AOG was recorded for Skyway ops. Charter Flight Support was not notified because the trip is not covered at 100%.';
-  const html = emailShell({
-    headline: 'AOG recorded internally',
-    lede,
-    body: factTable([
-      ['Trip ID', incident.tripId],
-      ['Tail', incident.tail],
-      ['Location', incident.location],
-      ['AOG time', incident.aogAt],
-      ['Issue', incident.issue],
-      ['Coverage', 'Not covered at 100% by Charter Flight Support'],
-    ]),
-  });
-  const text = [lede, `Trip ${incident.tripId || ''}`, incident.location || '', incident.issue || ''].join('\n');
+  ].filter(Boolean).join('\n');
   return { subject, html, text };
 }

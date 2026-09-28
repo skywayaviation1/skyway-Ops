@@ -445,6 +445,13 @@ export function buildCoverageDraft({ parsed, settings, match, messageId }) {
     returnDate: parsed?.returnDate || '',
     datesLabel: parsed?.datesLabel || '',
     itinerary: parsed?.itinerary || '',
+    legs: (Array.isArray(parsed?.legs) ? parsed.legs : []).slice(0, 12).map((leg) => ({
+      from: String(leg?.from || '').slice(0, 4),
+      to: String(leg?.to || '').slice(0, 4),
+      departAt: String(leg?.departAt || '').slice(0, 40),
+      arriveAt: String(leg?.arriveAt || '').slice(0, 40),
+    })),
+    contractSignedAt: parsed?.signedAt || '',
     tripTotal: Number.isFinite(Number(parsed?.tripTotal)) ? Number(parsed.tripTotal) : null,
     coverageLevel: action.coverageLevel,
     premium: action.premium,

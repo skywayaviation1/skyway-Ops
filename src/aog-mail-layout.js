@@ -42,7 +42,7 @@ export function tripSummaryRows(record = {}) {
   const legs = Array.isArray(record.legs) ? record.legs : [];
   if (legs.length > 0) {
     legs.forEach((leg, index) => {
-      const when = String(leg.departAt || leg.date || '').slice(0, 10);
+      const when = String(leg.departAt || leg.date || '').slice(0, 32);
       const route = [leg.from, leg.to].filter(Boolean).join(' → ');
       rows.push([`Leg ${index + 1}`, [route, when].filter(Boolean).join(' · ')]);
     });

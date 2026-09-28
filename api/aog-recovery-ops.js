@@ -78,11 +78,9 @@ export default async function handler(req, res) {
         duplicate: result.duplicate === true,
         notified: result.notified === true,
         reason: result.reason || '',
-        message: result.reason === 'not_covered_at_100'
-          ? 'Recorded internally. This trip is not covered at 100% by Charter Flight Support, so CFS was not notified.'
-          : (result.notified
-            ? 'Charter Flight Support was notified.'
-            : `Recorded for Charter Flight Support. Mail: ${result.emailError || 'not sent'}`),
+        message: result.notified
+          ? 'Charter Flight Support was notified.'
+          : `Recorded for Charter Flight Support. Mail: ${result.emailError || 'not sent'}`,
         incident: {
           id: result.incident.id,
           tripId: result.incident.tripId,
@@ -151,6 +149,10 @@ export default async function handler(req, res) {
           routeTo: parsed.routeTo || '',
           departDate: parsed.departDate || '',
           returnDate: parsed.returnDate || '',
+          datesLabel: parsed.datesLabel || '',
+          passengerCount: parsed.passengerCount ?? null,
+          legs: parsed.legs || [],
+          contractSignedAt: parsed.signedAt || '',
           tripTotal: parsed.tripTotal ?? null,
           uncertainFields: parsed.uncertainFields || [],
           notes: parsed.notes || [],

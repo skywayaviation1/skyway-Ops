@@ -842,6 +842,8 @@ export function serializeCoverage(id, data = {}) {
     returnDate: data.returnDate || '',
     datesLabel: data.datesLabel || '',
     itinerary: data.itinerary || '',
+    legs: Array.isArray(data.legs) ? data.legs : [],
+    contractSignedAt: data.contractSignedAt || '',
     tripTotal: data.tripTotal ?? null,
     coverageLevel: data.coverageLevel || 'included_50',
     premium: data.premium ?? null,

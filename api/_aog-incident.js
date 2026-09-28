@@ -1,15 +1,14 @@
-// Ops reports an AOG. 100% trips notify Charter Flight Support. 50% trips
-// stay internal. The document id is the idempotency key, so a double submit
-// does not send a second email.
+// Ops reports an AOG. Every report notifies Charter Flight Support.
+// The document id is the idempotency key, so a double submit does not send
+// a second email. Coverage percentage is included only when 100% is bound.
 
 import crypto from 'crypto';
 import { CFS_BIND_CC, CFS_BIND_TO } from '../src/aog-recovery.js';
 import { isHundredCoverage } from '../src/aog-reporting.js';
 import {
   cfsIncidentView,
-  cfsShouldBeNotified,
+  coverageIsBound,
   incidentCfsLetter,
-  incidentInternalLetter,
   validateAogReport,
 } from '../src/aog-incident.js';
 import {
@@ -87,7 +86,6 @@ export async function createAogIncident(db, input, { actor, baseUrl } = {}) {
     };
   }
   const records = await coverageForTrip(db, value.tripId);
-  const notify = cfsShouldBeNotified(records);
   const now = new Date().toISOString();
   const hundred = records.find((row) => isHundredCoverage(row.coverageLevel));
   const data = {
@@ -96,9 +94,10 @@ export async function createAogIncident(db, input, { actor, baseUrl } = {}) {
     createdAt: now,
     createdBy: actor || '',
     cfsNotified: false,
-    notifyBlockReason: notify ? '' : 'not_covered_at_100',
+    coverageBound: coverageIsBound(records),
+    notifyBlockReason: '',
     updates: [{ at: now, text: 'AOG reported', by: actor || 'ops', role: 'ops' }],
-    coverageId: hundred?.id || '',
+    coverageId: hundred?.id || records[0]?.id || '',
   };
   await ref.set(data);
   if (data.coverageId) {
@@ -109,21 +108,6 @@ export async function createAogIncident(db, input, { actor, baseUrl } = {}) {
       detail: `${value.location}: ${value.issue}`.slice(0, 500),
       tripId: value.tripId,
     }).catch(() => {});
-  }
-  if (!notify) {
-    const letter = incidentInternalLetter({ id: ref.id, ...data });
-    await sendRecoveryEmail({
-      to: CFS_BIND_CC,
-      subject: letter.subject,
-      html: letter.html,
-      text: letter.text,
-    }).catch(() => {});
-    return {
-      incident: { id: ref.id, ...data },
-      duplicate: false,
-      notified: false,
-      reason: 'not_covered_at_100',
-    };
   }
   const sent = await notifyCfs(db, ref, { id: ref.id, ...data }, baseUrl);
   return {

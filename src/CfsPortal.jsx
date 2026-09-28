@@ -137,7 +137,7 @@ function ActiveAog({ incident, onRespond }) {
       <h3>{incident.location || 'Location pending'}</h3>
       <p>{incident.issue}</p>
       <p className="cfs-meta">{[incident.tail, incident.aircraftType, incident.route, incident.aogAt].filter(Boolean).join(' · ')}</p>
-      <p className="cfs-meta">Coverage: 100%</p>
+      {incident.coverage === '100%' && <p className="cfs-meta">Coverage: 100%</p>}
       {(incident.updates || []).slice(-3).map((row) => (
         <p key={`${row.at}-${row.text}`} className="cfs-meta">{row.text}</p>
       ))}

@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { extractUncompressedPdfText, parseCheckoutEmail } from '../api/_aog-checkout-parser.js';
+import { publicCoverageView } from '../api/_aog-recovery.js';
 import { renderElectionPdf } from '../api/_aog-election-pdf.js';
 import { applyNotifyTestMode, notifyTestModeEnabled, notifyTestRecipient } from '../api/_notify-test-mode.js';
 import { assertStripeTestKey, buildCheckoutSessionParams, stripeClient } from '../api/_aog-stripe.js';
@@ -27,7 +28,7 @@ import {
   tripRowCsv,
 } from '../src/aog-trip-rows.js';
 import { planBrokerBackfill } from '../src/broker-backfill.js';
-import { cfsIncidentView, cfsShouldBeNotified, incidentCfsLetter, validateAogReport } from '../src/aog-incident.js';
+import { cfsIncidentView, coverageIsBound, incidentCfsLetter, validateAogReport } from '../src/aog-incident.js';
 import {
   ackTokenUsable,
   bindLetterContent,
@@ -79,7 +80,7 @@ test('provisional parser reads a synthetic CJ3 checkout and flags nothing requir
     knownAircraft: ['Citation CJ3', 'Learjet 60'],
   });
   assert.equal(parsed.isCheckout, true);
-  assert.equal(parsed.parserVersion, 'provisional-2');
+  assert.equal(parsed.parserVersion, 'provisional-3');
   assert.equal(parsed.tripId, 'WEQVQD');
   assert.equal(parsed.tail, 'N100TS');
   assert.equal(parsed.aircraftType, 'Citation CJ3');
@@ -91,7 +92,7 @@ test('provisional parser reads a synthetic CJ3 checkout and flags nothing requir
   assert.equal(parsed.checkoutEmail, 'broker@example-charter.test');
   assert.equal(parsed.brokerCompany, 'Example Charter Group');
   assert.deepEqual(parsed.uncertainFields, []);
-  assert.match(parsed.notes.join(' '), /provisional-2/);
+  assert.match(parsed.notes.join(' '), /provisional-3/);
 });
 
 test('provisional parser reads a synthetic Lear checkout', async () => {
@@ -1052,7 +1053,55 @@ test('a real trip code is required before a broker offer is queued', () => {
   assert.equal(ready.ratePercent, 1.5);
 });
 
-test('an AOG report notifies CFS only at 100% and hides broker economics', () => {
+test('a redacted Skyway contract parses the trip locator, charter price, and local leg', async () => {
+  const parsed = parseCheckoutEmail(await loadFixture('skyway-signed-contract.txt'), {
+    knownAircraft: ['Citation CJ3', 'Learjet 60'],
+  });
+  assert.equal(parsed.isCheckout, true);
+  assert.equal(parsed.tripId, 'TBAE0L');
+  assert.equal(parsed.tail, 'N525CR');
+  assert.equal(parsed.confidence.tail, 'high');
+  assert.match(parsed.aircraftType, /CJ3/);
+  assert.equal(parsed.passengerCount, 2);
+  assert.equal(parsed.tripTotal, 15000);
+  assert.equal(parsed.confidence.tripTotal, 'high');
+  assert.equal(parsed.departDate, '2026-09-28');
+  assert.equal(parsed.returnDate, null);
+  assert.equal(parsed.routeFrom, 'DSM');
+  assert.equal(parsed.routeTo, 'IAD');
+  assert.deepEqual(parsed.legs, [{
+    from: 'DSM',
+    to: 'IAD',
+    departAt: '2026-09-28 13:00 CDT',
+    arriveAt: '2026-09-28 16:18 EDT',
+  }]);
+  assert.equal(parsed.checkoutEmail, 'jordan.hale@example-charter.test');
+  assert.equal(parsed.brokerCompany, 'Jordan Hale');
+  assert.equal(parsed.signedAt, '2026-09-25T13:27:52Z');
+  assert.equal(parsed.contractSigned, true);
+  assert.equal(parsed.notes.some((note) => /2600:|e-signature value|aarBls/.test(note)), false);
+  assert.deepEqual(parsed.uncertainFields, []);
+
+  const quote = quotePremium({ aircraftType: parsed.aircraftType, tripTotal: parsed.tripTotal });
+  assert.equal(quote.premium, 225);
+  assert.equal(quote.ratePercent, 1.5);
+  const action = classifyCheckout(parsed, {});
+  assert.deepEqual(action.emails, ['broker_offer']);
+  assert.equal(action.premium, 225);
+  const draft = buildCoverageDraft({
+    parsed,
+    settings: {},
+    match: { status: 'unmatched', matches: [], ambiguous: false },
+    messageId: 'fixture',
+  });
+  const view = publicCoverageView(draft);
+  assert.equal(view.includedLine, 'Included: 50%, up to $15,000.00');
+  assert.equal(view.upgradeLine, 'Upgrade: 100%, up to $30,000.00, premium $225.00');
+  assert.equal(draft.contractSignedAt, '2026-09-25T13:27:52Z');
+  assert.equal(draft.legs[0].departAt, '2026-09-28 13:00 CDT');
+});
+
+test('an AOG report notifies CFS for every trip and hides coverage unless 100% is bound', () => {
   const missing = validateAogReport({ tripId: 'LOCATOR', wholeTrip: true, legs: [{ id: 'a', from: 'KDSM', to: 'KIAD' }] });
   assert.equal(missing.ok, false);
   const report = validateAogReport({
@@ -1073,24 +1122,34 @@ test('an AOG report notifies CFS only at 100% and hides broker economics', () =>
   assert.equal(report.ok, true);
   assert.equal(report.value.legs.length, 1);
   assert.equal(report.value.legs[0].id, 'leg-b');
-  assert.equal(cfsShouldBeNotified([{ coverageLevel: 'included_50' }]), false);
-  assert.equal(cfsShouldBeNotified([{ coverageLevel: 'purchased_100' }]), true);
-  const view = cfsIncidentView({
-    id: 'abc',
-    ...report.value,
+  assert.equal(coverageIsBound([{ coverageLevel: 'included_50' }]), false);
+  assert.equal(coverageIsBound([{ coverageLevel: 'purchased_100' }]), true);
+  const hidden = {
     premium: 277.5,
     checkoutEmail: 'trips@surfair.com',
     passengerName: 'Hidden Guest',
-  });
+  };
+  const unbound = cfsIncidentView({ id: 'abc', ...report.value, ...hidden });
+  assert.equal(unbound.coverage, undefined);
+  assert.equal(unbound.premium, undefined);
+  assert.equal(unbound.checkoutEmail, undefined);
+  assert.equal(unbound.passengerName, undefined);
+  const unboundLetter = incidentCfsLetter(unbound, 'https://example.test/cfs?aog=token');
+  const unboundBody = `${unboundLetter.html}\n${unboundLetter.text}`;
+  assert.match(unboundBody, /K7M4QX/);
+  assert.match(unboundBody, /Hydraulic leak/);
+  assert.equal(/\b50%/.test(unboundBody), false);
+  assert.equal(/\bpremium\b/i.test(unboundBody), false);
+  assert.equal(/\b100%/.test(unboundLetter.text), false);
+  assert.equal(unboundBody.includes('trips@surfair.com'), false);
+  const view = cfsIncidentView({ id: 'abc', ...report.value, ...hidden, coverageBound: true });
   assert.equal(view.coverage, '100%');
-  assert.equal(view.premium, undefined);
-  assert.equal(view.checkoutEmail, undefined);
-  assert.equal(view.passengerName, undefined);
   const letter = incidentCfsLetter(view, 'https://example.test/cfs?aog=token');
   const body = `${letter.html}\n${letter.text}`;
-  assert.match(body, /K7M4QX/);
+  assert.match(body, /Coverage: 100%/);
   assert.match(body, /Hydraulic leak/);
   assert.equal(/premium/i.test(body), false);
+  assert.equal(/50%/.test(body), false);
   assert.equal(body.includes('trips@surfair.com'), false);
   const again = validateAogReport({ ...report.value, idempotencyKey: 'same-key', wholeTrip: true, legs: report.value.legs });
   assert.equal(again.value.idempotencyKey, 'same-key');

@@ -816,7 +816,7 @@ async function clickThrough() {
 async function renderMailShots(page) {
   const { offerLetter, brokerPaidLetter, includedOnlyLetter } = await import('../api/_aog-recovery.js');
   const { bindLetterContent, cfsOpsLetter, cfsBrokerLetter } = await import('../src/aog-cfs.js');
-  const { incidentCfsLetter, incidentInternalLetter } = await import('../src/aog-incident.js');
+  const { incidentCfsLetter } = await import('../src/aog-incident.js');
   const cj3 = {
     tripId: 'K7M4QX',
     tail: 'N525CR',
@@ -850,8 +850,21 @@ async function renderMailShots(page) {
     ['aog-email-bind', bindLetterContent({ ...cj3, coverageLevel: 'purchased_100', legCount: 1, brokerCompany: 'Surf Air' }, { ackUrl: 'https://skyway-ops.vercel.app/cfs?ack=preview', portalUrl: 'https://skyway-ops.vercel.app/cfs' })],
     ['aog-email-cfs-ops', cfsOpsLetter({ ...cj3, coverageLevel: 'purchased_100' }, { name: 'Casey Stone', email: 'casey@charterflightsupport.com', cfsCostCents: 64000, reference: 'CFS-4491', notes: '' })],
     ['aog-email-cfs-broker', cfsBrokerLetter({ ...cj3, coverageLevel: 'purchased_100', premium: 277.5 })],
-    ['aog-email-incident', incidentCfsLetter({ ...cj3, location: 'KIAD', aogAt: '2026-09-28 15:30', issue: 'Hydraulic leak on arrival', contact: 'Dispatch desk' }, 'https://skyway-ops.vercel.app/cfs?aog=preview')],
-    ['aog-email-incident-internal', incidentInternalLetter({ ...cj3, location: 'KDSM', aogAt: '2026-09-28 11:00', issue: 'Generator failure' })],
+    ['aog-email-offer-tbae0l', offerLetter({
+      tripId: 'TBAE0L',
+      tail: 'N525CR',
+      aircraftType: 'Citation CJ3',
+      route: 'DSM → IAD',
+      datesLabel: '2026-09-28',
+      tripTotal: 15000,
+      premium: 225,
+      ratePercent: 1.5,
+      coverageLevel: 'included_50',
+      upgradeAvailable: true,
+      legs: [{ from: 'DSM', to: 'IAD', departAt: '2026-09-28 13:00 CDT', arriveAt: '2026-09-28 16:18 EDT' }],
+    }, 'https://skyway-ops.vercel.app/aog-coverage?token=preview')],
+    ['aog-email-incident', incidentCfsLetter({ ...cj3, location: 'KIAD', aogAt: '2026-09-28 15:30', issue: 'Hydraulic leak on arrival', contact: 'Dispatch desk', coverageBound: true }, 'https://skyway-ops.vercel.app/cfs?aog=preview')],
+    ['aog-email-incident-facts', incidentCfsLetter({ ...cj3, tripId: 'TBAE0L', location: 'KDSM', aogAt: '2026-09-28 11:00', issue: 'Generator failure', coverageBound: false }, 'https://skyway-ops.vercel.app/cfs?aog=preview')],
   ];
   await page.setViewportSize({ width: 390, height: 844 });
   for (const [name, letter] of letters) {
