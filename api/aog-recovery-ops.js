@@ -2,6 +2,7 @@
 // unmatched checkout to a trip, and resend the offer or the CFS bind email.
 
 import { classifyCheckout, paymentStatusLabel } from '../src/aog-recovery.js';
+import { decideInvoice, findInvoiceForTrip, invoiceOpsPayload, markInvoicePaid } from './_aog-invoice.js';
 import { createAogIncident, listAogIncidents, postAogUpdate } from './_aog-incident.js';
 import {
   COLLECTION,
@@ -183,6 +184,18 @@ export default async function handler(req, res) {
       return;
     }
 
+    if (action === 'invoice-for-trip') {
+      const found = await findInvoiceForTrip(db, body.tripId);
+      const invoice = found && (found.data.invoiceRequestStatus || found.data.paymentMethod === 'invoice')
+        ? invoiceOpsPayload({ id: found.id, ...found.data })
+        : null;
+      res.status(200).json({
+        ok: true,
+        invoice: invoice ? { ...invoice, paymentLabel: paymentStatusLabel(found.data.paymentStatus) } : null,
+      });
+      return;
+    }
+
     const id = String(body.coverageId || '').trim();
     if (!id) {
       res.status(400).json({ error: 'coverageId is required' });
@@ -349,6 +362,31 @@ export default async function handler(req, res) {
         offerSentAt: '',
       }, { baseUrl: publicBaseUrl(req), force: true });
       res.status(200).json({ ok: sent.ok, error: sent.error || '', paymentStatus: paymentStatusLabel('offer_pending') });
+      return;
+    }
+
+    if (action === 'invoice-decide') {
+      const decision = String(body.decision || '');
+      const result = await decideInvoice(db, ref, record, {
+        decision,
+        actor: actor.email,
+        baseUrl: publicBaseUrl(req),
+      });
+      res.status(200).json({
+        ok: true,
+        duplicate: result.duplicate === true,
+        invoice: { ...invoiceOpsPayload(result.record), paymentLabel: paymentStatusLabel(result.record.paymentStatus) },
+      });
+      return;
+    }
+
+    if (action === 'invoice-paid') {
+      const result = await markInvoicePaid(db, ref, record, { actor: actor.email });
+      res.status(200).json({
+        ok: true,
+        duplicate: result.duplicate === true,
+        invoice: { ...invoiceOpsPayload(result.record), paymentLabel: paymentStatusLabel(result.record.paymentStatus) },
+      });
       return;
     }
 

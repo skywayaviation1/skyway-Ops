@@ -10,6 +10,7 @@ function useToken() {
   return {
     token: params.get('token') || '',
     result: params.get('result') || '',
+    choice: params.get('choice') || '',
   };
 }
 
@@ -34,13 +35,15 @@ function Row({ label, value }) {
 }
 
 export default function AogCoverageOffer() {
-  const { token, result } = useToken();
+  const { token, result, choice } = useToken();
   const [coverage, setCoverage] = useState(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [fullName, setFullName] = useState('');
+  const [invoiceEmail, setInvoiceEmail] = useState('');
   const [agreed, setAgreed] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [invoiceNote, setInvoiceNote] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -56,6 +59,8 @@ export default function AogCoverageOffer() {
         if (!response.ok || !data.coverage) throw new Error(data.error || 'This coverage link is not valid');
         if (cancelled) return;
         setCoverage(data.coverage);
+        setFullName((current) => current || data.coverage.signedName || data.coverage.brokerCompany || '');
+        setInvoiceEmail((current) => current || data.coverage.brokerEmail || '');
         setError('');
         if (result === 'success' && data.coverage?.paymentStatus !== 'paid' && attempt < 8) {
           setTimeout(() => load(attempt + 1), 2000);
@@ -70,6 +75,11 @@ export default function AogCoverageOffer() {
     return () => { cancelled = true; };
   }, [token, result]);
 
+  useEffect(() => {
+    if (!coverage || choice !== 'invoice') return;
+    document.getElementById('invoice-choice')?.scrollIntoView({ block: 'center' });
+  }, [coverage, choice]);
+
   async function sign(event) {
     event.preventDefault();
     setBusy(true);
@@ -77,6 +87,31 @@ export default function AogCoverageOffer() {
     try {
       const data = await post(token, { action: 'sign', fullName, agreed });
       setCoverage(data.coverage);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function requestInvoice(event) {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    setInvoiceNote('');
+    try {
+      const data = await post(token, {
+        action: 'invoice',
+        fullName,
+        email: invoiceEmail,
+        agreed: coverage?.signed ? true : agreed,
+      });
+      setCoverage(data.coverage);
+      setInvoiceNote(data.autoApproved
+        ? '100% coverage is confirmed. The premium will appear on your charter invoice.'
+        : data.duplicate
+          ? 'This invoice request is already with Skyway.'
+          : 'Request received. Skyway will add the premium to your charter invoice after a quick review.');
     } catch (err) {
       setError(err.message);
     } finally {
@@ -142,8 +177,58 @@ export default function AogCoverageOffer() {
               </section>
             </div>
 
+            {coverage.upgradeAvailable && coverage.invoiceRequestStatus !== 'approved' && coverage.paymentStatus !== 'invoice_unpaid' && coverage.paymentStatus !== 'invoice_paid' && (
+              <div className="mt-4 grid gap-3">
+                <h2 className="text-sm font-semibold">Choose how to pay the premium</h2>
+                <section aria-label="Pay premium by card" className="rounded-lg border border-edge p-3">
+                  <p className="text-sm font-semibold">Pay premium by card</p>
+                  <p className="mt-1 text-sm text-content-muted">One-time charge of {fmtMoney(coverage.premium)} on Stripe, separate from the charter.</p>
+                  <Button className="mt-3" variant="primary" loading={busy} onClick={coverage.signed ? pay : () => document.getElementById('election-sign')?.scrollIntoView({ block: 'center' })}>
+                    {coverage.signed ? `Pay ${fmtMoney(coverage.premium)} by card` : 'Sign the terms, then pay by card'}
+                  </Button>
+                </section>
+                <section id="invoice-choice" aria-label="Add premium to my charter invoice" className="rounded-lg border border-accent bg-accent-soft p-3">
+                  <p className="text-sm font-semibold">Add premium to my charter invoice</p>
+                  <p className="mt-1 text-sm text-content-muted">Ask Skyway to add {fmtMoney(coverage.premium)} to the charter invoice. No card charge.</p>
+                  {coverage.invoiceRequestStatus === 'pending' ? (
+                    <p className="mt-3 text-sm" role="status">Request received. Skyway will add the premium to your charter invoice after a quick review. You can still pay by card if you prefer.</p>
+                  ) : (
+                    <form className="mt-3 space-y-2" onSubmit={requestInvoice}>
+                      <label className="block text-sm">
+                        <span className="mb-1 block text-content-muted">Your name</span>
+                        <input aria-label="Invoice name" value={fullName} onChange={(event) => setFullName(event.target.value)} autoComplete="name" required className="w-full rounded-lg border border-edge bg-surface px-3 py-2 text-sm outline-none focus:border-accent" />
+                      </label>
+                      <label className="block text-sm">
+                        <span className="mb-1 block text-content-muted">Email</span>
+                        <input aria-label="Invoice email" type="email" value={invoiceEmail} onChange={(event) => setInvoiceEmail(event.target.value)} autoComplete="email" required className="w-full rounded-lg border border-edge bg-surface px-3 py-2 text-sm outline-none focus:border-accent" />
+                      </label>
+                      {!coverage.signed && (
+                        <label className="flex items-start gap-2 text-sm">
+                          <input type="checkbox" checked={agreed} onChange={(event) => setAgreed(event.target.checked)} className="mt-1" required />
+                          <span>I agree to the terms below and elect 100% AOG coverage. Add the premium to my charter invoice.</span>
+                        </label>
+                      )}
+                      <Button type="submit" variant="secondary" loading={busy} disabled={!coverage.signed && (!agreed || fullName.trim().length < 5)}>
+                        Add {fmtMoney(coverage.premium)} to my charter invoice
+                      </Button>
+                    </form>
+                  )}
+                  {invoiceNote && coverage.invoiceRequestStatus !== 'pending' && (
+                    <p className="mt-3 text-sm text-success" role="status">{invoiceNote}</p>
+                  )}
+                </section>
+              </div>
+            )}
+
             {coverage.paymentStatus === 'paid' && (
               <p className="mt-4 text-sm text-success">Payment received. You are covered at 100%. A confirmation email follows once Stripe’s notice is recorded.</p>
+            )}
+            {(coverage.paymentStatus === 'invoice_unpaid' || coverage.paymentStatus === 'invoice_paid') && (
+              <p className="mt-4 text-sm text-success" role="status">
+                {coverage.paymentStatus === 'invoice_paid'
+                  ? '100% coverage is confirmed. The premium was paid on your charter invoice.'
+                  : '100% coverage is confirmed. The premium will appear on your charter invoice.'}
+              </p>
             )}
             {result === 'success' && coverage.paymentStatus !== 'paid' && (
               <p className="mt-4 text-sm text-content-muted">Stripe accepted the return to this page. Coverage is confirmed only after the signed webhook records the premium.</p>
@@ -171,7 +256,7 @@ export default function AogCoverageOffer() {
                     <p className="mt-2 text-2xs text-content-muted">Card details are entered on Stripe. Skyway never sees the card number. The premium is charged separately from the charter.</p>
                   </div>
                 ) : (
-                  <form className="mt-4 space-y-3" onSubmit={sign}>
+                  <form id="election-sign" className="mt-4 space-y-3" onSubmit={sign}>
                     <label className="block text-sm">
                       <span className="mb-1 block text-content-muted">Full name</span>
                       <input

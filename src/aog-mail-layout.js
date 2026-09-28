@@ -22,6 +22,21 @@ export function emailButton(href, label) {
     + `</td></tr></table>`;
 }
 
+/** Full-width stacked actions. The first button is the primary choice. */
+export function emailButtonStack(buttons) {
+  return (buttons || []).map((button) => {
+    const url = String(button?.href || '').trim();
+    if (!url) return '';
+    const secondary = button.tone === 'secondary';
+    const background = secondary ? '#ffffff' : '#0b6e6a';
+    const color = secondary ? '#0b6e6a' : '#ffffff';
+    const border = secondary ? 'border:1px solid #c5d0d8;' : '';
+    return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:8px 0"><tr><td align="center" style="border-radius:8px;background:${background};${border}">`
+      + `<a href="${escapeHtml(url)}" style="display:block;padding:14px 18px;font-family:Georgia,'Times New Roman',serif;font-size:16px;line-height:1.2;color:${color};text-decoration:none;font-weight:700">${escapeHtml(button.label)}</a>`
+      + `</td></tr></table>`;
+  }).join('');
+}
+
 export function factTable(rows) {
   const body = (rows || []).filter(([, value]) => value != null && String(value).trim() !== '').map(([label, value]) => (
     `<tr>`

@@ -152,6 +152,8 @@ export default async function handler(req, res) {
       electedBy: paid.electedBy,
       paidAt,
       paymentMismatch: false,
+      paymentMethod: 'card',
+      invoiceRequestStatus: record.invoiceRequestStatus === 'pending' ? 'withdrawn' : (record.invoiceRequestStatus || ''),
     }, { merge: true });
     await appendCoverageEvent(db, snap.id, {
       type: 'paid',

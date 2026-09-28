@@ -62,7 +62,8 @@ import {
   shouldAttachCharterContract,
 } from '../src/charter-contract.js';
 import { comparisonHtml, comparisonText, brokerComparison } from '../src/aog-offer-copy.js';
-import { emailButton, emailShell, factTable, tripSummaryRows } from '../src/aog-mail-layout.js';
+import { emailButton, emailButtonStack, emailShell, factTable, tripSummaryRows } from '../src/aog-mail-layout.js';
+import { brokerInvoiceDeclinedLetter, brokerInvoiceLetter, coverageChoiceUrl } from '../src/aog-invoice.js';
 import { coverageEvent, coverageLimitCentsFor, coverageTierCents, dollarsFromCents, includedCoveragePatch, includedMultiplierFrom, isHundredCoverage, multiplierOr, reportingFacts, requireCoverageMultiplier, tripTotalCentsOf, DEFAULT_INCLUDED_MULTIPLIER, DEFAULT_UPGRADE_MULTIPLIER, LEGACY_INCLUDED_MULTIPLIER } from '../src/aog-reporting.js';
 
 const COLLECTION = 'aogRecovery';
@@ -294,6 +295,8 @@ export async function loadSettings(db = recoveryDb()) {
     upgradeMultiplier: multiplierOr(data.upgradeMultiplier, DEFAULT_UPGRADE_MULTIPLIER),
     includedMultiplierExplicit: explicitIncluded,
     cfsStaff: readCfsStaff(data),
+    invoiceAutoApprove: data.invoiceAutoApprove === true,
+    invoiceAutoApproveDomains: Array.isArray(data.invoiceAutoApproveDomains) ? data.invoiceAutoApproveDomains : [],
     updatedAt: data.updatedAt || '',
     updatedBy: data.updatedBy || '',
   };
@@ -306,6 +309,8 @@ export async function saveSettings(db, {
   includedMultiplier,
   upgradeMultiplier,
   cfsStaff,
+  invoiceAutoApprove,
+  invoiceAutoApproveDomains,
   actor,
 } = {}) {
   const existing = await loadSettings(db);
@@ -332,6 +337,10 @@ export async function saveSettings(db, {
     cfsStaff: cfsStaff == null
       ? existing.cfsStaff
       : cfsStaffFromList(cfsStaff, { previous: existing.cfsStaff, actorEmail: actor?.email || '', now }),
+    invoiceAutoApprove: invoiceAutoApprove == null ? existing.invoiceAutoApprove === true : invoiceAutoApprove === true,
+    invoiceAutoApproveDomains: invoiceAutoApproveDomains == null
+      ? (existing.invoiceAutoApproveDomains || [])
+      : invoiceAutoApproveDomains,
     updatedAt: now,
     updatedBy: actor?.email || '',
   };
@@ -413,13 +422,17 @@ export function offerLetter(record, url) {
     preheader: '50% is included. Upgrade to 100% AOG recovery coverage.',
     headline: 'Keep your client moving if the aircraft goes AOG',
     lede,
-    body: `${comparisonHtml(record)}${emailButton(url, 'Upgrade to 100%')}${tripBlock(record)}<p style="font-family:-apple-system,Segoe UI,sans-serif;font-size:12px;line-height:1.5;color:#5c6b7a">This link is unique to this trip. If you do nothing, you stay at the included 50%.</p>`,
+    body: `${comparisonHtml(record)}${emailButtonStack([
+      { href: coverageChoiceUrl(url, 'card'), label: 'Pay premium by card', tone: 'primary' },
+      { href: coverageChoiceUrl(url, 'invoice'), label: 'Add premium to my charter invoice', tone: 'secondary' },
+    ])}${tripBlock(record)}<p style="font-family:-apple-system,Segoe UI,sans-serif;font-size:12px;line-height:1.4;color:#5c6b7a">This link is unique to this trip. If you do nothing, you stay at the included 50%.</p>`,
     footer: `Questions: <a href="mailto:charters@flyskyway.com" style="color:#0b6e6a;text-decoration:none">charters@flyskyway.com</a><br>Coverage terms are on the offer page before you elect 100%.`,
   });
   const text = [
     lede,
     comparisonText(record),
-    `Upgrade to 100%: ${url || ''}`,
+    `Pay premium by card: ${coverageChoiceUrl(url, 'card')}`,
+    `Add premium to my charter invoice: ${coverageChoiceUrl(url, 'invoice')}`,
     `Trip ${record.tripId || ''} · ${record.tail || ''} · ${record.route || ''}`,
     record.datesLabel || '',
   ].filter(Boolean).join('\n');
@@ -812,6 +825,9 @@ export function publicCoverageView(record) {
     premiumLine: payable && premiumLabelText && premiumLabelText !== '—'
       ? `One-time premium of ${premiumLabelText}, charged separately from the charter.`
       : '',
+    brokerEmail: record.checkoutEmail || record.brokerEmail || '',
+    invoiceRequestStatus: record.invoiceRequestStatus || '',
+    paymentMethod: record.paymentMethod || '',
     coverageValueLabel: upgradeValueLabel,
     premium: record.premium ?? null,
     ratePercent: record.ratePercent ?? null,
@@ -1041,6 +1057,18 @@ export async function dispatchCoverageEmails(db, id, record, { baseUrl, force = 
     const sent = await sendLetter(record, brokerPaidLetter(record), { to: record.checkoutEmail });
     if (sent.ok) patch.brokerConfirmSentAt = new Date().toISOString();
     else errors.push(sent.error || 'broker confirmation failed');
+  }
+
+  const invoiceTo = record.invoiceRequestedByEmail || record.checkoutEmail || record.brokerEmail || '';
+  if (emails.includes('broker_invoice') && invoiceTo && (force || !record.brokerConfirmSentAt)) {
+    const sent = await sendLetter(record, brokerInvoiceLetter(record), { to: invoiceTo });
+    if (sent.ok) patch.brokerConfirmSentAt = new Date().toISOString();
+    else errors.push(sent.error || 'invoice confirmation failed');
+  }
+  if (emails.includes('broker_invoice_declined') && invoiceTo && (force || !record.invoiceDeclineMailAt)) {
+    const sent = await sendLetter(record, brokerInvoiceDeclinedLetter(record), { to: invoiceTo });
+    if (sent.ok) patch.invoiceDeclineMailAt = new Date().toISOString();
+    else errors.push(sent.error || 'invoice decline notice failed');
   }
 
   patch.emailError = errors.join('; ');

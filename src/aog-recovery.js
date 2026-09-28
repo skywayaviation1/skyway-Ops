@@ -15,7 +15,10 @@ export const PAYMENT_STATUSES = Object.freeze({
   not_required: 'Not required',
   offer_pending: 'Offer sent',
   awaiting_payment: 'Awaiting payment',
-  paid: 'Paid',
+  paid: 'Paid by card',
+  invoice_pending: 'Invoice requested',
+  invoice_unpaid: 'On invoice, unpaid',
+  invoice_paid: 'On invoice, paid',
   complimentary: 'Complimentary',
   gifted: 'Gifted',
   unavailable: 'Upgrade unavailable',
@@ -54,6 +57,7 @@ export const CSV_COLUMNS = Object.freeze([
   ['coverageLevel', 'Coverage level'],
   ['premium', 'Premium'],
   ['paymentStatus', 'Payment status'],
+  ['invoiceLineItem', 'Invoice line'],
   ['stripeReference', 'Stripe reference'],
   ['electionContract', 'Election contract'],
   ['charterContract', 'Charter contract'],
@@ -89,7 +93,7 @@ export function isComplimentaryDomain(email, domains) {
   });
 }
 
-export function normalizeDomains(input) {
+export function normalizeDomains(input, label = 'complimentary domain') {
   const list = Array.isArray(input) ? input : String(input || '').split(/[\s,;]+/);
   const domains = [];
   for (const raw of list) {
@@ -97,7 +101,7 @@ export function normalizeDomains(input) {
     domain = domain.replace(/^https?:\/\//, '').split('/')[0].replace(/\.$/, '');
     if (!domain) continue;
     if (!/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)+$/.test(domain)) {
-      const error = new Error(`Invalid complimentary domain: ${raw}`);
+      const error = new Error(`Invalid ${label}: ${raw}`);
       error.status = 400;
       throw error;
     }

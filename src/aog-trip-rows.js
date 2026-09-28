@@ -217,6 +217,11 @@ export function buildTripRows(legs, records = []) {
       row.coverageLevel = coverage.coverageLevel || 'included_50';
       row.premium = coverage.premium ?? null;
       row.paymentStatus = coverage.paymentStatus || 'not_required';
+      row.paymentMethod = coverage.paymentMethod || '';
+      row.invoiceRequestStatus = coverage.invoiceRequestStatus || '';
+      row.invoiceRequestedByName = coverage.invoiceRequestedByName || '';
+      row.invoiceRequestedByEmail = coverage.invoiceRequestedByEmail || '';
+      row.invoiceLineItem = coverage.invoiceLineItem || '';
       row.offerSentAt = coverage.offerSentAt || coverage.coveredNoticeSentAt || coverage.includedNoticeSentAt || '';
       row.bindEmailSentAt = coverage.bindEmailSentAt || '';
       row.cfsStatus = coverage.cfsStatus || '';
@@ -343,7 +348,7 @@ function csvCell(value) {
 export function tripRowCsv(rows) {
   const header = [
     'Trip ID', 'Dates', 'Route', 'Tail', 'Aircraft', 'Broker company', 'Broker email',
-    'Charter contract', 'Trip total', 'Coverage level', 'Premium', 'Payment status',
+    'Charter contract', 'Trip total', 'Coverage level', 'Premium', 'Payment status', 'Invoice line',
     'Offer sent', 'Bound to CFS', 'CFS confirmed', 'Accepted coverage percent',
     'Coverage limit cents', 'CFS cost cents', 'Margin cents',
   ];
@@ -360,6 +365,7 @@ export function tripRowCsv(rows) {
     coverageLevelLabel(row.coverageLevel),
     premiumLabel({ coverageLevel: row.coverageLevel, premium: row.premium }),
     paymentStatusLabel(row.paymentStatus),
+    row.invoiceLineItem || '',
     row.offerSentAt || '',
     row.bindEmailSentAt || '',
     row.cfsStatus === 'cfs_confirmed' ? (row.cfsConfirmedAt || 'confirmed') : '',

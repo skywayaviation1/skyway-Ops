@@ -112,6 +112,10 @@ async function seed() {
     from: 'KMIA', to: 'KTEB', tail: 'N444AM', aircraft: 'Citation CJ3', customer: 'Kept Broker Co', email: 'kept@example-broker.test',
   }));
   writes.push(leg(db, {
+    id: 'leg-inv', tripId: 'J4N8QV', start: '2026-10-12T14:00:00.000Z', end: '2026-10-12T16:00:00.000Z',
+    from: 'KDSM', to: 'KIAD', tail: 'N525CR', aircraft: 'Citation CJ3', customer: 'Example Invoice Jets', email: 'invoice@example-charter.test',
+  }));
+  writes.push(leg(db, {
     id: 'leg-cfs-a', tripId: 'M8CFS2', start: '2026-11-02T14:00:00.000Z', end: '2026-11-02T17:00:00.000Z',
     from: 'KTEB', to: 'KPBI', tail: 'N318CS', aircraft: 'Citation CJ3', customer: 'Example Charter Group', email: 'broker@example-charter.test',
   }));
@@ -353,6 +357,45 @@ async function seed() {
     createdAt: Timestamp.fromDate(new Date('2026-09-01T12:00:00.000Z')),
     offerTokenHash: createHash('sha256').update(OFFER_TOKEN).digest('hex'),
   });
+  await db.collection('aogRecovery').doc('cov-invoice').set({
+    source: 'checkout',
+    tripId: 'J4N8QV',
+    brokerCompany: 'Example Invoice Jets',
+    checkoutEmail: 'invoice@example-charter.test',
+    brokerEmail: 'invoice@example-charter.test',
+    tail: 'N525CR',
+    aircraftType: 'Citation CJ3',
+    route: 'KDSM → KIAD',
+    datesLabel: '2026-10-12',
+    departDate: '2026-10-12',
+    returnDate: '2026-10-12',
+    tripTotal: 15000,
+    tripTotalCents: 1500000,
+    premium: 225,
+    premiumCents: 22500,
+    ratePercent: 1.5,
+    includedMultiplier: 1.5,
+    upgradeMultiplier: 2,
+    coverageLimitCents: 3000000,
+    coverageMultiplier: 2,
+    coverageLevel: 'purchased_100',
+    electionSource: 'purchased',
+    paymentMethod: 'invoice',
+    paymentStatus: 'invoice_unpaid',
+    invoiceRequestStatus: 'approved',
+    invoiceRequestedByName: 'Jordan Hale',
+    invoiceRequestedByEmail: 'invoice@example-charter.test',
+    invoiceRequestedAt: '2026-09-28T12:00:00.000Z',
+    invoicePremiumCents: 22500,
+    invoiceTripId: 'J4N8QV',
+    invoiceLineItem: 'AOG Recovery Coverage, 100% (trip J4N8QV)',
+    invoiceApprovedAt: '2026-09-28T12:05:00.000Z',
+    invoiceApprovedBy: 'ops@example-charter.test',
+    currency: 'usd',
+    matchStatus: 'linked',
+    linkedTripUid: 'leg-inv',
+    createdAt: Timestamp.fromDate(new Date('2026-09-28T12:00:00.000Z')),
+  });
   console.log('seeded synthetic trips');
 }
 
@@ -380,6 +423,7 @@ async function startApi() {
   const cfs = (await import('../api/aog-recovery-cfs.js')).default;
   const offer = (await import('../api/aog-recovery-public.js')).default;
   const portal = (await import('../api/cfs-portal.js')).default;
+  const invoice = (await import('../api/aog-recovery-invoice.js')).default;
   const routes = {
     '/api/aog-recovery-ops': ops,
     '/api/aog-recovery-settings': settings,
@@ -388,6 +432,7 @@ async function startApi() {
     '/api/aog-recovery-inbox-scan': scan,
     '/api/aog-recovery-cfs': cfs,
     '/api/aog-recovery-public': offer,
+    '/api/aog-recovery-invoice': invoice,
     '/api/cfs-portal': portal,
   };
   const server = createServer((req, res) => {
@@ -460,11 +505,18 @@ async function scrollSheetBody(locator) {
   });
 }
 
-async function shot(page, name) {
+async function shot(page, name, { fullPage = false } = {}) {
   await mkdir(SHOT, { recursive: true });
   const file = path.join(SHOT, `${name}.png`);
-  await page.screenshot({ path: file });
+  await page.screenshot({ path: file, fullPage });
   console.log('screenshot', file);
+}
+
+async function setAppTheme(page, theme) {
+  await page.evaluate((value) => {
+    if (value) document.documentElement.setAttribute('data-theme', value);
+    else document.documentElement.removeAttribute('data-theme');
+  }, theme || '');
 }
 
 async function clickThrough() {
@@ -934,6 +986,9 @@ async function portalShots(page) {
   if (!offerBody.includes('Coverage value: up to $30,000.00')) throw new Error('offer email is missing the 1.5x included value');
   if (!offerBody.includes('Coverage value: up to $40,000.00')) throw new Error('offer email is missing the 100% upgrade');
   if (!offerBody.includes('One-time premium of $300.00, charged separately from the charter.')) throw new Error('offer email is missing the premium wording');
+  if (!offerBody.includes('Pay premium by card') || !offerBody.includes('Add premium to my charter invoice')) {
+    throw new Error('offer email is missing the card and invoice choices');
+  }
   if (/Included: 50%, up to|The trip total is not charged/.test(offerBody)) throw new Error('offer email still repeats the coverage value');
   await page.setViewportSize({ width: 720, height: 900 });
   await page.setContent(`<!doctype html><html><body style="margin:0;background:#fff">${letter.html}</body></html>`);
@@ -1060,6 +1115,123 @@ async function portalShots(page) {
   await preview.waitFor();
   await page.getByRole('heading', { name: 'Charter Flight Support portal' }).evaluate((el) => el.scrollIntoView({ block: 'start' }));
   await shot(page, 'aog-cfs-allowlist-preview');
+
+  await invoiceShots(page);
+}
+
+async function fitPublicSheet(page) {
+  const height = await page.locator('.aog-public-sheet .sw-sheet-body').evaluate((el) => el.scrollHeight);
+  await page.setViewportSize({ width: 390, height: Math.min(Math.max(height + 48, 844), 5000) });
+  await page.locator('.aog-public-sheet .sw-sheet-body').evaluate((el) => { el.scrollTop = 0; });
+}
+
+async function invoiceShots(page) {
+  const { opsInvoiceLetter } = await import('../src/aog-invoice.js');
+  const offerUrl = `http://127.0.0.1:${WEB_PORT}/aog-coverage?token=${encodeURIComponent(OFFER_TOKEN)}&choice=invoice`;
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(offerUrl, { waitUntil: 'domcontentloaded' });
+  const cardChoice = page.getByRole('region', { name: 'Pay premium by card' });
+  const invoiceChoice = page.getByRole('region', { name: 'Add premium to my charter invoice' });
+  await cardChoice.waitFor({ timeout: 20000 });
+  await invoiceChoice.waitFor();
+  await page.getByText('Choose how to pay the premium').waitFor();
+  for (const scheme of ['light', 'dark']) {
+    await setAppTheme(page, scheme === 'light' ? 'classy' : '');
+    await fitPublicSheet(page);
+    const cardBox = await cardChoice.boundingBox();
+    const invoiceBox = await invoiceChoice.boundingBox();
+    const viewport = page.viewportSize();
+    if (!cardBox || !invoiceBox || cardBox.y < 0 || invoiceBox.y + invoiceBox.height > viewport.height + 2) {
+      throw new Error(`invoice choices are outside the iPhone-width page ${JSON.stringify({ cardBox, invoiceBox, viewport })}`);
+    }
+    await shot(page, `aog-invoice-offer-iphone-${scheme}`);
+  }
+
+  await page.goto(offerUrl, { waitUntil: 'domcontentloaded' });
+  await page.getByLabel('Invoice name').waitFor({ timeout: 20000 });
+  const invoiceName = await page.getByLabel('Invoice name').inputValue();
+  if (invoiceName.trim().length < 5) await page.getByLabel('Invoice name').fill('Jordan Hale');
+  const invoiceEmail = await page.getByLabel('Invoice email').inputValue();
+  if (!invoiceEmail.includes('@')) await page.getByLabel('Invoice email').fill('broker@example-charter.test');
+  await page.getByRole('checkbox', { name: /I agree to the terms/ }).check();
+  await page.getByRole('button', { name: /Add \$300\.00 to my charter invoice/ }).click();
+  const received = page.getByText('Request received. Skyway will add the premium to your charter invoice after a quick review. You can still pay by card if you prefer.');
+  await received.waitFor({ timeout: 20000 });
+  for (const scheme of ['light', 'dark']) {
+    await setAppTheme(page, scheme === 'light' ? 'classy' : '');
+    await fitPublicSheet(page);
+    const receivedBox = await received.boundingBox();
+    const viewport = page.viewportSize();
+    if (!receivedBox || receivedBox.y < 0 || receivedBox.y + receivedBox.height > viewport.height + 2) {
+      throw new Error(`invoice confirmation is outside the iPhone-width page ${JSON.stringify({ receivedBox, viewport })}`);
+    }
+    await shot(page, `aog-invoice-confirmed-iphone-${scheme}`);
+  }
+  await setAppTheme(page, '');
+
+  const opsLetter = opsInvoiceLetter({
+    tripId: 'T8R4WQ',
+    brokerCompany: 'Example Charter Group',
+    tail: 'N318CS',
+    aircraftType: 'Citation CJ3',
+    route: 'KTEB → KPBI',
+    datesLabel: '2026-11-02 – 2026-11-04',
+    tripTotal: 20000,
+    premium: 300,
+    premiumCents: 30000,
+    invoicePremiumCents: 30000,
+    invoiceRequestedByName: 'Jordan Hale',
+    invoiceRequestedByEmail: 'broker@example-charter.test',
+    invoiceLineItem: 'AOG Recovery Coverage, 100% (trip T8R4WQ)',
+  }, {
+    approveUrl: `http://127.0.0.1:${WEB_PORT}/aog-invoice?token=synthetic-decision-token&decision=approve`,
+    declineUrl: `http://127.0.0.1:${WEB_PORT}/aog-invoice?token=synthetic-decision-token&decision=decline`,
+  });
+  const opsBody = `${opsLetter.html}\n${opsLetter.text}`;
+  if (!opsBody.includes('T8R4WQ') || !opsBody.includes('Jordan Hale') || !opsBody.includes('$300.00')) {
+    throw new Error('ops invoice email is missing the trip, broker, or premium');
+  }
+  if (!opsBody.includes('Approve invoice') || !opsBody.includes('Decline invoice')) {
+    throw new Error('ops invoice email is missing the decision buttons');
+  }
+  await page.setViewportSize({ width: 720, height: 900 });
+  for (const scheme of ['light', 'dark']) {
+    await page.emulateMedia({ colorScheme: scheme });
+    const html = scheme === 'dark'
+      ? opsLetter.html.replace('@media (prefers-color-scheme: dark)', '@media all')
+      : opsLetter.html;
+    await page.setContent(html, { waitUntil: 'domcontentloaded' });
+    await shot(page, `aog-invoice-ops-email-${scheme}`, { fullPage: true });
+  }
+  await page.emulateMedia({ colorScheme: 'light' });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`http://127.0.0.1:${WEB_PORT}/aog-emulator`, { waitUntil: 'domcontentloaded' });
+  await page.getByLabel('Search trips').fill('J4N8QV');
+  await page.getByLabel('Trip window').selectOption('current');
+  await page.getByLabel('Contract').selectOption('');
+  await page.getByText('On invoice, unpaid').first().waitFor({ timeout: 20000 });
+  await page.getByText('J4N8QV').first().click();
+  const drawer = page.getByRole('dialog', { name: 'Trip J4N8QV' });
+  await drawer.waitFor();
+  const status = drawer.getByText('Payment: On invoice, unpaid');
+  const line = drawer.getByText('Invoice line: AOG Recovery Coverage, 100% (trip J4N8QV)');
+  const markPaid = drawer.getByRole('button', { name: 'Mark premium paid' });
+  await status.waitFor();
+  await line.waitFor();
+  await markPaid.waitFor();
+  await drawer.getByText('Add the invoice line to the broker\'s charter invoice, then mark it paid.').waitFor();
+  for (const scheme of ['light', 'dark']) {
+    await setAppTheme(page, scheme === 'light' ? 'classy' : '');
+    await status.evaluate((el) => el.scrollIntoView({ block: 'center' }));
+    const box = await status.boundingBox();
+    const viewport = page.viewportSize();
+    if (!box || box.y < 0 || box.y + box.height > viewport.height + 2) {
+      throw new Error(`invoice payment status is outside the drawer viewport ${JSON.stringify({ box, viewport })}`);
+    }
+    await shot(page, `aog-invoice-drawer-iphone-${scheme}`);
+  }
+  await setAppTheme(page, '');
 }
 
 const children = [];

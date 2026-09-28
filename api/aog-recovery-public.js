@@ -2,9 +2,11 @@
 // credential. Amounts are never taken from the browser.
 
 import { buildCheckoutSessionParams, stripeClient } from './_aog-stripe.js';
+import { requestInvoice } from './_aog-invoice.js';
 import {
   applySignature,
   findByToken,
+  loadSettings,
   persistIncludedCoverage,
   publicBaseUrl,
   publicCoverageView,
@@ -68,13 +70,40 @@ export default async function handler(req, res) {
       return;
     }
 
+    if (action === 'invoice') {
+      let current = (await found.ref.get()).data() || {};
+      if (!current.signedAt) {
+        await applySignature(db, found.ref, { id: found.id, ...current }, {
+          fullName: body.fullName,
+          agreed: body.agreed === true,
+          ...requestClient(req),
+        });
+        current = (await found.ref.get()).data() || current;
+      }
+      const settings = await loadSettings(db);
+      const result = await requestInvoice(db, found.ref, { id: found.id, ...current }, {
+        name: body.fullName || current.signedName,
+        email: body.email,
+        settings,
+        baseUrl: publicBaseUrl(req),
+      });
+      const fresh = await found.ref.get();
+      res.status(200).json({
+        ok: true,
+        duplicate: result.duplicate === true,
+        autoApproved: result.autoApproved === true,
+        coverage: publicCoverageView({ id: found.id, ...(fresh.data() || result.record) }),
+      });
+      return;
+    }
+
     if (action === 'checkout') {
       const current = (await found.ref.get()).data() || {};
       if (!current.signedAt) {
         res.status(400).json({ error: 'Sign the election before paying' });
         return;
       }
-      if (current.paymentStatus === 'paid') {
+      if (current.paymentStatus === 'paid' || current.paymentStatus === 'invoice_unpaid' || current.paymentStatus === 'invoice_paid' || current.coverageLevel === 'purchased_100') {
         res.status(200).json({ ok: true, alreadyPaid: true, coverage: publicCoverageView({ id: found.id, ...current }) });
         return;
       }

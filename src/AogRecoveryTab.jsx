@@ -34,7 +34,7 @@ import {
 const LegacyAogTab = lazy(() => import('./AogTab.jsx'));
 
 const LEVEL_OPTIONS = ['', 'included_50', 'purchased_100', 'gifted_100', 'complimentary_100'];
-const PAYMENT_OPTIONS = ['', 'not_required', 'offer_pending', 'awaiting_payment', 'paid', 'complimentary', 'gifted', 'unavailable', 'refunded'];
+const PAYMENT_OPTIONS = ['', 'not_required', 'offer_pending', 'awaiting_payment', 'paid', 'invoice_pending', 'invoice_unpaid', 'invoice_paid', 'complimentary', 'gifted', 'unavailable', 'refunded'];
 const HUNDRED = new Set(['purchased_100', 'gifted_100', 'complimentary_100']);
 
 async function authPost(url, body) {
@@ -617,6 +617,35 @@ function TripDrawer({ row, settings, busy, setBusy, setError, setBanner, onClose
     }
   }
 
+  async function decideInvoice(decision) {
+    setBusy(true);
+    setError('');
+    try {
+      const data = await authPost('/api/aog-recovery-ops', { action: 'invoice-decide', coverageId: row.coverageId, decision });
+      setBanner(decision === 'approve' ? 'Invoice approved. 100% coverage is bound.' : 'Invoice declined. The broker can still pay by card.');
+      if (data.invoice?.paymentLabel) setBanner(`${decision === 'approve' ? 'Approved.' : 'Declined.'} Payment: ${data.invoice.paymentLabel}`);
+      await onSaved();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function markInvoicePaid() {
+    setBusy(true);
+    setError('');
+    try {
+      await authPost('/api/aog-recovery-ops', { action: 'invoice-paid', coverageId: row.coverageId });
+      setBanner('Premium marked paid on the charter invoice.');
+      await onSaved();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function gift() {
     setBusy(true);
     setError('');
@@ -740,6 +769,25 @@ function TripDrawer({ row, settings, busy, setBusy, setError, setBanner, onClose
         )}
 
         {locked && <p className="mt-2 text-2xs text-content-muted">Paid coverage keeps its premium. Replacing the PDF does not change the amount that was charged.</p>}
+
+        <h3 className="mt-5 text-xs font-semibold uppercase tracking-wide text-content-muted">Premium payment</h3>
+        <p className="mt-1 text-xs">Payment: {paymentStatusLabel(row.paymentStatus)}</p>
+        {row.invoiceLineItem && <p className="mt-1 text-xs">Invoice line: {row.invoiceLineItem}</p>}
+        {row.invoiceRequestedByName && (
+          <p className="mt-1 text-xs text-content-muted">Requested by {row.invoiceRequestedByName}{row.invoiceRequestedByEmail ? ` · ${row.invoiceRequestedByEmail}` : ''}</p>
+        )}
+        {row.invoiceRequestStatus === 'pending' && (
+          <div className="mt-2 flex flex-wrap gap-2">
+            <Button size="sm" variant="primary" loading={busy} onClick={() => decideInvoice('approve')}>Approve invoice</Button>
+            <Button size="sm" variant="danger-outline" loading={busy} onClick={() => decideInvoice('decline')}>Decline invoice</Button>
+          </div>
+        )}
+        {row.paymentStatus === 'invoice_unpaid' && (
+          <div className="mt-2">
+            <p className="text-xs text-content-muted">Add the invoice line to the broker&apos;s charter invoice, then mark it paid.</p>
+            <Button className="mt-2" size="sm" variant="primary" loading={busy} onClick={markInvoicePaid}>Mark premium paid</Button>
+          </div>
+        )}
 
         <h3 className="mt-5 text-xs font-semibold uppercase tracking-wide text-content-muted">Charter Flight Support</h3>
         {Number.isInteger(row.coverageLimitCents) && (
@@ -884,6 +932,8 @@ function SettingsPanel({ settings, busy, setBusy, setError, setBanner, onSetting
   const [rates, setRates] = useState(() => rateDraft(settings));
   const [includedMultiplier, setIncludedMultiplier] = useState(settings?.includedMultiplier ?? 1.5);
   const [upgradeMultiplier, setUpgradeMultiplier] = useState(settings?.upgradeMultiplier ?? 2);
+  const [invoiceAutoApprove, setInvoiceAutoApprove] = useState(settings?.invoiceAutoApprove === true);
+  const [invoiceDomain, setInvoiceDomain] = useState('');
   const [domain, setDomain] = useState('');
   const [staffEmail, setStaffEmail] = useState('');
   const [pending, setPending] = useState(null);
@@ -893,6 +943,7 @@ function SettingsPanel({ settings, busy, setBusy, setError, setBanner, onSetting
     setRates(rateDraft(settings));
     setIncludedMultiplier(settings?.includedMultiplier ?? 1.5);
     setUpgradeMultiplier(settings?.upgradeMultiplier ?? 2);
+    setInvoiceAutoApprove(settings?.invoiceAutoApprove === true);
   }, [settings]);
 
   async function saveRates() {
@@ -911,6 +962,52 @@ function SettingsPanel({ settings, busy, setBusy, setError, setBanner, onSetting
       });
       onSettings(data.settings);
       setBanner('Aircraft rates saved.');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveInvoice() {
+    setBusy(true);
+    setError('');
+    try {
+      const data = await authPost('/api/aog-recovery-settings', {
+        action: 'save-invoice',
+        invoiceAutoApprove,
+      });
+      onSettings(data.settings);
+      setBanner(invoiceAutoApprove ? 'Invoice requests will auto-approve.' : 'Invoice requests wait for ops approval.');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function addInvoiceDomain() {
+    setBusy(true);
+    setError('');
+    try {
+      const data = await authPost('/api/aog-recovery-settings', { action: 'add-invoice-domain', domain: invoiceDomain });
+      onSettings(data.settings);
+      setInvoiceDomain('');
+      setBanner(`${data.domain} can add the premium to the charter invoice without waiting.`);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeInvoiceDomain(value) {
+    setBusy(true);
+    setError('');
+    try {
+      const data = await authPost('/api/aog-recovery-settings', { action: 'remove-invoice-domain', domain: value });
+      onSettings(data.settings);
+      setBanner(`Removed ${value} from invoice auto-approve.`);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -1010,6 +1107,30 @@ function SettingsPanel({ settings, busy, setBusy, setError, setBanner, onSetting
         <div className="mt-3 flex flex-wrap gap-2">
           <Button size="sm" variant="ghost" onClick={() => setRates((list) => [...list, { aircraftType: '', ratePercent: '', aliases: '' }])}>Add aircraft</Button>
           <Button size="sm" variant="primary" loading={busy} onClick={saveRates}>Save rates</Button>
+        </div>
+        <div className="mt-5 border-t border-edge pt-4">
+          <h3 className="text-sm font-semibold">Invoice requests</h3>
+          <p className="mt-1 text-2xs text-content-muted">Brokers can ask to add the premium to the charter invoice. Ops approves each request unless auto-approve is on. A listed domain is approved on its own.</p>
+          <label className="mt-3 flex items-center gap-2 text-sm">
+            <input type="checkbox" aria-label="Auto-approve invoice requests" checked={invoiceAutoApprove} onChange={(event) => setInvoiceAutoApprove(event.target.checked)} />
+            Auto-approve invoice requests
+          </label>
+          <Button className="mt-2" size="sm" variant="secondary" loading={busy} onClick={saveInvoice}>Save invoice setting</Button>
+          <div className="mt-3 flex flex-wrap items-end gap-2">
+            <label className="text-2xs text-content-muted">
+              Domain that can invoice without waiting
+              <input aria-label="Invoice auto-approve domain" value={invoiceDomain} onChange={(event) => setInvoiceDomain(event.target.value)} placeholder="example-charter.test" className="mt-1 w-64 rounded border border-edge bg-surface px-2 py-1 text-sm text-content" />
+            </label>
+            <Button size="sm" variant="primary" loading={busy} onClick={addInvoiceDomain}>Add invoice domain</Button>
+          </div>
+          <ul className="mt-2 space-y-1">
+            {(settings?.invoiceAutoApproveDomains || []).map((domain) => (
+              <li key={domain} className="flex items-center justify-between gap-2 text-sm">
+                <span>{domain}</span>
+                <Button size="sm" variant="danger-outline" onClick={() => removeInvoiceDomain(domain)}>Remove</Button>
+              </li>
+            ))}
+          </ul>
         </div>
         {settings?.updatedBy && <p className="mt-2 text-2xs text-content-muted">Last saved by {settings.updatedBy} {stamp(settings.updatedAt)}</p>}
       </Card>

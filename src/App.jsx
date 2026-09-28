@@ -130,6 +130,7 @@ const AdminDutyReportLazy = lazy(() => import('./AdminDutyReport.jsx'));
 // creating or reviewing.
 const AogRecoveryTabLazy = lazy(() => import('./AogRecoveryTab.jsx'));
 const AogRecoveryGiftButtonLazy = lazy(() => import('./AogRecoveryGiftButton.jsx'));
+const AogInvoiceOpsLazy = lazy(() => import('./AogInvoiceOps.jsx'));
 const AogIncidentReportLazy = lazy(() => import('./AogIncidentReport.jsx'));
 import TripCharterContract from './TripCharterContract.jsx';
 import AogCfsConfirmedMark from './AogCfsConfirmed.jsx';
@@ -6492,6 +6493,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
             {(currentUser?.role === 'ops' || currentUser?.role === 'admin') && (
               <Suspense fallback={null}>
                 <AogRecoveryGiftButtonLazy trip={trip} brokerEmail={brokerEmail} />
+                <AogInvoiceOpsLazy tripId={trip.info?.tripCode || trip.info?.tripId || ''} />
                 <AogIncidentReportLazy
                   compact
                   tripId={trip.info?.tripCode || trip.info?.tripId || ''}

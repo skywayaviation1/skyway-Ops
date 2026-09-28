@@ -93,6 +93,37 @@ export default async function handler(req, res) {
       res.status(200).json({ ok: true, settings });
       return;
     }
+    if (body.action === 'save-invoice') {
+      const settings = await saveSettings(db, {
+        invoiceAutoApprove: body.invoiceAutoApprove === true,
+        actor,
+      });
+      res.status(200).json({ ok: true, settings });
+      return;
+    }
+    if (body.action === 'add-invoice-domain') {
+      const [domain] = normalizeDomains([body.domain], 'invoice domain');
+      const existing = await loadSettings(db);
+      const already = (existing.invoiceAutoApproveDomains || []).includes(domain);
+      const settings = already
+        ? existing
+        : await saveSettings(db, {
+          invoiceAutoApproveDomains: [...(existing.invoiceAutoApproveDomains || []), domain],
+          actor,
+        });
+      res.status(200).json({ ok: true, settings, domain, already });
+      return;
+    }
+    if (body.action === 'remove-invoice-domain') {
+      const [domain] = normalizeDomains([body.domain], 'invoice domain');
+      const existing = await loadSettings(db);
+      const settings = await saveSettings(db, {
+        invoiceAutoApproveDomains: (existing.invoiceAutoApproveDomains || []).filter((item) => item !== domain),
+        actor,
+      });
+      res.status(200).json({ ok: true, settings });
+      return;
+    }
     if (body.action === 'apply-domain') {
       const [domain] = normalizeDomains([body.domain]);
       const result = await applyComplimentaryDomain(db, {

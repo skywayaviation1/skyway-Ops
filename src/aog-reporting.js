@@ -133,6 +133,10 @@ export const EVENT_TYPES = Object.freeze([
   'cfs_acknowledged',
   'cfs_reminder_sent',
   'cfs_portal_opened',
+  'invoice_requested',
+  'invoice_approved',
+  'invoice_declined',
+  'invoice_paid',
 ]);
 
 /** 100% was chosen by a purchase, a Skyway gift, or a complimentary domain. Included 50% is not an election. */
@@ -245,12 +249,17 @@ export function dollarsFromCents(cents) {
  * Stable event document ids. offer_sent, contract_signed, and bound are one
  * row unless force is set (a resend). paid and refunded are one row per Stripe id.
  */
-export function eventDocId(type, { stripePaymentIntentId, stripeEventId, stripeRefundId, atUtc, force } = {}) {
+export function eventDocId(type, { stripePaymentIntentId, stripeEventId, stripeRefundId, atUtc, force, generation } = {}) {
   if (!EVENT_TYPES.includes(type)) {
     throw new Error(`Unknown coverage event: ${type}`);
   }
   if (type === 'paid') return `paid_${stripePaymentIntentId || stripeEventId || atUtc || 'unknown'}`;
   if (type === 'refunded') return `refunded_${stripeRefundId || stripeEventId || atUtc || 'unknown'}`;
+  if (type === 'invoice_paid') return 'invoice_paid';
+  if (type === 'invoice_requested' || type === 'invoice_approved' || type === 'invoice_declined') {
+    const n = Number(generation) || 1;
+    return n <= 1 ? type : `${type}_${n}`;
+  }
   if (type === 'contract_signed') return 'contract_signed';
   if (type === 'broker_backfilled' || type === 'broker_mismatch' || type === 'cfs_acknowledged' || type === 'cfs_reminder_sent' || type === 'cfs_portal_opened') {
     return `${type}_${String(atUtc || '').replace(/[:.]/g, '')}`;
@@ -270,6 +279,7 @@ export function coverageEvent(input = {}) {
       stripeRefundId: facts.stripeRefundId,
       atUtc,
       force: input.force === true,
+      generation: input.generation,
     }),
     type,
     atUtc,
