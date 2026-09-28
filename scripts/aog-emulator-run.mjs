@@ -1205,13 +1205,29 @@ async function invoiceShots(page) {
   }
   await page.emulateMedia({ colorScheme: 'light' });
 
-  await page.setViewportSize({ width: 390, height: 844 });
+  const { listScheduleLegs, recoveryDb } = await import('../api/_aog-recovery.js');
+  const schedule = await listScheduleLegs(recoveryDb());
+  const seeded = schedule.legs.filter((leg) => leg.uid === 'leg-inv' || leg.tripId === 'J4N8QV');
+  console.log('invoice schedule', JSON.stringify({ count: schedule.legs.length, truncated: schedule.truncated, seeded }));
+  if (!seeded.length) throw new Error('seeded invoice trip J4N8QV is missing from the schedule');
+
+  await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto(`http://127.0.0.1:${WEB_PORT}/aog-emulator`, { waitUntil: 'domcontentloaded' });
-  await page.getByLabel('Search trips').fill('J4N8QV');
-  await page.getByLabel('Trip window').selectOption('current');
+  await page.getByText('WEQVQD').first().waitFor({ timeout: 25000 });
+  await page.getByLabel('Trip window').selectOption('all');
   await page.getByLabel('Contract').selectOption('');
-  await page.getByText('On invoice, unpaid').first().waitFor({ timeout: 20000 });
-  await page.getByText('J4N8QV').first().click();
+  await page.getByLabel('Payment status').selectOption('');
+  await page.getByLabel('Search trips').fill('J4N8QV');
+  const tripCell = page.getByRole('cell', { name: 'J4N8QV' });
+  try {
+    await tripCell.waitFor({ timeout: 20000 });
+  } catch (err) {
+    const text = await page.locator('body').innerText();
+    console.log('invoice page text', text.slice(0, 1200));
+    throw err;
+  }
+  await tripCell.click();
+  await page.setViewportSize({ width: 390, height: 844 });
   const drawer = page.getByRole('dialog', { name: 'Trip J4N8QV' });
   await drawer.waitFor();
   const status = drawer.getByText('Payment: On invoice, unpaid');
