@@ -849,10 +849,14 @@ async function clickThrough() {
     await coverageValue.evaluate((el) => el.scrollIntoView({ block: 'center' }));
     await shot(page, 'aog-cfs-drawer-iphone');
     await page.getByRole('button', { name: 'Report AOG' }).click();
+    await page.getByText('Which part of the trip is AOG?').waitFor({ timeout: 15000 });
+    const wholeTrip = page.getByRole('checkbox', { name: 'Whole trip' });
+    await wholeTrip.uncheck();
     const reportLeg = page.getByLabel('Leg KTEB to KPBI');
     await reportLeg.waitFor({ timeout: 15000 });
     await reportLeg.evaluate((el) => el.scrollIntoView({ block: 'center' }));
     await shot(page, 'aog-final-report-legs-dark');
+    await wholeTrip.check();
     await page.getByLabel('Airport or location').fill('KTEB');
     await page.getByLabel('Time it went AOG').fill('2026-11-02T15:30');
     await page.getByLabel('Issue').fill('Hydraulic leak after landing');
