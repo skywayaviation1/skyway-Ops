@@ -16,13 +16,14 @@ export function brokerComparison(record = {}) {
   const premium = Number(record.premium) > 0 ? fmtMoney(record.premium) : '';
   const already = isHundredCoverage(record.coverageLevel);
   const offered = !already && Number(record.premium) > 0 && record.upgradeAvailable !== false && Boolean(upgradeValue);
-  const includedLine = includedValue ? `Included: 50%, ${includedValue}` : 'Included: 50%, pending trip total';
-  let upgradeLine = 'Upgrade: 100% is not offered for this aircraft';
-  if (offered && upgradeValue) upgradeLine = `Upgrade: 100%, ${upgradeValue}, premium ${premium}`;
-  else if (already && upgradeValue) upgradeLine = `Upgrade: 100%, ${upgradeValue}, premium ${premium}`;
+  const includedLine = includedValue ? `Coverage value: ${includedValue}` : 'Coverage value: pending trip total';
+  const premiumLine = premium ? `One-time premium of ${premium}, charged separately from the charter.` : '';
+  let upgradeLine = '100% is not offered for this aircraft until a premium rate is published.';
+  if ((offered || already) && upgradeValue) upgradeLine = `Coverage value: ${upgradeValue}`;
   return {
     includedLine,
     upgradeLine,
+    premiumLine,
     includedValue,
     upgradeValue,
     premium,
@@ -37,8 +38,8 @@ function card(title, percent, price, line, tone) {
   return `<td class="aog-soft" width="50%" valign="top" style="width:50%;vertical-align:top;background:${wash};border:1px solid ${border};border-radius:12px;padding:16px">`
     + `<p style="margin:0;font-family:-apple-system,Segoe UI,sans-serif;font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#5c6b7a">${title}</p>`
     + `<p style="margin:8px 0 0;font-family:Georgia,'Times New Roman',serif;font-size:32px;line-height:1;color:#14202b">${percent}</p>`
-    + `<p style="margin:8px 0 0;font-family:-apple-system,Segoe UI,sans-serif;font-size:14px;color:#14202b">${price}</p>`
-    + `<p style="margin:10px 0 0;font-family:-apple-system,Segoe UI,sans-serif;font-size:13px;line-height:1.4;color:#243140">${line}</p>`
+    + (price ? `<p style="margin:8px 0 0;font-family:-apple-system,Segoe UI,sans-serif;font-size:14px;line-height:1.4;color:#14202b">${price}</p>` : '')
+    + (line ? `<p style="margin:10px 0 0;font-family:-apple-system,Segoe UI,sans-serif;font-size:13px;line-height:1.4;color:#243140">${line}</p>` : '')
     + `</td>`;
 }
 
@@ -46,8 +47,8 @@ function card(title, percent, price, line, tone) {
 export function comparisonHtml(record) {
   const view = brokerComparison(record);
   const upgradePrice = view.offered || view.already
-    ? (view.premium ? `Premium ${view.premium}` : 'No further charge')
-    : 'Not offered yet';
+    ? (view.premiumLine || 'No further charge')
+    : '';
   const gap = `<td width="12" style="width:12px;font-size:0;line-height:0">&nbsp;</td>`;
   return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:18px 0;border-collapse:separate"><tr>`
     + card('Included with the charter', '50%', 'No charge', view.includedLine, 'included')
@@ -58,5 +59,10 @@ export function comparisonHtml(record) {
 
 export function comparisonText(record) {
   const view = brokerComparison(record);
-  return [view.includedLine, view.upgradeLine].filter(Boolean).join('\n');
+  return [
+    `50% included. No charge. ${view.includedLine}`,
+    view.offered || view.already
+      ? ['100% upgrade.', view.premiumLine, view.upgradeLine].filter(Boolean).join(' ')
+      : view.upgradeLine,
+  ].filter(Boolean).join('\n');
 }

@@ -882,7 +882,7 @@ function UnmatchedContract({ record, trips, busy, onAttach }) {
 
 function SettingsPanel({ settings, busy, setBusy, setError, setBanner, onSettings, tripRows }) {
   const [rates, setRates] = useState(() => rateDraft(settings));
-  const [includedMultiplier, setIncludedMultiplier] = useState(settings?.includedMultiplier ?? 1);
+  const [includedMultiplier, setIncludedMultiplier] = useState(settings?.includedMultiplier ?? 1.5);
   const [upgradeMultiplier, setUpgradeMultiplier] = useState(settings?.upgradeMultiplier ?? 2);
   const [domain, setDomain] = useState('');
   const [staffEmail, setStaffEmail] = useState('');
@@ -891,7 +891,7 @@ function SettingsPanel({ settings, busy, setBusy, setError, setBanner, onSetting
 
   useEffect(() => {
     setRates(rateDraft(settings));
-    setIncludedMultiplier(settings?.includedMultiplier ?? 1);
+    setIncludedMultiplier(settings?.includedMultiplier ?? 1.5);
     setUpgradeMultiplier(settings?.upgradeMultiplier ?? 2);
   }, [settings]);
 
@@ -996,7 +996,7 @@ function SettingsPanel({ settings, busy, setBusy, setError, setBanner, onSetting
             <input aria-label="100% multiplier" inputMode="decimal" value={upgradeMultiplier} onChange={(event) => setUpgradeMultiplier(event.target.value)} className="mt-1 w-full rounded border border-edge bg-surface px-2 py-1 text-sm text-content" />
           </label>
         </div>
-        <p className="mt-1 text-2xs text-content-muted">Coverage value is the multiplier times the contract trip total. Defaults are 1× for included 50% and 2× for 100%.</p>
+        <p className="mt-1 text-2xs text-content-muted">Coverage value is the multiplier times the contract trip total. 50% is additional coverage on top of the trip, so the default is 1.5×. 100% defaults to 2×.</p>
         <div className="mt-3 space-y-2">
           {rates.map((row, index) => (
             <div key={`${row.aircraftType}-${index}`} className="grid gap-2 md:grid-cols-[1fr_120px_1fr_auto]">

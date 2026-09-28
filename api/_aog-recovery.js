@@ -63,7 +63,7 @@ import {
 } from '../src/charter-contract.js';
 import { comparisonHtml, comparisonText, brokerComparison } from '../src/aog-offer-copy.js';
 import { emailButton, emailShell, factTable, tripSummaryRows } from '../src/aog-mail-layout.js';
-import { coverageEvent, coverageLimitCentsFor, coverageTierCents, dollarsFromCents, isHundredCoverage, multiplierOr, reportingFacts, requireCoverageMultiplier, tripTotalCentsOf, DEFAULT_INCLUDED_MULTIPLIER, DEFAULT_UPGRADE_MULTIPLIER } from '../src/aog-reporting.js';
+import { coverageEvent, coverageLimitCentsFor, coverageTierCents, dollarsFromCents, includedCoveragePatch, includedMultiplierFrom, isHundredCoverage, multiplierOr, reportingFacts, requireCoverageMultiplier, tripTotalCentsOf, DEFAULT_INCLUDED_MULTIPLIER, DEFAULT_UPGRADE_MULTIPLIER, LEGACY_INCLUDED_MULTIPLIER } from '../src/aog-reporting.js';
 
 const COLLECTION = 'aogRecovery';
 const CONFIG_DOC = ['aogRecoveryConfig', 'settings'];
@@ -219,6 +219,7 @@ export function reportingPatch(input = {}) {
   const created = createdRaw instanceof Date && !Number.isNaN(createdRaw.getTime()) ? createdRaw : now;
   return {
     ...facts,
+    ...(input.includedMultiplierExplicit === true ? { includedMultiplierExplicit: true } : {}),
     tripTotal: dollarsFromCents(facts.tripTotalCents),
     premium: dollarsFromCents(facts.premiumCents),
     checkoutEmail: facts.brokerEmail || input.checkoutEmail || '',
@@ -279,12 +280,19 @@ export async function loadSettings(db = recoveryDb()) {
   const snap = await db.collection(CONFIG_DOC[0]).doc(CONFIG_DOC[1]).get();
   const data = snap.exists ? snap.data() || {} : {};
   const domainRecords = readDomainRecords(data);
+  const explicitIncluded = data.includedMultiplierExplicit === true;
+  let includedMultiplier = includedMultiplierFrom(data.includedMultiplier, explicitIncluded);
+  if (snap.exists && !explicitIncluded && Number(data.includedMultiplier) === LEGACY_INCLUDED_MULTIPLIER) {
+    includedMultiplier = DEFAULT_INCLUDED_MULTIPLIER;
+    await snap.ref.set({ includedMultiplier }, { merge: true });
+  }
   return {
     rates: Array.isArray(data.rates) && data.rates.length ? data.rates : DEFAULT_RATES.map((row) => ({ ...row })),
     complimentaryDomains: domainRecords.map((row) => row.domain),
     domainRecords,
-    includedMultiplier: multiplierOr(data.includedMultiplier, DEFAULT_INCLUDED_MULTIPLIER),
+    includedMultiplier,
     upgradeMultiplier: multiplierOr(data.upgradeMultiplier, DEFAULT_UPGRADE_MULTIPLIER),
+    includedMultiplierExplicit: explicitIncluded,
     cfsStaff: readCfsStaff(data),
     updatedAt: data.updatedAt || '',
     updatedBy: data.updatedBy || '',
@@ -317,6 +325,7 @@ export async function saveSettings(db, {
     includedMultiplier: includedMultiplier == null
       ? existing.includedMultiplier
       : requireCoverageMultiplier(includedMultiplier, '50% multiplier'),
+    includedMultiplierExplicit: includedMultiplier == null ? existing.includedMultiplierExplicit === true : true,
     upgradeMultiplier: upgradeMultiplier == null
       ? existing.upgradeMultiplier
       : requireCoverageMultiplier(upgradeMultiplier, '100% multiplier'),
@@ -398,9 +407,8 @@ function tripBlock(record) {
 }
 
 export function offerLetter(record, url) {
-  const view = brokerComparison(record);
   const subject = `AOG coverage for trip ${record.tripId || record.tail || ''}`.trim();
-  const lede = 'If the aircraft goes mechanical, AOG recovery coverage pays toward a replacement flight so your client is not stuck. 50% is included with the charter. 100% raises that protection. The only charge is the premium — the trip total is not charged.';
+  const lede = 'If the aircraft goes mechanical, AOG recovery coverage pays toward a replacement flight so your client is not stuck. 50% additional coverage is included with the charter. 100% raises that protection. The upgrade is a one-time premium, charged separately from the charter.';
   const html = emailShell({
     preheader: '50% is included. Upgrade to 100% AOG recovery coverage.',
     headline: 'Keep your client moving if the aircraft goes AOG',
@@ -411,8 +419,6 @@ export function offerLetter(record, url) {
   const text = [
     lede,
     comparisonText(record),
-    view.premium ? `Premium ${view.premium}. The trip total is not charged.` : '',
-    view.upgradeValue ? `Coverage value: ${view.upgradeValue}` : (view.includedValue ? `Coverage value: ${view.includedValue}` : 'Coverage value: pending trip total'),
     `Upgrade to 100%: ${url || ''}`,
     `Trip ${record.tripId || ''} · ${record.tail || ''} · ${record.route || ''}`,
     record.datesLabel || '',
@@ -799,12 +805,13 @@ export function publicCoverageView(record) {
     upgradeMultiplier: tiers.upgradeMultiplier,
     includedValueLabel,
     upgradeValueLabel,
-    includedLine: includedValueLabel ? `Included: 50%, ${includedValueLabel}` : 'Included: 50%, pending trip total',
-    upgradeLine: payable
-      ? `Upgrade: 100%, ${upgradeValueLabel}, premium ${premiumLabelText}`
-      : (isHundredCoverage(record.coverageLevel)
-        ? `Upgrade: 100%, ${upgradeValueLabel}, premium ${premiumLabelText}`
-        : 'Upgrade: 100% is not offered for this aircraft'),
+    includedLine: includedValueLabel ? `Coverage value: ${includedValueLabel}` : 'Coverage value: pending trip total',
+    upgradeLine: payable || isHundredCoverage(record.coverageLevel)
+      ? (upgradeValueLabel ? `Coverage value: ${upgradeValueLabel}` : 'Coverage value: pending trip total')
+      : '100% is not offered for this aircraft until a premium rate is published.',
+    premiumLine: payable && premiumLabelText && premiumLabelText !== '—'
+      ? `One-time premium of ${premiumLabelText}, charged separately from the charter.`
+      : '',
     coverageValueLabel: upgradeValueLabel,
     premium: record.premium ?? null,
     ratePercent: record.ratePercent ?? null,
@@ -820,13 +827,19 @@ export function publicCoverageView(record) {
   };
 }
 
+export async function persistIncludedCoverage(ref, data = {}) {
+  const patch = includedCoveragePatch(data);
+  if (!patch) return data;
+  await ref.set(patch, { merge: true });
+  return { ...data, ...patch };
+}
+
 export function serializeCoverage(id, data = {}) {
-  const coverageLimitCents = Number.isInteger(data.coverageLimitCents)
-    ? data.coverageLimitCents
-    : coverageLimitCentsFor(tripTotalCentsOf(data), data.coverageLevel, {
-      includedMultiplier: data.includedMultiplier,
-      upgradeMultiplier: data.upgradeMultiplier,
-    });
+  const economics = includedCoveragePatch(data);
+  const source = economics ? { ...data, ...economics } : data;
+  const coverageLimitCents = Number.isInteger(source.coverageLimitCents)
+    ? source.coverageLimitCents
+    : coverageLimitCentsFor(tripTotalCentsOf(source), source.coverageLevel, source);
   return {
     id,
     source: data.source || '',
@@ -886,12 +899,12 @@ export function serializeCoverage(id, data = {}) {
     contractAttachError: data.contractAttachError || '',
     currency: data.currency || 'usd',
     tripTotalCents: Number.isInteger(data.tripTotalCents) ? data.tripTotalCents : null,
-    includedMultiplier: multiplierOr(data.includedMultiplier, DEFAULT_INCLUDED_MULTIPLIER),
-    upgradeMultiplier: multiplierOr(data.upgradeMultiplier, DEFAULT_UPGRADE_MULTIPLIER),
+    includedMultiplier: includedMultiplierFrom(source.includedMultiplier, source.includedMultiplierExplicit === true),
+    upgradeMultiplier: multiplierOr(source.upgradeMultiplier, DEFAULT_UPGRADE_MULTIPLIER),
     coverageLimitCents,
     coverageMultiplier: coverageLimitCents == null
       ? null
-      : multiplierOr(data.coverageMultiplier, isHundredCoverage(data.coverageLevel) ? DEFAULT_UPGRADE_MULTIPLIER : DEFAULT_INCLUDED_MULTIPLIER),
+      : multiplierOr(source.coverageMultiplier, isHundredCoverage(source.coverageLevel) ? DEFAULT_UPGRADE_MULTIPLIER : DEFAULT_INCLUDED_MULTIPLIER),
     cfsReminder24SentAt: data.cfsReminder24SentAt || '',
     cfsReminderDepartSentAt: data.cfsReminderDepartSentAt || '',
     cfsReminderDue: data.cfsReminderDue === true,
@@ -1236,6 +1249,7 @@ export async function ingestParsedCheckout(db, { messageId, parsed, pdfBuffer, p
       ...draft,
       legCount,
       includedMultiplier: settings?.includedMultiplier,
+      includedMultiplierExplicit: settings?.includedMultiplierExplicit === true,
       upgradeMultiplier: settings?.upgradeMultiplier,
       createdAt: existing.exists ? (existing.data().createdAt || now) : now,
     }),
@@ -1549,7 +1563,13 @@ export async function listScheduleLegs(db) {
 
 export async function listCoverageRecords(db, limit = 500) {
   const snap = await db.collection(COLLECTION).orderBy('createdAt', 'desc').limit(limit).get();
-  return snap.docs.map((docSnap) => serializeCoverage(docSnap.id, docSnap.data()));
+  const rows = [];
+  for (const docSnap of snap.docs) {
+    // eslint-disable-next-line no-await-in-loop
+    const data = await persistIncludedCoverage(docSnap.ref, docSnap.data());
+    rows.push(serializeCoverage(docSnap.id, data));
+  }
+  return rows;
 }
 
 async function findCoverageForTrip(db, tripId, legUids) {
@@ -1702,6 +1722,7 @@ export async function saveUploadedContract(db, { pdfBuffer, filename, tripId, le
       legCount: legs.length,
       brokerEmail: draft.checkoutEmail,
       includedMultiplier: settings?.includedMultiplier,
+      includedMultiplierExplicit: settings?.includedMultiplierExplicit === true,
       upgradeMultiplier: settings?.upgradeMultiplier,
       createdAt: existingData.createdAt || now,
     }),
@@ -1838,6 +1859,7 @@ export async function applyComplimentaryDomain(db, { domain, tripIds, actor, bas
       legCount: rowLegs.length,
       brokerEmail: email,
       includedMultiplier: settings?.includedMultiplier,
+      includedMultiplierExplicit: settings?.includedMultiplierExplicit === true,
       upgradeMultiplier: settings?.upgradeMultiplier,
     }));
     // eslint-disable-next-line no-await-in-loop

@@ -317,6 +317,7 @@ export default async function handler(req, res) {
         ...next,
         ...patch,
         includedMultiplier: settings.includedMultiplier,
+        includedMultiplierExplicit: settings.includedMultiplierExplicit === true,
         upgradeMultiplier: settings.upgradeMultiplier,
         brokerEmail: patch.checkoutEmail || next.checkoutEmail || '',
         createdAt: record.createdAt,

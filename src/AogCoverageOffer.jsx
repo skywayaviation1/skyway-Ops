@@ -104,7 +104,7 @@ export default function AogCoverageOffer() {
         <img src="/skyway-logo-nav.png" alt="Skyway Aviation" width="148" height="36" className="h-9 w-auto" />
         <p className="mt-4 text-2xs uppercase tracking-[0.16em] text-content-muted">Skyway Aviation · Charter Flight Support</p>
         <h1 className="mt-2 font-serif text-3xl font-semibold leading-tight">Keep the trip moving if the aircraft goes AOG</h1>
-        <p className="mt-2 text-sm text-content-muted">50% recovery coverage is included with the charter. 100% raises that protection. You pay only the premium — the trip total is not charged.</p>
+        <p className="mt-2 text-sm text-content-muted">50% additional recovery coverage is included with the charter. 100% raises that protection. The upgrade is a one-time premium, charged separately from the charter.</p>
 
         <div className="mt-4 rounded-lg border border-warning-border bg-warning-soft px-3 py-2 text-sm text-warning">
           Placeholder terms — Jake will replace this document before live use.
@@ -126,19 +126,19 @@ export default function AogCoverageOffer() {
             <Row label="Dates" value={coverage.datesLabel} />
             <Row label="Trip total" value={Number(coverage.tripTotal) > 0 ? fmtMoney(coverage.tripTotal) : 'Pending trip total'} />
             <div className="mt-4 grid grid-cols-2 gap-3">
-              <section aria-label={coverage.includedLine || 'Included 50%'} className="rounded-lg border border-edge bg-surface-sunken p-3">
+              <section aria-label="Included 50%" className="rounded-lg border border-edge bg-surface-sunken p-3">
                 <p className="text-2xs uppercase tracking-[0.14em] text-content-muted">Included with the charter</p>
                 <p className="mt-1 text-2xl font-semibold">50%</p>
                 <p className="text-sm">No charge</p>
                 <p className="mt-2 text-sm">Coverage value: {coverage.includedValueLabel || 'pending trip total'}</p>
-                <p className="mt-2 text-sm font-medium">{coverage.includedLine}</p>
               </section>
-              <section aria-label={coverage.upgradeLine || 'Upgrade 100%'} className="rounded-lg border border-accent bg-accent-soft p-3">
+              <section aria-label="Upgrade 100%" className="rounded-lg border border-accent bg-accent-soft p-3">
                 <p className="text-2xs uppercase tracking-[0.14em] text-content-muted">Upgrade</p>
                 <p className="mt-1 text-2xl font-semibold">100%</p>
-                <p className="text-sm">{coverage.upgradeAvailable || coverage.paymentStatus === 'paid' ? `Premium ${fmtMoney(coverage.premium)}. The trip total is not charged.` : '100% is not offered for this aircraft until a premium rate is published.'}</p>
-                <p className="mt-2 text-sm">Coverage value: {coverage.upgradeValueLabel || 'pending trip total'}</p>
-                <p className="mt-2 text-sm font-medium">{coverage.upgradeLine}</p>
+                <p className="text-sm">{coverage.upgradeAvailable || coverage.paymentStatus === 'paid' ? `One-time premium of ${fmtMoney(coverage.premium)}, charged separately from the charter.` : '100% is not offered for this aircraft until a premium rate is published.'}</p>
+                {(coverage.upgradeAvailable || coverage.paymentStatus === 'paid') && (
+                  <p className="mt-2 text-sm">Coverage value: {coverage.upgradeValueLabel || 'pending trip total'}</p>
+                )}
               </section>
             </div>
 
@@ -168,7 +168,7 @@ export default function AogCoverageOffer() {
                     <Button className="mt-3" variant="primary" loading={busy} onClick={pay}>
                       Pay {fmtMoney(coverage.premium)} premium
                     </Button>
-                    <p className="mt-2 text-2xs text-content-muted">Card details are entered on Stripe. Skyway never sees the card number. The trip total is not charged.</p>
+                    <p className="mt-2 text-2xs text-content-muted">Card details are entered on Stripe. Skyway never sees the card number. The premium is charged separately from the charter.</p>
                   </div>
                 ) : (
                   <form className="mt-4 space-y-3" onSubmit={sign}>

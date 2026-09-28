@@ -23,7 +23,7 @@ const trip = {
   tripTotal: 20000,
   tripTotalCents: 2000000,
   upgradeMultiplier: 2,
-  includedMultiplier: 1,
+  includedMultiplier: 1.5,
   aircraftType: 'Citation CJ3',
   tail: 'N318CS',
   route: 'KTEB → KPBI',
@@ -41,15 +41,24 @@ const trip = {
   charterContractPath: 'trip-contracts/M8CFS2/charter-contract.pdf',
 };
 
-test('50% stores a 1x limit and 100% stores the upgrade multiplier', () => {
-  const included = reportingFacts({ tripTotalCents: 2000000, coverageLevel: 'included_50', includedMultiplier: 1, upgradeMultiplier: 2 });
-  assert.equal(included.coverageLimitCents, 2000000);
-  assert.equal(included.coverageMultiplier, 1);
+test('50% stores a 1.5x limit and 100% stores the upgrade multiplier', () => {
+  const included = reportingFacts({ tripTotalCents: 2000000, coverageLevel: 'included_50', upgradeMultiplier: 2 });
+  assert.equal(included.coverageLimitCents, 3000000);
+  assert.equal(included.coverageMultiplier, 1.5);
+  assert.equal(included.includedMultiplier, 1.5);
   const upgraded = reportingFacts({ tripTotalCents: 2500000, coverageLevel: 'purchased_100', upgradeMultiplier: 2 });
   assert.equal(upgraded.coverageLimitCents, 5000000);
   assert.equal(upgraded.coverageMultiplier, 2);
-  const corrected = reportingFacts({ tripTotalCents: 1800000, coverageLevel: 'included_50', includedMultiplier: 1 });
-  assert.equal(corrected.coverageLimitCents, 1800000);
+  const legacy = reportingFacts({ tripTotalCents: 1500000, coverageLevel: 'included_50', includedMultiplier: 1 });
+  assert.equal(legacy.coverageLimitCents, 2250000);
+  assert.equal(legacy.coverageMultiplier, 1.5);
+  const explicit = reportingFacts({
+    tripTotalCents: 1800000,
+    coverageLevel: 'included_50',
+    includedMultiplier: 1,
+    includedMultiplierExplicit: true,
+  });
+  assert.equal(explicit.coverageLimitCents, 1800000);
   assert.equal(coverageLimitCentsFor(1800000, 'gifted_100', { upgradeMultiplier: 2 }), 3600000);
 });
 
@@ -60,8 +69,10 @@ test('broker comparison names both tiers and the premium', () => {
     upgradeAvailable: true,
     premium: 300,
   });
-  assert.equal(view.includedLine, 'Included: 50%, up to $20,000.00');
-  assert.equal(view.upgradeLine, 'Upgrade: 100%, up to $40,000.00, premium $300.00');
+  assert.equal(view.includedLine, 'Coverage value: up to $30,000.00');
+  assert.equal(view.upgradeLine, 'Coverage value: up to $40,000.00');
+  assert.equal(view.premiumLine, 'One-time premium of $300.00, charged separately from the charter.');
+  assert.doesNotMatch(`${view.includedLine}\n${view.upgradeLine}`, /Included: 50%, up to/);
 });
 
 test('CFS projection drops 50% trips and Skyway-only fields', () => {

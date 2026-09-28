@@ -36,7 +36,7 @@ export function renderElectionPdf({ record, signature }) {
     line(doc, 'Premium charged', fmtMoney(signature.premium ?? record.premium));
     doc.moveDown();
     doc.font('Helvetica-Oblique').fontSize(10)
-      .text('The amount charged is the premium only. The trip total is not charged on this election.');
+      .text('The amount charged is a one-time premium, charged separately from the charter.');
     doc.moveDown();
 
     doc.font('Helvetica-Bold').fontSize(12).text('Terms');

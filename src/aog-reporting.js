@@ -6,7 +6,10 @@ import { emailDomain } from './aog-recovery.js';
 import { normalizeTripId } from './trip-id.js';
 
 export const COVERAGE_CURRENCY = 'usd';
-export const DEFAULT_INCLUDED_MULTIPLIER = 1;
+// 50% is additional coverage on top of the trip total, so the included
+// limit is 1.5×. The first default was 1×, which stored the trip total itself.
+export const DEFAULT_INCLUDED_MULTIPLIER = 1.5;
+export const LEGACY_INCLUDED_MULTIPLIER = 1;
 export const DEFAULT_UPGRADE_MULTIPLIER = 2;
 export const COVERAGE_VALUE_MULTIPLIER = DEFAULT_UPGRADE_MULTIPLIER;
 
@@ -21,6 +24,17 @@ export function multiplierOr(value, fallback) {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0 || n > 20) return fallback;
   return Math.round(n * 1000) / 1000;
+}
+
+/**
+ * Included 50% multiplier. A stored 1× is the old default and becomes 1.5×
+ * unless ops saved that 1× on purpose.
+ */
+export function includedMultiplierFrom(value, explicit = false) {
+  if (!explicit && (value == null || value === '' || Number(value) === LEGACY_INCLUDED_MULTIPLIER)) {
+    return DEFAULT_INCLUDED_MULTIPLIER;
+  }
+  return multiplierOr(value, DEFAULT_INCLUDED_MULTIPLIER);
 }
 
 export function requireCoverageMultiplier(value, label) {
@@ -43,7 +57,7 @@ export function limitCentsForMultiplier(tripTotalCents, multiplier) {
 
 /**
  * Dollar limit for the coverage level on the record.
- * Included 50% uses the included multiplier (default 1× the trip total).
+ * Included 50% uses the included multiplier (default 1.5× the trip total).
  * 100% uses the upgrade multiplier (default 2×).
  */
 export function coverageLimitCentsFor(tripTotalCents, coverageLevel, multipliers = {}) {
@@ -62,16 +76,45 @@ export function hundredCoverageLimitCents(tripTotalCents, multiplier = DEFAULT_U
 /** Included 50% limit and 100% upgrade limit for broker-facing comparison. */
 export function coverageTierCents(record = {}) {
   const tripTotalCents = tripTotalCentsOf(record);
-  const includedMultiplier = multiplierOr(record.includedMultiplier, DEFAULT_INCLUDED_MULTIPLIER);
+  const includedMultiplier = includedMultiplierFrom(record.includedMultiplier, record.includedMultiplierExplicit === true);
   const upgradeMultiplier = multiplierOr(record.upgradeMultiplier, DEFAULT_UPGRADE_MULTIPLIER);
   const stored = Number.isInteger(record.coverageLimitCents) ? record.coverageLimitCents : null;
   const hundred = isHundredCoverage(record.coverageLevel);
+  const computedIncluded = limitCentsForMultiplier(tripTotalCents, includedMultiplier);
+  const legacyIncludedLimit = !hundred
+    && stored != null
+    && tripTotalCents != null
+    && stored === tripTotalCents
+    && includedMultiplier !== LEGACY_INCLUDED_MULTIPLIER;
   return {
     includedMultiplier,
     upgradeMultiplier,
-    includedCents: !hundred && stored != null ? stored : limitCentsForMultiplier(tripTotalCents, includedMultiplier),
+    includedCents: !hundred && stored != null && !legacyIncludedLimit ? stored : computedIncluded,
     upgradeCents: hundred && stored != null ? stored : limitCentsForMultiplier(tripTotalCents, upgradeMultiplier),
   };
+}
+
+/**
+ * Patch for records still stored at the old 1× included default.
+ * 100% limits stay on the upgrade multiplier. Returns null when nothing changes.
+ */
+export function includedCoveragePatch(record = {}) {
+  if (record.includedMultiplierExplicit === true) return null;
+  const includedMultiplier = includedMultiplierFrom(record.includedMultiplier, false);
+  const upgradeMultiplier = multiplierOr(record.upgradeMultiplier, DEFAULT_UPGRADE_MULTIPLIER);
+  const tripTotalCents = tripTotalCentsOf(record);
+  const level = record.coverageLevel || '';
+  const patch = {};
+  if (Number(record.includedMultiplier) === LEGACY_INCLUDED_MULTIPLIER) {
+    patch.includedMultiplier = includedMultiplier;
+  }
+  if (level === 'included_50' && tripTotalCents != null) {
+    const limit = limitCentsForMultiplier(tripTotalCents, includedMultiplier);
+    if (record.coverageLimitCents !== limit) patch.coverageLimitCents = limit;
+    if (record.coverageMultiplier !== includedMultiplier) patch.coverageMultiplier = includedMultiplier;
+    if (record.includedMultiplier == null) patch.includedMultiplier = includedMultiplier;
+  }
+  return Object.keys(patch).length ? patch : null;
 }
 
 export function tripTotalCentsOf(record = {}) {
@@ -156,7 +199,7 @@ export function reportingFacts(input = {}) {
     : dollarsToCents(input.premium);
   const rate = input.ratePercent == null || input.ratePercent === '' ? null : Number(input.ratePercent);
   const coverageLevel = input.coverageLevel || 'included_50';
-  const includedMultiplier = multiplierOr(input.includedMultiplier, DEFAULT_INCLUDED_MULTIPLIER);
+  const includedMultiplier = includedMultiplierFrom(input.includedMultiplier, input.includedMultiplierExplicit === true);
   const upgradeMultiplier = multiplierOr(input.upgradeMultiplier, DEFAULT_UPGRADE_MULTIPLIER);
   const coverageLimitCents = coverageLimitCentsFor(tripTotalCents, coverageLevel, { includedMultiplier, upgradeMultiplier });
   const coverageMultiplier = coverageLimitCents == null

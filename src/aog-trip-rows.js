@@ -3,7 +3,7 @@
 // records are overlaid. A trip with no coverage row is 50% included.
 
 import { contractIsOnTrip } from './charter-contract.js';
-import { coverageLimitCentsFor, isHundredCoverage, multiplierOr, tripTotalCentsOf, DEFAULT_INCLUDED_MULTIPLIER, DEFAULT_UPGRADE_MULTIPLIER } from './aog-reporting.js';
+import { coverageLimitCentsFor, includedCoveragePatch, isHundredCoverage, multiplierOr, tripTotalCentsOf, DEFAULT_INCLUDED_MULTIPLIER, DEFAULT_UPGRADE_MULTIPLIER } from './aog-reporting.js';
 import { normalizeTripId } from './trip-id.js';
 import {
   coverageLevelLabel,
@@ -229,14 +229,16 @@ export function buildTripRows(legs, records = []) {
         ? coverage.cfsMarginCents
         : (row.premiumCents != null && row.cfsCostCents != null ? row.premiumCents - row.cfsCostCents : null);
       row.acceptedCoveragePercent = coverage.cfsStatus === 'cfs_confirmed' ? 100 : (coverage.acceptedCoveragePercent ?? null);
-      row.coverageLimitCents = Number.isInteger(coverage.coverageLimitCents)
-        ? coverage.coverageLimitCents
-        : coverageLimitCentsFor(tripTotalCentsOf(coverage), coverage.coverageLevel, coverage);
+      const economics = includedCoveragePatch(coverage);
+      const priced = economics ? { ...coverage, ...economics } : coverage;
+      row.coverageLimitCents = Number.isInteger(priced.coverageLimitCents)
+        ? priced.coverageLimitCents
+        : coverageLimitCentsFor(tripTotalCentsOf(priced), priced.coverageLevel, priced);
       row.coverageMultiplier = row.coverageLimitCents == null
         ? null
         : multiplierOr(
-          coverage.coverageMultiplier,
-          isHundredCoverage(coverage.coverageLevel) ? DEFAULT_UPGRADE_MULTIPLIER : DEFAULT_INCLUDED_MULTIPLIER,
+          priced.coverageMultiplier,
+          isHundredCoverage(priced.coverageLevel) ? DEFAULT_UPGRADE_MULTIPLIER : DEFAULT_INCLUDED_MULTIPLIER,
         );
       row.cfsReference = coverage.cfsReference || '';
       row.electionContractPath = coverage.electionContractPath || '';

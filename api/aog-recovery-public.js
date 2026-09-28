@@ -5,6 +5,7 @@ import { buildCheckoutSessionParams, stripeClient } from './_aog-stripe.js';
 import {
   applySignature,
   findByToken,
+  persistIncludedCoverage,
   publicBaseUrl,
   publicCoverageView,
   readJson,
@@ -47,7 +48,8 @@ export default async function handler(req, res) {
       res.status(404).json({ error: 'This coverage link is not valid' });
       return;
     }
-    const record = { id: found.id, ...found.data };
+    const stored = await persistIncludedCoverage(found.ref, found.data);
+    const record = { id: found.id, ...stored };
 
     if (req.method === 'GET') {
       res.status(200).json({ ok: true, coverage: publicCoverageView(record) });

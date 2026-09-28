@@ -97,6 +97,7 @@ export default async function handler(req, res) {
     Object.assign(record, reportingPatch({
       ...record,
       includedMultiplier: settings.includedMultiplier,
+      includedMultiplierExplicit: settings.includedMultiplierExplicit === true,
       upgradeMultiplier: settings.upgradeMultiplier,
     }));
     if (!Number.isFinite(record.tripTotal)) record.needsReview = true;

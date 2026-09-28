@@ -50,7 +50,9 @@ import { offerLetter } from '../api/_aog-recovery.js';
 import {
   coverageEvent,
   coverageLimitCentsFor,
+  coverageTierCents,
   dollarsFromCents,
+  includedCoveragePatch,
   electionSourceFor,
   eventDocId,
   reportingFacts,
@@ -350,9 +352,9 @@ test('reporting fields are typed cents, ICAO, and an append-only event id', () =
   assert.equal(facts.returnAtUtc, '2026-10-14T00:00:00.000Z');
   assert.equal(facts.electionSource, null);
   assert.equal(facts.ratePercent, 1.5);
-  assert.equal(facts.coverageLimitCents, 1850000);
-  assert.equal(facts.coverageMultiplier, 1);
-  assert.equal(facts.includedMultiplier, 1);
+  assert.equal(facts.coverageLimitCents, 2775000);
+  assert.equal(facts.coverageMultiplier, 1.5);
+  assert.equal(facts.includedMultiplier, 1.5);
   assert.equal(facts.upgradeMultiplier, 2);
   const hundred = reportingFacts({ tripTotal: 20000, coverageLevel: 'gifted_100', premiumCents: 30000 });
   assert.equal(hundred.coverageLimitCents, 4000000);
@@ -360,9 +362,46 @@ test('reporting fields are typed cents, ICAO, and an append-only event id', () =
   const corrected = reportingFacts({ tripTotalCents: 2500000, coverageLevel: 'purchased_100' });
   assert.equal(corrected.coverageLimitCents, 5000000);
   assert.equal(corrected.coverageMultiplier, 2);
-  assert.equal(coverageLimitCentsFor(2000000, 'included_50'), 2000000);
+  assert.equal(coverageLimitCentsFor(2000000, 'included_50'), 3000000);
   assert.equal(coverageLimitCentsFor(2000000, 'included_50', { includedMultiplier: 1.5 }), 3000000);
+  assert.equal(coverageLimitCentsFor(2000000, 'included_50', { includedMultiplier: 1, includedMultiplierExplicit: true }), 2000000);
   assert.equal(coverageLimitCentsFor(2000000, 'gifted_100', { upgradeMultiplier: 3 }), 6000000);
+  const legacyPatch = includedCoveragePatch({
+    coverageLevel: 'included_50',
+    tripTotalCents: 1500000,
+    includedMultiplier: 1,
+    upgradeMultiplier: 2,
+    coverageLimitCents: 1500000,
+    coverageMultiplier: 1,
+  });
+  assert.equal(legacyPatch.includedMultiplier, 1.5);
+  assert.equal(legacyPatch.coverageLimitCents, 2250000);
+  assert.equal(legacyPatch.coverageMultiplier, 1.5);
+  const tiers = coverageTierCents({
+    coverageLevel: 'included_50',
+    tripTotal: 15000,
+    includedMultiplier: 1,
+    coverageLimitCents: 1500000,
+    upgradeMultiplier: 2,
+  });
+  assert.equal(tiers.includedCents, 2250000);
+  assert.equal(tiers.upgradeCents, 3000000);
+  assert.equal(includedCoveragePatch({
+    coverageLevel: 'gifted_100',
+    tripTotalCents: 2000000,
+    includedMultiplier: 1.5,
+    upgradeMultiplier: 2,
+    coverageLimitCents: 4000000,
+    coverageMultiplier: 2,
+  }), null);
+  assert.equal(includedCoveragePatch({
+    coverageLevel: 'included_50',
+    tripTotalCents: 1800000,
+    includedMultiplier: 1,
+    includedMultiplierExplicit: true,
+    coverageLimitCents: 1800000,
+    coverageMultiplier: 1,
+  }), null);
   assert.equal(electionSourceFor('purchased_100'), 'purchased');
   assert.equal(electionSourceFor('gifted_100'), 'gifted');
   assert.equal(electionSourceFor('complimentary_100'), 'complimentary_domain');
@@ -872,8 +911,9 @@ test('broker CFS mail omits cost and premium, and both notices show the 2x cover
   };
   const broker = cfsBrokerLetter(cfsRecord, fields);
   const brokerBody = `${broker.html}\n${broker.text}`;
-  assert.match(brokerBody, /Included: 50%, up to \$20,000\.00/);
-  assert.match(brokerBody, /Upgrade: 100%, up to \$40,000\.00, premium \$360\.00/);
+  assert.match(brokerBody, /Coverage value: up to \$30,000\.00/);
+  assert.match(brokerBody, /One-time premium of \$360\.00, charged separately from the charter/);
+  assert.doesNotMatch(brokerBody, /Included: 50%, up to/);
   assert.equal(brokerBody.includes('$640'), false);
   assert.equal(brokerBody.includes('640.00'), false);
   assert.equal(/CFS cost/i.test(brokerBody), false);
@@ -892,9 +932,11 @@ test('broker CFS mail omits cost and premium, and both notices show the 2x cover
   assert.equal(/premium/i.test(opsBody), false);
   const offer = offerLetter({ ...cfsRecord, coverageLevel: 'included_50', premium: 300, ratePercent: 1.5 }, 'https://example.test/aog-coverage');
   const offerBody = `${offer.html}\n${offer.text}`;
-  assert.match(offerBody, /Included: 50%, up to \$20,000\.00/);
-  assert.match(offerBody, /Upgrade: 100%, up to \$40,000\.00, premium \$300\.00/);
+  assert.match(offerBody, /Coverage value: up to \$30,000\.00/);
   assert.match(offerBody, /Coverage value: up to \$40,000\.00/);
+  assert.match(offerBody, /One-time premium of \$300\.00, charged separately from the charter/);
+  assert.doesNotMatch(offerBody, /Included: 50%, up to/);
+  assert.doesNotMatch(offerBody, /The trip total is not charged/);
 
   const view = JSON.stringify(publicCfsView({ ...cfsRecord, cfsStatus: '' }));
   assert.equal(/premium/i.test(view), false);
@@ -1095,8 +1137,10 @@ test('a redacted Skyway contract parses the trip locator, charter price, and loc
     messageId: 'fixture',
   });
   const view = publicCoverageView(draft);
-  assert.equal(view.includedLine, 'Included: 50%, up to $15,000.00');
-  assert.equal(view.upgradeLine, 'Upgrade: 100%, up to $30,000.00, premium $225.00');
+  assert.equal(view.includedValueLabel, 'up to $22,500.00');
+  assert.equal(view.upgradeValueLabel, 'up to $30,000.00');
+  assert.equal(view.includedLine, 'Coverage value: up to $22,500.00');
+  assert.equal(view.premiumLine, 'One-time premium of $225.00, charged separately from the charter.');
   assert.equal(draft.contractSignedAt, '2026-09-25T13:27:52Z');
   assert.equal(draft.legs[0].departAt, '2026-09-28 13:00 CDT');
 });

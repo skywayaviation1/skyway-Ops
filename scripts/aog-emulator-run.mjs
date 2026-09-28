@@ -277,7 +277,7 @@ async function seed() {
     routeTo: 'KPBI',
     tripTotal: 20000,
     tripTotalCents: 2000000,
-    includedMultiplier: 1,
+    includedMultiplier: 1.5,
     upgradeMultiplier: 2,
     coverageLimitCents: 4000000,
     coverageMultiplier: 2,
@@ -342,10 +342,10 @@ async function seed() {
     premium: 300,
     premiumCents: 30000,
     ratePercent: 1.5,
-    includedMultiplier: 1,
+    includedMultiplier: 1.5,
     upgradeMultiplier: 2,
-    coverageLimitCents: 2000000,
-    coverageMultiplier: 1,
+    coverageLimitCents: 3000000,
+    coverageMultiplier: 1.5,
     coverageLevel: 'included_50',
     paymentStatus: 'offer_pending',
     upgradeAvailable: true,
@@ -750,7 +750,7 @@ async function clickThrough() {
     if (/\$640|640\.00|CFS cost/i.test(brokerBody)) {
       throw new Error('broker email includes the CFS cost');
     }
-    if (!/Included: 50%, up to \$20,000\.00/.test(brokerBody) || !/premium \$300\.00/.test(brokerBody)) {
+    if (!/Coverage value: up to \$30,000\.00/.test(brokerBody) || !/One-time premium of \$300\.00, charged separately from the charter/.test(brokerBody)) {
       throw new Error('broker email is missing the included 50% and 100% upgrade');
     }
     if (!/up to \$40,000\.00/.test(brokerBody) || !/100%/.test(brokerBody)) {
@@ -885,10 +885,12 @@ async function portalShots(page) {
   const offerUrl = `http://127.0.0.1:${WEB_PORT}/aog-coverage?token=${encodeURIComponent(OFFER_TOKEN)}`;
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto(offerUrl, { waitUntil: 'domcontentloaded' });
-  const included = page.getByText('Included: 50%, up to $20,000.00');
-  const upgrade = page.getByText('Upgrade: 100%, up to $40,000.00, premium $300.00');
+  const included = page.getByText('Coverage value: up to $30,000.00');
+  const upgrade = page.getByText('Coverage value: up to $40,000.00');
+  const premiumLine = page.getByText('One-time premium of $300.00, charged separately from the charter.');
   await included.waitFor({ timeout: 20000 });
   await upgrade.waitFor();
+  await premiumLine.waitFor();
   await included.evaluate((el) => el.scrollIntoView({ block: 'center' }));
   await shot(page, 'aog-offer-comparison-desktop');
   await page.setViewportSize({ width: 390, height: 844 });
@@ -922,15 +924,17 @@ async function portalShots(page) {
     ratePercent: 1.5,
     coverageLevel: 'included_50',
     upgradeAvailable: true,
-    includedMultiplier: 1,
+    includedMultiplier: 1.5,
     upgradeMultiplier: 2,
     tail: 'N318CS',
     route: 'KTEB → KPBI',
     datesLabel: '2026-11-02 – 2026-11-04',
   }, offerUrl);
   const offerBody = `${letter.html}\n${letter.text}`;
-  if (!offerBody.includes('Included: 50%, up to $20,000.00')) throw new Error('offer email is missing included 50%');
-  if (!offerBody.includes('Upgrade: 100%, up to $40,000.00, premium $300.00')) throw new Error('offer email is missing the 100% upgrade');
+  if (!offerBody.includes('Coverage value: up to $30,000.00')) throw new Error('offer email is missing the 1.5x included value');
+  if (!offerBody.includes('Coverage value: up to $40,000.00')) throw new Error('offer email is missing the 100% upgrade');
+  if (!offerBody.includes('One-time premium of $300.00, charged separately from the charter.')) throw new Error('offer email is missing the premium wording');
+  if (/Included: 50%, up to|The trip total is not charged/.test(offerBody)) throw new Error('offer email still repeats the coverage value');
   await page.setViewportSize({ width: 720, height: 900 });
   await page.setContent(`<!doctype html><html><body style="margin:0;background:#fff">${letter.html}</body></html>`);
   await shot(page, 'aog-offer-email');
