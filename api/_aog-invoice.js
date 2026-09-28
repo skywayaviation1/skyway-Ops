@@ -12,6 +12,8 @@ import {
   planInvoiceDecision,
   planInvoiceRequest,
 } from '../src/aog-invoice.js';
+
+export { invoiceDecisionView };
 import { OPS_ACK_TO } from '../src/aog-cfs.js';
 import { normalizeTripId } from '../src/trip-id.js';
 import {
