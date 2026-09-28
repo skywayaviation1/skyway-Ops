@@ -792,6 +792,17 @@ async function clickThrough() {
     await page.getByText('End of trip details').waitFor();
     await coverageValue.evaluate((el) => el.scrollIntoView({ block: 'center' }));
     await shot(page, 'aog-cfs-drawer-iphone');
+    await page.getByRole('button', { name: 'Report AOG' }).click();
+    await page.getByLabel('Airport or location').fill('KTEB');
+    await page.getByLabel('Time it went AOG').fill('2026-11-02T15:30');
+    await page.getByLabel('Issue').fill('Hydraulic leak after landing');
+    await page.getByRole('button', { name: 'Review and send' }).click();
+    await page.getByText('Confirm this AOG report').waitFor();
+    await shot(page, 'aog-report-confirm-iphone');
+    await page.getByRole('button', { name: 'Confirm and notify' }).click();
+    await page.getByText(/Charter Flight Support was notified|Recorded for Charter Flight Support/).waitFor({ timeout: 20000 });
+    await shot(page, 'aog-report-sent-iphone');
+    await renderMailShots(page);
     await portalShots(page);
     console.log('click-through ok');
   } catch (err) {
@@ -800,6 +811,61 @@ async function clickThrough() {
   } finally {
     await browser.close();
   }
+}
+
+async function renderMailShots(page) {
+  const { offerLetter, brokerPaidLetter, includedOnlyLetter } = await import('../api/_aog-recovery.js');
+  const { bindLetterContent, cfsOpsLetter, cfsBrokerLetter } = await import('../src/aog-cfs.js');
+  const { incidentCfsLetter, incidentInternalLetter } = await import('../src/aog-incident.js');
+  const cj3 = {
+    tripId: 'K7M4QX',
+    tail: 'N525CR',
+    aircraftType: 'Cessna Citation CJ3',
+    route: 'KDSM → KIAD',
+    datesLabel: '2026-09-28 – 2026-09-29',
+    tripTotal: 18500,
+    premium: 277.5,
+    ratePercent: 1.5,
+    coverageLevel: 'included_50',
+    upgradeAvailable: true,
+    brokerCompany: 'Surf Air',
+    legs: [{ from: 'KDSM', to: 'KIAD', departAt: '2026-09-28' }],
+  };
+  const multi = {
+    ...cj3,
+    tripId: 'M8R2LQ',
+    route: 'KDSM → KIAD → KTEB → KDSM',
+    datesLabel: '2026-09-28 – 2026-09-30',
+    legs: [
+      { from: 'KDSM', to: 'KIAD', departAt: '2026-09-28' },
+      { from: 'KIAD', to: 'KTEB', departAt: '2026-09-29' },
+      { from: 'KTEB', to: 'KDSM', departAt: '2026-09-30' },
+    ],
+  };
+  const letters = [
+    ['aog-email-offer-cj3', offerLetter(cj3, 'https://skyway-ops.vercel.app/aog-coverage?token=preview')],
+    ['aog-email-offer-multileg', offerLetter(multi, 'https://skyway-ops.vercel.app/aog-coverage?token=preview')],
+    ['aog-email-included-only', includedOnlyLetter({ ...cj3, aircraftType: 'Helicopter', upgradeAvailable: false, premium: null })],
+    ['aog-email-payment', brokerPaidLetter({ ...cj3, coverageLevel: 'purchased_100', premium: 277.5 })],
+    ['aog-email-bind', bindLetterContent({ ...cj3, coverageLevel: 'purchased_100', legCount: 1, brokerCompany: 'Surf Air' }, { ackUrl: 'https://skyway-ops.vercel.app/cfs?ack=preview', portalUrl: 'https://skyway-ops.vercel.app/cfs' })],
+    ['aog-email-cfs-ops', cfsOpsLetter({ ...cj3, coverageLevel: 'purchased_100' }, { name: 'Casey Stone', email: 'casey@charterflightsupport.com', cfsCostCents: 64000, reference: 'CFS-4491', notes: '' })],
+    ['aog-email-cfs-broker', cfsBrokerLetter({ ...cj3, coverageLevel: 'purchased_100', premium: 277.5 })],
+    ['aog-email-incident', incidentCfsLetter({ ...cj3, location: 'KIAD', aogAt: '2026-09-28 15:30', issue: 'Hydraulic leak on arrival', contact: 'Dispatch desk' }, 'https://skyway-ops.vercel.app/cfs?aog=preview')],
+    ['aog-email-incident-internal', incidentInternalLetter({ ...cj3, location: 'KDSM', aogAt: '2026-09-28 11:00', issue: 'Generator failure' })],
+  ];
+  await page.setViewportSize({ width: 390, height: 844 });
+  for (const [name, letter] of letters) {
+    for (const scheme of ['light', 'dark']) {
+      await page.emulateMedia({ colorScheme: scheme });
+      const html = scheme === 'dark'
+        ? letter.html.replace('@media (prefers-color-scheme: dark)', '@media all')
+        : letter.html;
+      await page.setContent(html, { waitUntil: 'domcontentloaded' });
+      await page.waitForTimeout(200);
+      await shot(page, `${name}-${scheme}`);
+    }
+  }
+  await page.emulateMedia({ colorScheme: 'light' });
 }
 
 async function portalShots(page) {
@@ -874,6 +940,8 @@ async function portalShots(page) {
   await page.goto(dev.href, { waitUntil: 'domcontentloaded' });
   await page.getByText('Awaiting acknowledgement').first().waitFor({ timeout: 20000 });
   await page.getByText('Needs action').waitFor();
+  await page.getByRole('heading', { name: 'Active AOG' }).waitFor({ timeout: 20000 });
+  await shot(page, 'cfs-active-aog-desktop');
   if (await page.getByText('T8R4WQ').count()) throw new Error('50% trip is visible in the CFS portal');
   if (/premium|gifted|complimentary/i.test(await page.locator('body').innerText())) {
     throw new Error('CFS dashboard shows Skyway-only wording');

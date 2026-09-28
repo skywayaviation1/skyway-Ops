@@ -4,6 +4,8 @@
 
 import crypto from 'crypto';
 import admin from 'firebase-admin';
+import { emailButton, emailShell } from '../src/aog-mail-layout.js';
+import { findIncidentByToken, listAogIncidents, postAogUpdate, presentIncident } from './_aog-incident.js';
 import {
   acknowledgeCfs,
   appendCoverageEvent,
@@ -129,12 +131,13 @@ function listPayload(records, body) {
 }
 
 async function sendMagicLink({ email, link }) {
-  const html = `<div style="font-family:-apple-system,Segoe UI,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#1c1917">`
-    + `<p style="font-size:12px;letter-spacing:0.14em;text-transform:uppercase;color:#57534e">Skyway Aviation × Charter Flight Support</p>`
-    + `<h1 style="font-size:22px">Sign in to the CFS portal</h1>`
-    + `<p>This link signs you in for 7 days. It expires in 15 minutes and works once.</p>`
-    + `<p><a href="${link}" style="display:inline-block;background:#0f766e;color:#ffffff;text-decoration:none;padding:12px 18px;border-radius:6px">Open the CFS portal</a></p>`
-    + `</div>`;
+  const html = emailShell({
+    coBrand: true,
+    preheader: 'Your Charter Flight Support sign-in link.',
+    headline: 'Sign in to the CFS portal',
+    lede: 'This link signs you in for 7 days. It expires in 15 minutes and works once.',
+    body: emailButton(link, 'Open the CFS portal'),
+  });
   return sendRecoveryEmail({
     to: email,
     subject: 'Sign in to the Charter Flight Support portal',
@@ -231,6 +234,16 @@ export default async function handler(req, res) {
       return;
     }
 
+    if (action === 'incident') {
+      const found = await findIncidentByToken(db, body.token);
+      if (!found || found.cfsNotified !== true) {
+        res.status(404).json({ error: 'This AOG link is not valid' });
+        return;
+      }
+      res.status(200).json({ ok: true, incident: presentIncident(found, { cfs: true }) });
+      return;
+    }
+
     if (action === 'preview') {
       const actor = await authorizeOps(body.idToken);
       const session = newToken();
@@ -257,7 +270,32 @@ export default async function handler(req, res) {
     const records = await loadVisible(db);
 
     if (action === 'list' || action === 'dashboard') {
-      res.status(200).json({ ok: true, email: session.email, preview: session.preview, ...listPayload(records, body) });
+      const incidents = (await listAogIncidents(db, { cfsOnly: true })).map((row) => presentIncident(row, { cfs: true }));
+      res.status(200).json({ ok: true, email: session.email, preview: session.preview, incidents, ...listPayload(records, body) });
+      return;
+    }
+
+    if (action === 'incident-respond') {
+      if (session.preview) {
+        res.status(403).json({ error: 'The CFS portal preview is read-only' });
+        return;
+      }
+      let incidentId = String(body.incidentId || '');
+      if (!incidentId && body.token) {
+        const found = await findIncidentByToken(db, body.token);
+        if (!found) {
+          res.status(404).json({ error: 'This AOG link is not valid' });
+          return;
+        }
+        incidentId = found.id;
+      }
+      const incident = await postAogUpdate(db, {
+        id: incidentId,
+        text: body.response,
+        actor: session.email,
+        role: 'cfs',
+      });
+      res.status(200).json({ ok: true, incident: presentIncident(incident, { cfs: true }) });
       return;
     }
 

@@ -114,6 +114,45 @@ function scrollPortal() {
   document.querySelector('.cfs-portal .sw-sheet-body')?.scrollTo(0, 0);
 }
 
+function ActiveAog({ incident, onRespond }) {
+  const [response, setResponse] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  async function submit(event) {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      await onRespond(response);
+      setResponse('');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <article className="cfs-aog-card">
+      <p className="cfs-kicker">Active AOG · {incident.tripId}</p>
+      <h3>{incident.location || 'Location pending'}</h3>
+      <p>{incident.issue}</p>
+      <p className="cfs-meta">{[incident.tail, incident.aircraftType, incident.route, incident.aogAt].filter(Boolean).join(' · ')}</p>
+      <p className="cfs-meta">Coverage: 100%</p>
+      {(incident.updates || []).slice(-3).map((row) => (
+        <p key={`${row.at}-${row.text}`} className="cfs-meta">{row.text}</p>
+      ))}
+      <form onSubmit={submit} className="cfs-aog-form">
+        <label>
+          Response
+          <textarea aria-label={`Response for ${incident.tripId}`} value={response} onChange={(event) => setResponse(event.target.value)} required rows={2} />
+        </label>
+        {error && <p className="cfs-error" role="alert">{error}</p>}
+        <button type="submit" className="cfs-btn" disabled={busy || response.trim().length < 2}>Send response</button>
+      </form>
+    </article>
+  );
+}
+
 export default function CfsPortal() {
   const initial = params();
   const [theme, setTheme] = useState(() => localStorage.getItem(THEME_KEY) || 'light');
@@ -143,6 +182,8 @@ export default function CfsPortal() {
   const [trip, setTrip] = useState(null);
   const [events, setEvents] = useState([]);
   const [ackOnly, setAckOnly] = useState(null);
+  const [aogOnly, setAogOnly] = useState(null);
+  const [incidents, setIncidents] = useState([]);
   const [selected, setSelected] = useState({});
   const [costs, setCosts] = useState({});
   const [sameCost, setSameCost] = useState('');
@@ -170,6 +211,7 @@ export default function CfsPortal() {
       const query = params();
       const link = query.get('link');
       const ack = query.get('ack');
+      const aog = query.get('aog');
       if (link) {
         try {
           const data = await post({ action: 'redeem', token: link });
@@ -193,6 +235,13 @@ export default function CfsPortal() {
         } catch (err) {
           if (!cancelled) setError(err.message);
         }
+      } else if (aog) {
+        try {
+          const data = await post({ action: 'incident', token: aog });
+          if (!cancelled) setAogOnly({ token: aog, incident: data.incident });
+        } catch (err) {
+          if (!cancelled) setError(err.message);
+        }
       }
       if (!cancelled) setLoading(false);
     }
@@ -201,7 +250,7 @@ export default function CfsPortal() {
   }, []);
 
   useEffect(() => {
-    if (!session || ackOnly) return undefined;
+    if (!session || ackOnly || aogOnly) return undefined;
     let cancelled = false;
     setLoading(true);
     post({
@@ -224,6 +273,7 @@ export default function CfsPortal() {
       setPages(data.pages || 1);
       setMe(data.email || '');
       setPreview(data.preview === true);
+      setIncidents(Array.isArray(data.incidents) ? data.incidents : []);
       setError('');
     }).catch((err) => {
       if (!cancelled) setError(err.message);
@@ -231,7 +281,7 @@ export default function CfsPortal() {
       if (!cancelled) setLoading(false);
     });
     return () => { cancelled = true; };
-  }, [session, ackOnly, tab, q, tail, aircraft, airport, broker, from, to, sort, page]);
+  }, [session, ackOnly, aogOnly, tab, q, tail, aircraft, airport, broker, from, to, sort, page]);
 
   const needsAction = summary?.needsAction || [];
   const selectedIds = useMemo(() => Object.keys(selected).filter((id) => selected[id]), [selected]);
@@ -469,6 +519,14 @@ export default function CfsPortal() {
             <AckTokenTrip coverage={ackOnly.coverage} onSubmit={submitAckToken} confirmed={confirmed} />
           )}
 
+          {!loading && aogOnly && (
+            <ActiveAog incident={aogOnly.incident} onRespond={async (response) => {
+              const data = await post({ action: 'incident-respond', token: aogOnly.token, response });
+              setAogOnly({ token: aogOnly.token, incident: data.incident });
+              setToast('Response sent to Skyway.');
+            }} />
+          )}
+
           {!loading && !ackOnly && !session && (
             <section className="cfs-card cfs-signin" aria-labelledby="cfs-signin-title">
               <p className="cfs-kicker">Passwordless sign-in</p>
@@ -485,7 +543,7 @@ export default function CfsPortal() {
             </section>
           )}
 
-          {!loading && !ackOnly && session && view === 'home' && (
+          {!loading && !ackOnly && !aogOnly && session && view === 'home' && (
             <>
               <section className="cfs-cards" aria-label="Summary">
                 <Stat icon={<ClockIcon />} label="Awaiting acknowledgement" value={summary ? String(summary.awaiting) : '—'} />
@@ -493,6 +551,23 @@ export default function CfsPortal() {
                 <Stat icon={<ShieldIcon />} label="Coverage value bound this month" value={summary?.boundValueLabel || '—'} />
                 <Stat icon={<PlaneIcon />} label="Upcoming flights under coverage" value={summary ? String(summary.upcomingFlights) : '—'} />
               </section>
+
+              {incidents.length > 0 && (
+                <section className="cfs-section cfs-aog-live" aria-label="Active AOG">
+                  <div className="cfs-section-head">
+                    <h2>Active AOG</h2>
+                    <p>These trips need a response now.</p>
+                  </div>
+                  {incidents.map((incident) => (
+                    <ActiveAog key={incident.id} incident={incident} onRespond={async (response) => {
+                      await post({ action: 'incident-respond', sessionToken: session, incidentId: incident.id, response });
+                      setToast('Response sent to Skyway.');
+                      const list = await post({ action: 'list', sessionToken: session, status: tab, page });
+                      setIncidents(list.incidents || []);
+                    }} />
+                  ))}
+                </section>
+              )}
 
               <section className="cfs-section" aria-labelledby="needs-action-title">
                 <div className="cfs-section-head">
@@ -619,7 +694,7 @@ export default function CfsPortal() {
             </>
           )}
 
-          {!loading && !ackOnly && session && view === 'trip' && trip && (
+          {!loading && !ackOnly && !aogOnly && session && view === 'trip' && trip && (
             <TripView
               trip={trip}
               events={events}
@@ -633,7 +708,7 @@ export default function CfsPortal() {
             />
           )}
 
-          {!loading && !ackOnly && session && view === 'statement' && (
+          {!loading && !ackOnly && !aogOnly && session && view === 'statement' && (
             <Statement
               month={month}
               setMonth={setMonth}

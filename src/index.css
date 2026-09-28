@@ -754,6 +754,12 @@ html[data-native] .sw-mobile-tab {
   .cfs-route-lg { font-size: 22px; }
 }
 
+.cfs-aog-live { border-color: #b45309; }
+.cfs-aog-card { margin-top: 12px; padding: 14px; border: 1px solid #b45309; border-radius: 12px; background: var(--cfs-surface); }
+.cfs-aog-card h3 { margin: 4px 0; font-size: 18px; }
+.cfs-aog-form { display: grid; gap: 8px; margin-top: 10px; }
+.cfs-aog-form textarea { width: 100%; border: 1px solid var(--cfs-line); border-radius: 8px; padding: 8px; background: var(--cfs-bg); color: var(--cfs-ink); }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;

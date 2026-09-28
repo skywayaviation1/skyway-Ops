@@ -130,6 +130,7 @@ const AdminDutyReportLazy = lazy(() => import('./AdminDutyReport.jsx'));
 // creating or reviewing.
 const AogRecoveryTabLazy = lazy(() => import('./AogRecoveryTab.jsx'));
 const AogRecoveryGiftButtonLazy = lazy(() => import('./AogRecoveryGiftButton.jsx'));
+const AogIncidentReportLazy = lazy(() => import('./AogIncidentReport.jsx'));
 import TripCharterContract from './TripCharterContract.jsx';
 import AogCfsConfirmedMark from './AogCfsConfirmed.jsx';
 import AppTimezoneSwitch from './AppTimezoneSwitch.jsx';
@@ -6491,6 +6492,19 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
             {(currentUser?.role === 'ops' || currentUser?.role === 'admin') && (
               <Suspense fallback={null}>
                 <AogRecoveryGiftButtonLazy trip={trip} brokerEmail={brokerEmail} />
+                <AogIncidentReportLazy
+                  compact
+                  tripId={trip.info?.tripCode || trip.info?.tripId || ''}
+                  tail={trip.info?.tail || ''}
+                  aircraftType={trip.info?.aircraft || trip.info?.aircraftType || ''}
+                  legs={(allTrips || []).filter((item) => item?.info?.tripCode && item.info.tripCode === trip.info?.tripCode).map((item) => ({
+                    id: item.uid,
+                    from: item.info?.from || '',
+                    to: item.info?.to || '',
+                    departAt: item.start instanceof Date ? item.start.toISOString() : (item.start || ''),
+                    tail: item.info?.tail || '',
+                  }))}
+                />
               </Suspense>
             )}
             {aogCfs?.status === 'cfs_confirmed' && (

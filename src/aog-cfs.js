@@ -4,6 +4,7 @@
 // send another email once both notices for that revision have been recorded.
 
 import { fmtMoney } from './aog-recovery.js';
+import { emailButton, emailShell } from './aog-mail-layout.js';
 import { comparisonHtml, comparisonText } from './aog-offer-copy.js';
 import {
   DEFAULT_UPGRADE_MULTIPLIER,
@@ -27,7 +28,7 @@ export function coverageValueText(record = {}) {
     tripTotalCentsOf(record),
     multiplierOr(record.upgradeMultiplier, DEFAULT_UPGRADE_MULTIPLIER),
   );
-  if (!Number.isInteger(cents)) return '';
+  if (!Number.isInteger(cents) || cents <= 0) return '';
   return `up to ${fmtMoney(cents / 100)}`;
 }
 
@@ -56,11 +57,12 @@ function row(label, value) {
 }
 
 function shell(title, inner) {
-  return `<div style="font-family:-apple-system,Segoe UI,sans-serif;max-width:640px;margin:0 auto;padding:24px;color:#0f172a">`
-    + `<div style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#64748b">Skyway Aviation · Charter Flight Support</div>`
-    + `<h1 style="font-size:20px;margin:8px 0 16px">${escapeHtml(title)}</h1>`
-    + inner
-    + `</div>`;
+  return emailShell({
+    kicker: 'Skyway Aviation · Charter Flight Support',
+    headline: title,
+    body: inner,
+    coBrand: true,
+  });
 }
 
 function moneyFromCents(cents) {
@@ -227,7 +229,7 @@ function tripRows(record) {
     row('Broker', record.brokerCompany),
     row('Coverage', '100%'),
     row('Contract trip total', fmtMoney(record.tripTotal)),
-    row('Coverage value', coverageValueText(record)),
+    row('Coverage value', coverageValueText(record) ? `Coverage value: ${coverageValueText(record)}` : 'pending trip total'),
   ].join('');
 }
 
@@ -238,7 +240,7 @@ export function bindLetterContent(record, { ackUrl, portalUrl, attachmentNotes }
     <p>Please bind AOG mechanical recovery coverage for the trip below.</p>
     <table style="border-collapse:collapse;font-size:14px;margin:16px 0">${tripRows(record)}</table>
     <p style="font-size:13px;color:#334155">${escapeHtml(attachmentNotes || '')}</p>
-    <p><a href="${escapeHtml(ackUrl || '')}" style="display:inline-block;background:#0f766e;color:#ffffff;text-decoration:none;padding:12px 18px;border-radius:6px">Acknowledge coverage</a></p>
+    ${emailButton(ackUrl, 'Acknowledge coverage')}
     <p style="font-size:13px"><a href="${escapeHtml(portal || '')}">Open the CFS portal</a> for every other trip.</p>
     <p style="font-size:12px;color:#64748b">The acknowledge link is unique to this trip and works without signing in. It expires.</p>
   `);

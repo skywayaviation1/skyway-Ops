@@ -158,6 +158,13 @@ export function buildTripRows(legs, records = []) {
       groupKey: key,
       tripId,
       legUids: ordered.map((leg) => leg.uid).filter(Boolean),
+      legs: ordered.map((leg) => ({
+        id: leg.uid || '',
+        from: leg.from || '',
+        to: leg.to || '',
+        departAt: leg.start || '',
+        tail: leg.tail || '',
+      })),
       legCount: ordered.length,
       departAt,
       departDay,
@@ -248,21 +255,23 @@ export function buildTripRows(legs, records = []) {
   return rows;
 }
 
+function lastLegDay(row) {
+  return row.returnDay || row.departDay || '';
+}
+
 function inWindow(row, windowName, { from, to, now }) {
   const today = nyDay(now);
-  const recentCut = nyDay(new Date(new Date(now).getTime() - RECENT_DAYS * 24 * 60 * 60 * 1000));
+  const end = lastLegDay(row);
   const depart = row.departDay || '';
   if (windowName === 'all') return true;
-  if (windowName === 'upcoming') return Boolean(depart) && depart >= today;
-  if (windowName === 'past') return Boolean(depart) && depart < today;
+  if (windowName === 'past') return Boolean(end) && end < today;
   if (windowName === 'range') {
     if (!depart) return false;
     if (from && depart < from) return false;
     if (to && depart > to) return false;
     return true;
   }
-  if (!depart) return true;
-  return depart >= recentCut;
+  return Boolean(end) && end >= today;
 }
 
 export function filterTripRows(rows, {

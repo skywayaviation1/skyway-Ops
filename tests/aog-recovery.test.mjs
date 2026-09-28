@@ -27,6 +27,7 @@ import {
   tripRowCsv,
 } from '../src/aog-trip-rows.js';
 import { planBrokerBackfill } from '../src/broker-backfill.js';
+import { cfsIncidentView, cfsShouldBeNotified, incidentCfsLetter, validateAogReport } from '../src/aog-incident.js';
 import {
   ackTokenUsable,
   bindLetterContent,
@@ -78,7 +79,7 @@ test('provisional parser reads a synthetic CJ3 checkout and flags nothing requir
     knownAircraft: ['Citation CJ3', 'Learjet 60'],
   });
   assert.equal(parsed.isCheckout, true);
-  assert.equal(parsed.parserVersion, 'provisional-1');
+  assert.equal(parsed.parserVersion, 'provisional-2');
   assert.equal(parsed.tripId, 'WEQVQD');
   assert.equal(parsed.tail, 'N100TS');
   assert.equal(parsed.aircraftType, 'Citation CJ3');
@@ -90,7 +91,7 @@ test('provisional parser reads a synthetic CJ3 checkout and flags nothing requir
   assert.equal(parsed.checkoutEmail, 'broker@example-charter.test');
   assert.equal(parsed.brokerCompany, 'Example Charter Group');
   assert.deepEqual(parsed.uncertainFields, []);
-  assert.match(parsed.notes.join(' '), /provisional-1/);
+  assert.match(parsed.notes.join(' '), /provisional-2/);
 });
 
 test('provisional parser reads a synthetic Lear checkout', async () => {
@@ -165,7 +166,7 @@ test('complimentary domains get 100% and a CFS bind, and 50% does not', () => {
   assert.equal(complimentary.premium, 0);
   assert.deepEqual(complimentary.emails, ['broker_covered', 'cfs_bind']);
 
-  const paid = classifyCheckout({ ...parsed, checkoutEmail: 'buyer@other-example.test' }, settings);
+  const paid = classifyCheckout({ ...parsed, tripId: 'WEQVQD', checkoutEmail: 'buyer@other-example.test' }, settings);
   assert.equal(paid.coverageLevel, 'included_50');
   assert.equal(paid.premium, 150);
   assert.deepEqual(paid.emails, ['broker_offer']);
@@ -572,7 +573,7 @@ test('recovery mail and stripe routes are wired, and test mode is centralized', 
   assert.match(mailer, /attachCheckoutContract/);
   const tab = await readFile(path.join(root, 'src/AogRecoveryTab.jsx'), 'utf8');
   assert.match(tab, /Unmatched contracts/);
-  assert.match(tab, /Upcoming and recent/);
+  assert.match(tab, /Today and upcoming/);
   assert.match(tab, /Add domain/);
   assert.match(tab, /Save contract/);
   assert.match(tab, /preview-contract/);
@@ -599,12 +600,14 @@ test('recovery mail and stripe routes are wired, and test mode is centralized', 
   assert.doesNotMatch(checkout, /payment_method_types/);
 });
 
-test('trip rows group legs and default to upcoming plus recent', () => {
+test('trip rows group legs and default to today forward by last leg', () => {
   const now = new Date('2026-09-27T15:00:00.000Z');
   const legs = [
     { uid: 'a1', tripId: 'WEQVQD', start: '2026-10-12T14:00:00.000Z', end: '2026-10-12T16:00:00.000Z', tail: 'N100TS', from: 'KAPF', to: 'KTEB', aircraft: 'Citation CJ3', customer: 'Example Charter Group', brokerEmail: 'broker@example-charter.test', contractAttached: false },
     { uid: 'a2', tripId: 'WEQVQD', start: '2026-10-14T14:00:00.000Z', end: '2026-10-14T17:00:00.000Z', tail: 'N100TS', from: 'KTEB', to: 'KAPF', aircraft: 'Citation CJ3', customer: 'Example Charter Group', brokerEmail: 'broker@example-charter.test', contractAttached: false },
     { uid: 'past', tripId: 'G7OLD2', start: '2026-08-01T14:00:00.000Z', end: '2026-08-01T16:00:00.000Z', tail: 'N200TS', from: 'KTEB', to: 'KMIA', aircraft: 'Learjet 60', customer: 'Northwind Example Jets', brokerEmail: 'dispatch@example-lear.test', contractAttached: false },
+    { uid: 'mid', tripId: 'R3TURN', start: '2026-09-20T14:00:00.000Z', end: '2026-09-28T16:00:00.000Z', tail: 'N100TS', from: 'KTEB', to: 'KAPF', aircraft: 'Citation CJ3', customer: 'Example Charter Group', brokerEmail: 'broker@example-charter.test', contractAttached: false },
+    { uid: 'yest', tripId: 'Y2DONE', start: '2026-09-20T14:00:00.000Z', end: '2026-09-26T16:00:00.000Z', tail: 'N200TS', from: 'KTEB', to: 'KMIA', aircraft: 'Learjet 60', customer: 'Northwind Example Jets', brokerEmail: 'dispatch@example-lear.test', contractAttached: false },
   ];
   const rows = buildTripRows(legs, []);
   const grouped = rows.find((row) => row.tripId === 'WEQVQD');
@@ -614,11 +617,11 @@ test('trip rows group legs and default to upcoming plus recent', () => {
   assert.equal(grouped.contractStatus, 'missing');
   assert.equal(grouped.paymentStatus, 'not_required');
   const current = filterTripRows(rows, { now, window: 'current' });
-  assert.deepEqual(current.map((row) => row.tripId), ['WEQVQD']);
+  assert.deepEqual(current.map((row) => row.tripId), ['R3TURN', 'WEQVQD']);
   const past = filterTripRows(rows, { now, window: 'past' });
-  assert.deepEqual(past.map((row) => row.tripId), ['G7OLD2']);
+  assert.deepEqual(past.map((row) => row.tripId), ['Y2DONE', 'G7OLD2']);
   const missing = filterTripRows(rows, { now, window: 'all', contract: 'missing' });
-  assert.equal(missing.length, 2);
+  assert.equal(missing.length, 4);
   const many = buildTripRows(Array.from({ length: TRIP_PAGE_SIZE + 5 }, (_, i) => ({
     uid: `f${i}`, tripId: `SKY-FILL-${i}`, start: '2026-10-15T12:00:00.000Z', tail: 'N100TS', from: 'KAPF', to: 'KTEB',
   })), []);
@@ -994,4 +997,101 @@ test('CFS acknowledgement is an Admin SDK write and mail is claimed once per cha
   });
   assert.match(event.id, /^cfs_acknowledged_/);
   assert.equal(event.amountCents, 64000);
+});
+
+test('checkout parser rejects label words, clips aircraft, and orders dates', () => {
+  const parsed = parseCheckoutEmail({
+    subject: 'Charter checkout',
+    from: 'andrius.butkus@surfair.com',
+    bodyText: [
+      'Trip locator: LOCATOR',
+      'Trip code: K7M4QX',
+      'Aircraft: Cessna Citation CJ3 (N525CR) Passengers : 2 Charter p',
+      'Tail: N525CR',
+      'Route: KDSM - KIAD',
+      'Departure: 2026-09-28',
+      'Return: 2026-09-27',
+      'Trip total: $0.00',
+      'Checkout email: trips@surfair.com',
+      'Broker: Surf Air',
+    ].join('\n'),
+    attachmentNames: ['signed-charter-contract.pdf'],
+    hasPdf: true,
+  }, { knownAircraft: ['Citation CJ3', 'Learjet 60'] });
+  assert.equal(parsed.tripId, 'K7M4QX');
+  assert.equal(parsed.aircraftType, 'Cessna Citation CJ3');
+  assert.equal(parsed.tail, 'N525CR');
+  assert.equal(parsed.passengerCount, 2);
+  assert.equal(parsed.departDate, '2026-09-27');
+  assert.equal(parsed.returnDate, '2026-09-28');
+  assert.equal(parsed.datesLabel, '2026-09-27 – 2026-09-28');
+  assert.equal(parsed.tripTotal, null);
+  assert.match(parsed.notes.join(' '), /LOCATOR/);
+
+  const held = classifyCheckout(parsed, {});
+  assert.deepEqual(held.emails, []);
+  assert.equal(findRate('Cessna Citation CJ3 (N525CR) Passengers : 2')?.aircraftType, 'Citation CJ3');
+  assert.equal(findRate('Citation CJ1'), null);
+});
+
+test('a real trip code is required before a broker offer is queued', () => {
+  const offer = classifyCheckout({
+    tripId: 'LOCATOR',
+    aircraftType: 'Citation CJ3',
+    tripTotal: 18500,
+    checkoutEmail: 'trips@surfair.com',
+  }, {});
+  assert.deepEqual(offer.emails, []);
+  const ready = classifyCheckout({
+    tripId: 'K7M4QX',
+    aircraftType: 'Cessna Citation CJ3',
+    tripTotal: 18500,
+    checkoutEmail: 'trips@surfair.com',
+  }, {});
+  assert.deepEqual(ready.emails, ['broker_offer']);
+  assert.equal(ready.ratePercent, 1.5);
+});
+
+test('an AOG report notifies CFS only at 100% and hides broker economics', () => {
+  const missing = validateAogReport({ tripId: 'LOCATOR', wholeTrip: true, legs: [{ id: 'a', from: 'KDSM', to: 'KIAD' }] });
+  assert.equal(missing.ok, false);
+  const report = validateAogReport({
+    tripId: 'k7m4qx',
+    wholeTrip: false,
+    legIds: ['leg-b'],
+    legs: [
+      { id: 'leg-a', from: 'KDSM', to: 'KIAD', departAt: '2026-09-28T14:00:00Z', tail: 'N525CR' },
+      { id: 'leg-b', from: 'KIAD', to: 'KTEB', departAt: '2026-09-29T14:00:00Z', tail: 'N525CR' },
+    ],
+    location: 'KIAD',
+    aogAt: '2026-09-29T16:00',
+    issue: 'Hydraulic leak on arrival',
+    notes: 'Crew is with the aircraft',
+    contact: 'Dispatch desk',
+    idempotencyKey: 'same-key',
+  });
+  assert.equal(report.ok, true);
+  assert.equal(report.value.legs.length, 1);
+  assert.equal(report.value.legs[0].id, 'leg-b');
+  assert.equal(cfsShouldBeNotified([{ coverageLevel: 'included_50' }]), false);
+  assert.equal(cfsShouldBeNotified([{ coverageLevel: 'purchased_100' }]), true);
+  const view = cfsIncidentView({
+    id: 'abc',
+    ...report.value,
+    premium: 277.5,
+    checkoutEmail: 'trips@surfair.com',
+    passengerName: 'Hidden Guest',
+  });
+  assert.equal(view.coverage, '100%');
+  assert.equal(view.premium, undefined);
+  assert.equal(view.checkoutEmail, undefined);
+  assert.equal(view.passengerName, undefined);
+  const letter = incidentCfsLetter(view, 'https://example.test/cfs?aog=token');
+  const body = `${letter.html}\n${letter.text}`;
+  assert.match(body, /K7M4QX/);
+  assert.match(body, /Hydraulic leak/);
+  assert.equal(/premium/i.test(body), false);
+  assert.equal(body.includes('trips@surfair.com'), false);
+  const again = validateAogReport({ ...report.value, idempotencyKey: 'same-key', wholeTrip: true, legs: report.value.legs });
+  assert.equal(again.value.idempotencyKey, 'same-key');
 });

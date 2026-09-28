@@ -2,7 +2,7 @@
 // server. Premium math lives here so a browser preview and a Checkout Session
 // cannot drift. The broker is charged only the premium, never the trip total.
 
-import { normalizeTripId } from './trip-id.js';
+import { acceptTripCode, normalizeTripId } from './trip-id.js';
 
 export const COVERAGE_LEVELS = Object.freeze({
   included_50: '50% included',
@@ -33,7 +33,7 @@ export const DEFAULT_RATES = Object.freeze([
   {
     aircraftType: 'Citation CJ3',
     ratePercent: 1.5,
-    aliases: ['CJ3', 'Citation CJ3', 'C525'],
+    aliases: ['CJ3', 'Citation CJ3', 'Cessna Citation CJ3', 'C525'],
   },
   {
     aircraftType: 'Learjet 60',
@@ -64,6 +64,12 @@ export const CSV_COLUMNS = Object.freeze([
 
 function typeKey(value) {
   return String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function aliasPattern(name) {
+  const escaped = String(name || '').trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (!escaped) return null;
+  return new RegExp(`(?:^|[^A-Za-z0-9])${escaped}(?=$|[^A-Za-z0-9])`, 'i');
 }
 
 export function emailDomain(email) {
@@ -242,19 +248,27 @@ export function normalizeRateTable(input) {
 }
 
 export function findRate(aircraftType, rates = DEFAULT_RATES) {
-  const key = typeKey(aircraftType);
+  const raw = String(aircraftType || '');
+  const key = typeKey(raw);
   if (!key || !Array.isArray(rates)) return null;
   let best = null;
   let bestLen = 0;
+  const consider = (row, length) => {
+    if (length > bestLen) {
+      best = row;
+      bestLen = length;
+    }
+  };
   for (const row of rates) {
     const names = [row.aircraftType, ...(row.aliases || [])];
     for (const name of names) {
-      const candidate = typeKey(name);
+      const label = String(name || '').trim();
+      const candidate = typeKey(label);
       if (!candidate) continue;
-      const hit = candidate === key || key.includes(candidate) || candidate.includes(key);
-      if (hit && candidate.length > bestLen) {
-        best = row;
-        bestLen = candidate.length;
+      const pattern = aliasPattern(label);
+      if (pattern && pattern.test(raw)) consider(row, candidate.length);
+      else if (candidate.length >= 6 && (candidate === key || key.includes(candidate) || candidate.includes(key))) {
+        consider(row, candidate.length);
       }
     }
   }
@@ -312,16 +326,17 @@ export function classifyCheckout(parsed, settings = {}) {
     rates,
   });
   if (!quote.eligible) {
+    const hold = quote.reason === 'no_total' || quote.reason === 'zero_premium' || quote.reason === 'premium_not_less_than_trip';
     return {
       coverageLevel: 'included_50',
       paymentStatus: quote.reason === 'no_rate' ? 'unavailable' : 'not_required',
       premium: null,
       premiumCents: null,
       ratePercent: null,
-      matchedAircraftType: parsed?.aircraftType || '',
+      matchedAircraftType: findRate(parsed?.aircraftType, rates)?.aircraftType || parsed?.aircraftType || '',
       upgradeAvailable: false,
       upgradeBlockReason: quote.reason,
-      emails: ['broker_included_only'],
+      emails: hold ? [] : brokerFacingEmails(parsed, quote.reason === 'no_rate' ? ['broker_included_only'] : []),
       electedBy: '',
     };
   }
@@ -333,9 +348,14 @@ export function classifyCheckout(parsed, settings = {}) {
     ratePercent: quote.ratePercent,
     matchedAircraftType: quote.aircraftType,
     upgradeAvailable: true,
-    emails: ['broker_offer'],
+    emails: brokerFacingEmails(parsed, ['broker_offer']),
     electedBy: '',
   };
+}
+
+function brokerFacingEmails(parsed, emails) {
+  if (acceptTripCode(parsed?.tripId)) return emails;
+  return emails.filter((name) => name !== 'broker_offer' && name !== 'broker_included_only');
 }
 
 export function normalizeAirport(code) {

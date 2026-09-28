@@ -2,6 +2,7 @@
 // unmatched checkout to a trip, and resend the offer or the CFS bind email.
 
 import { classifyCheckout, paymentStatusLabel } from '../src/aog-recovery.js';
+import { createAogIncident, listAogIncidents, postAogUpdate } from './_aog-incident.js';
 import {
   COLLECTION,
   assertMutable,
@@ -64,6 +65,61 @@ export default async function handler(req, res) {
     if (action === 'list') {
       const records = await listCoverageRecords(db);
       res.status(200).json({ ok: true, records });
+      return;
+    }
+
+    if (action === 'report-aog') {
+      const result = await createAogIncident(db, body, {
+        actor: actor.email,
+        baseUrl: publicBaseUrl(req),
+      });
+      res.status(200).json({
+        ok: true,
+        duplicate: result.duplicate === true,
+        notified: result.notified === true,
+        reason: result.reason || '',
+        message: result.reason === 'not_covered_at_100'
+          ? 'Recorded internally. This trip is not covered at 100% by Charter Flight Support, so CFS was not notified.'
+          : (result.notified
+            ? 'Charter Flight Support was notified.'
+            : `Recorded for Charter Flight Support. Mail: ${result.emailError || 'not sent'}`),
+        incident: {
+          id: result.incident.id,
+          tripId: result.incident.tripId,
+          status: result.incident.status,
+          location: result.incident.location,
+        },
+      });
+      return;
+    }
+
+    if (action === 'aog-update' || action === 'aog-resolve') {
+      const incident = await postAogUpdate(db, {
+        id: body.incidentId,
+        text: body.text,
+        actor: actor.email,
+        resolve: action === 'aog-resolve',
+      });
+      res.status(200).json({ ok: true, status: incident.status });
+      return;
+    }
+
+    if (action === 'aog-list') {
+      const incidents = await listAogIncidents(db);
+      res.status(200).json({
+        ok: true,
+        incidents: incidents.map((row) => ({
+          id: row.id,
+          tripId: row.tripId,
+          status: row.status,
+          location: row.location,
+          aogAt: row.aogAt,
+          issue: row.issue,
+          notified: row.cfsNotified === true,
+          reason: row.notifyBlockReason || '',
+          createdAt: row.createdAt || '',
+        })),
+      });
       return;
     }
 

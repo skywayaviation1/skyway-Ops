@@ -2,6 +2,7 @@
 // reminder. A trip that is still open inside 24 hours of departure gets one
 // more. Test mode redirects both to jake@flyskyway.com.
 
+import { emailButton, emailShell } from '../src/aog-mail-layout.js';
 import { appendCoverageEvent, loadSettings, publicBaseUrl, recoveryDb, sendRecoveryEmail } from './_aog-recovery.js';
 import { planCfsReminders } from '../src/cfs-portal.js';
 import { normalizeTripId } from '../src/trip-id.js';
@@ -21,13 +22,13 @@ function reminderLetter(record, kind, portalUrl) {
     ? 'The first departure is inside 24 hours and coverage is not acknowledged yet.'
     : 'This bind request has been open for 24 hours.';
   const subject = `Reminder: acknowledge AOG coverage — ${tripId}`;
-  const html = `<div style="font-family:-apple-system,Segoe UI,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#1c1917">`
-    + `<p style="font-size:12px;letter-spacing:0.14em;text-transform:uppercase;color:#57534e">Skyway Aviation × Charter Flight Support</p>`
-    + `<h1 style="font-size:20px">Coverage is still waiting</h1>`
-    + `<p>${why}</p>`
-    + `<p>Trip ${tripId}. Coverage: 100%.</p>`
-    + `<p><a href="${portalUrl}">Open the CFS portal</a></p>`
-    + `</div>`;
+  const html = emailShell({
+    coBrand: true,
+    preheader: 'AOG coverage is still waiting for acknowledgement.',
+    headline: 'Coverage is still waiting',
+    lede: why,
+    body: `<p style="font-family:-apple-system,Segoe UI,sans-serif;font-size:15px;color:#14202b">Trip ${tripId}. Coverage: 100%.</p>${emailButton(portalUrl, 'Open the CFS portal')}`,
+  });
   const text = `${why}\nTrip ${tripId}\nCoverage: 100%\nOpen the CFS portal: ${portalUrl}\n`;
   return { subject, html, text };
 }

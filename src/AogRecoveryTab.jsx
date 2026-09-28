@@ -5,6 +5,7 @@ import { Suspense, lazy, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { collection, limit, onSnapshot, orderBy, query } from 'firebase/firestore';
 import { Download, RefreshCw } from 'lucide-react';
+import AogIncidentReport from './AogIncidentReport.jsx';
 import { auth, db } from './firebase.js';
 import { Button, Card, PageHeader, cx } from './ui.jsx';
 import {
@@ -324,8 +325,7 @@ export default function AogRecoveryTab({ currentUser, scheduleTrips = [] }) {
           <div className="mb-3 flex flex-wrap items-center gap-2">
             <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search trip ID, broker, tail" aria-label="Search trips" className="h-8 rounded border border-edge bg-surface px-2 text-sm" />
             <select aria-label="Trip window" value={windowName} onChange={(event) => setWindowName(event.target.value)} className="h-8 rounded border border-edge bg-surface px-2 text-sm">
-              <option value="current">Upcoming and recent</option>
-              <option value="upcoming">Upcoming</option>
+              <option value="current">Today and upcoming</option>
               <option value="past">Past</option>
               <option value="range">Date range</option>
               <option value="all">All trips</option>
@@ -709,6 +709,12 @@ function TripDrawer({ row, settings, busy, setBusy, setError, setBanner, onClose
           )}
           {giftArmed && <Button size="sm" variant="primary" loading={busy} onClick={gift}>Confirm gift</Button>}
         </div>
+        <AogIncidentReport
+          tripId={view.tripId}
+          tail={row.tail}
+          aircraftType={row.aircraft}
+          legs={row.legs || []}
+        />
 
         {review && (
           <p className="mt-3 text-xs text-content-muted">{proposalText(plan)}</p>

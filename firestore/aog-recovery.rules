@@ -52,6 +52,10 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    match /aogIncidents/{incidentId} {
+      allow read, write: if false;
+    }
+
     // Portal sessions, magic links, and contract download tokens. Admin SDK only.
     // A cfs-role client cannot read Skyway collections or these secrets.
     match /cfsAuthLinks/{id} {

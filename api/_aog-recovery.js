@@ -48,7 +48,7 @@ import {
   readCfsStaff,
 } from '../src/aog-recovery.js';
 import { buildTripRows, nyDay, rowsEligibleForComplimentary } from '../src/aog-trip-rows.js';
-import { normalizeTripId } from '../src/trip-id.js';
+import { acceptTripCode, normalizeTripId } from '../src/trip-id.js';
 import {
   brokerBackfillDetail,
   brokerMismatchDetail,
@@ -61,7 +61,8 @@ import {
   planContractWrite,
   shouldAttachCharterContract,
 } from '../src/charter-contract.js';
-import { comparisonHtml, comparisonText } from '../src/aog-offer-copy.js';
+import { comparisonHtml, comparisonText, brokerComparison } from '../src/aog-offer-copy.js';
+import { emailButton, emailShell, factTable, tripSummaryRows } from '../src/aog-mail-layout.js';
 import { coverageEvent, coverageLimitCentsFor, coverageTierCents, dollarsFromCents, isHundredCoverage, multiplierOr, reportingFacts, requireCoverageMultiplier, tripTotalCentsOf, DEFAULT_INCLUDED_MULTIPLIER, DEFAULT_UPGRADE_MULTIPLIER } from '../src/aog-reporting.js';
 
 const COLLECTION = 'aogRecovery';
@@ -387,71 +388,63 @@ function escapeHtml(value) {
     .replace(/"/g, '&quot;');
 }
 
-function detailRows(record) {
-  const rows = [
-    ['Trip ID', record.tripId],
-    ['Tail', record.tail],
-    ['Aircraft', record.aircraftType],
-    ['Dates', record.datesLabel || [record.departDate, record.returnDate].filter(Boolean).join(' – ')],
-    ['Route', record.route],
-    ['Trip total', fmtMoney(record.tripTotal)],
-    ['Coverage', isHundredCoverage(record.coverageLevel) ? '100%' : '50% included'],
-    ['Premium', premiumLabel(record)],
-  ];
-  return rows.map(([label, value]) => (
-    `<tr><td style="padding:4px 12px 4px 0;color:#64748b">${escapeHtml(label)}</td>`
-    + `<td style="padding:4px 0;color:#0f172a">${escapeHtml(value || '—')}</td></tr>`
-  )).join('');
+function positiveTotal(record) {
+  const amount = Number(record?.tripTotal);
+  return Number.isFinite(amount) && amount > 0;
 }
 
-function shell(title, inner) {
-  return `<div style="font-family:-apple-system,Segoe UI,sans-serif;max-width:640px;margin:0 auto;padding:24px;color:#0f172a">`
-    + `<div style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#64748b">Skyway Aviation · Charter Flight Support</div>`
-    + `<h1 style="font-size:20px;margin:8px 0 16px">${escapeHtml(title)}</h1>`
-    + inner
-    + `</div>`;
-}
-
-function brokerLetterBody(record, intro, url) {
-  const compare = comparisonText(record);
-  const html = `
-    <p>${intro}</p>
-    ${comparisonHtml(record)}
-    <table style="border-collapse:collapse;font-size:14px;margin:16px 0">${detailRows(record)}</table>
-    ${url ? `<p><a href="${escapeHtml(url)}" style="display:inline-block;background:#0f766e;color:#ffffff;text-decoration:none;padding:12px 18px;border-radius:6px">Review and elect 100% coverage</a></p>` : ''}
-  `;
-  return { html, text: `${intro}\n${compare}\n${url || ''}`.trim() };
+function tripBlock(record) {
+  return factTable(tripSummaryRows(record));
 }
 
 export function offerLetter(record, url) {
+  const view = brokerComparison(record);
   const subject = `AOG coverage for trip ${record.tripId || record.tail || ''}`.trim();
-  const body = brokerLetterBody(
-    record,
-    '50% AOG recovery coverage is included with the charter at no charge. 100% is the upgrade. The premium is the only amount charged. The trip itself is not charged.',
-    url,
-  );
-  const html = shell('50% is included. 100% is available.', `${body.html}<p style="font-size:12px;color:#64748b">This link is unique to this trip. If you do nothing, you stay at the included 50%.</p>`);
-  return { subject, html, text: body.text };
+  const lede = 'If the aircraft goes mechanical, AOG recovery coverage pays toward a replacement flight so your client is not stuck. 50% is included with the charter. 100% raises that protection. The only charge is the premium — the trip total is not charged.';
+  const html = emailShell({
+    preheader: '50% is included. Upgrade to 100% AOG recovery coverage.',
+    headline: 'Keep your client moving if the aircraft goes AOG',
+    lede,
+    body: `${comparisonHtml(record)}${emailButton(url, 'Upgrade to 100%')}${tripBlock(record)}<p style="font-family:-apple-system,Segoe UI,sans-serif;font-size:12px;line-height:1.5;color:#5c6b7a">This link is unique to this trip. If you do nothing, you stay at the included 50%.</p>`,
+    footer: `Questions: <a href="mailto:charters@flyskyway.com" style="color:#0b6e6a;text-decoration:none">charters@flyskyway.com</a><br>Coverage terms are on the offer page before you elect 100%.`,
+  });
+  const text = [
+    lede,
+    comparisonText(record),
+    view.premium ? `Premium ${view.premium}. The trip total is not charged.` : '',
+    view.upgradeValue ? `Coverage value: ${view.upgradeValue}` : (view.includedValue ? `Coverage value: ${view.includedValue}` : 'Coverage value: pending trip total'),
+    `Upgrade to 100%: ${url || ''}`,
+    `Trip ${record.tripId || ''} · ${record.tail || ''} · ${record.route || ''}`,
+    record.datesLabel || '',
+  ].filter(Boolean).join('\n');
+  return { subject, html, text };
 }
 
 export function includedOnlyLetter(record) {
+  const view = brokerComparison(record);
   const subject = `AOG coverage for trip ${record.tripId || record.tail || ''} — 50% included`.trim();
-  const body = brokerLetterBody(
-    record,
-    '50% AOG recovery coverage is included with the charter at no charge. 100% is not offered for this aircraft until a premium rate is published.',
-    '',
-  );
-  return { subject, html: shell('50% AOG coverage is included', body.html), text: body.text };
+  const lede = '50% AOG recovery coverage is included with the charter at no charge. 100% is not offered for this aircraft until a premium rate is published.';
+  const html = emailShell({
+    preheader: '50% AOG recovery coverage is included with this charter.',
+    headline: '50% AOG coverage is included',
+    lede,
+    body: `<p style="font-family:-apple-system,Segoe UI,sans-serif;font-size:15px;color:#14202b">${view.includedLine}</p>${tripBlock(record)}`,
+  });
+  const text = [lede, view.includedLine, `Trip ${record.tripId || ''}`, record.route || ''].filter(Boolean).join('\n');
+  return { subject, html, text };
 }
 
 export function coveredLetter(record) {
   const subject = `You are covered at 100% AOG — trip ${record.tripId || record.tail || ''}`.trim();
-  const body = brokerLetterBody(
-    record,
-    'This trip is covered at 100% AOG recovery. 50% is what the charter includes. There is no premium to pay.',
-    '',
-  );
-  return { subject, html: shell('You are covered at 100%', body.html), text: body.text };
+  const lede = 'This trip is covered at 100% AOG recovery. 50% is what the charter includes. There is no premium to pay.';
+  const html = emailShell({
+    preheader: 'This trip is covered at 100% AOG recovery.',
+    headline: 'You are covered at 100%',
+    lede,
+    body: `${comparisonHtml(record)}${tripBlock(record)}`,
+  });
+  const text = [lede, comparisonText(record), `Trip ${record.tripId || ''}`, record.route || ''].filter(Boolean).join('\n');
+  return { subject, html, text };
 }
 
 export function bindLetter(record, attachmentNotes, ackUrl) {
@@ -460,12 +453,15 @@ export function bindLetter(record, attachmentNotes, ackUrl) {
 
 export function brokerPaidLetter(record) {
   const subject = `AOG coverage confirmed — trip ${record.tripId || record.tail || ''}`.trim();
-  const body = brokerLetterBody(
-    record,
-    `Payment of the premium was received. This trip is covered at 100%. Premium paid: ${fmtMoney(record.premium)}. The trip total was not charged.`,
-    '',
-  );
-  return { subject, html: shell('100% coverage is confirmed', body.html), text: body.text };
+  const paid = `Payment of the premium was received. This trip is covered at 100%. Premium paid: ${fmtMoney(record.premium)}. The trip total was not charged.`;
+  const html = emailShell({
+    preheader: '100% AOG recovery coverage is confirmed.',
+    headline: '100% coverage is confirmed',
+    lede: paid,
+    body: `${comparisonHtml(record)}${tripBlock(record)}`,
+  });
+  const text = [paid, comparisonText(record), `Trip ${record.tripId || ''}`].filter(Boolean).join('\n');
+  return { subject, html, text };
 }
 
 async function sendViaResend({ to, cc, subject, html, attachments }) {
@@ -786,8 +782,8 @@ export function publicCoverageView(record) {
     && record.coverageLevel === 'included_50'
     && record.paymentStatus !== 'paid';
   const tiers = coverageTierCents(record);
-  const includedValueLabel = Number.isInteger(tiers.includedCents) ? `up to ${fmtMoney(tiers.includedCents / 100)}` : '';
-  const upgradeValueLabel = Number.isInteger(tiers.upgradeCents) ? `up to ${fmtMoney(tiers.upgradeCents / 100)}` : '';
+  const includedValueLabel = Number.isInteger(tiers.includedCents) && tiers.includedCents > 0 ? `up to ${fmtMoney(tiers.includedCents / 100)}` : '';
+  const upgradeValueLabel = Number.isInteger(tiers.upgradeCents) && tiers.upgradeCents > 0 ? `up to ${fmtMoney(tiers.upgradeCents / 100)}` : '';
   const premiumLabelText = fmtMoney(record.premium);
   return {
     tripId: record.tripId || '',
@@ -803,7 +799,7 @@ export function publicCoverageView(record) {
     upgradeMultiplier: tiers.upgradeMultiplier,
     includedValueLabel,
     upgradeValueLabel,
-    includedLine: includedValueLabel ? `Included: 50%, ${includedValueLabel}` : 'Included: 50%',
+    includedLine: includedValueLabel ? `Included: 50%, ${includedValueLabel}` : 'Included: 50%, pending trip total',
     upgradeLine: payable
       ? `Upgrade: 100%, ${upgradeValueLabel}, premium ${premiumLabelText}`
       : (isHundredCoverage(record.coverageLevel)
@@ -950,7 +946,11 @@ export async function dispatchCoverageEmails(db, id, record, { baseUrl, force = 
   const errors = [];
   const emails = record.emailsToSend || [];
 
+  const brokerMailHeld = !acceptTripCode(record.tripId) || !positiveTotal(record);
   if (emails.includes('broker_offer') && record.checkoutEmail && (force || !record.offerSentAt)) {
+    if (brokerMailHeld) {
+      errors.push('Offer held until the trip has a valid trip code and a trip total.');
+    } else {
     const token = newOfferToken();
     const url = `${baseUrl}/aog-coverage?token=${encodeURIComponent(token)}`;
     const letter = offerLetter(record, url);
@@ -969,12 +969,17 @@ export async function dispatchCoverageEmails(db, id, record, { baseUrl, force = 
         actor: record.checkoutEmail || '',
       }).catch((err) => errors.push(`offer event: ${err.message}`));
     } else errors.push(sent.error || 'offer email failed');
+    }
   }
 
   if (emails.includes('broker_included_only') && record.checkoutEmail && (force || !record.includedNoticeSentAt)) {
+    if (!acceptTripCode(record.tripId) || !positiveTotal(record)) {
+      errors.push('Included notice held until the trip has a valid trip code and a trip total.');
+    } else {
     const sent = await sendLetter(record, includedOnlyLetter(record), { to: record.checkoutEmail });
     if (sent.ok) patch.includedNoticeSentAt = new Date().toISOString();
     else errors.push(sent.error || 'included notice failed');
+    }
   }
 
   if (emails.includes('broker_covered') && record.checkoutEmail && (force || !record.coveredNoticeSentAt)) {

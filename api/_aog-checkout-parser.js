@@ -9,20 +9,24 @@
 // 2. Update LABELED_FIELDS / CHECKOUT_SIGNAL if the sample uses different
 //    headings. Keep the return shape stable so the inbox job does not change.
 // 3. Run `node --test tests/aog-recovery.test.mjs`.
-// Records store parserVersion `provisional-1` until this file changes.
+// Records store parserVersion `provisional-2`.
 //
 // Input: { subject, from, bodyText, attachmentNames, attachmentText, hasPdf }
 // Output: structured trip fields, per-field confidence, and isCheckout.
 
-import { normalizeTripId } from '../src/trip-id.js';
+import { acceptTripCode, normalizeTripId, TRIP_ID_LABEL_WORDS } from '../src/trip-id.js';
 
-export const PARSER_VERSION = 'provisional-1';
+export const PARSER_VERSION = 'provisional-2';
 
 const CHECKOUT_SIGNAL = /\b(checkout|charter agreement|charter contract|signed contract|signed agreement|trip total|charter total|contract total)\b/i;
 
 const TOTAL_LABEL = /(?:trip\s*total|charter\s*total|grand\s*total|total\s*due|contract\s*total|amount\s*due)\s*[:#-]?\s*\$?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2})?|[0-9]+(?:\.[0-9]{2})?)/gi;
 
-const TRIP_ID_LABEL = /(?:(?:passenger|crew)\s+itinerary\s*\(\s*([A-Z0-9]{6,7})\s*\)|(?:trip\s*(?:id|code)|confirmation\s*code)\s*[:#-]?\s*([A-Z0-9]{6,7})\b|\btrip\s+(?!id\b|code\b|number\b|no\b|total\b|date\b)([A-Z0-9]{6,7})\b)/gi;
+const TRIP_ID_LABEL = /(?:(?:passenger|crew)\s+itinerary\s*\(\s*([A-Z0-9]{6,7})\s*\)|(?:trip\s*(?:id|code|locator)|locator|confirmation\s*code)\s*[:#-]?\s*([A-Z0-9]{6,7})\b|\btrip\s+(?!id\b|code\b|number\b|no\b|total\b|date\b|locator\b)([A-Z0-9]{6,7})\b)/gi;
+
+const FIELD_BLEED = /\b(?:passengers?|pax|tail(?:\s*(?:number|#))?|registration|n-?number|charter|route|itinerary|depart(?:ure)?|return|dates?|broker|phone|e-?mail|email|total)\b/i;
+
+const PAX_LABEL = /\bpassengers?\s*[:#-]?\s*(\d{1,3})\b/i;
 
 const PHONE_LABEL = /(?:broker\s*)?phone\s*[:#-]\s*(\+?\(?[0-9][0-9().\-\s]{6,20}[0-9])/gi;
 
@@ -115,6 +119,32 @@ function money(value) {
   return Math.round(amount * 100) / 100;
 }
 
+function cleanAircraft(value) {
+  let text = String(value || '').replace(/\s+/g, ' ').trim();
+  const stop = text.search(FIELD_BLEED);
+  if (stop > 2) text = text.slice(0, stop);
+  text = text
+    .replace(/\(\s*N[0-9]{1,5}[A-Z]{0,2}\s*\)/ig, ' ')
+    .replace(/\bN[0-9]{1,5}[A-Z]{0,2}\b/ig, ' ')
+    .replace(/[|•].*$/, '')
+    .replace(/[.,;:]+$/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return text.slice(0, 60);
+}
+
+function orderedDates(values) {
+  const dates = [...new Set(values.filter(Boolean))].sort();
+  if (dates.length === 0) return { departDate: null, returnDate: null, datesLabel: '' };
+  const departDate = dates[0];
+  const returnDate = dates.length > 1 ? dates[dates.length - 1] : null;
+  return {
+    departDate,
+    returnDate,
+    datesLabel: returnDate && returnDate !== departDate ? `${departDate} – ${returnDate}` : departDate,
+  };
+}
+
 function parseRoute(value) {
   const codes = String(value || '').toUpperCase().match(/\b[A-Z0-9]{3,4}\b/g) || [];
   const airports = codes.filter((code) => !['PAX', 'TAIL', 'TRIP', 'FROM', 'DATE', 'AND'].includes(code));
@@ -158,11 +188,16 @@ export function parseCheckoutEmail(input = {}, options = {}) {
   const notes = [];
   const confidence = {};
 
-  const tripIds = unique(allMatches(TRIP_ID_LABEL, body).map((value) => normalizeTripId(value)).filter(Boolean));
+  const rawTripIds = allMatches(TRIP_ID_LABEL, body);
+  const rejectedLabels = unique(rawTripIds.map((value) => normalizeTripId(value)).filter((value) => value && TRIP_ID_LABEL_WORDS.has(value)));
+  const tripIds = unique(rawTripIds.map((value) => acceptTripCode(value)).filter(Boolean));
   const tripIdConfidence = tripIds.length === 1 ? 'high' : (tripIds.length > 1 ? 'low' : 'missing');
   const tripId = tripIds[0] || null;
   confidence.tripId = tripIdConfidence;
   if (tripIds.length > 1) notes.push(`Multiple trip ids: ${tripIds.join(', ')}`);
+  if (rejectedLabels.length > 0) {
+    notes.push(`Ignored label words that are not trip codes: ${rejectedLabels.join(', ')}`);
+  }
 
   const labeledTails = unique(allMatches(TAIL_LABEL, body).map((value) => value.toUpperCase()));
   const bareTails = unique((body.toUpperCase().match(N_NUMBER) || []));
@@ -180,7 +215,7 @@ export function parseCheckoutEmail(input = {}, options = {}) {
   }
   if (!tail) confidence.tail = 'missing';
 
-  const aircraftHits = unique(allMatches(AIRCRAFT_LABEL, body).map((value) => value.replace(/\s{2,}/g, ' ').replace(/[.,;]+$/, '')));
+  const aircraftHits = unique(allMatches(AIRCRAFT_LABEL, body).map((value) => cleanAircraft(value)).filter((value) => value.length > 1));
   let aircraftType = aircraftHits[0] || null;
   confidence.aircraftType = aircraftHits.length === 1 ? 'high' : (aircraftHits.length > 1 ? 'low' : 'missing');
   if (aircraftHits.length > 1) notes.push(`Multiple aircraft labels: ${aircraftHits.join(' | ')}`);
@@ -211,15 +246,30 @@ export function parseCheckoutEmail(input = {}, options = {}) {
 
   const departRaw = allMatches(DEPART_LABEL, body);
   const returnRaw = allMatches(RETURN_LABEL, body);
-  const departDate = parseLooseDate(departRaw[0]);
-  const returnDate = parseLooseDate(returnRaw[0]);
+  const labeledDepart = parseLooseDate(departRaw[0]);
+  const labeledReturn = parseLooseDate(returnRaw[0]);
+  const ranged = [...String(body).matchAll(/(\d{4}-\d{2}-\d{2})\s*(?:–|-|to)\s*(\d{4}-\d{2}-\d{2})/gi)]
+    .flatMap((match) => [match[1], match[2]]);
+  const span = orderedDates([
+    ...departRaw.map(parseLooseDate),
+    ...returnRaw.map(parseLooseDate),
+    ...ranged,
+  ]);
+  const departDate = span.departDate;
+  const returnDate = span.returnDate;
+  const datesLabel = span.datesLabel;
   confidence.dates = departDate && departRaw.length === 1 ? 'high' : (departRaw.length > 1 ? 'low' : 'missing');
-  if (departRaw.length > 0 && !departDate) {
+  if (departRaw.length > 0 && !labeledDepart && !departDate) {
     confidence.dates = 'low';
     notes.push(`Departure date was not understood: ${departRaw[0]}`);
   }
   if (departRaw.length > 1) notes.push('Multiple departure dates');
-  const datesLabel = [departDate, returnDate].filter(Boolean).join(' – ');
+  if (labeledDepart && labeledReturn && labeledReturn < labeledDepart) {
+    notes.push('Dates were ordered from the first leg to the last leg');
+  }
+
+  const passengerMatch = String(body).match(PAX_LABEL);
+  const passengerCount = passengerMatch ? Number(passengerMatch[1]) : null;
 
   const totals = unique(allMatches(TOTAL_LABEL, body).map(money).filter((value) => value != null).map(String)).map(Number);
   let tripTotal = null;
@@ -262,7 +312,7 @@ export function parseCheckoutEmail(input = {}, options = {}) {
     if (!hasPdf) skipReason = 'no signed-contract PDF';
     else skipReason = 'PDF attachment did not look like a charter checkout';
   } else {
-    notes.push('Parser is provisional-1. Confirm every field until a real checkout sample is wired in.');
+    notes.push('Parser is provisional-2. Confirm every field until a real checkout sample is wired in.');
     if (!signal) notes.push('Treated as checkout because a PDF, a trip total, and a tail or trip id were present');
   }
 
@@ -285,6 +335,7 @@ export function parseCheckoutEmail(input = {}, options = {}) {
     returnDate,
     datesLabel,
     tripTotal,
+    passengerCount,
     checkoutEmail,
     brokerCompany,
     brokerPhone,
