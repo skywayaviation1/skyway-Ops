@@ -52,8 +52,9 @@ function escapeHtml(value) {
 }
 
 function row(label, value) {
-  return `<tr><td style="padding:4px 12px 4px 0;color:#64748b">${escapeHtml(label)}</td>`
-    + `<td style="padding:4px 0;color:#0f172a">${escapeHtml(value || '—')}</td></tr>`;
+  const font = "font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;";
+  return `<tr><td style="padding:4px 12px 4px 0;${font}font-size:13px;line-height:1.4;color:#64748b">${escapeHtml(label)}</td>`
+    + `<td style="padding:4px 0;${font}font-size:14px;line-height:1.4;color:#0f172a">${escapeHtml(value || '—')}</td></tr>`;
 }
 
 function shell(title, inner) {
@@ -236,13 +237,14 @@ function tripRows(record) {
 export function bindLetterContent(record, { ackUrl, portalUrl, attachmentNotes } = {}) {
   const portal = portalUrl || String(ackUrl || '').replace(/[?#].*$/, '').replace(/\/aog-cfs$/, '/cfs');
   const subject = `AOG coverage bind request — ${normalizeTripId(record.tripId) || record.tripId || 'trip'} ${record.tail || ''}`.trim();
+  const font = "font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;";
   const html = shell('Bind request', `
-    <p>Please bind AOG mechanical recovery coverage for the trip below.</p>
+    <p style="${font}font-size:15px;line-height:1.4;color:#14202b">Please bind AOG mechanical recovery coverage for the trip below.</p>
     <table style="border-collapse:collapse;font-size:14px;margin:16px 0">${tripRows(record)}</table>
-    <p style="font-size:13px;color:#334155">${escapeHtml(attachmentNotes || '')}</p>
+    <p style="${font}font-size:13px;line-height:1.4;color:#334155">${escapeHtml(attachmentNotes || '')}</p>
     ${emailButton(ackUrl, 'Acknowledge coverage')}
-    <p style="font-size:13px"><a href="${escapeHtml(portal || '')}">Open the CFS portal</a> for every other trip.</p>
-    <p style="font-size:12px;color:#64748b">The acknowledge link is unique to this trip and works without signing in. It expires.</p>
+    <p style="${font}font-size:13px;line-height:1.4"><a href="${escapeHtml(portal || '')}" style="${font}color:#0b6e6a;text-decoration:none">Open the CFS portal</a> for every other trip.</p>
+    <p style="${font}font-size:12px;line-height:1.4;color:#64748b">The acknowledge link is unique to this trip and works without signing in. It expires.</p>
   `);
   const text = [
     'AOG coverage bind request',
@@ -295,7 +297,7 @@ export function cfsBrokerLetter(record) {
   const tripId = normalizeTripId(record.tripId) || record.tripId || 'trip';
   const subject = `AOG recovery coverage accepted — trip ${tripId}`;
   const html = shell('AOG recovery coverage has been accepted', `
-    <p>Charter Flight Support has accepted 100% AOG recovery coverage for this trip.</p>
+    <p style="font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:15px;line-height:1.4;color:#14202b">Charter Flight Support has accepted 100% AOG recovery coverage for this trip.</p>
     ${comparisonHtml(record)}
     <table style="border-collapse:collapse;font-size:14px;margin:16px 0">
       ${row('Trip ID', tripId)}

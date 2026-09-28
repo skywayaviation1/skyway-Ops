@@ -3,6 +3,7 @@
 
 import { fmtMoney } from './aog-recovery.js';
 import { coverageTierCents, isHundredCoverage } from './aog-reporting.js';
+import { MAIL_FONT } from './aog-mail-layout.js';
 
 export function moneyUpTo(cents) {
   if (!Number.isInteger(cents) || cents <= 0) return '';
@@ -35,11 +36,11 @@ export function brokerComparison(record = {}) {
 function card(title, percent, price, line, tone) {
   const border = tone === 'upgrade' ? '#0b6e6a' : '#d5dee6';
   const wash = tone === 'upgrade' ? '#f3faf9' : '#f7f9fb';
-  return `<td class="aog-soft" width="50%" valign="top" style="width:50%;vertical-align:top;background:${wash};border:1px solid ${border};border-radius:12px;padding:16px">`
-    + `<p style="margin:0;font-family:-apple-system,Segoe UI,sans-serif;font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#5c6b7a">${title}</p>`
-    + `<p style="margin:8px 0 0;font-family:Georgia,'Times New Roman',serif;font-size:32px;line-height:1;color:#14202b">${percent}</p>`
-    + (price ? `<p style="margin:8px 0 0;font-family:-apple-system,Segoe UI,sans-serif;font-size:14px;line-height:1.4;color:#14202b">${price}</p>` : '')
-    + (line ? `<p style="margin:10px 0 0;font-family:-apple-system,Segoe UI,sans-serif;font-size:13px;line-height:1.4;color:#243140">${line}</p>` : '')
+  return `<td class="aog-soft" width="50%" valign="top" style="width:50%;vertical-align:top;background:${wash};border:1px solid ${border};border-radius:12px;padding:16px;font-family:${MAIL_FONT}">`
+    + `<p style="margin:0;font-family:${MAIL_FONT};font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#5c6b7a">${title}</p>`
+    + `<p style="margin:8px 0 0;font-family:${MAIL_FONT};font-size:32px;line-height:1.2;color:#14202b">${percent}</p>`
+    + (price ? `<p style="margin:8px 0 0;font-family:${MAIL_FONT};font-size:14px;line-height:1.4;color:#14202b">${price}</p>` : '')
+    + (line ? `<p style="margin:10px 0 0;font-family:${MAIL_FONT};font-size:13px;line-height:1.4;color:#243140">${line}</p>` : '')
     + `</td>`;
 }
 
@@ -49,7 +50,7 @@ export function comparisonHtml(record) {
   const upgradePrice = view.offered || view.already
     ? (view.premiumLine || 'No further charge')
     : '';
-  const gap = `<td width="12" style="width:12px;font-size:0;line-height:0">&nbsp;</td>`;
+  const gap = `<td width="12" style="width:12px;font-family:${MAIL_FONT};font-size:0;line-height:0">&nbsp;</td>`;
   return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:18px 0;border-collapse:separate"><tr>`
     + card('Included with the charter', '50%', 'No charge', view.includedLine, 'included')
     + gap

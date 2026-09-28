@@ -425,8 +425,8 @@ export function offerLetter(record, url) {
     body: `${comparisonHtml(record)}${emailButtonStack([
       { href: coverageChoiceUrl(url, 'card'), label: 'Pay premium by card', tone: 'primary' },
       { href: coverageChoiceUrl(url, 'invoice'), label: 'Add premium to my charter invoice', tone: 'secondary' },
-    ])}${tripBlock(record)}<p style="font-family:-apple-system,Segoe UI,sans-serif;font-size:12px;line-height:1.4;color:#5c6b7a">This link is unique to this trip. If you do nothing, you stay at the included 50%.</p>`,
-    footer: `Questions: <a href="mailto:charters@flyskyway.com" style="color:#0b6e6a;text-decoration:none">charters@flyskyway.com</a><br>Coverage terms are on the offer page before you elect 100%.`,
+    ])}${tripBlock(record)}<p style="font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:12px;line-height:1.4;color:#5c6b7a">This link is unique to this trip. If you do nothing, you stay at the included 50%.</p>`,
+    footer: `Questions: <a href="mailto:charters@flyskyway.com" style="font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:#0b6e6a;text-decoration:none">charters@flyskyway.com</a><br>Coverage terms are on the offer page before you elect 100%.`,
   });
   const text = [
     lede,
@@ -447,7 +447,7 @@ export function includedOnlyLetter(record) {
     preheader: '50% AOG recovery coverage is included with this charter.',
     headline: '50% AOG coverage is included',
     lede,
-    body: `<p style="font-family:-apple-system,Segoe UI,sans-serif;font-size:15px;color:#14202b">${view.includedLine}</p>${tripBlock(record)}`,
+    body: `<p style="font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:15px;line-height:1.4;color:#14202b">${view.includedLine}</p>${tripBlock(record)}`,
   });
   const text = [lede, view.includedLine, `Trip ${record.tripId || ''}`, record.route || ''].filter(Boolean).join('\n');
   return { subject, html, text };

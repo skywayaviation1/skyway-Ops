@@ -533,6 +533,10 @@ async function clickThrough() {
     await page.goto(`http://127.0.0.1:${WEB_PORT}/aog-emulator`, { waitUntil: 'domcontentloaded' });
     await page.getByText('WEQVQD').first().waitFor({ timeout: 25000 });
     await page.getByText('Email test mode is on').waitFor();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByLabel('Trip window').waitFor();
+    await shot(page, 'aog-final-aog-tab-dark');
+    await page.setViewportSize({ width: 1440, height: 900 });
     await page.getByText('2 legs').waitFor();
     await shot(page, 'aog-trips-list');
 
@@ -845,15 +849,21 @@ async function clickThrough() {
     await coverageValue.evaluate((el) => el.scrollIntoView({ block: 'center' }));
     await shot(page, 'aog-cfs-drawer-iphone');
     await page.getByRole('button', { name: 'Report AOG' }).click();
+    const reportLeg = page.getByLabel('Leg KTEB to KPBI');
+    await reportLeg.waitFor({ timeout: 15000 });
+    await reportLeg.evaluate((el) => el.scrollIntoView({ block: 'center' }));
+    await shot(page, 'aog-final-report-legs-dark');
     await page.getByLabel('Airport or location').fill('KTEB');
     await page.getByLabel('Time it went AOG').fill('2026-11-02T15:30');
     await page.getByLabel('Issue').fill('Hydraulic leak after landing');
     await page.getByRole('button', { name: 'Review and send' }).click();
     await page.getByText('Confirm this AOG report').waitFor();
     await shot(page, 'aog-report-confirm-iphone');
+    await shot(page, 'aog-final-report-confirm-dark');
     await page.getByRole('button', { name: 'Confirm and notify' }).click();
     await page.getByText(/Charter Flight Support was notified|Recorded for Charter Flight Support/).waitFor({ timeout: 20000 });
     await shot(page, 'aog-report-sent-iphone');
+    await shot(page, 'aog-final-report-sent-dark');
     await renderMailShots(page);
     await portalShots(page);
     console.log('click-through ok');
@@ -918,9 +928,9 @@ async function renderMailShots(page) {
     ['aog-email-incident', incidentCfsLetter({ ...cj3, location: 'KIAD', aogAt: '2026-09-28 15:30', issue: 'Hydraulic leak on arrival', contact: 'Dispatch desk', coverageBound: true }, 'https://skyway-ops.vercel.app/cfs?aog=preview')],
     ['aog-email-incident-facts', incidentCfsLetter({ ...cj3, tripId: 'TBAE0L', location: 'KDSM', aogAt: '2026-09-28 11:00', issue: 'Generator failure', coverageBound: false }, 'https://skyway-ops.vercel.app/cfs?aog=preview')],
   ];
-  await page.setViewportSize({ width: 390, height: 844 });
   for (const [name, letter] of letters) {
     for (const scheme of ['light', 'dark']) {
+      await page.setViewportSize({ width: 390, height: 844 });
       await page.emulateMedia({ colorScheme: scheme });
       const html = scheme === 'dark'
         ? letter.html.replace('@media (prefers-color-scheme: dark)', '@media all')
@@ -928,9 +938,48 @@ async function renderMailShots(page) {
       await page.setContent(html, { waitUntil: 'domcontentloaded' });
       await page.waitForTimeout(200);
       await shot(page, `${name}-${scheme}`);
+      if (scheme === 'dark') {
+        const finalName = {
+          'aog-email-offer-tbae0l': 'aog-final-offer-email-tbae0l-dark',
+          'aog-email-payment': 'aog-final-payment-email-dark',
+          'aog-email-bind': 'aog-final-bind-email-dark',
+          'aog-email-incident': 'aog-final-incident-100-dark',
+          'aog-email-incident-facts': 'aog-final-incident-50-dark',
+        }[name];
+        if (finalName) await shotDarkEmail(page, finalName, html);
+      }
     }
   }
+  const { opsInvoiceLetter } = await import('../src/aog-invoice.js');
+  const invoiceOps = opsInvoiceLetter({
+    tripId: 'TBAE0L',
+    brokerCompany: 'Example Charter Group',
+    tail: 'N525CR',
+    aircraftType: 'Citation CJ3',
+    route: 'DSM → IAD',
+    datesLabel: '2026-09-28',
+    tripTotal: 15000,
+    premium: 225,
+    premiumCents: 22500,
+    invoicePremiumCents: 22500,
+    invoiceRequestedByName: 'Jordan Hale',
+    invoiceRequestedByEmail: 'broker@example-charter.test',
+    invoiceLineItem: 'AOG Recovery Coverage, 100% (trip TBAE0L)',
+  }, {
+    approveUrl: 'https://skyway-ops.vercel.app/aog-invoice?token=preview&decision=approve',
+    declineUrl: 'https://skyway-ops.vercel.app/aog-invoice?token=preview&decision=decline',
+  });
+  await shotDarkEmail(page, 'aog-final-invoice-ops-email-dark', invoiceOps.html.replace('@media (prefers-color-scheme: dark)', '@media all'));
   await page.emulateMedia({ colorScheme: 'light' });
+}
+
+async function shotDarkEmail(page, name, html) {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setContent(html, { waitUntil: 'domcontentloaded' });
+  const height = await page.evaluate(() => Math.ceil(document.documentElement.scrollHeight));
+  await page.setViewportSize({ width: 390, height: Math.min(Math.max(height + 8, 844), 5000) });
+  if (/Georgia|Times New Roman/.test(html)) throw new Error(`${name} still uses a serif font`);
+  await shot(page, name);
 }
 
 async function portalShots(page) {
@@ -959,13 +1008,11 @@ async function portalShots(page) {
   await shot(page, 'aog-offer-comparison-iphone');
   await page.setViewportSize({ width: 375, height: 667 });
   const offerScrolled = await scrollSheetBody(offerSheet);
-  const offerEnd = page.getByText('End of offer');
-  await offerEnd.waitFor();
-  const offerEndBox = await offerEnd.boundingBox();
-  const offerSmall = page.viewportSize();
-  if (!offerEndBox || offerEndBox.y < 0 || offerEndBox.y + offerEndBox.height > offerSmall.height + 2) {
-    throw new Error(`offer page did not reach the bottom ${JSON.stringify({ offerScrolled, offerEndBox })}`);
+  if (offerScrolled.max > 20 && offerScrolled.top < offerScrolled.max - 8) {
+    throw new Error(`offer page did not reach the bottom ${JSON.stringify(offerScrolled)}`);
   }
+  if (await page.getByText('End of offer').count()) throw new Error('offer page still shows End of offer');
+  if (await page.getByRole('button', { name: 'Sign election' }).count()) throw new Error('offer page still has a second sign step');
 
   const { offerLetter } = await import('../api/_aog-recovery.js');
   const letter = offerLetter({
@@ -1023,6 +1070,10 @@ async function portalShots(page) {
   await page.getByRole('button', { name: 'Dark mode' }).click();
   await page.locator('.cfs-portal[data-theme="dark"]').waitFor();
   await shot(page, 'cfs-dashboard-dark');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole('heading', { name: 'Active AOG' }).evaluate((el) => el.scrollIntoView({ block: 'start' }));
+  await shot(page, 'aog-final-cfs-active-aog-dark');
+  await page.setViewportSize({ width: 1280, height: 800 });
   await page.getByRole('button', { name: 'Light mode' }).click();
   await page.locator('.cfs-portal[data-theme="light"]').waitFor();
   await page.setViewportSize({ width: 390, height: 844 });
@@ -1145,6 +1196,7 @@ async function invoiceShots(page) {
       throw new Error(`invoice choices are outside the iPhone-width page ${JSON.stringify({ cardBox, invoiceBox, viewport })}`);
     }
     await shot(page, `aog-invoice-offer-iphone-${scheme}`);
+    if (scheme === 'dark') await shot(page, 'aog-final-offer-page-dark');
   }
 
   await page.goto(offerUrl, { waitUntil: 'domcontentloaded' });
@@ -1153,7 +1205,7 @@ async function invoiceShots(page) {
   if (invoiceName.trim().length < 5) await page.getByLabel('Invoice name').fill('Jordan Hale');
   const invoiceEmail = await page.getByLabel('Invoice email').inputValue();
   if (!invoiceEmail.includes('@')) await page.getByLabel('Invoice email').fill('broker@example-charter.test');
-  await page.getByRole('checkbox', { name: /I agree to the terms/ }).check();
+  await page.getByRole('checkbox', { name: /I agree to the coverage terms/ }).check();
   await page.getByRole('button', { name: /Add \$300\.00 to my charter invoice/ }).click();
   const received = page.getByText('Request received. Skyway will add the premium to your charter invoice after a quick review. You can still pay by card if you prefer.');
   await received.waitFor({ timeout: 20000 });

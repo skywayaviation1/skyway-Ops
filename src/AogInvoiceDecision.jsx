@@ -74,7 +74,7 @@ export default function AogInvoiceDecision() {
           <div className="mx-auto w-full max-w-xl px-4 py-6">
             <img src="/skyway-logo-nav.png" alt="Skyway Aviation" width="148" height="36" className="h-9 w-auto" />
             <p className="mt-4 text-2xs uppercase tracking-[0.16em] text-content-muted">Skyway Aviation</p>
-            <h1 className="mt-2 font-serif text-3xl font-semibold leading-tight">{approve ? 'Approve this invoice request' : 'Decline this invoice request'}</h1>
+            <h1 className="mt-2 text-3xl font-semibold leading-tight">{approve ? 'Approve this invoice request' : 'Decline this invoice request'}</h1>
             {loading && <p className="mt-6 text-sm text-content-muted">Loading the request…</p>}
             {error && <p className="mt-6 text-sm text-danger" role="alert">{error}</p>}
             {invoice && (

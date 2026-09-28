@@ -80,18 +80,16 @@ export default function AogCoverageOffer() {
     document.getElementById('invoice-choice')?.scrollIntoView({ block: 'center' });
   }, [coverage, choice]);
 
-  async function sign(event) {
-    event.preventDefault();
-    setBusy(true);
-    setError('');
-    try {
-      const data = await post(token, { action: 'sign', fullName, agreed });
-      setCoverage(data.coverage);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setBusy(false);
-    }
+  function consentReady() {
+    if (coverage?.signed) return true;
+    return agreed && fullName.trim().length >= 5;
+  }
+
+  async function ensureSigned() {
+    if (coverage?.signed) return;
+    if (!consentReady()) throw new Error('Enter your name and agree to the coverage terms.');
+    const data = await post(token, { action: 'sign', fullName, agreed: true });
+    setCoverage(data.coverage);
   }
 
   async function requestInvoice(event) {
@@ -123,8 +121,10 @@ export default function AogCoverageOffer() {
     setBusy(true);
     setError('');
     try {
+      await ensureSigned();
       const data = await post(token, { action: 'checkout' });
       if (data.url) window.location.assign(data.url);
+      else setBusy(false);
     } catch (err) {
       setError(err.message);
       setBusy(false);
@@ -138,7 +138,7 @@ export default function AogCoverageOffer() {
       <div className="mx-auto w-full max-w-xl px-4 py-6">
         <img src="/skyway-logo-nav.png" alt="Skyway Aviation" width="148" height="36" className="h-9 w-auto" />
         <p className="mt-4 text-2xs uppercase tracking-[0.16em] text-content-muted">Skyway Aviation · Charter Flight Support</p>
-        <h1 className="mt-2 font-serif text-3xl font-semibold leading-tight">Keep the trip moving if the aircraft goes AOG</h1>
+        <h1 className="mt-2 text-3xl font-semibold leading-tight">Keep the trip moving if the aircraft goes AOG</h1>
         <p className="mt-2 text-sm text-content-muted">50% additional recovery coverage is included with the charter. 100% raises that protection. The upgrade is a one-time premium, charged separately from the charter.</p>
 
         <div className="mt-4 rounded-lg border border-warning-border bg-warning-soft px-3 py-2 text-sm text-warning">
@@ -178,46 +178,51 @@ export default function AogCoverageOffer() {
             </div>
 
             {coverage.upgradeAvailable && coverage.invoiceRequestStatus !== 'approved' && coverage.paymentStatus !== 'invoice_unpaid' && coverage.paymentStatus !== 'invoice_paid' && (
-              <div className="mt-4 grid gap-3">
+              <form id="election-sign" className="mt-4 grid gap-3" onSubmit={requestInvoice}>
                 <h2 className="text-sm font-semibold">Choose how to pay the premium</h2>
                 <section aria-label="Pay premium by card" className="rounded-lg border border-edge p-3">
                   <p className="text-sm font-semibold">Pay premium by card</p>
-                  <p className="mt-1 text-sm text-content-muted">One-time charge of {fmtMoney(coverage.premium)} on Stripe, separate from the charter.</p>
-                  <Button className="mt-3" variant="primary" loading={busy} onClick={coverage.signed ? pay : () => document.getElementById('election-sign')?.scrollIntoView({ block: 'center' })}>
-                    {coverage.signed ? `Pay ${fmtMoney(coverage.premium)} by card` : 'Sign the terms, then pay by card'}
-                  </Button>
+                  <p className="mt-1 text-sm text-content-muted">One charge of {fmtMoney(coverage.premium)} on Stripe, separate from the charter.</p>
                 </section>
                 <section id="invoice-choice" aria-label="Add premium to my charter invoice" className="rounded-lg border border-accent bg-accent-soft p-3">
                   <p className="text-sm font-semibold">Add premium to my charter invoice</p>
-                  <p className="mt-1 text-sm text-content-muted">Ask Skyway to add {fmtMoney(coverage.premium)} to the charter invoice. No card charge.</p>
-                  {coverage.invoiceRequestStatus === 'pending' ? (
-                    <p className="mt-3 text-sm" role="status">Request received. Skyway will add the premium to your charter invoice after a quick review. You can still pay by card if you prefer.</p>
-                  ) : (
-                    <form className="mt-3 space-y-2" onSubmit={requestInvoice}>
-                      <label className="block text-sm">
-                        <span className="mb-1 block text-content-muted">Your name</span>
-                        <input aria-label="Invoice name" value={fullName} onChange={(event) => setFullName(event.target.value)} autoComplete="name" required className="w-full rounded-lg border border-edge bg-surface px-3 py-2 text-sm outline-none focus:border-accent" />
-                      </label>
-                      <label className="block text-sm">
-                        <span className="mb-1 block text-content-muted">Email</span>
-                        <input aria-label="Invoice email" type="email" value={invoiceEmail} onChange={(event) => setInvoiceEmail(event.target.value)} autoComplete="email" required className="w-full rounded-lg border border-edge bg-surface px-3 py-2 text-sm outline-none focus:border-accent" />
-                      </label>
-                      {!coverage.signed && (
-                        <label className="flex items-start gap-2 text-sm">
-                          <input type="checkbox" checked={agreed} onChange={(event) => setAgreed(event.target.checked)} className="mt-1" required />
-                          <span>I agree to the terms below and elect 100% AOG coverage. Add the premium to my charter invoice.</span>
-                        </label>
-                      )}
-                      <Button type="submit" variant="secondary" loading={busy} disabled={!coverage.signed && (!agreed || fullName.trim().length < 5)}>
-                        Add {fmtMoney(coverage.premium)} to my charter invoice
-                      </Button>
-                    </form>
-                  )}
-                  {invoiceNote && coverage.invoiceRequestStatus !== 'pending' && (
-                    <p className="mt-3 text-sm text-success" role="status">{invoiceNote}</p>
-                  )}
+                  <p className="mt-1 text-sm text-content-muted">Skyway adds {fmtMoney(coverage.premium)} to the charter invoice. No card charge.</p>
                 </section>
-              </div>
+                {!coverage.signed && (
+                  <div className="grid gap-3">
+                    <label className="block text-sm">
+                      <span className="mb-1 block text-content-muted">Your name</span>
+                      <input aria-label="Invoice name" value={fullName} onChange={(event) => setFullName(event.target.value)} autoComplete="name" required className="w-full rounded-lg border border-edge bg-surface px-3 py-2 text-sm outline-none focus:border-accent" />
+                    </label>
+                    <label className="block text-sm">
+                      <span className="mb-1 block text-content-muted">Email</span>
+                      <input aria-label="Invoice email" type="email" value={invoiceEmail} onChange={(event) => setInvoiceEmail(event.target.value)} autoComplete="email" required className="w-full rounded-lg border border-edge bg-surface px-3 py-2 text-sm outline-none focus:border-accent" />
+                    </label>
+                    <details className="rounded-lg border border-edge bg-surface-sunken p-3 text-sm">
+                      <summary className="cursor-pointer font-medium">Coverage terms</summary>
+                      <pre className="mt-3 max-h-48 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-content-muted">{coverage.termsText}</pre>
+                    </details>
+                    <label className="flex items-start gap-2 text-sm">
+                      <input type="checkbox" checked={agreed} onChange={(event) => setAgreed(event.target.checked)} className="mt-1" required />
+                      <span>I agree to the coverage terms and elect 100% AOG coverage for this trip.</span>
+                    </label>
+                  </div>
+                )}
+                {coverage.signed && <p className="text-sm">Signed by {coverage.signedName}.</p>}
+                {coverage.invoiceRequestStatus === 'pending' ? (
+                  <p className="text-sm" role="status">Request received. Skyway will add the premium to your charter invoice after a quick review. You can still pay by card if you prefer.</p>
+                ) : (
+                  <Button type="submit" variant="secondary" loading={busy} disabled={!consentReady()}>
+                    Add {fmtMoney(coverage.premium)} to my charter invoice
+                  </Button>
+                )}
+                <Button type="button" variant="primary" loading={busy} disabled={!consentReady()} onClick={pay}>
+                  Pay {fmtMoney(coverage.premium)} by card
+                </Button>
+                {invoiceNote && coverage.invoiceRequestStatus !== 'pending' && (
+                  <p className="text-sm text-success" role="status">{invoiceNote}</p>
+                )}
+              </form>
             )}
 
             {coverage.paymentStatus === 'paid' && (
@@ -243,50 +248,8 @@ export default function AogCoverageOffer() {
               <p className="mt-4 text-sm">50% coverage is included. 100% is not offered for this aircraft until a premium rate is published.</p>
             )}
 
-            {coverage.upgradeAvailable && (
-              <>
-                <h2 className="mb-2 mt-6 text-sm font-semibold">Coverage terms</h2>
-                <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-lg border border-edge bg-surface-sunken p-3 text-xs leading-relaxed text-content-muted">{coverage.termsText}</pre>
-                {coverage.signed ? (
-                  <div className="mt-4">
-                    <p className="text-sm">Signed by {coverage.signedName}.</p>
-                    <Button className="mt-3" variant="primary" loading={busy} onClick={pay}>
-                      Pay {fmtMoney(coverage.premium)} premium
-                    </Button>
-                    <p className="mt-2 text-2xs text-content-muted">Card details are entered on Stripe. Skyway never sees the card number. The premium is charged separately from the charter.</p>
-                  </div>
-                ) : (
-                  <form id="election-sign" className="mt-4 space-y-3" onSubmit={sign}>
-                    <label className="block text-sm">
-                      <span className="mb-1 block text-content-muted">Full name</span>
-                      <input
-                        value={fullName}
-                        onChange={(event) => setFullName(event.target.value)}
-                        autoComplete="name"
-                        required
-                        className="w-full rounded-lg border border-edge bg-surface px-3 py-2 text-sm outline-none focus:border-accent"
-                      />
-                    </label>
-                    <label className="flex items-start gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={agreed}
-                        onChange={(event) => setAgreed(event.target.checked)}
-                        className="mt-1"
-                        required
-                      />
-                      <span>I agree to these terms and elect 100% AOG coverage for this trip. I will pay the premium shown, and only the premium.</span>
-                    </label>
-                    <Button type="submit" variant="primary" loading={busy} disabled={!agreed || fullName.trim().length < 5}>
-                      Sign election
-                    </Button>
-                  </form>
-                )}
-              </>
-            )}
           </Card>
         )}
-        <p className="aog-end mt-6 text-xs text-content-muted">End of offer</p>
       </div>
       </div>
       </div>

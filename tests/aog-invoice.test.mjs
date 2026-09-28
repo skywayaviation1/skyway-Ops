@@ -15,7 +15,8 @@ import {
   planInvoiceDecision,
   planInvoiceRequest,
 } from '../src/aog-invoice.js';
-import { offerLetter } from '../api/_aog-recovery.js';
+import { brokerPaidLetter, offerLetter } from '../api/_aog-recovery.js';
+import { incidentCfsLetter } from '../src/aog-incident.js';
 import { eventDocId } from '../src/aog-reporting.js';
 import { cfsTripProjection, projectionLeaks } from '../src/cfs-portal.js';
 import { paymentStatusLabel } from '../src/aog-recovery.js';
@@ -211,4 +212,36 @@ test('invoice routes are wired for the offer page, the email link, and ops', asy
   assert.match(page, /Add premium to my charter invoice/);
   assert.match(page, /Pay premium by card/);
   assert.match(decision, /\/api\/aog-recovery-invoice/);
+  assert.doesNotMatch(page, /End of offer/);
+  assert.doesNotMatch(page, /Sign election/);
+  assert.match(page, /I agree to the coverage terms/);
+});
+
+function assertSansMail(html, label) {
+  assert.equal(/Georgia|Times New Roman/.test(html), false, `${label} still uses a serif face`);
+  const tags = html.match(/<(td|th|a|h1|h2|h3|p|span)\b[^>]*>/gi) || [];
+  assert.ok(tags.length > 3, `${label} has text elements`);
+  for (const tag of tags) {
+    assert.match(tag, /font-family:[^;"]*sans-serif/i, `${label} missing a sans stack on ${tag}`);
+  }
+}
+
+test('every AOG email text element uses the sans stack', () => {
+  const offer = offerLetter(openRecord, 'https://example.test/aog-coverage?token=preview');
+  const paid = brokerPaidLetter({ ...openRecord, coverageLevel: 'purchased_100' });
+  const bind = bindLetterContent({ ...openRecord, coverageLevel: 'purchased_100', legCount: 1 }, {
+    ackUrl: 'https://example.test/cfs?ack=preview',
+    portalUrl: 'https://example.test/cfs',
+  });
+  const ops = opsInvoiceLetter(openRecord, {
+    approveUrl: 'https://example.test/aog-invoice?token=preview-token-123456&decision=approve',
+    declineUrl: 'https://example.test/aog-invoice?token=preview-token-123456&decision=decline',
+  });
+  const incident = incidentCfsLetter({ ...openRecord, coverageBound: true, location: 'KIAD', issue: 'Hydraulic leak' }, 'https://example.test/cfs?aog=preview');
+  for (const [label, letter] of [['offer', offer], ['payment', paid], ['bind', bind], ['invoice ops', ops], ['incident', incident]]) {
+    assertSansMail(letter.html, label);
+  }
+  assert.match(offer.html, /\$22,500\.00/);
+  assert.match(offer.html, /\$30,000\.00/);
+  assert.match(offer.html, /\$225\.00/);
 });

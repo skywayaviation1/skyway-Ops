@@ -13,6 +13,7 @@ import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import { signAogToken, AOG_TOKEN_TTL_MS } from './_aog-token.js';
 import { withCharterCopy } from './_email-signature.js';
+import { stampMailFonts } from '../src/aog-mail-layout.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -74,7 +75,7 @@ export default async function handler(req, res) {
 
   const subject = `AOG Additional Coverage Offer — ${c.tail} · ${c.routeFrom} → ${c.routeTo} · ${fmtDate(c.tripDate)}`;
 
-  const html = `
+  const html = stampMailFonts(`
 <div style="font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:640px;margin:0 auto;padding:32px 24px;color:#0f172a;background:#ffffff">
   <div style="border-bottom:2px solid #0ea5e9;padding-bottom:16px;margin-bottom:24px">
     <div style="font-size:11px;letter-spacing:0.15em;color:#64748b;text-transform:uppercase;font-family:ui-monospace,monospace">Skyway Aviation Services · Charter Flight Support</div>
@@ -135,7 +136,7 @@ export default async function handler(req, res) {
     This offer expires ${new Date(expiresAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}. Questions? Reply to this email or call Skyway Aviation Ops.
   </p>
 </div>
-`.trim();
+`.trim());
 
   const text = `AOG Additional Coverage Offer
 
