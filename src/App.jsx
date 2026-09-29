@@ -27722,6 +27722,7 @@ export default function CharterOps() {
     if (params.get('trip')) return 'schedule';
     if (params.get('section') === 'accounting' || params.has('qbo')) return 'accounting';
     if (params.get('section') === 'mailbox' || params.has('userMail')) return 'mailbox';
+    if (params.get('section') === 'tracking') return 'tracking';
     return params.get('channel') || window.location.hash === '#comms' ? 'comms' : 'home';
   });
   // FlightAware live tracking kill switch — synced from Firestore so admin can

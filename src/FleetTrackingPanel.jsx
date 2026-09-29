@@ -180,11 +180,15 @@ export default function FleetTrackingPanel({
 
       <div
         className={cx(
-          'relative min-h-[22rem] w-full xl:min-h-[36rem] xl:flex-1',
+          'relative h-[22rem] w-full xl:h-auto xl:min-h-[36rem] xl:flex-1',
           mobileTab === 'fleet' ? 'hidden xl:block' : 'block',
         )}
       >
-        {map}
+        {/* h-full inside a min-height-only parent collapses to 0 on phones.
+            The absolute frame fills the explicit slot, including the desktop flex height. */}
+        <div className="absolute inset-0">
+          {map}
+        </div>
       </div>
       <div
         className={cx(

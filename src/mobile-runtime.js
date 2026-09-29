@@ -1,4 +1,5 @@
 import { Capacitor } from '@capacitor/core';
+import { isMapKitAssetUrl } from './mapkit-fallback.js';
 
 export const PRODUCTION_API_BASE = 'https://www.skyway.app';
 
@@ -15,8 +16,17 @@ const apiBase = resolveApiBase(import.meta.env?.VITE_API_BASE_URL);
  * default from PR #7 is no longer the public host).
  */
 if (isNative && typeof window !== 'undefined' && !window.__skywayNativeFetch) {
-  const browserFetch = window.fetch.bind(window);
-  window.fetch = (input, init) => browserFetch(rewriteApiRequest(input, apiBase), init);
+  const patchedFetch = window.fetch.bind(window);
+  // CapacitorHttp rewrites cross-origin GET through a native proxy that does
+  // not send the WebView Origin. MapKit JS compares that header to the token,
+  // so its bootstrap and tile fetches must stay on the WebView's own fetch.
+  const webFetch = typeof window.CapacitorWebFetch === 'function'
+    ? window.CapacitorWebFetch.bind(window)
+    : null;
+  window.fetch = (input, init) => {
+    if (webFetch && isMapKitAssetUrl(input)) return webFetch(input, init);
+    return patchedFetch(rewriteApiRequest(input, apiBase), init);
+  };
   window.__skywayNativeFetch = true;
 }
 

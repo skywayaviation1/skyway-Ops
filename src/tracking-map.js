@@ -47,11 +47,13 @@ export function loadLeaflet() {
 }
 
 /* ─── BASEMAPS ───────────────────────────────────────────────────────────────
-   Key-free Leaflet fallbacks used only when Apple MapKit (preferred) and
-   Google Maps are unavailable. No CARTO tiles — they now watermark
-   "API KEY REQUIRED". Dark and satellite use Esri; terrain uses OpenTopoMap.
-   `dim` is applied to the tile pane only, so overlays keep full contrast over
-   bright satellite imagery.
+   Key-free Leaflet fallbacks used when Apple MapKit (preferred) and Google
+   Maps are unavailable, and also shown underneath Apple until its tiles
+   actually paint. CARTO's dark_all and light_all rasters were checked again
+   on 2026-09-28 and still watermark "API KEY REQUIRED" without a key, so
+   the street fallback stays on Esri World Dark Gray / World Light Gray.
+   Satellite stays Esri; terrain stays OpenTopoMap. `dim` is applied to the
+   tile pane only, so overlays keep full contrast over bright imagery.
    ─────────────────────────────────────────────────────────────────────────── */
 export const BASEMAPS = {
   dark: {
@@ -64,6 +66,20 @@ export const BASEMAPS = {
     ],
     labels: {
       url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}',
+      opacity: 0.92,
+    },
+    attribution: 'Tiles &copy; Esri',
+  },
+  light: {
+    id: 'light',
+    label: 'Light',
+    maxZoom: 16,
+    dim: '',
+    tiles: [
+      { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}', maxNativeZoom: 16 },
+    ],
+    labels: {
+      url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}',
       opacity: 0.92,
     },
     attribution: 'Tiles &copy; Esri',
@@ -97,13 +113,38 @@ export const BASEMAPS = {
 
 export const BASEMAP_ORDER = ['dark', 'satellite', 'terrain'];
 
+/** `classy` is the light theme. Everything else, including the default, is dark. */
+export function currentMapTheme() {
+  if (typeof document === 'undefined') return 'dark';
+  return document.documentElement.getAttribute('data-theme') === 'classy' ? 'light' : 'dark';
+}
+
+/** The street slot follows the app theme. Satellite and terrain do not. */
+export function standardBasemapSpec(basemapId, theme = 'dark') {
+  if ((basemapId === 'dark' || !BASEMAPS[basemapId]) && theme === 'light') return BASEMAPS.light;
+  return BASEMAPS[basemapId] || (theme === 'light' ? BASEMAPS.light : BASEMAPS.dark);
+}
+
+/** Drops Leaflet tile layers so a vendor basemap underneath can show through. */
+export function clearBasemap(map) {
+  if (!map) return;
+  if (map.__swBasemapLayers) {
+    map.__swBasemapLayers.forEach((layer) => {
+      try { map.removeLayer(layer); } catch { /* already gone */ }
+    });
+  }
+  map.__swBasemapLayers = [];
+  const tilePane = map.getPane('tilePane');
+  if (tilePane) tilePane.style.filter = '';
+}
+
 /**
  * Swaps the active basemap. Tile layers are tracked on the map instance so
  * repeated calls never leak layers, and label tiles are pinned above the
  * overlay pane so airport names stay readable through a flight trail.
  */
-export function applyBasemap(L, map, basemapId) {
-  const spec = BASEMAPS[basemapId] || BASEMAPS.dark;
+export function applyBasemap(L, map, basemapId, theme = currentMapTheme()) {
+  const spec = standardBasemapSpec(basemapId, theme);
 
   if (!map.__swBasemapLayers) map.__swBasemapLayers = [];
   map.__swBasemapLayers.forEach((layer) => {

@@ -6,12 +6,24 @@
  * to its existing Leaflet basemap without losing aircraft or status data.
  */
 
+import { isNativeApp, resolveApiBase } from './mobile-runtime.js';
+import { mapKitTokenUrl } from './mapkit-fallback.js';
+
 const MAPKIT_JS_URL = 'https://cdn.apple-mapkit.com/mk/5.x.x/mapkit.js';
 let mapKitPromise = null;
 let firstToken = null;
 
+function tokenRequestUrl() {
+  const native = isNativeApp();
+  return mapKitTokenUrl({
+    native,
+    pageOrigin: native && typeof window !== 'undefined' ? window.location.origin : '',
+    apiBase: native ? resolveApiBase(import.meta.env?.VITE_API_BASE_URL) : '',
+  });
+}
+
 async function fetchToken() {
-  const response = await fetch('/api/apple-mapkit-token', {
+  const response = await fetch(tokenRequestUrl(), {
     cache: 'no-store',
     headers: { Accept: 'application/json' },
   });
@@ -47,6 +59,15 @@ export function loadAppleMapKit() {
     // Fail fast before downloading the SDK when Apple Maps is not configured.
     firstToken = await fetchToken();
     const mapkit = await loadScript();
+    // Auth failures are dispatched on a later turn. Bind this before init so
+    // an error that lands before the map component is listening is remembered
+    // and the cream grid is never treated as success.
+    if (typeof mapkit.addEventListener === 'function' && !mapkit.__skywayFailureBound) {
+      mapkit.__skywayFailureBound = true;
+      mapkit.addEventListener('error', (event) => {
+        mapkit.__skywayAuthFailure = event || true;
+      });
+    }
     mapkit.init({
       authorizationCallback(done) {
         if (firstToken) {

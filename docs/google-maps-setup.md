@@ -2,7 +2,8 @@
 
 Skyway tracking maps prefer Apple MapKit. If Apple is not configured or
 fails at runtime, the shared `TrackingMap` tries Google Maps next, then
-clean Esri / OpenTopoMap tiles. CARTO tiles are not used.
+Esri Dark or Light Gray, Esri Satellite, and OpenTopoMap. CARTO tiles are
+not used; without a key they still watermark.
 
 Leaflet remains the operational overlay for aircraft, routes, trails,
 airport markers, fitting, and weather radar. Aircraft position data is
