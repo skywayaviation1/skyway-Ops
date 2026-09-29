@@ -8,6 +8,9 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    proxy: process.env.AOG_API_PROXY
+      ? { '/api': { target: process.env.AOG_API_PROXY, changeOrigin: true } }
+      : undefined,
   },
   build: {
     outDir: 'dist',

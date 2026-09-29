@@ -1,0 +1,13 @@
+SUBJECT: Signed charter contract TJ7R2B
+FROM: dispatch@example-lear.test
+ATTACHMENTS: Charter-Agreement.pdf
+
+Trip ID: TJ7R2B
+Company: Northwind Example Jets
+Checkout email: dispatch@example-lear.test
+Aircraft type: Learjet 60
+Registration: N200TS
+Itinerary: KTEB → KMIA
+Depart: Oct 20, 2026
+Return: Oct 22, 2026
+Charter total: $24,000.00

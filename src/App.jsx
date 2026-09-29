@@ -128,7 +128,12 @@ const AdminDutyReportLazy = lazy(() => import('./AdminDutyReport.jsx'));
 // Charter Flight Support policy. Lazy because non-ops roles never see
 // it and even ops only opens it when new coverage records need
 // creating or reviewing.
-const AogTabLazy = lazy(() => import('./AogTab.jsx'));
+const AogRecoveryTabLazy = lazy(() => import('./AogRecoveryTab.jsx'));
+const AogRecoveryGiftButtonLazy = lazy(() => import('./AogRecoveryGiftButton.jsx'));
+const AogInvoiceOpsLazy = lazy(() => import('./AogInvoiceOps.jsx'));
+const AogIncidentReportLazy = lazy(() => import('./AogIncidentReport.jsx'));
+import TripCharterContract from './TripCharterContract.jsx';
+import AogCfsConfirmedMark from './AogCfsConfirmed.jsx';
 import AppTimezoneSwitch from './AppTimezoneSwitch.jsx';
 import { todayInAppTz } from './app-timezone.js';
 import { createPortal } from 'react-dom';
@@ -5232,6 +5237,9 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   const [passengers, setPassengers] = useState([]);
   const [scanning, setScanning] = useState(false);
   const [brokerEmail, setBrokerEmail] = useState(trip.info.broker || '');
+  const [brokerCompany, setBrokerCompany] = useState('');
+  const [brokerPhone, setBrokerPhone] = useState('');
+  const [aogCfs, setAogCfs] = useState(null);
   const [autoNotify, setAutoNotify] = useState(false);
   const [hasCatering, setHasCatering] = useState(true);
   const [paxOverride, setPaxOverride] = useState(null);
@@ -5459,6 +5467,9 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
           setStatuses(state.statuses);
           setPassengers(state.passengers);
           setBrokerEmail(state.brokerEmail || trip.info.broker || '');
+          setBrokerCompany(state.brokerCompany || '');
+          setBrokerPhone(state.brokerPhone || '');
+          setAogCfs(state.aogCfs || null);
           setAutoNotify(state.autoNotify);
           setHasCatering(state.hasCatering !== false);
           setPaxOverride(typeof state.paxOverride === 'number' ? state.paxOverride : null);
@@ -6398,7 +6409,8 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
                 </div>
                 <p className="mt-1 truncate text-sm text-content-muted">
                   {trip.info.tail || 'Tail pending'}
-                  {trip.info.customer ? ` · ${trip.info.customer}` : ''}
+                  {(trip.info.customer || brokerCompany) ? ` · ${trip.info.customer || brokerCompany}` : ''}
+                  {brokerPhone ? ` · ${brokerPhone}` : ''}
                   {trip.info.legType ? ` · ${trip.info.legType === 'REVENUE' ? 'Revenue' : trip.info.legType}` : ''}
                 </p>
                 <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-2xs text-content-muted">
@@ -6477,6 +6489,34 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
                 <MXShareButton tail={trip.info.tail} onOpenModal={() => setMxShareOpen(true)} />
                 <TailStatusBadge tail={trip.info.tail} />
               </>
+            )}
+            {(currentUser?.role === 'ops' || currentUser?.role === 'admin') && (
+              <Suspense fallback={null}>
+                <AogRecoveryGiftButtonLazy trip={trip} brokerEmail={brokerEmail} />
+                <AogInvoiceOpsLazy tripId={trip.info?.tripCode || trip.info?.tripId || ''} />
+                <AogIncidentReportLazy
+                  compact
+                  tripId={trip.info?.tripCode || trip.info?.tripId || ''}
+                  tail={trip.info?.tail || ''}
+                  aircraftType={trip.info?.aircraft || trip.info?.aircraftType || ''}
+                  legs={(allTrips || []).filter((item) => item?.info?.tripCode && item.info.tripCode === trip.info?.tripCode).map((item) => ({
+                    id: item.uid,
+                    from: item.info?.from || '',
+                    to: item.info?.to || '',
+                    departAt: item.start instanceof Date ? item.start.toISOString() : (item.start || ''),
+                    tail: item.info?.tail || '',
+                  }))}
+                />
+              </Suspense>
+            )}
+            {aogCfs?.status === 'cfs_confirmed' && (
+              <div className="basis-full">
+                <AogCfsConfirmedMark
+                  acknowledgement={aogCfs}
+                  tripId={aogCfs.tripId || ''}
+                  legLabel={[trip.info?.from, trip.info?.to].filter(Boolean).join(' → ')}
+                />
+              </div>
             )}
             {fromFbo && <StatusChip tone="neutral">{trip.info.from}: {fromFbo}</StatusChip>}
             {toFbo && <StatusChip tone="neutral">{trip.info.to}: {toFbo}</StatusChip>}
@@ -6881,6 +6921,8 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       )}
       </div>
 
+      <TripCharterContract tripUid={trip.uid} />
+
       {/* Tabs — grouped the same way as the primary nav. `tab` still holds a
           leaf id so every `tab === '…'` content branch below is untouched;
           only the chrome above it changed. Ten peer tabs meant Status (opened
@@ -6999,7 +7041,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
         ref={tripScrollRef}
         className={cx(
           'min-h-0 flex-1',
-          tab === 'chat' ? 'flex flex-col overflow-hidden' : 'overflow-y-auto',
+          tab === 'chat' ? 'flex flex-col overflow-hidden' : 'overflow-y-auto scroll-area sw-panel-scroll',
         )}
       >
         {loading ? (
@@ -8524,9 +8566,9 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
   };
 
   return createPortal(
-    <div className="fixed inset-0 z-[100] bg-slate-950/80 backdrop-blur-sm flex items-start sm:items-center justify-center p-0 sm:p-4 overflow-y-auto">
-      <div className="bg-slate-900 border border-slate-700 w-full max-w-lg sm:my-8 flex flex-col min-h-screen sm:min-h-0 sm:max-h-[90vh]">
-        <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3 shrink-0">
+    <div className="sw-sheet z-[100] bg-slate-950/80 backdrop-blur-sm sm:items-center sm:justify-center sm:p-4">
+      <div className="sw-sheet-panel sw-sheet-scroll w-full max-w-lg border border-slate-700 bg-slate-900 sm:h-auto sm:max-h-[90dvh]">
+        <div className="sticky top-0 z-10 flex shrink-0 items-center justify-between border-b border-slate-800 bg-slate-900 px-4 py-3">
           <div>
             <h3 className="text-lg tracking-wider text-slate-100" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
               SHARE TRIP WITH BROKER
@@ -9026,7 +9068,7 @@ function TripSheetPanel({
       }));
 
       // 3. Show preview before uploading
-      setMatchPreview({ ...parsed, matches, file });
+      setMatchPreview({ ...parsed, matches, file, sourceText: text });
     } catch (err) {
       const m = String(err && err.message || '');
       if (m.includes('is not a valid JavaScript MIME type') ||
@@ -9059,6 +9101,8 @@ function TripSheetPanel({
 
       // For each leg with a matched trip, attach the PDF + preloaded pax
       const { attachTripSheetToLeg } = await import('./firebase-data.js');
+      const { brokerDetailsFromText } = await import('./broker-backfill.js');
+      const broker = brokerDetailsFromText(matchPreview.sourceText || '');
       for (const m of matchPreview.matches) {
         if (m.candidates.length === 0) continue;
         // If multiple candidates, take the first (most recent). Could prompt later.
@@ -9129,6 +9173,7 @@ function TripSheetPanel({
           fromFbo: m.leg.fromFbo || null,
           toFbo: m.leg.toFbo || null,
           tripSheetData,
+          broker,
         });
       }
 
@@ -21797,7 +21842,7 @@ const NAV_SECTIONS = [
   { id: 'reports',   label: 'Reports',     icon: AlertCircle,   roles: ['crew', 'ops', 'admin'] },
 
   { id: 'maint',     label: 'Maintenance', icon: Wrench,        roles: ['maint', 'ops', 'admin'] },
-  { id: 'aog',       label: 'AOG',         icon: AlertTriangle, roles: ['ops', 'admin'] },
+  { id: 'aog',       label: 'AOG Coverage', icon: AlertTriangle, roles: ['ops', 'admin'] },
 
   { id: 'expenses',  label: 'Expenses',    icon: Mail,          roles: ['crew', 'sales', 'ops', 'accounting', 'admin'] },
   { id: 'accounting', label: 'Accounting',  icon: Building2,     roles: ['accounting', 'admin'] },
@@ -22102,7 +22147,7 @@ function UnreadBadge({ count, className = '' }) {
    last slot becomes "More", which opens a sheet listing every
    remaining destination by group.
    ============================================================ */
-function MobileNav({ currentSection, setCurrentSection, currentUser, onOpenSettings, onToggleTheme, themeMode, onLogout }) {
+export function MobileNav({ currentSection, setCurrentSection, currentUser, onOpenSettings, onToggleTheme, themeMode, onLogout }) {
   const groups = useNavGroups(currentUser);
   const activeGroupId = groupIdForSection(currentSection);
   const { totalUnread: commsUnread } = useStreamPresence();
@@ -22189,20 +22234,20 @@ function MobileNav({ currentSection, setCurrentSection, currentUser, onOpenSetti
         </div>
       </nav>
 
-      {sheetOpen && (
-        <div className="fixed inset-0 z-50 md:hidden" role="dialog" aria-modal="true" aria-label="More destinations">
+      {sheetOpen && typeof document !== 'undefined' && createPortal(
+        <div className="sw-sheet z-[90] justify-end md:hidden" role="dialog" aria-modal="true" aria-label="More destinations">
           <button
             type="button"
             aria-label="Close menu"
             className="absolute inset-0 animate-fade-in bg-black/60 backdrop-blur-sm"
             onClick={() => setSheetOpen(false)}
           />
-          <div className="absolute inset-x-0 bottom-0 max-h-[75vh] overflow-y-auto rounded-t-xl border-t border-edge bg-surface pb-[calc(env(safe-area-inset-bottom,0px)+12px)] shadow-overlay">
-            <div className="sticky top-0 flex items-center justify-between border-b border-edge bg-surface px-4 py-3">
+          <div className="sw-sheet-panel relative z-10 mt-auto max-h-full rounded-t-xl border-t border-edge bg-surface shadow-overlay">
+            <div className="sticky top-0 z-10 flex shrink-0 items-center justify-between border-b border-edge bg-surface px-4 py-3">
               <h2 className="text-sm font-semibold text-content">More</h2>
               <IconButton icon={X} title="Close" onClick={() => setSheetOpen(false)} />
             </div>
-            <div className="p-2">
+            <div className="sw-sheet-body p-2">
               {overflow.map((g) => (
                 <div key={g.id} className="mb-1">
                   <SectionLabel className="px-3 py-2">{g.label}</SectionLabel>
@@ -22257,9 +22302,11 @@ function MobileNav({ currentSection, setCurrentSection, currentUser, onOpenSetti
                   </button>
                 )}
               </div>
+              <p className="px-3 py-4 text-2xs text-content-subtle">End of menu</p>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </>
   );
@@ -22296,8 +22343,8 @@ function ManualTripModal({ onCancel, onSubmit }) {
   };
 
   return (
-    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <div className="bg-slate-950 border border-slate-700 max-w-xl w-full max-h-[90vh] overflow-y-auto">
+    <div className="sw-sheet z-50 bg-black/70 backdrop-blur-sm sm:items-center sm:justify-center sm:p-4">
+      <div className="sw-sheet-panel sw-sheet-scroll max-w-xl border border-slate-700 bg-slate-950 sm:h-auto sm:max-h-[90dvh]">
         <div className="px-5 py-4 border-b border-slate-800 flex items-center justify-between sticky top-0 bg-slate-950">
           <h2 className="text-base tracking-widest" style={{ fontFamily: 'DM Sans, sans-serif', fontWeight: 700 }}>ADD TRIP MANUALLY</h2>
           <button onClick={onCancel} className="text-slate-500 hover:text-slate-300"><X className="w-5 h-5" /></button>
@@ -29286,9 +29333,9 @@ export default function CharterOps() {
             section state gets set via URL query or restored from
             localStorage after a role change. */}
         {section === 'aog' && (currentUser.role === 'ops' || currentUser.role === 'admin') && (
-          <div className="flex-1 overflow-y-auto scroll-area">
+          <div className="min-h-0 flex-1 overflow-y-auto scroll-area sw-panel-scroll">
             <Suspense fallback={<div className="flex items-center justify-center py-16 text-slate-500"><Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading AOG coverage...</div>}>
-              <AogTabLazy currentUser={currentUser} />
+              <AogRecoveryTabLazy currentUser={currentUser} scheduleTrips={allTrips} />
             </Suspense>
           </div>
         )}

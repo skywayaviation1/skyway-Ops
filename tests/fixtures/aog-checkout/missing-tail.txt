@@ -1,0 +1,11 @@
+SUBJECT: Checkout charter contract
+FROM: broker@example-charter.test
+ATTACHMENTS: signed-charter-contract.pdf
+
+Broker: Example Charter Group
+Checkout email: broker@example-charter.test
+Aircraft: Citation CJ3
+Route: KAPF - KTEB
+Departure: 2026-12-01
+Trip total: $10,000.00
+Trip id: K4M8NQ

@@ -14,6 +14,7 @@ import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import { verifyAogToken } from './_aog-token.js';
 import { withCharterCopy } from './_email-signature.js';
+import { stampMailFonts } from '../src/aog-mail-layout.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -60,7 +61,7 @@ async function sendNotifications(coverage, action, db) {
     ? `✓ AOG Coverage ACCEPTED — ${coverage.tail} ${coverage.routeFrom}→${coverage.routeTo} ${fmtDate(coverage.tripDate)} — ${fmtCurrency(coverage.coverageCost)}`
     : `✗ AOG Coverage DECLINED — ${coverage.tail} ${coverage.routeFrom}→${coverage.routeTo} ${fmtDate(coverage.tripDate)}`;
 
-  const html = `
+  const html = stampMailFonts(`
 <div style="font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:600px;margin:0 auto;padding:24px;color:#0f172a">
   <div style="display:inline-block;padding:4px 10px;background:${isAccept ? '#10b981' : '#64748b'};color:white;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;font-weight:600;border-radius:3px;margin-bottom:16px">
     ${isAccept ? 'COVERAGE ACCEPTED' : 'COVERAGE DECLINED'}
@@ -88,7 +89,7 @@ async function sendNotifications(coverage, action, db) {
 
   <p style="margin-top:24px;font-size:12px;color:#94a3b8">Coverage ID: <code>${coverage.id || ''}</code> · Responded ${new Date().toLocaleString('en-US', { timeZone: 'America/New_York' })} ET</p>
 </div>
-`.trim();
+`.trim());
 
   const text = `${isAccept ? 'ACCEPTED' : 'DECLINED'}: AOG Coverage — ${coverage.broker || 'Broker'} (${coverage.brokerEmail})
 Aircraft: ${coverage.tail} (${coverage.class})

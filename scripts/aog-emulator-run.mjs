@@ -1,0 +1,1331 @@
+// Click through the AOG Coverage page against the Firebase emulators.
+// Run under: firebase emulators:exec --config firebase.emulator.json --project skyway-ops-app
+// Synthetic data only.
+
+import { createHash } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { createServer } from 'node:http';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { chromium } from 'playwright';
+import { bindLetterContent, cfsBrokerLetter, cfsOpsLetter } from '../src/aog-cfs.js';
+
+process.env.AOG_LOCAL_STORAGE = process.env.AOG_LOCAL_STORAGE || '/tmp/aog-emulator-storage';
+process.env.GCLOUD_PROJECT = process.env.GCLOUD_PROJECT || 'skyway-ops-app';
+process.env.GOOGLE_CLOUD_PROJECT = process.env.GCLOUD_PROJECT;
+
+const EMAIL = 'ops@example-charter.test';
+const PASSWORD = 'synthetic-ops-pass';
+const CFS_ACK_TOKEN = 'synthetic-cfs-ack-token-0123456789abcd';
+const OFFER_TOKEN = 'synthetic-offer-token-0123456789abcd';
+const API_PORT = 8787;
+const WEB_PORT = 5199;
+const SHOT = '/opt/cursor/artifacts/screenshots';
+
+if (!process.env.FIRESTORE_EMULATOR_HOST || !process.env.FIREBASE_AUTH_EMULATOR_HOST) {
+  console.error('Start this script from firebase emulators:exec so the emulator hosts are set.');
+  process.exit(1);
+}
+
+function contractPdf(lines) {
+  const stream = lines.map((line) => `(${String(line).replace(/[()\\]/g, '')}) Tj`).join('\n');
+  return Buffer.from(`%PDF-1.4\n${stream}\n%%EOF\n`);
+}
+
+function leg(db, { id, tripId, start, end, from, to, tail, aircraft, customer, email, contract }) {
+  return db.collection('trip-state').doc(id).set({
+    tripSheetData: { tripCode: tripId, tail, client: customer, aircraftType: aircraft },
+    tripMeta: { tail, from, to, start },
+    brokerEmail: email,
+    ...(contract ? { charterContract: contract } : {}),
+  });
+}
+
+async function seed() {
+  const { Timestamp } = await import('firebase-admin/firestore');
+  const { getAdmin, recoveryDb, savePdf } = await import('../api/_aog-recovery.js');
+  const admin = (await import('firebase-admin')).default;
+  const auth = admin.auth(getAdmin());
+  let user;
+  try {
+    user = await auth.createUser({ email: EMAIL, password: PASSWORD, emailVerified: true, displayName: 'Synthetic Ops' });
+  } catch (err) {
+    if (!/already exists/i.test(String(err.message))) throw err;
+    user = await auth.getUserByEmail(EMAIL);
+  }
+  const db = recoveryDb();
+  await db.collection('users').doc(user.uid).set({
+    email: EMAIL,
+    name: 'Synthetic Ops',
+    role: 'ops',
+    active: true,
+    approved: true,
+  });
+
+  const writes = [];
+  writes.push(leg(db, {
+    id: 'leg-3001-a', tripId: 'WEQVQD', start: '2026-10-12T14:00:00.000Z', end: '2026-10-12T16:00:00.000Z',
+    from: 'KAPF', to: 'KTEB', tail: 'N100TS', aircraft: 'Citation CJ3', customer: 'Example Charter Group', email: 'broker@example-charter.test',
+  }));
+  writes.push(leg(db, {
+    id: 'leg-3001-b', tripId: 'WEQVQD', start: '2026-10-14T18:00:00.000Z', end: '2026-10-14T20:00:00.000Z',
+    from: 'KTEB', to: 'KAPF', tail: 'N100TS', aircraft: 'Citation CJ3', customer: 'Example Charter Group', email: 'broker@example-charter.test',
+  }));
+  writes.push(leg(db, {
+    id: 'leg-3002', tripId: 'M4PQ8K', start: '2026-08-01T14:00:00.000Z', end: '2026-08-01T16:00:00.000Z',
+    from: 'KTEB', to: 'KMIA', tail: 'N200TS', aircraft: 'Learjet 60', customer: 'Northwind Example Jets', email: 'past@example-past.test',
+  }));
+  writes.push(leg(db, {
+    id: 'leg-3003', tripId: 'H7N2QD', start: '2026-10-20T14:00:00.000Z', end: '2026-10-22T14:00:00.000Z',
+    from: 'KTEB', to: 'KMIA', tail: 'N200TS', aircraft: 'Learjet 60', customer: 'Northwind Example Jets', email: 'dispatch@example-lear.test',
+  }));
+  writes.push(leg(db, {
+    id: 'leg-3004', tripId: 'R2K8LM', start: '2026-10-21T14:00:00.000Z', end: '2026-10-21T18:00:00.000Z',
+    from: 'KAPF', to: 'KTEB', tail: 'N100TS', aircraft: 'Citation CJ3', customer: 'Example Gift Jets', email: 'gift@example-gift.test',
+  }));
+  writes.push(leg(db, {
+    id: 'leg-3005', tripId: 'B6TQ9N', start: '2026-10-22T14:00:00.000Z', end: '2026-10-22T18:00:00.000Z',
+    from: 'KMIA', to: 'KTEB', tail: 'N200TS', aircraft: 'Learjet 60', customer: 'Example Other Jets', email: 'other@example-other.test',
+  }));
+  writes.push(leg(db, {
+    id: 'leg-3006', tripId: 'C8W4PL', start: '2026-10-23T14:00:00.000Z', end: '2026-10-23T18:00:00.000Z',
+    from: 'KAPF', to: 'KTEB', tail: 'N100TS', aircraft: 'Citation CJ3', customer: 'Example History Jets', email: 'history@example-history.test',
+    contract: { path: 'trip-contracts/C8W4PL/charter-contract.pdf', fingerprint: 'synthetic-fingerprint' },
+  }));
+  writes.push(leg(db, {
+    id: 'leg-3020', tripId: 'F5H9RT', start: '2026-09-20T14:00:00.000Z', end: '2026-09-20T16:00:00.000Z',
+    from: 'KTEB', to: 'KAPF', tail: 'N100TS', aircraft: 'Citation CJ3', customer: 'Example Recent Jets', email: 'recent@example-recent.test',
+  }));
+  for (let i = 1; i <= 45; i += 1) {
+    const n = String(i).padStart(5, '0');
+    writes.push(leg(db, {
+      id: `leg-fill-${n}`, tripId: `F${n}`, start: '2026-10-15T12:00:00.000Z', end: '2026-10-15T15:00:00.000Z',
+      from: 'KAPF', to: 'KTEB', tail: 'N100TS', aircraft: 'Citation CJ3', customer: 'Example Fill Broker', email: 'fill@example-fill.test',
+    }));
+  }
+  writes.push(leg(db, {
+    id: 'leg-q4', tripId: 'Q4M8LN', start: '2026-10-18T14:00:00.000Z', end: '2026-10-18T16:00:00.000Z',
+    from: 'KACY', to: 'KSYR', tail: 'N286N', aircraft: '', customer: '', email: '',
+  }));
+  writes.push(leg(db, {
+    id: 'leg-k9', tripId: 'K9P2DX', start: '2026-10-19T14:00:00.000Z', end: '2026-10-19T16:00:00.000Z',
+    from: 'KMIA', to: 'KTEB', tail: 'N444AM', aircraft: 'Citation CJ3', customer: 'Kept Broker Co', email: 'kept@example-broker.test',
+  }));
+  writes.push(leg(db, {
+    id: 'leg-inv', tripId: 'J4N8QV', start: '2026-10-12T14:00:00.000Z', end: '2026-10-12T16:00:00.000Z',
+    from: 'KDSM', to: 'KIAD', tail: 'N525CR', aircraft: 'Citation CJ3', customer: 'Example Invoice Jets', email: 'invoice@example-charter.test',
+  }));
+  writes.push(leg(db, {
+    id: 'leg-cfs-a', tripId: 'M8CFS2', start: '2026-11-02T14:00:00.000Z', end: '2026-11-02T17:00:00.000Z',
+    from: 'KTEB', to: 'KPBI', tail: 'N318CS', aircraft: 'Citation CJ3', customer: 'Example Charter Group', email: 'broker@example-charter.test',
+  }));
+  writes.push(leg(db, {
+    id: 'leg-cfs-b', tripId: 'M8CFS2', start: '2026-11-04T18:00:00.000Z', end: '2026-11-04T21:00:00.000Z',
+    from: 'KPBI', to: 'KTEB', tail: 'N318CS', aircraft: 'Citation CJ3', customer: 'Example Charter Group', email: 'broker@example-charter.test',
+  }));
+  await Promise.all(writes);
+  await db.collection('manual-trips').doc('leg-3007').set({
+    uid: 'leg-3007',
+    tripCode: 'D3Y7KS',
+    start: '2026-10-24T14:00:00.000Z',
+    end: '2026-10-24T18:00:00.000Z',
+    info: {
+      tail: 'N100TS', from: 'KAPF', to: 'KBOS', aircraft: 'Citation CJ3',
+      customer: 'Example Manual Jets', brokerEmail: 'manual@example-manual.test',
+    },
+  });
+
+  const created = Timestamp.fromDate(new Date('2026-09-20T15:00:00.000Z'));
+  await db.collection('aogRecovery').doc('cov-3006').set({
+    source: 'inbox',
+    tripId: 'C8W4PL',
+    brokerCompany: 'Example History Jets',
+    checkoutEmail: 'history@example-history.test',
+    brokerEmail: 'history@example-history.test',
+    tail: 'N100TS',
+    aircraftType: 'Citation CJ3',
+    route: 'KAPF → KTEB',
+    datesLabel: '2026-10-23',
+    tripTotal: 18500,
+    coverageLevel: 'included_50',
+    paymentStatus: 'offer_pending',
+    premium: 277.5,
+    upgradeAvailable: true,
+    charterContractPath: 'aog-recovery/cov-3006/charter-contract.pdf',
+    charterContractFilename: 'synthetic-charter.pdf',
+    contractAttachStatus: 'attached',
+    matchStatus: 'linked',
+    linkedTripUid: 'leg-3006',
+    offerSentAt: '2026-09-20T15:05:00.000Z',
+    createdAt: created,
+    currency: 'usd',
+  });
+  await db.collection('aogRecovery').doc('cov-3006').collection('coverageEvents').doc('offer_sent').set({
+    type: 'offer_sent',
+    at: Timestamp.fromDate(new Date('2026-09-20T15:05:00.000Z')),
+    atUtc: '2026-09-20T15:05:00.000Z',
+    actor: 'history@example-history.test',
+    coverageLevel: 'included_50',
+    paymentStatus: 'offer_pending',
+    currency: 'usd',
+    amountCents: 27750,
+  });
+  await savePdf('aog-recovery/cov-3006/charter-contract.pdf', contractPdf(['Charter contract', 'Trip ID: C8W4PL']));
+
+  await db.collection('aogRecovery').doc('unmatched_synthetic').set({
+    source: 'inbox',
+    tripId: 'P2L6VX',
+    brokerCompany: 'Example Charter Group',
+    checkoutEmail: 'broker@example-charter.test',
+    brokerEmail: 'broker@example-charter.test',
+    tail: 'N100TS',
+    aircraftType: 'Citation CJ3',
+    route: 'KAPF → KTEB',
+    datesLabel: '2026-11-02 – 2026-11-04',
+    tripTotal: 18500,
+    coverageLevel: 'included_50',
+    paymentStatus: 'offer_pending',
+    premium: 277.5,
+    charterContractPath: 'aog-recovery/unmatched_synthetic/charter-contract.pdf',
+    charterContractFilename: 'synthetic-unmatched.pdf',
+    contractAttachStatus: 'unmatched',
+    contractSource: { messageId: 'graph-synthetic-unmatched', receivedAt: '2026-09-01T15:00:00.000Z', sender: 'broker@example-charter.test' },
+    matchStatus: 'unmatched',
+    createdAt: Timestamp.fromDate(new Date('2026-09-01T15:00:00.000Z')),
+    currency: 'usd',
+  });
+  await savePdf('aog-recovery/unmatched_synthetic/charter-contract.pdf', contractPdf([
+    'Charter contract',
+    'Trip ID: P2L6VX',
+    'Charter total: $18,500.00',
+  ]));
+
+  const uploadPdf = contractPdf([
+    'Charter contract',
+    'Trip ID: H7N2QD',
+    'Company: Northwind Example Jets',
+    'Checkout email: dispatch@example-lear.test',
+    'Aircraft type: Learjet 60',
+    'Registration: N200TS',
+    'Itinerary: KTEB → KMIA',
+    'Depart: 2026-10-20',
+    'Return: 2026-10-22',
+    'Charter total: $24,000.00',
+  ]);
+  await writeFile('/tmp/synthetic-charter-3003.pdf', uploadPdf);
+  await writeFile('/tmp/synthetic-charter-q4.pdf', contractPdf([
+    'Charter contract',
+    'Trip ID: Q4M8LN',
+    'Company: New Broker Jets',
+    'Checkout email: newbroker@example-charter.test',
+    'Broker phone: (305) 555-0148',
+    'Aircraft type: Citation CJ3',
+    'Registration: N286N',
+    'Itinerary: KACY → KSYR',
+    'Depart: 2026-10-18',
+    'Charter total: $12,000.00',
+  ]));
+  await writeFile('/tmp/synthetic-charter-k9.pdf', contractPdf([
+    'Charter contract',
+    'Trip ID: K9P2DX',
+    'Company: Other Jets',
+    'Checkout email: other@example-other.test',
+    'Aircraft type: Citation CJ3',
+    'Registration: N444AM',
+    'Itinerary: KMIA → KTEB',
+    'Depart: 2026-10-19',
+    'Charter total: $15,000.00',
+  ]));
+  await db.collection('aogRecovery').doc('cov-m8cfs2').set({
+    source: 'gift',
+    tripId: 'M8CFS2',
+    brokerCompany: 'Example Charter Group',
+    checkoutEmail: 'broker@example-charter.test',
+    brokerEmail: 'broker@example-charter.test',
+    tail: 'N318CS',
+    aircraftType: 'Citation CJ3',
+    route: 'KTEB → KPBI',
+    datesLabel: '2026-11-02 – 2026-11-04',
+    departDate: '2026-11-02',
+    returnDate: '2026-11-04',
+    legCount: 2,
+    tripTotal: 20000,
+    tripTotalCents: 2000000,
+    premium: 300,
+    premiumCents: 30000,
+    ratePercent: 1.5,
+    coverageLimitCents: 4000000,
+    coverageMultiplier: 2,
+    coverageLevel: 'gifted_100',
+    paymentStatus: 'gifted',
+    electionSource: 'gifted',
+    currency: 'usd',
+    matchStatus: 'linked',
+    contractAttachStatus: 'attached',
+    linkedTripUids: ['leg-cfs-a', 'leg-cfs-b'],
+    contractLegIds: ['leg-cfs-a', 'leg-cfs-b'],
+    bindEmailSentAt: '2026-11-01T15:00:00.000Z',
+    createdAt: Timestamp.fromDate(new Date('2026-11-01T15:00:00.000Z')),
+    updatedAt: '2026-11-01T15:00:00.000Z',
+    ackTokenHash: createHash('sha256').update(CFS_ACK_TOKEN).digest('hex'),
+    ackTokenExpiresAt: '2026-12-31T00:00:00.000Z',
+    charterContractPath: 'trip-contracts/M8CFS2/charter-contract.pdf',
+  });
+  const portalBase = {
+    source: 'gift',
+    brokerCompany: 'Example Charter Group',
+    tail: 'N318CS',
+    aircraftType: 'Citation CJ3',
+    route: 'KTEB → KPBI',
+    routeFrom: 'KTEB',
+    routeTo: 'KPBI',
+    tripTotal: 20000,
+    tripTotalCents: 2000000,
+    includedMultiplier: 1.5,
+    upgradeMultiplier: 2,
+    coverageLimitCents: 4000000,
+    coverageMultiplier: 2,
+    coverageLevel: 'gifted_100',
+    paymentStatus: 'gifted',
+    currency: 'usd',
+    bindEmailSentAt: '2026-09-25T12:00:00.000Z',
+  };
+  const portalAck = (label) => ({
+    ackTokenHash: createHash('sha256').update(`synthetic-portal-ack-${label}`).digest('hex'),
+    ackTokenExpiresAt: '2026-12-31T00:00:00.000Z',
+  });
+  await db.collection('aogRecovery').doc('cov-urgent').set({
+    ...portalBase,
+    ...portalAck('V3K8QM'),
+    tripId: 'V3K8QM',
+    datesLabel: '2026-09-29 – 2026-09-30',
+    departDate: '2026-09-29',
+    departAtUtc: '2026-09-29T14:00:00.000Z',
+    returnDate: '2026-09-30',
+    createdAt: Timestamp.fromDate(new Date('2026-09-25T12:00:00.000Z')),
+  });
+  await db.collection('aogRecovery').doc('cov-bulk').set({
+    ...portalBase,
+    ...portalAck('L4P9HX'),
+    tripId: 'L4P9HX',
+    datesLabel: '2026-10-08 – 2026-10-09',
+    departDate: '2026-10-08',
+    departAtUtc: '2026-10-08T14:00:00.000Z',
+    returnDate: '2026-10-09',
+    createdAt: Timestamp.fromDate(new Date('2026-09-24T12:00:00.000Z')),
+  });
+  await db.collection('aogRecovery').doc('cov-bound').set({
+    ...portalBase,
+    ...portalAck('N6C2WT'),
+    tripId: 'N6C2WT',
+    datesLabel: '2026-10-02 – 2026-10-03',
+    departDate: '2026-10-02',
+    departAtUtc: '2026-10-02T14:00:00.000Z',
+    returnDate: '2026-10-03',
+    cfsStatus: 'cfs_confirmed',
+    cfsConfirmedAt: '2026-09-20T15:00:00.000Z',
+    cfsConfirmedByName: 'Casey Stone',
+    cfsConfirmedByEmail: 'charter@charterflightsupport.com',
+    cfsCostCents: 64000,
+    cfsReference: 'CFS-4491',
+    createdAt: Timestamp.fromDate(new Date('2026-09-20T12:00:00.000Z')),
+  });
+  await db.collection('aogRecovery').doc('cov-offer').set({
+    source: 'checkout',
+    tripId: 'T8R4WQ',
+    brokerCompany: 'Example Charter Group',
+    checkoutEmail: 'broker@example-charter.test',
+    tail: 'N318CS',
+    aircraftType: 'Citation CJ3',
+    route: 'KTEB → KPBI',
+    datesLabel: '2026-11-02 – 2026-11-04',
+    departDate: '2026-11-02',
+    returnDate: '2026-11-04',
+    tripTotal: 20000,
+    tripTotalCents: 2000000,
+    premium: 300,
+    premiumCents: 30000,
+    ratePercent: 1.5,
+    includedMultiplier: 1.5,
+    upgradeMultiplier: 2,
+    coverageLimitCents: 3000000,
+    coverageMultiplier: 1.5,
+    coverageLevel: 'included_50',
+    paymentStatus: 'offer_pending',
+    upgradeAvailable: true,
+    currency: 'usd',
+    createdAt: Timestamp.fromDate(new Date('2026-09-01T12:00:00.000Z')),
+    offerTokenHash: createHash('sha256').update(OFFER_TOKEN).digest('hex'),
+  });
+  await db.collection('aogRecovery').doc('cov-invoice').set({
+    source: 'checkout',
+    tripId: 'J4N8QV',
+    brokerCompany: 'Example Invoice Jets',
+    checkoutEmail: 'invoice@example-charter.test',
+    brokerEmail: 'invoice@example-charter.test',
+    tail: 'N525CR',
+    aircraftType: 'Citation CJ3',
+    route: 'KDSM → KIAD',
+    datesLabel: '2026-10-12',
+    departDate: '2026-10-12',
+    returnDate: '2026-10-12',
+    tripTotal: 15000,
+    tripTotalCents: 1500000,
+    premium: 225,
+    premiumCents: 22500,
+    ratePercent: 1.5,
+    includedMultiplier: 1.5,
+    upgradeMultiplier: 2,
+    coverageLimitCents: 3000000,
+    coverageMultiplier: 2,
+    coverageLevel: 'purchased_100',
+    electionSource: 'purchased',
+    paymentMethod: 'invoice',
+    paymentStatus: 'invoice_unpaid',
+    invoiceRequestStatus: 'approved',
+    invoiceRequestedByName: 'Jordan Hale',
+    invoiceRequestedByEmail: 'invoice@example-charter.test',
+    invoiceRequestedAt: '2026-09-28T12:00:00.000Z',
+    invoicePremiumCents: 22500,
+    invoiceTripId: 'J4N8QV',
+    invoiceLineItem: 'AOG Recovery Coverage, 100% (trip J4N8QV)',
+    invoiceApprovedAt: '2026-09-28T12:05:00.000Z',
+    invoiceApprovedBy: 'ops@example-charter.test',
+    currency: 'usd',
+    matchStatus: 'linked',
+    linkedTripUid: 'leg-inv',
+    createdAt: Timestamp.fromDate(new Date('2026-09-28T12:00:00.000Z')),
+  });
+  console.log('seeded synthetic trips');
+}
+
+function adapt(res) {
+  res.status = (code) => {
+    res.statusCode = code;
+    return res;
+  };
+  res.json = (body) => {
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify(body));
+  };
+  res.send = (body) => {
+    res.end(body);
+  };
+  return res;
+}
+
+async function startApi() {
+  const ops = (await import('../api/aog-recovery-ops.js')).default;
+  const settings = (await import('../api/aog-recovery-settings.js')).default;
+  const gift = (await import('../api/aog-recovery-gift.js')).default;
+  const file = (await import('../api/aog-recovery-file.js')).default;
+  const scan = (await import('../api/aog-recovery-inbox-scan.js')).default;
+  const cfs = (await import('../api/aog-recovery-cfs.js')).default;
+  const offer = (await import('../api/aog-recovery-public.js')).default;
+  const portal = (await import('../api/cfs-portal.js')).default;
+  const invoice = (await import('../api/aog-recovery-invoice.js')).default;
+  const routes = {
+    '/api/aog-recovery-ops': ops,
+    '/api/aog-recovery-settings': settings,
+    '/api/aog-recovery-gift': gift,
+    '/api/aog-recovery-file': file,
+    '/api/aog-recovery-inbox-scan': scan,
+    '/api/aog-recovery-cfs': cfs,
+    '/api/aog-recovery-public': offer,
+    '/api/aog-recovery-invoice': invoice,
+    '/api/cfs-portal': portal,
+  };
+  const server = createServer((req, res) => {
+    adapt(res);
+    const url = new URL(req.url, 'http://127.0.0.1');
+    req.query = Object.fromEntries(url.searchParams);
+    if (url.pathname === '/health') {
+      res.status(200).end('ok');
+      return;
+    }
+    const handler = routes[url.pathname];
+    if (!handler) {
+      res.status(404).json({ error: 'not found' });
+      return;
+    }
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf8');
+      try {
+        req.body = raw ? JSON.parse(raw) : {};
+      } catch {
+        res.status(400).json({ error: 'Invalid JSON' });
+        return;
+      }
+      Promise.resolve(handler(req, res)).catch((err) => {
+        if (!res.headersSent) res.status(500).json({ error: err.message || 'failed' });
+      });
+    });
+  });
+  await new Promise((resolve) => server.listen(API_PORT, '127.0.0.1', resolve));
+  return server;
+}
+
+function waitForHttp(url) {
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    const tick = async () => {
+      try {
+        const response = await fetch(url);
+        if (response.status < 500) {
+          resolve();
+          return;
+        }
+      } catch {
+        // server still booting
+      }
+      if (Date.now() - started > 30000) {
+        reject(new Error(`Timed out waiting for ${url}`));
+        return;
+      }
+      setTimeout(tick, 300);
+    };
+    tick();
+  });
+}
+
+async function scrollSheetBody(locator) {
+  return locator.evaluate(async (el) => {
+    let top = 0;
+    let max = 0;
+    for (let i = 0; i < 6; i += 1) {
+      el.scrollTop = el.scrollHeight;
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      max = el.scrollHeight - el.clientHeight;
+      top = el.scrollTop;
+      if (max <= 20 || top >= max - 8) break;
+    }
+    return { top, max };
+  });
+}
+
+async function shot(page, name, { fullPage = false } = {}) {
+  await mkdir(SHOT, { recursive: true });
+  const file = path.join(SHOT, `${name}.png`);
+  await page.screenshot({ path: file, fullPage });
+  console.log('screenshot', file);
+}
+
+async function setAppTheme(page, theme) {
+  await page.evaluate((value) => {
+    if (value) document.documentElement.setAttribute('data-theme', value);
+    else document.documentElement.removeAttribute('data-theme');
+  }, theme || '');
+}
+
+async function clickThrough() {
+  const browser = await chromium.launch({
+    executablePath: '/usr/bin/google-chrome-stable',
+    headless: true,
+  });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  page.on('pageerror', (err) => console.log('PAGE', err.message));
+  page.on('console', (msg) => {
+    if (msg.type() === 'error') console.log('CONSOLE', msg.text());
+  });
+  try {
+    await page.goto(`http://127.0.0.1:${WEB_PORT}/aog-emulator`, { waitUntil: 'domcontentloaded' });
+    await page.getByText('WEQVQD').first().waitFor({ timeout: 25000 });
+    await page.getByText('Email test mode is on').waitFor();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByLabel('Trip window').waitFor();
+    await shot(page, 'aog-final-aog-tab-dark');
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.getByText('2 legs').waitFor();
+    await shot(page, 'aog-trips-list');
+
+    await page.getByLabel('Trip window').selectOption('past');
+    await page.getByText('M4PQ8K').waitFor();
+    if (await page.getByText('WEQVQD').count()) throw new Error('upcoming trip still visible in past view');
+    await shot(page, 'aog-trips-past-filter');
+    await page.getByLabel('Trip window').selectOption('current');
+    await page.getByLabel('Search trips').fill('H7N2QD');
+    await page.getByLabel('Contract').selectOption('missing');
+    await page.getByText('H7N2QD').waitFor();
+    await page.getByText('H7N2QD').click();
+    await page.getByRole('dialog', { name: 'Trip H7N2QD' }).waitFor();
+    await page.locator('input[type=file]').setInputFiles('/tmp/synthetic-charter-3003.pdf');
+    await page.getByRole('button', { name: 'Save contract' }).waitFor({ timeout: 20000 });
+    const total = page.getByRole('dialog').getByLabel('Trip total');
+    const parsedTotal = await total.inputValue();
+    if (!String(parsedTotal).includes('24000') && parsedTotal !== '24000') {
+      throw new Error(`parser did not fill trip total (got ${parsedTotal})`);
+    }
+    const email = await page.getByRole('dialog').getByLabel('Broker email').inputValue();
+    if (email !== 'dispatch@example-lear.test') throw new Error(`parser email ${email}`);
+    await shot(page, 'aog-contract-review');
+    await page.getByRole('button', { name: 'Save contract' }).click();
+    await page.getByText(/Contract saved/).waitFor({ timeout: 20000 });
+    await page.getByRole('button', { name: 'Close' }).click();
+    await page.getByLabel('Contract').selectOption('attached');
+    await page.getByText('H7N2QD').waitFor();
+    await shot(page, 'aog-contract-saved');
+
+    await page.getByLabel('Search trips').fill('R2K8LM');
+    await page.getByLabel('Contract').selectOption('');
+    await page.getByText('R2K8LM').click();
+    await page.getByRole('button', { name: 'Gift 100%' }).click();
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const confirmGift = page.getByRole('button', { name: 'Confirm gift' });
+      try {
+        await confirmGift.waitFor({ timeout: 4000 });
+        await confirmGift.click({ timeout: 5000 });
+        break;
+      } catch (err) {
+        if (attempt === 4) throw err;
+        const arm = page.getByRole('button', { name: 'Gift 100%' });
+        if (await arm.count()) await arm.click().catch(() => {});
+      }
+    }
+    await page.getByText(/Gifted 100%/).waitFor({ timeout: 20000 });
+    await page.getByRole('button', { name: 'Close' }).click();
+    await page.getByRole('cell', { name: /100% gifted by Skyway/ }).waitFor({ timeout: 15000 });
+    await shot(page, 'aog-gift');
+
+    await page.getByLabel('Search trips').fill('C8W4PL');
+    await page.getByText('C8W4PL').click();
+    await page.getByText('offer_sent').waitFor();
+    await page.getByRole('button', { name: 'View charter' }).click();
+    await shot(page, 'aog-event-history');
+    await page.getByRole('button', { name: 'Close' }).click();
+
+    await page.getByRole('tab', { name: 'Settings' }).click();
+    const lear = page.getByLabel('Rate percent Learjet 60');
+    await lear.waitFor();
+    await lear.fill('2.5');
+    await page.getByRole('button', { name: 'Save rates' }).click();
+    await page.getByText('Aircraft rates saved.').waitFor();
+    await shot(page, 'aog-rates');
+
+    await page.getByLabel('Complimentary domain').fill('example-charter.test');
+    await page.getByRole('button', { name: 'Add domain' }).click();
+    await page.getByLabel('Apply to WEQVQD').waitFor();
+    await page.locator('li').filter({ hasText: 'example-charter.test' }).getByText(/ops@example-charter\.test/).waitFor();
+    await shot(page, 'aog-domain-apply');
+    await page.getByRole('button', { name: 'Apply complimentary 100%' }).click();
+    await page.getByText(/Complimentary 100% applied/).waitFor({ timeout: 20000 });
+
+    await page.getByRole('tab', { name: 'Trips' }).click();
+    await page.getByLabel('Search trips').fill('WEQVQD');
+    await page.getByLabel('Trip window').selectOption('all');
+    await page.getByLabel('Contract').selectOption('');
+    await page.getByRole('cell', { name: /100% complimentary domain/ }).waitFor({ timeout: 15000 });
+    await shot(page, 'aog-complimentary-applied');
+
+    await page.getByRole('tab', { name: /Unmatched contracts/ }).click();
+    await page.getByText('P2L6VX').waitFor();
+    await page.getByLabel('Trip for P2L6VX').selectOption('B6TQ9N');
+    await shot(page, 'aog-unmatched');
+    await page.getByRole('button', { name: 'Attach to trip' }).click();
+    await page.getByText(/Charter contract attached/).waitFor({ timeout: 20000 });
+
+    await page.getByRole('tab', { name: 'Trips' }).click();
+    await page.getByLabel('Search trips').fill('');
+    await page.getByLabel('Trip window').selectOption('current');
+    const downloadPromise = page.waitForEvent('download');
+    await page.getByRole('button', { name: 'Export CSV' }).click();
+    const download = await downloadPromise;
+    const csv = await readFile(await download.path(), 'utf8');
+    if (!csv.includes('Trip ID,Dates,Route')) throw new Error('csv header missing');
+    if (!csv.includes('WEQVQD')) throw new Error('csv missing synthetic trip');
+    await writeFile(path.join(SHOT, 'aog-coverage.csv'), csv);
+
+    await page.getByRole('button', { name: 'Next page' }).click();
+    await page.getByText(/Page 2 of/).waitFor();
+    await shot(page, 'aog-trips-page-2');
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByRole('tab', { name: 'Trips' }).click();
+    await page.getByLabel('Search trips').fill('WEQVQD');
+    await page.getByLabel('Trip window').selectOption('current');
+    await page.getByLabel('Contract').selectOption('');
+    await page.getByText('WEQVQD').first().waitFor();
+    await shot(page, 'aog-trip-ids-iphone');
+
+    await page.getByLabel('Search trips').fill('Q4M8LN');
+    await page.getByLabel('Contract').selectOption('missing');
+    await page.getByText('Q4M8LN').click();
+    await page.getByRole('dialog', { name: 'Trip Q4M8LN' }).waitFor();
+    await page.locator('input[type=file]').setInputFiles('/tmp/synthetic-charter-q4.pdf');
+    await page.getByRole('button', { name: 'Save contract' }).waitFor({ timeout: 20000 });
+    const backfillEmail = await page.getByRole('dialog').getByLabel('Broker email').inputValue();
+    if (backfillEmail !== 'newbroker@example-charter.test') throw new Error(`backfill email ${backfillEmail}`);
+    const backfillAircraft = await page.getByRole('dialog').getByLabel('Aircraft').inputValue();
+    if (!String(backfillAircraft).includes('Citation')) throw new Error(`aircraft prefill ${backfillAircraft}`);
+    await page.getByText('saved onto the trip').waitFor();
+    await shot(page, 'aog-broker-backfill-review');
+    await page.getByRole('button', { name: 'Save contract' }).click();
+    await page.getByText(/Contract saved/).waitFor({ timeout: 20000 });
+    const drawer = page.locator('.sw-sheet-body').last();
+    const scrolled = await scrollSheetBody(drawer);
+    await page.getByText('End of trip details').waitFor();
+    if (scrolled.max > 20 && scrolled.top < scrolled.max - 8) throw new Error(`drawer did not reach the bottom ${JSON.stringify(scrolled)}`);
+    await shot(page, 'aog-drawer-scrolled-iphone-390');
+    await page.getByRole('button', { name: 'Close' }).click();
+
+    await page.getByLabel('Search trips').fill('K9P2DX');
+    await page.getByText('K9P2DX').click();
+    await page.locator('input[type=file]').setInputFiles('/tmp/synthetic-charter-k9.pdf');
+    await page.getByText('does not match this contract').waitFor({ timeout: 20000 });
+    const keptEmail = await page.getByRole('dialog').getByLabel('Broker email').inputValue();
+    if (keptEmail !== 'kept@example-broker.test') throw new Error(`mismatch overwrote broker ${keptEmail}`);
+    await shot(page, 'aog-broker-mismatch');
+    await page.getByRole('button', { name: 'Close' }).click();
+
+    await page.setViewportSize({ width: 375, height: 667 });
+    await page.getByLabel('Contract').selectOption('');
+    await page.getByLabel('Search trips').fill('Q4M8LN');
+    await page.getByText('Q4M8LN').click();
+    const shortDrawer = page.locator('.sw-sheet-body').last();
+    const shortScrolled = await scrollSheetBody(shortDrawer);
+    await page.getByText('End of trip details').waitFor();
+    if (shortScrolled.max > 20 && shortScrolled.top < shortScrolled.max - 8) throw new Error(`short drawer did not reach the bottom ${JSON.stringify(shortScrolled)}`);
+    await shot(page, 'aog-drawer-scrolled-iphone-375');
+    await page.getByRole('button', { name: 'Close' }).click();
+
+    const opened = await page.evaluate(() => {
+      const buttons = [...document.querySelectorAll('button')];
+      const described = buttons.map((el) => {
+        const rect = el.getBoundingClientRect();
+        return {
+          el,
+          text: (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim(),
+          w: Math.round(rect.width),
+          h: Math.round(rect.height),
+          top: Math.round(rect.top),
+        };
+      });
+      const target = described.filter((item) => item.text === 'More').pop();
+      if (!target) {
+        return {
+          ok: false,
+          width: window.innerWidth,
+          navs: [...document.querySelectorAll('nav')].map((nav) => ({
+            label: nav.getAttribute('aria-label'),
+            hidden: getComputedStyle(nav).display,
+            texts: [...nav.querySelectorAll('button')].map((el) => (el.innerText || '').replace(/\s+/g, ' ').trim()),
+          })),
+          texts: described.map((item) => item.text).filter(Boolean).slice(-20),
+        };
+      }
+      target.el.click();
+      return { ok: true, top: target.top, w: target.w, h: target.h };
+    });
+    console.log('more click', JSON.stringify(opened));
+    if (!opened.ok) throw new Error(`More tab is not on screen ${JSON.stringify(opened)}`);
+    const more = page.getByRole('dialog', { name: 'More destinations' });
+    await more.waitFor();
+    const moreBody = more.locator('.sw-sheet-body');
+    const moreScrolled = await scrollSheetBody(moreBody);
+    await more.getByText('End of menu').waitFor();
+    if (moreScrolled.max > 20 && moreScrolled.top < moreScrolled.max - 8) throw new Error(`more sheet did not reach the bottom ${JSON.stringify(moreScrolled)}`);
+    await shot(page, 'more-sheet-scrolled-iphone');
+
+    const cfsRecord = {
+      tripId: 'M8CFS2',
+      aircraftType: 'Citation CJ3',
+      tail: 'N318CS',
+      route: 'KTEB → KPBI',
+      datesLabel: '2026-11-02 – 2026-11-04',
+      legCount: 2,
+      brokerCompany: 'Example Charter Group',
+      coverageLevel: 'gifted_100',
+      tripTotal: 20000,
+      tripTotalCents: 2000000,
+      premium: 300,
+      premiumCents: 30000,
+      ratePercent: 1.5,
+    };
+    const ackUrl = `http://127.0.0.1:${WEB_PORT}/aog-cfs?token=${encodeURIComponent(CFS_ACK_TOKEN)}`;
+    const bind = bindLetterContent(cfsRecord, { ackUrl, attachmentNotes: 'Charter contract is attached.' });
+    const bindBody = `${bind.html}\n${bind.text}`;
+    if (/premium/i.test(bindBody)) throw new Error('bind email still names the premium');
+    if (bindBody.includes('1.5') || bindBody.includes('$300') || bindBody.includes('$360')) throw new Error('bind email still names the rate or premium amount');
+    if (!bind.html.includes('Acknowledge coverage')) throw new Error('bind email is missing the acknowledge button');
+    if (!bindBody.includes('Coverage value: up to $40,000.00')) throw new Error('bind email is missing the coverage value');
+    if (!bindBody.includes('$20,000.00')) throw new Error('bind email is missing the trip total');
+    await page.setViewportSize({ width: 720, height: 900 });
+    await page.setContent(`<!doctype html><html><body style="margin:0;background:#fff">${bind.html}</body></html>`);
+    await shot(page, 'aog-bind-email');
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(ackUrl, { waitUntil: 'domcontentloaded' });
+    await page.getByLabel('Your name').waitFor({ timeout: 20000 });
+    const formText = await page.locator('body').innerText();
+    if (/premium/i.test(formText)) throw new Error('acknowledgement page shows the premium');
+    if (!formText.includes('100%') || !formText.includes('$20,000.00') || !formText.includes('up to $40,000.00')) {
+      throw new Error(`acknowledgement page is missing the fixed coverage value: ${formText.slice(0, 500)}`);
+    }
+    if (await page.getByLabel('Accepted coverage percent').count()) throw new Error('percent field is still on the form');
+    if (await page.getByLabel('Coverage limit').count()) throw new Error('coverage limit field is still on the form');
+    await page.getByLabel('Your name').fill('Casey Stone');
+    await page.getByLabel('Your email').fill('casey@charterflightsupport.com');
+    await page.getByLabel('CFS cost').fill('640.00');
+    await page.getByLabel('Policy or reference number').fill('CFS-4491');
+    await page.locator('.sw-sheet-body').evaluate((el) => { el.scrollTop = 0; });
+    await page.getByText('Coverage', { exact: true }).first().waitFor();
+    await page.getByText('up to $40,000.00').first().waitFor();
+    await shot(page, 'aog-cfs-form-iphone');
+    await page.getByRole('button', { name: 'Acknowledge coverage' }).click();
+    await page.getByText('Coverage acknowledged').waitFor({ timeout: 20000 });
+    await page.getByText('Already acknowledged by Casey Stone').waitFor();
+
+    await page.setViewportSize({ width: 375, height: 667 });
+    const ackBody = page.locator('.sw-sheet-body');
+    const ackScrolled = await scrollSheetBody(ackBody);
+    const ackEnd = page.getByText('End of acknowledgement');
+    await ackEnd.waitFor();
+    const ackBox = await ackEnd.boundingBox();
+    const ackViewport = page.viewportSize();
+    console.log('ack scroll', JSON.stringify({ ackScrolled, ackBox, ackViewport }));
+    if (!ackBox || ackBox.y < 0 || ackBox.y + ackBox.height > ackViewport.height + 2) {
+      throw new Error(`acknowledgement page did not reach the bottom ${JSON.stringify({ ackScrolled, ackBox })}`);
+    }
+    await shot(page, 'aog-cfs-form-iphone-375');
+
+    const ackFields = {
+      name: 'Casey Stone',
+      email: 'casey@charterflightsupport.com',
+      cfsCostCents: 64000,
+      reference: 'CFS-4491',
+      notes: '',
+    };
+    const opsLetter = cfsOpsLetter(cfsRecord, ackFields);
+    const opsBody = `${opsLetter.html}\n${opsLetter.text}`;
+    if (!/640/.test(opsBody) || !/CFS cost/i.test(opsBody)) throw new Error('ops email is missing the CFS cost');
+    if (!/up to \$40,000\.00/.test(opsBody)) throw new Error('ops email is missing the coverage value');
+    if (/below what was requested/i.test(opsBody)) throw new Error('ops email still flags a shortfall');
+    const brokerLetter = cfsBrokerLetter(cfsRecord);
+    const brokerBody = `${brokerLetter.html}\n${brokerLetter.text}`;
+    if (/\$640|640\.00|CFS cost/i.test(brokerBody)) {
+      throw new Error('broker email includes the CFS cost');
+    }
+    if (!/Coverage value: up to \$30,000\.00/.test(brokerBody) || !/One-time premium of \$300\.00, charged separately from the charter/.test(brokerBody)) {
+      throw new Error('broker email is missing the included 50% and 100% upgrade');
+    }
+    if (!/up to \$40,000\.00/.test(brokerBody) || !/100%/.test(brokerBody)) {
+      throw new Error('broker email is missing 100% coverage value');
+    }
+    await page.setViewportSize({ width: 720, height: 900 });
+    await page.setContent(`<!doctype html><html><body style="margin:0;background:#fff">${opsLetter.html}</body></html>`);
+    await shot(page, 'aog-cfs-ops-email');
+    await page.setContent(`<!doctype html><html><body style="margin:0;background:#fff">${brokerLetter.html}</body></html>`);
+    await shot(page, 'aog-cfs-broker-email');
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`http://127.0.0.1:${WEB_PORT}/aog-emulator`, { waitUntil: 'domcontentloaded' });
+    await page.getByRole('region', { name: 'Trip detail' }).getByText('AOG coverage confirmed by Charter Flight Support').first().waitFor({ timeout: 25000 });
+    await page.getByText('Coverage value: up to $40,000.00').first().waitFor();
+    await page.getByText('This leg: KTEB → KPBI').waitFor();
+    await page.getByText('This leg: KPBI → KTEB').waitFor();
+    await shot(page, 'aog-trip-detail-cfs');
+
+    await page.getByLabel('Search trips').fill('M8CFS2');
+    await page.getByRole('cell', { name: /100% gifted by Skyway/ }).waitFor({ timeout: 15000 });
+    await page.getByLabel('CFS confirmation').selectOption('confirmed');
+    const badge = page.getByText('Confirmed', { exact: true });
+    await badge.waitFor({ timeout: 15000 });
+    await badge.evaluate((el) => {
+      const scroller = el.closest('.overflow-x-auto') || el.parentElement;
+      if (scroller) scroller.scrollLeft = scroller.scrollWidth;
+      el.scrollIntoView({ block: 'center', inline: 'center' });
+    });
+    await shot(page, 'aog-cfs-confirmed-badge');
+    await page.getByRole('cell', { name: 'M8CFS2' }).click();
+    const cfsDrawer = page.locator('.sw-sheet-body').last();
+    await cfsDrawer.getByText('CFS cost').waitFor();
+    await cfsDrawer.getByText('$640.00').waitFor();
+    const coverageValue = cfsDrawer.getByText('Coverage value: up to $40,000.00').first();
+    await coverageValue.waitFor();
+    await page.getByRole('button', { name: 'Resend bind email' }).waitFor();
+    await scrollSheetBody(cfsDrawer);
+    await page.getByText('End of trip details').waitFor();
+    await coverageValue.evaluate((el) => el.scrollIntoView({ block: 'center' }));
+    await shot(page, 'aog-cfs-drawer-iphone');
+    await page.getByRole('button', { name: 'Report AOG' }).click();
+    await page.getByText('Which part of the trip is AOG?').waitFor({ timeout: 15000 });
+    const wholeTrip = page.getByRole('checkbox', { name: 'Whole trip' });
+    await wholeTrip.uncheck();
+    const reportLeg = page.getByLabel('Leg KTEB to KPBI');
+    await reportLeg.waitFor({ timeout: 15000 });
+    await reportLeg.evaluate((el) => el.scrollIntoView({ block: 'center' }));
+    await shot(page, 'aog-final-report-legs-dark');
+    await wholeTrip.check();
+    await page.getByLabel('Airport or location').fill('KTEB');
+    await page.getByLabel('Time it went AOG').fill('2026-11-02T15:30');
+    await page.getByLabel('Issue').fill('Hydraulic leak after landing');
+    await page.getByRole('button', { name: 'Review and send' }).click();
+    await page.getByText('Confirm this AOG report').waitFor();
+    await shot(page, 'aog-report-confirm-iphone');
+    await shot(page, 'aog-final-report-confirm-dark');
+    await page.getByRole('button', { name: 'Confirm and notify' }).click();
+    await page.getByText(/Charter Flight Support was notified|Recorded for Charter Flight Support/).waitFor({ timeout: 20000 });
+    await shot(page, 'aog-report-sent-iphone');
+    await shot(page, 'aog-final-report-sent-dark');
+    await renderMailShots(page);
+    await portalShots(page);
+    console.log('click-through ok');
+  } catch (err) {
+    await shot(page, 'aog-failure').catch(() => {});
+    throw err;
+  } finally {
+    await browser.close();
+  }
+}
+
+async function renderMailShots(page) {
+  const { offerLetter, brokerPaidLetter, includedOnlyLetter } = await import('../api/_aog-recovery.js');
+  const { bindLetterContent, cfsOpsLetter, cfsBrokerLetter } = await import('../src/aog-cfs.js');
+  const { incidentCfsLetter } = await import('../src/aog-incident.js');
+  const cj3 = {
+    tripId: 'K7M4QX',
+    tail: 'N525CR',
+    aircraftType: 'Cessna Citation CJ3',
+    route: 'KDSM → KIAD',
+    datesLabel: '2026-09-28 – 2026-09-29',
+    tripTotal: 18500,
+    premium: 277.5,
+    ratePercent: 1.5,
+    coverageLevel: 'included_50',
+    upgradeAvailable: true,
+    brokerCompany: 'Surf Air',
+    legs: [{ from: 'KDSM', to: 'KIAD', departAt: '2026-09-28' }],
+  };
+  const multi = {
+    ...cj3,
+    tripId: 'M8R2LQ',
+    route: 'KDSM → KIAD → KTEB → KDSM',
+    datesLabel: '2026-09-28 – 2026-09-30',
+    legs: [
+      { from: 'KDSM', to: 'KIAD', departAt: '2026-09-28' },
+      { from: 'KIAD', to: 'KTEB', departAt: '2026-09-29' },
+      { from: 'KTEB', to: 'KDSM', departAt: '2026-09-30' },
+    ],
+  };
+  const letters = [
+    ['aog-email-offer-cj3', offerLetter(cj3, 'https://skyway-ops.vercel.app/aog-coverage?token=preview')],
+    ['aog-email-offer-multileg', offerLetter(multi, 'https://skyway-ops.vercel.app/aog-coverage?token=preview')],
+    ['aog-email-included-only', includedOnlyLetter({ ...cj3, aircraftType: 'Helicopter', upgradeAvailable: false, premium: null })],
+    ['aog-email-payment', brokerPaidLetter({ ...cj3, coverageLevel: 'purchased_100', premium: 277.5 })],
+    ['aog-email-bind', bindLetterContent({ ...cj3, coverageLevel: 'purchased_100', legCount: 1, brokerCompany: 'Surf Air' }, { ackUrl: 'https://skyway-ops.vercel.app/cfs?ack=preview', portalUrl: 'https://skyway-ops.vercel.app/cfs' })],
+    ['aog-email-cfs-ops', cfsOpsLetter({ ...cj3, coverageLevel: 'purchased_100' }, { name: 'Casey Stone', email: 'casey@charterflightsupport.com', cfsCostCents: 64000, reference: 'CFS-4491', notes: '' })],
+    ['aog-email-cfs-broker', cfsBrokerLetter({ ...cj3, coverageLevel: 'purchased_100', premium: 277.5 })],
+    ['aog-email-offer-tbae0l', offerLetter({
+      tripId: 'TBAE0L',
+      tail: 'N525CR',
+      aircraftType: 'Citation CJ3',
+      route: 'DSM → IAD',
+      datesLabel: '2026-09-28',
+      tripTotal: 15000,
+      premium: 225,
+      ratePercent: 1.5,
+      coverageLevel: 'included_50',
+      upgradeAvailable: true,
+      legs: [{ from: 'DSM', to: 'IAD', departAt: '2026-09-28 13:00 CDT', arriveAt: '2026-09-28 16:18 EDT' }],
+    }, 'https://skyway-ops.vercel.app/aog-coverage?token=preview')],
+    ['aog-email-incident', incidentCfsLetter({ ...cj3, location: 'KIAD', aogAt: '2026-09-28 15:30', issue: 'Hydraulic leak on arrival', contact: 'Dispatch desk', coverageBound: true }, 'https://skyway-ops.vercel.app/cfs?aog=preview')],
+    ['aog-email-incident-facts', incidentCfsLetter({ ...cj3, tripId: 'TBAE0L', location: 'KDSM', aogAt: '2026-09-28 11:00', issue: 'Generator failure', coverageBound: false }, 'https://skyway-ops.vercel.app/cfs?aog=preview')],
+  ];
+  for (const [name, letter] of letters) {
+    for (const scheme of ['light', 'dark']) {
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.emulateMedia({ colorScheme: scheme });
+      const html = scheme === 'dark'
+        ? letter.html.replace('@media (prefers-color-scheme: dark)', '@media all')
+        : letter.html;
+      await page.setContent(html, { waitUntil: 'domcontentloaded' });
+      await page.waitForTimeout(200);
+      await shot(page, `${name}-${scheme}`);
+      if (scheme === 'dark') {
+        const finalName = {
+          'aog-email-offer-tbae0l': 'aog-final-offer-email-tbae0l-dark',
+          'aog-email-payment': 'aog-final-payment-email-dark',
+          'aog-email-bind': 'aog-final-bind-email-dark',
+          'aog-email-incident': 'aog-final-incident-100-dark',
+          'aog-email-incident-facts': 'aog-final-incident-50-dark',
+        }[name];
+        if (finalName) await shotDarkEmail(page, finalName, html);
+      }
+    }
+  }
+  const { opsInvoiceLetter } = await import('../src/aog-invoice.js');
+  const invoiceOps = opsInvoiceLetter({
+    tripId: 'TBAE0L',
+    brokerCompany: 'Example Charter Group',
+    tail: 'N525CR',
+    aircraftType: 'Citation CJ3',
+    route: 'DSM → IAD',
+    datesLabel: '2026-09-28',
+    tripTotal: 15000,
+    premium: 225,
+    premiumCents: 22500,
+    invoicePremiumCents: 22500,
+    invoiceRequestedByName: 'Jordan Hale',
+    invoiceRequestedByEmail: 'broker@example-charter.test',
+    invoiceLineItem: 'AOG Recovery Coverage, 100% (trip TBAE0L)',
+  }, {
+    approveUrl: 'https://skyway-ops.vercel.app/aog-invoice?token=preview&decision=approve',
+    declineUrl: 'https://skyway-ops.vercel.app/aog-invoice?token=preview&decision=decline',
+  });
+  await shotDarkEmail(page, 'aog-final-invoice-ops-email-dark', invoiceOps.html.replace('@media (prefers-color-scheme: dark)', '@media all'));
+  await page.emulateMedia({ colorScheme: 'light' });
+}
+
+async function shotDarkEmail(page, name, html) {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setContent(html, { waitUntil: 'domcontentloaded' });
+  const height = await page.evaluate(() => Math.ceil(document.documentElement.scrollHeight));
+  await page.setViewportSize({ width: 390, height: Math.min(Math.max(height + 8, 844), 5000) });
+  if (/Georgia|Times New Roman/.test(html)) throw new Error(`${name} still uses a serif font`);
+  await shot(page, name);
+}
+
+async function portalShots(page) {
+  const offerUrl = `http://127.0.0.1:${WEB_PORT}/aog-coverage?token=${encodeURIComponent(OFFER_TOKEN)}`;
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(offerUrl, { waitUntil: 'domcontentloaded' });
+  const included = page.getByText('Coverage value: up to $30,000.00');
+  const upgrade = page.getByText('Coverage value: up to $40,000.00');
+  const premiumLine = page.getByText('One-time premium of $300.00, charged separately from the charter.');
+  await included.waitFor({ timeout: 20000 });
+  await upgrade.waitFor();
+  await premiumLine.waitFor();
+  await included.evaluate((el) => el.scrollIntoView({ block: 'center' }));
+  await shot(page, 'aog-offer-comparison-desktop');
+  await page.setViewportSize({ width: 390, height: 844 });
+  const offerSheet = page.locator('.aog-public-sheet .sw-sheet-body');
+  await upgrade.evaluate((el) => el.scrollIntoView({ block: 'center' }));
+  const includedBox = await included.boundingBox();
+  const upgradeBox = await upgrade.boundingBox();
+  const offerViewport = page.viewportSize();
+  if (!includedBox || !upgradeBox
+    || includedBox.y < 0
+    || upgradeBox.y + upgradeBox.height > offerViewport.height + 2) {
+    throw new Error(`offer comparison is outside the iPhone viewport ${JSON.stringify({ includedBox, upgradeBox, offerViewport })}`);
+  }
+  await shot(page, 'aog-offer-comparison-iphone');
+  await page.setViewportSize({ width: 375, height: 667 });
+  const offerScrolled = await scrollSheetBody(offerSheet);
+  if (offerScrolled.max > 20 && offerScrolled.top < offerScrolled.max - 8) {
+    throw new Error(`offer page did not reach the bottom ${JSON.stringify(offerScrolled)}`);
+  }
+  if (await page.getByText('End of offer').count()) throw new Error('offer page still shows End of offer');
+  if (await page.getByRole('button', { name: 'Sign election' }).count()) throw new Error('offer page still has a second sign step');
+
+  const { offerLetter } = await import('../api/_aog-recovery.js');
+  const letter = offerLetter({
+    tripId: 'T8R4WQ',
+    tripTotal: 20000,
+    tripTotalCents: 2000000,
+    premium: 300,
+    ratePercent: 1.5,
+    coverageLevel: 'included_50',
+    upgradeAvailable: true,
+    includedMultiplier: 1.5,
+    upgradeMultiplier: 2,
+    tail: 'N318CS',
+    route: 'KTEB → KPBI',
+    datesLabel: '2026-11-02 – 2026-11-04',
+  }, offerUrl);
+  const offerBody = `${letter.html}\n${letter.text}`;
+  if (!offerBody.includes('Coverage value: up to $30,000.00')) throw new Error('offer email is missing the 1.5x included value');
+  if (!offerBody.includes('Coverage value: up to $40,000.00')) throw new Error('offer email is missing the 100% upgrade');
+  if (!offerBody.includes('One-time premium of $300.00, charged separately from the charter.')) throw new Error('offer email is missing the premium wording');
+  if (!offerBody.includes('Pay premium by card') || !offerBody.includes('Add premium to my charter invoice')) {
+    throw new Error('offer email is missing the card and invoice choices');
+  }
+  if (/Included: 50%, up to|The trip total is not charged/.test(offerBody)) throw new Error('offer email still repeats the coverage value');
+  await page.setViewportSize({ width: 720, height: 900 });
+  await page.setContent(`<!doctype html><html><body style="margin:0;background:#fff">${letter.html}</body></html>`);
+  await shot(page, 'aog-offer-email');
+
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(`http://127.0.0.1:${WEB_PORT}/cfs`, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: 'Email me a sign-in link' }).waitFor({ timeout: 20000 });
+  await shot(page, 'cfs-sign-in');
+
+  const linkResponse = await fetch(`http://127.0.0.1:${API_PORT}/api/cfs-portal`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'request-link', email: 'charter@charterflightsupport.com' }),
+  });
+  const linkBody = await linkResponse.json();
+  if (!linkBody.devLink) throw new Error(`magic link was not issued: ${JSON.stringify(linkBody)}`);
+  const dev = new URL(linkBody.devLink);
+  dev.protocol = 'http:';
+  dev.host = `127.0.0.1:${WEB_PORT}`;
+  await page.goto(dev.href, { waitUntil: 'domcontentloaded' });
+  await page.getByText('Awaiting acknowledgement').first().waitFor({ timeout: 20000 });
+  await page.getByText('Needs action').waitFor();
+  await page.getByRole('heading', { name: 'Active AOG' }).waitFor({ timeout: 20000 });
+  await shot(page, 'cfs-active-aog-desktop');
+  if (await page.getByText('T8R4WQ').count()) throw new Error('50% trip is visible in the CFS portal');
+  if (/premium|gifted|complimentary/i.test(await page.locator('body').innerText())) {
+    throw new Error('CFS dashboard shows Skyway-only wording');
+  }
+  await page.getByText('Signed in.').waitFor({ state: 'hidden', timeout: 8000 }).catch(() => {});
+  await shot(page, 'cfs-dashboard-desktop');
+  await page.getByRole('button', { name: 'Dark mode' }).click();
+  await page.locator('.cfs-portal[data-theme="dark"]').waitFor();
+  await shot(page, 'cfs-dashboard-dark');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole('heading', { name: 'Active AOG' }).evaluate((el) => el.scrollIntoView({ block: 'start' }));
+  await shot(page, 'aog-final-cfs-active-aog-dark');
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.getByRole('button', { name: 'Light mode' }).click();
+  await page.locator('.cfs-portal[data-theme="light"]').waitFor();
+  await page.setViewportSize({ width: 390, height: 844 });
+  const portalBody = page.locator('.cfs-portal .sw-sheet-body');
+  await portalBody.evaluate((el) => { el.scrollTop = 0; });
+  await shot(page, 'cfs-dashboard-iphone');
+
+  async function assertPortalEnd(label) {
+    const portalScrolled = await scrollSheetBody(portalBody);
+    const portalEnd = page.getByText('End of portal');
+    await portalEnd.waitFor();
+    const portalBox = await portalEnd.boundingBox();
+    const portalViewport = page.viewportSize();
+    console.log(label, JSON.stringify({ portalScrolled, portalBox, portalViewport }));
+    if (!portalBox || portalBox.y < 0 || portalBox.y + portalBox.height > portalViewport.height + 2) {
+      throw new Error(`CFS portal did not reach the bottom at ${label} ${JSON.stringify({ portalScrolled, portalBox })}`);
+    }
+  }
+  await assertPortalEnd('portal-390');
+  await page.setViewportSize({ width: 375, height: 667 });
+  await assertPortalEnd('portal-375');
+  await portalBody.evaluate((el) => { el.scrollTop = 0; });
+  await page.setViewportSize({ width: 390, height: 844 });
+
+  await page.getByRole('button', { name: /V3K8QM/ }).first().click();
+  await page.getByLabel('Your name').waitFor({ timeout: 15000 });
+  const summary = page.locator('[aria-label="Coverage summary"]');
+  await summary.getByText('100%', { exact: true }).waitFor();
+  const coverageValue = summary.getByText('Up to $40,000.00');
+  await coverageValue.waitFor();
+  await page.getByText('No contract attached yet').waitFor();
+  await page.setViewportSize({ width: 375, height: 667 });
+  await portalBody.evaluate((el) => { el.scrollTop = 0; });
+  const valueLines = await coverageValue.evaluate((el) => {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    return range.getClientRects().length;
+  });
+  if (valueLines !== 1) throw new Error(`coverage value wrapped onto ${valueLines} lines at 375px`);
+  await shot(page, 'cfs-trip-iphone-top-v2');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await portalBody.evaluate((el) => { el.scrollTop = 0; });
+  await shot(page, 'cfs-trip-iphone-top');
+  await page.getByLabel('Your name').evaluate((el) => el.scrollIntoView({ block: 'center' }));
+  await shot(page, 'cfs-trip-acknowledge');
+  await page.getByLabel('Your name').fill('Casey Stone');
+  await page.getByLabel('Your email').fill('charter@charterflightsupport.com');
+  await page.getByLabel('CFS cost').fill('640.00');
+  page.on('response', async (response) => {
+    const posted = response.request().postData() || '';
+    if (response.request().method() !== 'POST' || !posted.includes('"acknowledge"')) return;
+    const text = await response.text().catch(() => '');
+    console.log('ACK', response.status(), text.slice(0, 500));
+  });
+  await page.getByRole('button', { name: 'Acknowledge coverage' }).click();
+  const acknowledged = page.getByRole('heading', { name: 'Coverage acknowledged' });
+  await acknowledged.waitFor({ timeout: 20000 });
+  await page.locator('.cfs-success').evaluate((el) => el.scrollIntoView({ block: 'start' }));
+  await page.getByText('Signed in.').waitFor({ state: 'hidden', timeout: 1000 }).catch(() => {});
+  await shot(page, 'cfs-ack-success');
+
+  await page.getByRole('button', { name: 'Back to trips' }).click();
+  await page.getByLabel('Select V3K8QM').check();
+  await page.getByLabel('Select L4P9HX').check();
+  await page.getByLabel('Same CFS cost').fill('640.00');
+  await page.getByRole('button', { name: 'Apply same cost' }).click();
+  await page.getByRole('button', { name: 'Review bulk acknowledgement' }).click();
+  const bulkCost = page.getByLabel('CFS cost V3K8QM');
+  await bulkCost.waitFor();
+  await bulkCost.evaluate((el) => el.scrollIntoView({ block: 'center' }));
+  await shot(page, 'cfs-bulk-acknowledge');
+
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.getByRole('button', { name: 'Monthly statement' }).click();
+  await page.getByRole('button', { name: 'Show statement' }).click();
+  const statementId = page.locator('.cfs-table .cfs-trip-id', { hasText: 'N6C2WT' });
+  await statementId.waitFor({ timeout: 15000 });
+  await page.locator('.cfs-totals').getByText(/Coverage value total/).waitFor();
+  await page.locator('.cfs-table').evaluate((el) => el.scrollIntoView({ block: 'start' }));
+  await shot(page, 'cfs-statement');
+
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto(`http://127.0.0.1:${WEB_PORT}/aog-emulator`, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('tab', { name: 'Settings' }).click();
+  await page.getByLabel('50% multiplier').waitFor({ timeout: 20000 });
+  await page.getByLabel('100% multiplier').waitFor();
+  const staffRow = page.locator('li').filter({ hasText: 'charter@charterflightsupport.com' });
+  await staffRow.waitFor();
+  const preview = page.getByRole('button', { name: 'CFS portal preview' });
+  await preview.waitFor();
+  await page.getByRole('heading', { name: 'Charter Flight Support portal' }).evaluate((el) => el.scrollIntoView({ block: 'start' }));
+  await shot(page, 'aog-cfs-allowlist-preview');
+
+  await invoiceShots(page);
+}
+
+async function fitPublicSheet(page) {
+  const height = await page.locator('.aog-public-sheet .sw-sheet-body').evaluate((el) => el.scrollHeight);
+  await page.setViewportSize({ width: 390, height: Math.min(Math.max(height + 48, 844), 5000) });
+  await page.locator('.aog-public-sheet .sw-sheet-body').evaluate((el) => { el.scrollTop = 0; });
+}
+
+async function invoiceShots(page) {
+  const { opsInvoiceLetter } = await import('../src/aog-invoice.js');
+  const offerUrl = `http://127.0.0.1:${WEB_PORT}/aog-coverage?token=${encodeURIComponent(OFFER_TOKEN)}&choice=invoice`;
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(offerUrl, { waitUntil: 'domcontentloaded' });
+  const cardChoice = page.getByRole('region', { name: 'Pay premium by card' });
+  const invoiceChoice = page.getByRole('region', { name: 'Add premium to my charter invoice' });
+  await cardChoice.waitFor({ timeout: 20000 });
+  await invoiceChoice.waitFor();
+  await page.getByText('Choose how to pay the premium').waitFor();
+  for (const scheme of ['light', 'dark']) {
+    await setAppTheme(page, scheme === 'light' ? 'classy' : '');
+    await fitPublicSheet(page);
+    const cardBox = await cardChoice.boundingBox();
+    const invoiceBox = await invoiceChoice.boundingBox();
+    const viewport = page.viewportSize();
+    if (!cardBox || !invoiceBox || cardBox.y < 0 || invoiceBox.y + invoiceBox.height > viewport.height + 2) {
+      throw new Error(`invoice choices are outside the iPhone-width page ${JSON.stringify({ cardBox, invoiceBox, viewport })}`);
+    }
+    await shot(page, `aog-invoice-offer-iphone-${scheme}`);
+    if (scheme === 'dark') await shot(page, 'aog-final-offer-page-dark');
+  }
+
+  await page.goto(offerUrl, { waitUntil: 'domcontentloaded' });
+  await page.getByLabel('Invoice name').waitFor({ timeout: 20000 });
+  const invoiceName = await page.getByLabel('Invoice name').inputValue();
+  if (invoiceName.trim().length < 5) await page.getByLabel('Invoice name').fill('Jordan Hale');
+  const invoiceEmail = await page.getByLabel('Invoice email').inputValue();
+  if (!invoiceEmail.includes('@')) await page.getByLabel('Invoice email').fill('broker@example-charter.test');
+  await page.getByRole('checkbox', { name: /I agree to the coverage terms/ }).check();
+  await page.getByRole('button', { name: /Add \$300\.00 to my charter invoice/ }).click();
+  const received = page.getByText('Request received. Skyway will add the premium to your charter invoice after a quick review. You can still pay by card if you prefer.');
+  await received.waitFor({ timeout: 20000 });
+  for (const scheme of ['light', 'dark']) {
+    await setAppTheme(page, scheme === 'light' ? 'classy' : '');
+    await fitPublicSheet(page);
+    const receivedBox = await received.boundingBox();
+    const viewport = page.viewportSize();
+    if (!receivedBox || receivedBox.y < 0 || receivedBox.y + receivedBox.height > viewport.height + 2) {
+      throw new Error(`invoice confirmation is outside the iPhone-width page ${JSON.stringify({ receivedBox, viewport })}`);
+    }
+    await shot(page, `aog-invoice-confirmed-iphone-${scheme}`);
+  }
+  await setAppTheme(page, '');
+
+  const opsLetter = opsInvoiceLetter({
+    tripId: 'T8R4WQ',
+    brokerCompany: 'Example Charter Group',
+    tail: 'N318CS',
+    aircraftType: 'Citation CJ3',
+    route: 'KTEB → KPBI',
+    datesLabel: '2026-11-02 – 2026-11-04',
+    tripTotal: 20000,
+    premium: 300,
+    premiumCents: 30000,
+    invoicePremiumCents: 30000,
+    invoiceRequestedByName: 'Jordan Hale',
+    invoiceRequestedByEmail: 'broker@example-charter.test',
+    invoiceLineItem: 'AOG Recovery Coverage, 100% (trip T8R4WQ)',
+  }, {
+    approveUrl: `http://127.0.0.1:${WEB_PORT}/aog-invoice?token=synthetic-decision-token&decision=approve`,
+    declineUrl: `http://127.0.0.1:${WEB_PORT}/aog-invoice?token=synthetic-decision-token&decision=decline`,
+  });
+  const opsBody = `${opsLetter.html}\n${opsLetter.text}`;
+  if (!opsBody.includes('T8R4WQ') || !opsBody.includes('Jordan Hale') || !opsBody.includes('$300.00')) {
+    throw new Error('ops invoice email is missing the trip, broker, or premium');
+  }
+  if (!opsBody.includes('Approve invoice') || !opsBody.includes('Decline invoice')) {
+    throw new Error('ops invoice email is missing the decision buttons');
+  }
+  await page.setViewportSize({ width: 720, height: 900 });
+  for (const scheme of ['light', 'dark']) {
+    await page.emulateMedia({ colorScheme: scheme });
+    const html = scheme === 'dark'
+      ? opsLetter.html.replace('@media (prefers-color-scheme: dark)', '@media all')
+      : opsLetter.html;
+    await page.setContent(html, { waitUntil: 'domcontentloaded' });
+    await shot(page, `aog-invoice-ops-email-${scheme}`, { fullPage: true });
+  }
+  await page.emulateMedia({ colorScheme: 'light' });
+
+  const { listScheduleLegs, recoveryDb } = await import('../api/_aog-recovery.js');
+  const schedule = await listScheduleLegs(recoveryDb());
+  const seeded = schedule.legs.filter((leg) => leg.uid === 'leg-inv' || leg.tripId === 'J4N8QV');
+  console.log('invoice schedule', JSON.stringify({ count: schedule.legs.length, truncated: schedule.truncated, seeded }));
+  if (!seeded.length) throw new Error('seeded invoice trip J4N8QV is missing from the schedule');
+
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto(`http://127.0.0.1:${WEB_PORT}/aog-emulator`, { waitUntil: 'domcontentloaded' });
+  await page.getByText('WEQVQD').first().waitFor({ timeout: 25000 });
+  await page.getByLabel('Trip window').selectOption('all');
+  await page.getByLabel('Contract').selectOption('');
+  await page.getByLabel('Payment status').selectOption('');
+  await page.getByLabel('Search trips').fill('J4N8QV');
+  const tripCell = page.getByRole('cell', { name: 'J4N8QV' });
+  try {
+    await tripCell.waitFor({ timeout: 20000 });
+  } catch (err) {
+    const text = await page.locator('body').innerText();
+    console.log('invoice page text', text.slice(0, 1200));
+    throw err;
+  }
+  await tripCell.click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  const drawer = page.getByRole('dialog', { name: 'Trip J4N8QV' });
+  await drawer.waitFor();
+  const status = drawer.getByText('Payment: On invoice, unpaid');
+  const line = drawer.getByText('Invoice line: AOG Recovery Coverage, 100% (trip J4N8QV)');
+  const markPaid = drawer.getByRole('button', { name: 'Mark premium paid' });
+  await status.waitFor();
+  await line.waitFor();
+  await markPaid.waitFor();
+  await drawer.getByText('Add the invoice line to the broker\'s charter invoice, then mark it paid.').waitFor();
+  for (const scheme of ['light', 'dark']) {
+    await setAppTheme(page, scheme === 'light' ? 'classy' : '');
+    await status.evaluate((el) => el.scrollIntoView({ block: 'center' }));
+    const box = await status.boundingBox();
+    const viewport = page.viewportSize();
+    if (!box || box.y < 0 || box.y + box.height > viewport.height + 2) {
+      throw new Error(`invoice payment status is outside the drawer viewport ${JSON.stringify({ box, viewport })}`);
+    }
+    await shot(page, `aog-invoice-drawer-iphone-${scheme}`);
+  }
+  await setAppTheme(page, '');
+}
+
+const children = [];
+let api;
+try {
+  await seed();
+  api = await startApi();
+  const viteBin = path.resolve(import.meta.dirname, '../node_modules/vite/bin/vite.js');
+  const vite = spawn(process.execPath, [viteBin, '--host', '127.0.0.1', '--port', String(WEB_PORT), '--strictPort'], {
+    cwd: path.resolve(import.meta.dirname, '..'),
+    env: {
+      ...process.env,
+      VITE_FIREBASE_EMULATORS: '1',
+      AOG_API_PROXY: `http://127.0.0.1:${API_PORT}`,
+    },
+    stdio: 'inherit',
+  });
+  children.push(vite);
+  await waitForHttp(`http://127.0.0.1:${API_PORT}/health`);
+  await waitForHttp(`http://127.0.0.1:${WEB_PORT}/aog-emulator`);
+  await clickThrough();
+} finally {
+  for (const child of children) child.kill('SIGKILL');
+  if (api) await new Promise((resolve) => api.close(resolve));
+}

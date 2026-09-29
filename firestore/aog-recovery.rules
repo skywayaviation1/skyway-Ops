@@ -1,0 +1,76 @@
+// Fragment for the named Firestore database `appusers`.
+// Merge these matches into the existing ruleset. Do not deploy this file
+// by itself — it is not a complete ruleset and would lock every other
+// collection. The Admin SDK (inbox scan, Stripe webhook, public election,
+// gift, contract upload, rates, and complimentary domains) bypasses these
+// rules. Browsers may only read.
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+    function isCfsRole() {
+      return signedIn() && request.auth.token.role == 'cfs';
+    }
+    function isOpsOrAdmin() {
+      return signedIn()
+        && !isCfsRole()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && userDoc().role in ['ops', 'admin']
+        && userDoc().active != false
+        && userDoc().approved == true;
+    }
+
+    // Coverage rows. Ops reads them in the AOG Coverage tab. All writes
+    // (premium, payment, signature, contracts, uploads, rates, domains) are server-side.
+    match /aogRecovery/{coverageId} {
+      allow read: if isOpsOrAdmin();
+      allow create, update, delete: if false;
+
+      // Append-only coverage history. Ops can read it for a later report.
+      // Clients cannot create or edit events; the Admin SDK is the only writer.
+      match /coverageEvents/{eventId} {
+        allow read: if isOpsOrAdmin();
+        allow create, update, delete: if false;
+      }
+    }
+
+    // Rate table and complimentary domains. The tab reads them; saves go
+    // through /api/aog-recovery-settings.
+    match /aogRecoveryConfig/{docId} {
+      allow read: if isOpsOrAdmin();
+      allow create, update, delete: if false;
+    }
+
+    // Graph message ids already handled. Not visible to browsers.
+    match /aogRecoveryProcessed/{messageHash} {
+      allow read, write: if false;
+    }
+
+    match /aogIncidents/{incidentId} {
+      allow read, write: if false;
+    }
+
+    // Portal sessions, magic links, and contract download tokens. Admin SDK only.
+    // A cfs-role client cannot read Skyway collections or these secrets.
+    match /cfsAuthLinks/{id} {
+      allow read, write: if false;
+    }
+    match /cfsSessions/{id} {
+      allow read, write: if false;
+    }
+    match /cfsDownloads/{id} {
+      allow read, write: if false;
+    }
+
+    // Production rules for users, trip-state, and every other Skyway
+    // collection must also require request.auth.token.role != 'cfs'.
+    // A CFS custom token is not an ops login. The portal reads through
+    // the Admin SDK, never through these client rules.
+  }
+}

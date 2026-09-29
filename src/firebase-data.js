@@ -17,7 +17,11 @@ import {
   deleteDoc,
   collection,
   onSnapshot,
+  query,
+  where,
 } from 'firebase/firestore';
+import { planBrokerBackfill } from './broker-backfill.js';
+import { normalizeTripId } from './trip-id.js';
 
 function sanitizeKey(s) {
   return String(s).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 200);
@@ -87,6 +91,10 @@ export function subscribeToTripState(tripId, onUpdate) {
           statuses: data.statuses || {},
           passengers: data.passengers || [],
           brokerEmail: data.brokerEmail || '',
+          brokerCompany: data.brokerCompany || data.tripSheetData?.client || '',
+          brokerPhone: data.brokerPhone || '',
+          brokerDomain: data.brokerDomain || '',
+          brokerMismatch: Array.isArray(data.brokerMismatch) ? data.brokerMismatch : [],
           autoNotify: data.autoNotify === true,
           completed: data.completed === true,
           completedAt: data.completedAt || null,
@@ -114,11 +122,20 @@ export function subscribeToTripState(tripId, onUpdate) {
           // FBO names parsed from the trip sheet for THIS leg's two airports.
           fromFbo: data.fromFbo || null,
           toFbo: data.toFbo || null,
+          aogCfs: data.aogCfs?.status === 'cfs_confirmed' ? {
+            status: 'cfs_confirmed',
+            confirmedAt: data.aogCfs.confirmedAt || '',
+            tripId: data.aogCfs.tripId || '',
+            acceptedCoveragePercent: 100,
+            coverageLimitCents: Number.isInteger(data.aogCfs.coverageLimitCents) ? data.aogCfs.coverageLimitCents : null,
+            reference: data.aogCfs.reference || '',
+            legIds: Array.isArray(data.aogCfs.legIds) ? data.aogCfs.legIds : [],
+          } : null,
         });
       } else {
         // No state yet — emit empty defaults
         onUpdate({
-          statuses: {}, passengers: [], brokerEmail: '', autoNotify: false,
+          statuses: {}, passengers: [], brokerEmail: '', brokerCompany: '', brokerPhone: '', brokerDomain: '', brokerMismatch: [], autoNotify: false,
           completed: false, completedAt: null, archived: false, archivedAt: null,
           hasCatering: true, paxOverride: null,
           tripSheetUrl: null, tripSheetPath: null, tripSheetUploadedAt: null,
@@ -129,6 +146,7 @@ export function subscribeToTripState(tripId, onUpdate) {
           tripSheetNotesEditedByName: null,
           fromFbo: null,
           toFbo: null,
+          aogCfs: null,
         });
       }
     },
@@ -306,6 +324,50 @@ export async function attachTripSheetToLeg(legUpdate) {
     },
     { merge: true }
   );
+  if (legUpdate.broker) {
+    await backfillBrokerOnTripDocs(legUpdate.tripUid, legUpdate.broker, legUpdate.tripSheetData?.tripCode);
+  }
+}
+
+async function backfillBrokerOnTripDocs(tripUid, incoming, tripCode) {
+  const ids = new Set([sanitizeKey(tripUid)].filter(Boolean));
+  const code = normalizeTripId(tripCode);
+  if (code) {
+    try {
+      const snap = await getDocs(query(collection(db, 'trip-state'), where('tripSheetData.tripCode', '==', code)));
+      snap.forEach((item) => ids.add(item.id));
+    } catch (err) {
+      console.warn('[broker] sibling lookup skipped', err);
+    }
+  }
+  for (const id of ids) {
+    // eslint-disable-next-line no-await-in-loop
+    const ref = doc(db, 'trip-state', id);
+    // eslint-disable-next-line no-await-in-loop
+    const snap = await getDoc(ref);
+    if (!snap.exists()) continue;
+    const data = snap.data() || {};
+    const sheet = data.tripSheetData || {};
+    const plan = planBrokerBackfill({
+      brokerCompany: data.brokerCompany || sheet.client || '',
+      brokerEmail: data.brokerEmail || '',
+      brokerPhone: data.brokerPhone || '',
+      brokerDomain: data.brokerDomain || '',
+    }, incoming);
+    const patch = { updatedAt: Date.now() };
+    if (plan.patch.brokerEmail) patch.brokerEmail = plan.patch.brokerEmail;
+    if (plan.patch.brokerPhone) patch.brokerPhone = plan.patch.brokerPhone;
+    if (plan.patch.brokerDomain) patch.brokerDomain = plan.patch.brokerDomain;
+    if (plan.patch.brokerCompany) patch.brokerCompany = plan.patch.brokerCompany;
+    if (plan.mismatches.length) patch.brokerMismatch = plan.mismatches;
+    if (Object.keys(patch).length === 1) continue;
+    // eslint-disable-next-line no-await-in-loop
+    await updateDoc(ref, patch);
+    if (plan.patch.brokerCompany && !sheet.client) {
+      // eslint-disable-next-line no-await-in-loop
+      await updateDoc(ref, { 'tripSheetData.client': plan.patch.brokerCompany });
+    }
+  }
 }
 
 /**

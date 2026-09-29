@@ -5,6 +5,10 @@ import App, { ExternalTechPage } from './App.jsx';
 import { ServiceTechPage } from './ServiceRequests.jsx';
 import TripTrackPage from './TripTrack.jsx';
 import OperatorFlightPortal from './OperatorFlightPortal.jsx';
+import AogCoverageOffer from './AogCoverageOffer.jsx';
+import AogInvoiceDecision from './AogInvoiceDecision.jsx';
+import AogCfsAcknowledge from './AogCfsAcknowledge.jsx';
+import CfsPortal from './CfsPortal.jsx';
 import './index.css';
 
 // Chromium's install event is one-shot and can fire while Firebase is still
@@ -111,6 +115,28 @@ const isOperatorFlightRoute =
   typeof window !== 'undefined'
   && window.location.pathname.replace(/\/+$/, '') === '/operator-flight';
 
+const isAogCoverageRoute =
+  typeof window !== 'undefined'
+  && window.location.pathname.replace(/\/+$/, '') === '/aog-coverage';
+
+const isAogInvoiceRoute =
+  typeof window !== 'undefined'
+  && window.location.pathname.replace(/\/+$/, '') === '/aog-invoice';
+
+const isAogCfsRoute =
+  typeof window !== 'undefined'
+  && window.location.pathname.replace(/\/+$/, '') === '/aog-cfs';
+
+const isCfsPortalRoute =
+  typeof window !== 'undefined'
+  && window.location.pathname.replace(/\/+$/, '') === '/cfs';
+
+// Emulator click-through for the ops AOG page. Dead in production builds
+// because VITE_FIREBASE_EMULATORS is unset and Vite folds this to false.
+const isAogEmulatorRoute = import.meta.env.VITE_FIREBASE_EMULATORS === '1'
+  && typeof window !== 'undefined'
+  && window.location.pathname.replace(/\/+$/, '') === '/aog-emulator';
+
 /* ============================================================
    PWA SERVICE WORKER REGISTRATION
    ------------------------------------------------------------
@@ -129,7 +155,7 @@ const isOperatorFlightRoute =
    ============================================================ */
 if (!isNativeApp() && typeof window !== 'undefined' && 'serviceWorker' in navigator
     && !isExternalTechRoute && !isServiceTechRoute && !isTripTrackRoute
-    && !isOperatorFlightRoute) {
+    && !isOperatorFlightRoute && !isAogCoverageRoute && !isAogInvoiceRoute && !isAogCfsRoute && !isCfsPortalRoute && !isAogEmulatorRoute) {
   // Register after the page has finished loading so we don't compete
   // with initial render for the network.
   window.addEventListener('load', () => {
@@ -189,6 +215,34 @@ if (isExternalTechRoute) {
       <OperatorFlightPortal token={params.get('token') || ''} />
     </React.StrictMode>
   );
+} else if (isAogCoverageRoute) {
+  rootEl.render(
+    <React.StrictMode>
+      <AogCoverageOffer />
+    </React.StrictMode>
+  );
+} else if (isAogInvoiceRoute) {
+  rootEl.render(
+    <React.StrictMode>
+      <AogInvoiceDecision />
+    </React.StrictMode>
+  );
+} else if (isCfsPortalRoute) {
+  rootEl.render(
+    <React.StrictMode>
+      <CfsPortal />
+    </React.StrictMode>
+  );
+} else if (isAogCfsRoute) {
+  rootEl.render(
+    <React.StrictMode>
+      <AogCfsAcknowledge />
+    </React.StrictMode>
+  );
+} else if (isAogEmulatorRoute) {
+  import('./AogEmulatorHarness.jsx').then(({ default: Harness }) => {
+    rootEl.render(React.createElement(React.StrictMode, null, React.createElement(Harness)));
+  });
 } else {
   rootEl.render(
     <React.StrictMode>

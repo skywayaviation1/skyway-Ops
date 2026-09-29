@@ -1,0 +1,5 @@
+SUBJECT: Catering menu for Thursday
+FROM: kitchen@example-catering.test
+ATTACHMENTS: menu.pdf
+
+Please see the attached menu for Thursday's service.
