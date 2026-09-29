@@ -26,6 +26,9 @@ export const attachTripSheetToLeg = noop;
 export const saveManualTrip = noop;
 export const deleteManualTrip = noop;
 export const seedTripMeta = noop;
+export const syncLegTail = noop;
+export const syncUpcomingLegTails = noop;
+export const legTailInput = (trip) => ({ tail: trip?.info?.tail || '' });
 export const setTripFboById = noop;
 export const getTripSheetsForBackfill = async () => [];
 

@@ -34,6 +34,7 @@
 
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
+import { applyLegTailUpdate, legStateDocId, requestOrigin } from './_tail-change.js';
 
 let adminApp = null;
 let _db = null;
@@ -95,7 +96,17 @@ export default async function handler(req, res) {
     let updated = 0;
     let created = 0;
     let skipped = 0;
+    let tailChangeEmails = 0;
     const errors = [];
+
+    let aircraftByTail = {};
+    try {
+      const fleet = await db.collection('app-config').doc('fleet').get();
+      if (fleet.exists) aircraftByTail = fleet.data()?.aircraftByTail || {};
+    } catch (err) {
+      console.warn('[backfill-tripmeta] fleet lookup failed:', err?.message || err);
+    }
+    const origin = requestOrigin(req);
 
     // Process in small batches to avoid hot-looping Firestore
     const BATCH_SIZE = 25;
@@ -109,36 +120,53 @@ export default async function handler(req, res) {
             return;
           }
 
-          const tripMeta = {
-            tail: String(trip.tail).toUpperCase(),
-            from: String(trip.from).toUpperCase(),
-            to: String(trip.to || '').toUpperCase(),
+          // Same doc id seedTripMeta / saveTripState use, so a sync and a
+          // later open of the leg notice the tail change once.
+          const docId = legStateDocId(trip.uid);
+          const result = await applyLegTailUpdate(db, docId, {
+            tail: trip.tail,
+            from: trip.from,
+            to: trip.to || '',
             start: trip.start || null,
+            end: trip.end || null,
             legType: trip.legType || 'REVENUE',
-          };
+            aircraftType: trip.aircraftType || '',
+            tripCode: trip.tripCode || '',
+            summary: trip.summary || '',
+            cancelled: trip.cancelled === true,
+            completed: trip.completed === true,
+            isFlight: trip.isFlight === false ? false : true,
+            brokerEmail: trip.brokerEmail || '',
+          }, { origin, aircraftByTail });
+          if (result.sent) tailChangeEmails++;
 
-          const ref = db.collection('trip-state').doc(trip.uid);
-          const snap = await ref.get();
+          // Historical backfill wrote the raw iCal uid. The trip screen reads
+          // the sanitized id. Keep the raw doc's route in step when those
+          // ids differ, without sending a second email.
+          if (trip.uid !== docId) {
+            await db.collection('trip-state').doc(String(trip.uid)).set({
+              tripMeta: {
+                tail: String(trip.tail).toUpperCase(),
+                from: String(trip.from).toUpperCase(),
+                to: String(trip.to || '').toUpperCase(),
+                start: trip.start || null,
+                legType: trip.legType || 'REVENUE',
+              },
+              updatedAt: Date.now(),
+            }, { merge: true });
+          }
 
-          if (snap.exists) {
-            // Update existing doc — shallow merge, only tripMeta + updatedAt
-            await ref.update({
-              tripMeta,
-              updatedAt: Date.now(),
-            });
-            updated++;
-          } else {
-            // Create a minimal doc with just tripMeta so the matcher can find it
-            await ref.set({
-              tripMeta,
-              updatedAt: Date.now(),
+          if (!result.existed) {
+            await db.collection('trip-state').doc(docId).set({
               archived: false,
-              brokerEmail: '',
+              brokerEmail: trip.brokerEmail || '',
               autoNotify: false,
               hasCatering: true,
               statuses: {},
-            });
+            }, { merge: true });
             created++;
+          } else {
+            updated++;
           }
         } catch (err) {
           errors.push({ uid: trip?.uid || '?', error: err.message || String(err) });
@@ -146,9 +174,9 @@ export default async function handler(req, res) {
       }));
     }
 
-    console.log('[backfill-tripmeta]', { total: trips.length, updated, created, skipped, errorCount: errors.length });
+    console.log('[backfill-tripmeta]', { total: trips.length, updated, created, skipped, tailChangeEmails, errorCount: errors.length });
 
-    res.status(200).json({ ok: true, updated, created, skipped, errors });
+    res.status(200).json({ ok: true, updated, created, skipped, tailChangeEmails, errors });
   } catch (err) {
     console.error('[backfill-tripmeta] error:', err);
     res.status(500).json({ error: err.message || 'Server error' });

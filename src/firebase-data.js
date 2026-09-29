@@ -114,6 +114,7 @@ export function subscribeToTripState(tripId, onUpdate) {
           // FBO names parsed from the trip sheet for THIS leg's two airports.
           fromFbo: data.fromFbo || null,
           toFbo: data.toFbo || null,
+          activity: Array.isArray(data.activity) ? data.activity : [],
         });
       } else {
         // No state yet — emit empty defaults
@@ -129,6 +130,7 @@ export function subscribeToTripState(tripId, onUpdate) {
           tripSheetNotesEditedByName: null,
           fromFbo: null,
           toFbo: null,
+          activity: [],
         });
       }
     },
@@ -190,7 +192,35 @@ export async function saveTripState(tripId, state) {
   if (has('toFbo'))                patch.toFbo = state.toFbo || null;
   // tripMeta — route/tail/start info, used by the FlightAware webhook to match
   // incoming events to this trip. See PR 2c.
-  if (has('tripMeta'))             patch.tripMeta = state.tripMeta || null;
+  // Tail changes are decided on the server so a schedule sync and a trip
+  // save cannot each send their own email. When that write succeeds, leave
+  // tripMeta alone here — replacing it would drop the type and cancel flag
+  // the server just stored.
+  let wroteTailOnServer = false;
+  if (has('tripMeta') && state.tripMeta?.tail) {
+    try {
+      const synced = await syncLegTail(tripId, {
+        tail: state.tripMeta.tail,
+        from: state.tripMeta.from,
+        to: state.tripMeta.to,
+        start: state.tripMeta.start,
+        end: state.tripMeta.end,
+        legType: state.tripMeta.legType,
+        aircraftType: state.tripMeta.aircraftType,
+        tripCode: state.tripMeta.tripCode,
+        summary: state.tripMeta.summary,
+        cancelled: state.tripMeta.cancelled === true || state.cancelled === true,
+        completed: has('completed') ? state.completed === true : undefined,
+        isFlight: state.tripMeta.isFlight,
+        brokerEmail: has('brokerEmail') ? state.brokerEmail : undefined,
+        source: 'save-trip-state',
+      });
+      wroteTailOnServer = synced?.ok === true && synced?.reason !== 'send-failed';
+    } catch (err) {
+      console.warn('[saveTripState] tail-change sync failed:', err?.message || err);
+    }
+  }
+  if (has('tripMeta') && !wroteTailOnServer) patch.tripMeta = state.tripMeta || null;
 
   const ref = doc(db, 'trip-state', safeId);
 
@@ -229,10 +259,115 @@ export async function saveTripState(tripId, state) {
  *   - if the doc doesn't exist, we create it with just tripMeta and the
  *     matcher will accept it (archived === undefined evaluates falsy)
  */
+export function legTailInput(trip, extra = {}) {
+  const info = trip?.info || {};
+  const asIso = (value) => (value instanceof Date ? value.toISOString() : (value || null));
+  return {
+    tail: info.tail || '',
+    from: info.from || '',
+    to: info.to || '',
+    start: asIso(trip?.start),
+    end: asIso(trip?.end),
+    legType: info.legType || 'REVENUE',
+    aircraftType: info.aircraftType || info.acType || '',
+    tripCode: info.tripCode || '',
+    summary: info.rawSummary || '',
+    cancelled: info.cancelled === true,
+    isFlight: info.isFlight !== false,
+    brokerEmail: info.broker || '',
+    ...extra,
+  };
+}
+
+// Last tail/route payload the server accepted for a leg. Repeat saves of the
+// same tail (status taps, broker-email keystrokes) must not each hit the API,
+// and must not each send an email. A different tail bypasses the cache.
+const tailSyncFingerprint = new Map();
+
+function tailSyncKey(tripId, meta) {
+  const tail = String(meta?.tail || '').trim().toUpperCase().replace(/\s+/g, '');
+  return [
+    sanitizeKey(tripId),
+    tail,
+    String(meta?.from || '').trim().toUpperCase(),
+    String(meta?.to || '').trim().toUpperCase(),
+    meta?.start || '',
+    meta?.cancelled === true ? '1' : '0',
+    meta?.completed === true ? '1' : '0',
+    meta?.isFlight === false ? '0' : '1',
+  ].join('|');
+}
+
+/**
+ * Ask the server to store this leg's tail. The server compares it with the
+ * tail already on the trip and emails the broker when a live leg actually
+ * changes aircraft. Returns { ok:false, skipped } when nobody is signed in
+ * so callers can fall back to a direct tripMeta write.
+ */
+export async function syncLegTail(tripId, meta) {
+  if (!tripId || !meta?.tail) return { ok: false, skipped: 'missing-tail' };
+  const fingerprint = tailSyncKey(tripId, meta);
+  if (tailSyncFingerprint.get(sanitizeKey(tripId)) === fingerprint) {
+    return { ok: true, skipped: 'same-payload', sent: false };
+  }
+  let idToken = null;
+  try {
+    const { auth } = await import('./firebase.js');
+    if (auth.currentUser) idToken = await auth.currentUser.getIdToken();
+  } catch (err) {
+    console.warn('[syncLegTail] auth unavailable:', err?.message || err);
+  }
+  if (!idToken) return { ok: false, skipped: 'signed-out' };
+  const response = await fetch('/api/leg-tail', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ idToken, tripId, ...meta }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.ok === false) {
+    throw new Error(data.error || `Tail sync failed (${response.status})`);
+  }
+  if (data.reason !== 'send-failed') {
+    tailSyncFingerprint.set(sanitizeKey(tripId), fingerprint);
+  }
+  return data;
+}
+
+/** Schedule sync: notice tail changes on upcoming flight legs. */
+export async function syncUpcomingLegTails(trips) {
+  const now = Date.now();
+  const past = 12 * 60 * 60 * 1000;
+  const future = 30 * 24 * 60 * 60 * 1000;
+  const legs = (Array.isArray(trips) ? trips : []).filter((trip) => {
+    if (!trip?.uid || !trip?.info?.tail || trip.info.isFlight === false) return false;
+    const start = trip.start instanceof Date ? trip.start.getTime() : new Date(trip.start).getTime();
+    return Number.isFinite(start) && start > now - past && start < now + future;
+  });
+  const queue = legs.map((trip) => () => syncLegTail(trip.uid, legTailInput(trip, { source: 'schedule-sync' })));
+  const workers = Array.from({ length: Math.min(8, queue.length) }, async () => {
+    while (queue.length) {
+      const job = queue.shift();
+      if (!job) return;
+      try {
+        await job();
+      } catch (err) {
+        console.warn('[tail-change] schedule sync notice failed:', err?.message || err);
+      }
+    }
+  });
+  await Promise.all(workers);
+}
+
 export async function seedTripMeta(tripUid, meta) {
   if (!tripUid) throw new Error('seedTripMeta: tripUid required');
   if (!meta || !meta.tail || !meta.from || !meta.start) {
     throw new Error('seedTripMeta: meta needs tail, from, start');
+  }
+  try {
+    const synced = await syncLegTail(tripUid, { ...meta, source: meta.source || 'seed-trip-meta' });
+    if (synced?.ok) return;
+  } catch (err) {
+    console.warn('[seedTripMeta] tail sync failed, writing tripMeta directly:', err?.message || err);
   }
   const safeId = sanitizeKey(tripUid);
   const ref = doc(db, 'trip-state', safeId);
@@ -242,7 +377,12 @@ export async function seedTripMeta(tripUid, meta) {
       from: String(meta.from).toUpperCase(),
       to: String(meta.to || '').toUpperCase(),
       start: meta.start,
+      end: meta.end || null,
       legType: meta.legType || 'REVENUE',
+      ...(meta.aircraftType ? { aircraftType: String(meta.aircraftType).slice(0, 80) } : {}),
+      ...(meta.tripCode ? { tripCode: String(meta.tripCode).slice(0, 40) } : {}),
+      ...(meta.cancelled === true ? { cancelled: true } : {}),
+      ...(meta.isFlight === false ? { isFlight: false } : {}),
     },
     updatedAt: Date.now(),
   }, { merge: true });
@@ -500,6 +640,11 @@ export function subscribeToManualTrips(onUpdate) {
  */
 export async function saveManualTrip(trip) {
   const safeId = sanitizeKey(trip.uid);
+  try {
+    await syncLegTail(trip.uid, legTailInput(trip, { source: 'manual-trip' }));
+  } catch (err) {
+    console.warn('[saveManualTrip] tail-change sync failed:', err?.message || err);
+  }
   const serialized = {
     ...trip,
     uid: trip.uid,
