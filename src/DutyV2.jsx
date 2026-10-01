@@ -48,6 +48,7 @@ import {
 } from './firebase-duty-v2.js';
 import { evaluateCurrent, LIMITS } from './duty-legality.js';
 import { assignedTailFor, findAssignedTrip } from './duty-assignment.js';
+import { dutyClockState, partnerOnCrewDay } from './crew-day.js';
 import { DutyExportButtons } from './DutyExport.jsx';
 import TzAwareDateTimeInput from './TzAwareInput.jsx';
 import { Button, Card, InfoRow, StatusChip, cx } from './ui.jsx';
@@ -563,6 +564,7 @@ function OffDutyCard({ busy, openForm, setOpenForm, periods, now, onStart, myTri
           myTrips={myTrips}
           users={users}
           currentUserUid={currentUserUid}
+          currentUserName={name}
         />
       )}
     </Card>
@@ -570,7 +572,10 @@ function OffDutyCard({ busy, openForm, setOpenForm, periods, now, onStart, myTri
 }
 
 function OnDutyCard({ period, now, busy, openForm, setOpenForm, legality, onEnd, onEdit, onRequestOverride }) {
-  const elapsed = now - (period.dutyOnAt || now);
+  // The ring counts from the attested duty-on time. A trip departure,
+  // including a stale crew-assignment block, is not a duty start.
+  const clock = dutyClockState(period, now);
+  const elapsed = clock ? clock.elapsedMs : 0;
   const elapsedHrs = elapsed / MS_HR;
 
   // Duty-budget math — used for the ring + countdown.
@@ -580,8 +585,8 @@ function OnDutyCard({ period, now, busy, openForm, setOpenForm, legality, onEnd,
   // there is no 14h cap — the bar/countdown are informational only.
   // We always render the bar so the pilot has a visual sense of how
   // long they've been on, regardless of assignment type.
-  const DUTY_MAX_MS = 14 * MS_HR;
-  const remainingMs = Math.max(0, DUTY_MAX_MS - elapsed);
+  const DUTY_MAX_MS = clock?.maxMs ?? 14 * MS_HR;
+  const remainingMs = clock ? clock.remainingMs : Math.max(0, DUTY_MAX_MS - elapsed);
   const isRegular = period.assignmentType === 'regular';
   // The countdown label changes by assignment type so the pilot
   // doesn't read "X left" as a regulatory commitment for unscheduled.
@@ -609,6 +614,7 @@ function OnDutyCard({ period, now, busy, openForm, setOpenForm, legality, onEnd,
           the caption underneath. */}
       <Card padded={false} className="divide-y divide-edge overflow-hidden">
         <InfoRow icon={Clock} label="Started" value={fmtTime(period.dutyOnAt)} />
+        <InfoRow icon={Clock} label="Release by" value={clock ? fmtTime(clock.releaseAt) : '—'} />
         <InfoRow icon={Hourglass} label="Rest before" value={period.priorRestMs ? fmtElapsed(period.priorRestMs) : '—'} />
         <InfoRow
           icon={Plane}
@@ -862,7 +868,7 @@ function PendingConfirmCard({ period, now, busy, openForm, setOpenForm, onConfir
 // Forms
 // =====================================================================
 
-function StartDutyForm({ busy, onCancel, onConfirm, myTrips = [], users = [], currentUserUid }) {
+function StartDutyForm({ busy, onCancel, onConfirm, myTrips = [], users = [], currentUserUid, currentUserName }) {
   // dutyOnAt is held as a UTC millisecond timestamp throughout the form.
   // The TzAwareDateTimeInput component handles converting between this
   // and the user-visible local-time string in their chosen timezone.
@@ -940,7 +946,7 @@ function StartDutyForm({ busy, onCancel, onConfirm, myTrips = [], users = [], cu
     if (assignedTrip) {
       if (!location && assignedTrip.info?.from) setLocation(String(assignedTrip.info.from).toUpperCase().slice(0, 30));
       if (!tripId.trim()) {
-        const id = assignedTrip.id || (assignedTrip.info && (assignedTrip.info.uid || assignedTrip.info.tripId)) || '';
+        const id = assignedTrip.uid || assignedTrip.id || (assignedTrip.info && (assignedTrip.info.uid || assignedTrip.info.tripId)) || '';
         if (id) setTripId(String(id));
       }
     }
@@ -966,32 +972,41 @@ function StartDutyForm({ busy, onCancel, onConfirm, myTrips = [], users = [], cu
   // PIC sees the dropdown.
   //
   useEffect(() => {
-    // Reset partnerUid when trip changes — don't keep stale selection
-    if (!matchedTrip) {
-      // Clear auto-detected partner only if it was auto-set from a previous trip
-      if (partnerSourceTripId && partnerSourceTripId !== tripId) {
-        setPartnerUid(null);
-        setPartnerSourceTripId(null);
-      }
+    if (crewType !== 'two') return;
+    // One PIC+SIC pair for this local day sets the seat before we read
+    // the complementary name, so a SIC is not matched as if they were PIC.
+    const crewDay = partnerOnCrewDay(myTrips, currentUserName, dutyOnAt);
+    if (crewDay?.myRole && role !== crewDay.myRole) {
+      setRole(crewDay.myRole);
       return;
     }
-    if (crewType !== 'two') return;
-    // Auto-populate location and tail from the trip if not already filled
-    if (matchedTrip.info?.from && !location) {
-      setLocation(matchedTrip.info.from);
+    if (matchedTrip) {
+      if (matchedTrip.info?.from && !location) setLocation(matchedTrip.info.from);
+      if (matchedTrip.info?.tail && !tail) setTail(matchedTrip.info.tail);
+      const partnerName = role === 'PIC' ? matchedTrip.info?.sic : matchedTrip.info?.pic;
+      const match = partnerName ? matchUserByName(partnerName, crewUsers) : null;
+      if (match) {
+        setPartnerUid(match.user.uid || match.user.id);
+        setPartnerSourceTripId(tripId);
+        return;
+      }
     }
-    if (matchedTrip.info?.tail && !tail) {
-      setTail(matchedTrip.info.tail);
+    // Tail change, or a later leg that left one seat blank: the partner
+    // is still the other pilot on this local crew day. Pre-select only.
+    // Duty is not written until this pilot attests fit-for-duty.
+    if (crewDay?.name) {
+      const dayMatch = matchUserByName(crewDay.name, crewUsers);
+      if (dayMatch) {
+        setPartnerUid(dayMatch.user.uid || dayMatch.user.id);
+        setPartnerSourceTripId(tripId || crewDay.pairing?.legIds?.[0] || crewDay.pairing?.id || null);
+        return;
+      }
     }
-    const partnerName = role === 'PIC' ? matchedTrip.info?.sic : matchedTrip.info?.pic;
-    if (!partnerName) return;
-    const match = matchUserByName(partnerName, crewUsers);
-    if (match) {
-      setPartnerUid(match.user.uid || match.user.id);
-      setPartnerSourceTripId(tripId);
+    if (!matchedTrip && partnerSourceTripId && partnerSourceTripId !== tripId) {
+      setPartnerUid(null);
+      setPartnerSourceTripId(null);
     }
-    // If no confident match, leave partnerUid null — pilot sees the dropdown.
-  }, [matchedTrip, role, crewType, crewUsers, tripId]);
+  }, [matchedTrip, role, crewType, crewUsers, tripId, myTrips, currentUserName, dutyOnAt]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Resolved partner object — for display
   const partnerUser = useMemo(

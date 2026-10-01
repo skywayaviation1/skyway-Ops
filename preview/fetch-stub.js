@@ -497,6 +497,21 @@ export function sampleIcal() {
     .toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
 
   let out = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//OPS//PREVIEW//EN\r\n';
+  // JetInsight crew-assignment block: no route, started days ago, still open.
+  // The lead pilot is named in the description, which is how this used to
+  // land on the crew Home screen as an airborne flight.
+  const lead = SCHEDULE.find((t) => t.picIdx === 0) || SCHEDULE[0];
+  const staleStart = new Date(Date.now() - (2 * 24 + 14) * 3600_000)
+    .toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  const staleEnd = new Date(Date.now() + 24 * 3600_000)
+    .toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  out += 'BEGIN:VEVENT\r\n';
+  out += 'UID:crew-assignment-n525cr\r\n';
+  out += `DTSTART:${staleStart}\r\n`;
+  out += `DTEND:${staleEnd}\r\n`;
+  out += 'SUMMARY:[N525CR] Crew 525CR - Crew assignment\r\n';
+  out += `DESCRIPTION:PIC: ${lead.pic}\\nSIC: ${lead.sic}\\nPax: 0\r\n`;
+  out += 'END:VEVENT\r\n';
   for (const t of SCHEDULE) {
     out += 'BEGIN:VEVENT\r\n';
     out += `UID:${t.uid}\r\n`;

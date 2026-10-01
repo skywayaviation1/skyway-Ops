@@ -130,7 +130,20 @@ const AdminDutyReportLazy = lazy(() => import('./AdminDutyReport.jsx'));
 // creating or reviewing.
 const AogTabLazy = lazy(() => import('./AogTab.jsx'));
 import AppTimezoneSwitch from './AppTimezoneSwitch.jsx';
-import { todayInAppTz } from './app-timezone.js';
+import { getAppTimezone, todayInAppTz } from './app-timezone.js';
+import {
+  buildCrewDayPairings,
+  classifyFlightTiming,
+  crewNamesMatch,
+  finalizeScheduleCategory,
+  isCrewAssignmentRecord,
+  isRealFlightLeg,
+  legsVisibleToCrew,
+  resolveCrewTimeZone,
+  selectFocusTrip,
+  showTimeMs,
+  splitScheduleTypeSuffix,
+} from './crew-day.js';
 import { createPortal } from 'react-dom';
 import {
   Plane, Calendar, MessageSquare, Users, Bell, MapPin,
@@ -261,10 +274,15 @@ function extractTripInfo(event) {
       const afterRoute = rest.substring(lastRouteIdx + lastRoute[0].length);
       tripType = afterRoute.replace(/^\s*-\s*/, '').trim();
     } else {
-      // No "(XXX - YYY)" found — treat the whole remainder as customer name.
-      // This matches the original behavior for events that don't have a route
-      // (some maintenance entries can omit it).
+      // No "(XXX - YYY)" found. JetInsight still appends the event kind
+      // after a dash ("Crew 525CR - Crew assignment"). Split that off so
+      // the kind is categorized instead of becoming part of the customer.
       customer = rest.replace(/[,\s]+$/, '').trim();
+      const split = splitScheduleTypeSuffix(customer);
+      if (split) {
+        customer = split.customer;
+        tripType = split.tripType;
+      }
     }
   } else {
     // Fallback heuristic for non-JetInsight feeds
@@ -293,42 +311,19 @@ function extractTripInfo(event) {
     .filter(l => l && !/^(pax|pic|sic)\s*:/i.test(l))
     .join(' • ');
 
-  // Categorize by trip type from summary suffix
-  const t = tripType.toLowerCase();
-  let category;
-  if (t.includes('maintenance') || t.includes('mx out') || t.includes('fms')) category = 'MX';
-  else if (t.includes('training')) category = 'TRAINING';
-  else if (t.includes('crew assignment') || t.includes('hold') || t.includes('other')) category = 'HOLD';
-  else if (t.includes('ferry')) category = 'FERRY';
-  else if (t.includes('positioning')) category = 'REPO';
-  else if (t.includes('charter')) category = pax === 0 ? 'REPO' : 'REVENUE';
-  else if (t.includes('owner')) category = 'OWNER';
-  else if (pax >= 1) category = 'REVENUE';
-  else category = 'REPO';
-
-  // Same-origin-and-destination is never a real flight — it's a maintenance/admin block
-  // (e.g. "MX (TPA - TPA)", "No crews (TPA - TPA)"). Force these out of the flight list.
-  const sameAirport = from && to && from.toUpperCase() === to.toUpperCase();
-  if (sameAirport && !['MX', 'TRAINING', 'HOLD'].includes(category)) {
-    category = 'HOLD';
-  }
-
-  // JetInsight publishes placeholder "Needs repositioning to XXX" entries that aren't real
-  // scheduled trips — they're flags for ops to plan a future repo. Filter these out.
-  const isRepoPlaceholder = /needs?\s+repositioning/i.test(description) ||
-                             /needs?\s+repositioning/i.test(summary);
-  if (isRepoPlaceholder) {
-    category = 'HOLD';
-  }
-
-  // legType drives the status flow (5 buttons): only REVENUE shows pax-related steps
-  const legType = category === 'REVENUE' || category === 'OWNER' ? 'REVENUE' : 'REPO';
+  // A crew-assignment block, a same-airport hold, a "needs repositioning"
+  // flag, or a missing route is not a flight. See crew-day.js.
+  const classified = finalizeScheduleCategory({
+    tripType, summary, customer, from, to, pax, description,
+  });
 
   return {
     tail, customer, from, to, pax, pic, sic, notes,
-    tripType, category, legType,
-    isFlight: !['MX', 'TRAINING', 'HOLD'].includes(category),
-    isOps: ['REVENUE', 'REPO', 'FERRY', 'OWNER'].includes(category),
+    tripType,
+    category: classified.category,
+    legType: classified.legType,
+    isFlight: classified.isFlight,
+    isOps: classified.isOps,
     url,
     rawSummary: summary,
     rawDescription: description,
@@ -2154,6 +2149,12 @@ function TripCard({ trip, selected, onClick, statusCount, hasUpdate, onArchive }
                 return `${t.time}${t.tz ? ' ' + t.tz : ''}`;
               })()}
             </span>
+            {(() => {
+              const showMs = showTimeMs(trip);
+              if (showMs == null) return null;
+              const t = formatLocalTime(new Date(showMs), trip.info.from);
+              return <> · Show {t.time}{t.tz ? ` ${t.tz}` : ''}</>;
+            })()}
             {trip.info.pax > 0 && <> · {trip.info.pax} pax</>}
           </span>
           <span className="shrink-0 font-mono text-2xs text-content-subtle">{fmtRelative(dep)}</span>
@@ -4873,29 +4874,32 @@ function DutyCard({ currentUser, config, myTrips, users }) {
    ============================================================ */
 
 function PilotHomeScreen({ currentUser, trips, tripStates, config, users, onSelectTrip, onSwitchSection }) {
-  // Filter to MY trips (PIC/SIC match)
+  // Day boundaries follow the crew member's app timezone (browser local
+  // when they have not picked one). Pairings group every real leg a PIC
+  // and SIC share on that local day, including a tail change.
+  const crewTz = getAppTimezone() || resolveCrewTimeZone();
+  const pilotName = currentUser?.jetinsightName || currentUser?.name || '';
   const myTrips = useMemo(() => {
     if (!Array.isArray(trips)) return [];
-    return trips
-      .filter(t => tripIsAssignedToUser(t, currentUser))
+    return legsVisibleToCrew(trips, pilotName, crewTz)
       .sort((a, b) => new Date(a.start || 0) - new Date(b.start || 0));
-  }, [trips, currentUser]);
+  }, [trips, pilotName, crewTz]);
 
   const now = Date.now();
 
-  // Bucket trips
+  // Bucket trips. A stale window (crew-assignment block, multi-day hold)
+  // is not active and is not "recently completed".
   const buckets = useMemo(() => {
     const active = [];
     const imminent = [];
     const upcoming = [];
     const recent = [];
     for (const t of myTrips) {
-      const k = classifyTripTiming(t, now);
+      const k = classifyFlightTiming(t, now);
       if (k === 'active') active.push(t);
       else if (k === 'imminent') imminent.push(t);
       else if (k === 'upcoming') upcoming.push(t);
       else if (k === 'past') {
-        // Only include recent past (within 24h)
         const end = t.end ? new Date(t.end).getTime() : 0;
         if (now - end < 24 * 60 * 60 * 1000) recent.push(t);
       }
@@ -4903,16 +4907,27 @@ function PilotHomeScreen({ currentUser, trips, tripStates, config, users, onSele
     return { active, imminent, upcoming, recent };
   }, [myTrips, now]);
 
-  // "Current focus" trip — the one most relevant right now.
-  // Priority: active > imminent > next upcoming.
-  const focusTrip = buckets.active[0] || buckets.imminent[0] || buckets.upcoming[0] || null;
+  // Current focus is the earliest real leg: active, then imminent, then upcoming.
+  const focus = selectFocusTrip(myTrips, now);
+  const focusTrip = focus.trip;
+  const crewedWith = useMemo(() => {
+    if (!focusTrip || !pilotName) return '';
+    const hit = buildCrewDayPairings(myTrips, { timeZone: crewTz }).find((pairing) => (
+      pairing.legIds.includes(focusTrip.uid)
+      || pairing.legs.some((leg) => leg.uid === focusTrip.uid)
+    ));
+    if (!hit) return '';
+    if (crewNamesMatch(hit.picName, pilotName)) return hit.sicName;
+    if (crewNamesMatch(hit.sicName, pilotName)) return hit.picName;
+    return '';
+  }, [focusTrip, myTrips, crewTz, pilotName]);
 
   const userName = currentUser?.callsign || currentUser?.name?.split(' ')[0] || 'Pilot';
   const greeting = timeBasedGreeting();
 
   return (
-    <div className="flex-1 overflow-y-auto scroll-area bg-slate-950">
-      <div className="mx-auto max-w-5xl space-y-4 p-4 pb-8 md:space-y-5 md:p-6 lg:p-8">
+    <div className="min-h-0 flex-1 overflow-y-auto scroll-area bg-slate-950">
+      <div className="mx-auto max-w-5xl space-y-4 p-4 pb-[calc(var(--sw-bottom-nav-h)+env(safe-area-inset-bottom,0px)+28px)] md:space-y-5 md:p-6 md:pb-8 lg:p-8">
         {/* Greeting reads like a home screen, not a report header: name
             first, then a live wall clock the crew can glance at. */}
         <div className="flex items-start justify-between gap-4 pt-1">
@@ -4942,8 +4957,9 @@ function PilotHomeScreen({ currentUser, trips, tripStates, config, users, onSele
             trip={focusTrip}
             tripState={tripStates?.[focusTrip.uid]}
             currentUser={currentUser}
-            isActive={buckets.active.includes(focusTrip)}
-            isImminent={buckets.imminent.includes(focusTrip)}
+            isActive={Boolean(focus.timing?.isActive)}
+            isImminent={Boolean(focus.timing?.isImminent)}
+            crewedWith={crewedWith}
             onSelectTrip={onSelectTrip}
           />
         ) : (
@@ -5050,13 +5066,10 @@ function LocalClock() {
   return <>{weekday} · {time} {tz}</>;
 }
 
-function PilotFocusCard({ trip, tripState, currentUser, isActive, isImminent, onSelectTrip }) {
+function PilotFocusCard({ trip, tripState, currentUser, isActive, isImminent, crewedWith, onSelectTrip }) {
   const startMs = trip.start ? new Date(trip.start).getTime() : null;
   const headerLabel = isActive ? 'In progress' : isImminent ? 'Next flight' : 'Upcoming flight';
-  // Show-time = 60 min before scheduled departure for domestic, 90 min for international
-  const isInternational = String(trip.info?.from || '').match(/^[CMK]/) ? false : true;
-  const showOffsetMin = isInternational ? 90 : 60;
-  const showTime = startMs ? new Date(startMs - showOffsetMin * 60000) : null;
+  const showMs = showTimeMs(trip);
   const status = flightStatus(trip, tripState, { isActive, isImminent });
 
   const meIsPic = nameMatchesPilot(trip.info.pic || '', currentUser?.jetinsightName || currentUser?.name);
@@ -5087,7 +5100,9 @@ function PilotFocusCard({ trip, tripState, currentUser, isActive, isImminent, on
 
         <div className="mt-3 flex items-center justify-between gap-3">
           <span className="truncate text-2xs text-content-subtle">
-            {trip.info.customer || (meIsPic ? 'You are PIC' : meIsSic ? 'You are SIC' : '\u00A0')}
+            {crewedWith
+              ? `Crewed with ${crewedWith}`
+              : (trip.info.customer || (meIsPic ? 'You are PIC' : meIsSic ? 'You are SIC' : '\u00A0'))}
           </span>
           <StatusChip tone={status.tone}>{status.label}</StatusChip>
         </div>
@@ -5101,8 +5116,8 @@ function PilotFocusCard({ trip, tripState, currentUser, isActive, isImminent, on
           const t = formatLocalTime(trip.start, trip.info.from);
           return `${t.time}${t.tz ? ' ' + t.tz : ''}`;
         })() : '—'} />
-        <FocusField label="Show" value={showTime ? (() => {
-          const t = formatLocalTime(showTime.toISOString(), trip.info.from);
+        <FocusField label="Show" value={showMs ? (() => {
+          const t = formatLocalTime(new Date(showMs), trip.info.from);
           return `${t.time}${t.tz ? ' ' + t.tz : ''}`;
         })() : '—'} accent={isImminent || isActive} />
         <FocusField label="Pax" value={`${trip.info.pax || 0}`} />
@@ -5129,7 +5144,9 @@ function flightStatus(trip, tripState, timing = {}) {
   if (raw.includes('delay')) return { label: 'Delayed', tone: 'warning' };
   if (raw.includes('airborne') || raw.includes('departed')) return { label: 'Airborne', tone: 'success' };
   if (raw.includes('complete') || raw.includes('arrived')) return { label: 'Complete', tone: 'neutral' };
-  if (timing.isActive) return { label: 'Airborne', tone: 'success' };
+  if (timing.isActive && isRealFlightLeg(trip)) return { label: 'Airborne', tone: 'success' };
+  if (isCrewAssignmentRecord(trip)) return { label: 'Assignment', tone: 'neutral' };
+  if (timing.isActive) return { label: 'Scheduled', tone: 'neutral' };
   if (timing.isImminent) return { label: 'On time', tone: 'success' };
   return { label: 'Scheduled', tone: 'neutral' };
 }
@@ -28577,7 +28594,7 @@ export default function CharterOps() {
 
   const groupedTrips = useMemo(() => {
     const groups = { past: [], today: [], tomorrow: [], later: [], archived: [] };
-    let filtered = showAllCategories ? allTrips : allTrips.filter(t => t.info.isFlight);
+    let filtered = showAllCategories ? allTrips : allTrips.filter(t => isRealFlightLeg(t));
     // Apply tail filter (single-select). Empty = ALL.
     // Trips without a tail are hidden when a specific tail is active.
     if (tailFilter) {
@@ -28831,8 +28848,8 @@ export default function CharterOps() {
 
         {/* === SCHEDULE SECTION (existing trip view) === */}
         {section === 'schedule' && (
-          <div className="flex-1 flex overflow-hidden">
-            <aside className={`w-full md:w-80 lg:w-96 border-r border-slate-800 bg-slate-950/80 overflow-y-auto scroll-area ${selectedId ? 'hidden md:block' : 'block'}`}>
+          <div className="flex min-h-0 flex-1 overflow-hidden">
+            <aside className={`min-h-0 w-full overflow-y-auto scroll-area border-r border-slate-800 bg-slate-950/80 md:w-80 lg:w-96 ${selectedId ? 'hidden md:block' : 'block'}`}>
               <ScreenHeader
                 title="Flights"
                 right={(

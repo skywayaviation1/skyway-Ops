@@ -5,6 +5,8 @@
 // carries the tail the pilot is assigned to for the 14-hour period, without the
 // pilot having to type it.
 
+import { isRealFlightLeg } from './crew-day.js';
+
 const HOUR_MS = 60 * 60 * 1000;
 
 function toMs(value) {
@@ -40,6 +42,9 @@ export function findAssignedTrip(trips, dutyOnAtMs, windowHours = 14) {
   let bestScore = null;
   for (const trip of trips) {
     if (!tripTail(trip)) continue;
+    // Crew-assignment blocks and other non-flights must not become the
+    // aircraft assignment just because their window covers duty-on.
+    if (!isRealFlightLeg(trip)) continue;
     const start = toMs(trip.start ?? trip.info?.start);
     if (start == null) continue;
     const end = toMs(trip.end ?? trip.info?.end) ?? (start + windowHours * HOUR_MS);
