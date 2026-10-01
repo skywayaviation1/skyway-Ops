@@ -260,6 +260,7 @@ html[data-native] #root {
 .scroll-area {
   scrollbar-width: thin;
   scrollbar-color: rgba(148,163,184,0.22) transparent;
+  -webkit-overflow-scrolling: touch;
 }
 
 /* Horizontal scrollers that should not advertise a bar (nav rails). The
