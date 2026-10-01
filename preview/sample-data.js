@@ -464,7 +464,8 @@ const LEAD_PILOT = T.crew[0];
 
 export const CURRENT_USER = {
   uid: ADMIN.uid, id: ADMIN.uid, name: ADMIN.name, callsign: ADMIN.first,
-  role: 'admin', approved: true, active: true, email: emailFor(ADMIN),
+  role: 'admin', approved: true, active: true, email: 'jake@flyskyway.com',
+  superAdmin: true,
   emailSignature: `${ADMIN.name}\n${ADMIN.title}\n${T.company}`,
 };
 

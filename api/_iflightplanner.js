@@ -10,11 +10,25 @@
  * columns so a provider schema addition does not require an emergency deploy.
  */
 
-const API_BASE = 'https://dev.iflightplanner.com/api/v2';
-const TOKEN_URL = `${API_BASE}/oauth2/token`;
-const FBO_DATA_URL = `${API_BASE}/airports/fbos/data`;
+const DEFAULT_API_BASE = 'https://dev.iflightplanner.com/api/v2';
 const REQUEST_TIMEOUT_MS = 20_000;
 const DATA_TTL_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Provider base URL.
+ *
+ * iFlightPlanner issues *different* credentials for their dev and production
+ * environments, so a production Client ID used against the dev host is
+ * authenticated but unauthorized. Keeping this configurable means moving to
+ * production credentials is an environment change, not a code change.
+ */
+export function apiBase() {
+  return (clean(process.env.IFLIGHTPLANNER_BASE_URL) || DEFAULT_API_BASE).replace(/\/+$/, '');
+}
+
+const tokenUrl = () => `${apiBase()}/oauth2/token`;
+const fboDataUrl = () => `${apiBase()}/airports/fbos/data`;
+const fuelPriceDataUrl = () => `${apiBase()}/airports/fuel-prices/data`;
 
 let tokenCache = null;
 let dataCache = null;
@@ -86,6 +100,13 @@ function first(index, candidates) {
   return '';
 }
 
+function firstMatching(index, patterns) {
+  for (const [header, value] of index.entries()) {
+    if (clean(value) && patterns.some((pattern) => pattern.test(header))) return clean(value);
+  }
+  return '';
+}
+
 function money(value) {
   const normalized = clean(value).replace(/[$,\s]/g, '');
   if (!normalized || !/^-?\d+(?:\.\d+)?$/.test(normalized)) return null;
@@ -106,8 +127,8 @@ function fuelTypeForHeader(header) {
 
 function serviceForHeader(header) {
   const normalized = key(header);
-  if (/selfserve|selfservice|\bss\b/.test(normalized)) return 'Self service';
-  if (/fullserve|fullservice|\bfs\b/.test(normalized)) return 'Full service';
+  if (/selfserve|selfservice|ssprice|pricess|retailss/.test(normalized)) return 'Self service';
+  if (/fullserve|fullservice|fsprice|pricefs|retailfs/.test(normalized)) return 'Full service';
   return 'Retail';
 }
 
@@ -140,9 +161,16 @@ export function normalizeFboRecord(record) {
   const airport = normalizeAirport(first(index, [
     'airporticao', 'icao', 'airportidentifier', 'airportident', 'airportid',
     'airportcode', 'faaid', 'faalid', 'airport',
+  ]) || firstMatching(index, [
+    /^icao(?:id|code)?$/,
+    /^faa(?:lid|id|code)$/,
+    /^airport.*(?:icao|identifier|ident|code|id)$/,
   ]));
   const name = first(index, [
     'fboname', 'businessname', 'companyname', 'locationname', 'vendorname', 'name',
+  ]) || firstMatching(index, [
+    /^(?:fbo|business|company|vendor).*name$/,
+    /^name.*(?:fbo|business|company|vendor)$/,
   ]);
   const fuelPrices = Object.entries(record)
     .filter(([header, value]) => isPriceHeader(header) && money(value) != null)
@@ -181,19 +209,48 @@ export function normalizeFboCsv(csv) {
   };
 }
 
+/** Which credential variables this deployment is missing, by name. */
+export function missingCredentialNames() {
+  return [
+    ['IFLIGHTPLANNER_CLIENT_ID', clean(process.env.IFLIGHTPLANNER_CLIENT_ID)],
+    ['IFLIGHTPLANNER_CLIENT_SECRET', clean(process.env.IFLIGHTPLANNER_CLIENT_SECRET)],
+  ].filter(([, value]) => !value).map(([name]) => name);
+}
+
+/**
+ * Which deployment answered the request.
+ *
+ * Environment variables are scoped per environment on most hosts, so a value
+ * present in production is still absent from a branch preview. Naming the
+ * environment and branch is the difference between "the credentials are wrong"
+ * and "you are looking at a deployment they were never added to".
+ */
+export function deploymentContext() {
+  return {
+    environment: clean(process.env.VERCEL_ENV) || 'unknown',
+    branch: clean(process.env.VERCEL_GIT_COMMIT_REF) || null,
+  };
+}
+
 function configuredCredentials() {
-  const clientId = clean(process.env.IFLIGHTPLANNER_CLIENT_ID);
-  const clientSecret = clean(process.env.IFLIGHTPLANNER_CLIENT_SECRET);
-  if (!clientId || !clientSecret) {
+  const missing = missingCredentialNames();
+  if (missing.length > 0) {
+    const { environment, branch } = deploymentContext();
     const error = new Error(
-      'iFlightPlanner is not configured. Set IFLIGHTPLANNER_CLIENT_ID and '
-      + 'IFLIGHTPLANNER_CLIENT_SECRET on the server.',
+      `iFlightPlanner credentials are missing from this deployment (${environment}`
+      + `${branch ? ` · ${branch}` : ''}): ${missing.join(' and ')}. `
+      + 'Add them for this environment and redeploy — values added to another '
+      + 'environment, or added without a redeploy, do not reach this function.',
     );
     error.status = 503;
     error.code = 'iflightplanner_not_configured';
+    error.missingEnv = missing;
     throw error;
   }
-  return { clientId, clientSecret };
+  return {
+    clientId: clean(process.env.IFLIGHTPLANNER_CLIENT_ID),
+    clientSecret: clean(process.env.IFLIGHTPLANNER_CLIENT_SECRET),
+  };
 }
 
 async function fetchWithTimeout(url, options = {}) {
@@ -211,35 +268,123 @@ async function accessToken(force = false) {
     return tokenCache.token;
   }
   const { clientId, clientSecret } = configuredCredentials();
-  const response = await fetchWithTimeout(TOKEN_URL, {
-    method: 'POST',
-    headers: {
-      Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`,
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
+
+  // The provider's written OAuth instructions specify an
+  // application/x-www-form-urlencoded body, while their OpenAPI schema declares
+  // the same endpoint as application/json. Rather than bet on one, try the
+  // documented form first and fall back to JSON, so neither reading can leave
+  // this unable to authenticate.
+  const basic = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+  const scope = clean(process.env.IFLIGHTPLANNER_SCOPE);
+  const attempts = [
+    {
+      mediaType: 'application/x-www-form-urlencoded',
+      body: (() => {
+        const form = new URLSearchParams({ grant_type: 'client_credentials' });
+        if (scope) form.set('scope', scope);
+        return form.toString();
+      })(),
     },
-    body: JSON.stringify({ grant_type: 'client_credentials' }),
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || !data.access_token) {
-    const error = new Error(
-      `iFlightPlanner authorization failed (${response.status}): `
-      + `${data.error_description || data.error || 'token not returned'}`,
-    );
-    error.status = 502;
-    error.code = 'iflightplanner_auth_failed';
-    throw error;
+    {
+      mediaType: 'application/json',
+      body: JSON.stringify(scope
+        ? { grant_type: 'client_credentials', scope }
+        : { grant_type: 'client_credentials' }),
+    },
+  ];
+
+  let lastFailure = null;
+  for (const attempt of attempts) {
+    // eslint-disable-next-line no-await-in-loop
+    const response = await fetchWithTimeout(tokenUrl(), {
+      method: 'POST',
+      headers: {
+        Authorization: `Basic ${basic}`,
+        'Content-Type': attempt.mediaType,
+        Accept: 'application/json',
+      },
+      body: attempt.body,
+    });
+    // eslint-disable-next-line no-await-in-loop
+    const data = await response.json().catch(() => ({}));
+    if (response.ok && data.access_token) {
+      tokenCache = {
+        token: data.access_token,
+        expiresAt: Date.now() + Math.max(60, Number(data.expires_in) || 3600) * 1000,
+        scope: data.scope || scope || null,
+        mediaType: attempt.mediaType,
+      };
+      return tokenCache.token;
+    }
+    lastFailure = {
+      status: response.status,
+      message: data.error_description || data.error || 'token not returned',
+    };
   }
-  tokenCache = {
-    token: data.access_token,
-    expiresAt: Date.now() + Math.max(60, Number(data.expires_in) || 3600) * 1000,
-  };
-  return tokenCache.token;
+
+  const error = new Error(
+    `iFlightPlanner authorization failed (${lastFailure.status}): ${lastFailure.message}`,
+  );
+  error.status = 502;
+  error.code = 'iflightplanner_auth_failed';
+  throw error;
 }
 
-async function downloadFboCsv(forceToken = false) {
+/** Which media type the working token request used, for diagnostics. */
+export function tokenMediaType() {
+  return tokenCache?.mediaType || null;
+}
+
+/**
+ * Read the provider's own explanation out of their result envelope.
+ *
+ * Every response is an `AviationApiDataResult`: `status` (0 means success),
+ * plus a `title` and a `messages[]` array of `{ type, code, message }` where
+ * the descriptive text actually lives. Reporting only `status` yields a bare
+ * integer like "3", which tells nobody anything.
+ */
+export function describeProviderResult(result, fallbackBody = '') {
+  if (!result || typeof result !== 'object') {
+    return String(fallbackBody || '').trim().slice(0, 300) || 'no response body';
+  }
+  const messages = (Array.isArray(result.messages) ? result.messages : [])
+    .map((entry) => {
+      const code = clean(entry?.code);
+      const text = clean(entry?.message);
+      if (!text && !code) return '';
+      return code && !text.includes(code) ? `${text} [${code}]` : text;
+    })
+    .filter(Boolean);
+
+  const parts = [];
+  const title = clean(result.title);
+  if (title) parts.push(title);
+  parts.push(...messages);
+  if (parts.length === 0) {
+    const direct = clean(result.message) || clean(result.errorMessage) || clean(result.error);
+    if (direct) parts.push(direct);
+  }
+  if (parts.length === 0 && result.status != null) {
+    // Status alone is nearly useless, so say what it is rather than printing a
+    // naked number that reads like a message.
+    parts.push(`provider returned result status ${result.status} with no message`);
+  }
+  return parts.join(' · ').slice(0, 500)
+    || String(fallbackBody || '').trim().slice(0, 300)
+    || 'no response body';
+}
+
+/**
+ * Pull one CSV dataset.
+ *
+ * A 403 here means the client authenticated but is not entitled to this
+ * dataset, which is an account provisioning matter rather than anything the
+ * request can fix. The provider's own words are carried through verbatim so
+ * they can be forwarded to their support without re-running anything.
+ */
+async function downloadCsv(url, label, forceToken = false) {
   const token = await accessToken(forceToken);
-  const response = await fetchWithTimeout(FBO_DATA_URL, {
+  const response = await fetchWithTimeout(url, {
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: 'application/json',
@@ -247,17 +392,49 @@ async function downloadFboCsv(forceToken = false) {
   });
   if (response.status === 401 && !forceToken) {
     tokenCache = null;
-    return downloadFboCsv(true);
+    return downloadCsv(url, label, true);
   }
-  const result = await response.json().catch(() => ({}));
+
+  const body = await response.text();
+  let result = {};
+  try { result = JSON.parse(body); } catch { /* non-JSON error page */ }
+
   if (!response.ok || typeof result.data !== 'string') {
-    const message = result.message || result.errorMessage || result.error || 'FBO data not returned';
-    const error = new Error(`iFlightPlanner FBO request failed (${response.status}): ${message}`);
+    const providerMessage = describeProviderResult(result, body);
+    const error = new Error(
+      `iFlightPlanner ${label} request failed (${response.status}): ${providerMessage}`,
+    );
     error.status = 502;
-    error.code = 'iflightplanner_data_failed';
+    error.httpStatus = response.status;
+    error.providerMessage = providerMessage;
+    error.providerStatus = result?.status ?? null;
+    error.requestUrl = url;
+    error.code = response.status === 403
+      ? 'iflightplanner_forbidden'
+      : 'iflightplanner_data_failed';
     throw error;
   }
   return result.data;
+}
+
+async function downloadFboCsv() {
+  try {
+    return { csv: await downloadCsv(fboDataUrl(), 'FBO'), dataset: 'fbos' };
+  } catch (error) {
+    if (error.code !== 'iflightplanner_forbidden') throw error;
+    // The two datasets are licensed separately. If only the fuel-price feed is
+    // enabled, prices are still worth having, so try it before giving up.
+    try {
+      return {
+        csv: await downloadCsv(fuelPriceDataUrl(), 'fuel price'),
+        dataset: 'fuel-prices',
+        note: 'The FBO dataset is not enabled for this API client; retail fuel '
+          + 'prices are shown without FBO contact details.',
+      };
+    } catch {
+      throw error;
+    }
+  }
 }
 
 export async function getFboDataset({ force = false } = {}) {
@@ -265,10 +442,12 @@ export async function getFboDataset({ force = false } = {}) {
   if (!force && inFlightData) return inFlightData;
 
   const load = async () => {
-    const csv = await downloadFboCsv();
+    const { csv, dataset, note } = await downloadFboCsv();
     const normalized = normalizeFboCsv(csv);
     dataCache = {
       ...normalized,
+      dataset,
+      note: note || null,
       fetchedAt: Date.now(),
       expiresAt: Date.now() + DATA_TTL_MS,
     };
@@ -316,12 +495,18 @@ export function summarizeAirportFbos(records, requestedAirport) {
 }
 
 export function publicIFlightPlannerStatus() {
+  const missingEnv = missingCredentialNames();
+  const base = apiBase();
   return {
-    configured: Boolean(
-      clean(process.env.IFLIGHTPLANNER_CLIENT_ID)
-      && clean(process.env.IFLIGHTPLANNER_CLIENT_SECRET),
-    ),
+    configured: missingEnv.length === 0,
+    missingEnv,
+    deployment: deploymentContext(),
     source: 'iFlightPlanner',
     endpoint: 'FBO & Fuel Price Data v2',
+    apiBase: base,
+    // Their dev and production environments issue different credentials, so a
+    // host/credential mismatch is a first thing to rule out on a 403.
+    environmentKind: /(^|\/\/)dev\./i.test(base) ? 'development' : 'production',
+    scopeConfigured: Boolean(clean(process.env.IFLIGHTPLANNER_SCOPE)),
   };
 }

@@ -35,6 +35,7 @@ import {
   subscribeAllWearItems, subscribeWearItemsForTail,
   subscribeWearInspections, subscribeInspectionsForItem, subscribeTodayInspections,
   subscribeLatestSession, saveWearCheckSession, computeLandingsSinceCheck,
+  subscribeWearTailState,
   LANDINGS_PER_CHECK,
   subscribeTrainingLibrary,
   checkComplete, requestAiAssessment, localDateKey,
@@ -143,9 +144,11 @@ export function WearCheckBadge({
   tripId,
   legId,
   onOpenModal,
+  onDueChange,
 }) {
   const [latestSession, setLatestSession] = useState(null);
   const [sessionLoaded, setSessionLoaded] = useState(false);
+  const [tailState, setTailState] = useState(null);
 
   useEffect(() => {
     if (!tail) return;
@@ -157,18 +160,29 @@ export function WearCheckBadge({
     return () => u && u();
   }, [tail]);
 
+  useEffect(() => subscribeWearTailState(tail, setTailState), [tail]);
+
   // Landings since the most recent completed session for this tail.
-  const landingsSince = useMemo(
-    () => computeLandingsSinceCheck(allTrips, tail, latestSession?.completedAtMs || 0),
-    [allTrips, tail, latestSession],
-  );
+  const landingsSince = useMemo(() => {
+    const sameCycle = tailState
+      && (tailState.lastSessionId || null) === (latestSession?.id || null);
+    if (sameCycle && Number.isFinite(tailState.landingsSinceSession)) {
+      return tailState.landingsSinceSession;
+    }
+    return computeLandingsSinceCheck(allTrips, tail, latestSession?.completedAtMs || 0);
+  }, [allTrips, tail, latestSession, tailState]);
+
+  const isDue = sessionLoaded && landingsSince >= LANDINGS_PER_CHECK;
+  const isApproaching = landingsSince >= (LANDINGS_PER_CHECK - 2) && !isDue;
+
+  useEffect(() => {
+    onDueChange?.(sessionLoaded ? { due: isDue, landingsSince } : null);
+    return () => onDueChange?.(null);
+  }, [isDue, landingsSince, onDueChange, sessionLoaded]);
 
   // Avoid flashing the "DUE" red badge for half a second while the
   // session subscription is loading on first render.
   if (!sessionLoaded) return null;
-
-  const isDue = landingsSince >= LANDINGS_PER_CHECK;
-  const isApproaching = landingsSince >= (LANDINGS_PER_CHECK - 2) && !isDue;
 
   // Compose label + visual based on state
   let label, kind, titleAttr;

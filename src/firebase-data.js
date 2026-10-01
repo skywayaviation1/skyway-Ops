@@ -64,6 +64,19 @@ export async function fetchTripStateForShare(tripId) {
       preloadedPax: Array.isArray(data.preloadedPax) ? data.preloadedPax : [],
       passengers: Array.isArray(data.passengers) ? data.passengers : [],
       statuses: (data.statuses && typeof data.statuses === 'object') ? data.statuses : {},
+      brokerEmail: data.brokerEmail || '',
+      tripSheetUrl: data.tripSheetUrl || null,
+      tripSheetPath: data.tripSheetPath || null,
+      tripSheetFilename: data.tripSheetFilename || null,
+      tripSheetNotes: data.tripSheetNotes || null,
+      tripSheetData: (
+        data.tripSheetData && typeof data.tripSheetData === 'object'
+          ? data.tripSheetData
+          : null
+      ),
+      fromFbo: data.fromFbo || null,
+      toFbo: data.toFbo || null,
+      hasCatering: data.hasCatering !== false,
     };
   } catch (err) {
     console.error('[firebase-data] fetchTripStateForShare failed:', tripId, err);
@@ -276,6 +289,7 @@ export async function attachTripSheetToLeg(legUpdate) {
         // null rather than deleteField() — null reads cleanly downstream
         // and keeps Firestore merge semantics simple.
         tripSheetData: null,
+        tripCode: null,
         updatedAt: Date.now(),
       },
       { merge: true }
@@ -302,6 +316,7 @@ export async function attachTripSheetToLeg(legUpdate) {
       // include it (older client), leave Firestore field unchanged
       // (merge semantics).
       ...(legUpdate.tripSheetData ? { tripSheetData: legUpdate.tripSheetData } : {}),
+      tripCode: legUpdate.tripCode || legUpdate.tripSheetData?.tripCode || null,
       updatedAt: Date.now(),
     },
     { merge: true }

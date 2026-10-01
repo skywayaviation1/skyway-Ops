@@ -66,7 +66,7 @@ test('normalizes QuickBooks invoices and customers', () => {
     DocNumber: '1042',
     CustomerRef: { value: '7', name: 'Outlier Jets' },
     TxnDate: '2026-08-01',
-    DueDate: '2026-08-31',
+    DueDate: '2099-08-31',
     TotalAmt: 12500,
     Balance: 12500,
     BillEmail: { Address: 'ap@outlierjets.com' },
