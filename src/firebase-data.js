@@ -50,24 +50,47 @@ export async function fetchPreloadedPax(tripId) {
  * One-shot fetch combining preloadedPax + statuses + scanned passengers
  * for a trip. Used by SHARE WITH BROKER to grab everything needed for
  * the broker snapshot in a single read per leg.
- *   { preloadedPax: [], passengers: [], statuses: {} }
+ *   { preloadedPax, passengers, statuses, tripCode, brokerEmail, customer, secondaryNotify }
+ * secondaryNotify is null when the field was never saved, and an array
+ * (including empty) once ops has saved it. tripCode is the sheet code only.
  * Empty arrays/object if the doc doesn't exist or fields are missing.
  */
+function emptyShareState() {
+  return {
+    preloadedPax: [],
+    passengers: [],
+    statuses: {},
+    tripCode: null,
+    tripSheetData: null,
+    brokerEmail: '',
+    customer: null,
+    secondaryNotify: null,
+  };
+}
+
 export async function fetchTripStateForShare(tripId) {
-  if (!tripId) return { preloadedPax: [], passengers: [], statuses: {} };
+  if (!tripId) return emptyShareState();
   const safeId = sanitizeKey(tripId);
   try {
     const snap = await getDoc(doc(db, 'trip-state', safeId));
-    if (!snap.exists()) return { preloadedPax: [], passengers: [], statuses: {} };
+    if (!snap.exists()) return emptyShareState();
     const data = snap.data();
+    const tripCode = data.tripSheetData?.tripCode || null;
     return {
       preloadedPax: Array.isArray(data.preloadedPax) ? data.preloadedPax : [],
       passengers: Array.isArray(data.passengers) ? data.passengers : [],
       statuses: (data.statuses && typeof data.statuses === 'object') ? data.statuses : {},
+      tripCode,
+      tripSheetData: data.tripSheetData && typeof data.tripSheetData === 'object'
+        ? { tripCode }
+        : null,
+      brokerEmail: typeof data.brokerEmail === 'string' ? data.brokerEmail : '',
+      customer: data.tripMeta?.customer || null,
+      secondaryNotify: Array.isArray(data.secondaryNotify) ? data.secondaryNotify : null,
     };
   } catch (err) {
     console.error('[firebase-data] fetchTripStateForShare failed:', tripId, err);
-    return { preloadedPax: [], passengers: [], statuses: {} };
+    return emptyShareState();
   }
 }
 
@@ -191,6 +214,9 @@ export async function saveTripState(tripId, state) {
   // tripMeta — route/tail/start info, used by the FlightAware webhook to match
   // incoming events to this trip. See PR 2c.
   if (has('tripMeta'))             patch.tripMeta = state.tripMeta || null;
+  // Manual secondary-notify list. An array (including empty) is a saved
+  // choice and must not be rebuilt from the next trip's broker email.
+  if (has('secondaryNotify'))      patch.secondaryNotify = Array.isArray(state.secondaryNotify) ? state.secondaryNotify : [];
 
   const ref = doc(db, 'trip-state', safeId);
 
@@ -243,6 +269,7 @@ export async function seedTripMeta(tripUid, meta) {
       to: String(meta.to || '').toUpperCase(),
       start: meta.start,
       legType: meta.legType || 'REVENUE',
+      ...(meta.customer ? { customer: String(meta.customer) } : {}),
     },
     updatedAt: Date.now(),
   }, { merge: true });
