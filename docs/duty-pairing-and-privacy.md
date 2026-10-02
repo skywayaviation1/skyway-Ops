@@ -38,8 +38,11 @@ Either pilot can initiate:
    pending until that pilot personally confirms fitness/rest.
 5. The response includes only the caller's own record.
 6. `/api/duty-end-pair` accepts crew-supplied time/flight details only against
-   the caller's own period, then atomically closes the linked record at the same
-   duty-off time.
+   the caller's own period. When a partner is on duty the caller chooses
+   `scope: "self"` (only my duty) or `scope: "crew"` (whole crew). A crew
+   change sends the replacement and ends only the caller; the pilot who is
+   staying keeps the original duty-on time and is linked to the replacement.
+   Whole-crew duty-off is the only path that closes both records.
 
 ## Historical repair
 

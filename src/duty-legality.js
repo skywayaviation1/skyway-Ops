@@ -77,40 +77,23 @@
 // =====================================================================
 
 // ---- Constants ----
+// The numbers live in duty-limits.js so the crew-change planner and this
+// engine cannot drift. They are the existing 135.267 / 135.265 values.
 
-const MS_PER_HR = 3600 * 1000;
-const MS_PER_DAY = 24 * MS_PER_HR;
-
-// Flight time limits
-const SINGLE_PILOT_FLIGHT_MAX_MS = 8 * MS_PER_HR;
-const TWO_PILOT_FLIGHT_MAX_MS = 10 * MS_PER_HR;
-
-// Rest requirements
-const REST_REQUIRED_BEFORE_MS = 10 * MS_PER_HR;     // 135.267(b)
-const REGULAR_DUTY_MAX_MS = 14 * MS_PER_HR;          // 135.267(c)
-
-// Extended rest after flight-time excursion (135.267(d))
-const EXTENDED_REST_TIER_1_MS = 11 * MS_PER_HR;   // 0-30 min over
-const EXTENDED_REST_TIER_2_MS = 12 * MS_PER_HR;   // 31-60 min over
-const EXTENDED_REST_TIER_3_MS = 16 * MS_PER_HR;   // 60+ min over
-
-// Quarterly 24h rest days (135.265(c))
-const QUARTERLY_24H_REST_DAYS_REQUIRED = 13;
-
-// Warning thresholds — these aren't regulatory; they're our "approaching
-// the limit" indicators so dispatch sees a yellow warning before red.
-const WARN_AT_FRACTION = 0.85;   // 85% of any limit fires a warning
-
-export const LIMITS = {
+import {
+  LIMITS,
+  MS_PER_DAY,
+  MS_PER_HR,
+  QUARTERLY_24H_REST_DAYS_REQUIRED,
+  REGULAR_DUTY_MAX_MS,
+  REST_REQUIRED_BEFORE_MS,
   SINGLE_PILOT_FLIGHT_MAX_MS,
   TWO_PILOT_FLIGHT_MAX_MS,
-  REST_REQUIRED_BEFORE_MS,
-  REGULAR_DUTY_MAX_MS,
-  EXTENDED_REST_TIER_1_MS,
-  EXTENDED_REST_TIER_2_MS,
-  EXTENDED_REST_TIER_3_MS,
-  QUARTERLY_24H_REST_DAYS_REQUIRED,
-};
+  WARN_AT_FRACTION,
+} from './duty-limits.js';
+import { extendedRestForPeriod, flightTimeChecks } from './duty-crew-change.js';
+
+export { LIMITS };
 
 // ---- Period shape (input contract) ----
 //
@@ -436,32 +419,21 @@ function check_rest24h(periods, atTime, proposedDutyOffAt) {
   // Determine the assignment "completion" time we're computing toward
   const completion = Number.isFinite(proposedDutyOffAt) ? proposedDutyOffAt : atTime;
 
-  // Determine required rest. Start at 10h; bump for prior excursion.
+  // Determine required rest. Start at 10h (135.267(b)); bump for a real
+  // excursion under 135.267(d). The excursion is measured per crew segment:
+  // two-pilot time is compared with 10 hours, single-pilot time with 8.
   let requiredMs = REST_REQUIRED_BEFORE_MS;
   let extendedReason = null;
   // Find the most recent closed period before `completion`
   const lastClosed = [...(periods || [])]
     .filter(p => p && Number.isFinite(p.dutyOnAt) && Number.isFinite(p.dutyOffAt))
+    .filter(p => p.recordStatus !== 'superseded' && p.confirmStatus !== 'superseded')
     .filter(p => p.dutyOffAt <= completion)
     .sort((a, b) => b.dutyOffAt - a.dutyOffAt)[0];
   if (lastClosed) {
-    const ft = lastClosed.flightTimeMs || 0;
-    const limit = lastClosed.crewType === 'two'
-      ? TWO_PILOT_FLIGHT_MAX_MS
-      : SINGLE_PILOT_FLIGHT_MAX_MS;
-    const overMs = ft - limit;
-    if (overMs > 0) {
-      if (overMs <= 30 * 60 * 1000) {
-        requiredMs = EXTENDED_REST_TIER_1_MS;
-        extendedReason = '0–30 min flight-time excursion';
-      } else if (overMs <= 60 * 60 * 1000) {
-        requiredMs = EXTENDED_REST_TIER_2_MS;
-        extendedReason = '31–60 min flight-time excursion';
-      } else {
-        requiredMs = EXTENDED_REST_TIER_3_MS;
-        extendedReason = '>60 min flight-time excursion';
-      }
-    }
+    const requirement = extendedRestForPeriod(lastClosed);
+    requiredMs = requirement.requiredMs;
+    extendedReason = requirement.extendedReason;
   }
 
   // Find the largest continuous rest gap in the 24h window before completion
@@ -681,11 +653,16 @@ export function evaluateLegality(periods, outsideFlying, atTime, options = {}) {
   // Periods missing confirmStatus (legacy docs from before the pair flow
   // was added) are treated as self-attested (the default for all old
   // docs is implicitly self — the pilot filled the form themselves).
-  const safePeriods = rawPeriods.filter(p =>
-    !p || !p.confirmStatus ||
-    p.confirmStatus === 'self-attested' ||
-    p.confirmStatus === 'admin-attested'
-  );
+  const safePeriods = rawPeriods.filter(p => {
+    if (!p) return true;
+    // A superseded record keeps its original times for the audit trail but
+    // must not be counted twice after a crew-change correction merged it
+    // into one continuous duty.
+    if (p.recordStatus === 'superseded' || p.confirmStatus === 'superseded') return false;
+    return !p.confirmStatus ||
+      p.confirmStatus === 'self-attested' ||
+      p.confirmStatus === 'admin-attested';
+  });
   const safeOutside = Array.isArray(outsideFlying) ? outsideFlying : [];
   const proposed = options.proposedAssignment || null;
   // Crew type: if a proposed assignment specifies it, use that; otherwise
@@ -713,18 +690,14 @@ export function evaluateLegality(periods, outsideFlying, atTime, options = {}) {
     .sort((a, b) => b.dutyOnAt - a.dutyOnAt)[0]
     || proposed;
 
-  // NOTE 2026-06: the 8/10-hour rolling-24h flight-time check (FT_24H,
-  // computed by check_flightTime24h) was producing wildly incorrect
-  // numbers in production — it placed each duty period's whole
-  // flightTimeMs at dutyOnAt and double-counted events whose
-  // [at, at+ms] envelope brushed the 24h window, so two unrelated
-  // duty periods on different days would aggregate into a fake
-  // "9.4h of 10h" warning. Pulled from the alerts list per Jake's
-  // call. The check_flightTime24h function is kept in the file (and
-  // FT_24H is still in the comment table above) so a future rewrite
-  // has somewhere to land — it just isn't run.
+  // NOTE 2026-06: check_flightTime24h placed each period's flight time at
+  // dutyOnAt and double-counted envelopes, so it was taken out of the
+  // alert list. The 2026-10 replacement is flightTimeChecks: one count per
+  // period whose duty-on is inside the 24h window, split by crew segment.
+  // Single-pilot time uses the 8h limit and two-pilot time uses the 10h
+  // limit, both 14 CFR 135.267(b). check_flightTime24h remains below unused.
   const checks = [
-    // check_flightTime24h(periodsForCheck, safeOutside, crewType, checkTime),  // disabled — incorrect math, see note above
+    ...flightTimeChecks(periodsForCheck, checkTime, safeOutside),
     check_rest24h(periodsForCheck, atTime, proposed?.dutyOffAt),
     check_dutyPeriod14h(activeNow, checkTime),
     check_quarterly13(periodsForCheck, checkTime),

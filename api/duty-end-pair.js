@@ -8,9 +8,12 @@
 // never read partnerPeriodId to close the OTHER pilot. So when one pilot
 // tapped DUTY OFF, the partner stayed status:'on' — their timer ran past
 // 14h, threw a false "Duty Limit Exceeded", their rest never started, and
-// the two crew records split. Every admin function (addPartner / removePartner
-// / link / unlink) already cascades to the partner in a batch; the one
-// daily-use path (endDuty) did not.
+// the two crew records split.
+//
+// Closing both is right only when the whole crew is done. A crew change
+// (one pilot leaves, a replacement joins, the other pilot keeps flying)
+// must end only the pilot who is leaving. That choice is explicit. Naming
+// a replacement defaults to ending only the caller.
 //
 // WHY THIS IS A SERVER ENDPOINT (not a client cascade)
 // ----------------------------------------------------
@@ -27,9 +30,16 @@
 //             dutyOffAt?,    (ms, default now)
 //             flightTimeMs?, (initiator only — partner's own time is untouched)
 //             excursionReason?,
-//             endedByName?
+//             endedByName?,
+//             scope?,        'self' | 'crew' — required when a partner is on duty
+//             replacement?,  { pilotUid, pilotName, role? } crew change; forces scope 'self'
+//             over14Verified?
 //           }
-// Response: { ok, closed: [ids], dutyOffAt, alreadyClosed? }
+// Response: { ok, closed: [ids], dutyOffAt, scope, alreadyClosed? }
+//
+// scope 'crew' is the only path that ends the linked partner. A crew change
+// (replacement set, or scope omitted while a replacement is named) ends only
+// the caller and leaves the partner on their original duty-on time.
 //
 // Env vars (already present for other endpoints):
 //   FIREBASE_SERVICE_ACCOUNT_JSON
@@ -37,11 +47,11 @@
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import { sendOver14DutyEmail } from './_duty-alert.js';
+import { planDutyOff } from '../src/duty-crew-change.js';
 
 export const config = { runtime: 'nodejs', maxDuration: 30 };
 
 const COLL = 'duty-periods-v2';
-const MS_14H = 14 * 3600 * 1000;
 const ADMIN_ROLES = new Set(['admin']);
 
 let _adminApp = null;
@@ -94,14 +104,11 @@ export default async function handler(req, res) {
     if (!snap.exists) { res.status(404).json({ ok: false, error: 'duty period not found' }); return; }
     const period = snap.data();
 
-    // --- Load partner (if any) up front: needed for both authz and cascade ---
-    let partnerRef = null;
+    // --- Load partner (if any). Crew-change writes go through the planner. ---
     let partner = null;
     if (period.partnerPeriodId) {
-      partnerRef = db.collection(COLL).doc(period.partnerPeriodId);
-      const ps = await partnerRef.get();
+      const ps = await db.collection(COLL).doc(period.partnerPeriodId).get();
       if (ps.exists) partner = ps.data();
-      else partnerRef = null;
     }
 
     // --- Authorize: either paired pilot, or an admin-ish role ---
@@ -113,8 +120,7 @@ export default async function handler(req, res) {
     } catch { /* fall through to deny */ }
     // Crew must address their OWN period id. Otherwise a pilot who learns the
     // linked id could submit flight time/excursion data against the partner's
-    // record. The server still closes both records, but only the caller's own
-    // period accepts caller-supplied details.
+    // record. Only the caller's own period accepts caller-supplied details.
     const authorized = callerUid === period.pilotUid || isAdmin;
     if (!authorized) {
       res.status(403).json({ ok: false, error: 'not authorized to end this duty period' });
@@ -127,84 +133,76 @@ export default async function handler(req, res) {
       return;
     }
 
-    // --- Resolve dutyOffAt ---
+    // --- Resolve dutyOffAt and who, if anyone, goes off with the caller ---
     const dutyOffAt = Number.isFinite(body.dutyOffAt) ? body.dutyOffAt : Date.now();
-    if (dutyOffAt <= period.dutyOnAt) {
-      res.status(400).json({ ok: false, error: 'dutyOffAt must be after dutyOnAt' });
-      return;
-    }
     const endedBy = body.endedByName || period.pilotName || 'pilot';
     const now = Date.now();
-    const closed = [];
-    const initiatorOver14 = (dutyOffAt - period.dutyOnAt) > MS_14H;
-    const partnerOffAt = partner && dutyOffAt <= partner.dutyOnAt
-      ? partner.dutyOnAt + 1
-      : dutyOffAt;
-    const partnerOver14 = Boolean(
-      partner && partner.status === 'on' && partnerOffAt - partner.dutyOnAt > MS_14H,
-    );
-    if ((initiatorOver14 || partnerOver14) && body.over14Verified !== true) {
-      res.status(400).json({
-        ok: false,
-        error: 'Confirm that this duty period actually exceeded 14 hours before ending duty',
-        code: 'over14-verification-required',
-      });
+    const replacement = body.replacement?.pilotUid ? {
+      pilotUid: String(body.replacement.pilotUid),
+      pilotName: body.replacement.pilotName || null,
+      role: body.replacement.role || null,
+    } : null;
+
+    let replacementOpenPeriod = null;
+    if (replacement) {
+      const profile = await db.collection('users').doc(replacement.pilotUid).get();
+      if (!profile.exists) {
+        res.status(400).json({ ok: false, error: 'Replacement pilot profile not found' });
+        return;
+      }
+      const user = profile.data() || {};
+      const role = String(user.role || '').toLowerCase();
+      const pilotRoles = new Set(['crew', 'pilot', 'admin', 'ops', 'chief-pilot', 'chief_pilot']);
+      if (user.approved !== true || user.active === false || !pilotRoles.has(role)) {
+        res.status(400).json({ ok: false, error: 'Replacement is not an active approved pilot' });
+        return;
+      }
+      replacement.pilotName = user.name || user.displayName || replacement.pilotName || 'Unknown';
+      const open = await db.collection(COLL)
+        .where('pilotUid', '==', replacement.pilotUid)
+        .where('status', '==', 'on')
+        .get();
+      if (!open.empty) {
+        const docSnap = open.docs[0];
+        replacementOpenPeriod = { id: docSnap.id, ...docSnap.data() };
+      }
+    }
+
+    const partnerRecord = partner ? { id: period.partnerPeriodId, ...partner } : null;
+    const plan = planDutyOff({
+      period: { id: periodId, ...period },
+      partner: partnerRecord,
+      dutyOffAt,
+      flightTimeMs: Number.isFinite(body.flightTimeMs) ? body.flightTimeMs : undefined,
+      excursionReason: body.excursionReason || null,
+      scope: body.scope,
+      replacement,
+      replacementOpenPeriod,
+      actorName: endedBy,
+      now,
+      over14Verified: body.over14Verified === true,
+    });
+    if (!plan.ok) {
+      res.status(plan.status || 400).json({ ok: false, error: plan.error, code: plan.code || null });
       return;
     }
 
     const batch = db.batch();
-
-    // --- Close the initiator's period ---
-    const flightTimeMs = Number.isFinite(body.flightTimeMs) ? body.flightTimeMs : (period.flightTimeMs || 0);
-    const pEdits = Array.isArray(period.adminEdits) ? period.adminEdits : [];
-    batch.update(ref, {
-      dutyOffAt,
-      flightTimeMs,
-      excursionReason: body.excursionReason || period.excursionReason || null,
-      status: 'off',
-      over14: initiatorOver14,
-      over14VerifiedAt: initiatorOver14 ? now : null,
-      over14VerifiedBy: initiatorOver14 ? endedBy : null,
-      over14VerificationSource: initiatorOver14 ? 'pilot-duty-off' : null,
-      updatedAt: now,
-      adminEdits: [...pEdits, {
-        by: endedBy,
-        at: now,
-        field: 'endDuty',
-        from: { status: 'on', dutyOffAt: null },
-        to: { status: 'off', dutyOffAt },
-        note: body.excursionReason || null,
-      }],
-    });
-    closed.push(periodId);
-
-    // --- Cascade: close the paired partner at the SAME dutyOffAt ---
-    // Skip if the partner already closed, or declined the pairing (status would
-    // already be 'off' in that case, but we double-guard). The partner's own
-    // flightTimeMs is left untouched — each pilot owns their flight time.
-    if (partner && partnerRef && partner.status === 'on' && partner.confirmStatus !== 'declined') {
-      const sEdits = Array.isArray(partner.adminEdits) ? partner.adminEdits : [];
-      batch.update(partnerRef, {
-        dutyOffAt: partnerOffAt,
-        status: 'off',
-        over14: partnerOver14,
-        over14VerifiedAt: partnerOver14 ? now : null,
-        over14VerifiedBy: partnerOver14 ? endedBy : null,
-        over14VerificationSource: partnerOver14 ? 'crew-synced-duty-off' : null,
-        updatedAt: now,
-        adminEdits: [...sEdits, {
-          by: endedBy,
-          at: now,
-          field: 'endDuty',
-          from: { status: 'on', dutyOffAt: null },
-          to: { status: 'off', dutyOffAt: partnerOffAt },
-          note: `Crew-synced duty off — closed automatically when ${endedBy} (${period.role || 'crew'}) ended duty`,
-        }],
-      });
-      closed.push(period.partnerPeriodId);
+    const closed = [];
+    for (const write of plan.writes) {
+      if (write.op === 'create') {
+        batch.set(db.collection(COLL).doc(write.id), write.doc);
+      } else {
+        batch.update(db.collection(COLL).doc(write.id), write.patch);
+        if (write.patch?.status === 'off') closed.push(write.id);
+      }
     }
-
     await batch.commit();
+
+    const initiatorOver14 = plan.initiatorOver14;
+    const partnerOver14 = plan.partnerOver14;
+    const flightTimeMs = Number.isFinite(body.flightTimeMs) ? body.flightTimeMs : (period.flightTimeMs || 0);
+    const partnerOffAt = dutyOffAt;
 
     let email = null;
     if (initiatorOver14) {
@@ -240,12 +238,12 @@ export default async function handler(req, res) {
             over14: true,
           },
           verifiedBy: endedBy,
-          verificationSource: 'Crew-synced pilot duty-off confirmation',
+          verificationSource: 'Whole-crew duty-off confirmation',
         });
       } catch (err) {
         await db.collection('duty-alert-failures').add({
           type: 'over14',
-          periodId: partner.id || period.partnerPeriodId,
+          periodId: period.partnerPeriodId,
           recipients: ['Jim@flyskyway.com', 'Jake@flyskyway.com', 'zack.taylor@flyskyway.com'],
           error: err?.message || 'email failed',
           createdAt: Date.now(),
@@ -257,6 +255,8 @@ export default async function handler(req, res) {
       ok: true,
       closed,
       dutyOffAt,
+      scope: plan.scope,
+      scopeReason: plan.scopeReason,
       over14: initiatorOver14 || partnerOver14,
       email,
     });

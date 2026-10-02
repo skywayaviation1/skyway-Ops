@@ -39,7 +39,46 @@ export const subscribeToAogEvents = (cb) => emitValue([])(cb);
 /* ── firebase-duty-v2 ───────────────────────────────────────────────────── */
 export const subscribeRecentForAllPilots = (_days, cb) => emitValue(dutyPeriods())(cb);
 export const subscribeAllOnDuty = (cb) => emitValue(dutyPeriods().filter((p) => p.status === 'on'))(cb);
-export const subscribePeriodsForPilot = (_uid, cb) => emitValue(dutyPeriods())(cb);
+export const subscribePeriodsForPilot = (uid, cb) => {
+  const all = dutyPeriods();
+  let rows = uid ? all.filter((period) => period.pilotUid === uid) : all;
+  if (typeof window !== 'undefined' && uid) {
+    const scenario = new URLSearchParams(window.location.search).get('dutyScenario');
+    if (scenario === 'resume') {
+      const now = Date.now();
+      const HOUR = 3600_000;
+      rows = [{
+        id: 'duty-resume',
+        pilotUid: uid,
+        pilotName: 'Maxwell Hagberg',
+        status: 'off',
+        confirmStatus: 'self-attested',
+        dutyOnAt: now - 6 * HOUR,
+        dutyOffAt: now - 30 * 60_000,
+        flightTimeMs: 2 * HOUR,
+        location: 'KIAD',
+        tail: 'N444AM',
+        role: 'SIC',
+        crewType: 'two',
+        assignmentType: 'regular',
+        partnerPeriodId: 'duty-partner-old',
+        fitForDuty: true,
+        priorRestMs: 12 * HOUR,
+        over14: false,
+        closedByPartner: true,
+        adminEdits: [{
+          field: 'endDuty',
+          by: 'Daniel',
+          at: now - 30 * 60_000,
+          from: { status: 'on', dutyOffAt: null },
+          to: { status: 'off' },
+          note: 'Crew-synced duty off — closed automatically when Daniel (PIC) ended duty',
+        }],
+      }];
+    }
+  }
+  return emitValue(rows)(cb);
+};
 export const subscribeOutsideFlyingForPilot = (_uid, cb) => emitValue([])(cb);
 
 /* ── firebase-pilotdocs ─────────────────────────────────────────────────── */
@@ -113,6 +152,7 @@ export const startDuty = write;
 export const startDutyPair = write;
 export const endDuty = write;
 export const endDutyPair = write;
+export const relinkDutyPartner = write;
 export const editPeriod = write;
 export const confirmPendingDuty = write;
 export const declinePendingDuty = write;
