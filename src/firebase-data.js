@@ -47,6 +47,30 @@ export async function fetchPreloadedPax(tripId) {
 }
 
 /**
+ * Fields the trip-sheet upload must read before it writes, so a second
+ * upload can keep manually edited notes and check-in progress.
+ * Returns null when the leg has no trip-state doc yet.
+ */
+export async function fetchTripSheetEditState(tripId) {
+  if (!tripId) return null;
+  const safeId = sanitizeKey(tripId);
+  try {
+    const snap = await getDoc(doc(db, 'trip-state', safeId));
+    if (!snap.exists()) return null;
+    const data = snap.data();
+    return {
+      preloadedPax: Array.isArray(data.preloadedPax) ? data.preloadedPax : [],
+      tripSheetNotes: data.tripSheetNotes || null,
+      tripSheetNotesEditedAt: data.tripSheetNotesEditedAt || null,
+      tripSheetNotesEditedByName: data.tripSheetNotesEditedByName || null,
+    };
+  } catch (err) {
+    console.error('[firebase-data] fetchTripSheetEditState failed:', tripId, err);
+    return null;
+  }
+}
+
+/**
  * One-shot fetch combining preloadedPax + statuses + scanned passengers
  * for a trip. Used by SHARE WITH BROKER to grab everything needed for
  * the broker snapshot in a single read per leg.
@@ -114,6 +138,9 @@ export function subscribeToTripState(tripId, onUpdate) {
           // FBO names parsed from the trip sheet for THIS leg's two airports.
           fromFbo: data.fromFbo || null,
           toFbo: data.toFbo || null,
+          // Per-leg payload parsed from the crew itinerary (fees, fuel,
+          // times, crew, client). Absent on trips that never had a sheet.
+          tripSheetData: data.tripSheetData || null,
         });
       } else {
         // No state yet — emit empty defaults
@@ -129,6 +156,7 @@ export function subscribeToTripState(tripId, onUpdate) {
           tripSheetNotesEditedByName: null,
           fromFbo: null,
           toFbo: null,
+          tripSheetData: null,
         });
       }
     },
