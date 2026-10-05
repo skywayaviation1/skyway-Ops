@@ -42,6 +42,28 @@
   },
   "rewrites": [
     {
+      "source": "/trip-track",
+      "has": [
+        {
+          "type": "header",
+          "key": "user-agent",
+          "value": "facebookexternalhit|Facebot|Twitterbot|Slackbot|WhatsApp|LinkedInBot|Discordbot|TelegramBot|Applebot|Embedly|Pinterest|redditbot|SkypeUriPreview"
+        }
+      ],
+      "destination": "/api/trip-track-preview"
+    },
+    {
+      "source": "/trip-track.html",
+      "has": [
+        {
+          "type": "header",
+          "key": "user-agent",
+          "value": "facebookexternalhit|Facebot|Twitterbot|Slackbot|WhatsApp|LinkedInBot|Discordbot|TelegramBot|Applebot|Embedly|Pinterest|redditbot|SkypeUriPreview"
+        }
+      ],
+      "destination": "/api/trip-track-preview"
+    },
+    {
       "source": "/__/auth/:path*",
       "destination": "https://skyway-ops-app.firebaseapp.com/__/auth/:path*"
     },

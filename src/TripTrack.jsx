@@ -22,14 +22,16 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Plane, AlertCircle, RefreshCw, Loader2,
+  Plane, AlertCircle, RefreshCw, Loader2, Moon, Sun,
   ArrowRight, CheckCircle2, Circle, Cloud, Wind, Eye, Thermometer,
 } from 'lucide-react';
 import { formatLocalTime, formatLocalDate } from './airports.js';
 // The same map component and visual language the ops Tracking screen uses, so
 // a broker and a dispatcher are looking at the identical picture of the flight.
-import { Wordmark } from './ui.jsx';
+import { Wordmark, useThemeMode } from './ui.jsx';
 import { brand } from './brand.js';
+import { accentPalette, trackingPageMeta } from './broker-brand.js';
+import './theme-classy.css';
 import TrackingMap from './TrackingMap.jsx';
 import { flightCategoryStyle, normalizeTrail, distanceNm } from './tracking-map.js';
 // FAA NOTAM badge — renders silently when no significant NOTAMs are active,
@@ -823,12 +825,97 @@ function Leg({ leg, isActive, position }) {
 
 const EMPTY_STATE = {
   loading: false, err: null, trip: null, position: null,
-  trail: null, trailLive: false, weather: {},
+  trail: null, trailLive: false, weather: {}, branding: null,
 };
+
+function applyDocumentMeta(meta) {
+  if (typeof document === 'undefined') return () => {};
+  const previousTitle = document.title;
+  document.title = meta.title;
+  const touched = [];
+  const setMeta = (attr, key, content) => {
+    if (!content) return;
+    let el = document.head.querySelector(`meta[${attr}="${key}"]`);
+    const created = !el;
+    if (!el) {
+      el = document.createElement('meta');
+      el.setAttribute(attr, key);
+      document.head.appendChild(el);
+    }
+    const previous = el.getAttribute('content');
+    el.setAttribute('content', content);
+    touched.push({ el, created, previous });
+  };
+  setMeta('name', 'description', meta.description);
+  setMeta('property', 'og:title', meta.title);
+  setMeta('property', 'og:description', meta.description);
+  setMeta('property', 'og:image', meta.image);
+  setMeta('name', 'twitter:card', meta.image ? 'summary' : null);
+  setMeta('name', 'twitter:title', meta.title);
+  setMeta('name', 'twitter:description', meta.description);
+  setMeta('name', 'twitter:image', meta.image);
+  setMeta('name', 'robots', 'noindex, nofollow');
+  const themeNodes = [];
+  if (meta.themeColor) {
+    document.querySelectorAll('meta[name="theme-color"]').forEach((el) => {
+      themeNodes.push({ el, previous: el.getAttribute('content') });
+      el.setAttribute('content', meta.themeColor);
+    });
+  }
+  let icon = null;
+  if (meta.whiteLabel && meta.image) {
+    icon = document.createElement('link');
+    icon.rel = 'icon';
+    icon.href = meta.image;
+    document.head.appendChild(icon);
+  }
+  return () => {
+    document.title = previousTitle;
+    for (const node of touched) {
+      if (node.created) node.el.remove();
+      else if (node.previous != null) node.el.setAttribute('content', node.previous);
+    }
+    for (const node of themeNodes) {
+      if (node.previous != null) node.el.setAttribute('content', node.previous);
+    }
+    icon?.remove();
+  };
+}
+
+function useTrackAppearance() {
+  const mode = useThemeMode();
+  useEffect(() => {
+    const root = document.documentElement;
+    const requested = new URLSearchParams(window.location.search).get('appearance');
+    if (requested === 'light') {
+      root.setAttribute('data-theme', 'classy');
+      return;
+    }
+    if (requested === 'dark') {
+      root.setAttribute('data-theme', 'dark');
+      return;
+    }
+    let saved = null;
+    try { saved = localStorage.getItem('skyway-theme'); } catch { /* private mode */ }
+    if (saved === 'classy' || saved === 'dark') {
+      root.setAttribute('data-theme', saved);
+      return;
+    }
+    const light = window.matchMedia?.('(prefers-color-scheme: light)').matches;
+    root.setAttribute('data-theme', light ? 'classy' : 'dark');
+  }, []);
+  const toggle = () => {
+    const next = document.documentElement.getAttribute('data-theme') === 'classy' ? 'dark' : 'classy';
+    document.documentElement.setAttribute('data-theme', next);
+    try { localStorage.setItem('skyway-theme', next); } catch { /* private mode */ }
+  };
+  return { light: mode === 'classy', toggle };
+}
 
 export default function TripTrackPage({ token }) {
   const [state, setState] = useState({ ...EMPTY_STATE, loading: true });
   const [refreshing, setRefreshing] = useState(false);
+  const appearance = useTrackAppearance();
 
   const load = async () => {
     if (!token) {
@@ -850,11 +937,21 @@ export default function TripTrackPage({ token }) {
         trail: data.trail || null,
         trailLive: data.trailLive === true,
         weather: data.weather || {},
+        branding: data.branding?.whiteLabel ? data.branding : null,
       });
     } catch (e) {
       setState({ ...EMPTY_STATE, err: 'Could not reach the tracking service.' });
     }
   };
+
+  useEffect(() => {
+    const meta = trackingPageMeta({
+      branding: state.branding,
+      operator: brand(),
+      origin: window.location.origin,
+    });
+    return applyDocumentMeta(meta);
+  }, [state.branding]);
 
   useEffect(() => {
     load();
@@ -903,46 +1000,86 @@ export default function TripTrackPage({ token }) {
     );
   }
 
-  const { trip, position, trail, trailLive, weather } = state;
+  const { trip, position, trail, trailLive, weather, branding } = state;
+  const whiteLabel = branding?.whiteLabel === true && !!branding.logoUrl;
+  const accent = whiteLabel ? (accentPalette(branding.accentColor) || accentPalette('#9AA0A8')) : null;
+  const operator = brand();
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
-      {/* Header */}
-      <header className="border-b border-slate-800 bg-slate-900/50 px-4 py-4 sticky top-0 z-10 backdrop-blur">
-        <div className="max-w-3xl mx-auto flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3 min-w-0">
-            <Wordmark
-              variant="compact"
-              surface="dark"
-              className="h-7 w-auto shrink-0"
-            />
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <Plane className="w-5 h-5 text-cyan-400 shrink-0" />
-                <span className="text-xl tracking-wider truncate" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
-                  {trip.tail || 'TRIP'}
-                </span>
-                {trip.tripCode && (
-                  <span className="text-[10px] text-slate-500 tracking-widest ml-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                    {trip.tripCode}
-                  </span>
-                )}
+    <div
+      className="min-h-screen bg-slate-950 text-slate-100"
+      data-white-label={whiteLabel ? '1' : '0'}
+      style={accent ? { '--broker-accent': accent.base } : undefined}
+    >
+      {/* Header. A white plate holds wide and square logos so both read. */}
+      <header className="sticky top-0 z-10 border-b border-slate-800 bg-slate-900/50 backdrop-blur">
+        {accent && <div className="track-accent-bar h-1" />}
+        <div
+          className="mx-auto flex max-w-3xl items-center justify-between gap-3 px-4 py-3"
+          style={{ paddingTop: 'max(0.75rem, env(safe-area-inset-top))' }}
+        >
+          {whiteLabel ? (
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="track-logo-plate shrink-0">
+                <img src={branding.logoUrl} alt={branding.displayName || 'Broker logo'} />
               </div>
-              <div className="text-[10px] text-slate-500 mt-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                {brand().legalName.toUpperCase()}
-                {trip.aircraftType ? ` · ${trip.aircraftType.toUpperCase()}` : ''}
+              <div className="min-w-0">
+                {branding.displayName && (
+                  <div className="truncate text-sm font-semibold text-slate-100" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                    {branding.displayName}
+                  </div>
+                )}
+                <div className="mt-0.5 truncate text-[10px] text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  {trip.tail || 'TRIP'}
+                  {trip.tripCode ? ` · ${trip.tripCode}` : ''}
+                  {trip.aircraftType ? ` · ${trip.aircraftType.toUpperCase()}` : ''}
+                </div>
               </div>
             </div>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            {refreshing && <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-400" />}
+          ) : (
+            <div className="flex min-w-0 items-center gap-3">
+              <Wordmark
+                variant="compact"
+                surface="dark"
+                className="h-7 w-auto shrink-0"
+              />
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <Plane className="h-5 w-5 shrink-0 text-cyan-400" />
+                  <span className="truncate text-xl tracking-wider" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
+                    {trip.tail || 'TRIP'}
+                  </span>
+                  {trip.tripCode && (
+                    <span className="ml-2 text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                      {trip.tripCode}
+                    </span>
+                  )}
+                </div>
+                <div className="mt-0.5 text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  {operator.legalName.toUpperCase()}
+                  {trip.aircraftType ? ` · ${trip.aircraftType.toUpperCase()}` : ''}
+                </div>
+              </div>
+            </div>
+          )}
+          <div className="flex shrink-0 items-center gap-1">
+            {refreshing && <Loader2 className="h-3.5 w-3.5 animate-spin text-cyan-400" />}
+            <button
+              type="button"
+              onClick={appearance.toggle}
+              className="p-1.5 text-slate-500 hover:text-slate-200"
+              title={appearance.light ? 'Switch to dark' : 'Switch to light'}
+              aria-label={appearance.light ? 'Switch to dark' : 'Switch to light'}
+            >
+              {appearance.light ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
+            </button>
             <button
               onClick={load}
               className="p-1.5 text-slate-500 hover:text-slate-200"
               title="Refresh"
               aria-label="Refresh"
             >
-              <RefreshCw className="w-4 h-4" />
+              <RefreshCw className="h-4 w-4" />
             </button>
           </div>
         </div>
@@ -987,9 +1124,19 @@ export default function TripTrackPage({ token }) {
           })}
         </section>
 
-        <footer className="text-[10px] text-slate-600 text-center py-6 border-t border-slate-800" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-          QUESTIONS? · CHARTERS@FLYSKYWAY.COM · 727-605-5000
-          <br />
+        <footer className="border-t border-slate-800 py-6 text-center text-[10px] text-slate-600" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {whiteLabel && branding.showPoweredBy && (
+            <>
+              POWERED BY {operator.shortName.toUpperCase()}
+              <br />
+            </>
+          )}
+          {!whiteLabel && (
+            <>
+              QUESTIONS? · {operator.contactEmail.toUpperCase()} · {operator.contactPhone}
+              <br />
+            </>
+          )}
           THIS LINK EXPIRES 24 HOURS AFTER FINAL LEG LANDING
         </footer>
       </main>

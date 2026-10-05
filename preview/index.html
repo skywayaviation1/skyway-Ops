@@ -4,6 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Operations preview</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bebas+Neue&amp;family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" />
     <style>
       html, body, #root { height: 100%; margin: 0; }
     </style>
@@ -13,6 +16,9 @@
       (function () {
         var requested = new URLSearchParams(window.location.search).get('tenant');
         window.__TENANT__ = requested || 'skyway';
+        var appearance = new URLSearchParams(window.location.search).get('appearance');
+        if (appearance === 'light') document.documentElement.setAttribute('data-theme', 'classy');
+        if (appearance === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
       })();
     </script>
   </head>

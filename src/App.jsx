@@ -81,6 +81,8 @@ const OpsCommandCenterLazy = lazy(() => import('./OpsCommandCenter.jsx'));
 // roles that never see it.
 const OpsDashboardLazy = lazy(() => import('./OpsDashboard.jsx'));
 const AdminSettingsLazy = lazy(() => import('./AdminSettings.jsx'));
+const BrokerDirectoryLazy = lazy(() => import('./BrokerBrandPanel.jsx').then((m) => ({ default: m.BrokerDirectory })));
+const BrokerBrandPanelLazy = lazy(() => import('./BrokerBrandPanel.jsx'));
 
 // Code-split: Lodging tab loads only when a user opens it on a trip.
 // Trip detail is the most-touched screen — keeping this lazy means the
@@ -8738,6 +8740,15 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
             <p className="text-[10px] text-slate-500 mt-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
               Separate multiple addresses with commas, semicolons, or spaces. Pre-fills from the trip's broker email.
             </p>
+            <div className="mt-3">
+              <Suspense fallback={<div className="text-[10px] text-slate-500">Loading broker branding…</div>}>
+                <BrokerBrandPanelLazy
+                  email={String(emailTo || '').split(/[,;\s]+/).map((s) => s.trim()).find(Boolean) || ''}
+                  getIdToken={getFirebaseIdToken}
+                  embedded
+                />
+              </Suspense>
+            </div>
             <textarea
               value={emailMessage}
               onChange={(e) => setEmailMessage(e.target.value)}
@@ -21820,6 +21831,7 @@ const NAV_SECTIONS = [
   { id: 'accounting', label: 'Accounting',  icon: Building2,     roles: ['accounting', 'admin'] },
   { id: 'wallet',    label: 'Wallet',      icon: CreditCard,    roles: ['crew', 'sales', 'ops', 'accounting', 'admin'] },
   { id: 'users',     label: 'Users',       icon: Users,         roles: ['ops', 'admin'] },
+  { id: 'brokers',   label: 'Brokers',     icon: Palette,       roles: ['ops', 'admin'] },
   { id: 'settings',  label: 'Settings',    icon: SettingsIcon,  roles: ['admin'] },
 ];
 
@@ -21832,7 +21844,7 @@ const NAV_GROUPS = [
   { id: 'crew',     label: 'Crew',     icon: Users,         children: ['duty', 'currency', 'wear', 'reports', 'expenses'] },
   { id: 'aircraft', label: 'Aircraft', icon: Wrench,        children: ['maint', 'aog'] },
   // Labelled "Finance" for roles without user administration.
-  { id: 'admin',    label: 'Admin',    icon: Building2,     altLabel: 'Finance', children: ['accounting', 'wallet', 'users', 'settings'] },
+  { id: 'admin',    label: 'Admin',    icon: Building2,     altLabel: 'Finance', children: ['accounting', 'wallet', 'users', 'brokers', 'settings'] },
 ];
 
 if (import.meta.env?.DEV) {
@@ -29424,6 +29436,17 @@ export default function CharterOps() {
               onImpersonate={setImpersonateUid}
             />
           </div>
+        )}
+
+        {/* === BROKER WHITE LABEL === */}
+        {section === 'brokers' && (currentUser.role === 'ops' || currentUser.role === 'admin') && (
+          <Suspense fallback={
+            <div className="flex flex-1 items-center justify-center text-content-muted">
+              <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading broker branding…
+            </div>
+          }>
+            <BrokerDirectoryLazy getIdToken={getFirebaseIdToken} />
+          </Suspense>
         )}
 
         {/* === ADMIN SETTINGS === */}
