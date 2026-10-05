@@ -26,6 +26,7 @@
 // transitions.
 
 import React, { useEffect, useMemo, useState } from 'react';
+import Oct1CrewCorrection from './Oct1CrewCorrection.jsx';
 import {
   collection, query, where, getDocs, doc, setDoc, deleteDoc,
   addDoc, Timestamp, serverTimestamp,
@@ -1189,7 +1190,7 @@ function EditDutyTab({ pilot, users }) {
 
 export default function AdminDutyTools({ users, onClose }) {
   const [pilotUid, setPilotUid] = useState(null);
-  const [tab, setTab] = useState('edit'); // 'edit' | 'import'
+  const [tab, setTab] = useState('edit'); // 'edit' | 'import' | 'oct1'
 
   const pilot = useMemo(() => {
     const u = users.find(x => x.uid === pilotUid);
@@ -1247,10 +1248,23 @@ export default function AdminDutyTools({ users, onClose }) {
             <Upload className="w-3.5 h-3.5" />
             IMPORT JETINSIGHT
           </button>
+          <button
+            type="button"
+            onClick={() => setTab('oct1')}
+            className={`flex items-center gap-2 px-4 py-3 text-xs tracking-widest border-b-2 ${
+              tab === 'oct1'
+                ? 'text-cyan-400 border-cyan-400'
+                : 'text-slate-500 border-transparent hover:text-slate-300'
+            }`}
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            OCT 1 CREW CHANGE
+          </button>
         </div>
 
         <div className="flex-1 min-h-0 overflow-y-auto p-4">
           {tab === 'edit' && <EditDutyTab pilot={pilot} users={users} />}
+          {tab === 'oct1' && <Oct1CrewCorrection />}
           {tab === 'import' && (
             pilot
               ? <JetInsightImportTab pilot={pilot} users={users} />

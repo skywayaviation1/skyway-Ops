@@ -640,8 +640,15 @@ export async function endDuty(periodId, opts = {}) {
  * crew-manage end button should call — NOT the low-level endDuty() above, which
  * only closes a single period and is kept for completeness / single-pilot use.
  *
- * opts: { dutyOffAt?, flightTimeMs?, excursionReason?, over14Verified?, endedBy? }
- * Returns: { ok, closed: [ids], dutyOffAt, alreadyClosed? }
+ * opts: {
+ *   dutyOffAt?, flightTimeMs?, excursionReason?, over14Verified?, endedBy?,
+ *   scope?: 'self' | 'crew',
+ *   replacement?: { pilotUid, pilotName, role? },
+ * }
+ * Returns: { ok, closed: [ids], dutyOffAt, scope, alreadyClosed? }
+ *
+ * scope is required when a partner is still on duty, unless replacement is
+ * set — a crew change defaults to ending only the caller.
  */
 export async function endDutyPair(periodId, opts = {}) {
   if (!periodId) throw new Error('periodId required');
@@ -660,6 +667,12 @@ export async function endDutyPair(periodId, opts = {}) {
       excursionReason: opts.excursionReason || undefined,
       over14Verified: opts.over14Verified === true,
       endedByName: opts.endedBy || user.displayName || null,
+      scope: opts.scope || undefined,
+      replacement: opts.replacement?.pilotUid ? {
+        pilotUid: opts.replacement.pilotUid,
+        pilotName: opts.replacement.pilotName || null,
+        role: opts.replacement.role || null,
+      } : undefined,
     }),
   });
 
@@ -667,6 +680,35 @@ export async function endDutyPair(periodId, opts = {}) {
   try { data = await resp.json(); } catch { /* non-JSON error body */ }
   if (!resp.ok || !data?.ok) {
     throw new Error(data?.error || `Duty off failed (${resp.status})`);
+  }
+  return data;
+}
+
+/**
+ * Pair an open duty, or a duty a partner's duty-off closed by mistake, with
+ * a new pilot. The original duty-on time stays on this record.
+ */
+export async function relinkDutyPartner(periodId, opts = {}) {
+  if (!periodId) throw new Error('periodId required');
+  if (!opts.partnerUid) throw new Error('partnerUid required');
+  const user = auth.currentUser;
+  if (!user) throw new Error('not signed in');
+  const idToken = await user.getIdToken();
+  const resp = await fetch('/api/duty-crew-change', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      idToken,
+      periodId,
+      partnerUid: opts.partnerUid,
+      joinAt: Number.isFinite(opts.joinAt) ? opts.joinAt : undefined,
+      partnerRole: opts.partnerRole || undefined,
+    }),
+  });
+  let data = null;
+  try { data = await resp.json(); } catch { /* non-JSON error body */ }
+  if (!resp.ok || !data?.ok) {
+    throw new Error(data?.error || `Crew change failed (${resp.status})`);
   }
   return data;
 }

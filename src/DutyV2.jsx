@@ -42,11 +42,13 @@ import {
   declinePendingDuty as fbDeclinePendingDuty,
   endDuty as fbEndDuty,
   endDutyPair as fbEndDutyPair,
+  relinkDutyPartner as fbRelinkDutyPartner,
   editPeriod as fbEditPeriod,
   requestOverride as fbRequestOverride,
   addOutsideFlying as fbAddOutsideFlying,
 } from './firebase-duty-v2.js';
 import { evaluateCurrent, LIMITS } from './duty-legality.js';
+import { wasClosedByPartnerDutyOff } from './duty-crew-change.js';
 import { assignedTailFor, findAssignedTrip } from './duty-assignment.js';
 import { dutyClockState, partnerOnCrewDay } from './crew-day.js';
 import { DutyExportButtons } from './DutyExport.jsx';
@@ -211,6 +213,15 @@ export default function DutyV2({ currentUser, myTrips = [], users = [] }) {
   // automatically excludes pending/declined periods, so a SIC sitting
   // on a pending invite sees their PRE-pair legality (which is correct
   // — they're not legally on duty until they confirm).
+  const resumable = useMemo(() => {
+    const sorted = [...periods]
+      .filter((p) => p && p.recordStatus !== 'superseded' && p.confirmStatus !== 'declined' && p.confirmStatus !== 'pending')
+      .sort((a, b) => (b.dutyOnAt || 0) - (a.dutyOnAt || 0));
+    const latest = sorted[0];
+    if (!latest || latest.status === 'on') return null;
+    return wasClosedByPartnerDutyOff(latest) ? latest : null;
+  }, [periods]);
+
   const legality = useMemo(
     () => evaluateCurrent(periods, outside, now,
       // crewType defaults to 'two' here; will be re-evaluated per period
@@ -282,13 +293,23 @@ export default function DutyV2({ currentUser, myTrips = [], users = [] }) {
     if (!current?.id) return;
     setBusy(true); setError(null);
     try {
-      // endDutyPair closes BOTH paired pilots atomically (server-side) so the
-      // partner doesn't get stranded on duty. Falls back to a clear error if
-      // the endpoint is unreachable.
+      // scope 'crew' is the only path that ends the partner. A crew change
+      // sends scope 'self' plus the replacement, and the partner stays on
+      // the original duty-on time.
       await fbEndDutyPair(current.id, { ...opts, endedBy: name });
       setOpenForm(null);
     } catch (e) {
       setError(e.message || 'Failed to end duty');
+    } finally { setBusy(false); }
+  };
+
+  const doRelink = async (periodId, opts) => {
+    setBusy(true); setError(null);
+    try {
+      await fbRelinkDutyPartner(periodId, opts);
+      setOpenForm(null);
+    } catch (e) {
+      setError(e.message || 'Failed to link a partner');
     } finally { setBusy(false); }
   };
 
@@ -373,6 +394,9 @@ export default function DutyV2({ currentUser, myTrips = [], users = [] }) {
           onEnd={doEnd}
           onEdit={doEdit}
           onRequestOverride={doRequestOverride}
+          users={users}
+          currentUserUid={uid}
+          onRelink={(opts) => doRelink(current.id, opts)}
         />
       ) : (
         <OffDutyCard
@@ -382,6 +406,8 @@ export default function DutyV2({ currentUser, myTrips = [], users = [] }) {
           periods={periods}
           now={now}
           onStart={doStart}
+          onResume={(opts) => resumable && doRelink(resumable.id, opts)}
+          resumable={resumable}
           myTrips={myTrips}
           users={users}
           currentUserUid={uid}
@@ -515,8 +541,9 @@ function fmtClock(ms) {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
 }
 
-function OffDutyCard({ busy, openForm, setOpenForm, periods, now, onStart, myTrips, users, currentUserUid }) {
+function OffDutyCard({ busy, openForm, setOpenForm, periods, now, onStart, onResume, resumable, myTrips, users, currentUserUid }) {
   const starting = openForm === 'start';
+  const resuming = openForm === 'resume';
   // Show rest-status info: if most-recent closed period ended within
   // 10 hours, the pilot is technically still resting.
   const lastClosed = periods.find(p => p.status === 'off');
@@ -536,17 +563,49 @@ function OffDutyCard({ busy, openForm, setOpenForm, periods, now, onStart, myTri
         <h3 className="text-sm font-semibold text-content">Duty</h3>
         <StatusChip tone="neutral">Off duty</StatusChip>
       </div>
-      {!starting && (
+      {!starting && !resuming && resumable && (
+        <div className="mb-3 rounded-lg border border-info-border bg-info-soft px-3 py-3" data-testid="resume-duty">
+          <p className="text-sm font-semibold text-content">Your partner's duty-off closed this period</p>
+          <p className="mt-1 text-2xs leading-relaxed text-content-muted">
+            Resume it as one continuous duty and pair with the pilot who is taking over.
+            Duty on stays {fmtTime(resumable.dutyOnAt)}. You are not starting a new single-pilot day.
+          </p>
+          <Button
+            onClick={() => setOpenForm('resume')}
+            disabled={busy}
+            variant="success"
+            size="lg"
+            block
+            className="mt-3"
+            icon={Users}
+            data-testid="resume-duty-open"
+          >
+            Resume paired duty
+          </Button>
+        </div>
+      )}
+      {resuming && (
+        <RelinkForm
+          users={users}
+          currentUserUid={currentUserUid}
+          busy={busy}
+          title="RESUME WITH A NEW PARTNER"
+          detail={`Your duty on remains ${fmtTime(resumable.dutyOnAt)}. The new pilot joins now and confirms their own fit-for-duty.`}
+          onCancel={() => setOpenForm(null)}
+          onConfirm={onResume}
+        />
+      )}
+      {!starting && !resuming && (
         <>
           <Button
             onClick={() => setOpenForm('start')}
             disabled={busy}
-            variant="success"
+            variant={resumable ? 'secondary' : 'success'}
             size="xl"
             block
             icon={Play}
           >
-            Start Duty
+            {resumable ? 'Start a separate duty' : 'Start Duty'}
           </Button>
           <p className={cx(
             'mt-2.5 text-center text-2xs',
@@ -571,7 +630,7 @@ function OffDutyCard({ busy, openForm, setOpenForm, periods, now, onStart, myTri
   );
 }
 
-function OnDutyCard({ period, now, busy, openForm, setOpenForm, legality, onEnd, onEdit, onRequestOverride }) {
+function OnDutyCard({ period, now, busy, openForm, setOpenForm, legality, onEnd, onEdit, onRequestOverride, users, currentUserUid, onRelink }) {
   // The ring counts from the attested duty-on time. A trip departure,
   // including a stale crew-assignment block, is not a duty start.
   const clock = dutyClockState(period, now);
@@ -592,26 +651,34 @@ function OnDutyCard({ period, now, busy, openForm, setOpenForm, legality, onEnd,
   // doesn't read "X left" as a regulatory commitment for unscheduled.
   const remainingLabel = isRegular ? 'LEFT' : 'TO 14H REF';
 
-  const ending = openForm === 'end';
+  const ending = openForm === 'end' || openForm === 'crew-change';
+  const linking = openForm === 'relink';
   const editingOn = openForm === `edit:${period.id}:dutyOnAt`;
   const requestingOverride = openForm === 'override';
+  const needsPartner = period.crewType === 'single' || period.awaitingPartner || !period.partnerPeriodId;
 
   return (
     <div className="space-y-3.5">
-      {/* The clock is the screen. Everything else is supporting detail. */}
-      <DutyRing elapsedMs={elapsed} maxMs={DUTY_MAX_MS} label={fmtClock(elapsed)} />
+      {/* The clock is the screen. Hide it while a form is open so the
+          crew-change choice fits an iPhone without scrolling past the ring. */}
+      {!ending && !linking && (
+        <DutyRing elapsedMs={elapsed} maxMs={DUTY_MAX_MS} label={fmtClock(elapsed)} />
+      )}
 
-      <LegalityPanel legality={legality} align="center" />
+      {!ending && !linking && <LegalityPanel legality={legality} align="center" />}
 
+      {!ending && !linking && (
       <p className="text-center text-2xs text-content-muted">
         {elapsedHrs < 14
           ? <><span className="font-mono text-content">{fmtElapsed(remainingMs)}</span> {remainingLabel.toLowerCase()} · {period.assignmentType === 'regular' ? '14-hour regular assignment' : 'Unscheduled assignment'}</>
           : <span className="text-danger">{fmtElapsed(elapsed - DUTY_MAX_MS)} over 14 hours — an approved override is required to continue.</span>}
       </p>
+      )}
 
       {/* Three rows, because these are the three numbers a pilot is actually
           checking. Tail, base and seat are identity, not state — they go in
           the caption underneath. */}
+      {!ending && !linking && (
       <Card padded={false} className="divide-y divide-edge overflow-hidden">
         <InfoRow icon={Clock} label="Started" value={fmtTime(period.dutyOnAt)} />
         <InfoRow icon={Clock} label="Release by" value={clock ? fmtTime(clock.releaseAt) : '—'} />
@@ -622,8 +689,16 @@ function OnDutyCard({ period, now, busy, openForm, setOpenForm, legality, onEnd,
           value={period.flightTimeMs ? (period.flightTimeMs / MS_HR).toFixed(1) : '0.0'}
         />
       </Card>
+      )}
 
-      {(period.tail || period.location || period.role) && (
+      {(ending || linking) && (
+        <p className="text-center text-2xs text-content-muted">
+          On duty since {fmtTime(period.dutyOnAt)}
+          {period.partnerPeriodId ? ' · linked crew' : ''}
+        </p>
+      )}
+
+      {!ending && !linking && (period.tail || period.location || period.role) && (
         <p className="text-center font-mono text-2xs text-content-muted">
           {[period.tail, period.location, period.role].filter(Boolean).join(' · ')}
         </p>
@@ -631,10 +706,10 @@ function OnDutyCard({ period, now, busy, openForm, setOpenForm, legality, onEnd,
 
       {/* Crew can know their own record is linked, but never receive the other
           pilot's confirmation, identity, rest, flight time or legality. */}
-      {period.partnerPeriodId && (
+      {!ending && !linking && period.partnerPeriodId && (
         <div className="flex items-start gap-2 rounded-lg border border-info-border bg-info-soft px-3 py-2.5 text-2xs text-info">
           <Users className="mt-px h-3.5 w-3.5 shrink-0" />
-          <span>Linked crew duty · duty-off synchronizes for both records. Partner duty and compliance data remain private.</span>
+          <span>Linked crew. Ending duty asks whether only you go off or the whole crew does. A crew change keeps your partner on the original duty-on time. Partner compliance data stays private.</span>
         </div>
       )}
 
@@ -674,9 +749,35 @@ function OnDutyCard({ period, now, busy, openForm, setOpenForm, legality, onEnd,
         />
       )}
 
-      {/* End duty */}
-      {!ending && !editingOn && !requestingOverride && (
+      {/* End duty / crew change */}
+      {!ending && !linking && !editingOn && !requestingOverride && (
         <>
+          {period.partnerPeriodId && (
+            <Button
+              onClick={() => setOpenForm('crew-change')}
+              disabled={busy}
+              variant="secondary"
+              size="xl"
+              block
+              icon={Users}
+              data-testid="crew-change-open"
+            >
+              Crew change
+            </Button>
+          )}
+          {needsPartner && (
+            <Button
+              onClick={() => setOpenForm('relink')}
+              disabled={busy}
+              variant="secondary"
+              size="xl"
+              block
+              icon={Users}
+              data-testid="relink-open"
+            >
+              Pair with another pilot
+            </Button>
+          )}
           <Button
             onClick={() => setOpenForm('end')}
             disabled={busy}
@@ -684,6 +785,7 @@ function OnDutyCard({ period, now, busy, openForm, setOpenForm, legality, onEnd,
             size="xl"
             block
             icon={Square}
+            data-testid="end-duty-open"
           >
             End Duty
           </Button>
@@ -696,10 +798,24 @@ function OnDutyCard({ period, now, busy, openForm, setOpenForm, legality, onEnd,
           </button>
         </>
       )}
+      {linking && (
+        <RelinkForm
+          users={users}
+          currentUserUid={currentUserUid}
+          busy={busy}
+          title="PAIR WITH ANOTHER PILOT"
+          detail={`Duty on stays ${fmtTime(period.dutyOnAt)}. Time already flown single-pilot stays on the single-pilot limit. Time after your partner joins counts as two-pilot.`}
+          onCancel={() => setOpenForm(null)}
+          onConfirm={onRelink}
+        />
+      )}
       {ending && (
         <EndDutyForm
           period={period}
           busy={busy}
+          users={users}
+          currentUserUid={currentUserUid}
+          initialIntent={openForm === 'crew-change' ? 'crew-change' : 'end'}
           onCancel={() => setOpenForm(null)}
           onConfirm={onEnd}
         />
@@ -1288,13 +1404,75 @@ function PartnerPicker({
   );
 }
 
-function EndDutyForm({ period, busy, onCancel, onConfirm }) {
+function eligibleCrew(users, currentUserUid) {
+  return (users || []).filter((u) => {
+    const uuid = u.uid || u.id;
+    if (!uuid || uuid === currentUserUid) return false;
+    const role = (u.role || '').toLowerCase();
+    return (role === 'crew' || role === 'pilot') && u.approved === true && u.active !== false;
+  });
+}
+
+function RelinkForm({ users, currentUserUid, busy, title, detail, onCancel, onConfirm }) {
+  const crew = eligibleCrew(users, currentUserUid);
+  const [partnerUid, setPartnerUid] = useState('');
+  const partner = crew.find((u) => (u.uid || u.id) === partnerUid);
+  return (
+    <div className="space-y-3" data-testid="relink-form" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+      <Label>{title}</Label>
+      <p className="text-[11px] leading-relaxed text-slate-300">{detail}</p>
+      <select
+        data-testid="relink-partner"
+        value={partnerUid}
+        onChange={(e) => setPartnerUid(e.target.value)}
+        className="w-full bg-slate-950/80 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
+      >
+        <option value="">— SELECT THE PILOT JOINING —</option>
+        {crew.map((u) => (
+          <option key={u.uid || u.id} value={u.uid || u.id}>
+            {u.name || u.displayName || u.email}
+          </option>
+        ))}
+      </select>
+      <div className="flex gap-2 pt-1">
+        <button
+          type="button"
+          data-testid="relink-confirm"
+          onClick={() => onConfirm({
+            partnerUid,
+            partnerName: partner?.name || partner?.displayName || null,
+            joinAt: Date.now(),
+          })}
+          disabled={busy || !partnerUid}
+          className="flex-1 py-3 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold tracking-widest disabled:opacity-40"
+        >
+          {busy ? 'LINKING…' : 'CONFIRM PAIRED DUTY'}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={busy}
+          className="px-4 py-3 border border-slate-700 text-sm text-slate-300 hover:border-slate-500 disabled:opacity-40"
+        >
+          CANCEL
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function EndDutyForm({ period, busy, onCancel, onConfirm, users = [], currentUserUid, initialIntent = 'end' }) {
+  const paired = Boolean(period.partnerPeriodId);
   const [dutyOffAt, setDutyOffAt] = useState(() => Math.round(Date.now() / 300000) * 300000);
   const [flightTimeHours, setFlightTimeHours] = useState(
     period.flightTimeMs ? (period.flightTimeMs / MS_HR).toFixed(1) : '0'
   );
   const [excursionReason, setExcursionReason] = useState('');
   const [over14Verified, setOver14Verified] = useState(false);
+  const [scope, setScope] = useState(paired ? (initialIntent === 'crew-change' ? 'self' : null) : 'self');
+  const [replacementUid, setReplacementUid] = useState('');
+  const crew = eligibleCrew(users, currentUserUid);
+  const replacement = crew.find((u) => (u.uid || u.id) === replacementUid);
 
   const offAtMs = dutyOffAt;
   const ftMs = (() => {
@@ -1307,10 +1485,69 @@ function EndDutyForm({ period, busy, onCancel, onConfirm }) {
   const limit = period.crewType === 'two' ? LIMITS.TWO_PILOT_FLIGHT_MAX_MS : LIMITS.SINGLE_PILOT_FLIGHT_MAX_MS;
   const overFlight = ftMs > limit;
 
-  const canSubmit = offAtMs != null && offAtMs > period.dutyOnAt && offAtMs <= Date.now() + 60000;
+  const canSubmit = offAtMs != null && offAtMs > period.dutyOnAt && offAtMs <= Date.now() + 60000
+    && (!paired || scope === 'self' || scope === 'crew');
+  const confirmLabel = scope === 'crew'
+    ? 'END BOTH PILOTS’ DUTY'
+    : replacement
+      ? 'END MY DUTY, BRING ON REPLACEMENT'
+      : 'END ONLY MY DUTY';
 
   return (
-    <div className="space-y-3 mt-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+    <div className="space-y-3 mt-2" data-testid="end-duty-form" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+      {paired && (
+        <div data-testid="end-scope" className="space-y-2">
+          <Label>WHO IS ENDING DUTY?</Label>
+          <label className="flex items-start gap-2 border border-cyan-500/40 bg-cyan-500/5 p-2.5 cursor-pointer">
+            <input
+              type="radio"
+              name="end-scope"
+              data-testid="end-scope-self"
+              checked={scope === 'self'}
+              onChange={() => setScope('self')}
+              className="mt-0.5 accent-cyan-400"
+            />
+            <span className="text-[11px] leading-relaxed text-slate-100">
+              <strong>End only my duty.</strong> My partner stays on duty. Their original duty-on time does not change.
+            </span>
+          </label>
+          <label className="flex items-start gap-2 border border-slate-700 p-2.5 cursor-pointer">
+            <input
+              type="radio"
+              name="end-scope"
+              data-testid="end-scope-crew"
+              checked={scope === 'crew'}
+              onChange={() => { setScope('crew'); setReplacementUid(''); }}
+              className="mt-0.5 accent-red-400"
+            />
+            <span className="text-[11px] leading-relaxed text-slate-100">
+              <strong>End the whole crew.</strong> Both pilots go off duty together.
+            </span>
+          </label>
+          {scope === 'self' && (
+            <div>
+              <Label>REPLACE CREW MEMBER</Label>
+              <select
+                data-testid="replacement-select"
+                value={replacementUid}
+                onChange={(e) => setReplacementUid(e.target.value)}
+                className="w-full bg-slate-950/80 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
+              >
+                <option value="">No replacement yet — partner stays on</option>
+                {crew.map((u) => (
+                  <option key={u.uid || u.id} value={u.uid || u.id}>
+                    {u.name || u.displayName || u.email}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-[10px] leading-relaxed text-slate-400">
+                A crew change defaults to ending only your duty. The pilot who is staying keeps the original duty-on time, and the replacement confirms their own fit-for-duty.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
       <Label>DUTY-OFF TIME</Label>
       <TzAwareDateTimeInput
         value={dutyOffAt}
@@ -1334,8 +1571,9 @@ function EndDutyForm({ period, busy, onCancel, onConfirm }) {
         className="w-full bg-slate-950/80 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
       />
       <div className="text-[10px] text-slate-500">
-        Sum of block time across legs in this duty period. Limit for{' '}
-        {period.crewType === 'two' ? 'two-pilot' : 'single-pilot'}: {limit / MS_HR}h.
+        Sum of block time across legs in this duty period. 14 CFR 135.267(b) limit for{' '}
+        {period.crewType === 'two' ? 'two-pilot crew: 10h' : 'single-pilot: 8h'}.
+        {' '}Two-pilot time is not counted against the 8-hour single-pilot limit.
       </div>
 
       {overFlight && (
@@ -1379,16 +1617,23 @@ function EndDutyForm({ period, busy, onCancel, onConfirm }) {
 
       <div className="flex gap-2 pt-1">
         <button
+          data-testid="confirm-duty-off"
           onClick={() => onConfirm({
             dutyOffAt: offAtMs,
             flightTimeMs: ftMs,
             excursionReason: overFlight ? (excursionReason.trim() || null) : null,
             over14Verified,
+            scope: paired ? scope : 'self',
+            replacement: scope === 'self' && replacement ? {
+              pilotUid: replacement.uid || replacement.id,
+              pilotName: replacement.name || replacement.displayName || null,
+              role: period.role === 'PIC' ? 'SIC' : 'PIC',
+            } : null,
           })}
           disabled={busy || !canSubmit || (overFlight && !excursionReason.trim()) || (over14 && !over14Verified)}
           className="flex-1 py-3 bg-red-600 hover:bg-red-500 text-white text-sm font-bold tracking-widest disabled:opacity-40"
         >
-          {busy ? 'ENDING…' : 'CONFIRM DUTY OFF'}
+          {busy ? 'ENDING…' : confirmLabel}
         </button>
         <button
           onClick={onCancel}
