@@ -6,6 +6,8 @@ import {
   BASE, CHARTER_INBOX, COMPANY, COMPANY_LEGAL, DOMAIN, SCHEDULE, TENANT,
   brokerEmailFor, emailFor, tripStates,
 } from './sample-data.js';
+import meridianWordmarkUrl from './fixtures/meridian-wordmark.png';
+import meridianMarkUrl from './fixtures/meridian-mark.png';
 
 const T = TENANT;
 
@@ -448,29 +450,20 @@ function sampleTrackLog(ident) {
   };
 }
 
-const MERIDIAN_LOGO_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 64" role="img" aria-label="Meridian Charter">
-  <circle cx="28" cy="32" r="18" fill="#1F6B4A"/>
-  <path d="M16 36c6-2 10-10 12-14 2 6 6 12 14 14-8 1-12 6-14 12-2-8-6-12-12-12z" fill="#F4F7F5"/>
-  <text x="58" y="30" font-family="Georgia, 'Times New Roman', serif" font-size="22" font-weight="700" fill="#1F6B4A">MERIDIAN</text>
-  <text x="58" y="48" font-family="Georgia, 'Times New Roman', serif" font-size="11" letter-spacing="3.5" fill="#5C6B63">CHARTER</text>
-</svg>`;
-
-const MERIDIAN_MARK_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Meridian">
-  <rect width="64" height="64" rx="12" fill="#1F6B4A"/>
-  <path d="M14 38c8-2 12-14 16-18 3 8 8 16 18 18-10 2-15 8-18 16-3-10-8-14-16-16z" fill="#F4F7F5"/>
-</svg>`;
-
 function previewBrokerBranding() {
-  const mode = new URLSearchParams(window.location.search).get('brand');
+  const params = new URLSearchParams(window.location.search);
+  const mode = params.get('brand');
   if (mode !== 'broker' && mode !== 'square') return null;
-  const svg = mode === 'square' ? MERIDIAN_MARK_SVG : MERIDIAN_LOGO_SVG;
+  const logoUrl = mode === 'square'
+    ? '/api/broker-logo?token=preview-token&shape=square'
+    : '/api/broker-logo?token=preview-token';
   return {
     whiteLabel: true,
     displayName: 'Meridian Charter',
     accentColor: '#1F6B4A',
-    logoUrl: `data:image/svg+xml,${encodeURIComponent(svg)}`,
-    logoContentType: 'image/svg+xml',
-    showPoweredBy: new URLSearchParams(window.location.search).get('powered') === '1',
+    logoUrl,
+    logoContentType: 'image/png',
+    showPoweredBy: params.get('powered') === '1',
   };
 }
 
@@ -606,16 +599,26 @@ export function installFetchStub() {
         accentColor: '#1F6B4A',
         showPoweredBy: false,
         hasLogo: true,
-        logoContentType: 'image/svg+xml',
+        logoContentType: 'image/png',
         updatedAt: Date.now(),
       };
       if (action === 'list') return json({ ok: true, brokers: [broker] });
       return json({ ok: true, broker });
     }
     if (path === '/api/broker-logo') {
-      return new Response(MERIDIAN_LOGO_SVG, {
+      const requestUrl = new URL(url, window.location.origin);
+      const asset = requestUrl.searchParams.get('shape') === 'square'
+        ? meridianMarkUrl
+        : meridianWordmarkUrl;
+      const file = real ? await real(asset) : null;
+      if (!file?.ok) return new Response('logo missing', { status: 404 });
+      const bytes = await file.arrayBuffer();
+      return new Response(bytes, {
         status: 200,
-        headers: { 'Content-Type': 'image/svg+xml' },
+        headers: {
+          'Content-Type': 'image/png',
+          'X-Content-Type-Options': 'nosniff',
+        },
       });
     }
     if (path === '/api/user-mail') return json(mailResponse(action, true));

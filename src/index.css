@@ -334,36 +334,6 @@ html[data-native] .sw-mobile-tab {
   min-height: 48px;
 }
 
-/* Broker logo on the public tracking page and in the upload preview.
-   A white plate keeps dark and light artwork readable, and object-fit
-   contains both wide wordmarks and square marks without stretching. */
-.track-logo-plate {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-sizing: border-box;
-  width: max-content;
-  max-width: min(210px, 58vw);
-  height: 44px;
-  padding: 5px 10px;
-  background: #ffffff;
-  border-radius: 8px;
-  box-shadow: 0 1px 2px rgba(10, 11, 13, 0.18);
-  border: 1px solid rgba(18, 20, 23, 0.08);
-}
-.track-logo-plate img {
-  display: block;
-  max-height: 32px;
-  max-width: 100%;
-  width: auto;
-  height: auto;
-  object-fit: contain;
-  object-position: center;
-}
-.track-accent-bar {
-  background: var(--broker-accent, var(--sw-accent));
-}
-
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;

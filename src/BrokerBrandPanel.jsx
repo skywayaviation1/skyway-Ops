@@ -8,11 +8,12 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Building2, ImagePlus, Loader2, Trash2 } from 'lucide-react';
 import { Button, ScreenHeader, cx } from './ui.jsx';
 import {
-  BROKER_LOGO_MAX_BYTES,
+  BROKER_LOGO_LIMIT_LABEL,
   brokerDocId,
   contentTypeForFile,
   validateLogoMeta,
 } from './broker-brand.js';
+import './track-brand.css';
 
 async function postBrand(getIdToken, payload) {
   const idToken = await getIdToken();
@@ -45,18 +46,13 @@ function readFileAsBase64(file) {
   });
 }
 
-function LogoPlate({ src, alt, wide = false }) {
+function LogoPlate({ src, alt }) {
   return (
-    <div
-      className={cx(
-        'track-logo-plate',
-        wide ? 'h-16 max-w-[240px]' : 'h-14 max-w-[200px]',
-      )}
-    >
+    <div className="track-logo-plate">
       {src ? (
         <img src={src} alt={alt || 'Broker logo'} />
       ) : (
-        <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-slate-500">
+        <span className="px-3 py-2 text-[10px] font-medium uppercase tracking-[0.14em] text-slate-500" style={{ lineHeight: 1.2 }}>
           Logo
         </span>
       )}
@@ -302,10 +298,10 @@ export default function BrokerBrandPanel({
             }}
           >
             <div className="flex justify-center" style={{ ['--broker-accent']: plateAccent }}>
-              <LogoPlate src={shownLogo} alt={displayName || email || 'Broker logo'} wide />
+              <LogoPlate src={shownLogo} alt={displayName || email || 'Broker logo'} />
             </div>
             <p className="mt-2 text-center text-[10px] leading-relaxed text-content-subtle">
-              PNG, JPG, or SVG · 1.5 MB max
+              PNG, JPG, or SVG · {BROKER_LOGO_LIMIT_LABEL} max
               <br />
               Shown on a white plate, so wide and square marks both fit.
             </p>
@@ -395,7 +391,7 @@ export default function BrokerBrandPanel({
             Save branding
           </Button>
           <p className="text-[10px] leading-relaxed text-content-subtle">
-            The public page keeps operator branding until a logo is saved. File limit {Math.round(BROKER_LOGO_MAX_BYTES / (1024 * 1024) * 10) / 10} MB.
+            The public page keeps operator branding until a logo is saved. File limit {BROKER_LOGO_LIMIT_LABEL}.
           </p>
         </div>
       </div>

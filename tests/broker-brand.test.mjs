@@ -16,6 +16,7 @@ import {
   sanitizeSvg,
   trackingPageMeta,
   validateLogoMeta,
+  BROKER_LOGO_LIMIT_LABEL,
   BROKER_LOGO_MAX_BYTES,
 } from '../src/broker-brand.js';
 import { brand } from '../src/brand.js';
@@ -153,15 +154,39 @@ test('logo bytes must match the declared type, and svg scripts are rejected', ()
   assert.equal(scripted.ok, false);
   const handler = sanitizeSvg('<svg onload="alert(1)"><rect /></svg>');
   assert.equal(handler.ok, false);
+
+  const sized = sanitizeSvg('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 64"><rect width="10" height="10"/></svg>');
+  assert.equal(sized.ok, true);
+  assert.match(sized.svg, /width="280"/);
+  assert.match(sized.svg, /height="64"/);
+  const already = sanitizeSvg('<svg width="12" height="12" viewBox="0 0 12 12"><rect /></svg>');
+  assert.equal((already.svg.match(/width=/g) || []).length, 1);
 });
+
+function contrastAgainst(hex, surface) {
+  const n = parseInt(hex.slice(1), 16);
+  const rgb = [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  const channel = (c) => {
+    const s = c / 255;
+    return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  };
+  const lum = (color) => 0.2126 * channel(color[0]) + 0.7152 * channel(color[1]) + 0.0722 * channel(color[2]);
+  const a = lum(rgb);
+  const b = lum(surface);
+  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+}
 
 test('accent palette keeps the chosen hue and picks a readable contrast', () => {
   const dark = accentPalette('#1F6B4A');
   assert.equal(dark.base, '#1F6B4A');
   assert.equal(dark.contrast, '#FFFFFF');
   assert.match(dark.soft, /^rgba\(31, 107, 74,/);
+  assert.equal(dark.onLight, '#1F6B4A');
+  assert.ok(contrastAgainst(dark.onDark, [30, 33, 38]) >= 4.5);
+  assert.ok(contrastAgainst(dark.onLight, [255, 255, 255]) >= 4.5);
   const light = accentPalette('#F4E7C5');
   assert.equal(light.contrast, '#0A0B0D');
+  assert.ok(contrastAgainst(light.onLight, [255, 255, 255]) >= 4.5);
   assert.equal(accentPalette('nope'), null);
 });
 
@@ -176,9 +201,22 @@ test('ops records omit the storage path', () => {
 test('the public page and the trip API both consume the branding resolver', () => {
   const page = read('src/TripTrack.jsx');
   const api = read('api/trip-public.js');
+  const plate = read('src/track-brand.css');
+  const logoRoute = read('api/broker-logo.js');
+  const panel = read('src/BrokerBrandPanel.jsx');
   assert.match(page, /branding\?\.whiteLabel/);
   assert.match(page, /showPoweredBy/);
   assert.match(page, /trackingPageMeta/);
+  assert.match(page, /track-accent-text/);
+  assert.match(page, /track-accent-dot/);
   assert.match(api, /publicBrandingForTrip/);
   assert.doesNotMatch(page, /CHARTERS@FLYSKYWAY/);
+  assert.match(plate, /height:\s*44px/);
+  assert.match(plate, /max-width:\s*180px/);
+  assert.doesNotMatch(plate, /\.track-logo-plate img \{[^}]*max-width:\s*100%/);
+  assert.doesNotMatch(logoRoute, /Content-Security-Policy'.*sandbox/);
+  assert.match(logoRoute, /nosniff/);
+  assert.equal(BROKER_LOGO_LIMIT_LABEL, '1.5 MB');
+  assert.match(panel, /BROKER_LOGO_LIMIT_LABEL/);
+  assert.doesNotMatch(panel, /1\.4 MB/);
 });

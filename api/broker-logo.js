@@ -43,7 +43,10 @@ export default async function handler(req, res) {
     res.setHeader('Content-Length', String(logo.bytes.length));
     res.setHeader('Cache-Control', cache);
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox");
+    // Do not add a CSP sandbox token. Browsers drop a sandboxed SVG when it is
+    // used as an <img>, which leaves the plate empty. Scripts are stripped
+    // before storage, and default-src 'none' blocks anything still referenced.
+    res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'");
     res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
     if (req.method === 'HEAD') return res.status(200).end();
     return res.status(200).send(logo.bytes);

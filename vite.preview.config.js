@@ -6,6 +6,7 @@
 // stubs and mounts the real components. `npm run build` never uses this file,
 // so nothing here can reach production.
 
+import fs from 'node:fs';
 import path from 'node:path';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
@@ -46,6 +47,29 @@ const SDK_STUBS = new Map([
   ['firebase/firestore', stub('firestore.js')],
 ]);
 
+// <img src="/api/broker-logo"> is a real request, not window.fetch, so the
+// fetch stub never sees it. This preview-only middleware returns the sample
+// PNG with an image content type. Production uses api/broker-logo.js.
+function previewBrokerLogo() {
+  const wordmark = path.join(root, 'preview/fixtures/meridian-wordmark.png');
+  const mark = path.join(root, 'preview/fixtures/meridian-mark.png');
+  return {
+    name: 'preview-broker-logo',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const url = new URL(req.url || '/', 'http://preview.local');
+        if (url.pathname !== '/api/broker-logo') return next();
+        const file = url.searchParams.get('shape') === 'square' ? mark : wordmark;
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'image/png');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setHeader('Cache-Control', 'no-store');
+        fs.createReadStream(file).pipe(res);
+      });
+    },
+  };
+}
+
 function previewStubs() {
   return {
     name: 'skyway-preview-stubs',
@@ -63,7 +87,7 @@ function previewStubs() {
 
 export default defineConfig({
   root: path.join(root, 'preview'),
-  plugins: [previewStubs(), react()],
+  plugins: [previewBrokerLogo(), previewStubs(), react()],
   resolve: { extensions: ['.js', '.jsx', '.json'] },
   publicDir: path.join(root, 'public'),
   server: { port: 4178, host: '127.0.0.1' },

@@ -12,6 +12,9 @@
 
 export const BROKER_LOGO_MAX_BYTES = 1_500_000;
 
+/** Same ceiling the validator enforces, written once so the UI cannot drift. */
+export const BROKER_LOGO_LIMIT_LABEL = '1.5 MB';
+
 export const DISPLAY_NAME_MAX = 80;
 
 /** MIME types ops may upload, and the storage extension each one uses. */
@@ -84,7 +87,7 @@ export function validateLogoMeta({ contentType, byteLength }) {
     return { ok: false, error: 'Logo file is empty.' };
   }
   if (byteLength > BROKER_LOGO_MAX_BYTES) {
-    return { ok: false, error: 'Logo must be 1.5 MB or smaller.' };
+    return { ok: false, error: `Logo must be ${BROKER_LOGO_LIMIT_LABEL} or smaller.` };
   }
   return { ok: true, ext, contentType: canonical };
 }
@@ -93,24 +96,112 @@ export function brokerLogoPath(brokerId, ext) {
   return `broker-logos/${brokerId}/logo.${ext}`;
 }
 
+function srgbChannel(c) {
+  const s = c / 255;
+  return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+}
+
+function relativeLuminance(r, g, b) {
+  return 0.2126 * srgbChannel(r) + 0.7152 * srgbChannel(g) + 0.0722 * srgbChannel(b);
+}
+
+function contrastRatio(rgb, surface) {
+  const a = relativeLuminance(rgb[0], rgb[1], rgb[2]);
+  const b = relativeLuminance(surface[0], surface[1], surface[2]);
+  const hi = Math.max(a, b);
+  const lo = Math.min(a, b);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+function rgbToHsl(r, g, b) {
+  const R = r / 255;
+  const G = g / 255;
+  const B = b / 255;
+  const max = Math.max(R, G, B);
+  const min = Math.min(R, G, B);
+  const l = (max + min) / 2;
+  if (max === min) return [0, 0, l];
+  const d = max - min;
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h = 0;
+  if (max === R) h = (G - B) / d + (G < B ? 6 : 0);
+  else if (max === G) h = (B - R) / d + 2;
+  else h = (R - G) / d + 4;
+  return [h * 60, s, l];
+}
+
+function hslToRgb(h, s, l) {
+  const a = s * Math.min(l, 1 - l);
+  const f = (n) => {
+    const k = (n + h / 30) % 12;
+    return l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
+  };
+  return [f(0), f(8), f(4)].map((v) => Math.round(v * 255));
+}
+
+function toHex(rgb) {
+  return `#${rgb.map((n) => Math.max(0, Math.min(255, n)).toString(16).padStart(2, '0')).join('').toUpperCase()}`;
+}
+
+function rgba(rgb, alpha) {
+  return `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${alpha})`;
+}
+
+/** Header graphite and a white card. Text has to clear 4.5:1 on both. */
+const DARK_SURFACE = [30, 33, 38];
+const LIGHT_SURFACE = [255, 255, 255];
+
+/**
+ * Keep the chosen hue, and only move lightness when the raw color would
+ * disappear. A deep green stays deep on white and is lifted on graphite.
+ */
+function readableInk(rgb, surface) {
+  if (contrastRatio(rgb, surface) >= 4.5) return rgb;
+  const [h, s] = rgbToHsl(rgb[0], rgb[1], rgb[2]);
+  const sat = Math.min(0.62, Math.max(0.28, s || 0.45));
+  const dark = relativeLuminance(surface[0], surface[1], surface[2]) < 0.4;
+  if (dark) {
+    for (let L = 0.28; L <= 0.84; L += 0.01) {
+      const next = hslToRgb(h, sat, L);
+      if (contrastRatio(next, surface) >= 4.5) return next;
+    }
+    return [255, 255, 255];
+  }
+  for (let L = 0.46; L >= 0.12; L -= 0.01) {
+    const next = hslToRgb(h, sat, L);
+    if (contrastRatio(next, surface) >= 4.5) return next;
+  }
+  return [10, 11, 13];
+}
+
 /**
  * Ink derived from a single hex accent. Soft and border tints are the same
  * hue at low opacity so the public page can use the color without repainting
- * status chips.
+ * status chips. `onDark` / `onLight` are the same hue shifted only as far as
+ * readable text needs.
  */
 export function accentPalette(hex) {
   const color = normalizeAccentColor(hex);
   if (!color) return null;
   const n = parseInt(color.slice(1), 16);
-  const r = (n >> 16) & 255;
-  const g = (n >> 8) & 255;
-  const b = n & 255;
+  const rgb = [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  const [r, g, b] = rgb;
   const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+  const onDark = readableInk(rgb, DARK_SURFACE);
+  const onLight = readableInk(rgb, LIGHT_SURFACE);
   return {
     base: color,
     soft: `rgba(${r}, ${g}, ${b}, 0.16)`,
     border: `rgba(${r}, ${g}, ${b}, 0.45)`,
     contrast: luminance > 0.62 ? '#0A0B0D' : '#FFFFFF',
+    onDark: toHex(onDark),
+    onLight: toHex(onLight),
+    softDark: rgba(onDark, 0.18),
+    softLight: rgba(onLight, 0.12),
+    lineDark: rgba(onDark, 0.72),
+    lineLight: rgba(onLight, 0.55),
+    glowDark: rgba(onDark, 0.35),
+    glowLight: rgba(onLight, 0.2),
   };
 }
 
@@ -142,9 +233,26 @@ export function sanitizeSvg(source) {
     return { ok: false, error: 'SVG contains unsupported content.' };
   }
   if (text.length > BROKER_LOGO_MAX_BYTES) {
-    return { ok: false, error: 'Logo must be 1.5 MB or smaller.' };
+    return { ok: false, error: `Logo must be ${BROKER_LOGO_LIMIT_LABEL} or smaller.` };
   }
-  return { ok: true, svg: text };
+  return { ok: true, svg: withSvgIntrinsicSize(text) };
+}
+
+/**
+ * An `<img>` with no intrinsic size collapses inside a shrink-wrapped plate.
+ * Width and height from the viewBox give the browser a real aspect ratio.
+ */
+function withSvgIntrinsicSize(svg) {
+  return svg.replace(/<svg\b([^>]*)>/i, (match, attrs) => {
+    const hasW = /(?:^|\s)width\s*=/i.test(attrs);
+    const hasH = /(?:^|\s)height\s*=/i.test(attrs);
+    if (hasW && hasH) return match;
+    const vb = attrs.match(/viewBox\s*=\s*["']\s*[-\d.]+\s+[-\d.]+\s+([-\d.]+)\s+([-\d.]+)\s*["']/i);
+    const w = vb ? vb[1] : '240';
+    const h = vb ? vb[2] : '80';
+    const extra = `${hasW ? '' : ` width="${w}"`}${hasH ? '' : ` height="${h}"`}`;
+    return `<svg${attrs}${extra}>`;
+  });
 }
 
 /**
