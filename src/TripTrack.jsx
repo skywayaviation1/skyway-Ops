@@ -22,14 +22,25 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Plane, AlertCircle, RefreshCw, Loader2,
+  Plane, AlertCircle, RefreshCw, Loader2, Moon, Sun,
   ArrowRight, CheckCircle2, Circle, Cloud, Wind, Eye, Thermometer,
 } from 'lucide-react';
 import { formatLocalTime, formatLocalDate } from './airports.js';
 // The same map component and visual language the ops Tracking screen uses, so
 // a broker and a dispatcher are looking at the identical picture of the flight.
-import { Wordmark } from './ui.jsx';
+import { Wordmark, useThemeMode } from './ui.jsx';
 import { brand } from './brand.js';
+import { accentPalette, trackingPageMeta } from './broker-brand.js';
+import './theme-classy.css';
+import './track-brand.css';
+
+// Null on the operator-branded page. Set only when a broker logo is showing,
+// so cyan highlights stay Skyway's unless this trip is white-labeled.
+const TrackBrandContext = React.createContext(null);
+
+function useTrackBrand() {
+  return React.useContext(TrackBrandContext);
+}
 import TrackingMap from './TrackingMap.jsx';
 import { flightCategoryStyle, normalizeTrail, distanceNm } from './tracking-map.js';
 // FAA NOTAM badge — renders silently when no significant NOTAMs are active,
@@ -128,9 +139,13 @@ function HeroCard({ trip, position }) {
     }
   }
 
-  // Visual palette per mode
+  const branded = !!useTrackBrand();
+  // Visual palette per mode. Airborne is the broker accent when white-labeled;
+  // the other states stay semantic (amber / slate / emerald).
   const palette = {
-    airborne:  { label: 'IN FLIGHT',    badgeBg: 'bg-cyan-500/20',    badgeBorder: 'border-cyan-400/50',   text: 'text-cyan-300',  glow: 'shadow-[0_0_24px_rgba(34,211,238,0.15)]' },
+    airborne: branded
+      ? { label: 'IN FLIGHT', badgeBg: 'track-accent-fill', badgeBorder: 'track-accent-border', text: 'track-accent-text', glow: 'track-accent-glow' }
+      : { label: 'IN FLIGHT', badgeBg: 'bg-cyan-500/20', badgeBorder: 'border-cyan-400/50', text: 'text-cyan-300', glow: 'shadow-[0_0_24px_rgba(34,211,238,0.15)]' },
     preflight: { label: 'ON THE GROUND',badgeBg: 'bg-amber-500/20',   badgeBorder: 'border-amber-400/50',  text: 'text-amber-200', glow: '' },
     scheduled: { label: 'SCHEDULED',    badgeBg: 'bg-slate-700/40',   badgeBorder: 'border-slate-600/50',  text: 'text-slate-200', glow: '' },
     completed: { label: 'COMPLETED',    badgeBg: 'bg-emerald-500/20', badgeBorder: 'border-emerald-400/50',text: 'text-emerald-300', glow: '' },
@@ -183,12 +198,12 @@ function HeroCard({ trip, position }) {
           {palette.label}
         </div>
         {mode === 'airborne' && (
-          <div className="flex items-center gap-1">
-            <span className="relative flex h-1.5 w-1.5">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-cyan-400"></span>
+          <div className="flex items-center gap-1.5">
+            <span className="relative flex h-2 w-2">
+              <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${branded ? 'track-accent-dot' : 'bg-cyan-400'}`}></span>
+              <span className={`relative inline-flex h-2 w-2 rounded-full ${branded ? 'track-accent-dot' : 'bg-cyan-400'}`}></span>
             </span>
-            <span className="text-[9px] text-cyan-400 font-mono tracking-wider">LIVE</span>
+            <span className={`text-[9px] font-mono tracking-wider ${branded ? 'track-accent-text' : 'text-cyan-400'}`}>LIVE</span>
           </div>
         )}
         {trip.tail && (
@@ -232,13 +247,16 @@ function HeroCard({ trip, position }) {
 // LIVE badge — small "LIVE" indicator with pulsing dot for the active leg
 // ====================================================================
 function LiveBadge() {
+  const branded = !!useTrackBrand();
   return (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 border border-cyan-400/50 bg-cyan-500/20">
-      <span className="relative flex h-1.5 w-1.5">
-        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
-        <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-cyan-400"></span>
+    <span className={branded
+      ? 'track-accent-chip inline-flex items-center gap-1 border px-2 py-0.5'
+      : 'inline-flex items-center gap-1 border border-cyan-400/50 bg-cyan-500/20 px-2 py-0.5'}>
+      <span className="relative flex h-2 w-2">
+        <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${branded ? 'track-accent-dot' : 'bg-cyan-400'}`}></span>
+        <span className={`relative inline-flex h-2 w-2 rounded-full ${branded ? 'track-accent-dot' : 'bg-cyan-400'}`}></span>
       </span>
-      <span className="text-[9px] text-cyan-300 font-mono tracking-wider" style={{ fontFamily: 'JetBrains Mono, monospace' }}>LIVE</span>
+      <span className={`text-[9px] font-mono tracking-wider ${branded ? 'track-accent-text' : 'text-cyan-300'}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>LIVE</span>
     </span>
   );
 }
@@ -254,6 +272,8 @@ function LiveBadge() {
 // Returns null when there's nothing useful to show (a future leg with no
 // timestamps yet) so the UI doesn't render a 0% bar everywhere.
 function LegProgress({ leg, position }) {
+  const branded = !!useTrackBrand();
+  const fill = branded ? 'track-progress' : 'bg-cyan-400';
   const status = leg?.status || {};
   // Landed = full bar
   if (status.landed) {
@@ -279,14 +299,14 @@ function LegProgress({ leg, position }) {
       const pct = Math.max(2, Math.min(98, ((now - start) / (end - start)) * 100));
       return (
         <div className="w-full h-1 bg-slate-800 overflow-hidden">
-          <div className="h-full bg-cyan-400 transition-all duration-1000" style={{ width: `${pct}%` }} />
+          <div className={`h-full ${fill} transition-all duration-1000`} style={{ width: `${pct}%` }} />
         </div>
       );
     }
     // Airborne but no ETA — show indeterminate bar
     return (
       <div className="w-full h-1 bg-slate-800 overflow-hidden">
-        <div className="h-full bg-cyan-400/50" style={{ width: '50%' }} />
+        <div className={`h-full ${branded ? 'track-progress' : 'bg-cyan-400/50'}`} style={{ width: '50%' }} />
       </div>
     );
   }
@@ -298,11 +318,12 @@ function LegProgress({ leg, position }) {
   );
 }
 
-function categoryBadge(cat) {
+function categoryBadge(cat, branded) {
   const c = String(cat || 'REVENUE').toUpperCase();
   if (c === 'REPO' || c === 'FERRY' || c === 'REPOSITIONING') {
     return { text: 'REPOSITIONING', cls: 'bg-amber-500/20 text-amber-300 border-amber-500/40' };
   }
+  if (branded) return { text: 'CHARTER LEG', cls: 'track-accent-chip border' };
   return { text: 'CHARTER LEG', cls: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40' };
 }
 
@@ -354,6 +375,8 @@ function legPhase(leg) {
  * single thing a broker checking on a charter wants to see.
  */
 function BrokerFlightMap({ position, legs, trail, trailLive, tail }) {
+  const brand = useTrackBrand();
+  const airborneColor = brand?.route || BROKER_PHASE_COLORS.airborne;
   const [coordsTick, setCoordsTick] = useState(0);
   const [coordsFn, setCoordsFn] = useState(null);
   const askedRef = useRef(new Set());
@@ -459,13 +482,13 @@ function BrokerFlightMap({ position, legs, trail, trailLive, tail }) {
         } else if (havePos) {
           routes.push({
             points: [[from.lat, from.lng], [position.latitude, position.longitude]],
-            color: BROKER_PHASE_COLORS.airborne, weight: 3.5, opacity: 0.95,
+            color: airborneColor, weight: 3.5, opacity: 0.95,
           });
           projected = [[position.latitude, position.longitude], [to.lat, to.lng]];
         } else {
           routes.push({
             points: [[from.lat, from.lng], [to.lat, to.lng]],
-            color: BROKER_PHASE_COLORS.airborne, weight: 3, opacity: 0.8, dashed: true,
+            color: airborneColor, weight: 3, opacity: 0.8, dashed: true,
           });
         }
         return;
@@ -503,7 +526,7 @@ function BrokerFlightMap({ position, legs, trail, trailLive, tail }) {
       trail: normalizedTrail.length >= 2 ? normalizedTrail : null,
       projected,
     };
-  }, [coordsFn, legs, position, normalizedTrail, tail, coordsTick]);
+  }, [coordsFn, legs, position, normalizedTrail, tail, coordsTick, airborneColor]);
 
   const flownNm = useMemo(() => {
     if (normalizedTrail.length < 2) return null;
@@ -549,6 +572,7 @@ function BrokerFlightMap({ position, legs, trail, trailLive, tail }) {
  * "is weather going to delay my charter" without exposing ops planning data.
  */
 function WeatherPanel({ legs, weather }) {
+  const branded = !!useTrackBrand();
   const stations = useMemo(() => {
     if (!weather || typeof weather !== 'object') return [];
     const order = [];
@@ -574,7 +598,7 @@ function WeatherPanel({ legs, weather }) {
   return (
     <section>
       <h2 className="mb-2 flex items-center gap-2 text-lg tracking-wider" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
-        <Cloud className="h-4 w-4 text-cyan-400" /> WEATHER
+        <Cloud className={branded ? 'track-accent-text h-4 w-4' : 'h-4 w-4 text-cyan-400'} /> WEATHER
       </h2>
       <div className="grid gap-2 sm:grid-cols-2">
         {stations.map((s) => (
@@ -697,7 +721,8 @@ function PaxRow({ pax, iataCode }) {
 }
 
 function Leg({ leg, isActive, position }) {
-  const cat = categoryBadge(leg.category);
+  const branded = !!useTrackBrand();
+  const cat = categoryBadge(leg.category, branded);
   // Status lives directly on the leg (server-attached per-leg from each
   // trip-state doc). No need for the legacy statuses[leg.legNumber] map.
   const legStatuses = leg.status || {};
@@ -720,7 +745,7 @@ function Leg({ leg, isActive, position }) {
   const isRevenue = String(leg.category || '').toUpperCase() === 'REVENUE';
 
   return (
-    <div className={`border ${isActive ? 'border-cyan-400/60 shadow-[0_0_24px_rgba(34,211,238,0.12)]' : 'border-slate-700'} bg-slate-900/40 mb-3 overflow-hidden`}>
+    <div className={`mb-3 overflow-hidden border bg-slate-900/40 ${isActive ? (branded ? 'track-accent-border track-accent-glow' : 'border-cyan-400/60 shadow-[0_0_24px_rgba(34,211,238,0.12)]') : 'border-slate-700'}`}>
       {/* Progress bar runs across the top edge of the card */}
       <LegProgress leg={leg} position={position} />
 
@@ -741,7 +766,7 @@ function Leg({ leg, isActive, position }) {
                 <span className="tracking-wider">{leg.from || '???'}</span>
                 {leg.from && <FAANotamBadge icao={leg.from} />}
               </span>
-              <ArrowRight className="w-5 h-5 text-cyan-400" />
+              <ArrowRight className={branded ? 'track-accent-text h-5 w-5' : 'h-5 w-5 text-cyan-400'} />
               <span className="inline-flex items-center gap-1.5">
                 <span className="tracking-wider">{leg.to || '???'}</span>
                 {leg.to && <FAANotamBadge icao={leg.to} />}
@@ -823,12 +848,97 @@ function Leg({ leg, isActive, position }) {
 
 const EMPTY_STATE = {
   loading: false, err: null, trip: null, position: null,
-  trail: null, trailLive: false, weather: {},
+  trail: null, trailLive: false, weather: {}, branding: null,
 };
+
+function applyDocumentMeta(meta) {
+  if (typeof document === 'undefined') return () => {};
+  const previousTitle = document.title;
+  document.title = meta.title;
+  const touched = [];
+  const setMeta = (attr, key, content) => {
+    if (!content) return;
+    let el = document.head.querySelector(`meta[${attr}="${key}"]`);
+    const created = !el;
+    if (!el) {
+      el = document.createElement('meta');
+      el.setAttribute(attr, key);
+      document.head.appendChild(el);
+    }
+    const previous = el.getAttribute('content');
+    el.setAttribute('content', content);
+    touched.push({ el, created, previous });
+  };
+  setMeta('name', 'description', meta.description);
+  setMeta('property', 'og:title', meta.title);
+  setMeta('property', 'og:description', meta.description);
+  setMeta('property', 'og:image', meta.image);
+  setMeta('name', 'twitter:card', meta.image ? 'summary' : null);
+  setMeta('name', 'twitter:title', meta.title);
+  setMeta('name', 'twitter:description', meta.description);
+  setMeta('name', 'twitter:image', meta.image);
+  setMeta('name', 'robots', 'noindex, nofollow');
+  const themeNodes = [];
+  if (meta.themeColor) {
+    document.querySelectorAll('meta[name="theme-color"]').forEach((el) => {
+      themeNodes.push({ el, previous: el.getAttribute('content') });
+      el.setAttribute('content', meta.themeColor);
+    });
+  }
+  let icon = null;
+  if (meta.whiteLabel && meta.image) {
+    icon = document.createElement('link');
+    icon.rel = 'icon';
+    icon.href = meta.image;
+    document.head.appendChild(icon);
+  }
+  return () => {
+    document.title = previousTitle;
+    for (const node of touched) {
+      if (node.created) node.el.remove();
+      else if (node.previous != null) node.el.setAttribute('content', node.previous);
+    }
+    for (const node of themeNodes) {
+      if (node.previous != null) node.el.setAttribute('content', node.previous);
+    }
+    icon?.remove();
+  };
+}
+
+function useTrackAppearance() {
+  const mode = useThemeMode();
+  useEffect(() => {
+    const root = document.documentElement;
+    const requested = new URLSearchParams(window.location.search).get('appearance');
+    if (requested === 'light') {
+      root.setAttribute('data-theme', 'classy');
+      return;
+    }
+    if (requested === 'dark') {
+      root.setAttribute('data-theme', 'dark');
+      return;
+    }
+    let saved = null;
+    try { saved = localStorage.getItem('skyway-theme'); } catch { /* private mode */ }
+    if (saved === 'classy' || saved === 'dark') {
+      root.setAttribute('data-theme', saved);
+      return;
+    }
+    const light = window.matchMedia?.('(prefers-color-scheme: light)').matches;
+    root.setAttribute('data-theme', light ? 'classy' : 'dark');
+  }, []);
+  const toggle = () => {
+    const next = document.documentElement.getAttribute('data-theme') === 'classy' ? 'dark' : 'classy';
+    document.documentElement.setAttribute('data-theme', next);
+    try { localStorage.setItem('skyway-theme', next); } catch { /* private mode */ }
+  };
+  return { light: mode === 'classy', toggle };
+}
 
 export default function TripTrackPage({ token }) {
   const [state, setState] = useState({ ...EMPTY_STATE, loading: true });
   const [refreshing, setRefreshing] = useState(false);
+  const appearance = useTrackAppearance();
 
   const load = async () => {
     if (!token) {
@@ -850,11 +960,21 @@ export default function TripTrackPage({ token }) {
         trail: data.trail || null,
         trailLive: data.trailLive === true,
         weather: data.weather || {},
+        branding: data.branding?.whiteLabel ? data.branding : null,
       });
     } catch (e) {
       setState({ ...EMPTY_STATE, err: 'Could not reach the tracking service.' });
     }
   };
+
+  useEffect(() => {
+    const meta = trackingPageMeta({
+      branding: state.branding,
+      operator: brand(),
+      origin: window.location.origin,
+    });
+    return applyDocumentMeta(meta);
+  }, [state.branding]);
 
   useEffect(() => {
     load();
@@ -903,46 +1023,100 @@ export default function TripTrackPage({ token }) {
     );
   }
 
-  const { trip, position, trail, trailLive, weather } = state;
+  const { trip, position, trail, trailLive, weather, branding } = state;
+  const whiteLabel = branding?.whiteLabel === true && !!branding.logoUrl;
+  const accent = whiteLabel ? (accentPalette(branding.accentColor) || accentPalette('#9AA0A8')) : null;
+  const operator = brand();
+  const ink = accent ? (appearance.light ? accent.onLight : accent.onDark) : null;
+  const trackBrand = accent ? { ink, route: accent.onDark } : null;
+  const brandStyle = accent ? {
+    '--broker-ink': ink,
+    '--broker-ink-dark': accent.onDark,
+    '--broker-soft': appearance.light ? accent.softLight : accent.softDark,
+    '--broker-line': appearance.light ? accent.lineLight : accent.lineDark,
+    '--broker-glow': appearance.light ? accent.glowLight : accent.glowDark,
+    '--sw-accent': ink,
+    '--sw-accent-soft': appearance.light ? accent.softLight : accent.softDark,
+    '--sw-accent-border': appearance.light ? accent.lineLight : accent.lineDark,
+    '--sw-accent-contrast': accent.contrast,
+  } : undefined;
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
-      {/* Header */}
-      <header className="border-b border-slate-800 bg-slate-900/50 px-4 py-4 sticky top-0 z-10 backdrop-blur">
-        <div className="max-w-3xl mx-auto flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3 min-w-0">
-            <Wordmark
-              variant="compact"
-              surface="dark"
-              className="h-7 w-auto shrink-0"
-            />
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <Plane className="w-5 h-5 text-cyan-400 shrink-0" />
-                <span className="text-xl tracking-wider truncate" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
-                  {trip.tail || 'TRIP'}
-                </span>
-                {trip.tripCode && (
-                  <span className="text-[10px] text-slate-500 tracking-widest ml-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                    {trip.tripCode}
-                  </span>
-                )}
+    <TrackBrandContext.Provider value={trackBrand}>
+    <div
+      className="min-h-screen bg-slate-950 text-slate-100"
+      data-white-label={whiteLabel ? '1' : '0'}
+      style={brandStyle}
+    >
+      {/* Header. The logo is the mark; the name sits under it on a phone and beside it on a wider screen. */}
+      <header className="sticky top-0 z-10 border-b border-slate-800 bg-slate-900/50 backdrop-blur">
+        {accent && <div className="track-accent-bar" />}
+        <div
+          className="mx-auto flex max-w-3xl items-center justify-between gap-3 px-4 py-3"
+          style={{ paddingTop: 'max(0.75rem, env(safe-area-inset-top))' }}
+        >
+          {whiteLabel ? (
+            <div className="flex min-w-0 flex-1 flex-col items-start gap-1.5 sm:flex-row sm:items-center sm:gap-4">
+              <div className="track-logo-plate shrink-0">
+                <img src={branding.logoUrl} alt={branding.displayName || 'Broker logo'} />
               </div>
-              <div className="text-[10px] text-slate-500 mt-0.5" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                {brand().legalName.toUpperCase()}
-                {trip.aircraftType ? ` · ${trip.aircraftType.toUpperCase()}` : ''}
+              <div className="min-w-0">
+                {branding.displayName && (
+                  <div className="truncate text-sm font-semibold leading-tight text-slate-100 sm:text-base" style={{ fontFamily: 'DM Sans, sans-serif' }}>
+                    {branding.displayName}
+                  </div>
+                )}
+                <div className="mt-0.5 truncate text-[10px] text-slate-400" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  {trip.tail || 'TRIP'}
+                  {trip.tripCode ? ` · ${trip.tripCode}` : ''}
+                  {trip.aircraftType ? ` · ${trip.aircraftType.toUpperCase()}` : ''}
+                </div>
               </div>
             </div>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            {refreshing && <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-400" />}
+          ) : (
+            <div className="flex min-w-0 items-center gap-3">
+              <Wordmark
+                variant="compact"
+                surface="dark"
+                className="h-7 w-auto shrink-0"
+              />
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <Plane className="h-5 w-5 shrink-0 text-cyan-400" />
+                  <span className="truncate text-xl tracking-wider" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
+                    {trip.tail || 'TRIP'}
+                  </span>
+                  {trip.tripCode && (
+                    <span className="ml-2 text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                      {trip.tripCode}
+                    </span>
+                  )}
+                </div>
+                <div className="mt-0.5 text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  {operator.legalName.toUpperCase()}
+                  {trip.aircraftType ? ` · ${trip.aircraftType.toUpperCase()}` : ''}
+                </div>
+              </div>
+            </div>
+          )}
+          <div className="flex shrink-0 items-center gap-1">
+            {refreshing && <Loader2 className={`h-3.5 w-3.5 animate-spin ${whiteLabel ? 'track-accent-btn' : 'text-cyan-400'}`} />}
+            <button
+              type="button"
+              onClick={appearance.toggle}
+              className={whiteLabel ? 'track-accent-btn p-1.5' : 'p-1.5 text-slate-500 hover:text-slate-200'}
+              title={appearance.light ? 'Switch to dark' : 'Switch to light'}
+              aria-label={appearance.light ? 'Switch to dark' : 'Switch to light'}
+            >
+              {appearance.light ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
+            </button>
             <button
               onClick={load}
-              className="p-1.5 text-slate-500 hover:text-slate-200"
+              className={whiteLabel ? 'track-accent-btn p-1.5' : 'p-1.5 text-slate-500 hover:text-slate-200'}
               title="Refresh"
               aria-label="Refresh"
             >
-              <RefreshCw className="w-4 h-4" />
+              <RefreshCw className="h-4 w-4" />
             </button>
           </div>
         </div>
@@ -987,12 +1161,23 @@ export default function TripTrackPage({ token }) {
           })}
         </section>
 
-        <footer className="text-[10px] text-slate-600 text-center py-6 border-t border-slate-800" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-          QUESTIONS? · CHARTERS@FLYSKYWAY.COM · 727-605-5000
-          <br />
+        <footer className="border-t border-slate-800 py-6 text-center text-[10px] text-slate-600" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+          {whiteLabel && branding.showPoweredBy && (
+            <>
+              POWERED BY {operator.shortName.toUpperCase()}
+              <br />
+            </>
+          )}
+          {!whiteLabel && (
+            <>
+              QUESTIONS? · {operator.contactEmail.toUpperCase()} · {operator.contactPhone}
+              <br />
+            </>
+          )}
           THIS LINK EXPIRES 24 HOURS AFTER FINAL LEG LANDING
         </footer>
       </main>
     </div>
+    </TrackBrandContext.Provider>
   );
 }

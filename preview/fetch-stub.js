@@ -6,6 +6,8 @@ import {
   BASE, CHARTER_INBOX, COMPANY, COMPANY_LEGAL, DOMAIN, SCHEDULE, TENANT,
   brokerEmailFor, emailFor, tripStates,
 } from './sample-data.js';
+import meridianWordmarkUrl from './fixtures/meridian-wordmark.png';
+import meridianMarkUrl from './fixtures/meridian-mark.png';
 
 const T = TENANT;
 
@@ -448,6 +450,23 @@ function sampleTrackLog(ident) {
   };
 }
 
+function previewBrokerBranding() {
+  const params = new URLSearchParams(window.location.search);
+  const mode = params.get('brand');
+  if (mode !== 'broker' && mode !== 'square') return null;
+  const logoUrl = mode === 'square'
+    ? '/api/broker-logo?token=preview-token&shape=square'
+    : '/api/broker-logo?token=preview-token';
+  return {
+    whiteLabel: true,
+    displayName: 'Meridian Charter',
+    accentColor: '#1F6B4A',
+    logoUrl,
+    logoContentType: 'image/png',
+    showPoweredBy: params.get('powered') === '1',
+  };
+}
+
 function brokerPayload() {
   const from = AIRPORT_COORDS[LEAD.from];
   const to = AIRPORT_COORDS[LEAD.to];
@@ -466,6 +485,7 @@ function brokerPayload() {
 
   return {
     ok: true,
+    branding: previewBrokerBranding(),
     trip: brokerTrip(),
     position: {
       ident: LEAD.tail, airborne: true,
@@ -572,6 +592,35 @@ export function installFetchStub() {
     }
 
     if (path === '/api/trip-public') return json(brokerPayload());
+    if (path === '/api/broker-brand') {
+      const broker = {
+        email: body.email || 'alex@meridiancharter.example',
+        displayName: 'Meridian Charter',
+        accentColor: '#1F6B4A',
+        showPoweredBy: false,
+        hasLogo: true,
+        logoContentType: 'image/png',
+        updatedAt: Date.now(),
+      };
+      if (action === 'list') return json({ ok: true, brokers: [broker] });
+      return json({ ok: true, broker });
+    }
+    if (path === '/api/broker-logo') {
+      const requestUrl = new URL(url, window.location.origin);
+      const asset = requestUrl.searchParams.get('shape') === 'square'
+        ? meridianMarkUrl
+        : meridianWordmarkUrl;
+      const file = real ? await real(asset) : null;
+      if (!file?.ok) return new Response('logo missing', { status: 404 });
+      const bytes = await file.arrayBuffer();
+      return new Response(bytes, {
+        status: 200,
+        headers: {
+          'Content-Type': 'image/png',
+          'X-Content-Type-Options': 'nosniff',
+        },
+      });
+    }
     if (path === '/api/user-mail') return json(mailResponse(action, true));
     if (path === '/api/charter-mail') return json(mailResponse(action, false));
     if (path === '/api/teams') return json(teamsResponse(action));

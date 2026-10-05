@@ -57,6 +57,7 @@ const OpsConsole = lazy(() => import('../src/OpsConsole.jsx'));
 const FlightBoard = lazy(() => import('../src/FlightBoard.jsx'));
 const AdminDutyReport = lazy(() => import('../src/AdminDutyReport.jsx'));
 const TripTrackPage = lazy(() => import('../src/TripTrack.jsx'));
+const BrokerDirectory = lazy(() => import('../src/BrokerBrandPanel.jsx').then((m) => ({ default: m.BrokerDirectory })));
 
 const SURFACES = {
   dashboard: {
@@ -137,6 +138,11 @@ const SURFACES = {
   broker: {
     label: 'Broker live tracking link',
     render: () => <TripTrackPage token="preview-token" />,
+  },
+
+  'broker-brand': {
+    label: 'Broker logo upload',
+    render: () => <BrokerDirectory getIdToken={async () => 'preview-token'} />,
   },
 
   dutyreport: {

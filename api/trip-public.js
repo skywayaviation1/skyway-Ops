@@ -26,6 +26,7 @@
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import { verifyTripToken } from './_trip-token.js';
+import { publicBrandingForTrip } from './_broker-brand-store.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -554,15 +555,21 @@ export default async function handler(req, res) {
   const hasDepartedLeg = sanitized.legs.some((l) => l.status?.wheels_up);
   const hasAirborneLeg = sanitized.legs.some((l) => l.status?.wheels_up && !l.status?.landed);
 
-  const [position, trail, weather] = await Promise.all([
+  const [position, trail, weather, branding] = await Promise.all([
     fetchPosition(sanitized.tail),
     hasDepartedLeg && sanitized.tail ? fetchActualPath(sanitized.tail) : Promise.resolve(null),
     fetchWeather(airportCodes),
+    publicBrandingForTrip(data, token).catch((e) => {
+      console.warn('[trip-public] branding lookup failed:', e?.message || e);
+      return null;
+    }),
   ]);
 
   return res.status(200).json({
     ok: true,
     trip: sanitized,
+    // Null when this broker has no logo. The page then keeps operator branding.
+    branding,
     position,
     // Track-log points as { lat, lon, altitude_ft, groundspeed_kt, time } so
     // the broker map can colour the trail by altitude.

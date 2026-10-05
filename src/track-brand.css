@@ -1,0 +1,88 @@
+/* Broker white-label chrome.
+   Loaded after theme-classy.css. Highlight classes are custom on purpose:
+   the light theme forces every .text-cyan / .bg-cyan / .border-cyan utility
+   back to Skyway cyan with !important, so those utilities cannot carry a
+   broker color.
+
+   The plate sizes to the artwork. The image has an explicit pixel height
+   and a pixel max-width. A percentage max-width inside a shrink-wrapped
+   parent collapses the logo to an empty sliver. */
+
+.track-logo-plate {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: flex-start;
+  box-sizing: border-box;
+  width: fit-content;
+  height: auto;
+  max-width: 100%;
+  padding: 6px 10px;
+  background: #ffffff;
+  border-radius: 10px;
+  line-height: 0;
+  box-shadow: 0 1px 2px rgba(10, 11, 13, 0.18);
+  border: 1px solid rgba(18, 20, 23, 0.08);
+}
+
+.track-logo-plate img {
+  display: block;
+  height: 44px !important;
+  width: auto !important;
+  max-height: 44px !important;
+  max-width: 180px !important;
+  object-fit: contain !important;
+  object-position: center !important;
+}
+
+@media (min-width: 768px) {
+  .track-logo-plate {
+    padding: 8px 14px;
+  }
+  .track-logo-plate img {
+    height: 64px !important;
+    max-height: 64px !important;
+    max-width: 280px !important;
+  }
+}
+
+[data-white-label="1"] .track-accent-bar {
+  height: 6px;
+  background-color: var(--broker-ink-dark) !important;
+}
+
+[data-white-label="1"] .track-accent-text {
+  color: var(--broker-ink) !important;
+}
+
+[data-white-label="1"] .track-accent-fill {
+  background-color: var(--broker-soft) !important;
+}
+
+[data-white-label="1"] .track-accent-border {
+  border-width: 2px;
+  border-color: var(--broker-line) !important;
+}
+
+[data-white-label="1"] .track-accent-dot {
+  background-color: var(--broker-ink) !important;
+}
+
+[data-white-label="1"] .track-accent-glow {
+  box-shadow: 0 0 28px var(--broker-glow) !important;
+}
+
+/* Header stays graphite in both themes, so these controls use the dark-surface ink. */
+[data-white-label="1"] .track-accent-btn {
+  color: var(--broker-ink-dark) !important;
+}
+
+[data-white-label="1"] .track-accent-chip {
+  color: var(--broker-ink) !important;
+  background-color: var(--broker-soft) !important;
+  border-color: var(--broker-line) !important;
+}
+
+[data-white-label="1"] .track-progress {
+  background-color: var(--broker-ink) !important;
+}
