@@ -21,6 +21,8 @@ const BRANDS = {
     contactEmail: 'charters@flyskyway.com',
     contactPhone: '727-605-5000',
     tagline: 'Private Jet & Helicopter Charter Services',
+    // Light files are the mark on a dark plate (white ink). Dark files are
+    // the same mark with a transparent background, for dark chrome.
     wordmark: {
       full: { light: '/skyway-logo', dark: '/skyway-logo-reverse' },
       compact: { light: '/skyway-logo-nav', dark: '/skyway-logo-nav-reverse' },

@@ -308,16 +308,16 @@ export function RouteLine({ from, to, size = 'md', muted = false, className = ''
 }
 
 /* ── WORDMARK ───────────────────────────────────────────────────────────────
-   The logo artwork mixes two inks: brand cyan, which reads on anything, and a
-   dark navy used for "AVIATION", the speed lines and the aircraft. That navy
-   disappears on a dark shell, so a reversed set with the navy lifted to
-   platinum ships alongside it — and that one disappears on a light shell.
+   The mark is cyan SKYWAY with a white jet and white AVIATION. The white ink
+   disappears on a light page, so the light-theme files are that same mark
+   composited on the dark plate, and the dark-theme files are the transparent
+   mark for headers that are already dark.
 
-   Which is correct therefore depends on the surface, and the surface can
-   change while the page is open (the theme toggle). Reading the attribute the
-   theme actually sets keeps the two in step without threading state through
-   every caller. Surfaces that stay dark regardless of theme — the nav header,
-   the boot splash — pass surface="dark" and opt out of the swap. */
+   Which file is correct depends on the surface, and the surface can change
+   while the page is open (the theme toggle). Reading the attribute the theme
+   actually sets keeps the two in step without threading state through every
+   caller. Surfaces that stay dark regardless of theme — the nav header, the
+   boot splash — pass surface="dark" and opt out of the swap. */
 
 // Artwork comes from the active tenant, so a deployment for another operator
 // carries its own wordmark without touching any component.
@@ -345,8 +345,9 @@ export function useThemeMode() {
  * The operator's wordmark.
  *
  * @param variant  'full' for the stacked lockup, 'compact' for the nav strip.
- * @param surface  'auto' follows the theme; 'dark' pins the reversed artwork
- *                 for surfaces that stay dark in both themes.
+ * @param surface  'auto' follows the theme; 'dark' pins the transparent mark
+ *                 for surfaces that stay dark in both themes. Light theme
+ *                 loads the plated file so the white ink keeps its backing.
  */
 export function Wordmark({
   variant = 'full',

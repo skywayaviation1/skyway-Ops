@@ -16166,7 +16166,7 @@ function LegacyLoginScreen({ initialMode = 'login' }) {
       <div className="absolute inset-0 grid-bg-login pointer-events-none" />
       <div className="max-w-md w-full relative">
         <div className="text-center mb-8">
-          <Wordmark surface="dark" className="mx-auto mb-4 h-16 w-auto" />
+          <Wordmark className="mx-auto mb-4 h-16 w-auto" />
           <p className="text-[10px] tracking-[0.3em] text-slate-500 mt-2" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
             OPS CONSOLE · SECURE LOGIN
           </p>

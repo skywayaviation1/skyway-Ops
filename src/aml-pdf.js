@@ -23,7 +23,8 @@ import jsPDF from 'jspdf';
 // multiple PDFs doesn't re-download it.
 //
 // Deliberately the base wordmark rather than the `-reverse` variant the app
-// chrome uses: the page is white, so this needs the navy ink.
+// chrome uses. The page is white, and the mark is cyan + white, so this file
+// is the lockup already composited on its dark plate.
 let logoDataUrlCache = null;
 async function getLogoDataUrl() {
   if (logoDataUrlCache) return logoDataUrlCache;

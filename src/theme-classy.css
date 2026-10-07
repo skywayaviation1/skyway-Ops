@@ -338,5 +338,5 @@ html[data-theme="classy"] body {
 [data-theme="classy"] .animate-ping.bg-cyan-400  { background-color: #17809E !important; }
 
 /* ─── LOGO ────────────────────────────────────────────────────────────────── */
-/* The wordmark PNGs now carry a real alpha channel, so they composite onto any
-   surface. Nothing theme-specific is required here. */
+/* Light theme loads the plated wordmark (cyan + white on the dark plate).
+   Dark chrome loads the transparent mark. Nothing else is theme-specific. */
