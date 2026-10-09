@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback, Suspense, laz
 import { APP_REVIEWER_EMAIL, passwordSignInAllowed } from './reviewer-account.js';
 import { DEMO_AIRCRAFT_BY_TAIL, DEMO_TAILS } from './reviewer-demo-data.js';
 import { readReviewerDatabaseFlag } from './reviewer-sandbox.js';
+import { demoFlightDetail, demoPositionsMap, demoTrackPoints } from './reviewer-demo-track.js';
 
 // Classy theme override stylesheet — applied when the user switches to
 // "classy" mode via the topbar toggle. The CSS targets [data-theme="classy"]
@@ -5036,8 +5037,14 @@ function PilotHomeScreen({ currentUser, trips, tripStates, config, users, onSele
           <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
             <QuickActionButton icon={Calendar} label="All flights" onClick={() => onSwitchSection?.('schedule')} />
             <QuickActionButton icon={FileText} label="Manifests" onClick={() => onSwitchSection?.('manifests')} />
-            <QuickActionButton icon={Mail} label="Expenses" onClick={() => onSwitchSection?.('expenses')} />
-            <QuickActionButton icon={AlertCircle} label="Report" onClick={() => onSwitchSection?.('reports')} />
+            {currentUser?.appReviewer ? (
+              <QuickActionButton icon={Navigation} label="Tracking" onClick={() => onSwitchSection?.('tracking')} />
+            ) : (
+              <>
+                <QuickActionButton icon={Mail} label="Expenses" onClick={() => onSwitchSection?.('expenses')} />
+                <QuickActionButton icon={AlertCircle} label="Report" onClick={() => onSwitchSection?.('reports')} />
+              </>
+            )}
           </div>
         </Card>
 
@@ -15502,6 +15509,26 @@ function TabOrderPanel({ currentUser }) {
   );
 }
 
+function SandboxAccountDialog({ onClose, onLogout }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/70 p-4 sm:items-center" role="dialog" aria-labelledby="sandbox-settings-title">
+      <div className="w-full max-w-md rounded-xl border border-edge bg-surface p-5 shadow-overlay">
+        <h2 id="sandbox-settings-title" className="text-lg font-semibold text-content">App Review sandbox</h2>
+        <p className="mt-2 text-sm leading-relaxed text-content-muted">
+          Company settings, the schedule feed, and user administration are not part of this demo.
+        </p>
+        <p className="mt-3 text-sm leading-relaxed text-content-muted">
+          Skyway Ops accounts are provisioned by the employer. This app does not let someone create an account, and this demo sign-in cannot delete a company account. Sign out when you are finished. Skyway deletes an employee account when that person leaves the company.
+        </p>
+        <div className="mt-5 flex justify-end gap-2">
+          <Button variant="outline" onClick={onClose}>Close</Button>
+          <Button onClick={onLogout}>Sign out</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SettingsModal({ config, setConfig, onClose, onLoadDemo, onLoadFromUrl, onLoadFromText, syncStatus, currentUser, allTrips, users = [] }) {
   const [icalUrl, setIcalUrl] = useState(config.icalUrl || '');
   const [icalText, setIcalText] = useState('');
@@ -22915,8 +22942,9 @@ function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
   const fleetTails = useMemo(() => resolveManagedTails(config), [config]);
 
   const [selectedTail, setSelectedTail] = useState(fleetTails[0]);
-  const [tailStates, setTailStates] = useState({});
-  const [loadingFleet, setLoadingFleet] = useState(true);
+  const reviewerTracking = readReviewerDatabaseFlag();
+  const [tailStates, setTailStates] = useState(() => (reviewerTracking ? demoPositionsMap() : {}));
+  const [loadingFleet, setLoadingFleet] = useState(!reviewerTracking);
   const [lastPolledAt, setLastPolledAt] = useState(null);
 
   useEffect(() => {
@@ -22935,8 +22963,12 @@ function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
         if (cancelled) return;
         unsubscribe = m.subscribeFleetPositions((map) => {
           if (cancelled) return;
-          setTailStates(map || {});
-          const latest = Object.values(map || {}).reduce(
+          const incoming = map || {};
+          const next = readReviewerDatabaseFlag()
+            ? (Object.keys(incoming).length === 0 ? demoPositionsMap() : { ...demoPositionsMap(), ...incoming })
+            : incoming;
+          setTailStates(next);
+          const latest = Object.values(next).reduce(
             (max, item) => Math.max(max, Number(item?.polledAt || 0)),
             0,
           );
@@ -23203,6 +23235,11 @@ function useFullFlightTrack(tail, airborne) {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
+    if (readReviewerDatabaseFlag()) {
+      setPoints(normalizeTrail(demoTrackPoints(tail)));
+      setLoading(false);
+      return undefined;
+    }
     if (!tail) { setPoints([]); return undefined; }
     let cancelled = false;
     let timer = null;
@@ -23241,6 +23278,7 @@ function useAirportWeatherSet(codes) {
   const key = codes.join(',');
 
   useEffect(() => {
+    if (readReviewerDatabaseFlag()) { setWeather({}); return undefined; }
     if (!key) { setWeather({}); return undefined; }
     let cancelled = false;
     (async () => {
@@ -23527,8 +23565,19 @@ function TrackingDetailPanel({ tail, initialState, trips, tripStates }) {
   const [error, setError] = useState(null);
   const [showChart, setShowChart] = useState(true);
 
-  // Fetch detail + track + weather; refresh every 30s
+  // Fetch detail + track + weather; refresh every 30s.
+  // The sandbox never calls FlightAware. It renders the seeded demo flight.
   useEffect(() => {
+    if (readReviewerDatabaseFlag()) {
+      const demo = demoFlightDetail(tail);
+      setDetail(demo);
+      setTrackLog(demoTrackPoints(tail));
+      setOriginWx(null);
+      setDestWx(null);
+      setError(demo ? null : 'Demo aircraft');
+      setLoading(false);
+      return undefined;
+    }
     let cancelled = false;
     let timer = null;
 
@@ -28344,7 +28393,7 @@ export default function CharterOps() {
   // feed for backgrounded sessions. Wakes back up + immediately fetches
   // when the tab becomes visible again.
   useEffect(() => {
-    if (!config?.icalUrl) return;
+    if (readReviewerDatabaseFlag() || !config?.icalUrl) return;
     const REFRESH_MS = 30 * 60 * 1000; // 30 minutes
     let timer = null;
 
@@ -28919,7 +28968,10 @@ export default function CharterOps() {
           now={now}
           tripCount={allTrips.length}
           onOpenSettings={() => {
-            if (currentUser?.appReviewer) return;
+            if (currentUser?.appReviewer) {
+              setShowSettings(true);
+              return;
+            }
             if (currentUser?.role === 'admin') {
               setSection('settings');
               setSelectedId(null);
@@ -29719,7 +29771,10 @@ export default function CharterOps() {
           setCurrentSection={(s) => { setSection(s); setSelectedId(null); }}
           currentUser={currentUser}
           onOpenSettings={() => {
-            if (currentUser?.appReviewer) return;
+            if (currentUser?.appReviewer) {
+              setShowSettings(true);
+              return;
+            }
             if (currentUser?.role === 'admin') {
               setSection('settings');
               setSelectedId(null);
@@ -29733,7 +29788,13 @@ export default function CharterOps() {
         />
       </div>
 
-      {showSettings && (
+      {showSettings && currentUser?.appReviewer && (
+        <SandboxAccountDialog
+          onClose={() => setShowSettings(false)}
+          onLogout={signOut}
+        />
+      )}
+      {showSettings && !currentUser?.appReviewer && (
         <SettingsModal
           config={config}
           setConfig={setConfig}

@@ -11,7 +11,7 @@ import {
   reviewerSessionBlock,
 } from '../src/reviewer-account.js';
 import { buildReviewerDemo, DEMO_TAILS } from '../src/reviewer-demo-data.js';
-import { demoTrackingResponse, isDemoTrackingToken } from '../src/reviewer-demo-track.js';
+import { demoFlightDetail, demoPositionsMap, demoTrackPoints, demoTrackingResponse, isDemoTrackingToken } from '../src/reviewer-demo-track.js';
 import {
   isCompanyApiRequest,
   isDemoTrackingRequest,
@@ -104,7 +104,18 @@ test('demo data stays fictional and covers the main screens', () => {
   assert.equal(demo.manifests.length, 1);
   assert.ok(demo.manifests[0].legs[0].passengers.length >= 2);
   assert.deepEqual(demo.fleet.managedTails, [...DEMO_TAILS]);
-  assert.equal(demo.positions.find((p) => p.id === 'N551SK').airborne, true);
+  const airborne = demo.positions.find((p) => p.id === 'N551SK');
+  const parked = demo.positions.find((p) => p.id === 'N882SK');
+  assert.equal(airborne.airborne, true);
+  assert.equal(parked.airborne, false);
+  assert.ok(Number.isFinite(parked.groundedLat));
+  const map = demoPositionsMap(now);
+  assert.equal(map.N551SK.airborne, true);
+  assert.equal(map.N882SK.airborne, false);
+  assert.ok(demoTrackPoints('N551SK', now).length >= 2);
+  assert.equal(demoTrackPoints('N882SK', now).length, 0);
+  assert.equal(demoFlightDetail('N551SK', now).destination.code, 'KTEB');
+  assert.ok(demoFlightDetail('N882SK', now).actualOn);
 });
 
 test('demo tracking token never looks like a company trip token', () => {

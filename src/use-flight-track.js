@@ -3,6 +3,8 @@
 
 import { useEffect, useState } from 'react';
 import { normalizeTrail } from './tracking-map.js';
+import { demoTrackPoints } from './reviewer-demo-track.js';
+import { readReviewerDatabaseFlag } from './reviewer-sandbox.js';
 
 export function useFullFlightTrack(tail, airborne) {
   const [points, setPoints] = useState([]);
@@ -10,6 +12,12 @@ export function useFullFlightTrack(tail, airborne) {
   const [error, setError] = useState(null);
 
   useEffect(() => {
+    if (readReviewerDatabaseFlag()) {
+      setPoints(normalizeTrail(demoTrackPoints(tail)));
+      setError(null);
+      setLoading(false);
+      return undefined;
+    }
     if (!tail) {
       setPoints([]);
       setError(null);

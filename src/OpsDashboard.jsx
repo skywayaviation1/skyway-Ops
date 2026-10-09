@@ -35,6 +35,8 @@ import { resolveManagedTails } from './fleet-config.js';
 import { buildFleetMapScene } from './fleet-tracking.js';
 import { buildActiveOpsTrips, computeOutstanding } from './ops-readiness.js';
 import FleetTrackingPanel from './FleetTrackingPanel.jsx';
+import { demoPositionsMap } from './reviewer-demo-track.js';
+import { readReviewerDatabaseFlag } from './reviewer-sandbox.js';
 
 const DashboardMailboxPreviewLazy = lazy(() => import('./DashboardMailboxPreview.jsx'));
 
@@ -68,10 +70,11 @@ function fmtDuration(ms) {
    subscription fails closed to an empty list. */
 
 function useOpsData(enabled) {
+  const reviewer = readReviewerDatabaseFlag();
   const [squawks, setSquawks] = useState([]);
   const [mel, setMel] = useState([]);
-  const [positions, setPositions] = useState({});
-  const [positionsReady, setPositionsReady] = useState(false);
+  const [positions, setPositions] = useState(() => (reviewer ? demoPositionsMap() : {}));
+  const [positionsReady, setPositionsReady] = useState(reviewer);
   const [tripStates, setTripStates] = useState(null);
   const [aogEvents, setAogEvents] = useState([]);
   const [dutyPeriods, setDutyPeriods] = useState([]);
@@ -106,7 +109,14 @@ function useOpsData(enabled) {
       if (cancelled) return;
       track(m.subscribeFleetPositions?.((map) => {
         if (cancelled) return;
-        setPositions(map || {});
+        const incoming = map || {};
+        if (readReviewerDatabaseFlag() && Object.keys(incoming).length === 0) {
+          setPositions(demoPositionsMap());
+        } else if (readReviewerDatabaseFlag()) {
+          setPositions({ ...demoPositionsMap(), ...incoming });
+        } else {
+          setPositions(incoming);
+        }
         setPositionsReady(true);
       }));
       track(m.subscribeAllTripStates?.((map) => !cancelled && setTripStates(map || null)));
@@ -549,7 +559,12 @@ export default function OpsDashboard({
     return () => clearInterval(id);
   }, []);
 
-  const data = useOpsData(currentUser?.role === 'admin' || currentUser?._impersonating === true);
+  const data = useOpsData(
+    currentUser?.role === 'admin'
+    || currentUser?._impersonating === true
+    || currentUser?.appReviewer === true,
+  );
+  const reviewerHome = currentUser?.appReviewer === true;
 
   // The managed fleet. Tails that appear only on the schedule are added by
   // buildFleetRows and flagged off-fleet, so they stay visible without
@@ -706,12 +721,12 @@ export default function OpsDashboard({
 
         {/* Personal and shared mail at a glance. */}
         <div className="grid gap-4 xl:grid-cols-2">
-          <SectionCard title="Personal email" subtitle="Your Microsoft 365 inbox" icon={MessageSquare}>
+          <SectionCard title="Personal email" subtitle={reviewerHome ? 'Mailbox is off in this sandbox' : 'Your Microsoft 365 inbox'} icon={MessageSquare}>
             <Suspense fallback={<div className="flex min-h-48 items-center justify-center"><Spinner label="Loading personal email" /></div>}>
               <DashboardMailboxPreviewLazy mode="personal" onOpen={() => onSwitchSection?.('mailbox')} />
             </Suspense>
           </SectionCard>
-          <SectionCard title="Shared charter inbox" subtitle="charters@flyskyway.com" icon={MessageSquare}>
+          <SectionCard title="Shared charter inbox" subtitle={reviewerHome ? 'Shared inbox is off in this sandbox' : 'charters@flyskyway.com'} icon={MessageSquare}>
             <Suspense fallback={<div className="flex min-h-48 items-center justify-center"><Spinner label="Loading shared email" /></div>}>
               <DashboardMailboxPreviewLazy mode="shared" onOpen={() => onSwitchSection?.('inbox')} />
             </Suspense>
@@ -822,6 +837,34 @@ export default function OpsDashboard({
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
+            {reviewerHome ? (
+              <>
+                <ModuleCard
+                  icon={CalendarDays}
+                  title="Schedule"
+                  value={summary.remainingToday}
+                  detail={`${summary.legsToday} demo legs today`}
+                  tone="accent"
+                  onClick={() => onSwitchSection?.('schedule')}
+                />
+                <ModuleCard
+                  icon={ClipboardList}
+                  title="Manifests"
+                  value="OPEN"
+                  detail="Fictional load manifest for the active leg"
+                  onClick={() => onSwitchSection?.('manifests')}
+                />
+                <ModuleCard
+                  icon={Navigation}
+                  title="Live tracking"
+                  value={summary.airborne}
+                  detail={`${mapScene.aircraft.length} aircraft reporting position`}
+                  tone={summary.airborne ? 'accent' : 'neutral'}
+                  onClick={() => onSwitchSection?.('tracking')}
+                />
+              </>
+            ) : (
+              <>
             <ModuleCard
               icon={Activity}
               title="Flight control"
@@ -898,6 +941,8 @@ export default function OpsDashboard({
               detail="Managed aircraft · services · alert policy"
               onClick={() => onSwitchSection?.('settings')}
             />
+              </>
+            )}
           </div>
         </div>
       </div>

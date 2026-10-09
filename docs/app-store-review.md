@@ -88,7 +88,12 @@ renders a fixed fictional flight and does not read company trips.
 
 The banner switches between the operations board and the crew home. Crew home
 includes duty for the sandbox account. Manifests, schedule, and tracking use
-the seeded demo tails `N551SK` and `N882SK`.
+the seeded demo tails `N551SK` and `N882SK`. N551SK is airborne from PBI to
+TEB with a static track. N882SK is parked at TEB. The sandbox does not call
+FlightAware, so those positions never wait on a live poll.
+
+Settings on this account explains that Skyway provisions accounts and that
+this demo sign-in cannot delete a company account.
 
 ## Review notes to paste into App Store Connect
 
@@ -104,4 +109,10 @@ This account is a demo. It cannot see Skyway trips, crew, passengers,
 billing, or messages, and it cannot send email, SMS, or charges. The
 operations board, crew home, duty, manifests, trip details, and the demo
 tracking link are populated with fictional data.
+
+Account deletion is not available in the app. Skyway Ops accounts are
+provisioned by the employer (Microsoft for employees, this sandbox
+account for App Review). The app does not let a user create an account.
+Skyway deletes an employee account when that person leaves the company.
+This follows App Store guideline 5.1.1(v) for employer-provisioned accounts.
 ```
