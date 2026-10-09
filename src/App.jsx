@@ -6497,11 +6497,11 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
                 }}
               />
             )}
+            {trip.info.isFlight && trip.info.tail && !currentUser?.appReviewer && (
+              <MXShareButton tail={trip.info.tail} onOpenModal={() => setMxShareOpen(true)} />
+            )}
             {trip.info.isFlight && trip.info.tail && (
-              <>
-                <MXShareButton tail={trip.info.tail} onOpenModal={() => setMxShareOpen(true)} />
-                <TailStatusBadge tail={trip.info.tail} />
-              </>
+              <TailStatusBadge tail={trip.info.tail} />
             )}
             {fromFbo && <StatusChip tone="neutral">{trip.info.from}: {fromFbo}</StatusChip>}
             {toFbo && <StatusChip tone="neutral">{trip.info.to}: {toFbo}</StatusChip>}
@@ -6510,7 +6510,11 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
           {/* Primary mobile actions stay immediately reachable without
               forcing the hero to reproduce the desktop action cluster. */}
           <div className="mt-3 grid grid-cols-[1fr_1fr_auto] gap-2 md:hidden">
-            {(currentUser?.role === 'ops' || currentUser?.role === 'admin') && (
+            {currentUser?.appReviewer ? (
+              <Button variant="outline" size="sm" onClick={() => { window.location.assign(trip.info?.demoTrackingUrl || '/trip-track?token=demo-sandbox'); }}>
+                Demo tracking
+              </Button>
+            ) : (currentUser?.role === 'ops' || currentUser?.role === 'admin') && (
               <Button variant="outline" size="sm" icon={Send} onClick={() => setShareDialogOpen(true)}>Share</Button>
             )}
             <Button

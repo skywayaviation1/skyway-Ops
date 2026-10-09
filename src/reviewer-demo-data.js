@@ -71,6 +71,7 @@ function trip({
       legType,
       category,
       isFlight: true,
+      isOps: true,
       aircraftType: DEMO_AIRCRAFT_BY_TAIL[tail]?.displayName || '',
       fromFbo: 'Signature Flight Support',
       toFbo: 'Atlantic Aviation',
