@@ -1,4 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback, Suspense, lazy } from 'react';
+import { APP_REVIEWER_EMAIL, passwordSignInAllowed } from './reviewer-account.js';
+import { DEMO_AIRCRAFT_BY_TAIL, DEMO_TAILS } from './reviewer-demo-data.js';
+import { readReviewerDatabaseFlag } from './reviewer-sandbox.js';
 
 // Classy theme override stylesheet — applied when the user switches to
 // "classy" mode via the topbar toggle. The CSS targets [data-theme="classy"]
@@ -6447,17 +6450,22 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
                 onClick={() => setHeroCollapsed(true)}
                 variant="ghost"
               />
-              {trip.info.url && (
+              {trip.info.url && !currentUser?.appReviewer && (
                 <Button variant="outline" size="sm" onClick={() => window.open(trip.info.url, '_blank', 'noopener,noreferrer')}>
                   JetInsight
                 </Button>
               )}
-              {(currentUser?.role === 'ops' || currentUser?.role === 'admin') && (
+              {currentUser?.appReviewer && (
+                <Button variant="outline" size="sm" onClick={() => { window.location.assign(trip.info?.demoTrackingUrl || '/trip-track?token=demo-sandbox'); }}>
+                  Demo tracking
+                </Button>
+              )}
+              {!currentUser?.appReviewer && (currentUser?.role === 'ops' || currentUser?.role === 'admin') && (
                 <Button variant="outline" size="sm" icon={Send} onClick={() => setShareDialogOpen(true)}>
                   Share
                 </Button>
               )}
-              {(currentUser?.role === 'ops' || currentUser?.role === 'admin') && trip.info?.tail && brokerEmail && (
+              {!currentUser?.appReviewer && (currentUser?.role === 'ops' || currentUser?.role === 'admin') && trip.info?.tail && brokerEmail && (
                 <Button variant="secondary" size="sm" loading={updatingEta} onClick={handleUpdateEta}>
                   Update ETA
                 </Button>
@@ -6631,7 +6639,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
                 {completedCount}/{applicableSteps.length} STEPS
               </Pill>
             )}
-            {trip.info.url && (
+            {trip.info.url && !currentUser?.appReviewer && (
               <a
                 href={trip.info.url}
                 target="_blank"
@@ -6646,7 +6654,16 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
                 and emails it to all broker emails on the trip. Shows result
                 inline. Works only when aircraft is actually airborne (the
                 handler validates and shows a message otherwise). */}
-            {(currentUser?.role === 'ops' || currentUser?.role === 'admin') && trip.info?.tail && brokerEmail && (
+            {currentUser?.appReviewer && (
+              <a
+                href={trip.info?.demoTrackingUrl || '/trip-track?token=demo-sandbox'}
+                className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] uppercase tracking-[0.15em] border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              >
+                DEMO TRACKING LINK
+              </a>
+            )}
+            {!currentUser?.appReviewer && (currentUser?.role === 'ops' || currentUser?.role === 'admin') && trip.info?.tail && brokerEmail && (
               <button
                 onClick={handleUpdateEta}
                 disabled={updatingEta}
@@ -6668,7 +6685,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
                 public tracking URL and (optionally) emails it to the broker.
                 Available for any trip, regardless of airborne status (works
                 pre-departure for the broker to bookmark). */}
-            {(currentUser?.role === 'ops' || currentUser?.role === 'admin') && (
+            {!currentUser?.appReviewer && (currentUser?.role === 'ops' || currentUser?.role === 'admin') && (
               <button
                 onClick={() => setShareDialogOpen(true)}
                 className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] uppercase tracking-[0.15em] border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10"
@@ -15883,6 +15900,11 @@ function MicrosoftMark({ className = '' }) {
 function LoginScreen({ authError = null }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
+  const [reviewerOpen, setReviewerOpen] = useState(false);
+  const [reviewerEmail, setReviewerEmail] = useState(APP_REVIEWER_EMAIL);
+  const [reviewerPassword, setReviewerPassword] = useState('');
+  const [reviewerSubmitting, setReviewerSubmitting] = useState(false);
+  const [reviewerError, setReviewerError] = useState('');
   // How sign-in is actually wired, so guidance never tells an administrator to
   // apply a fix they have already applied.
   const [authContext, setAuthContext] = useState(null);
@@ -15917,6 +15939,35 @@ function LoginScreen({ authError = null }) {
   const shownError = error
     || (authError ? describeAuthError(authError, authContext) : null)
     || (diagnosticAge < 5 * 60 * 1000 ? describeDirectoryError(diagnostic?.error) : null);
+
+  const handleReviewerLogin = async (event) => {
+    event.preventDefault();
+    setReviewerError('');
+    if (!passwordSignInAllowed(reviewerEmail)) {
+      setReviewerError('Email and password sign-in is only available for the App Review account.');
+      return;
+    }
+    if (!reviewerPassword) {
+      setReviewerError('Enter the App Review password.');
+      return;
+    }
+    setReviewerSubmitting(true);
+    try {
+      const { signInAsAppReviewer } = await import('./firebase-auth.js');
+      await signInAsAppReviewer(reviewerEmail, reviewerPassword);
+    } catch (err) {
+      const passwordMessage = {
+        'auth/invalid-credential': 'That email and password were not accepted.',
+        'auth/wrong-password': 'That password does not match the App Review account.',
+        'auth/user-not-found': 'The App Review account has not been created yet.',
+        'auth/operation-not-allowed': 'Email and password sign-in is not enabled for this Firebase project yet.',
+        'auth/password-not-allowed': 'Email and password sign-in is only available for the App Review account.',
+        'auth/reviewer-not-activated': 'The App Review account is not activated yet.',
+      }[err?.code];
+      setReviewerError(passwordMessage || err?.message || 'Could not sign in.');
+      setReviewerSubmitting(false);
+    }
+  };
 
   const handleMicrosoftLogin = async () => {
     setSubmitting(true);
@@ -16060,6 +16111,59 @@ function LoginScreen({ authError = null }) {
           <p className="mt-5 text-center text-2xs text-content-subtle">
             Skyway Aviation internal system · Access is logged and monitored
           </p>
+
+          <div className="mt-8 text-center">
+            {reviewerOpen ? (
+              <form onSubmit={handleReviewerLogin} className="mx-auto max-w-xs space-y-3 text-left">
+                <p className="text-center text-2xs text-content-subtle">App Review sign-in</p>
+                <label className="block text-[10px] font-semibold uppercase tracking-wide text-content-subtle">
+                  Email
+                  <input
+                    type="email"
+                    autoComplete="username"
+                    value={reviewerEmail}
+                    onChange={(event) => setReviewerEmail(event.target.value)}
+                    className="mt-1 h-10 w-full rounded-md border border-edge bg-slate-950 px-3 text-sm text-content"
+                  />
+                </label>
+                <label className="block text-[10px] font-semibold uppercase tracking-wide text-content-subtle">
+                  Password
+                  <input
+                    type="password"
+                    autoComplete="current-password"
+                    value={reviewerPassword}
+                    onChange={(event) => setReviewerPassword(event.target.value)}
+                    className="mt-1 h-10 w-full rounded-md border border-edge bg-slate-950 px-3 text-sm text-content"
+                  />
+                </label>
+                {reviewerError && (
+                  <p className="text-2xs leading-relaxed text-danger">{reviewerError}</p>
+                )}
+                <button
+                  type="submit"
+                  disabled={reviewerSubmitting}
+                  className="h-10 w-full rounded-md border border-edge text-xs font-semibold text-content-muted hover:text-content disabled:opacity-60"
+                >
+                  {reviewerSubmitting ? 'Signing in…' : 'Sign in'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setReviewerOpen(false); setReviewerError(''); }}
+                  className="w-full text-center text-[10px] text-content-subtle underline-offset-2 hover:underline"
+                >
+                  Back
+                </button>
+              </form>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setReviewerOpen(true)}
+                className="text-[10px] text-content-subtle/80 underline-offset-2 hover:underline"
+              >
+                Reviewer sign-in
+              </button>
+            )}
+          </div>
         </section>
       </div>
     </main>
@@ -16425,6 +16529,10 @@ function describeAuthError(err, authContext = null) {
 
   const SIMPLE = {
     'auth/company-account-required': 'Use your @flyskyway.com Microsoft account.',
+    'auth/password-not-allowed': 'Email and password sign-in is only available for the App Review account.',
+    'auth/reviewer-not-activated': 'The App Review account is not activated yet. An administrator needs to run the reviewer account script so the sandbox claim is set.',
+    'auth/wrong-password': 'That password does not match the App Review account.',
+    'auth/invalid-login-credentials': 'That email and password were not accepted.',
     'auth/profile-identity-mismatch': 'This Microsoft account does not match the Skyway profile on file. Contact an administrator to relink it.',
     'auth/account-disabled': 'This account has been deactivated. Contact a Skyway administrator.',
     'auth/popup-blocked': 'Microsoft sign-in was blocked by the browser. Allow pop-ups and try again.',
@@ -21853,13 +21961,20 @@ function groupIdForSection(sectionId) {
 }
 
 /** Leaf sections this user may open, in canonical order. */
+const REVIEWER_NAV = new Set(['home', 'schedule', 'tracking', 'manifests']);
+
 function useAllowedSections(currentUser) {
   // The Duty oversight screen also opens while an admin is impersonating a
   // crew member; impersonation is admin-only, so the flag is a safe signal.
   const isAdminContext = currentUser?.role === 'admin' || currentUser?._impersonating === true;
-  return useMemo(() => NAV_SECTIONS.filter(s =>
-    s.roles.includes(currentUser?.role) || (s.id === 'duty' && isAdminContext)
-  ), [currentUser?.role, isAdminContext]);
+  return useMemo(() => {
+    if (currentUser?.appReviewer) {
+      return NAV_SECTIONS.filter((s) => REVIEWER_NAV.has(s.id));
+    }
+    return NAV_SECTIONS.filter(s =>
+      s.roles.includes(currentUser?.role) || (s.id === 'duty' && isAdminContext)
+    );
+  }, [currentUser?.role, currentUser?.appReviewer, isAdminContext]);
 }
 
 /** Groups with their role-filtered children; groups with nothing left drop out. */
@@ -27647,12 +27762,21 @@ export default function CharterOps() {
   const { users, loading: usersLoading, updateUser, removeUser, approveUser } = useFirestoreUsers(profile);
 
   // App state
-  const [config, setConfig] = useState({
-    icalUrl: DEFAULT_ICAL_URL,
-    opsEmail: '',
-    crewName: '',
-    dutyTrackerEnabled: DUTY_TRACKER_ENABLED,
+  const [config, setConfig] = useState(() => {
+    const reviewer = readReviewerDatabaseFlag();
+    return {
+      icalUrl: reviewer ? '' : DEFAULT_ICAL_URL,
+      opsEmail: '',
+      crewName: '',
+      dutyTrackerEnabled: DUTY_TRACKER_ENABLED,
+      ...(reviewer ? {
+        fleetConfigured: true,
+        fleetTails: [...DEMO_TAILS],
+        aircraftByTail: DEMO_AIRCRAFT_BY_TAIL,
+      } : {}),
+    };
   });
+  const [sandboxView, setSandboxView] = useState('ops');
   const [trips, setTrips] = useState([]);
   const [manualTrips, setManualTrips] = useState([]);
   const [selectedId, setSelectedId] = useState(() => {
@@ -28037,7 +28161,21 @@ export default function CharterOps() {
       // Carried through here so TopNav/TripDetail receive it without an
       // extra Firestore round trip.
       tabOrderPrefs: liveProfile.tabOrderPrefs || null,
+      appReviewer: liveProfile.appReviewer === true,
     };
+    if (realUser.appReviewer) {
+      if (sandboxView === 'crew') {
+        return {
+          ...realUser,
+          role: 'crew',
+          name: 'Avery Lang',
+          callsign: 'AVERY',
+          jetinsightName: 'Avery Lang',
+          _sandboxView: 'crew',
+        };
+      }
+      return { ...realUser, role: 'ops', _sandboxView: 'ops' };
+    }
     // Only admins can impersonate
     if (impersonateUid && realUser.role === 'admin') {
       const target = users.find(u => u.uid === impersonateUid);
@@ -28063,7 +28201,7 @@ export default function CharterOps() {
       }
     }
     return realUser;
-  }, [profile, impersonateUid, users]);
+  }, [profile, impersonateUid, users, sandboxView]);
   const activeDispatchView = dispatchView;
 
   // Tick clock
@@ -28153,6 +28291,18 @@ export default function CharterOps() {
         ...(cfg || { icalUrl: DEFAULT_ICAL_URL, opsEmail: '', crewName: '' }),
         dutyTrackerEnabled: DUTY_TRACKER_ENABLED,
       };
+      if (readReviewerDatabaseFlag()) {
+        setConfig((previous) => ({
+          ...previous,
+          icalUrl: '',
+          fleetConfigured: true,
+          fleetTails: previous?.fleetTails?.length ? previous.fleetTails : [...DEMO_TAILS],
+          aircraftByTail: previous?.aircraftByTail || DEMO_AIRCRAFT_BY_TAIL,
+        }));
+        setTrips([]);
+        setLoading(false);
+        return;
+      }
       if (!effectiveCfg.icalUrl) effectiveCfg.icalUrl = DEFAULT_ICAL_URL;
       setConfig((previous) => (
         previous?.fleetConfigured === true
@@ -28260,6 +28410,7 @@ export default function CharterOps() {
   // brokerEmail, autoNotify are never touched.
   const tripMetaBackfilledRef = useRef(false);
   useEffect(() => {
+    if (readReviewerDatabaseFlag() || currentUser?.appReviewer) return;
     if (tripMetaBackfilledRef.current) return;
     if (!allTrips || allTrips.length === 0) return;
     if (!currentUser?.uid) return;
@@ -28437,6 +28588,7 @@ export default function CharterOps() {
    * idToken). Skips silently if there's no auth.
    */
   async function autoBackfillActiveTripMeta(allTripsLocal) {
+    if (readReviewerDatabaseFlag()) return;
     try {
       const { auth } = await import('./firebase.js');
       const u = auth.currentUser;
@@ -28484,6 +28636,7 @@ export default function CharterOps() {
 
   // Multi-proxy sync with full diagnostic logging
   const loadFromUrl = async (url) => {
+    if (readReviewerDatabaseFlag()) return;
     if (!url) return;
     setSyncStatus({ status: 'syncing', message: 'Starting sync...' });
     log('info', `Sync start → ${url.slice(0, 80)}`);
@@ -28701,6 +28854,32 @@ export default function CharterOps() {
             Add to Home Screen flow because iOS Safari has no built-in
             install prompt (unlike Chrome/Android). */}
         <IosInstallBanner />
+        {currentUser?.appReviewer && (
+          <div
+            role="status"
+            className="flex shrink-0 flex-wrap items-center justify-center gap-2 border-b border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-center"
+          >
+            <span className="font-mono text-[10px] font-semibold tracking-wide text-cyan-200">
+              APP REVIEW SANDBOX · DEMO DATA ONLY · OUTBOUND MESSAGES SUPPRESSED
+            </span>
+            <div className="inline-flex rounded-md border border-cyan-500/30 p-0.5">
+              <button
+                type="button"
+                onClick={() => { setSandboxView('ops'); setSection('home'); setSelectedId(null); }}
+                className={`rounded px-2 py-1 text-[10px] font-semibold ${sandboxView === 'ops' ? 'bg-cyan-400 text-slate-950' : 'text-cyan-100'}`}
+              >
+                Ops board
+              </button>
+              <button
+                type="button"
+                onClick={() => { setSandboxView('crew'); setSection('home'); setSelectedId(null); }}
+                className={`rounded px-2 py-1 text-[10px] font-semibold ${sandboxView === 'crew' ? 'bg-cyan-400 text-slate-950' : 'text-cyan-100'}`}
+              >
+                Crew home
+              </button>
+            </div>
+          </div>
+        )}
         {profile?.authProvider === 'dev-bypass' && (
           <div
             role="status"
@@ -28736,6 +28915,7 @@ export default function CharterOps() {
           now={now}
           tripCount={allTrips.length}
           onOpenSettings={() => {
+            if (currentUser?.appReviewer) return;
             if (currentUser?.role === 'admin') {
               setSection('settings');
               setSelectedId(null);
@@ -28761,7 +28941,38 @@ export default function CharterOps() {
               everyone else — the personalized PilotHomeScreen
             Gating here keeps each home component independent of the others. */}
         {section === 'home' && (
-          currentUser?.role === 'admin' ? (
+          currentUser?.appReviewer && sandboxView === 'crew' ? (
+            <PilotHomeScreen
+              currentUser={currentUser}
+              trips={allTrips}
+              tripStates={null}
+              config={config}
+              users={users}
+              onSelectTrip={(uid) => { setSelectedId(uid); setSection('schedule'); }}
+              onSwitchSection={(id) => setSection(id)}
+            />
+          ) : currentUser?.appReviewer ? (
+            <Suspense fallback={
+              <div className="flex-1 flex items-center justify-center bg-slate-950 text-content-subtle">
+                <Loader2 className="w-4 h-4 animate-spin inline mr-2" />
+                Loading operations control
+              </div>
+            }>
+              <OpsDashboardLazy
+                currentUser={currentUser}
+                trips={allTrips}
+                users={users}
+                config={config}
+                onSelectTrip={(uid) => { setSelectedId(uid); setSection('schedule'); }}
+                onSwitchSection={(id) => {
+                  if (!REVIEWER_NAV.has(id)) return;
+                  setSelectedId(null);
+                  setSection(id);
+                }}
+                onOpenDispatch={() => {}}
+              />
+            </Suspense>
+          ) : currentUser?.role === 'admin' ? (
             <Suspense fallback={
               <div className="flex-1 flex items-center justify-center bg-slate-950 text-content-subtle">
                 <Loader2 className="w-4 h-4 animate-spin inline mr-2" />
@@ -29156,7 +29367,7 @@ export default function CharterOps() {
         )}
 
         {/* === EXPENSES SECTION === */}
-        {section === 'expenses' && (
+        {section === 'expenses' && !currentUser?.appReviewer && (
           <ExpensesScreen
             currentUser={currentUser}
             currentUserUid={currentUser?.uid || currentUser?.id}
@@ -29302,7 +29513,7 @@ export default function CharterOps() {
             roles from seeing the tab, but we double-gate here in case
             section state gets set via URL query or restored from
             localStorage after a role change. */}
-        {section === 'aog' && (currentUser.role === 'ops' || currentUser.role === 'admin') && (
+        {section === 'aog' && !currentUser?.appReviewer && (currentUser.role === 'ops' || currentUser.role === 'admin') && (
           <div className="flex-1 overflow-y-auto scroll-area">
             <Suspense fallback={<div className="flex items-center justify-center py-16 text-slate-500"><Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading AOG coverage...</div>}>
               <AogTabLazy currentUser={currentUser} />
@@ -29360,7 +29571,7 @@ export default function CharterOps() {
             Stream Chat-powered. The screen needs allTrips so it can
             auto-create trip channels, and a way to fetch the Firebase
             idToken to mint a Stream token. */}
-        {section === 'comms' && (
+        {section === 'comms' && !currentUser?.appReviewer && (
           <Suspense fallback={
             <div className="flex-1 flex items-center justify-center text-slate-500">
               <Loader2 className="w-5 h-5 animate-spin" />
@@ -29379,7 +29590,7 @@ export default function CharterOps() {
         )}
 
         {/* === MICROSOFT TEAMS === */}
-        {section === 'teams' && currentUser?.approved && (
+        {section === 'teams' && !currentUser?.appReviewer && currentUser?.approved && (
           <Suspense fallback={
             <div className="flex flex-1 items-center justify-center text-content-muted">
               <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading Microsoft Teams…
@@ -29390,7 +29601,7 @@ export default function CharterOps() {
         )}
 
         {/* === PERSONAL WORK MAILBOX === */}
-        {section === 'mailbox' && currentUser?.approved && (
+        {section === 'mailbox' && !currentUser?.appReviewer && currentUser?.approved && (
           <Suspense fallback={
             <div className="flex flex-1 items-center justify-center text-content-muted">
               <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading your work mailbox…
@@ -29412,7 +29623,7 @@ export default function CharterOps() {
         )}
 
         {/* === USERS SECTION === */}
-        {section === 'users' && (
+        {section === 'users' && !currentUser?.appReviewer && (
           <div className="flex-1 overflow-y-auto scroll-area">
             <UsersScreen
               users={users}
@@ -29504,6 +29715,7 @@ export default function CharterOps() {
           setCurrentSection={(s) => { setSection(s); setSelectedId(null); }}
           currentUser={currentUser}
           onOpenSettings={() => {
+            if (currentUser?.appReviewer) return;
             if (currentUser?.role === 'admin') {
               setSection('settings');
               setSelectedId(null);

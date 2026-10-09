@@ -17,7 +17,7 @@
       "enabled": true
     },
     "FirebaseAuthentication": {
-      "providers": ["microsoft.com"],
+      "providers": ["microsoft.com", "password"],
       "skipNativeAuth": false
     },
     "FirebaseMessaging": {

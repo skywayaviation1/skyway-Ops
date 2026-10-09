@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // Vercel serverless function: parse receipt image/PDF using Anthropic Claude vision.
 //
 // The Claude API key lives only on the server — never exposed to the browser.
@@ -122,7 +123,7 @@ export default async function handler(req, res) {
   }
   try {
     const admin = await getAdmin();
-    await admin.auth().verifyIdToken(idToken);
+    reviewerSessionBlock(await admin.auth().verifyIdToken(idToken));
   } catch (err) {
     if (/FIREBASE_SERVICE_ACCOUNT_JSON/.test(err.message)) {
       console.error('[parse-receipt] admin init failed:', err.message);

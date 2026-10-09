@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // Re-link a pilot who is already on duty, or whose duty a partner closed,
 // with a new two-pilot partner. The original duty-on time is preserved.
 //
@@ -47,7 +48,7 @@ export default async function handler(req, res) {
 
     let caller;
     try {
-      caller = await getAdmin().auth().verifyIdToken(idToken);
+      caller = reviewerSessionBlock(await getAdmin().auth().verifyIdToken(idToken));
     } catch {
       res.status(401).json({ ok: false, error: 'invalid idToken' });
       return;

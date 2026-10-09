@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // api/veryon-oauth-start.js
 //
 // Begins the Veryon Tracking OAuth2 flow (authorizationCode + PKCE).
@@ -78,7 +79,7 @@ export default async function handler(req, res) {
 
     let decoded;
     try {
-      decoded = await admin.auth().verifyIdToken(idToken);
+      decoded = reviewerSessionBlock(await admin.auth().verifyIdToken(idToken));
     } catch (err) {
       res.status(401).json({ error: 'Invalid token: ' + err.message });
       return;

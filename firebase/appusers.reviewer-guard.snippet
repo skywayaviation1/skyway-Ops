@@ -1,0 +1,17 @@
+// Paste into the EXISTING rules for the named database `appusers`.
+// Do not deploy this file by itself. A full replacement would remove the
+// company allows that already protect production.
+//
+// 1. Add this function next to the other helpers.
+// 2. Add `&& !isAppReviewer()` to every allow that can read or write company data.
+//
+// Password sign-in is rejected outright, so a second email/password user
+// cannot become a back door even if someone creates one in the console.
+
+function isAppReviewer() {
+  return request.auth != null && (
+    request.auth.token.appReviewer == true
+    || request.auth.token.email == 'appreview@flyskyway.com'
+    || request.auth.token.firebase.sign_in_provider == 'password'
+  );
+}

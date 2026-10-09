@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // Authenticated OCC control actions and shift log. These are coordination
 // states, not a regulatory flight release. Every mutation writes an immutable
 // audit entry with the controller identity.
@@ -24,7 +25,7 @@ function safeTripId(value) {
 async function authorize(idToken) {
   if (!idToken) return null;
   const app = getAdmin();
-  const decoded = await admin.auth(app).verifyIdToken(idToken, true);
+  const decoded = reviewerSessionBlock(await admin.auth(app).verifyIdToken(idToken, true));
   const db = getFirestore(app, 'appusers');
   const snap = await db.collection('users').doc(decoded.uid).get();
   const profile = snap.data() || {};

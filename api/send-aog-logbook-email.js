@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // Send an AOG maintenance logbook entry email — HTML body with logo + PDF
 // attachment. Same auth pattern as send-email.js (idToken or internal secret).
 //
@@ -192,7 +193,7 @@ export default async function handler(req, res) {
     } else {
       try {
         const auth = admin.auth(getAdmin());
-        await auth.verifyIdToken(body.idToken);
+        reviewerSessionBlock(await auth.verifyIdToken(body.idToken));
         isAuthorized = true;
       } catch (e) {
         authFailReason = `idToken verify failed: ${e.message}`;

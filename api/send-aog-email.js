@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // Send an AOG (Aircraft On Ground) status email.
 //
 // Uses the same auth pattern as send-email.js (idToken from frontend OR
@@ -179,7 +180,7 @@ export default async function handler(req, res) {
     } else {
       try {
         const auth = admin.auth(getAdmin());
-        await auth.verifyIdToken(body.idToken);
+        reviewerSessionBlock(await auth.verifyIdToken(body.idToken));
         isAuthorized = true;
       } catch (e) {
         authFailReason = `idToken verify failed: ${e.message}`;

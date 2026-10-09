@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // Vercel serverless function: delete a user from Firebase Auth + Firestore.
 //
 // This requires the Firebase Admin SDK with privileged credentials (a service
@@ -83,7 +84,7 @@ export default async function handler(req, res) {
     // 1. Verify the caller's ID token — this confirms they're authenticated
     let decoded;
     try {
-      decoded = await admin.auth().verifyIdToken(idToken);
+      decoded = reviewerSessionBlock(await admin.auth().verifyIdToken(idToken));
     } catch (err) {
       return res.status(401).json({ error: 'Invalid auth token' });
     }

@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // Server-only Microsoft Graph client for the charters@ shared mailbox.
 
 import admin from 'firebase-admin';
@@ -68,7 +69,7 @@ export async function authorizeMailboxCaller(idToken, roles = ['admin', 'sales']
   }
   let decoded;
   try {
-    decoded = await admin.auth(mailAdminApp()).verifyIdToken(idToken, true);
+    decoded = reviewerSessionBlock(await admin.auth(mailAdminApp()).verifyIdToken(idToken, true));
   } catch {
     const error = new Error('Invalid or revoked session');
     error.status = 401;

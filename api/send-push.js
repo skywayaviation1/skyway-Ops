@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // api/send-push.js
 //
 // Vercel serverless function that dispatches a push notification when a new
@@ -180,7 +181,7 @@ export default async function handler(req, res) {
     // Verify the sender is who they say they are.
     let decoded;
     try {
-      decoded = await cachedAdmin.auth().verifyIdToken(idToken);
+      decoded = reviewerSessionBlock(await cachedAdmin.auth().verifyIdToken(idToken));
     } catch (err) {
       console.warn('[send-push] 401 invalid token:', err.message);
       return res.status(401).json({ error: 'invalid token: ' + err.message });

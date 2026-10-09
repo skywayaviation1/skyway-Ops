@@ -1,0 +1,19 @@
+// Paste into the EXISTING Cloud Storage rules. Do not deploy this file
+// as a replacement for the production bucket rules.
+//
+// The sandbox may use only the `demo/` prefix. Company objects stay denied
+// for the reviewer and for every other password session.
+
+function isAppReviewer() {
+  return request.auth != null && (
+    request.auth.token.appReviewer == true
+    || request.auth.token.email == 'appreview@flyskyway.com'
+    || request.auth.token.firebase.sign_in_provider == 'password'
+  );
+}
+
+match /demo/{allPaths=**} {
+  allow read, write: if isAppReviewer();
+}
+
+// On every existing company allow, add: && !isAppReviewer()

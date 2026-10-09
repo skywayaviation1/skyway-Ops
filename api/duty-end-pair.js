@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // api/duty-end-pair.js
 //
 // Atomic crew-synced DUTY OFF for Part 135 duty tracking (V2).
@@ -90,7 +91,7 @@ export default async function handler(req, res) {
     // --- Verify caller ---
     let caller;
     try {
-      caller = await getAdmin().auth().verifyIdToken(idToken);
+      caller = reviewerSessionBlock(await getAdmin().auth().verifyIdToken(idToken));
     } catch {
       res.status(401).json({ ok: false, error: 'invalid idToken' });
       return;

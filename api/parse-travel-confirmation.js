@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // Vercel serverless function: parse travel confirmations (hotel or commercial
 // flight) using Anthropic Claude vision/document API.
 //
@@ -136,7 +137,7 @@ export default async function handler(req, res) {
   }
   try {
     const admin = await getAdmin();
-    await admin.auth().verifyIdToken(idToken);
+    reviewerSessionBlock(await admin.auth().verifyIdToken(idToken));
   } catch (err) {
     if (/FIREBASE_SERVICE_ACCOUNT_JSON/.test(err.message)) {
       console.error('[parse-travel] admin init failed:', err.message);

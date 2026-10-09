@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // /api/bulk-download-pilot-docs.js
 //
 // Server-side ZIP builder for pilot documents. The client lists the
@@ -52,7 +53,7 @@ async function authorize(req, body) {
     req.query?.idToken;
   if (idToken) {
     try {
-      const decoded = await admin.auth(getAdmin()).verifyIdToken(idToken);
+      const decoded = reviewerSessionBlock(await admin.auth(getAdmin()).verifyIdToken(idToken));
       return decoded;
     }
     catch (_) { return false; }

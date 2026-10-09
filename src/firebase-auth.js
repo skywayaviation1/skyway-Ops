@@ -4,7 +4,7 @@
 // Missing profiles are provisioned server-side with crew/pending defaults;
 // the browser never chooses its own role or approval state.
 
-import { auth, db, AUTH_DOMAIN } from './firebase.js';
+import { auth, db, AUTH_DOMAIN, activateReviewerDatabase } from './firebase.js';
 import {
   OAuthProvider,
   getRedirectResult,
@@ -12,10 +12,21 @@ import {
   signInWithPopup,
   signInWithCredential,
   signInWithCustomToken,
+  signInWithEmailAndPassword,
   signOut as fbSignOut,
   onAuthStateChanged,
   reload as reloadAuthUser,
 } from 'firebase/auth';
+import {
+  APP_REVIEWER_EMAIL,
+  isActivatedReviewerSession,
+  isReviewerEmail,
+  passwordSignInAllowed,
+} from './reviewer-account.js';
+import {
+  readReviewerDatabaseFlag,
+  writeReviewerDatabaseFlag,
+} from './reviewer-sandbox.js';
 import {
   doc,
   getDoc,
@@ -128,6 +139,28 @@ function isMicrosoftUser(user) {
   return user?.providerData?.some(p => p.providerId === 'microsoft.com') === true;
 }
 
+function isPasswordUser(user) {
+  return user?.providerData?.some(p => p.providerId === 'password') === true;
+}
+
+function looksLikeReviewer(user) {
+  return isReviewerEmail(user?.email) && isPasswordUser(user);
+}
+
+async function reviewerClaims(user) {
+  const result = await user.getIdTokenResult(true);
+  return {
+    email: user.email,
+    claims: result?.claims || {},
+    signInProvider: result?.signInProvider || '',
+  };
+}
+
+function reloadForDatabaseChange() {
+  if (typeof window === 'undefined') return;
+  window.location.reload();
+}
+
 function microsoftProvider() {
   const provider = new OAuthProvider('microsoft.com');
   // Always send a tenant. Omitting it makes Firebase use /common, which the
@@ -209,6 +242,76 @@ export function watchAuth(onChange) {
       return;
     }
 
+    // The App Review account is a password user on a separate named database.
+    // Switch before any company read. A full reload makes listeners that
+    // already captured `db` start against the sandbox instead.
+    if (looksLikeReviewer(user)) {
+      if (!readReviewerDatabaseFlag()) {
+        writeReviewerDatabaseFlag(true);
+        activateReviewerDatabase(true);
+        onChange({ state: 'loading' });
+        reloadForDatabaseChange();
+        return;
+      }
+      activateReviewerDatabase(true);
+      let activated = false;
+      try {
+        activated = isActivatedReviewerSession(await reviewerClaims(user));
+      } catch (err) {
+        setDiag('reviewer-claims', err);
+      }
+      if (!activated) {
+        writeReviewerDatabaseFlag(false);
+        activateReviewerDatabase(false);
+        await fbSignOut(auth).catch(() => {});
+        onChange({ state: 'signed-out', authError: 'auth/reviewer-not-activated' });
+        reloadForDatabaseChange();
+        return;
+      }
+      try {
+        await reloadAuthUser(user);
+      } catch (err) {
+        console.warn('reloadAuthUser failed', err);
+      }
+      let profile = null;
+      let readError = null;
+      try {
+        const snap = await getDoc(doc(db, 'users', user.uid));
+        if (snap.exists()) profile = { uid: user.uid, ...snap.data() };
+      } catch (err) {
+        readError = err;
+        setDiag('reviewer-profile-read', err, { uid: user.uid });
+      }
+      if (!profile) {
+        onChange({ state: 'no-profile', user, error: readError });
+        return;
+      }
+      if (!isReviewerEmail(profile.email) || profile.appReviewer !== true || profile.sandbox !== true) {
+        await fbSignOut(auth).catch(() => {});
+        onChange({ state: 'signed-out', authError: 'auth/reviewer-not-activated' });
+        return;
+      }
+      if (profile.active === false) {
+        await fbSignOut(auth).catch(() => {});
+        onChange({ state: 'signed-out', authError: 'auth/account-disabled' });
+        return;
+      }
+      if (profile.approved !== true) {
+        onChange({ state: 'pending', user, profile });
+        return;
+      }
+      onChange({ state: 'active', user, profile });
+      return;
+    }
+
+    if (readReviewerDatabaseFlag()) {
+      writeReviewerDatabaseFlag(false);
+      activateReviewerDatabase(false);
+      onChange({ state: 'loading' });
+      reloadForDatabaseChange();
+      return;
+    }
+
     // This is an authorization boundary, not just login-screen decoration.
     // Reject legacy password sessions and non-company identities before any
     // Firestore data is read. Each rejection carries a code so the login
@@ -240,6 +343,15 @@ export function watchAuth(onChange) {
       });
       await fbSignOut(auth).catch(() => {});
       onChange({ state: 'signed-out', authError: 'auth/company-account-required' });
+      return;
+    }
+    if (!devBypass && isPasswordUser(user)) {
+      setDiag('identity-policy', new Error('Password sign-in is limited to the App Review account'), {
+        emails,
+        providers: user.providerData?.map(p => p.providerId) || [],
+      });
+      await fbSignOut(auth).catch(() => {});
+      onChange({ state: 'signed-out', authError: 'auth/password-not-allowed' });
       return;
     }
     if (!devBypass && !nativeMicrosoft && !isMicrosoftUser(user)) {
@@ -435,6 +547,50 @@ async function mergeExistingAccountWithMicrosoft(err) {
   return validateMicrosoftResult(result.user);
 }
 
+/**
+ * Email/password sign-in for the single App Review account.
+ * Any other address is rejected before Firebase is contacted. Works in the
+ * Capacitor WebView through the same Firebase JS SDK the rest of the app
+ * uses for Firestore, and also signs the native Firebase user in when the
+ * iOS/Android plugin is present.
+ */
+export async function signInAsAppReviewer(email, password) {
+  if (!passwordSignInAllowed(email)) {
+    const err = new Error('Email and password sign-in is only available for the App Review account.');
+    err.code = 'auth/password-not-allowed';
+    throw err;
+  }
+  const cred = await signInWithEmailAndPassword(auth, APP_REVIEWER_EMAIL, password);
+  let activated = false;
+  try {
+    activated = isActivatedReviewerSession(await reviewerClaims(cred.user));
+  } catch (err) {
+    setDiag('reviewer-claims', err);
+  }
+  if (!activated) {
+    await fbSignOut(auth).catch(() => {});
+    const err = new Error('This password account is not an activated App Review sandbox.');
+    err.code = 'auth/reviewer-not-activated';
+    throw err;
+  }
+  if (isNativeApp()) {
+    try {
+      const { FirebaseAuthentication } = await import('@capacitor-firebase/authentication');
+      await FirebaseAuthentication.signInWithEmailAndPassword({
+        email: APP_REVIEWER_EMAIL,
+        password,
+      });
+    } catch (err) {
+      // The WebView session is what Firestore uses. Native sign-in keeps
+      // the iOS Firebase user in step when the plugin is available.
+      console.warn('[reviewer] native email sign-in skipped', err?.message || err);
+    }
+  }
+  writeReviewerDatabaseFlag(true);
+  activateReviewerDatabase(true);
+  return cred.user;
+}
+
 export async function signInWithMicrosoft() {
   if (isNativeApp()) {
     const { FirebaseAuthentication } = await import('@capacitor-firebase/authentication');
@@ -558,11 +714,15 @@ export function completeMicrosoftRedirect() {
 }
 
 export async function signOut() {
+  const reviewer = readReviewerDatabaseFlag();
   if (isNativeApp()) {
     const { FirebaseAuthentication } = await import('@capacitor-firebase/authentication');
     await FirebaseAuthentication.signOut().catch(() => {});
   }
+  writeReviewerDatabaseFlag(false);
+  activateReviewerDatabase(false);
   await fbSignOut(auth);
+  if (reviewer) reloadForDatabaseChange();
 }
 
 export function subscribeToUsers(onUpdate) {

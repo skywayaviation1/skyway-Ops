@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // /api/flightaware-track-log.js
 //
 // Returns the FlightAware track log for a tail's active or most recent flight.
@@ -47,7 +48,7 @@ async function authorize(req) {
   if (internalSecret && internalSecret === process.env.INTERNAL_API_SECRET) return true;
   const idToken = req.headers['authorization']?.replace(/^Bearer\s+/i, '') || req.query?.idToken;
   if (idToken) {
-    try { await admin.auth(getAdmin()).verifyIdToken(idToken); return true; }
+    try { reviewerSessionBlock(await admin.auth(getAdmin()).verifyIdToken(idToken)); return true; }
     catch (_) { return false; }
   }
   return false;

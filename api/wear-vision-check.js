@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // /api/wear-vision-check.js
 //
 // AI vision assessment for wear inspections.
@@ -48,7 +49,7 @@ async function authorize(req, body) {
     req.headers['authorization']?.replace(/^Bearer\s+/i, '') || body?.idToken;
   if (!idToken) return null;
   try {
-    return await admin.auth(getAdmin()).verifyIdToken(idToken);
+    return reviewerSessionBlock(await admin.auth(getAdmin()).verifyIdToken(idToken));
   } catch {
     return null;
   }

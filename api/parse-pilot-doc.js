@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // /api/parse-pilot-doc.js
 //
 // Extracts structured data from a crew member's pilot document using
@@ -45,7 +46,7 @@ async function authorize(req, body) {
     body?.idToken ||
     req.query?.idToken;
   if (idToken) {
-    try { await admin.auth(getAdmin()).verifyIdToken(idToken); return true; }
+    try { reviewerSessionBlock(await admin.auth(getAdmin()).verifyIdToken(idToken)); return true; }
     catch (_) { return false; }
   }
   return false;

@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 /**
  * Server-only ForeFlight Dispatch client.
  *
@@ -43,7 +44,7 @@ export async function authorizeForeFlightCaller(idToken, roles = ['admin', 'ops'
   }
   let decoded;
   try {
-    decoded = await admin.auth(getAdminApp()).verifyIdToken(idToken, true);
+    decoded = reviewerSessionBlock(await admin.auth(getAdminApp()).verifyIdToken(idToken, true));
   } catch {
     const error = new Error('Invalid or revoked session');
     error.status = 401;

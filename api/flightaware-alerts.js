@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // api/flightaware-alerts.js
 //
 // Admin-only management endpoint for FlightAware alerts. Handles three actions:
@@ -38,7 +39,7 @@ const FA_API_BASE = 'https://aeroapi.flightaware.com/aeroapi';
 async function verifyAdmin(idToken) {
   // Defensive: ensure admin SDK initialized even if caller forgot to do so
   getAdmin();
-  const decoded = await admin.auth().verifyIdToken(idToken);
+  const decoded = reviewerSessionBlock(await admin.auth().verifyIdToken(idToken));
   const db = getDb();
   const profile = await db.collection('users').doc(decoded.uid).get();
   if (!profile.exists || profile.data().role !== 'admin') {

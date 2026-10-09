@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // /api/trip-share.js
 //
 // AUTHENTICATED endpoint (Firebase idToken required) used by ops to:
@@ -41,7 +42,7 @@ async function authorize(req, body) {
   const idToken = req.headers['authorization']?.replace(/^Bearer\s+/i, '') || body?.idToken;
   if (!idToken) return { ok: false };
   try {
-    const decoded = await admin.auth(getAdmin()).verifyIdToken(idToken);
+    const decoded = reviewerSessionBlock(await admin.auth(getAdmin()).verifyIdToken(idToken));
     // Look up role — only admin / ops / sales can generate tracking links.
     // (Sales because they often field broker questions.)
     const userDoc = await db().collection('users').doc(decoded.uid).get();

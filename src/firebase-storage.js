@@ -10,6 +10,13 @@
 
 import { initializeApp, getApps } from 'firebase/app';
 import { getStorage, ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
+import { isReviewerDatabaseActive } from './firebase.js';
+
+function assertCompanyStorage() {
+  if (isReviewerDatabaseActive()) {
+    throw new Error('File uploads are disabled in the App Review sandbox.');
+  }
+}
 
 // Initialize storage from the existing app config — same project as Firestore
 const firebaseConfig = {
@@ -51,6 +58,7 @@ export function computeTripGroupId(tail, departureDate) {
  * tripGroupId: returned from computeTripGroupId
  */
 export async function uploadTripSheet(file, tripGroupId) {
+  assertCompanyStorage();
   if (!file) throw new Error('No file provided');
   if (!tripGroupId) throw new Error('Missing trip group ID');
   if (file.size > 10 * 1024 * 1024) {
@@ -107,6 +115,7 @@ export async function deleteTripSheet(path) {
    ============================================================ */
 
 export async function uploadAogReference(file, aogId) {
+  assertCompanyStorage();
   if (!file) throw new Error('No file provided');
   if (!aogId) throw new Error('Missing AOG id');
   if (file.size > 15 * 1024 * 1024) {
@@ -153,6 +162,7 @@ export async function deleteAogReference(path) {
 // Separate storage path prefix (service-references/) so service and AOG
 // reference files never collide.
 export async function uploadServiceReference(file, srId) {
+  assertCompanyStorage();
   if (!file) throw new Error('No file provided');
   if (!srId) throw new Error('Missing service request id');
   if (file.size > 15 * 1024 * 1024) {
@@ -198,6 +208,7 @@ export async function deleteServiceReference(path) {
 // comms attachments. Separate Storage path from comms attachments so
 // per-trip rules can authorize differently if you ever tighten them.
 export async function uploadTripAttachment(file, tripId) {
+  assertCompanyStorage();
   if (!file) throw new Error('No file provided');
   if (!tripId) throw new Error('Missing trip id');
   if (file.size > 10 * 1024 * 1024) {
@@ -234,6 +245,7 @@ export async function uploadTripAttachment(file, tripId) {
 // and common document types. Stricter than the AOG reference upload
 // (smaller cap, more types allowed) to fit chat usage.
 export async function uploadCommsAttachment(file, conversationId) {
+  assertCompanyStorage();
   if (!file) throw new Error('No file provided');
   if (!conversationId) throw new Error('Missing conversation id');
   if (file.size > 10 * 1024 * 1024) {
@@ -269,6 +281,7 @@ export async function uploadCommsAttachment(file, conversationId) {
 // Path prefix mel-uploads/ keeps these isolated from aog/service references.
 // Larger limit (30MB) — a full MEL PDF can be sizeable.
 export async function uploadMelRevisionPdf(file, tail) {
+  assertCompanyStorage();
   if (!file) throw new Error('No file provided');
   if (!tail) throw new Error('Missing tail');
   if (file.size > 30 * 1024 * 1024) {
@@ -305,6 +318,7 @@ export async function uploadMelRevisionPdf(file, tail) {
 // NOTE: Real access control must be enforced by Firebase Storage Rules —
 // path-scoping alone is convenience, not security. See deploy notes.
 export async function uploadPilotDoc(file, uid, docType) {
+  assertCompanyStorage();
   if (!file) throw new Error('No file provided');
   if (!uid) throw new Error('Missing uid');
   if (file.size > 15 * 1024 * 1024) {

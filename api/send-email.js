@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // Vercel serverless function: send transactional email via Resend.
 //
 // Called by:
@@ -84,7 +85,7 @@ export default async function handler(req, res) {
     } else {
       try {
         const auth = admin.auth(getAdmin());
-        await auth.verifyIdToken(body.idToken);
+        reviewerSessionBlock(await auth.verifyIdToken(body.idToken));
         isAuthorized = true;
       } catch (e) {
         authFailReason = `idToken verify failed: ${e.code || ''} ${e.message || e}`;

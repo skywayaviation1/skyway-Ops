@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // /api/faa-notams.js
 //
 // Fetch active NOTAMs for an airport from the FAA NMS (NOTAM Management
@@ -84,7 +85,7 @@ async function authorize(req) {
   // OR a real Firebase user token
   const idToken = req.headers['authorization']?.replace(/^Bearer\s+/i, '') || req.query?.idToken;
   if (idToken) {
-    try { await admin.auth(getAdmin()).verifyIdToken(idToken); return true; }
+    try { reviewerSessionBlock(await admin.auth(getAdmin()).verifyIdToken(idToken)); return true; }
     catch (_) { return false; }
   }
   // Broker pages are unauthenticated. We still want them to see NOTAMs,

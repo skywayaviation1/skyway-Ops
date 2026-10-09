@@ -115,7 +115,8 @@ export function StreamPresenceProvider({ currentUser, getIdToken, children }) {
       disconnectTimer.current = null;
     }
     // Tear down on sign-out / user switch.
-    if (!currentUser?.uid) {
+    if (!currentUser?.uid || currentUser.appReviewer === true) {
+      // The sandbox does not join company Stream channels.
       setChannelUnread({});
       setIsConnected(false);
       return;
@@ -261,7 +262,7 @@ export function StreamPresenceProvider({ currentUser, getIdToken, children }) {
         disconnectTimer.current = { id, uid };
       }
     };
-  }, [currentUser?.uid, getIdToken]);
+  }, [currentUser?.uid, currentUser?.appReviewer, getIdToken]);
 
   const value = React.useMemo(
     () => ({ totalUnread, channelUnread, isConnected }),

@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // api/flightaware-backfill-tripmeta.js
 //
 // ONE-TIME / ON-DEMAND MIGRATION
@@ -78,7 +79,7 @@ export default async function handler(req, res) {
     const auth = admin.auth(getAdmin());
     let decoded;
     try {
-      decoded = await auth.verifyIdToken(idToken);
+      decoded = reviewerSessionBlock(await auth.verifyIdToken(idToken));
     } catch (e) {
       res.status(401).json({ error: 'Invalid idToken' });
       return;

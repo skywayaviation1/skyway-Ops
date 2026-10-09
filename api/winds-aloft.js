@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // /api/winds-aloft.js
 //
 // Returns forecasted winds and temperatures at standard flight altitudes for a
@@ -53,7 +54,7 @@ async function authorize(req) {
   if (internalSecret && internalSecret === process.env.INTERNAL_API_SECRET) return true;
   const idToken = req.headers['authorization']?.replace(/^Bearer\s+/i, '') || req.query?.idToken;
   if (idToken) {
-    try { await admin.auth(getAdmin()).verifyIdToken(idToken); return true; }
+    try { reviewerSessionBlock(await admin.auth(getAdmin()).verifyIdToken(idToken)); return true; }
     catch (_) { return false; }
   }
   return false;

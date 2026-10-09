@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // Admin-only organization settings. Fleet removal is deliberately
 // non-destructive: schedules and maintenance history remain intact while the
 // aircraft is marked scheduled-only and excluded from managed-fleet surfaces.
@@ -49,7 +50,7 @@ export default async function handler(req, res) {
     const auth = admin.auth(app);
     let caller;
     try {
-      caller = await auth.verifyIdToken(idToken, true);
+      caller = reviewerSessionBlock(await auth.verifyIdToken(idToken, true));
     } catch {
       res.status(401).json({ error: 'Invalid or revoked session' });
       return;
