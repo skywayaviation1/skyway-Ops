@@ -16,9 +16,10 @@
  *                Light theme, PDFs, and any white page. These are the base
  *                skyway-logo / skyway-logo-nav files.
  *
- * The full lockup is too wide to read inside a square favicon, so app icons
- * use a crop of the jet crossing SKYWAY, on the same dark plate. Launch
- * images use the full lockup. Re-run after replacing the master.
+ * Square icons are concept A: the SKYWAY + jet word (no AVIATION line),
+ * scaled as large as the padding allows on the same dark plate. Maskable
+ * icons and the Android adaptive foreground stay inside their safe zones.
+ * Launch images use the full lockup. Re-run after replacing the master.
  *
  * Usage: node scripts/build-logo-assets.mjs
  */
@@ -40,27 +41,93 @@ const writePng = (file, png) => {
 };
 
 /**
- * The part of the master that still reads inside a square icon: the white
- * jet where it crosses the cyan SKYWAY letters, stopping above AVIATION.
- * Fractions are of the current master (2222×490).
+ * SKYWAY plus the jet, cut above the white AVIATION line. This is the
+ * square-icon artwork: the full word, not a crop of one letter.
  */
-function iconMark(src) {
-  const x0 = Math.round(src.width * 0.655);
-  const x1 = Math.round(src.width * 0.905);
-  const y1 = Math.round(src.height * 0.71);
-  const w = x1 - x0;
-  const out = new PNG({ width: w, height: y1 });
-  for (let y = 0; y < y1; y++) {
+function skywayJet(src) {
+  const { width, height, data } = src;
+  const rowInk = new Array(height).fill(0);
+  const rowWhite = new Array(height).fill(0);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4;
+      if (data[i + 3] < 40) continue;
+      if (Math.max(data[i], data[i + 1], data[i + 2]) < 20) continue;
+      rowInk[y]++;
+      if (data[i] > 200 && data[i + 1] > 200 && data[i + 2] > 200) rowWhite[y]++;
+    }
+  }
+  let cut = height;
+  for (let y = Math.floor(height * 0.55); y < height; y++) {
+    if (rowWhite[y] > 20) {
+      cut = y;
+      break;
+    }
+  }
+  let y0 = 0;
+  while (y0 < cut && rowInk[y0] === 0) y0++;
+  let y1 = cut - 1;
+  while (y1 > y0 && rowInk[y1] === 0) y1--;
+  let x0 = width;
+  let x1 = -1;
+  for (let y = y0; y <= y1; y++) {
+    for (let x = 0; x < width; x++) {
+      if (data[(y * width + x) * 4 + 3] < 8) continue;
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+    }
+  }
+  const w = x1 - x0 + 1;
+  const h = y1 - y0 + 1;
+  const out = new PNG({ width: w, height: h });
+  for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      const si = (y * src.width + (x + x0)) * 4;
+      const si = ((y + y0) * width + (x + x0)) * 4;
       const di = (y * w + x) * 4;
-      out.data[di] = src.data[si];
-      out.data[di + 1] = src.data[si + 1];
-      out.data[di + 2] = src.data[si + 2];
-      out.data[di + 3] = src.data[si + 3];
+      out.data[di] = data[si];
+      out.data[di + 1] = data[si + 1];
+      out.data[di + 2] = data[si + 2];
+      out.data[di + 3] = data[si + 3];
     }
   }
   return out;
+}
+
+/**
+ * Largest width ratio whose artwork stays inside a centered circle of
+ * `safeDiameter` (fraction of the canvas) and clear of `edgePad` on each side.
+ */
+function fitRatio(word, canvasSize, { safeDiameter = 1, edgePad = 0.03 } = {}) {
+  const aspect = word.width / word.height;
+  const circleMax = safeDiameter / Math.sqrt(1 + 1 / (aspect * aspect));
+  const padded = 1 - edgePad * 2;
+  const pxGuard = 1 / canvasSize;
+  return Math.max(0.2, Math.min(circleMax - pxGuard, padded));
+}
+
+/** PNG images packed in a .ico (Vista-style). Widths of 256 are stored as 0. */
+function writeIco(file, images) {
+  const count = images.length;
+  const header = Buffer.alloc(6 + count * 16);
+  header.writeUInt16LE(0, 0);
+  header.writeUInt16LE(1, 2);
+  header.writeUInt16LE(count, 4);
+  let offset = header.length;
+  const blobs = [header];
+  images.forEach((img, index) => {
+    const bytes = PNG.sync.write(img);
+    const entry = 6 + index * 16;
+    header.writeUInt8(img.width >= 256 ? 0 : img.width, entry);
+    header.writeUInt8(img.height >= 256 ? 0 : img.height, entry + 1);
+    header.writeUInt16LE(1, entry + 4);
+    header.writeUInt16LE(32, entry + 6);
+    header.writeUInt32LE(bytes.length, entry + 8);
+    header.writeUInt32LE(offset, entry + 12);
+    offset += bytes.length;
+    blobs.push(bytes);
+  });
+  writeFileSync(file, Buffer.concat(blobs));
+  console.log(`  ${path.relative(root, file)}  ${images.map((img) => img.width).join(',')}`);
 }
 
 /** Opaque dark plate. Partial ink is composited over the plate. */
@@ -228,7 +295,7 @@ const master = readPng(MASTER);
 // The master is already cyan + white with real alpha. Do not recolor it.
 const transparent = master;
 const plated = plateOf(transparent);
-const mark = iconMark(transparent);
+const word = skywayJet(transparent);
 
 // Keep the master's aspect (2222×490). The old 600×152 / 250×63 boxes
 // belonged to the previous lockup and would squash this one.
@@ -262,17 +329,28 @@ writePng(path.join(root, 'skyway-logo-nav.png'), navPlate);
 writePng(path.join(root, 'skyway-logo-nav@2x.png'), navPlate2);
 
 console.log('PWA icons');
-const icons = [
-  ['public/favicon.png', 32, 0.9],
-  ['public/icon-192.png', 192, 0.86],
-  ['public/icon-512.png', 512, 0.86],
-  ['public/icon-512-maskable.png', 512, 0.66],
-  ['public/apple-touch-icon.png', 180, 0.84],
-  ['public/apple-touch-icon-167.png', 167, 0.84],
-];
-for (const [rel, size, ratio] of icons) {
-  writePng(path.join(root, rel), centeredMark(size, size, mark, { widthRatio: ratio, bg: PLATE }));
+// Ordinary squares: 3% plate showing on each side, which is as large as the
+// word can sit without touching the edge. Maskable art stays inside the
+// center 80% safe circle.
+const squareIcon = (size, opts) => centeredMark(size, size, word, {
+  widthRatio: fitRatio(word, size, opts),
+  bg: PLATE,
+});
+for (const [rel, size] of [
+  ['public/favicon.png', 32],
+  ['public/icon-192.png', 192],
+  ['public/icon-512.png', 512],
+  ['public/apple-touch-icon.png', 180],
+  ['public/apple-touch-icon-167.png', 167],
+]) {
+  writePng(path.join(root, rel), squareIcon(size));
 }
+writePng(
+  path.join(root, 'public/icon-512-maskable.png'),
+  squareIcon(512, { safeDiameter: 0.8, edgePad: 0.1 }),
+);
+const ico = [16, 32, 48, 64].map((size) => squareIcon(size));
+writeIco(path.join(root, 'public/favicon.ico'), ico);
 
 console.log('Launch images');
 for (const file of walkPngs(path.join(root, 'public/splashes'))) {
@@ -303,10 +381,14 @@ for (const file of walkPngs(path.join(root, 'android/app/src/main/res'))) {
     continue;
   }
   if (base === 'ic_launcher_foreground.png') {
-    writePng(file, centeredMark(current.width, current.height, mark, { widthRatio: 0.58, bg: null }));
+    // Adaptive safe zone is the center 66dp of the 108dp foreground.
+    const ratio = fitRatio(word, current.width, { safeDiameter: 66 / 108, edgePad: 0 });
+    writePng(file, centeredMark(current.width, current.height, word, { widthRatio: ratio, bg: null }));
     continue;
   }
-  const tile = centeredMark(current.width, current.height, mark, { widthRatio: 0.78, bg: PLATE });
+  // Round masks are full-bleed circles; the short word still fits at the
+  // same size as the square launcher tiles.
+  const tile = squareIcon(current.width);
   if (base === 'ic_launcher_round.png') maskCircle(tile);
   else maskRounded(tile, Math.round(current.width * 0.22));
   writePng(file, tile);
@@ -314,10 +396,10 @@ for (const file of walkPngs(path.join(root, 'android/app/src/main/res'))) {
 
 console.log('iOS');
 const iosIcon = path.join(root, 'ios/App/App/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png');
-writePng(iosIcon, centeredMark(1024, 1024, mark, { widthRatio: 0.84, bg: PLATE }));
+writePng(iosIcon, squareIcon(1024));
 for (const file of walkPngs(path.join(root, 'ios/App/App/Assets.xcassets/Splash.imageset'))) {
   const current = readPng(file);
   writePng(file, centeredMark(current.width, current.height, transparent, { widthRatio: 0.62, bg: PLATE }));
 }
 
-console.log('\nSkyway mark written from the master. Full lockup on wordmarks and splashes; jet crop on square icons.');
+console.log('\nSkyway mark written. Square icons are the SKYWAY + jet word on the dark plate.');
