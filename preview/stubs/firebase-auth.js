@@ -32,6 +32,11 @@ function profileFor(role) {
 }
 
 export function watchAuth(onChange) {
+  // ?auth=signed-out renders the real login screen for captures.
+  if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('auth') === 'signed-out') {
+    onChange({ state: 'signed-out', user: null, profile: null, authError: null });
+    return () => {};
+  }
   const profile = profileFor(requestedRole());
   onChange({
     state: 'active',

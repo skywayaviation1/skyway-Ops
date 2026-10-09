@@ -31,7 +31,7 @@ export const NO_REPLY_NOTICE = 'This is an automated message from Skyway Ops. Pl
 const SIGNATURE_MARK = '<!-- skyway-signature-applied -->';
 
 /**
- * Wrap an HTML body with the Skyway brand header (logo on black band) and
+ * Wrap an HTML body with the Skyway brand header (plated logo on a black band) and
  * footer (DO NOT REPLY notice + contact info). Idempotent — calling twice
  * doesn't double-wrap.
  *

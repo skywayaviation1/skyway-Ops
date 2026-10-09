@@ -8,8 +8,9 @@
 // makes the role of this document explicit. Official maintenance records
 // belong in Veryon/CAMP/equivalent per OpSpecs.
 
-// The base wordmark, not the `-reverse` variant the app chrome uses: the PDF
-// page is white, so this needs the navy ink rather than the platinum one.
+// The base wordmark, not the `-reverse` variant the app chrome uses. The PDF
+// page is white, and the mark is cyan + white, so this file carries the dark
+// plate the white jet and AVIATION need.
 const LOGO_URL = '/skyway-logo-nav.png';
 // Fallback: large logo if nav logo isn't available
 const LOGO_FALLBACK_URL = '/skyway-logo.png';
