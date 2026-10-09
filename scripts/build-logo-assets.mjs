@@ -2,10 +2,12 @@
 /**
  * Builds the Skyway wordmark, icon, and splash assets from the master lockup.
  *
- * The master (brand/skyway-logo-master.png) is the stacked SKYWAY / jet /
- * AVIATION artwork. The new mark keeps the cyan SKYWAY lettering and redraws
- * the jet, speed lines, and AVIATION in white. That ink only reads on a dark
- * surface, so two derivatives ship:
+ * The master (brand/skyway-logo-master.png) is the stacked mark Jake sent:
+ * cyan SKYWAY, a white jet through the word, white AVIATION, transparent
+ * background. No speed lines and no tagline. Pixels are copied through;
+ * nothing is recolored.
+ *
+ * The white ink only reads on a dark surface, so two derivatives ship:
  *
  *   transparent  cyan + white, real alpha. Dark headers, boot splash, email
  *                bands that are already black. These are the `-reverse` files
@@ -14,8 +16,9 @@
  *                Light theme, PDFs, and any white page. These are the base
  *                skyway-logo / skyway-logo-nav files.
  *
- * Icons and launch images are the transparent mark centered on that same plate.
- * Re-run after replacing the master. Outputs are deterministic.
+ * The full lockup is too wide to read inside a square favicon, so app icons
+ * use a crop of the jet crossing SKYWAY, on the same dark plate. Launch
+ * images use the full lockup. Re-run after replacing the master.
  *
  * Usage: node scripts/build-logo-assets.mjs
  */
@@ -30,9 +33,6 @@ const MASTER = path.join(root, 'brand/skyway-logo-master.png');
 // App shell / manifest background. The mark's white ink is drawn for this.
 const PLATE = [0x0a, 0x0b, 0x0d];
 
-const NAVY_G = 110;
-const CYAN_G = 150;
-
 const readPng = (file) => PNG.sync.read(readFileSync(file));
 const writePng = (file, png) => {
   writeFileSync(file, PNG.sync.write(png));
@@ -40,70 +40,25 @@ const writePng = (file, png) => {
 };
 
 /**
- * First row of the bottom word. AVIATION sits in its own band under a clear
- * gap; in the master that word is cyan, so the navy-vs-cyan test would leave
- * it cyan. Everything in the band is part of the word and turns white.
+ * The part of the master that still reads inside a square icon: the white
+ * jet where it crosses the cyan SKYWAY letters, stopping above AVIATION.
+ * Fractions are of the current master (2222×490).
  */
-function aviationBandStart(src) {
-  const { width, height, data } = src;
-  const counts = new Array(height).fill(0);
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const i = (y * width + x) * 4;
-      if (data[i + 3] > 40 && Math.max(data[i], data[i + 1], data[i + 2]) > 12) counts[y]++;
+function iconMark(src) {
+  const x0 = Math.round(src.width * 0.655);
+  const x1 = Math.round(src.width * 0.905);
+  const y1 = Math.round(src.height * 0.71);
+  const w = x1 - x0;
+  const out = new PNG({ width: w, height: y1 });
+  for (let y = 0; y < y1; y++) {
+    for (let x = 0; x < w; x++) {
+      const si = (y * src.width + (x + x0)) * 4;
+      const di = (y * w + x) * 4;
+      out.data[di] = src.data[si];
+      out.data[di + 1] = src.data[si + 1];
+      out.data[di + 2] = src.data[si + 2];
+      out.data[di + 3] = src.data[si + 3];
     }
-  }
-  let gapStart = null;
-  let band = null;
-  for (let y = Math.floor(height * 0.55); y < height; y++) {
-    const empty = counts[y] < width * 0.02;
-    if (empty) {
-      if (gapStart == null) gapStart = y;
-    } else if (gapStart != null) {
-      if (y - gapStart >= 8) band = y;
-      gapStart = null;
-    }
-  }
-  return band ?? Math.floor(height * 0.88);
-}
-
-/** Drops a black matte, lifts non-cyan ink to white, and whitens AVIATION. */
-function toWhiteMark(src) {
-  const out = new PNG({ width: src.width, height: src.height });
-  const { data } = src;
-  const aviationAt = aviationBandStart(src);
-  for (let i = 0; i < data.length; i += 4) {
-    let r = data[i];
-    let g = data[i + 1];
-    let b = data[i + 2];
-    let a = data[i + 3];
-    const max = Math.max(r, g, b);
-
-    // Already keyed on a previous export: partial alpha stays as-is.
-    if (a === 0 || (a > 0 && a < 255 && max > 12)) {
-      // fall through and recolor whatever ink is present
-    } else if (max <= 12) {
-      out.data[i + 3] = 0;
-      continue;
-    } else if (max < 64 && a >= 250) {
-      const t = (max - 12) / (64 - 12);
-      r = Math.min(255, Math.round(r / t));
-      g = Math.min(255, Math.round(g / t));
-      b = Math.min(255, Math.round(b / t));
-      a = Math.round(255 * t);
-    }
-
-    const y = Math.floor(i / 4 / src.width);
-    // 0 = navy / white-bound ink, 1 = brand cyan. Soft ramp keeps the
-    // anti-aliased edge between the jet and the letterforms. The bottom
-    // word is forced white regardless of its source ink.
-    const cyan = y >= aviationAt
-      ? 0
-      : Math.max(0, Math.min(1, (g - NAVY_G) / (CYAN_G - NAVY_G)));
-    out.data[i] = Math.round(255 + (r - 255) * cyan);
-    out.data[i + 1] = Math.round(255 + (g - 255) * cyan);
-    out.data[i + 2] = Math.round(255 + (b - 255) * cyan);
-    out.data[i + 3] = a;
   }
   return out;
 }
@@ -270,20 +225,31 @@ function walkPngs(dir, acc = []) {
 }
 
 const master = readPng(MASTER);
-const transparent = toWhiteMark(master);
+// The master is already cyan + white with real alpha. Do not recolor it.
+const transparent = master;
 const plated = plateOf(transparent);
+const mark = iconMark(transparent);
+
+// Keep the master's aspect (2222×490). The old 600×152 / 250×63 boxes
+// belonged to the previous lockup and would squash this one.
+const fit = (width) => [width, Math.round(width * transparent.height / transparent.width)];
+const [fullW, fullH] = fit(600);
+const [navW, navH] = fit(250);
+const [nav2W, nav2H] = fit(500);
 
 console.log('Wordmarks');
-const full1 = resize(transparent, 600, 152);
-const fullPlate1 = resize(plated, 600, 152);
-const nav = resize(transparent, 250, 63);
-const nav2 = resize(transparent, 500, 127);
-const navPlate = resize(plated, 250, 63);
-const navPlate2 = resize(plated, 500, 127);
+const full1 = resize(transparent, fullW, fullH);
+const full2 = resize(transparent, fullW * 2, fullH * 2);
+const fullPlate1 = resize(plated, fullW, fullH);
+const fullPlate2 = resize(plated, fullW * 2, fullH * 2);
+const nav = resize(transparent, navW, navH);
+const nav2 = resize(transparent, nav2W, nav2H);
+const navPlate = resize(plated, navW, navH);
+const navPlate2 = resize(plated, nav2W, nav2H);
 
-writePng(path.join(root, 'public/skyway-logo-reverse@2x.png'), transparent);
+writePng(path.join(root, 'public/skyway-logo-reverse@2x.png'), full2);
 writePng(path.join(root, 'public/skyway-logo-reverse.png'), full1);
-writePng(path.join(root, 'public/skyway-logo@2x.png'), plated);
+writePng(path.join(root, 'public/skyway-logo@2x.png'), fullPlate2);
 writePng(path.join(root, 'public/skyway-logo.png'), fullPlate1);
 writePng(path.join(root, 'public/skyway-logo-nav-reverse.png'), nav);
 writePng(path.join(root, 'public/skyway-logo-nav-reverse@2x.png'), nav2);
@@ -305,7 +271,7 @@ const icons = [
   ['public/apple-touch-icon-167.png', 167, 0.84],
 ];
 for (const [rel, size, ratio] of icons) {
-  writePng(path.join(root, rel), centeredMark(size, size, transparent, { widthRatio: ratio, bg: PLATE }));
+  writePng(path.join(root, rel), centeredMark(size, size, mark, { widthRatio: ratio, bg: PLATE }));
 }
 
 console.log('Launch images');
@@ -337,10 +303,10 @@ for (const file of walkPngs(path.join(root, 'android/app/src/main/res'))) {
     continue;
   }
   if (base === 'ic_launcher_foreground.png') {
-    writePng(file, centeredMark(current.width, current.height, transparent, { widthRatio: 0.58, bg: null }));
+    writePng(file, centeredMark(current.width, current.height, mark, { widthRatio: 0.58, bg: null }));
     continue;
   }
-  const tile = centeredMark(current.width, current.height, transparent, { widthRatio: 0.78, bg: PLATE });
+  const tile = centeredMark(current.width, current.height, mark, { widthRatio: 0.78, bg: PLATE });
   if (base === 'ic_launcher_round.png') maskCircle(tile);
   else maskRounded(tile, Math.round(current.width * 0.22));
   writePng(file, tile);
@@ -348,10 +314,10 @@ for (const file of walkPngs(path.join(root, 'android/app/src/main/res'))) {
 
 console.log('iOS');
 const iosIcon = path.join(root, 'ios/App/App/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png');
-writePng(iosIcon, centeredMark(1024, 1024, transparent, { widthRatio: 0.84, bg: PLATE }));
+writePng(iosIcon, centeredMark(1024, 1024, mark, { widthRatio: 0.84, bg: PLATE }));
 for (const file of walkPngs(path.join(root, 'ios/App/App/Assets.xcassets/Splash.imageset'))) {
   const current = readPng(file);
   writePng(file, centeredMark(current.width, current.height, transparent, { widthRatio: 0.62, bg: PLATE }));
 }
 
-console.log('\nSkyway mark written. White ink on the dark plate; cyan lettering unchanged.');
+console.log('\nSkyway mark written from the master. Full lockup on wordmarks and splashes; jet crop on square icons.');
