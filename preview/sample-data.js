@@ -451,11 +451,91 @@ export const WALLET_CARDS = [
   { id: 'card-2', label: 'Amex Business Platinum', last4: '9903', holder: T.company, kind: 'company' },
 ];
 
+function localCalendarDate(d = new Date()) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+const MANIFEST_SIG = `data:image/svg+xml,${encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" width="240" height="48"><path d="M8 30 C 28 8, 60 12, 88 28 S 150 42, 228 14" fill="none" stroke="#111827" stroke-width="2.2"/></svg>',
+)}`;
+
+// A filed load manifest for a leg that has not departed, so crew can amend it
+// in the preview harness. The flight day is today.
+const openLeg = LEG.laterSameTail;
+const manifestPic = T.crew[openLeg.picIdx];
+const manifestSic = T.crew[openLeg.sicIdx];
+const manifestFiledAt = Date.now() - 90 * MIN;
+
 export const MANIFESTS = [
   {
-    id: 'manifest-1', tail: LEG.airborne.tail, date: new Date(BASE).toISOString().slice(0, 10),
-    legs: [{ tripUid: LEG.airborne.uid, from: LEG.airborne.from, to: LEG.airborne.to, pax: [] }],
-    createdAt: BASE, updatedAt: BASE + HOUR,
+    id: 'manifest-1',
+    tail: openLeg.tail,
+    date: localCalendarDate(),
+    hobbsOut: '4120.4',
+    hobbsIn: '4122.1',
+    hobbsTotal: '1.7',
+    waitTime: '0.4',
+    timeOut: '1430',
+    timeIn: '1612',
+    timeTotal: '1.7',
+    dutyTimeIn: '1200',
+    dutyTimeOut: '1800',
+    dutyTimeTotal: '6.0',
+    legs: [{
+      tripUid: openLeg.uid,
+      from: openLeg.from,
+      to: openLeg.to,
+      airport: openLeg.to,
+      cycles: '1',
+      nightLdgs: '0',
+      passengers: T.passengers.slice(0, 3),
+      toWeight: '12840',
+      maxAllowable: '14000',
+      fwdCG: '210.0',
+      toCG: '218.4',
+      aftCG: '230.0',
+      numPax: '3',
+      configuration: 'A',
+      legType: 'REVENUE',
+    }],
+    picSig: {
+      name: manifestPic.name,
+      uid: manifestPic.uid,
+      email: emailFor(manifestPic),
+      signatureImg: MANIFEST_SIG,
+      timestamp: manifestFiledAt,
+    },
+    sicSig: {
+      name: manifestSic.name,
+      uid: manifestSic.uid,
+      email: emailFor(manifestSic),
+      signatureImg: MANIFEST_SIG,
+      timestamp: manifestFiledAt,
+    },
+    status: 'submitted',
+    revision: 1,
+    amended: false,
+    submittedAt: manifestFiledAt,
+    submittedBy: manifestPic.name,
+    submittedByUid: manifestPic.uid,
+    submittedByEmail: emailFor(manifestPic),
+    revisions: [{
+      revision: 1,
+      kind: 'original',
+      at: manifestFiledAt,
+      by: manifestPic.name,
+      byUid: manifestPic.uid,
+      byEmail: emailFor(manifestPic),
+      note: '',
+      summary: 'Original submission',
+      diff: [],
+      snapshot: null,
+    }],
+    createdAt: manifestFiledAt - 2 * HOUR,
+    updatedAt: manifestFiledAt,
   },
 ];
 

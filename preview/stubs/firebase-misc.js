@@ -41,12 +41,34 @@ export const sendStatusStepPush = noop;
 export const softDeleteLegacyTripMessage = noop;
 
 /* ── firebase-manifests ─────────────────────────────────────────────────── */
+// In-memory so an amend/resubmit in the preview updates the list the way
+// Firestore's listener would. Nothing here is written to a project.
+let manifestStore = MANIFESTS.map((manifest) => ({ ...manifest }));
+const manifestListeners = new Set();
+function emitManifests() {
+  const snapshot = manifestStore.map((manifest) => ({ ...manifest, legs: manifest.legs }));
+  for (const cb of manifestListeners) cb(snapshot);
+}
 export const manifestId = () => 'manifest-1';
 export const localDateString = (d = new Date()) => new Date(d).toISOString().slice(0, 10);
-export const saveManifest = noop;
-export const fetchManifest = async () => MANIFESTS[0] || null;
-export const deleteManifest = noop;
-export const subscribeToAllManifests = (cb) => emit(MANIFESTS)(cb);
+export const saveManifest = async (manifest) => {
+  if (!manifest?.id) return;
+  const next = { ...manifest, updatedAt: Date.now(), createdAt: manifest.createdAt || Date.now() };
+  const idx = manifestStore.findIndex((item) => item.id === manifest.id);
+  if (idx >= 0) manifestStore[idx] = next;
+  else manifestStore.push(next);
+  emitManifests();
+};
+export const fetchManifest = async (id) => manifestStore.find((item) => item.id === id) || null;
+export const deleteManifest = async (id) => {
+  manifestStore = manifestStore.filter((item) => item.id !== id);
+  emitManifests();
+};
+export const subscribeToAllManifests = (cb) => {
+  manifestListeners.add(cb);
+  cb(manifestStore.map((manifest) => ({ ...manifest })));
+  return () => manifestListeners.delete(cb);
+};
 export const autoAddTripToManifest = noop;
 export const buildLegFromTrip = (trip) => ({
   tripUid: trip?.uid || null,

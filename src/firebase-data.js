@@ -54,20 +54,22 @@ export async function fetchPreloadedPax(tripId) {
  * Empty arrays/object if the doc doesn't exist or fields are missing.
  */
 export async function fetchTripStateForShare(tripId) {
-  if (!tripId) return { preloadedPax: [], passengers: [], statuses: {} };
+  if (!tripId) return { preloadedPax: [], passengers: [], statuses: {}, completed: false, archived: false };
   const safeId = sanitizeKey(tripId);
   try {
     const snap = await getDoc(doc(db, 'trip-state', safeId));
-    if (!snap.exists()) return { preloadedPax: [], passengers: [], statuses: {} };
+    if (!snap.exists()) return { preloadedPax: [], passengers: [], statuses: {}, completed: false, archived: false };
     const data = snap.data();
     return {
       preloadedPax: Array.isArray(data.preloadedPax) ? data.preloadedPax : [],
       passengers: Array.isArray(data.passengers) ? data.passengers : [],
       statuses: (data.statuses && typeof data.statuses === 'object') ? data.statuses : {},
+      completed: data.completed === true,
+      archived: data.archived === true,
     };
   } catch (err) {
     console.error('[firebase-data] fetchTripStateForShare failed:', tripId, err);
-    return { preloadedPax: [], passengers: [], statuses: {} };
+    return { preloadedPax: [], passengers: [], statuses: {}, completed: false, archived: false };
   }
 }
 
