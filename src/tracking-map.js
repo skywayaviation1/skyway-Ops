@@ -379,6 +379,14 @@ export function formatSpeed(kt) {
 
 const PLANE_PATH = 'M12 2 L13.5 10 L22 12 L22 14 L13.5 14 L13 19 L15 21 L15 22 L12 21 L9 22 L9 21 L11 19 L10.5 14 L2 14 L2 12 L10.5 10 Z';
 
+function esc(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 /**
  * Aircraft marker. `heading` rotates the silhouette; the label block carries
  * tail, altitude and speed so the map is readable without a side panel.
@@ -391,6 +399,9 @@ export function aircraftIcon(L, {
   selected = false,
   showLabel = true,
   muted = false,
+  tripId = null,
+  destination = null,
+  etaLabel = null,
 } = {}) {
   const size = selected ? 38 : muted ? 22 : 28;
   const color = selected ? '#5FD4F0' : muted ? '#6B8A96' : '#8FCADF';
@@ -404,11 +415,16 @@ export function aircraftIcon(L, {
     : `<span style="position:absolute; inset:-4px; border-radius:50%; border:1px solid rgba(63,169,204,0.28);"></span>`;
 
   const readout = [formatAltitude(altitude), formatSpeed(groundspeed)].filter(Boolean).join(' · ');
+  const title = [tail, tripId].filter(Boolean).map(esc).join(' · ');
+  const calloutLines = [];
+  if (destination) calloutLines.push(`→ ${esc(destination)}`);
+  if (etaLabel) calloutLines.push(`ETA ${esc(etaLabel)}`);
+  if (calloutLines.length === 0 && readout) calloutLines.push(esc(readout));
   const label = showLabel ? `
     <div style="position:absolute; left:${size + 6}px; top:50%; transform:translateY(-50%); pointer-events:none; white-space:nowrap;">
-      <div style="background:rgba(6,12,22,0.92); border:1px solid ${selected ? 'rgba(63,169,204,0.7)' : 'rgba(125,211,252,0.28)'}; border-radius:5px; padding:2px 7px;">
-        <div style="font-family:'JetBrains Mono',monospace; font-size:11px; font-weight:700; line-height:1.2; color:${selected ? '#c5f4ff' : '#bae6fd'};">${tail || ''}</div>
-        ${readout ? `<div style="font-family:'JetBrains Mono',monospace; font-size:9px; line-height:1.3; color:#67e8f9;">${readout}</div>` : ''}
+      <div style="background:rgba(6,12,22,0.92); border:1px solid ${selected ? 'rgba(63,169,204,0.7)' : 'rgba(125,211,252,0.28)'}; border-radius:5px; padding:3px 7px;">
+        <div style="font-family:'JetBrains Mono',monospace; font-size:11px; font-weight:700; line-height:1.25; color:${selected ? '#c5f4ff' : '#bae6fd'};">${title}</div>
+        ${calloutLines.map((line) => `<div style="font-family:'JetBrains Mono',monospace; font-size:9px; line-height:1.35; color:${line.startsWith('ETA') ? '#fcd34d' : '#67e8f9'};">${line}</div>`).join('')}
       </div>
     </div>` : '';
 
@@ -450,7 +466,9 @@ export function airportIcon(L, { code, tone = 'neutral', small = false } = {}) {
 }
 
 /** Parked aircraft: muted silhouette so airborne vs grounded is obvious. */
-export function groundedIcon(L, { tail, at, selected = false, muted = false } = {}) {
+export function groundedIcon(L, {
+  tail, at, selected = false, muted = false, tripId = null, departureLabel = null,
+} = {}) {
   const size = selected ? 22 : muted ? 14 : 16;
   const fill = selected ? '#cbd5e1' : muted ? '#475569' : '#94a3b8';
   const ring = selected
@@ -467,9 +485,14 @@ export function groundedIcon(L, { tail, at, selected = false, muted = false } = 
             <path d="${PLANE_PATH}" fill="${fill}"/>
           </svg>
         </div>
-        <div style="position:absolute; left:${size + 6}px; top:50%; transform:translateY(-50%); display:flex; gap:4px; align-items:center; pointer-events:none; white-space:nowrap;">
-          <span style="font-family:'JetBrains Mono',monospace; font-size:9px; font-weight:${selected ? 700 : 500}; color:${selected ? '#e2e8f0' : '#94a3b8'}; background:rgba(6,12,22,0.88); padding:1px 5px; border-radius:3px;">${tail || ''}</span>
-          ${at ? `<span style="font-family:'JetBrains Mono',monospace; font-size:8px; color:#64748b; background:rgba(6,12,22,0.7); padding:1px 5px; border-radius:3px;">${at}</span>` : ''}
+        <div style="position:absolute; left:${size + 6}px; top:50%; transform:translateY(-50%); pointer-events:none; white-space:nowrap;">
+          <div style="background:rgba(6,12,22,0.92); border:1px solid rgba(148,163,184,0.35); border-radius:5px; padding:3px 7px;">
+            <div style="font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:${selected ? 700 : 600}; line-height:1.25; color:${selected ? '#e2e8f0' : '#cbd5e1'};">${esc([tail, tripId].filter(Boolean).join(' · '))}</div>
+            ${departureLabel
+              ? `<div style="font-family:'JetBrains Mono',monospace; font-size:9px; line-height:1.35; color:#fcd34d;">DEP ${esc(departureLabel)}</div>`
+              : ''}
+            ${at ? `<div style="font-family:'JetBrains Mono',monospace; font-size:8px; line-height:1.3; color:#64748b;">${esc(at)}</div>` : ''}
+          </div>
         </div>
       </div>`,
   });

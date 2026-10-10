@@ -118,6 +118,7 @@ export const TRIPS = SCHEDULE.map((s) => ({
     pax: s.pax,
     broker: BROKER_EMAIL[s.customer] ?? '',
     customer: s.customer,
+    tripCode: s.tripCode || null,
     legType: s.pax > 0 ? 'REVENUE' : 'REPO',
     category: s.pax > 0 ? 'REVENUE' : 'REPO',
     isFlight: true,

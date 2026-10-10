@@ -711,6 +711,7 @@ export default function OpsDashboard({
             fleetRows={managedRows}
             positions={data.positions}
             trips={trips}
+            tripStates={data.tripStates}
             aircraftByTail={config?.aircraftByTail || {}}
             unlocated={mapScene.unlocated}
             now={now}

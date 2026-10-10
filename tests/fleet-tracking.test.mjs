@@ -3,7 +3,12 @@ import test from 'node:test';
 import {
   buildFleetMapScene,
   buildSelectedFlightOverlay,
+  fleetFitPositions,
+  fleetFitSignature,
+  fleetMarkerCallout,
   formatLastUpdate,
+  formatMarkerTime,
+  readTripId,
   resolveAirportPoint,
   resolveFleetMapPosition,
   scheduleLocationForTail,
@@ -217,4 +222,133 @@ test('a landing updates the persistent last-known point', () => {
   assert.equal(merged.lastKnownAirport, 'KHYA');
   assert.equal(merged.lastKnownLatitude, 41.66);
   assert.equal(merged.latitude, 40, 'historical raw coordinate can remain but is not preferred');
+});
+
+test('trip ids are the 6–7 character code, not a trip number or calendar uid', () => {
+  assert.equal(readTripId('WEQVQD'), 'WEQVQD');
+  assert.equal(readTripId('m8vtqd'), 'M8VTQD');
+  assert.equal(readTripId('ABC1234'), 'ABC1234');
+  assert.equal(readTripId('104281'), null);
+  assert.equal(readTripId('3218'), null);
+  assert.equal(readTripId('sky-1001'), null);
+  assert.equal(readTripId('7a32dd47-6a5c-4c9c-b53b-864381bacebf'), null);
+  assert.equal(readTripId(
+    { tripNumber: '104281', uid: 'sky-1001' },
+    { tripSheetData: { tripCode: 'WEQVQD' }, info: { tripCode: 'OTHER1' } },
+  ), 'WEQVQD');
+});
+
+test('marker times include a timezone abbreviation', () => {
+  assert.equal(formatMarkerTime('2026-08-10T20:00:00Z', 'America/New_York'), '4:00 PM EDT');
+  assert.equal(formatMarkerTime('2026-08-10T20:00:00Z', 'UTC'), '8:00 PM UTC');
+  assert.equal(formatMarkerTime(null, 'UTC'), null);
+});
+
+test('airborne bubbles use ETA and destination; grounded bubbles use the next departure', () => {
+  const trips = [
+    {
+      uid: 'leg-now',
+      start: new Date(NOW - 30 * 60_000),
+      end: new Date(NOW + 40 * 60_000),
+      info: { tail: 'N444AM', from: 'IAD', to: 'HYA', isFlight: true, tripCode: 'WEQVQD', tripNumber: '104281' },
+    },
+    {
+      uid: 'leg-next',
+      start: new Date(NOW + 3 * 3600_000),
+      end: new Date(NOW + 4 * 3600_000),
+      info: { tail: 'N444AM', from: 'HYA', to: 'TEB', isFlight: true, tripCode: 'P3LHXA' },
+    },
+    {
+      uid: 'ground-next',
+      start: new Date(NOW + 90 * 60_000),
+      end: new Date(NOW + 3 * 3600_000),
+      info: { tail: 'N20UF', from: 'TEB', to: 'PBI', isFlight: true, tripNumber: '1005' },
+    },
+  ];
+  const states = new Map([
+    ['ground-next', { tripSheetData: { tripCode: 'M8VTQD' } }],
+  ]);
+  const airborne = fleetMarkerCallout({
+    tail: 'N444AM',
+    telemetry: {
+      airborne: true,
+      destination: 'KHYA',
+      estimatedOn: '2026-08-10T20:00:00Z',
+    },
+    trips,
+    tripStates: states,
+    now: NOW,
+    timeZone: 'America/New_York',
+  });
+  assert.equal(airborne.tripId, 'WEQVQD');
+  assert.equal(airborne.destination, 'KHYA');
+  assert.equal(airborne.etaLabel, '4:00 PM EDT');
+  assert.equal(airborne.departureLabel, null);
+
+  const grounded = fleetMarkerCallout({
+    tail: 'N20UF',
+    telemetry: { airborne: false, groundedAt: 'KTEB' },
+    trips,
+    tripStates: states,
+    now: NOW,
+    timeZone: 'America/New_York',
+  });
+  assert.equal(grounded.tripId, 'M8VTQD');
+  assert.equal(grounded.etaLabel, null);
+  assert.equal(grounded.departureLabel, formatMarkerTime(trips[2].start, 'America/New_York'));
+  assert.match(grounded.departureLabel, /EDT|EST/);
+  assert.doesNotMatch(grounded.departureLabel, /1005/);
+});
+
+test('fleet fit frames airborne tails and falls back to every aircraft', () => {
+  const aircraft = [
+    { id: 'N444AM', lat: 40.2, lon: -74.1, airborne: true },
+    { id: 'N651TW', lat: 32.1, lon: -90.4, airborne: true },
+    { id: 'N20UF', lat: 40.85, lon: -74.06, airborne: false },
+  ];
+  assert.deepEqual(fleetFitPositions(aircraft).map((item) => item.id), ['N444AM', 'N651TW']);
+  const moved = fleetFitPositions([
+    { ...aircraft[0], lat: 41.0 },
+    aircraft[1],
+    aircraft[2],
+  ]);
+  assert.notEqual(fleetFitSignature(aircraft), fleetFitSignature(moved));
+
+  const parked = aircraft.map((item) => ({ ...item, airborne: false }));
+  assert.deepEqual(fleetFitPositions(parked).map((item) => item.id), ['N444AM', 'N651TW', 'N20UF']);
+});
+
+test('scene callouts survive onto the selected-flight overlay', () => {
+  const scene = buildFleetMapScene({
+    fleetTails: ['N444AM', 'N20UF'],
+    positions: {
+      N444AM: {
+        airborne: true, latitude: 40, longitude: -74, destination: 'KHYA',
+        estimatedOn: '2026-08-10T20:00:00Z',
+      },
+      N20UF: { airborne: false, groundedAt: 'KTEB', groundedLat: 40.85, groundedLon: -74.06 },
+    },
+    trips: [{
+      uid: 'next',
+      start: new Date(NOW + 3600_000),
+      end: new Date(NOW + 2 * 3600_000),
+      info: { tail: 'N20UF', from: 'TEB', to: 'PBI', isFlight: true, tripCode: 'M8VTQD' },
+    }, {
+      uid: 'now',
+      start: new Date(NOW - 3600_000),
+      end: new Date(NOW + 3600_000),
+      info: { tail: 'N444AM', from: 'IAD', to: 'HYA', isFlight: true, tripCode: 'WEQVQD' },
+    }],
+    now: NOW,
+    timeZone: 'UTC',
+  });
+  const air = scene.aircraft.find((item) => item.tail === 'N444AM');
+  const ground = scene.aircraft.find((item) => item.tail === 'N20UF');
+  assert.equal(air.tripId, 'WEQVQD');
+  assert.equal(air.destination, 'KHYA');
+  assert.match(air.etaLabel, /UTC/);
+  assert.match(ground.departureLabel, /UTC/);
+  const overlaid = withSelectedFlightScene(scene, { airports: [], routes: [], trail: null }, { selectedTail: 'N444AM' });
+  assert.equal(overlaid.aircraft.find((item) => item.tail === 'N20UF').showLabel, true);
+  assert.equal(overlaid.aircraft.find((item) => item.tail === 'N20UF').departureLabel, ground.departureLabel);
 });

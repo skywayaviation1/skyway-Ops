@@ -53,14 +53,14 @@ const TENANTS = {
 
     // Hours from the day anchor; the schedule is built from these.
     schedule: [
-      { uid: 'sky-1003', tail: 'N286N', customer: 'Monarch Air Group', from: 'TVC', to: 'IAD', type: 'Charter', pax: 4, picIdx: 4, sicIdx: 5, startH: 0.2, endH: 2.4 },
-      { uid: 'sky-1001', tail: 'N444AM', customer: 'Outlier Jets', from: 'IAD', to: 'HYA', type: 'Charter', pax: 4, picIdx: 0, sicIdx: 1, startH: 2.8, endH: 4.4 },
-      { uid: 'sky-1004', tail: 'N651TW', customer: 'Jet Linx Aviation', from: 'APF', to: 'DFW', type: 'Charter', pax: 3, picIdx: 2, sicIdx: 7, startH: 3.2, endH: 6.1 },
-      { uid: 'sky-1005', tail: 'N20UF', customer: 'Private Jet Co', from: 'TEB', to: 'PBI', type: 'Charter', pax: 7, picIdx: 3, sicIdx: 6, startH: 4.6, endH: 7.4 },
-      { uid: 'sky-1002', tail: 'N444AM', customer: 'Outlier Jets', from: 'HYA', to: 'TEB', type: 'Charter', pax: 4, picIdx: 0, sicIdx: 1, startH: 8, endH: 9.4 },
-      { uid: 'sky-1006', tail: 'N551FP', customer: 'Skyway Aviation', from: 'PBI', to: 'OPF', type: 'Positioning', pax: 0, picIdx: 5, sicIdx: 6, startH: 9, endH: 9.9 },
-      { uid: 'sky-1007', tail: 'N168ZZ', customer: 'Victor US Flight Management', from: 'FXE', to: 'MDW', type: 'Charter', pax: 5, picIdx: 6, sicIdx: 3, startH: 10.5, endH: 13.4 },
-      { uid: 'sky-1008', tail: 'N525CR', customer: 'Coastal Air Charter', from: 'FLL', to: 'CHS', type: 'Charter', pax: 4, picIdx: 7, sicIdx: 2, startH: 12, endH: 13.6 },
+      { uid: 'sky-1003', tripCode: 'MNRC4K', tail: 'N286N', customer: 'Monarch Air Group', from: 'TVC', to: 'IAD', type: 'Charter', pax: 4, picIdx: 4, sicIdx: 5, startH: 0.2, endH: 2.4 },
+      { uid: 'sky-1001', tripCode: 'WEQVQD', tail: 'N444AM', customer: 'Outlier Jets', from: 'IAD', to: 'HYA', type: 'Charter', pax: 4, picIdx: 0, sicIdx: 1, startH: 2.8, endH: 4.4 },
+      { uid: 'sky-1004', tripCode: 'R4NCBX', tail: 'N651TW', customer: 'Jet Linx Aviation', from: 'APF', to: 'DFW', type: 'Charter', pax: 3, picIdx: 2, sicIdx: 7, startH: 3.2, endH: 6.1 },
+      { uid: 'sky-1005', tripCode: 'M8VTQD', tail: 'N20UF', customer: 'Private Jet Co', from: 'TEB', to: 'PBI', type: 'Charter', pax: 7, picIdx: 3, sicIdx: 6, startH: 4.6, endH: 7.4 },
+      { uid: 'sky-1002', tripCode: 'P3LHXA', tail: 'N444AM', customer: 'Outlier Jets', from: 'HYA', to: 'TEB', type: 'Charter', pax: 4, picIdx: 0, sicIdx: 1, startH: 8, endH: 9.4 },
+      { uid: 'sky-1006', tripCode: 'D6CRWN', tail: 'N551FP', customer: 'Skyway Aviation', from: 'PBI', to: 'OPF', type: 'Positioning', pax: 0, picIdx: 5, sicIdx: 6, startH: 9, endH: 9.9 },
+      { uid: 'sky-1007', tripCode: 'B9FQTS', tail: 'N168ZZ', customer: 'Victor US Flight Management', from: 'FXE', to: 'MDW', type: 'Charter', pax: 5, picIdx: 6, sicIdx: 3, startH: 10.5, endH: 13.4 },
+      { uid: 'sky-1008', tripCode: 'H2YMLA', tail: 'N525CR', customer: 'Coastal Air Charter', from: 'FLL', to: 'CHS', type: 'Charter', pax: 4, picIdx: 7, sicIdx: 2, startH: 12, endH: 13.6 },
     ],
   },
 
@@ -108,14 +108,14 @@ const TENANTS = {
 
     // A Gulf-coast day: Naples out to the northeast and back down the peninsula.
     schedule: [
-      { uid: 'ej-2201', tail: 'N604EJ', customer: 'Lantern Bay Aviation', from: 'SRQ', to: 'APF', type: 'Charter', pax: 3, picIdx: 4, sicIdx: 5, startH: 0.2, endH: 2.4 },
-      { uid: 'ej-2202', tail: 'N880EJ', customer: 'Meridian Air Partners', from: 'APF', to: 'TEB', type: 'Charter', pax: 6, picIdx: 0, sicIdx: 1, startH: 2.8, endH: 4.4 },
-      { uid: 'ej-2203', tail: 'N207EJ', customer: 'Halcyon Charter Group', from: 'FXE', to: 'AUS', type: 'Charter', pax: 4, picIdx: 2, sicIdx: 7, startH: 3.2, endH: 6.1 },
-      { uid: 'ej-2204', tail: 'N955EJ', customer: 'Vireo Aviation', from: 'PBI', to: 'BNA', type: 'Charter', pax: 5, picIdx: 3, sicIdx: 6, startH: 4.6, endH: 7.4 },
-      { uid: 'ej-2205', tail: 'N880EJ', customer: 'Meridian Air Partners', from: 'TEB', to: 'ACK', type: 'Charter', pax: 6, picIdx: 0, sicIdx: 1, startH: 8, endH: 9.4 },
-      { uid: 'ej-2206', tail: 'N726EJ', customer: 'Elite Jets', from: 'RSW', to: 'APF', type: 'Positioning', pax: 0, picIdx: 5, sicIdx: 6, startH: 9, endH: 9.9 },
-      { uid: 'ej-2207', tail: 'N418EJ', customer: 'Southcross Jet Brokers', from: 'RSW', to: 'IAD', type: 'Charter', pax: 5, picIdx: 6, sicIdx: 3, startH: 10.5, endH: 13.4 },
-      { uid: 'ej-2208', tail: 'N139EJ', customer: 'Continental Wing', from: 'APF', to: 'MCO', type: 'Charter', pax: 4, picIdx: 7, sicIdx: 2, startH: 12, endH: 13.6 },
+      { uid: 'ej-2201', tripCode: 'LNTRB2', tail: 'N604EJ', customer: 'Lantern Bay Aviation', from: 'SRQ', to: 'APF', type: 'Charter', pax: 3, picIdx: 4, sicIdx: 5, startH: 0.2, endH: 2.4 },
+      { uid: 'ej-2202', tripCode: 'MRDNP7', tail: 'N880EJ', customer: 'Meridian Air Partners', from: 'APF', to: 'TEB', type: 'Charter', pax: 6, picIdx: 0, sicIdx: 1, startH: 2.8, endH: 4.4 },
+      { uid: 'ej-2203', tripCode: 'HLCY4A', tail: 'N207EJ', customer: 'Halcyon Charter Group', from: 'FXE', to: 'AUS', type: 'Charter', pax: 4, picIdx: 2, sicIdx: 7, startH: 3.2, endH: 6.1 },
+      { uid: 'ej-2204', tripCode: 'VREO9K', tail: 'N955EJ', customer: 'Vireo Aviation', from: 'PBI', to: 'BNA', type: 'Charter', pax: 5, picIdx: 3, sicIdx: 6, startH: 4.6, endH: 7.4 },
+      { uid: 'ej-2205', tripCode: 'MRDNQ1', tail: 'N880EJ', customer: 'Meridian Air Partners', from: 'TEB', to: 'ACK', type: 'Charter', pax: 6, picIdx: 0, sicIdx: 1, startH: 8, endH: 9.4 },
+      { uid: 'ej-2206', tripCode: 'ELTPOS', tail: 'N726EJ', customer: 'Elite Jets', from: 'RSW', to: 'APF', type: 'Positioning', pax: 0, picIdx: 5, sicIdx: 6, startH: 9, endH: 9.9 },
+      { uid: 'ej-2207', tripCode: 'STHX5C', tail: 'N418EJ', customer: 'Southcross Jet Brokers', from: 'RSW', to: 'IAD', type: 'Charter', pax: 5, picIdx: 6, sicIdx: 3, startH: 10.5, endH: 13.4 },
+      { uid: 'ej-2208', tripCode: 'CTWG3M', tail: 'N139EJ', customer: 'Continental Wing', from: 'APF', to: 'MCO', type: 'Charter', pax: 4, picIdx: 7, sicIdx: 2, startH: 12, endH: 13.6 },
     ],
   },
 };

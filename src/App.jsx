@@ -187,7 +187,7 @@ import {
 import { compareNames } from './name-matching.js';
 import { lookupCoords } from './airport-coords.js';
 import { resolveManagedTails } from './fleet-config.js';
-import { buildFleetMapScene } from './fleet-tracking.js';
+import { buildFleetMapScene, readTripId } from './fleet-tracking.js';
 import { DUTY_TRACKER_ENABLED } from './duty-feature.js';
 import { applyBrandAccent, brand } from './brand.js';
 import {
@@ -310,6 +310,11 @@ function extractTripInfo(event) {
   const pic = picMatch ? picMatch[1].trim() : '';
   const sic = sicMatch ? sicMatch[1].trim() : '';
 
+  // JetInsight trip ID (6–7 characters, e.g. WEQVQD). A numeric trip number
+  // in the same description is a different field and is left unused.
+  const tripIdMatch = description.match(/\bTrip\s*ID\s*[:=]\s*([A-Z0-9]{6,7})\b/i);
+  const tripCode = readTripId(tripIdMatch ? tripIdMatch[1] : '');
+
   // Notes — anything in description that's NOT pax/pic/sic
   const notes = description
     .split(/\n+/)
@@ -325,6 +330,7 @@ function extractTripInfo(event) {
 
   return {
     tail, customer, from, to, pax, pic, sic, notes,
+    tripCode,
     tripType,
     category: classified.category,
     legType: classified.legType,
@@ -23010,7 +23016,9 @@ function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
       fleetTails,
       positions: tailStates,
       trips,
+      tripStates,
       aircraftByTail: config?.aircraftByTail || {},
+      timeZone: getAppTimezone() || undefined,
     });
     const aircraft = fleetScene.aircraft;
     const airports = [];
@@ -23056,7 +23064,7 @@ function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
       trail: trackPoints.length >= 2 ? trackPoints : null,
       projected,
     };
-  }, [fleetTails, tailStates, trips, config?.aircraftByTail, selectedTail, selectedState, selectedAirborne, trackPoints]);
+  }, [fleetTails, tailStates, trips, tripStates, config?.aircraftByTail, selectedTail, selectedState, selectedAirborne, trackPoints]);
 
   // Re-fit on selection change and when a trail first arrives, but not on every
   // 30-second position tick — that would fight the user's own pan and zoom.
@@ -23103,6 +23111,7 @@ function TrackingScreenV2({ currentUser, trips, tripStates, config }) {
       onSelectAircraft={handleSelectTail}
       fitKey={fitKey}
       focusIds={focusIds}
+      followFleet
       basemapDefault="dark"
       className="h-full w-full"
       overlay={selectedState ? (

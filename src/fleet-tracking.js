@@ -138,6 +138,120 @@ export function resolveAirportPoint(code, apiLat, apiLon) {
   return finitePoint(apiLat, apiLon);
 }
 
+/** JetInsight trip IDs are 6–7 letters and digits. Numeric trip numbers are not. */
+const TRIP_ID_PATTERN = /^[A-Z0-9]{6,7}$/;
+
+export function readTripId(...sources) {
+  const values = [];
+  for (const source of sources) {
+    if (source == null) continue;
+    if (typeof source === 'string' || typeof source === 'number') {
+      values.push(source);
+      continue;
+    }
+    if (typeof source === 'object') {
+      values.push(
+        source.tripSheetData?.tripCode,
+        source.tripCode,
+        source.info?.tripCode,
+        source.info?.tripId,
+      );
+    }
+  }
+  for (const value of values) {
+    const code = String(value || '').trim().toUpperCase();
+    if (TRIP_ID_PATTERN.test(code) && /[A-Z]/.test(code)) return code;
+  }
+  return null;
+}
+
+function stateForTrip(tripStates, uid) {
+  if (!tripStates || !uid) return null;
+  if (typeof tripStates.get === 'function') return tripStates.get(uid) || null;
+  return tripStates[uid] || null;
+}
+
+function flightLegsForTail(tail, trips) {
+  const normalized = String(tail || '').toUpperCase();
+  return (Array.isArray(trips) ? trips : [])
+    .filter((trip) => String(trip?.info?.tail || '').toUpperCase() === normalized)
+    .filter((trip) => trip?.info?.isFlight !== false)
+    .slice()
+    .sort((a, b) => (toMs(a.start) || 0) - (toMs(b.start) || 0));
+}
+
+/**
+ * Clock time plus a short zone name (`4:12 PM EDT`). The zone is part of the
+ * string so a bubble never shows a bare clock time.
+ */
+export function formatMarkerTime(value, timeZone) {
+  const ms = toMs(value);
+  if (ms == null) return null;
+  const options = { hour: 'numeric', minute: '2-digit', timeZoneName: 'short' };
+  if (timeZone) options.timeZone = timeZone;
+  try {
+    return new Date(ms).toLocaleTimeString('en-US', options);
+  } catch {
+    return new Date(ms).toLocaleTimeString('en-US', {
+      hour: 'numeric', minute: '2-digit', timeZoneName: 'short', timeZone: 'UTC',
+    });
+  }
+}
+
+/**
+ * What the map bubble says. Airborne tails get the active trip's destination
+ * and ETA. Grounded tails get the next flight's departure, not a flight number.
+ */
+export function fleetMarkerCallout({
+  tail,
+  telemetry = null,
+  trips = [],
+  tripStates = null,
+  now = Date.now(),
+  timeZone,
+} = {}) {
+  const legs = flightLegsForTail(tail, trips);
+  const active = legs.find((trip) => {
+    const start = toMs(trip.start);
+    const end = toMs(trip.end);
+    return start != null && start <= now && (end == null || end >= now);
+  }) || null;
+  const upcoming = legs.find((trip) => (toMs(trip.start) || 0) > now) || null;
+
+  if (telemetry?.airborne === true) {
+    const destination = telemetry.destination || active?.info?.to || null;
+    return {
+      tripId: readTripId(stateForTrip(tripStates, active?.uid), active),
+      destination: destination ? String(destination).trim().toUpperCase() : null,
+      etaLabel: formatMarkerTime(telemetry.estimatedOn || active?.end, timeZone),
+      departureLabel: null,
+    };
+  }
+
+  return {
+    tripId: readTripId(stateForTrip(tripStates, upcoming?.uid), upcoming),
+    destination: null,
+    etaLabel: null,
+    departureLabel: formatMarkerTime(upcoming?.start, timeZone),
+  };
+}
+
+/** Positions the fleet map should frame: airborne tails, or every tail if none are airborne. */
+export function fleetFitPositions(aircraft) {
+  const located = (Array.isArray(aircraft) ? aircraft : []).filter(
+    (item) => Number.isFinite(item?.lat) && Number.isFinite(item?.lon),
+  );
+  const airborne = located.filter((item) => item.airborne === true);
+  return airborne.length > 0 ? airborne : located;
+}
+
+export function fleetFitSignature(aircraft) {
+  return fleetFitPositions(aircraft)
+    .map((item) => `${item.id}:${Number(item.lat).toFixed(3)},${Number(item.lon).toFixed(3)}`)
+    .sort()
+    .join('|');
+}
+
 export function formatLastUpdate(value, now = Date.now()) {
   const ms = toMs(value);
   if (ms == null) return null;
@@ -212,7 +326,12 @@ export function buildSelectedFlightOverlay({ telemetry = null, trackPoints = [] 
 export function withSelectedFlightScene(scene, overlay, { selectedTail = null } = {}) {
   const aircraft = (scene?.aircraft || []).map((item) => ({
     ...item,
-    showLabel: item.airborne === true || item.id === selectedTail,
+    // Grounded departure bubbles stay up; only a parked tail with nothing
+    // coming is quieted until it is selected.
+    showLabel: item.airborne === true
+      || Boolean(item.departureLabel)
+      || Boolean(item.etaLabel)
+      || item.id === selectedTail,
   }));
   return {
     ...scene,
@@ -228,8 +347,10 @@ export function buildFleetMapScene({
   fleetTails = [],
   positions = {},
   trips = [],
+  tripStates = null,
   aircraftByTail = {},
   now = Date.now(),
+  timeZone,
 }) {
   const aircraft = [];
   const unlocated = [];
@@ -246,6 +367,9 @@ export function buildFleetMapScene({
       unlocated.push(tail);
       continue;
     }
+    const callout = fleetMarkerCallout({
+      tail, telemetry, trips, tripStates, now, timeZone,
+    });
     aircraft.push({
       id: tail,
       tail,
@@ -258,6 +382,10 @@ export function buildFleetMapScene({
       groundedAt: point.airport,
       positionSource: point.source,
       positionAt: point.at,
+      tripId: callout.tripId,
+      destination: callout.destination,
+      etaLabel: callout.etaLabel,
+      departureLabel: callout.departureLabel,
       showLabel: true,
     });
   }
