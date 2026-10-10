@@ -35,7 +35,10 @@ is unnecessary:
 - A `GoogleService-Info.plist` reference in the App target, so the file only has
   to be saved to the expected path
 - A build phase that reads `REVERSED_CLIENT_ID` from `GoogleService-Info.plist`
-  and injects the Microsoft OAuth callback URL scheme automatically
+  and injects the Microsoft OAuth callback URL scheme automatically. When that
+  key is missing, it falls back to Firebase's Encoded App ID (`app-` plus
+  `GOOGLE_APP_ID`, with `:` replaced by `-`) and fails the build only if
+  neither value is present
 - `FirebaseApp.configure()` and the Firebase OAuth/push delegate callbacks in
   `AppDelegate.swift`
 
