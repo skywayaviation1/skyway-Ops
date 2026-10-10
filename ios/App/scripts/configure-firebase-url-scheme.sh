@@ -1,12 +1,15 @@
 #!/bin/sh
-# Injects the Firebase REVERSED_CLIENT_ID into the built app's Info.plist as a
-# custom URL scheme. Firebase's OAuth provider flow (Microsoft sign-in) returns
-# to the app through that scheme, so a missing entry produces a sign-in that
-# opens the browser and never comes back.
+# Injects the Firebase OAuth callback URL scheme into the built app's
+# Info.plist. Firebase's OAuth provider flow (Microsoft sign-in) returns to the
+# app through that scheme, so a missing entry produces a sign-in that opens the
+# browser and never comes back.
 #
-# The value lives in GoogleService-Info.plist, which is per-Firebase-app and is
-# deliberately not committed. Deriving it at build time keeps the checked-in
-# project free of environment-specific identifiers.
+# Prefer REVERSED_CLIENT_ID from GoogleService-Info.plist. Firebase iOS apps
+# with no Google OAuth client omit that key and fall back to the Encoded App
+# ID: "app-" plus GOOGLE_APP_ID, with ":" replaced by "-". The plist is
+# per-Firebase-app and is deliberately not committed. Deriving the scheme at
+# build time keeps the checked-in project free of environment-specific
+# identifiers.
 
 set -e
 
@@ -21,9 +24,16 @@ fi
 
 REVERSED_CLIENT_ID=$("${PLIST_BUDDY}" -c "Print :REVERSED_CLIENT_ID" "${GOOGLE_PLIST}" 2>/dev/null || true)
 
-if [ -z "${REVERSED_CLIENT_ID}" ]; then
-  echo "warning: GoogleService-Info.plist has no REVERSED_CLIENT_ID. Enable an iOS OAuth client for this Firebase app, then re-download the file."
-  exit 0
+if [ -n "${REVERSED_CLIENT_ID}" ]; then
+  URL_SCHEME="${REVERSED_CLIENT_ID}"
+else
+  GOOGLE_APP_ID=$("${PLIST_BUDDY}" -c "Print :GOOGLE_APP_ID" "${GOOGLE_PLIST}" 2>/dev/null || true)
+  if [ -z "${GOOGLE_APP_ID}" ]; then
+    echo "error: GoogleService-Info.plist has neither REVERSED_CLIENT_ID nor GOOGLE_APP_ID. Microsoft sign-in cannot register a callback URL scheme."
+    exit 1
+  fi
+  # Firebase Encoded App ID, e.g. app-1-12464871520-ios-6e86ce57c35c7b97d2cb05
+  URL_SCHEME="app-$(printf '%s' "${GOOGLE_APP_ID}" | tr ':' '-')"
 fi
 
 # Rewrite rather than append so repeated builds cannot stack duplicate schemes.
@@ -32,6 +42,6 @@ fi
 "${PLIST_BUDDY}" -c "Add :CFBundleURLTypes:0 dict" "${BUILT_PLIST}"
 "${PLIST_BUDDY}" -c "Add :CFBundleURLTypes:0:CFBundleURLName string ${PRODUCT_BUNDLE_IDENTIFIER}.firebaseauth" "${BUILT_PLIST}"
 "${PLIST_BUDDY}" -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes array" "${BUILT_PLIST}"
-"${PLIST_BUDDY}" -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes:0 string ${REVERSED_CLIENT_ID}" "${BUILT_PLIST}"
+"${PLIST_BUDDY}" -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes:0 string ${URL_SCHEME}" "${BUILT_PLIST}"
 
 echo "Configured Firebase OAuth callback URL scheme."
