@@ -519,7 +519,7 @@ export default function TrackingMap({
       ref={frameRef}
       className={cx(
         'relative overflow-hidden bg-slate-950',
-        fullscreen ? 'fixed inset-0 z-[2000]' : className,
+        fullscreen ? 'fixed inset-0 z-[2000] sw-safe-inset' : className,
       )}
       style={fullscreen ? undefined : style}
     >
@@ -548,14 +548,14 @@ export default function TrackingMap({
       )}
 
       {overlay && (
-        <div className="pointer-events-none absolute left-3 top-3 z-[500] max-w-[min(20rem,calc(100%-6rem))]">
+        <div className="sw-map-overlay pointer-events-none absolute z-[500] max-w-[min(20rem,calc(100%-6rem))]">
           {overlay}
         </div>
       )}
 
       {/* Controls. Leaflet's own panes sit below z-400, so 500+ keeps these
           above tiles and markers without fighting the zoom control. */}
-      <div className={cx('absolute right-3 top-3 z-[500] flex flex-col items-end', compact ? 'gap-1.5' : 'gap-2')}>
+      <div className={cx('sw-map-controls absolute z-[500] flex flex-col items-end', compact ? 'gap-1.5' : 'gap-2')}>
         <div className="flex gap-1.5">
           <MapButton
             icon={CloudRain}
@@ -630,7 +630,7 @@ export default function TrackingMap({
       </div>
 
       {showLegend && trailOn && scene.trail && (
-        <div className="absolute bottom-3 left-3 z-[500] rounded-lg border border-edge bg-surface/90 px-2.5 py-2 shadow-card backdrop-blur">
+        <div className="sw-map-legend absolute z-[500] rounded-lg border border-edge bg-surface/90 px-2.5 py-2 shadow-card backdrop-blur">
           <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-content-subtle">Altitude</p>
           <div className="flex items-center gap-1.5">
             {ALTITUDE_LEGEND.map((stop) => (

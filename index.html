@@ -3,7 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <!-- viewport-fit=cover is required for env(safe-area-inset-*) on notched iPhones. -->
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!-- viewport-fit=cover lets env(safe-area-inset-*) reach the notch,
+         Dynamic Island, and home indicator. initial-scale=1 without a
+         maximum-scale lock: pinch zoom stays available, and inputs are
+         16px so iOS does not zoom on focus. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#0A0B0D" media="(prefers-color-scheme: dark)" />
     <meta name="theme-color" content="#0A0B0D" />
     <meta name="color-scheme" content="dark light" />

@@ -385,7 +385,7 @@ export default function AogTab({ currentUser }) {
   }
 
   return (
-    <div style={{ padding: '24px', color: '#e2e8f0', fontFamily: 'inherit', minHeight: '100vh' }}>
+    <div style={{ padding: '24px', color: '#e2e8f0', fontFamily: 'inherit', minHeight: '100dvh' }}>
       {/* Page header */}
       <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 20, paddingBottom: 16, borderBottom: '1px solid #1e293b' }}>
         <div>

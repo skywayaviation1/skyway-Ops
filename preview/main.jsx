@@ -156,7 +156,7 @@ const surface = SURFACES[surfaceId];
 function Frame({ children }) {
   return (
     <div style={{
-      height: '100vh', display: 'flex', flexDirection: 'column',
+      height: '100dvh', display: 'flex', flexDirection: 'column',
       background: 'var(--sw-bg)', color: 'var(--sw-text)', overflow: 'hidden',
     }}>
       {children}
