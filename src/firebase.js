@@ -45,6 +45,11 @@ const app = initializeApp(firebaseConfig);
 // Android Chrome). Saves real-world latency + eliminates noisy errors on
 // every iPhone our pilots use.
 //
+// The native shell keeps the same transport. Do not "speed up" the app by
+// sending this channel through CapacitorHttp — that proxy is what made
+// listeners stick on the empty cache. mobile-runtime.js leaves Google hosts
+// on the WebView's own XHR. Web builds are unchanged: CapacitorHttp is absent.
+//
 // We use the named 'appusers' database, not the default — passed in settings.
 // The App Review sandbox uses a second named database so company documents
 // are never in the same query scope. `db` is a live binding: the sandbox

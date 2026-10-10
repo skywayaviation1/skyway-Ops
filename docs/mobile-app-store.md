@@ -128,11 +128,33 @@ Production.
 2. Confirm the App target uses `com.flyskyway.ops` and the production signing
    team. Automatic signing promotes `aps-environment` to `production` on export,
    so the committed development value does not need editing.
-3. Use **Product > Archive**, validate the archive, then upload to App Store
-   Connect.
+3. Use **Product > Archive** with signing enabled, validate the archive, then
+   upload to App Store Connect. `aps-environment` has to be inside the signed
+   app. See the signing note below before distributing.
 4. Distribute through TestFlight first. For this employee operations app,
    evaluate **Unlisted App** or **Custom App via Apple Business Manager**
    distribution before choosing a public listing.
+
+#### Push entitlement when the archive is signed at export
+
+Archiving with code signing disabled (`CODE_SIGNING_ALLOWED=NO`, or signing
+only at export) does not embed `App.entitlements`. A later export signature
+adds `aps-environment` only when that step is given
+`ios/App/App/App.entitlements` (or a provisioning profile that already contains
+Push) and re-signs with it. Without `aps-environment` in the installed binary,
+iOS never returns an APNs device token and enabling notifications fails with
+"No APNS token specified before fetching FCM Token". After export, confirm the
+payload:
+
+```bash
+codesign -d --entitlements :- Payload/App.app
+```
+
+The dumped plist must include `aps-environment` (`production` for TestFlight).
+`Info.plist` sets `ITSAppUsesNonExemptEncryption` to false so TestFlight stops
+asking the export-compliance question on every build. Push still also needs
+the APNs auth key uploaded under Firebase Console → Project settings → Cloud
+Messaging (see the one-time setup above).
 
 ### Android
 

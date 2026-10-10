@@ -55,6 +55,7 @@ async function getFirebaseIdToken() {
 // screen. The hooks (useStreamPresence, useTripUnread) need to be
 // statically imported because hooks can't be lazy-loaded.
 import { StreamPresenceProvider, useStreamPresence, useTripUnread } from './stream-presence.jsx';
+import LiveLinkBanner from './LiveLinkBanner.jsx';
 
 // Admin Duty Tools — manual day editor, copy-from-pilot flow, JetInsight
 // paste importer. Loads only when admin opens the modal from the DUTY
@@ -28989,6 +28990,7 @@ export default function CharterOps() {
           }
           onReorderTopNav={reorderTopNav}
         />
+        <LiveLinkBanner />
 
         {/* === HOME SECTION === */}
         {/* Three homes, by what the role is accountable for:

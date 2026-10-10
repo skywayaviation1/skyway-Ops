@@ -1,5 +1,7 @@
 import { Capacitor } from '@capacitor/core';
 import { isMapKitAssetUrl } from './mapkit-fallback.js';
+import { noteDeviceNetwork } from './live-link.js';
+import { restoreWebViewXmlHttpRequest, shouldUseWebViewNetwork } from './native-http.js';
 
 export const PRODUCTION_API_BASE = 'https://www.skyway.app';
 
@@ -16,16 +18,25 @@ const apiBase = resolveApiBase(import.meta.env?.VITE_API_BASE_URL);
  * default from PR #7 is no longer the public host).
  */
 if (isNative && typeof window !== 'undefined' && !window.__skywayNativeFetch) {
+  // Undo CapacitorHttp's XMLHttpRequest patch before Firestore opens its
+  // listen channel. fetch stays patched below so /api calls still bypass CORS.
+  restoreWebViewXmlHttpRequest(window);
   const patchedFetch = window.fetch.bind(window);
   // CapacitorHttp rewrites cross-origin GET through a native proxy that does
   // not send the WebView Origin. MapKit JS compares that header to the token,
   // so its bootstrap and tile fetches must stay on the WebView's own fetch.
+  // Firestore, Auth, and the rest of *.googleapis.com have the same problem
+  // for a different reason: the proxy buffers and re-decodes the listen URL,
+  // which drops the named-database channel into offline mode.
   const webFetch = typeof window.CapacitorWebFetch === 'function'
     ? window.CapacitorWebFetch.bind(window)
     : null;
   window.fetch = (input, init) => {
-    if (webFetch && isMapKitAssetUrl(input)) return webFetch(input, init);
-    return patchedFetch(rewriteApiRequest(input, apiBase), init);
+    const rewritten = rewriteApiRequest(input, apiBase);
+    if (webFetch && (isMapKitAssetUrl(rewritten) || shouldUseWebViewNetwork(rewritten))) {
+      return webFetch(rewritten, init);
+    }
+    return patchedFetch(rewritten, init);
   };
   window.__skywayNativeFetch = true;
 }
@@ -68,6 +79,7 @@ export async function initializeMobileRuntime() {
 
   const applyNetworkState = ({ connected }) => {
     document.documentElement.toggleAttribute('data-offline', !connected);
+    noteDeviceNetwork(connected);
     window.dispatchEvent(new CustomEvent('skyway:native-network', {
       detail: { connected },
     }));

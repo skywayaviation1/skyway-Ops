@@ -2,6 +2,7 @@ import UIKit
 import Capacitor
 import FirebaseAuth
 import FirebaseCore
+import FirebaseMessaging
 
 @UIApplicationMain
 class AppDelegate: UIResponder, UIApplicationDelegate {
@@ -15,6 +16,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         if FirebaseApp.app() == nil {
             FirebaseApp.configure()
         }
+        // Permission is still requested later, from the Comms screen. Registering
+        // now lets APNs issue a device token so FCM is not asked first.
+        application.registerForRemoteNotifications()
         return true
     }
 
@@ -33,7 +37,12 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     func applicationDidBecomeActive(_ application: UIApplication) {
-        // Restart any tasks that were paused (or not yet started) while the application was inactive. If the application was previously in the background, optionally refresh the user interface.
+        // The system permission sheet resigns the app. If APNs had not issued a
+        // token yet (registration raced the grant), ask again before the web
+        // layer calls Messaging.token.
+        if Messaging.messaging().apnsToken == nil {
+            application.registerForRemoteNotifications()
+        }
     }
 
     func applicationWillTerminate(_ application: UIApplication) {
@@ -50,6 +59,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        // Firebase refuses to mint an FCM token until this is set. The
+        // Capacitor plugin also assigns it from the notification below;
+        // doing it here covers a plugin that has not loaded yet.
+        Messaging.messaging().apnsToken = deviceToken
         NotificationCenter.default.post(
             name: .capacitorDidRegisterForRemoteNotifications,
             object: deviceToken
@@ -57,6 +70,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        NSLog("[Skyway] APNs registration failed: %@", error.localizedDescription)
         NotificationCenter.default.post(
             name: .capacitorDidFailToRegisterForRemoteNotifications,
             object: error
