@@ -49,8 +49,9 @@ only in the `appreview` database.
 
 ## Firebase console steps
 
-1. Authentication → Sign-in method → enable **Email/Password**. Leave
-   Microsoft enabled. The app still rejects every password sign-in except
+1. Authentication → Sign-in method → keep **Email/Password** enabled next to
+   Microsoft. Existing password accounts, including `developer@flyskyway.com`,
+   stay as they are. The reviewer form itself submits only
    `appreview@flyskyway.com`.
 2. Create the named Firestore database `appreview` in `skyway-ops-app`, in
    the same region as `appusers`.
@@ -60,28 +61,29 @@ only in the `appreview` database.
    npx firebase-tools deploy --only firestore --project skyway-ops-app
    ```
 
-   `firebase.json` points Firestore deploy at `appreview` and does not replace
-   `appusers` rules.
-4. On the existing `appusers` rules, paste `firebase/appusers.reviewer-guard.snippet`
-   and add `&& !isAppReviewer()` to every allow. Do not replace the production
-   ruleset with that snippet.
-5. On the existing Storage rules, paste `firebase/storage.reviewer-guard.snippet`
-   and add `&& !isAppReviewer()` to every company allow. The sandbox may use
-   only the `demo/` prefix.
-6. Run `npm run reviewer:create` with the service account. Copy the password
+   `firebase.json` points Firestore deploy at `appreview` and leaves the
+   `appusers` rules untouched.
+4. Production `appusers` and Storage rules are already updated separately.
+   `isSignedIn()` admits every other signed-in account and excludes only the
+   reviewer identity: the `appReviewer` custom claim, or the email
+   `appreview@flyskyway.com`.
+5. Run `npm run reviewer:create` with the service account. Copy the password
    from the terminal into App Store Connect. Do not commit it.
 
 ## What the sandbox can and cannot do
 
 The reviewer reads and writes only the `appreview` database. Firestore rules
 on that database allow the one password account with the `appReviewer` claim
-and deny everyone else. Company rules must deny that account and every other
-password session.
+and the email `appreview@flyskyway.com`, and deny every other identity.
+Production `appusers` and Storage rules exclude that same reviewer identity
+from `isSignedIn()`.
 
 The client drops company API calls while the sandbox flag is set. Every
-`verifyIdToken` check in `api/` also rejects the reviewer and any other
-password session, so email, push, Stream Chat, QuickBooks, FlightAware,
-broker, and maintenance side effects do not run. Stream Chat is not connected.
+`verifyIdToken` check in `api/` rejects a token when `appReviewer` is true or
+the email is `appreview@flyskyway.com`. Other sessions, including existing
+password accounts, keep the checks they already had. Email, push, Stream
+Chat, QuickBooks, FlightAware, broker, and maintenance side effects do not
+run for the reviewer. Stream Chat is not connected.
 Mailbox previews stay empty. Share-with-broker and ETA email buttons are not
 shown. A **Demo tracking** link opens `/trip-track?token=demo-sandbox`, which
 renders a fixed fictional flight and does not read company trips.

@@ -1,8 +1,10 @@
 // App Review sandbox identity policy.
 //
-// Email/password sign-in exists for exactly one Firebase account. Every other
-// password session is rejected in the client, in API token checks, and in
-// Firestore rules. The password itself is never stored in this repository.
+// Existing email/password accounts stay valid. Company APIs, the client, and
+// production rules block only the reviewer: the appReviewer custom claim, or
+// the address appreview@flyskyway.com. The reviewer sign-in form still refuses
+// every other address before it contacts Firebase. The password itself is
+// never stored in this repository.
 
 export const APP_REVIEWER_EMAIL = 'appreview@flyskyway.com';
 export const DEMO_DATABASE_ID = 'appreview';
@@ -22,41 +24,19 @@ export function passwordSignInAllowed(email) {
   return isReviewerEmail(email);
 }
 
-function providerOf(decoded) {
-  return decoded?.firebase?.sign_in_provider
-    || decoded?.signInProvider
-    || '';
+/** Reviewer identity is the custom claim or the one sandbox address. */
+export function isReviewerToken(decoded) {
+  const email = normalizeEmail(decoded?.email);
+  const claim = decoded?.[APP_REVIEWER_CLAIM] === true;
+  return claim || email === APP_REVIEWER_EMAIL;
 }
 
 /**
  * Whether a decoded Firebase ID token may call company APIs.
- * Password sessions never may. The reviewer account is sandboxed.
- * A password session for any other email is a rejected back door.
+ * Only the reviewer is blocked. Other password sessions are unchanged.
  */
 export function classifyAuthToken(decoded) {
-  const email = normalizeEmail(decoded?.email);
-  const provider = providerOf(decoded);
-  const claim = decoded?.[APP_REVIEWER_CLAIM] === true;
-  const reviewerEmail = email === APP_REVIEWER_EMAIL;
-
-  if (provider === 'password') {
-    if (!(reviewerEmail && claim)) {
-      return {
-        block: true,
-        reviewer: false,
-        code: 'password-provider-blocked',
-        error: 'Email and password sign-in is not available for this account.',
-      };
-    }
-    return {
-      block: true,
-      reviewer: true,
-      code: 'app-reviewer-sandbox',
-      error: 'The App Review sandbox cannot use company services.',
-    };
-  }
-
-  if (claim || reviewerEmail) {
+  if (isReviewerToken(decoded)) {
     return {
       block: true,
       reviewer: true,
@@ -70,7 +50,7 @@ export function classifyAuthToken(decoded) {
 
 /**
  * Returns the decoded token when the session may use company APIs.
- * Throws for the reviewer sandbox and for every other password session.
+ * Throws only for the reviewer identity.
  */
 export function reviewerSessionBlock(decoded) {
   const decision = classifyAuthToken(decoded);

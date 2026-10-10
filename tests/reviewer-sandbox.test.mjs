@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readdir, readFile } from 'node:fs/promises';
+import { access, readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 
@@ -27,18 +27,27 @@ test('password sign-in allows only the reviewer address', () => {
   assert.equal(passwordSignInAllowed(''), false);
 });
 
-test('company tokens pass and every password token is blocked', () => {
-  assert.equal(classifyAuthToken({
+test('only the reviewer identity is blocked from company APIs', () => {
+  const microsoft = {
     email: 'pilot@flyskyway.com',
     firebase: { sign_in_provider: 'microsoft.com' },
-  }).block, false);
+  };
+  assert.equal(classifyAuthToken(microsoft).block, false);
+  assert.equal(reviewerSessionBlock(microsoft), microsoft);
+
+  const developer = {
+    email: 'developer@flyskyway.com',
+    firebase: { sign_in_provider: 'password' },
+  };
+  assert.equal(classifyAuthToken(developer).block, false);
+  assert.equal(reviewerSessionBlock(developer), developer);
 
   const otherPassword = classifyAuthToken({
     email: 'pilot@flyskyway.com',
     firebase: { sign_in_provider: 'password' },
   });
-  assert.equal(otherPassword.block, true);
-  assert.equal(otherPassword.code, 'password-provider-blocked');
+  assert.equal(otherPassword.block, false);
+  assert.equal(otherPassword.reviewer, false);
 
   const reviewer = classifyAuthToken({
     email: APP_REVIEWER_EMAIL,
@@ -49,16 +58,25 @@ test('company tokens pass and every password token is blocked', () => {
   assert.equal(reviewer.reviewer, true);
   assert.equal(reviewer.code, 'app-reviewer-sandbox');
 
-  assert.throws(
-    () => reviewerSessionBlock({
-      email: 'pilot@flyskyway.com',
-      firebase: { sign_in_provider: 'password' },
-    }),
-    /not available/,
-  );
+  const claimOnly = classifyAuthToken({
+    email: 'someone@example.com',
+    appReviewer: true,
+    firebase: { sign_in_provider: 'microsoft.com' },
+  });
+  assert.equal(claimOnly.block, true);
+  assert.equal(claimOnly.code, 'app-reviewer-sandbox');
 
-  const microsoft = { email: 'pilot@flyskyway.com', firebase: { sign_in_provider: 'microsoft.com' } };
-  assert.equal(reviewerSessionBlock(microsoft), microsoft);
+  const emailOnly = classifyAuthToken({
+    email: APP_REVIEWER_EMAIL,
+    firebase: { sign_in_provider: 'microsoft.com' },
+  });
+  assert.equal(emailOnly.block, true);
+  assert.equal(emailOnly.code, 'app-reviewer-sandbox');
+
+  assert.throws(
+    () => reviewerSessionBlock({ email: APP_REVIEWER_EMAIL }),
+    /sandbox/,
+  );
 });
 
 test('activation requires the claim, the email, and the password provider', () => {
@@ -154,7 +172,14 @@ test('every verifyIdToken call is wrapped and the client blocks the company feed
   const auth = await readFile(path.join(root, 'src/firebase-auth.js'), 'utf8');
   assert.match(auth, /signInAsAppReviewer/);
   assert.match(auth, /auth\/password-not-allowed/);
+  assert.doesNotMatch(auth, /isPasswordUser/);
   const rules = await readFile(path.join(root, 'firebase/appreview.rules'), 'utf8');
   assert.match(rules, /appreview@flyskyway\.com/);
   assert.match(rules, /sign_in_provider == 'password'/);
+  for (const snippet of [
+    'firebase/appusers.reviewer-guard.snippet',
+    'firebase/storage.reviewer-guard.snippet',
+  ]) {
+    await assert.rejects(access(path.join(root, snippet)));
+  }
 });

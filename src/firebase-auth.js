@@ -18,6 +18,7 @@ import {
   reload as reloadAuthUser,
 } from 'firebase/auth';
 import {
+  APP_REVIEWER_CLAIM,
   APP_REVIEWER_EMAIL,
   isActivatedReviewerSession,
   isReviewerEmail,
@@ -139,12 +140,13 @@ function isMicrosoftUser(user) {
   return user?.providerData?.some(p => p.providerId === 'microsoft.com') === true;
 }
 
-function isPasswordUser(user) {
-  return user?.providerData?.some(p => p.providerId === 'password') === true;
-}
-
-function looksLikeReviewer(user) {
-  return isReviewerEmail(user?.email) && isPasswordUser(user);
+async function hasReviewerClaim(user) {
+  try {
+    const result = await user.getIdTokenResult();
+    return result?.claims?.[APP_REVIEWER_CLAIM] === true;
+  } catch {
+    return false;
+  }
 }
 
 async function reviewerClaims(user) {
@@ -242,10 +244,12 @@ export function watchAuth(onChange) {
       return;
     }
 
-    // The App Review account is a password user on a separate named database.
-    // Switch before any company read. A full reload makes listeners that
-    // already captured `db` start against the sandbox instead.
-    if (looksLikeReviewer(user)) {
+    // The App Review identity (that email, or the appReviewer claim) uses a
+    // separate named database. Switch before any company read. A full reload
+    // makes listeners that already captured `db` start against the sandbox.
+    // Other password accounts are not diverted here.
+    const reviewerIdentity = isReviewerEmail(user?.email) || await hasReviewerClaim(user);
+    if (reviewerIdentity) {
       if (!readReviewerDatabaseFlag()) {
         writeReviewerDatabaseFlag(true);
         activateReviewerDatabase(true);
@@ -313,9 +317,8 @@ export function watchAuth(onChange) {
     }
 
     // This is an authorization boundary, not just login-screen decoration.
-    // Reject legacy password sessions and non-company identities before any
-    // Firestore data is read. Each rejection carries a code so the login
-    // screen can explain itself instead of silently reappearing.
+    // Non-company identities are rejected before any Firestore data is read,
+    // using the same Microsoft and company-email checks as before the sandbox.
     const devBypass = await isDevelopmentBypassUser(user);
     if (DEV_AUTH_BYPASS_ENABLED && !devBypass) {
       // A Microsoft session may still be cached from an earlier attempt.
@@ -343,15 +346,6 @@ export function watchAuth(onChange) {
       });
       await fbSignOut(auth).catch(() => {});
       onChange({ state: 'signed-out', authError: 'auth/company-account-required' });
-      return;
-    }
-    if (!devBypass && isPasswordUser(user)) {
-      setDiag('identity-policy', new Error('Password sign-in is limited to the App Review account'), {
-        emails,
-        providers: user.providerData?.map(p => p.providerId) || [],
-      });
-      await fbSignOut(auth).catch(() => {});
-      onChange({ state: 'signed-out', authError: 'auth/password-not-allowed' });
       return;
     }
     if (!devBypass && !nativeMicrosoft && !isMicrosoftUser(user)) {
