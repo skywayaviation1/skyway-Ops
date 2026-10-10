@@ -67,3 +67,18 @@ test('restores the WebView XMLHttpRequest after CapacitorHttp patches it', () =>
   assert.equal(OriginalXHR.prototype.send, originalSend);
   assert.equal(restoreWebViewXmlHttpRequest({}), false);
 });
+
+test('a partial XHR snapshot is not installed over the page XMLHttpRequest', () => {
+  function OriginalXHR() {}
+  OriginalXHR.prototype.open = function open() {};
+  function PatchedXHR() {}
+  const target = {
+    XMLHttpRequest: PatchedXHR,
+    CapacitorWebXMLHttpRequest: {
+      fullObject: function Empty() {},
+      open() {},
+    },
+  };
+  assert.equal(restoreWebViewXmlHttpRequest(target), false);
+  assert.equal(target.XMLHttpRequest, PatchedXHR);
+});

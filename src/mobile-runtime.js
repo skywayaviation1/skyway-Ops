@@ -17,16 +17,31 @@ const apiBase = resolveApiBase(import.meta.env?.VITE_API_BASE_URL);
  * Canonical production is www.skyway.app (the old skyway-ops.vercel.app
  * default from PR #7 is no longer the public host).
  *
- * The bypass also runs when Capacitor has already patched fetch/XHR, even if
- * an early `isNativePlatform()` read returned false. Otherwise Auth's calls
- * to identitytoolkit.googleapis.com and securetoken.googleapis.com stay on
- * the native proxy and fail as auth/network-request-failed.
+ * The bypass runs only when `Capacitor.isNativePlatform()` is strictly true.
+ * A desktop page can have `CapacitorWebFetch` / `CapacitorWebXMLHttpRequest`
+ * stubs, a `webkit.messageHandlers.bridge`, or an `androidBridge` without
+ * being the shell. Patching fetch or XMLHttpRequest there stops Firestore
+ * from opening a listen channel at all (profile-read · unavailable).
+ *
+ * `nativeOverride` is for tests. Production calls omit it and use Capacitor.
  */
-export function installNativeNetworkBypass(win = typeof window !== 'undefined' ? window : undefined) {
+export function installNativeNetworkBypass(
+  win = typeof window !== 'undefined' ? window : undefined,
+  nativeOverride,
+) {
   if (!win || win.__skywayNativeFetch) return false;
+  const native = typeof nativeOverride === 'boolean'
+    ? nativeOverride
+    : readNativePlatform(win, () => {
+      try { return Capacitor.isNativePlatform() === true; } catch { return false; }
+    });
+  // Website: getAuth, the browser's own fetch, the browser's own XHR.
+  if (native !== true) return false;
+
   const httpPatched = typeof win.CapacitorWebFetch === 'function' || Boolean(win.CapacitorWebXMLHttpRequest);
-  const native = readNativePlatform(win, () => Capacitor.isNativePlatform());
-  if (!native && !httpPatched) return false;
+  // The bridge assigns CapacitorWebFetch and then replaces fetch in one
+  // turn. Do not latch a half-installed bypass; the microtask retries.
+  if (!httpPatched) return false;
 
   // Undo CapacitorHttp's XMLHttpRequest patch before Firestore or Auth opens
   // a channel. fetch stays patched below so /api calls still bypass CORS.
@@ -42,10 +57,8 @@ export function installNativeNetworkBypass(win = typeof window !== 'undefined' ?
   const webFetch = typeof win.CapacitorWebFetch === 'function'
     ? win.CapacitorWebFetch.bind(win)
     : null;
-  // The bridge assigns CapacitorWebFetch and then replaces fetch in one
-  // turn. If we latched the bypass in between, Auth would stay on the proxy.
-  if (httpPatched && !webFetch) return false;
-  if (patchedFetch && webFetch) {
+  if (!webFetch) return false;
+  if (patchedFetch) {
     win.fetch = (input, init) => {
       const rewritten = rewriteApiRequest(input, apiBase);
       if (isMapKitAssetUrl(rewritten) || shouldUseWebViewNetwork(rewritten)) {
@@ -82,7 +95,9 @@ export function rewriteApiRequest(input, base = apiBase) {
 export function isNativeApp() {
   return readNativePlatform(
     typeof window !== 'undefined' ? window : undefined,
-    () => Capacitor.isNativePlatform(),
+    () => {
+      try { return Capacitor.isNativePlatform() === true; } catch { return false; }
+    },
   );
 }
 

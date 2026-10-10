@@ -2,7 +2,7 @@
 import { initializeApp } from 'firebase/app';
 import { connectFirestoreEmulator, initializeFirestore } from 'firebase/firestore';
 import { connectAuthEmulator, getAuth, indexedDBLocalPersistence, initializeAuth } from 'firebase/auth';
-import { isNativeApp } from './mobile-runtime.js';
+import { Capacitor } from '@capacitor/core';
 import { DEMO_DATABASE_ID } from './reviewer-account.js';
 import { installReviewerNetworkGate, readReviewerDatabaseFlag } from './reviewer-sandbox.js';
 
@@ -85,11 +85,23 @@ if (readReviewerDatabaseFlag()) installReviewerNetworkGate();
 // resolver (`getAuth`) only treats http(s) origins as authorized domains, and
 // its localStorage fallback is a poor fit for a WKWebView that the OS can
 // kill. IndexedDB is the persistence the native shell keeps the Firestore
-// session in. Browser builds retain Firebase's normal defaults, including
-// the popup/redirect resolver the website's Microsoft flow uses.
-export const auth = isNativeApp()
-  ? initializeAuth(app, { persistence: indexedDBLocalPersistence })
-  : getAuth(app);
+// session in.
+//
+// The website must use `getAuth` — the same call as before the iOS shell
+// work. `getAuth` installs the popup/redirect resolver Microsoft sign-in
+// needs. Gate the shell path on Capacitor.isNativePlatform() only. A
+// webkit bridge, androidBridge, or capacitor: origin must not select
+// initializeAuth in a desktop browser.
+export const auth = (function selectAuth() {
+  try {
+    if (Capacitor.isNativePlatform() === true) {
+      return initializeAuth(app, { persistence: indexedDBLocalPersistence });
+    }
+  } catch {
+    // Capacitor missing or not yet bound. The website still signs in.
+  }
+  return getAuth(app);
+}());
 
 // Local emulator wiring is development-only. Production builds tree-shake
 // this block because import.meta.env.DEV is false.

@@ -127,34 +127,32 @@ const isOperatorFlightRoute =
    startup. The app works fine without it; users just don't get
    the "Install" prompt.
    ============================================================ */
-if (typeof window !== 'undefined' && 'serviceWorker' in navigator
+if (!isNativeApp() && typeof window !== 'undefined' && 'serviceWorker' in navigator
     && !isExternalTechRoute && !isServiceTechRoute && !isTripTrackRoute
     && !isOperatorFlightRoute) {
   // Register after the page has finished loading so we don't compete
-  // with initial render for the network. Re-check the native bridge here:
-  // an early false read must not install a website service worker inside
-  // the Capacitor shell, where web push is the wrong path.
+  // with initial render for the network. The native shell is excluded by
+  // Capacitor.isNativePlatform() above — web push is the wrong path there.
   window.addEventListener('load', () => {
-    if (isNativeApp()) return;
     navigator.serviceWorker.register('/firebase-messaging-sw.js', { scope: '/' })
       .catch((err) => {
         // Don't surface to user. SW is non-critical for app function.
         console.warn('[pwa] service worker registration skipped:', err && err.message);
       });
+  });
 
-    // When a lock-screen notification focuses an already-open PWA, the service
-    // worker cannot navigate React directly. It posts the deep link here. A
-    // full same-origin navigation is deliberate: auth state is persisted, and
-    // a clean boot lets App.jsx resolve the trip/channel before rendering.
-    navigator.serviceWorker.addEventListener('message', (event) => {
-      if (event?.data?.type !== 'navigate' || !event.data.url) return;
-      try {
-        const target = new URL(event.data.url, window.location.origin);
-        if (target.origin === window.location.origin) window.location.assign(target.href);
-      } catch (err) {
-        console.warn('[pwa] ignored malformed notification URL:', err?.message || err);
-      }
-    });
+  // When a lock-screen notification focuses an already-open PWA, the service
+  // worker cannot navigate React directly. It posts the deep link here. A
+  // full same-origin navigation is deliberate: auth state is persisted, and
+  // a clean boot lets App.jsx resolve the trip/channel before rendering.
+  navigator.serviceWorker.addEventListener('message', (event) => {
+    if (event?.data?.type !== 'navigate' || !event.data.url) return;
+    try {
+      const target = new URL(event.data.url, window.location.origin);
+      if (target.origin === window.location.origin) window.location.assign(target.href);
+    } catch (err) {
+      console.warn('[pwa] ignored malformed notification URL:', err?.message || err);
+    }
   });
 }
 

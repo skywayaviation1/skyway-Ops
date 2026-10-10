@@ -1,29 +1,25 @@
 /**
  * Whether this JavaScript context is the Capacitor shell.
  *
- * `Capacitor.isNativePlatform()` reads `webkit.messageHandlers.bridge` (iOS)
- * or `androidBridge` at call time. Sampling it once at module import freezes
- * "web" when that read happens before the bridge exists, and every later
- * check then takes the browser path: PWA install UI, a service worker, and
- * `signInWithRedirect` from `capacitor://localhost`.
+ * The website must follow `Capacitor.isNativePlatform()` and nothing else.
+ * Treating `webkit.messageHandlers.bridge`, `androidBridge`, or a
+ * `capacitor:` / `ionic:` origin as native on their own sent desktop
+ * Microsoft sign-in down the shell path: IndexedDB-only auth, and the
+ * fetch/XHR bypass that replaced XMLHttpRequest. Firestore then opened no
+ * listen channel and the profile read failed as `unavailable`.
  *
- * Firebase's web SDK only accepts http(s) origins as authorized domains, so
- * `capacitor://` and `ionic://` must be treated as the native app even when
- * the bridge probe has not reported yet.
+ * `win` is unused on purpose. Bridge objects and custom protocols are not
+ * a second definition of "native" — Capacitor already consults the bridge
+ * inside `isNativePlatform()`, and a false extra signal must not flip the
+ * website off `getAuth`.
  */
-export function readNativePlatform(win, isNativePlatform) {
-  if (typeof isNativePlatform === 'function') {
-    try {
-      if (isNativePlatform()) return true;
-    } catch {
-      // A test double can throw. The bridge and origin checks still apply.
-    }
+export function readNativePlatform(_win, isNativePlatform) {
+  if (typeof isNativePlatform !== 'function') return false;
+  try {
+    return isNativePlatform() === true;
+  } catch {
+    return false;
   }
-  if (!win) return false;
-  if (win.androidBridge) return true;
-  if (win.webkit?.messageHandlers?.bridge) return true;
-  const protocol = win.location?.protocol;
-  return protocol === 'capacitor:' || protocol === 'ionic:';
 }
 
 /**
