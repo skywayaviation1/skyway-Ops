@@ -67,6 +67,17 @@ lives solely in the Firebase console.
    no scheme or port: `www.skyway.app`, the Vercel aliases, and `localhost`.
    Omitting one produces `auth/unauthorized-domain`.
 
+   The iOS shell is served from `capacitor://localhost`. Firebase only stores
+   bare hostnames, and its web SDK ignores any origin that is not `http` or
+   `https`, so `capacitor://localhost` is not a valid Authorized domains
+   entry. `localhost` is the hostname of that origin and must stay listed.
+   The native app does not use `signInWithRedirect` from that origin. It
+   signs in with the iOS Microsoft provider, then exchanges the ID token at
+   `/api/mobile-auth-token` for a custom token. The iOS SDK's auth domain is
+   `www.skyway.app` (see `AppDelegate.swift`), matching the Entra redirect
+   URI below. No additional Firebase hostname is required when `localhost`
+   and `www.skyway.app` are already listed.
+
 6. **Same-origin auth domain.** `VITE_FIREBASE_AUTH_DOMAIN=www.skyway.app`, and
    `vercel.json` proxies `/__/auth/*` to `skyway-ops-app.firebaseapp.com` ahead
    of the single-page catch-all. See the section below for why this is not

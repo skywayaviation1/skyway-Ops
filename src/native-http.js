@@ -13,7 +13,9 @@
  * URLSession.shared, which is why the whole shell feels slow.
  *
  * Google and Firebase hosts speak CORS to a WebView, so they must stay on
- * WKWebView's own networking. Skyway /api routes stay on CapacitorHttp.
+ * WKWebView's own networking. That includes Firebase Auth
+ * (identitytoolkit.googleapis.com, securetoken.googleapis.com) as well as
+ * Firestore. Skyway /api routes stay on CapacitorHttp.
  */
 
 const WEBVIEW_NETWORK_SUFFIXES = [

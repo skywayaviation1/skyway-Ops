@@ -53,7 +53,13 @@ Firebase platform files, and selecting a signing team.
 3. Keep Microsoft enabled in Firebase Authentication. In the Entra app
    registration, keep Firebase's documented Web redirect URI configured
    (`https://www.skyway.app/__/auth/handler`). Native Microsoft sign-in still
-   redeems through Firebase's Microsoft provider.
+   redeems through Firebase's Microsoft provider. `AppDelegate` sets
+   `Auth.auth().customAuthDomain` to `www.skyway.app` because
+   `@capacitor-firebase/authentication` 8.5.1 does not apply the
+   `authDomain` value from `capacitor.config.json`. Authorized domains
+   already need `www.skyway.app` and `localhost` (the hostname of
+   `capacitor://localhost`). Do not add `capacitor://localhost` itself;
+   Firebase stores hostnames only.
 4. Create or select an APNs auth key in Apple Developer and upload it in
    Firebase Console under **Project Settings > Cloud Messaging**.
 
@@ -113,9 +119,20 @@ Select a device or emulator in Android Studio and run the `app` configuration.
 3. That endpoint verifies the Microsoft company identity and mints a custom
    token with `nativeMicrosoft: true`.
 4. The WebView Firebase JS SDK signs in with that custom token so existing
-   Firestore rules and `watchAuth` keep working.
-5. `/api/auth-profile-bootstrap` accepts that custom-token session as the same
+   Firestore rules and `watchAuth` keep working. That call goes to
+   `identitytoolkit.googleapis.com`, and later token refresh goes to
+   `securetoken.googleapis.com`. Both stay on WKWebView's own fetch.
+   `CapacitorHttp` remains enabled for `/api/*` (those routes have no browser
+   CORS), and is not used for `*.googleapis.com`.
+5. Auth persistence in the shell is IndexedDB (`indexedDBLocalPersistence`).
+   The website keeps `getAuth()` and its redirect resolver.
+6. `/api/auth-profile-bootstrap` accepts that custom-token session as the same
    Microsoft company identity.
+
+`npm run mobile:sync` must be built with
+`VITE_FIREBASE_AUTH_DOMAIN=www.skyway.app` so the bundled JS config matches
+the native auth domain and the Entra redirect URI. The fallback when that
+variable is unset is `skyway-ops-app.firebaseapp.com`.
 
 `FIREBASE_SERVICE_ACCOUNT_JSON` must be available to both endpoints in Vercel
 Production.

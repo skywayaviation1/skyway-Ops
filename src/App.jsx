@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback, Suspense, laz
 import { APP_REVIEWER_EMAIL, passwordSignInAllowed } from './reviewer-account.js';
 import { DEMO_AIRCRAFT_BY_TAIL, DEMO_TAILS } from './reviewer-demo-data.js';
 import { readReviewerDatabaseFlag } from './reviewer-sandbox.js';
+import { isNativeApp } from './mobile-runtime.js';
 import { demoFlightDetail, demoPositionsMap, demoTrackPoints } from './reviewer-demo-track.js';
 
 // Classy theme override stylesheet — applied when the user switches to
@@ -27725,6 +27726,10 @@ function IosInstallBanner() {
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof navigator === 'undefined') return;
+    // The native shell is already the installed app. Its WKWebView reports
+    // an iPhone Safari user agent and is not standalone, which is the
+    // website's install signal.
+    if (isNativeApp()) return;
     // Soft dismiss — re-prompt after 14 days so first-time users who
     // accidentally dismissed still discover Add to Home Screen.
     try {

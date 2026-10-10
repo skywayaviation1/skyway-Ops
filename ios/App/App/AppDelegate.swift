@@ -16,6 +16,12 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         if FirebaseApp.app() == nil {
             FirebaseApp.configure()
         }
+        // Entra's redirect URI is https://www.skyway.app/__/auth/handler, the
+        // same host the web bundle uses as authDomain. Plugin 8.5.1 never
+        // copies plugins.FirebaseAuthentication.authDomain onto the native
+        // Auth instance, so without this the Microsoft session opens
+        // skyway-ops-app.firebaseapp.com and comes back as a network error.
+        Auth.auth().customAuthDomain = "www.skyway.app"
         // Permission is still requested later, from the Comms screen. Registering
         // now lets APNs issue a device token so FCM is not asked first.
         application.registerForRemoteNotifications()
