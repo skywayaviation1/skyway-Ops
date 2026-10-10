@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // api/flightaware-positions.js
 //
 // Returns current position data for one or more tail numbers from FlightAware
@@ -61,7 +62,7 @@ const FA_API_BASE = 'https://aeroapi.flightaware.com/aeroapi';
 async function verifyOpsOrAdmin(idToken) {
   // Ensure admin SDK is initialized BEFORE calling admin.auth()
   getAdmin();
-  const decoded = await admin.auth().verifyIdToken(idToken);
+  const decoded = reviewerSessionBlock(await admin.auth().verifyIdToken(idToken));
   const db = getDb();
   const profile = await db.collection('users').doc(decoded.uid).get();
   if (!profile.exists) throw Object.assign(new Error('User not found'), { code: 'forbidden' });

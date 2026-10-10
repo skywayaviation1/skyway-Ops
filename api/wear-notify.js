@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // /api/wear-notify.js
 //
 // Fast MX notification endpoint. Called from the client right after a
@@ -29,7 +30,7 @@ async function authorize(req, body) {
   const idToken =
     req.headers['authorization']?.replace(/^Bearer\s+/i, '') || body?.idToken;
   if (!idToken) return null;
-  try { return await admin.auth(getAdmin()).verifyIdToken(idToken); }
+  try { return reviewerSessionBlock(await admin.auth(getAdmin()).verifyIdToken(idToken)); }
   catch { return null; }
 }
 

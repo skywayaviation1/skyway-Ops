@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // Shared server-only QuickBooks Online client. Tokens never leave the server.
 // All data lives in the same named Firestore database as the application.
 
@@ -50,7 +51,7 @@ export async function authorizeQboCaller(idToken, roles = ['accounting', 'admin'
   }
   let decoded;
   try {
-    decoded = await admin.auth(getAdminApp()).verifyIdToken(idToken, true);
+    decoded = reviewerSessionBlock(await admin.auth(getAdminApp()).verifyIdToken(idToken, true));
   } catch {
     const error = new Error('Invalid or revoked session');
     error.status = 401;

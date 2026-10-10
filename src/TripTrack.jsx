@@ -38,6 +38,7 @@ import { flightCategoryStyle, normalizeTrail, distanceNm } from './tracking-map.
 // unauthenticated reads for now (NOTAM data is public FAA info).
 import FAANotamBadge from './FAANotamBadge.jsx';
 import { showsCateringStatus } from './ops-readiness.js';
+import { demoTrackingResponse, isDemoTrackingToken } from './reviewer-demo-track.js';
 
 const POLL_MS = 120000; // refresh live position every 2 minutes
 
@@ -833,6 +834,19 @@ export default function TripTrackPage({ token }) {
   const load = async () => {
     if (!token) {
       setState({ ...EMPTY_STATE, err: 'No tracking token provided.' });
+      return;
+    }
+    if (isDemoTrackingToken(token)) {
+      const data = demoTrackingResponse();
+      setState({
+        loading: false,
+        err: null,
+        trip: data.trip,
+        position: data.position,
+        trail: data.trail || null,
+        trailLive: data.trailLive === true,
+        weather: data.weather || {},
+      });
       return;
     }
     try {

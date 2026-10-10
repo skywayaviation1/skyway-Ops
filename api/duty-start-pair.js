@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // Atomic, symmetric PIC/SIC duty-on.
 //
 // Either assigned crewmember can initiate. Both operational records begin at
@@ -102,7 +103,7 @@ export default async function handler(req, res) {
 
     let caller;
     try {
-      caller = await getAdmin().auth().verifyIdToken(idToken);
+      caller = reviewerSessionBlock(await getAdmin().auth().verifyIdToken(idToken));
     } catch {
       return res.status(401).json({ ok: false, error: 'invalid idToken' });
     }

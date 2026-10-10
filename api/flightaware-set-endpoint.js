@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // api/flightaware-set-endpoint.js
 //
 // One-time setup: register our webhook URL with FlightAware. After this,
@@ -54,7 +55,7 @@ export default async function handler(req, res) {
     // Verify caller is admin
     let decoded;
     try {
-      decoded = await admin.auth().verifyIdToken(idToken);
+      decoded = reviewerSessionBlock(await admin.auth().verifyIdToken(idToken));
     } catch (err) {
       res.status(401).json({ error: 'Invalid token: ' + err.message });
       return;

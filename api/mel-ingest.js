@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // Vercel serverless function: ingest an FAA-approved MEL PDF into a DRAFT
 // revision in Firestore (collection `mel-revisions`), to be reviewed by a
 // qualified person and then activated.
@@ -309,7 +310,7 @@ export default async function handler(req, res) {
   let admin;
   try {
     admin = await getAdmin();
-    const decoded = await admin.auth().verifyIdToken(idToken);
+    const decoded = reviewerSessionBlock(await admin.auth().verifyIdToken(idToken));
     const fdb = await getDb();
     const callerDoc = await fdb.collection('users').doc(decoded.uid).get();
     const role = callerDoc.exists ? callerDoc.data()?.role : null;

@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // Creates a least-privilege Firestore profile after a verified Microsoft
 // company sign-in. This endpoint is deliberately server-side: email-domain
 // checks in React are UX only and can be bypassed by a modified client.
@@ -50,7 +51,7 @@ export default async function handler(req, res) {
     let decoded;
     try {
       // checkRevoked catches a disabled/revoked company account immediately.
-      decoded = await admin.auth(app).verifyIdToken(idToken, true);
+      decoded = reviewerSessionBlock(await admin.auth(app).verifyIdToken(idToken, true));
     } catch {
       res.status(401).json({ error: 'Invalid or revoked session' });
       return;

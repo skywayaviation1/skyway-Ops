@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // AUTHENTICATED endpoint — Skyway staff only. Mints or revokes the external
 // maintenance link for an AOG.
 //
@@ -61,7 +62,7 @@ export default async function handler(req, res) {
     authed = true;
   } else if (body.idToken) {
     try {
-      await getAdmin().auth().verifyIdToken(body.idToken);
+      reviewerSessionBlock(await getAdmin().auth().verifyIdToken(body.idToken));
       authed = true;
     } catch (e) {
       return res.status(401).json({ error: 'Unauthorized', reason: e.message });

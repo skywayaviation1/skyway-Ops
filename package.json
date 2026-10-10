@@ -17,6 +17,8 @@
     "ios:setup": "./scripts/setup-ios.sh",
     "mobile:doctor": "cap doctor",
     "verify:sso": "node scripts/verify-microsoft-sso.mjs",
+    "reviewer:create": "node scripts/create-reviewer-account.mjs",
+    "reviewer:reset": "node scripts/seed-reviewer-demo.mjs",
     "marketing:capture": "node scripts/capture-marketing-shots.mjs",
     "preview:stubs": "node scripts/check-preview-stubs.mjs",
     "logo:elite": "node scripts/build-elite-logo.mjs",

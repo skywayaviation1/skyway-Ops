@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // api/airport-coords-refresh.js
 //
 // Fetches the OurAirports CSV, parses it, filters to operational airports,
@@ -144,7 +145,7 @@ async function refreshFirestoreCache(db) {
 async function verifyOpsOrAdmin(idToken, db) {
   // Matches the pattern used by flightaware-positions.js and other
   // admin endpoints. Caller must be signed in AND have role ops/admin.
-  const decoded = await admin.auth(getAdmin()).verifyIdToken(idToken);
+  const decoded = reviewerSessionBlock(await admin.auth(getAdmin()).verifyIdToken(idToken));
   const profile = await db.collection('users').doc(decoded.uid).get();
   if (!profile.exists) {
     throw Object.assign(new Error('User profile not found'), { code: 'forbidden' });

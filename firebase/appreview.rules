@@ -1,0 +1,20 @@
+rules_version = '2';
+// Rules for the named database `appreview` only.
+// Deploy this file to that database. Do not copy it onto `appusers`.
+//
+// The single App Review password account can read and write demo documents.
+// Every other identity, including company Microsoft users, is denied.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAppReviewer() {
+      return request.auth != null
+        && request.auth.token.appReviewer == true
+        && request.auth.token.email == 'appreview@flyskyway.com'
+        && request.auth.token.firebase.sign_in_provider == 'password';
+    }
+
+    match /{document=**} {
+      allow read, write: if isAppReviewer();
+    }
+  }
+}

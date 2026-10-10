@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // Bridges a native Firebase Microsoft session into the Firebase JavaScript
 // session used by the existing Firestore application.
 //
@@ -76,7 +77,7 @@ export default async function handler(req, res) {
     const app = getAdmin();
     let decoded;
     try {
-      decoded = await admin.auth(app).verifyIdToken(idToken, true);
+      decoded = reviewerSessionBlock(await admin.auth(app).verifyIdToken(idToken, true));
     } catch {
       res.status(401).json({ error: 'Invalid or revoked native session' });
       return;

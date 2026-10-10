@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // Vercel serverless function: parse government-issued ID images using
 // Anthropic Claude vision.
 //
@@ -149,7 +150,7 @@ export default async function handler(req, res) {
     if (operatorToken) {
       await authorizeOperatorScan(admin, operatorToken);
     } else {
-      const decoded = await admin.auth().verifyIdToken(idToken, true);
+      const decoded = reviewerSessionBlock(await admin.auth().verifyIdToken(idToken, true));
       const profileSnap = await getFirestore(admin.app(), 'appusers')
         .collection('users')
         .doc(decoded.uid)

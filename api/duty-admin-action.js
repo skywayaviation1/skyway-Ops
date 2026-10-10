@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // Admin duty corrections and finding approvals.
 //
 // Trust-critical writes run server-side so linked periods update atomically,
@@ -32,7 +33,7 @@ function getDb() {
 }
 
 async function authorize(idToken) {
-  const caller = await getAdmin().auth().verifyIdToken(idToken);
+  const caller = reviewerSessionBlock(await getAdmin().auth().verifyIdToken(idToken));
   const snap = await getDb().collection('users').doc(caller.uid).get();
   const profile = snap.exists ? snap.data() : null;
   if (!profile || !ADMIN_ROLES.has(String(profile.role || '').toLowerCase())) {

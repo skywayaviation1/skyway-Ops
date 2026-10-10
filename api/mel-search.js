@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // Vercel serverless function: AI MEL finder.
 //
 // Given a plain-language description of a discrepancy, returns a ranked list
@@ -68,7 +69,7 @@ export default async function handler(req, res) {
   let admin;
   try {
     admin = await getAdmin();
-    await admin.auth().verifyIdToken(idToken);
+    reviewerSessionBlock(await admin.auth().verifyIdToken(idToken));
   } catch (err) {
     if (/FIREBASE_SERVICE_ACCOUNT_JSON/.test(err.message)) return res.status(500).json({ error: 'Auth not configured on server' });
     return res.status(401).json({ error: 'Invalid or expired auth token' });

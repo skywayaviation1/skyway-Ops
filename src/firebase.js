@@ -1,8 +1,10 @@
 // Firebase initialization. Public client config - safe to commit.
 import { initializeApp } from 'firebase/app';
-import { initializeFirestore } from 'firebase/firestore';
-import { getAuth, indexedDBLocalPersistence, initializeAuth } from 'firebase/auth';
+import { connectFirestoreEmulator, initializeFirestore } from 'firebase/firestore';
+import { connectAuthEmulator, getAuth, indexedDBLocalPersistence, initializeAuth } from 'firebase/auth';
 import { Capacitor } from '@capacitor/core';
+import { DEMO_DATABASE_ID } from './reviewer-account.js';
+import { installReviewerNetworkGate, readReviewerDatabaseFlag } from './reviewer-sandbox.js';
 
 // signInWithRedirect sends the browser to `authDomain` to run the sign-in
 // helper, then back here. When authDomain is a different origin from the app,
@@ -44,19 +46,35 @@ const app = initializeApp(firebaseConfig);
 // every iPhone our pilots use.
 //
 // We use the named 'appusers' database, not the default — passed in settings.
-export const db = initializeFirestore(
-  app,
-  {
-    experimentalForceLongPolling: true,
-    // Disable the auto-detect probe that fires before forceLongPolling kicks
-    // in. Without this, the SDK still sends 1-2 WebChannel handshake
-    // attempts on connection startup, which throw "access control checks"
-    // errors in Safari before falling back to long-polling.
-    experimentalAutoDetectLongPolling: false,
-    useFetchStreams: false,
-  },
-  'appusers',
-);
+// The App Review sandbox uses a second named database so company documents
+// are never in the same query scope. `db` is a live binding: the sandbox
+// flag is read before React mounts, and a reviewer sign-in reloads once so
+// every module observes the demo database.
+const FIRESTORE_SETTINGS = {
+  experimentalForceLongPolling: true,
+  // Disable the auto-detect probe that fires before forceLongPolling kicks
+  // in. Without this, the SDK still sends 1-2 WebChannel handshake
+  // attempts on connection startup, which throw "access control checks"
+  // errors in Safari before falling back to long-polling.
+  experimentalAutoDetectLongPolling: false,
+  useFetchStreams: false,
+};
+
+export const productionDb = initializeFirestore(app, { ...FIRESTORE_SETTINGS }, 'appusers');
+export const reviewerDb = initializeFirestore(app, { ...FIRESTORE_SETTINGS }, DEMO_DATABASE_ID);
+
+export let db = readReviewerDatabaseFlag() ? reviewerDb : productionDb;
+
+export function isReviewerDatabaseActive() {
+  return db === reviewerDb;
+}
+
+export function activateReviewerDatabase(on) {
+  db = on ? reviewerDb : productionDb;
+  if (on) installReviewerNetworkGate();
+}
+
+if (readReviewerDatabaseFlag()) installReviewerNetworkGate();
 
 // A bundled Capacitor app runs on a local WebView origin. Explicit IndexedDB
 // persistence keeps the web Firebase session that backs Firestore alive across
@@ -64,3 +82,11 @@ export const db = initializeFirestore(
 export const auth = Capacitor.isNativePlatform()
   ? initializeAuth(app, { persistence: indexedDBLocalPersistence })
   : getAuth(app);
+
+// Local emulator wiring is development-only. Production builds tree-shake
+// this block because import.meta.env.DEV is false.
+if (import.meta.env.DEV && import.meta.env.VITE_FIREBASE_EMULATOR === 'true') {
+  connectAuthEmulator(auth, 'http://127.0.0.1:9099', { disableWarnings: true });
+  connectFirestoreEmulator(productionDb, '127.0.0.1', 8080);
+  connectFirestoreEmulator(reviewerDb, '127.0.0.1', 8080);
+}

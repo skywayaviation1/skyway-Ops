@@ -26,6 +26,7 @@
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import { verifyTripToken } from './_trip-token.js';
+import { demoTrackingResponse, isDemoTrackingToken } from '../src/reviewer-demo-track.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -495,6 +496,13 @@ async function fetchLiveLegData(legs) {
 }
 
 export default async function handler(req, res) {
+  const reqUrl = new URL(req.url || '', 'https://www.skyway.app');
+  const demoToken = (req.query && req.query.token) || reqUrl.searchParams.get('token');
+  if (isDemoTrackingToken(demoToken)) {
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(200).json(demoTrackingResponse());
+  }
+
   res.setHeader('Cache-Control', 'no-store');
   // Allow cross-origin GETs from anywhere (broker email clients, etc.)
   res.setHeader('Access-Control-Allow-Origin', '*');

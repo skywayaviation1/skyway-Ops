@@ -104,13 +104,14 @@ function streamTokenProvider(getIdToken, initialToken) {
 function useStreamClient(currentUser, getIdToken) {
   const [client, setClient] = useState(null);
   const [error, setError] = useState(null);
+  const sandboxOff = currentUser?.appReviewer === true;
 
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
       try {
-        if (!currentUser?.uid) return;
+        if (sandboxOff || !currentUser?.uid) return;
         const { token, apiKey, user } = await fetchStreamSession(getIdToken);
         if (cancelled) return;
 
@@ -146,9 +147,9 @@ function useStreamClient(currentUser, getIdToken) {
       // CommsStreamScreen and TripChatStream. Sign-out is what tears it
       // down, handled by App.jsx's auth listener.
     };
-  }, [currentUser?.uid, getIdToken]);
+  }, [currentUser?.uid, getIdToken, sandboxOff]);
 
-  return { client, error };
+  return { client, error, sandboxOff };
 }
 
 /* ─────────────────────────────────────────────────────────────────────
@@ -674,7 +675,7 @@ export default function CommsStreamScreen({
   getIdToken,
   initialChannelId = '',
 }) {
-  const { client, error } = useStreamClient(currentUser, getIdToken);
+  const { client, error, sandboxOff } = useStreamClient(currentUser, getIdToken);
   const [showNewDm, setShowNewDm] = useState(false);
   const [showNewGroup, setShowNewGroup] = useState(false);
 
@@ -698,6 +699,14 @@ export default function CommsStreamScreen({
   // a handful of channels on the client is fine.
   const channelRenderFilterFn = (channels) =>
     channels.filter((c) => !String(c.id || '').startsWith('trip-'));
+
+  if (sandboxOff) {
+    return (
+      <div className="flex-1 flex items-center justify-center p-6">
+        <p className="text-sm text-content-muted">Chat is off in the App Review sandbox.</p>
+      </div>
+    );
+  }
 
   if (error) {
     return (
@@ -976,7 +985,7 @@ function CommsLayoutInner({
    ───────────────────────────────────────────────────────────────────── */
 
 export function TripChatStream({ trip, currentUser, users = [], getIdToken }) {
-  const { client, error } = useStreamClient(currentUser, getIdToken);
+  const { client, error, sandboxOff } = useStreamClient(currentUser, getIdToken);
   const [channel, setChannel] = useState(null);
   const [ensureError, setEnsureError] = useState(null);
 
@@ -1055,6 +1064,14 @@ export function TripChatStream({ trip, currentUser, users = [], getIdToken }) {
     //   - the users roster transitioned from empty → loaded
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client?.userID, trip?.uid, memberUidsReady]);
+
+  if (sandboxOff) {
+    return (
+      <div className="p-6 text-center">
+        <p className="text-sm text-content-muted">Chat is off in the App Review sandbox.</p>
+      </div>
+    );
+  }
 
   if (error) {
     return (

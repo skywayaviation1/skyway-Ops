@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // Admin-only correction for the Oct 1, 2026 crew change.
 // mode 'dry-run' (default) prints the plan and writes nothing.
 // mode 'apply' writes the plan and an audit entry on every record.
@@ -72,7 +73,7 @@ export default async function handler(req, res) {
     const mode = body.mode === 'apply' ? 'apply' : 'dry-run';
     let caller;
     try {
-      caller = await getAdmin().auth().verifyIdToken(body.idToken);
+      caller = reviewerSessionBlock(await getAdmin().auth().verifyIdToken(body.idToken));
     } catch {
       res.status(401).json({ ok: false, error: 'invalid idToken' });
       return;

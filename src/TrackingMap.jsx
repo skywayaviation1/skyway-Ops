@@ -283,7 +283,10 @@ export default function TrackingMap({
         if (mapRef.current.__swAppleSync) {
           mapRef.current.off('move zoom resize', mapRef.current.__swAppleSync);
         }
-        try { mapRef.current.remove(); } catch { /* already torn down */ }
+        try {
+          mapRef.current.stop();
+          mapRef.current.remove();
+        } catch { /* already torn down */ }
         mapRef.current = null;
         overlayGroupRef.current = null;
       }

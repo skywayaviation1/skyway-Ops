@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // /api/email-enqueue.js
 //
 // Reliable email submission: writes the email into the email-queue Firestore
@@ -82,7 +83,7 @@ export default async function handler(req, res) {
     authedAs = 'internal';
   } else if (body.idToken) {
     try {
-      const decoded = await admin.auth(getAdmin()).verifyIdToken(body.idToken);
+      const decoded = reviewerSessionBlock(await admin.auth(getAdmin()).verifyIdToken(body.idToken));
       authedAs = `user:${decoded.uid}`;
     } catch (e) {
       return res.status(401).json({ error: 'invalid idToken', reason: e.message });

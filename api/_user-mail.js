@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // Delegated Microsoft Graph client for each employee's own work mailbox.
 
 import admin from 'firebase-admin';
@@ -98,7 +99,7 @@ export async function authorizeApprovedUser(idToken) {
   }
   let decoded;
   try {
-    decoded = await admin.auth(mailAdminApp()).verifyIdToken(idToken, true);
+    decoded = reviewerSessionBlock(await admin.auth(mailAdminApp()).verifyIdToken(idToken, true));
   } catch {
     const error = new Error('Invalid or revoked session');
     error.status = 401;

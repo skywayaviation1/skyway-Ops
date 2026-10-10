@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // /api/airport-weather.js
 //
 // Returns current METAR + TAF + parsed weather for an airport. Uses NOAA's
@@ -43,7 +44,7 @@ async function authorize(req) {
   if (internalSecret && internalSecret === process.env.INTERNAL_API_SECRET) return true;
   const idToken = req.headers['authorization']?.replace(/^Bearer\s+/i, '') || req.query?.idToken;
   if (idToken) {
-    try { await admin.auth(getAdmin()).verifyIdToken(idToken); return true; }
+    try { reviewerSessionBlock(await admin.auth(getAdmin()).verifyIdToken(idToken)); return true; }
     catch (_) { return false; }
   }
   return false;

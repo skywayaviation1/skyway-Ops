@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 /**
  * Authenticated airport/FBO/fuel-price lookup.
  *
@@ -27,7 +28,7 @@ async function authorize(req) {
   }
   let decoded;
   try {
-    decoded = await admin.auth(getAdminApp()).verifyIdToken(idToken, true);
+    decoded = reviewerSessionBlock(await admin.auth(getAdminApp()).verifyIdToken(idToken, true));
   } catch {
     const error = new Error('Invalid or expired session');
     error.status = 401;

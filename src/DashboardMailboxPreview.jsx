@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { AlertTriangle, Inbox, Loader2, Mail, RefreshCw } from 'lucide-react';
 import { Button, EmptyState, IconButton } from './ui.jsx';
+import { readReviewerDatabaseFlag } from './reviewer-sandbox.js';
 
 async function idToken() {
   const { auth } = await import('./firebase.js');
@@ -40,6 +41,10 @@ export default function DashboardMailboxPreview({
   const [state, setState] = useState({ loading: true, connected: false, messages: [] });
 
   const load = async () => {
+    if (readReviewerDatabaseFlag()) {
+      setState({ loading: false, connected: false, messages: [], sandbox: true });
+      return;
+    }
     setState((current) => ({ ...current, loading: true, error: null }));
     try {
       const status = await mailApi(path, 'status');
@@ -75,11 +80,15 @@ export default function DashboardMailboxPreview({
       <div className="flex min-h-48 flex-col items-center justify-center p-4 text-center">
         {state.error ? <AlertTriangle className="h-7 w-7 text-warning" /> : <Mail className="h-7 w-7 text-content-subtle" />}
         <p className="mt-2 text-sm font-medium text-content">
-          {state.error || (personal ? 'Personal mailbox not connected' : 'Shared inbox not configured')}
+          {state.sandbox
+            ? 'Mailbox is off in the App Review sandbox'
+            : (state.error || (personal ? 'Personal mailbox not connected' : 'Shared inbox not configured'))}
         </p>
-        <Button className="mt-3" size="sm" variant="secondary" onClick={onOpen}>
-          {personal ? 'Connect / open mailbox' : 'Open shared inbox'}
-        </Button>
+        {!state.sandbox && (
+          <Button className="mt-3" size="sm" variant="secondary" onClick={onOpen}>
+            {personal ? 'Connect / open mailbox' : 'Open shared inbox'}
+          </Button>
+        )}
       </div>
     );
   }

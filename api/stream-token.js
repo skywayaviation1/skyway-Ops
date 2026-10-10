@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // api/stream-token.js
 //
 // Mints a Stream Chat user token from a Firebase idToken. The Stream API
@@ -69,7 +70,7 @@ export default async function handler(req, res) {
     getAdmin();
     let decoded;
     try {
-      decoded = await admin.auth().verifyIdToken(idToken);
+      decoded = reviewerSessionBlock(await admin.auth().verifyIdToken(idToken));
     } catch (err) {
       res.status(401).json({ error: 'Invalid idToken: ' + err.message });
       return;

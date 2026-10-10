@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // Send AOG manual reference PDF(s) to selected recipients as email
 // attachments.
 //
@@ -81,7 +82,7 @@ export default async function handler(req, res) {
   } else {
     try {
       const auth = getAdmin().auth();
-      await auth.verifyIdToken(body.idToken);
+      reviewerSessionBlock(await auth.verifyIdToken(body.idToken));
       authed = true;
     } catch (e) {
       authFailReason = `idToken verify failed: ${e.message}`;

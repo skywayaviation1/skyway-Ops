@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 /**
  * Staff-only lifecycle for a brokered operator crew-update link.
  *
@@ -29,7 +30,7 @@ function db() {
 async function authorize(idToken) {
   if (!idToken) return null;
   try {
-    const decoded = await admin.auth(getAdmin()).verifyIdToken(idToken, true);
+    const decoded = reviewerSessionBlock(await admin.auth(getAdmin()).verifyIdToken(idToken, true));
     const snap = await db().collection('users').doc(decoded.uid).get();
     const profile = snap.data() || {};
     if (

@@ -1,3 +1,4 @@
+import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // Admin-only paired-duty audit and backfill.
 //
 // POST { idToken, mode: 'preview'|'apply', trips: [...] }
@@ -245,7 +246,7 @@ export default async function handler(req, res) {
     if (!body.idToken) return res.status(401).json({ ok: false, error: 'idToken required' });
     let caller;
     try {
-      caller = await getAdmin().auth().verifyIdToken(body.idToken);
+      caller = reviewerSessionBlock(await getAdmin().auth().verifyIdToken(body.idToken));
     } catch {
       return res.status(401).json({ ok: false, error: 'invalid idToken' });
     }
