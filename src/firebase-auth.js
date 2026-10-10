@@ -43,6 +43,7 @@ import {
   resolveMicrosoftTenant,
 } from './auth-environment.js';
 import { isNativeApp } from './mobile-runtime.js';
+import { noteListenerFailure, noteSnapshotMetadata } from './live-link.js';
 
 const COMPANY_DOMAIN = 'flyskyway.com';
 
@@ -720,16 +721,38 @@ export async function signOut() {
 }
 
 export function subscribeToUsers(onUpdate) {
-  return onSnapshot(
+  let releaseFailure = null;
+  let announced = false;
+  const unsub = onSnapshot(
     collection(db, 'users'),
+    { includeMetadataChanges: true },
     (snapshot) => {
-      const users = snapshot.docs.map((doc) => ({ uid: doc.id, ...doc.data() }));
-      onUpdate(users);
+      noteSnapshotMetadata(snapshot.metadata);
+      if (snapshot.metadata?.fromCache === false && releaseFailure) {
+        releaseFailure();
+        releaseFailure = null;
+      }
+      // Metadata-only ticks (cache → server with the same documents) must
+      // not rebuild the roster. The first snapshot still has to land, including
+      // an empty one, or the shell waits forever.
+      if (!announced || snapshot.docChanges().length > 0) {
+        announced = true;
+        const users = snapshot.docs.map((doc) => ({ uid: doc.id, ...doc.data() }));
+        onUpdate(users);
+      }
     },
     (err) => {
       console.error('Users subscription error:', err);
+      if (!releaseFailure) releaseFailure = noteListenerFailure();
     }
   );
+  return () => {
+    if (releaseFailure) {
+      releaseFailure();
+      releaseFailure = null;
+    }
+    unsub();
+  };
 }
 
 export async function approveUser(uid) {

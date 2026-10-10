@@ -17,6 +17,7 @@
       "enabled": true
     },
     "FirebaseAuthentication": {
+      "authDomain": "www.skyway.app",
       "providers": ["microsoft.com", "password"],
       "skipNativeAuth": false
     },

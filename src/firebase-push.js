@@ -23,11 +23,16 @@
 // doesn't activate until the key is configured, with a clear console
 // message explaining what's missing.
 
+import { Capacitor } from '@capacitor/core';
 import { db } from './firebase.js';
 import {
   doc, setDoc, deleteDoc, serverTimestamp,
 } from 'firebase/firestore';
 import { isNativeApp } from './mobile-runtime.js';
+import {
+  nativePushFailureMessage,
+  waitForApnsToken,
+} from './native-push.js';
 
 // Cached so we don't repeatedly import the heavy messaging SDK.
 let cachedMessaging = null;
@@ -206,6 +211,11 @@ export async function enablePush(user, opts = {}) {
 async function enableNativePush(user, opts = {}) {
   const uid = user.uid || user.id;
   const { FirebaseMessaging } = await import('@capacitor-firebase/messaging');
+  // Subscribe before the permission sheet. Plugin load already calls
+  // registerForRemoteNotifications; the event is retained until we listen.
+  const apnsReady = Capacitor.getPlatform() === 'ios'
+    ? waitForApnsToken(FirebaseMessaging)
+    : null;
   const permission = await FirebaseMessaging.requestPermissions();
   const granted = permission.receive === 'granted';
   try {
@@ -217,12 +227,21 @@ async function enableNativePush(user, opts = {}) {
     // private mode
   }
   if (!granted) {
+    apnsReady?.catch(() => {});
     const error = new Error('Notification permission was not granted.');
     error.code = 'permission-denied';
     throw error;
   }
 
-  const { token } = await FirebaseMessaging.getToken();
+  if (apnsReady) await apnsReady;
+  let token;
+  try {
+    ({ token } = await FirebaseMessaging.getToken());
+  } catch (err) {
+    const error = new Error(nativePushFailureMessage(err));
+    error.code = err?.code || 'native-push-failed';
+    throw error;
+  }
   if (!token) throw new Error('Firebase did not return a device push token.');
   const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || '';
   await savePushToken(uid, token, 'native', ua);

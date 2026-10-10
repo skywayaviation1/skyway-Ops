@@ -2,7 +2,7 @@
 import { initializeApp } from 'firebase/app';
 import { connectFirestoreEmulator, initializeFirestore } from 'firebase/firestore';
 import { connectAuthEmulator, getAuth, indexedDBLocalPersistence, initializeAuth } from 'firebase/auth';
-import { Capacitor } from '@capacitor/core';
+import { isNativeApp } from './mobile-runtime.js';
 import { DEMO_DATABASE_ID } from './reviewer-account.js';
 import { installReviewerNetworkGate, readReviewerDatabaseFlag } from './reviewer-sandbox.js';
 
@@ -45,6 +45,11 @@ const app = initializeApp(firebaseConfig);
 // Android Chrome). Saves real-world latency + eliminates noisy errors on
 // every iPhone our pilots use.
 //
+// The native shell keeps the same transport. Do not "speed up" the app by
+// sending this channel through CapacitorHttp — that proxy is what made
+// listeners stick on the empty cache. mobile-runtime.js leaves Google hosts
+// on the WebView's own XHR. Web builds are unchanged: CapacitorHttp is absent.
+//
 // We use the named 'appusers' database, not the default — passed in settings.
 // The App Review sandbox uses a second named database so company documents
 // are never in the same query scope. `db` is a live binding: the sandbox
@@ -76,10 +81,13 @@ export function activateReviewerDatabase(on) {
 
 if (readReviewerDatabaseFlag()) installReviewerNetworkGate();
 
-// A bundled Capacitor app runs on a local WebView origin. Explicit IndexedDB
-// persistence keeps the web Firebase session that backs Firestore alive across
-// native process restarts. Browser builds retain Firebase's normal defaults.
-export const auth = Capacitor.isNativePlatform()
+// A bundled Capacitor app runs on capacitor://localhost. Firebase's browser
+// resolver (`getAuth`) only treats http(s) origins as authorized domains, and
+// its localStorage fallback is a poor fit for a WKWebView that the OS can
+// kill. IndexedDB is the persistence the native shell keeps the Firestore
+// session in. Browser builds retain Firebase's normal defaults, including
+// the popup/redirect resolver the website's Microsoft flow uses.
+export const auth = isNativeApp()
   ? initializeAuth(app, { persistence: indexedDBLocalPersistence })
   : getAuth(app);
 

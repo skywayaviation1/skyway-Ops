@@ -1,9 +1,11 @@
 import { Capacitor } from '@capacitor/core';
 import { isMapKitAssetUrl } from './mapkit-fallback.js';
+import { noteDeviceNetwork } from './live-link.js';
+import { readNativePlatform } from './native-platform.js';
+import { restoreWebViewXmlHttpRequest, shouldUseWebViewNetwork } from './native-http.js';
 
 export const PRODUCTION_API_BASE = 'https://www.skyway.app';
 
-const isNative = Capacitor.isNativePlatform();
 const apiBase = resolveApiBase(import.meta.env?.VITE_API_BASE_URL);
 
 /**
@@ -14,20 +16,53 @@ const apiBase = resolveApiBase(import.meta.env?.VITE_API_BASE_URL);
  *
  * Canonical production is www.skyway.app (the old skyway-ops.vercel.app
  * default from PR #7 is no longer the public host).
+ *
+ * The bypass also runs when Capacitor has already patched fetch/XHR, even if
+ * an early `isNativePlatform()` read returned false. Otherwise Auth's calls
+ * to identitytoolkit.googleapis.com and securetoken.googleapis.com stay on
+ * the native proxy and fail as auth/network-request-failed.
  */
-if (isNative && typeof window !== 'undefined' && !window.__skywayNativeFetch) {
-  const patchedFetch = window.fetch.bind(window);
+export function installNativeNetworkBypass(win = typeof window !== 'undefined' ? window : undefined) {
+  if (!win || win.__skywayNativeFetch) return false;
+  const httpPatched = typeof win.CapacitorWebFetch === 'function' || Boolean(win.CapacitorWebXMLHttpRequest);
+  const native = readNativePlatform(win, () => Capacitor.isNativePlatform());
+  if (!native && !httpPatched) return false;
+
+  // Undo CapacitorHttp's XMLHttpRequest patch before Firestore or Auth opens
+  // a channel. fetch stays patched below so /api calls still bypass CORS.
+  restoreWebViewXmlHttpRequest(win);
+  const patchedFetch = typeof win.fetch === 'function' ? win.fetch.bind(win) : null;
   // CapacitorHttp rewrites cross-origin GET through a native proxy that does
   // not send the WebView Origin. MapKit JS compares that header to the token,
   // so its bootstrap and tile fetches must stay on the WebView's own fetch.
-  const webFetch = typeof window.CapacitorWebFetch === 'function'
-    ? window.CapacitorWebFetch.bind(window)
+  // Firestore, Auth, and the rest of *.googleapis.com have the same problem
+  // for a different reason: the proxy buffers and re-decodes the listen URL,
+  // which drops the named-database channel into offline mode and turns
+  // identitytoolkit/securetoken posts into auth/network-request-failed.
+  const webFetch = typeof win.CapacitorWebFetch === 'function'
+    ? win.CapacitorWebFetch.bind(win)
     : null;
-  window.fetch = (input, init) => {
-    if (webFetch && isMapKitAssetUrl(input)) return webFetch(input, init);
-    return patchedFetch(rewriteApiRequest(input, apiBase), init);
-  };
-  window.__skywayNativeFetch = true;
+  // The bridge assigns CapacitorWebFetch and then replaces fetch in one
+  // turn. If we latched the bypass in between, Auth would stay on the proxy.
+  if (httpPatched && !webFetch) return false;
+  if (patchedFetch && webFetch) {
+    win.fetch = (input, init) => {
+      const rewritten = rewriteApiRequest(input, apiBase);
+      if (isMapKitAssetUrl(rewritten) || shouldUseWebViewNetwork(rewritten)) {
+        return webFetch(rewritten, init);
+      }
+      return patchedFetch(rewritten, init);
+    };
+  }
+  win.__skywayNativeFetch = true;
+  return true;
+}
+
+installNativeNetworkBypass();
+if (typeof window !== 'undefined') {
+  // The bridge script is injected at document start. A second pass covers a
+  // module that evaluated before that patch assigned CapacitorWebFetch.
+  queueMicrotask(() => installNativeNetworkBypass());
 }
 
 export function resolveApiBase(envValue) {
@@ -45,15 +80,18 @@ export function rewriteApiRequest(input, base = apiBase) {
 }
 
 export function isNativeApp() {
-  return isNative;
+  return readNativePlatform(
+    typeof window !== 'undefined' ? window : undefined,
+    () => Capacitor.isNativePlatform(),
+  );
 }
 
 export function apiUrl(path) {
-  return isNative && String(path || '').startsWith('/api/') ? `${apiBase}${path}` : path;
+  return isNativeApp() && String(path || '').startsWith('/api/') ? `${apiBase}${path}` : path;
 }
 
 export async function initializeMobileRuntime() {
-  if (!isNative || typeof document === 'undefined') return;
+  if (!isNativeApp() || typeof document === 'undefined') return;
 
   document.documentElement.dataset.native = Capacitor.getPlatform();
 
@@ -68,6 +106,7 @@ export async function initializeMobileRuntime() {
 
   const applyNetworkState = ({ connected }) => {
     document.documentElement.toggleAttribute('data-offline', !connected);
+    noteDeviceNetwork(connected);
     window.dispatchEvent(new CustomEvent('skyway:native-network', {
       detail: { connected },
     }));
@@ -81,7 +120,7 @@ export async function initializeMobileRuntime() {
 }
 
 export async function nativeImpact() {
-  if (!isNative) return;
+  if (!isNativeApp()) return;
   const { Haptics, ImpactStyle } = await import('@capacitor/haptics');
   await Haptics.impact({ style: ImpactStyle.Light }).catch(() => {});
 }

@@ -8,6 +8,7 @@
 // every other user's device.
 
 import { db } from './firebase.js';
+import { noteListenerFailure, noteSnapshotMetadata } from './live-link.js';
 import {
   doc,
   setDoc,
@@ -78,9 +79,15 @@ export async function fetchTripStateForShare(tripId) {
  */
 export function subscribeToTripState(tripId, onUpdate) {
   const safeId = sanitizeKey(tripId);
-  return onSnapshot(
+  let releaseFailure = null;
+  const unsub = onSnapshot(
     doc(db, 'trip-state', safeId),
     (snap) => {
+      noteSnapshotMetadata(snap.metadata);
+      if (snap.metadata?.fromCache === false && releaseFailure) {
+        releaseFailure();
+        releaseFailure = null;
+      }
       if (snap.exists()) {
         const data = snap.data();
         onUpdate({
@@ -134,8 +141,16 @@ export function subscribeToTripState(tripId, onUpdate) {
     },
     (err) => {
       console.error('Trip state subscription error:', err);
+      if (!releaseFailure) releaseFailure = noteListenerFailure();
     }
   );
+  return () => {
+    if (releaseFailure) {
+      releaseFailure();
+      releaseFailure = null;
+    }
+    unsub();
+  };
 }
 
 /**

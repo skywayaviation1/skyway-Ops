@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, Copy, Download, PlusSquare, Share, Smartphone, X } from 'lucide-react';
 import { Button, notify } from './ui.jsx';
 import { isIosDevice, isStandaloneApp } from './auth-environment.js';
+import { isNativeApp } from './mobile-runtime.js';
+import { shouldOfferPwaInstall } from './native-platform.js';
 
 function isSafari(nav = globalThis.navigator) {
   const ua = nav?.userAgent || '';
@@ -16,6 +18,7 @@ export function installEnvironment(win = globalThis.window, nav = globalThis.nav
     ios,
     safari: ios && isSafari(nav),
     canShare: typeof nav?.share === 'function',
+    native: isNativeApp(),
   };
 }
 
@@ -73,7 +76,7 @@ export function usePwaInstall() {
 export default function PwaInstall({ compact = false, className = '' }) {
   const install = usePwaInstall();
   const [open, setOpen] = useState(false);
-  const visible = !install.standalone && (install.ios || install.nativePromptAvailable);
+  const visible = shouldOfferPwaInstall(install);
 
   if (!visible) return null;
 
