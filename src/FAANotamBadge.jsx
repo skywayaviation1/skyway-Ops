@@ -73,6 +73,12 @@ function maxSeverity(notams) {
   return 'low';
 }
 
+function notamSourceLabel(source) {
+  if (source === 'avwx') return 'AVWX';
+  if (source === 'faa') return 'FAA';
+  return '';
+}
+
 // Format a NOTAM effective window for display. "ACTIVE UNTIL 14 JUN 18:00Z"
 // or "EFFECTIVE NOW" if no end date. Compact.
 function formatWindow(notam) {
@@ -130,10 +136,13 @@ export default function FAANotamBadge({ icao, getIdToken, compact = true }) {
         onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
         className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] tracking-wider border ${tone.border} ${tone.bg} ${tone.text} rounded-sm cursor-pointer`}
         style={{ fontFamily: 'JetBrains Mono, monospace' }}
-        title={`${count} active NOTAM${count === 1 ? '' : 's'} — click for details`}
+        title={`${count} active NOTAM${count === 1 ? '' : 's'}${data?.source ? ` · ${notamSourceLabel(data.source)}` : ''} — click for details`}
       >
         <AlertTriangle className="w-2.5 h-2.5" />
         NOTAM{count > 1 ? ` ×${count}` : ''}
+        {data?.source === 'avwx' && (
+          <span className="text-slate-500">AVWX</span>
+        )}
         {!compact && primary && (
           <span className="ml-1 text-slate-400 normal-case">· {primary.summary}</span>
         )}
@@ -145,6 +154,7 @@ export default function FAANotamBadge({ icao, getIdToken, compact = true }) {
           notams={significant}
           allNotams={data?.notams || []}
           fetchedAt={data?.fetchedAt}
+          source={data?.source}
           onClose={() => setOpen(false)}
         />
       )}
@@ -154,7 +164,7 @@ export default function FAANotamBadge({ icao, getIdToken, compact = true }) {
 
 // Expanded panel — shows the significant NOTAMs in detail. Click-outside
 // to close. Positioned absolutely below the badge.
-function NotamPanel({ icao, notams, allNotams, fetchedAt, onClose }) {
+function NotamPanel({ icao, notams, allNotams, fetchedAt, source, onClose }) {
   // Track an "expanded" mode that shows ALL NOTAMs (including routine
   // ones we filtered out by default). Useful for crew that wants the
   // full picture before a leg.
@@ -163,6 +173,8 @@ function NotamPanel({ icao, notams, allNotams, fetchedAt, onClose }) {
   const ageStr = fetchedAt
     ? `Updated ${Math.max(1, Math.floor((Date.now() - fetchedAt) / 60000))}m ago`
     : '';
+  const sourceStr = notamSourceLabel(source);
+  const metaStr = [ageStr, sourceStr].filter(Boolean).join(' · ');
 
   return (
     <>
@@ -182,7 +194,7 @@ function NotamPanel({ icao, notams, allNotams, fetchedAt, onClose }) {
             <div className="text-xs tracking-widest text-slate-300">
               {icao} · NOTAMs
             </div>
-            <div className="text-[9px] text-slate-600">{ageStr}</div>
+            <div className="text-[9px] text-slate-600">{metaStr}</div>
           </div>
           <button
             type="button"
