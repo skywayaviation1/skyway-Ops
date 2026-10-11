@@ -22,6 +22,7 @@ import {
 } from './fleet-config.js';
 import { DUTY_TRACKER_ENABLED } from './duty-feature.js';
 import MailboxSettingsPanel from './MailboxSettingsPanel.jsx';
+import { FboEmailSafety } from './FboDesk.jsx';
 
 const DEFAULT_ALERT_EMAILS = [
   'jim@flyskyway.com',
@@ -406,6 +407,8 @@ export default function AdminSettings({
               />
               <p className="mt-2 text-2xs text-content-subtle">Separate addresses with commas, spaces or new lines.</p>
             </Card>
+
+            <FboEmailSafety />
 
             <MailboxSettingsPanel currentUser={currentUser} placement="settings" showShared />
 

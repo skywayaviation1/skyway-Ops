@@ -27,6 +27,10 @@
     {
       "path": "/api/shift-handoff-cleanup",
       "schedule": "15 9 * * *"
+    },
+    {
+      "path": "/api/fbo-departure-cron",
+      "schedule": "*/5 * * * *"
     }
   ],
   "functions": {
@@ -44,6 +48,12 @@
       "maxDuration": 60
     },
     "api/shift-handoff-cleanup.js": {
+      "maxDuration": 60
+    },
+    "api/fbo-departure-cron.js": {
+      "maxDuration": 60
+    },
+    "api/fbo-desk.js": {
       "maxDuration": 60
     }
   },
