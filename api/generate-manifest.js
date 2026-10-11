@@ -28,8 +28,7 @@ export const config = { runtime: 'nodejs' };
 
 import PDFDocument from 'pdfkit';
 import { applySkywaySignature, ensureCharterCc, textToHtml } from './_email-signature.js';
-
-const FORM_REV = 'S-5/R-37/10-30-23';
+import { FORM_REV, composeManifestNotice, isAmendedManifest } from './_manifest-notice.js';
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -66,50 +65,40 @@ export default async function handler(req, res) {
       });
     }
 
-    // Email to Loadmanifest@flyskyway.com
+    // Original filings go to Loadmanifest@flyskyway.com (charters@ is CC'd).
+    // Amendments use a distinct AMENDED subject, body, and filename so nobody
+    // treats the message as a second original. Non-production runs sink to
+    // jake@flyskyway.com only — no filing desk, no charter CC.
     const apiKey = process.env.RESEND_API_KEY;
     let emailId = null;
     let emailError = null;
     if (apiKey) {
       try {
-        const subject = `Load Manifest — ${manifest.tail || 'Unknown'} ${manifest.tripDate || ''} ${manifest.tripCode ? `[${manifest.tripCode}]` : ''}`.trim();
-        // Filename format: "MM-DD-YYYY TAIL.pdf" (e.g. "05-04-2026 N20UF.pdf")
-        // Handles both ISO (YYYY-MM-DD) and US (M/D/YYYY) input dates.
-        const filename = buildManifestFilename(manifest.tripDate, manifest.tail);
-        const text = [
-          `Load Manifest submitted by ${manifest.submittedBy || 'crew'}.`,
-          '',
-          `Aircraft:       ${manifest.tail || ''}`,
-          `Date:           ${manifest.tripDate || ''}`,
-          `Trip code:      ${manifest.tripCode || ''}`,
-          `Hobbs out:      ${manifest.hobbsOut || ''}`,
-          `Hobbs in:       ${manifest.hobbsIn || ''}`,
-          `Hobbs total:    ${manifest.hobbsTotal || ''}`,
-          `Legs:           ${(manifest.legs || []).length}`,
-          '',
-          `PIC: ${manifest.picSig?.name || ''} (${manifest.picSig?.email || ''})`,
-          `SIC: ${manifest.sicSig?.name || ''} (${manifest.sicSig?.email || ''})`,
-          '',
-          'PDF attached. This email was sent automatically by Skyway Ops.',
-          `Form revision: ${FORM_REV}`,
-        ].join('\n');
-
-        const recipients = ['Loadmanifest@flyskyway.com'];
+        const notice = composeManifestNotice(manifest);
+        const subject = notice.subject;
+        const filename = notice.filename;
+        const text = notice.text;
+        const recipients = notice.to;
+        const cc = notice.testing ? [] : ensureCharterCc([], recipients);
+        if (notice.testing) {
+          console.info('[generate-manifest] non-production email sink:', recipients.join(', '));
+        }
+        const message = {
+          from: 'Skyway Ops <noreply@send.flyskyway.com>',
+          to: recipients,
+          subject,
+          text,
+          html: applySkywaySignature(textToHtml(text)),
+          attachments: [{ filename, content: pdfBase64 }],
+        };
+        if (cc.length > 0) message.cc = cc;
         const upstream = await fetch('https://api.resend.com/emails', {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${apiKey}`,
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({
-            from: 'Skyway Ops <noreply@send.flyskyway.com>',
-            to: recipients,
-            cc: ensureCharterCc([], recipients),
-            subject,
-            text,
-            html: applySkywaySignature(textToHtml(text)),
-            attachments: [{ filename, content: pdfBase64 }],
-          }),
+          body: JSON.stringify(message),
         });
         const upstreamData = await upstream.json().catch(() => ({}));
         if (!upstream.ok) {
@@ -142,41 +131,6 @@ export default async function handler(req, res) {
  * Build the manifest PDF using pdfkit. Layout mirrors the paper S-5/R-37 form.
  * Returns a Buffer.
  */
-/**
- * Build a Skyway-standard manifest filename.
- * Format: "MM-DD-YYYY TAIL.pdf" (e.g. "05-04-2026 N20UF.pdf")
- *
- * Accepts both ISO format (2026-05-04) and US format (5/4/2026) for the date.
- * Falls back gracefully when fields are missing.
- */
-function buildManifestFilename(tripDate, tail) {
-  const safeTail = String(tail || 'TAIL').toUpperCase().replace(/[^A-Z0-9]/g, '');
-  let mm = '', dd = '', yyyy = '';
-  const dateStr = String(tripDate || '').trim();
-
-  // Try YYYY-MM-DD (ISO)
-  let m = dateStr.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-  if (m) {
-    yyyy = m[1];
-    mm = m[2].padStart(2, '0');
-    dd = m[3].padStart(2, '0');
-  } else {
-    // Try M/D/YYYY (US)
-    m = dateStr.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
-    if (m) {
-      mm = m[1].padStart(2, '0');
-      dd = m[2].padStart(2, '0');
-      yyyy = m[3].length === 2 ? `20${m[3]}` : m[3];
-    }
-  }
-
-  if (mm && dd && yyyy) {
-    return `${mm}-${dd}-${yyyy} ${safeTail}.pdf`;
-  }
-  // Fallback if date couldn't be parsed
-  return `Manifest ${safeTail}.pdf`;
-}
-
 async function buildManifestPdf(m) {
   const doc = new PDFDocument({ size: 'LETTER', margin: 36, layout: 'landscape' });
   const chunks = [];
@@ -190,6 +144,17 @@ async function buildManifestPdf(m) {
 
   doc.moveDown(0.3);
   doc.fontSize(16).font('Helvetica-Bold').text('Load Manifest', { align: 'center' });
+  if (isAmendedManifest(m)) {
+    const rev = Number(m.revision) || 2;
+    doc.moveDown(0.15);
+    doc.fontSize(12).fillColor('#9a3412').text(`AMENDED — REVISION ${rev}`, { align: 'center' });
+    const summary = String(m.changeSummary || '').trim();
+    if (summary) {
+      doc.fontSize(8).font('Helvetica').fillColor('#111');
+      doc.text(summary.split('\n').slice(0, 6).join(' · '), 36, doc.y, { width: 720, align: 'center' });
+    }
+    doc.fillColor('#000');
+  }
   doc.moveDown(0.3);
 
   // Top row: tail/date | hobbs | duty | wait

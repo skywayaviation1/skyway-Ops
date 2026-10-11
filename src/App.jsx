@@ -136,7 +136,17 @@ const AdminDutyReportLazy = lazy(() => import('./AdminDutyReport.jsx'));
 // creating or reviewing.
 const AogTabLazy = lazy(() => import('./AogTab.jsx'));
 import AppTimezoneSwitch from './AppTimezoneSwitch.jsx';
-import { getAppTimezone, todayInAppTz } from './app-timezone.js';
+import { dateKeyInTz, getAppTimezone, todayInAppTz } from './app-timezone.js';
+import {
+  amendmentAccess,
+  buildOriginalSubmission,
+  buildResubmission,
+  currentRevisionNumber,
+  isLegAirborne,
+  revisionHistory,
+  revisionLabel,
+  validateManifestSubmit,
+} from './manifest-revisions.js';
 import {
   buildCrewDayPairings,
   classifyFlightTiming,
@@ -9532,13 +9542,17 @@ function TripSheetPanel({
 // adds legs throughout the day. Manifests auto-pick-up legs when ops marks
 // trips complete. Crew can also add manual legs (positioning, training).
 // E-signatures: typed name + saved drawn signature + audit log (UID, email,
-// timestamp). Submission is final (record locks); PDF emails to
-// Loadmanifest@flyskyway.com.
+// timestamp). Submitting locks the form and emails a PDF to
+// Loadmanifest@flyskyway.com. Crew, ops, and admins can amend that filing
+// and resubmit it as the next revision; the original is kept.
 
 function ManifestsScreen({ currentUser, allTrips }) {
   const [manifests, setManifests] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [selectedId, setSelectedId] = useState(null);
+  const [selectedId, setSelectedId] = useState(() => {
+    if (typeof window === 'undefined') return null;
+    return new URLSearchParams(window.location.search).get('manifest');
+  });
   const [showNewModal, setShowNewModal] = useState(false);
 
   const isCrew = currentUser?.role === 'crew';
@@ -9908,6 +9922,7 @@ function ManifestRow({ manifest, selected, onClick }) {
   const legCount = (manifest.legs || []).length;
   const hasPic = !!manifest.picSig;
   const hasSic = !!manifest.sicSig;
+  const revisionMark = currentRevisionNumber(manifest);
 
   // Multi-crew differentiator. When the manifest ID has an "_N" suffix
   // (e.g. "2026-06-02_N444AM_2"), this manifest is the 2nd, 3rd, etc.
@@ -9946,8 +9961,8 @@ function ManifestRow({ manifest, selected, onClick }) {
             </span>
           )}
         </span>
-        <span className={`text-[10px] tracking-widest shrink-0 ${isSubmitted ? 'text-emerald-300' : 'text-amber-300'}`} style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
-          {isSubmitted ? 'SUBMITTED' : 'DRAFT'}
+        <span className={`text-[10px] tracking-widest shrink-0 ${manifest.status === 'submitted' && revisionMark > 1 ? 'text-amber-200' : isSubmitted ? 'text-emerald-300' : 'text-amber-300'}`} style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+          {manifest.status === 'submitted' ? revisionLabel(manifest).toUpperCase() : 'DRAFT'}
         </span>
       </div>
       {crewLabel && (
@@ -10407,6 +10422,13 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [submitInfo, setSubmitInfo] = useState(null);
+  // Amend is local until resubmit. The filed document is not written again
+  // until the user confirms, so a half-edited form cannot replace Rev N.
+  const [amending, setAmending] = useState(false);
+  const [amendNote, setAmendNote] = useState('');
+  const [amendBaseline, setAmendBaseline] = useState(null);
+  const [pendingResubmit, setPendingResubmit] = useState(null);
+  const [legStates, setLegStates] = useState({});
 
   // Duty-period link state — populated by the auto-fill flow. The
   // candidate list is the set of duty periods that match this
@@ -10427,7 +10449,45 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
   const canSign = isCrew;
   const canEdit = isCrew || isOps || isAdmin;
 
-  useEffect(() => { setDraft(manifest); }, [manifest.id, manifest.updatedAt]);
+  // Opening a different manifest drops any in-progress amendment.
+  useEffect(() => {
+    setDraft(manifest);
+    setAmending(false);
+    setAmendBaseline(null);
+    setAmendNote('');
+    setPendingResubmit(null);
+  }, [manifest.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Live updates from Firestore. Skip them while an amendment is being edited
+  // so a subscription refresh cannot wipe unsaved corrections.
+  useEffect(() => {
+    if (amending) return;
+    setDraft(manifest);
+  }, [manifest.updatedAt]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Trip state for the departure guard. Same-day landed legs stay amendable;
+  // an airborne leg, or a manifest date before today, closes the record.
+  useEffect(() => {
+    let cancelled = false;
+    const uids = [...new Set((manifest?.legs || []).map(leg => leg.tripUid).filter(Boolean))];
+    if (uids.length === 0) {
+      setLegStates({});
+      return undefined;
+    }
+    (async () => {
+      const data = await import('./firebase-data.js');
+      const pairs = await Promise.all(uids.map(async (uid) => {
+        try {
+          const state = await data.fetchTripStateForShare(uid);
+          return [uid, state];
+        } catch {
+          return [uid, null];
+        }
+      }));
+      if (!cancelled) setLegStates(Object.fromEntries(pairs));
+    })();
+    return () => { cancelled = true; };
+  }, [manifest?.id, manifest?.updatedAt]);
 
   // Auto-fetch duty candidates on manifest open IF the duty fields are
   // empty (i.e. nothing was auto-populated at creation time, which
@@ -10608,11 +10668,49 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
   // needed). Read-only manifests don't get patched.
   const healAppliedRef = useRef('');
 
-  const isSubmitted = draft?.status === 'submitted';
+  const filed = draft?.status === 'submitted';
+  const isSubmitted = filed && !amending;
+  // Locked after filing, unless this user is in an amend session.
   const readOnly = isSubmitted || !canEdit;
+  // Never persist schedule heals, pax sync, or draft saves over a filing.
+  const freezeWrites = filed || !canEdit;
+
+  const amendGate = useMemo(() => {
+    const legStatusByUid = {};
+    const appTz = getAppTimezone();
+    for (const trip of allTrips || []) {
+      if (!trip?.uid || !legStates[trip.uid]) continue;
+      const startMs = trip.start instanceof Date ? trip.start.getTime() : new Date(trip.start).getTime();
+      const state = legStates[trip.uid];
+      const statuses = state?.statuses || {};
+      legStatusByUid[trip.uid] = {
+        airborne: isLegAirborne(state),
+        departed: Boolean(statuses.wheels_up || statuses.taxi_dep),
+        completed: Boolean(state?.completed || state?.archived || statuses.landed),
+        date: dateKeyInTz(startMs, appTz),
+      };
+    }
+    // Legs whose trip is not in the schedule still consult trip-state.
+    for (const [uid, state] of Object.entries(legStates)) {
+      if (legStatusByUid[uid] || !state) continue;
+      const statuses = state.statuses || {};
+      legStatusByUid[uid] = {
+        airborne: isLegAirborne(state),
+        departed: Boolean(statuses.wheels_up || statuses.taxi_dep),
+        completed: Boolean(state.completed || state.archived || statuses.landed),
+        date: '',
+      };
+    }
+    return amendmentAccess({
+      manifest: draft || manifest,
+      role: currentUser?.role,
+      today: todayInAppTz(),
+      legStatusByUid,
+    });
+  }, [allTrips, legStates, draft, manifest, currentUser?.role]);
 
   useEffect(() => {
-    if (readOnly) return;
+    if (freezeWrites) return;
     if (!draft) return;
     const healMap = scheduleDiff.healedUids;
     if (!healMap || Object.keys(healMap).length === 0) return;
@@ -10637,14 +10735,14 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
         console.warn('[manifest] heal save failed:', err?.message);
       }
     })();
-  }, [scheduleDiff.healedUids, draft?.id, readOnly]);  // eslint-disable-line react-hooks/exhaustive-deps
+  }, [scheduleDiff.healedUids, draft?.id, freezeWrites]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   // Pre-populate from schedule on first open if no legs exist yet.
   // Uses a ref-tracked "already attempted" flag so the effect doesn't loop
   // when the save round-trips back through Firestore.
   const populatedRef = useRef(false);
   useEffect(() => {
-    if (readOnly) return;
+    if (freezeWrites) return;
     if (!draft) return;
     if (populatedRef.current) return; // already done for this manifest
     if ((draft.legs || []).length > 0) {
@@ -10691,7 +10789,7 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
       try { await m.saveManifest(next); }
       catch (err) { console.error('[manifest] pre-populate save failed:', err); }
     })();
-  }, [draft, allTrips, scheduledTrips, readOnly]);
+  }, [draft, allTrips, scheduledTrips, freezeWrites]);
   // Reset the populated ref when the manifest ID changes (new manifest opened)
   useEffect(() => { populatedRef.current = false; }, [manifest?.id]);
 
@@ -10700,7 +10798,7 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
   // auto-update on this manifest. Only updates pax names — never overwrites
   // crew-edited W&B/CG/etc data on the leg.
   useEffect(() => {
-    if (readOnly) return;
+    if (freezeWrites) return;
     if (!draft || !Array.isArray(draft.legs)) return;
     const tripUids = draft.legs.filter(l => l.tripUid).map(l => l.tripUid);
     if (tripUids.length === 0) return;
@@ -10755,10 +10853,10 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
         try { u(); } catch {}
       }
     };
-  }, [draft?.id, draft?.legs?.length, readOnly]);
+  }, [draft?.id, draft?.legs?.length, freezeWrites]);
 
   const acceptScheduleChanges = async () => {
-    if (readOnly) return;
+    if (freezeWrites) return;
     const m = await import('./firebase-manifests.js');
     const dataModule = await import('./firebase-data.js');
     let nextLegs = Array.isArray(draft.legs) ? [...draft.legs] : [];
@@ -10843,7 +10941,9 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
       dismissedTripUids,
     };
     setDraft(next);
-    // Auto-save so deletion sticks even if user navigates away
+    // Auto-save so deletion sticks even if user navigates away.
+    // An in-progress amendment stays local until resubmit.
+    if (freezeWrites) return;
     try {
       const m = await import('./firebase-manifests.js');
       await m.saveManifest(next);
@@ -10853,7 +10953,7 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
   };
 
   const saveDraft = async () => {
-    if (readOnly) return;
+    if (freezeWrites) return;
     setSaving(true);
     setError(null);
     try {
@@ -10895,6 +10995,7 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
     const next = { ...draft, [`${role}Sig`]: sig };
     setDraft(next);
     setSigningRole(null);
+    if (freezeWrites) return;
     try {
       const m = await import('./firebase-manifests.js');
       await m.saveManifest(next);
@@ -10909,6 +11010,7 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
     if (!window.confirm(`Remove ${role.toUpperCase()} signature?`)) return;
     const next = { ...draft, [`${role}Sig`]: null };
     setDraft(next);
+    if (freezeWrites) return;
     try {
       const m = await import('./firebase-manifests.js');
       await m.saveManifest(next);
@@ -10956,53 +11058,52 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
     }
   };
 
+  const emailManifest = async (filedManifest) => {
+    const payload = {
+      ...filedManifest,
+      tail: filedManifest.tail,
+      tripDate: filedManifest.date,
+      tripCode: '',
+      changeSummary: filedManifest.changeSummary || '',
+      amendmentNote: filedManifest.amendmentNote || '',
+    };
+    const r = await fetch('/api/generate-manifest', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ manifest: payload }),
+    });
+    const data = await r.json().catch(() => ({}));
+    return { ok: r.ok, status: r.status, data };
+  };
+
   const submitManifest = async () => {
-    if (!draft.picSig || !draft.sicSig) {
-      notify.error('Both PIC and SIC must sign before submitting.');
-      return;
-    }
-    if (!(draft.legs || []).length) {
-      notify.error('Manifest has no legs. Add at least one leg before submitting.');
+    const problems = validateManifestSubmit(draft);
+    if (problems.length) {
+      notify.error(problems[0]);
       return;
     }
     if (!window.confirm(
-      'Submit this load manifest? This action is FINAL.\n\n' +
+      'Submit this load manifest?\n\n' +
       'The PDF will be generated and emailed to Loadmanifest@flyskyway.com. ' +
-      'After submitting, the manifest cannot be edited.'
+      'After submitting, the record locks. Crew, operations, or an admin can amend it later and resubmit a numbered revision.'
     )) return;
     setSaving(true);
     setError(null);
     setSubmitInfo(null);
     try {
       const m = await import('./firebase-manifests.js');
-      const submitted = {
-        ...draft,
-        status: 'submitted',
-        submittedAt: Date.now(),
-        submittedBy: currentUser?.name || '',
-      };
+      const { manifest: submitted } = buildOriginalSubmission(draft, currentUser, Date.now());
       await m.saveManifest(submitted);
       setDraft(submitted);
-      const payload = {
-        ...submitted,
-        tail: submitted.tail,
-        tripDate: submitted.date,
-        tripCode: '',
-      };
-      const r = await fetch('/api/generate-manifest', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ manifest: payload }),
-      });
-      const data = await r.json().catch(() => ({}));
-      if (!r.ok) {
-        setError(`Manifest submitted but email failed: ${data.error || r.status}.`);
+      const mailed = await emailManifest(submitted);
+      if (!mailed.ok) {
+        setError(`Manifest submitted but email failed: ${mailed.data.error || mailed.status}.`);
         return;
       }
-      if (data.emailError) {
-        setError(`Manifest submitted, PDF generated, but email failed: ${data.emailError}`);
+      if (mailed.data.emailError) {
+        setError(`Manifest submitted, PDF generated, but email failed: ${mailed.data.emailError}`);
       } else {
-        setSubmitInfo(`Manifest submitted and emailed to Loadmanifest@flyskyway.com.`);
+        setSubmitInfo('Manifest submitted and emailed to Loadmanifest@flyskyway.com.');
       }
     } catch (err) {
       console.error('[manifest] submit failed:', err);
@@ -11012,7 +11113,80 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
     }
   };
 
-  const showScheduleBanner = !readOnly && !scheduleDiff.unchanged;
+  const startAmend = () => {
+    if (!amendGate.allowed) return;
+    setAmendBaseline(JSON.parse(JSON.stringify(draft)));
+    setAmendNote('');
+    setAmending(true);
+    setError(null);
+    setSubmitInfo(null);
+    setPendingResubmit(null);
+  };
+
+  const cancelAmend = () => {
+    if (amendBaseline) setDraft(amendBaseline);
+    setAmending(false);
+    setAmendBaseline(null);
+    setAmendNote('');
+    setPendingResubmit(null);
+  };
+
+  const prepareResubmit = () => {
+    const problems = validateManifestSubmit(draft);
+    if (problems.length) {
+      notify.error(problems[0]);
+      return;
+    }
+    const result = buildResubmission({
+      baseline: amendBaseline || draft,
+      draft,
+      note: amendNote,
+      user: currentUser,
+      now: Date.now(),
+    });
+    if (!result.ok) {
+      notify.error(result.error);
+      return;
+    }
+    setPendingResubmit(result);
+  };
+
+  const confirmResubmit = async () => {
+    if (!pendingResubmit?.manifest) return;
+    setSaving(true);
+    setError(null);
+    setSubmitInfo(null);
+    try {
+      const m = await import('./firebase-manifests.js');
+      await m.saveManifest(pendingResubmit.manifest);
+      const filedManifest = pendingResubmit.manifest;
+      const rev = filedManifest.revision;
+      setDraft(filedManifest);
+      setAmending(false);
+      setAmendBaseline(null);
+      setAmendNote('');
+      setPendingResubmit(null);
+      const mailed = await emailManifest(filedManifest);
+      if (!mailed.ok) {
+        setError(`Amended (Rev ${rev}) was saved, but the email failed: ${mailed.data.error || mailed.status}.`);
+        return;
+      }
+      if (mailed.data.emailError) {
+        setError(`Amended (Rev ${rev}) was saved, but the email failed: ${mailed.data.emailError}`);
+      } else {
+        setSubmitInfo(`Amended (Rev ${rev}) and emailed as AMENDED. Recipients are told to use this version.`);
+      }
+    } catch (err) {
+      console.error('[manifest] resubmit failed:', err);
+      setError(err.message || 'Resubmit failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const showScheduleBanner = !freezeWrites && !scheduleDiff.unchanged;
+  const revNumber = currentRevisionNumber(draft);
+  const history = revisionHistory(amending ? amendBaseline : draft);
 
   return (
     <div className="p-4 max-w-5xl mx-auto space-y-4">
@@ -11025,7 +11199,7 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
             {draft.tail} · {formatDate(draft.date)}
           </h1>
           <div className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            S-5/R-37/10-30-23 · LOAD MANIFEST
+            S-5/R-37/10-30-23 · LOAD MANIFEST{filed && revNumber > 1 ? ` · ${revisionLabel(draft)}` : ''}
           </div>
         </div>
         {isAdmin && (
@@ -11056,14 +11230,53 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
       </div>
 
       {isSubmitted && (
-        <div className="border border-emerald-500/40 bg-emerald-500/5 p-3">
-          <div className="text-[10px] tracking-widest text-emerald-300" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-            SUBMITTED — RECORD LOCKED
-          </div>
-          <div className="text-sm text-slate-200 mt-1">
-            Submitted by {draft.submittedBy} on {new Date(draft.submittedAt).toLocaleString()}
+        <div className={`border p-3 ${revNumber > 1 ? 'border-amber-500/40 bg-amber-500/5' : 'border-emerald-500/40 bg-emerald-500/5'}`}>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0">
+              <div className={`text-[10px] tracking-widest ${revNumber > 1 ? 'text-amber-200' : 'text-emerald-300'}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                {revNumber > 1 ? revisionLabel(draft) : 'SUBMITTED — RECORD LOCKED'}
+              </div>
+              <div className="text-sm text-slate-200 mt-1">
+                Submitted by {draft.submittedBy || 'crew'}
+                {draft.submittedAt ? ` on ${new Date(draft.submittedAt).toLocaleString()}` : ''}
+                {revNumber > 1 && draft.amendedBy ? ` · Amended by ${draft.amendedBy}` : ''}
+                {revNumber > 1 && draft.amendedAt ? ` on ${new Date(draft.amendedAt).toLocaleString()}` : ''}
+              </div>
+              {amendGate.reason && (
+                <p className="text-xs text-slate-400 mt-2">{amendGate.reason}</p>
+              )}
+              {amendGate.warning && (
+                <p className="text-xs text-amber-200 mt-2">{amendGate.warning}</p>
+              )}
+            </div>
+            {amendGate.allowed && (
+              <button
+                type="button"
+                onClick={startAmend}
+                className="min-h-11 w-full shrink-0 px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 text-sm font-medium tracking-widest sm:w-auto"
+                style={{ fontFamily: 'DM Sans, sans-serif' }}
+              >
+                AMEND MANIFEST
+              </button>
+            )}
           </div>
         </div>
+      )}
+      {amending && (
+        <div className="border border-amber-500/40 bg-amber-500/5 p-3">
+          <div className="text-[10px] tracking-widest text-amber-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            AMENDING · WILL FILE REV {revNumber + 1}
+          </div>
+          <p className="text-sm text-slate-200 mt-1">
+            The filed revision stays in history. Resubmit emails an AMENDED copy so recipients use this version.
+          </p>
+          {amendGate.warning && (
+            <p className="text-xs text-amber-200 mt-2">{amendGate.warning}</p>
+          )}
+        </div>
+      )}
+      {filed && history.length > 0 && (
+        <ManifestRevisionHistory revisions={history} />
       )}
       {error && <div className="border border-red-500/40 bg-red-500/5 p-3 text-xs text-red-300">{error}</div>}
       {submitInfo && <div className="border border-emerald-500/40 bg-emerald-500/5 p-3 text-xs text-emerald-300">{submitInfo}</div>}
@@ -11276,13 +11489,61 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
         />
       </div>
 
-      {!isSubmitted && (
-        <div className="flex flex-wrap gap-2 pt-3 border-t border-slate-800">
+      {amending && (
+        <div className="space-y-3 pt-3 border-t border-slate-800">
+          <label className="block">
+            <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              REASON / NOTE (OPTIONAL)
+            </span>
+            <textarea
+              value={amendNote}
+              onChange={(e) => setAmendNote(e.target.value)}
+              rows={2}
+              maxLength={500}
+              placeholder="What was fixed, for the record and the email"
+              className="mt-1 w-full bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-amber-400"
+              style={{ fontFamily: 'DM Sans, sans-serif' }}
+            />
+          </label>
+          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+            <button
+              type="button"
+              onClick={prepareResubmit}
+              disabled={saving}
+              className="min-h-11 px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 text-sm font-medium tracking-widest disabled:opacity-40"
+              style={{ fontFamily: 'DM Sans, sans-serif' }}
+            >
+              RESUBMIT
+            </button>
+            <button
+              type="button"
+              onClick={previewPdf}
+              disabled={generatingPreview || !(draft.legs || []).length}
+              className="min-h-11 px-4 py-2 border border-violet-500/40 text-violet-300 hover:bg-violet-500/10 text-sm tracking-widest disabled:opacity-50"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              {generatingPreview ? 'GENERATING...' : '↗ PREVIEW PDF'}
+            </button>
+            <button
+              type="button"
+              onClick={cancelAmend}
+              disabled={saving}
+              className="min-h-11 px-4 py-2 border border-slate-700 text-sm text-slate-300 tracking-widest"
+              style={{ fontFamily: 'JetBrains Mono, monospace' }}
+            >
+              CANCEL
+            </button>
+          </div>
+        </div>
+      )}
+
+      {!filed && (
+        <div className="flex flex-col gap-2 pt-3 border-t border-slate-800 sm:flex-row sm:flex-wrap">
           {canEdit && (
             <button
               onClick={saveDraft}
               disabled={saving}
-              className="px-4 py-2 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 text-sm tracking-widest disabled:opacity-50"
+              className="min-h-11 px-4 py-2 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 text-sm tracking-widest disabled:opacity-50"
               style={{ fontFamily: 'JetBrains Mono, monospace' }}
             >
               {saving ? 'SAVING...' : 'SAVE DRAFT'}
@@ -11292,7 +11553,7 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
             <button
               onClick={previewPdf}
               disabled={generatingPreview || !(draft.legs || []).length}
-              className="px-4 py-2 border border-violet-500/40 text-violet-300 hover:bg-violet-500/10 text-sm tracking-widest disabled:opacity-50"
+              className="min-h-11 px-4 py-2 border border-violet-500/40 text-violet-300 hover:bg-violet-500/10 text-sm tracking-widest disabled:opacity-50"
               style={{ fontFamily: 'JetBrains Mono, monospace' }}
               title="See the PDF before submitting"
             >
@@ -11303,7 +11564,7 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
             <button
               onClick={submitManifest}
               disabled={saving || !draft.picSig || !draft.sicSig || !(draft.legs || []).length}
-              className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-sm font-medium tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
+              className="min-h-11 px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-sm font-medium tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
               style={{ fontFamily: 'DM Sans, sans-serif' }}
               title={!draft.picSig || !draft.sicSig ? 'Both PIC and SIC must sign' : !(draft.legs || []).length ? 'Add at least one leg' : 'Submit final manifest'}
             >
@@ -11311,6 +11572,16 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
             </button>
           )}
         </div>
+      )}
+
+      {pendingResubmit && (
+        <ManifestResubmitModal
+          result={pendingResubmit}
+          note={amendNote}
+          saving={saving}
+          onCancel={() => { if (!saving) setPendingResubmit(null); }}
+          onConfirm={confirmResubmit}
+        />
       )}
 
       {/* PDF preview modal */}
@@ -11329,7 +11600,7 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
                   PDF PREVIEW
                 </h2>
                 <div className="text-[10px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-                  {draft.tail} · {formatDate(draft.date)} · NOT YET SUBMITTED
+                  {draft.tail} · {formatDate(draft.date)} · {amending ? `AMENDING · REV ${revNumber + 1}` : filed ? revisionLabel(draft) : 'NOT YET SUBMITTED'}
                 </div>
               </div>
               <div className="flex items-center gap-2">
@@ -11371,9 +11642,11 @@ function ManifestDetail({ manifest, currentUser, allTrips, onBack }) {
             </div>
             <div className="p-3 border-t border-slate-800 flex flex-wrap gap-2 items-center">
               <div className="flex-1 min-w-0 text-[11px] text-slate-500" style={{ fontFamily: 'DM Sans, sans-serif' }}>
-                Review carefully. Once submitted, the manifest is locked and emailed to Loadmanifest@flyskyway.com.
+                {amending
+                  ? 'Review the amended PDF. Resubmit files the next revision and emails it as AMENDED.'
+                  : 'Review carefully. Submitting locks the record and emails Loadmanifest@flyskyway.com. It can be amended later.'}
               </div>
-              {canSign && draft.picSig && draft.sicSig && (
+              {!filed && canSign && draft.picSig && draft.sicSig && (
                 <button
                   onClick={async () => {
                     setPreviewPdfUrl(null);
@@ -11734,6 +12007,123 @@ function ManifestDutyAutoFillModal({ preview, currentDraft, onCancel, onApply })
             style={{ fontFamily: 'JetBrains Mono, monospace' }}
           >
             CANCEL
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ManifestRevisionHistory({ revisions }) {
+  const ordered = [...(revisions || [])].sort((a, b) => Number(b.revision) - Number(a.revision));
+  if (ordered.length === 0) return null;
+  return (
+    <div className="border border-slate-700 bg-slate-900/40">
+      <div className="px-3 py-2 text-[10px] tracking-widest text-slate-400 border-b border-slate-800" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+        CHANGE HISTORY
+      </div>
+      <div className="divide-y divide-slate-800">
+        {ordered.map((rev) => {
+          const when = rev.at ? new Date(rev.at).toLocaleString() : '';
+          const title = Number(rev.revision) > 1 || rev.kind === 'amendment'
+            ? `Amended (Rev ${rev.revision})`
+            : `Rev ${rev.revision} · Original`;
+          const changes = Array.isArray(rev.diff) ? rev.diff : [];
+          return (
+            <details key={rev.revision} open={rev.kind === 'amendment' && rev.revision === ordered[0].revision} className="px-3 py-2">
+              <summary className="cursor-pointer text-sm text-slate-200 min-h-11 flex items-center">
+                <span>
+                  <span className="font-medium">{title}</span>
+                  <span className="block text-[11px] text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                    {[rev.by, when].filter(Boolean).join(' · ') || 'Filed revision'}
+                  </span>
+                </span>
+              </summary>
+              <div className="mt-2 space-y-1 text-xs text-slate-300">
+                {rev.note ? <p className="text-slate-400">Note: {rev.note}</p> : null}
+                {changes.length === 0 ? (
+                  <p className="text-slate-500">Original filing. No prior version.</p>
+                ) : (
+                  <ul className="space-y-1">
+                    {changes.map((item, index) => (
+                      <li key={`${item.path}-${index}`} className="break-words">
+                        <span className={item.kind === 'removed' ? 'text-red-300' : item.kind === 'added' ? 'text-emerald-300' : 'text-amber-200'}>
+                          {item.kind === 'removed' ? 'Removed' : item.kind === 'added' ? 'Added' : 'Changed'}
+                        </span>
+                        {' · '}
+                        {item.summary}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </details>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ManifestResubmitModal({ result, note, saving, onCancel, onConfirm }) {
+  const rev = result?.manifest?.revision;
+  const diff = result?.diff || [];
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-slate-950/90 flex items-end sm:items-center justify-center p-0 sm:p-4"
+      onClick={onCancel}
+    >
+      <div
+        className="bg-slate-950 border border-slate-700 w-full sm:max-w-lg max-h-[92vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="resubmit-title"
+      >
+        <div className="p-4 border-b border-slate-800">
+          <h2 id="resubmit-title" className="text-lg tracking-wider" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
+            RESUBMIT AMENDED MANIFEST
+          </h2>
+          <div className="text-[10px] text-amber-200 tracking-widest mt-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+            Amended (Rev {rev})
+          </div>
+        </div>
+        <div className="p-4 overflow-y-auto space-y-3 text-sm text-slate-200">
+          <p>
+            This emails an AMENDED load manifest. It is not a second original filing. Recipients are told to use this version.
+          </p>
+          {note ? <p className="text-slate-400">Note: {note}</p> : null}
+          <div>
+            <div className="text-[10px] tracking-widest text-slate-500 mb-1" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+              WHAT CHANGED
+            </div>
+            <ul className="space-y-1 text-xs">
+              {diff.map((item, index) => (
+                <li key={`${item.path}-${index}`} className="break-words border border-slate-800 px-2 py-1.5">
+                  {item.summary}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+        <div className="p-4 border-t border-slate-800 flex flex-col gap-2 sm:flex-row sm:justify-end">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={saving}
+            className="min-h-11 px-4 py-2 border border-slate-700 text-sm text-slate-300 tracking-widest"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            KEEP EDITING
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={saving}
+            className="min-h-11 px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 text-sm font-medium tracking-widest disabled:opacity-40"
+            style={{ fontFamily: 'DM Sans, sans-serif' }}
+          >
+            {saving ? 'SENDING...' : 'RESUBMIT'}
           </button>
         </div>
       </div>
@@ -27920,9 +28310,11 @@ export default function CharterOps() {
     if (typeof window === 'undefined') return 'home';
     const params = new URLSearchParams(window.location.search);
     if (params.get('trip')) return 'schedule';
-    if (params.get('section') === 'accounting' || params.has('qbo')) return 'accounting';
-    if (params.get('section') === 'mailbox' || params.has('userMail')) return 'mailbox';
-    if (params.get('section') === 'tracking') return 'tracking';
+    const requested = params.get('section');
+    if (requested === 'accounting' || params.has('qbo')) return 'accounting';
+    if (requested === 'mailbox' || params.has('userMail')) return 'mailbox';
+    if (requested === 'tracking') return 'tracking';
+    if (requested === 'manifests') return 'manifests';
     return params.get('channel') || window.location.hash === '#comms' ? 'comms' : 'home';
   });
   // FlightAware live tracking kill switch — synced from Firestore so admin can
