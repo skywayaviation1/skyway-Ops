@@ -42,6 +42,7 @@ import {
   loadGoogleMaps,
   onGoogleMapsAuthFailure,
 } from './google-maps.js';
+import { fleetFitPositions, fleetFitSignature } from './fleet-tracking.js';
 import { cx } from './ui.jsx';
 
 const EMPTY_SCENE = { aircraft: [], airports: [], routes: [], trail: null, projected: null };
@@ -68,6 +69,11 @@ export default function TrackingMap({
   overlay = null,
   /** Tighter controls for the home dashboard map. */
   compact = false,
+  /**
+   * Fleet maps frame every airborne tail and follow position updates until
+   * the user pans or zooms. Single-flight maps keep the fitKey behaviour.
+   */
+  followFleet = false,
 }) {
   const containerRef = useRef(null);
   const googleContainerRef = useRef(null);
@@ -423,6 +429,8 @@ export default function TrackingMap({
             at: a.groundedAt,
             selected,
             muted: Boolean(selectedId) && !selected,
+            tripId: a.tripId,
+            departureLabel: a.departureLabel,
           }),
           zIndexOffset: selected ? 700 : 50,
         }).addTo(group);
@@ -443,6 +451,9 @@ export default function TrackingMap({
             selected,
             muted: Boolean(selectedId) && !selected,
             showLabel: a.showLabel !== false,
+            tripId: a.tripId,
+            destination: a.destination,
+            etaLabel: a.etaLabel,
           }),
           zIndexOffset: selected ? 1000 : 200,
         }).addTo(group);
@@ -493,14 +504,66 @@ export default function TrackingMap({
   // data arrival). Position updates alone must not steal the user's pan/zoom.
   const lastFitRef = useRef(null);
   useEffect(() => {
-    if (!ready) return;
+    if (!ready || followFleet) return;
     if (lastFitRef.current === fitKey) return;
     const hasGeometry = aircraft.some((a) => Number.isFinite(a?.lat))
       || airports.some((a) => Number.isFinite(a?.lat));
     if (!hasGeometry) return;
     lastFitRef.current = fitKey;
     fitScene();
-  }, [ready, fitKey, aircraft, airports, fitScene]);
+  }, [ready, followFleet, fitKey, aircraft, airports, fitScene]);
+
+  // Fleet follow: frame airborne tails (or every tail when none are airborne)
+  // again whenever those positions move. A user pan or zoom sets the lock;
+  // Fit all clears it. Programmatic fitBounds also emits zoomstart, so the
+  // lock ignores gestures that start while a fit is in progress.
+  const userMovedRef = useRef(false);
+  const fittingRef = useRef(false);
+  const fitFleetBounds = useCallback(() => {
+    if (!mapRef.current || !window.L) return;
+    const targets = fleetFitPositions(aircraft);
+    if (targets.length === 0) return;
+    fittingRef.current = true;
+    try {
+      if (targets.length === 1) {
+        mapRef.current.setView([targets[0].lat, targets[0].lon], 8, { animate: true });
+      } else {
+        mapRef.current.fitBounds(window.L.latLngBounds(targets.map((item) => [item.lat, item.lon])), {
+          paddingTopLeft: [48, 48],
+          paddingBottomRight: [56, 160],
+          maxZoom: 8,
+          animate: true,
+          duration: 0.45,
+        });
+      }
+    } catch { /* degenerate bounds */ }
+    queueMicrotask(() => { fittingRef.current = false; });
+  }, [aircraft]);
+
+  const fitAll = useCallback(() => {
+    userMovedRef.current = false;
+    fitFleetBounds();
+  }, [fitFleetBounds]);
+
+  const fleetSignature = fleetFitSignature(aircraft);
+  useEffect(() => {
+    if (!ready || !followFleet || userMovedRef.current || !fleetSignature) return;
+    fitFleetBounds();
+  }, [ready, followFleet, fleetSignature, fitFleetBounds]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!ready || !followFleet || !map) return undefined;
+    const noteUserGesture = () => {
+      if (!fittingRef.current) userMovedRef.current = true;
+    };
+    map.on('dragstart', noteUserGesture);
+    map.on('zoomstart', noteUserGesture);
+    return () => {
+      map.off('dragstart', noteUserGesture);
+      map.off('zoomstart', noteUserGesture);
+    };
+  }, [ready, followFleet]);
 
   const radarLabel = radarFrameAt
     ? new Date(radarFrameAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -619,7 +682,11 @@ export default function TrackingMap({
         )}
 
         <div className="flex gap-1.5">
-          <MapButton icon={Crosshair} compact={compact} onClick={fitScene} title="Fit the whole flight on screen" />
+          {followFleet ? (
+            <MapButton icon={Crosshair} label="Fit all" compact={compact} onClick={fitAll} title="Fit all airborne aircraft" />
+          ) : (
+            <MapButton icon={Crosshair} compact={compact} onClick={fitScene} title="Fit the whole flight on screen" />
+          )}
           <MapButton
             icon={fullscreen ? Minimize2 : Maximize2}
             compact={compact}

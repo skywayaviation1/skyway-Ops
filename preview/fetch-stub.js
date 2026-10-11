@@ -518,7 +518,7 @@ export function sampleIcal() {
     out += `DTSTART:${stamp(t.startH)}\r\n`;
     out += `DTEND:${stamp(t.endH)}\r\n`;
     out += `SUMMARY:[${t.tail}] ${t.customer} (${t.from} - ${t.to}) - ${t.type}\r\n`;
-    out += `DESCRIPTION:Pax: ${t.pax}\\nPIC: ${t.pic}\\nSIC: ${t.sic}\r\n`;
+    out += `DESCRIPTION:Pax: ${t.pax}\\nPIC: ${t.pic}\\nSIC: ${t.sic}\\nTrip Number: ${t.uid}\\nTrip ID: ${t.tripCode || ''}\r\n`;
     out += `LOCATION:${t.from}\r\n`;
     out += 'END:VEVENT\r\n';
   }

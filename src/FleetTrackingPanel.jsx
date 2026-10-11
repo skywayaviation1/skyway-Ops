@@ -8,6 +8,7 @@ import React, { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import {
   ArrowRight, Clock, Gauge, Navigation, Plane, Radio,
 } from 'lucide-react';
+import { getAppTimezone } from './app-timezone.js';
 import {
   buildFleetMapScene,
   buildSelectedFlightOverlay,
@@ -46,6 +47,7 @@ export default function FleetTrackingPanel({
   fleetRows = [],
   positions = {},
   trips = [],
+  tripStates = null,
   aircraftByTail = {},
   unlocated = [],
   now = Date.now(),
@@ -90,9 +92,11 @@ export default function FleetTrackingPanel({
     fleetTails,
     positions,
     trips,
+    tripStates,
     aircraftByTail,
     now,
-  }), [fleetTails, positions, trips, aircraftByTail, now]);
+    timeZone: getAppTimezone() || undefined,
+  }), [fleetTails, positions, trips, tripStates, aircraftByTail, now]);
 
   const scene = useMemo(() => {
     const overlay = buildSelectedFlightOverlay({
@@ -120,6 +124,7 @@ export default function FleetTrackingPanel({
         onSelectAircraft={handleSelect}
         fitKey={fitKey}
         focusIds={focusIds}
+        followFleet
         basemapDefault="dark"
         showTrailToggle
         compact
