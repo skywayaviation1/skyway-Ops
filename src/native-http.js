@@ -55,15 +55,23 @@ export function shouldUseWebViewNetwork(input) {
 export function restoreWebViewXmlHttpRequest(target) {
   const saved = target?.CapacitorWebXMLHttpRequest;
   const Original = saved?.fullObject;
-  if (!Original || typeof saved.open !== 'function') return false;
+  // Refuse a partial snapshot. Swapping in a constructor that cannot abort
+  // makes Firestore's long-poll throw before it ever touches the network,
+  // which is the "no Firestore requests" failure.
+  if (typeof Original !== 'function' || !Original.prototype) return false;
+  if (typeof saved.open !== 'function' || typeof saved.send !== 'function' || typeof saved.abort !== 'function') {
+    return false;
+  }
   const proto = Original.prototype;
-  if (!proto) return false;
   proto.open = saved.open;
-  if (typeof saved.send === 'function') proto.send = saved.send;
-  if (typeof saved.abort === 'function') proto.abort = saved.abort;
+  proto.send = saved.send;
+  proto.abort = saved.abort;
   if (typeof saved.setRequestHeader === 'function') proto.setRequestHeader = saved.setRequestHeader;
   if (typeof saved.getAllResponseHeaders === 'function') proto.getAllResponseHeaders = saved.getAllResponseHeaders;
   if (typeof saved.getResponseHeader === 'function') proto.getResponseHeader = saved.getResponseHeader;
+  if (typeof proto.open !== 'function' || typeof proto.send !== 'function' || typeof proto.abort !== 'function') {
+    return false;
+  }
   target.XMLHttpRequest = Original;
   return true;
 }
