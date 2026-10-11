@@ -1,10 +1,26 @@
 import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // Authenticated OCC control actions and shift log. These are coordination
-// states, not a regulatory flight release. Every mutation writes an immutable
-// audit entry with the controller identity.
+// states, not a regulatory flight release. Every trip mutation writes an
+// immutable audit entry with the controller identity.
+//
+// Shift handoff notes are submitted on create. There is no draft. Any
+// active ops or admin user may edit or delete a submitted note; drafts
+// and any other non-submitted status are rejected. Notes older than 7
+// days are omitted here and deleted by /api/shift-handoff-cleanup.
+// Direct client access to `ops-shift-log` is denied — see
+// firebase/appusers-ops-shift-log.rules, which must be merged into the
+// deployed `appusers` rules (it is not deployed by firebase.json).
 
 import admin from 'firebase-admin';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
+import {
+  HANDOFF_COLLECTION,
+  buildHandoffEdit,
+  buildSubmittedHandoff,
+  handoffMutationBlock,
+  normalizeHandoffId,
+  visibleHandoffs,
+} from '../src/shift-handoff.js';
 
 const ROLES = new Set(['ops', 'admin']);
 const DISPOSITIONS = new Set(['monitoring', 'ready', 'hold']);
@@ -112,32 +128,58 @@ async function mutateTrip(caller, body) {
   return { tripId, action: body.action, updatedAt: now };
 }
 
-async function addShiftNote(caller, body) {
-  const text = String(body.note || '').trim().slice(0, 2000);
-  if (!text) throw Object.assign(new Error('Shift note required'), { status: 400 });
-  const category = ['handoff', 'risk', 'update', 'decision'].includes(body.category)
-    ? body.category
-    : 'update';
-  const ref = caller.db.collection('ops-shift-log').doc();
-  const payload = {
-    text,
-    category,
-    pinned: body.pinned === true,
-    authorUid: caller.uid,
-    authorName: caller.name,
-    authorRole: caller.role,
-    createdAt: Date.now(),
-  };
+export async function addShiftNote(caller, body) {
+  const payload = buildSubmittedHandoff({
+    text: body.note,
+    category: body.category,
+    pinned: body.pinned,
+    author: caller,
+  });
+  const ref = caller.db.collection(HANDOFF_COLLECTION).doc();
   await ref.set(payload);
   return { id: ref.id, ...payload };
 }
 
-async function listShiftNotes(caller) {
-  const snap = await caller.db.collection('ops-shift-log')
+async function loadShiftNote(caller, noteId) {
+  const id = normalizeHandoffId(noteId);
+  const snap = await caller.db.collection(HANDOFF_COLLECTION).doc(id).get();
+  if (!snap.exists) return { id, data: null };
+  return { id, data: snap.data() || null };
+}
+
+function assertMutable(data) {
+  const block = handoffMutationBlock(data);
+  if (!block) return;
+  throw Object.assign(new Error(block.error), { status: block.status });
+}
+
+export async function updateShiftNote(caller, body) {
+  const { id, data } = await loadShiftNote(caller, body.noteId);
+  assertMutable(data);
+  const patch = buildHandoffEdit(data, {
+    text: body.note,
+    category: body.category,
+    pinned: body.pinned,
+    editor: caller,
+  });
+  await caller.db.collection(HANDOFF_COLLECTION).doc(id).set(patch, { merge: true });
+  return { id, ...data, ...patch };
+}
+
+export async function deleteShiftNote(caller, body) {
+  const { id, data } = await loadShiftNote(caller, body.noteId);
+  assertMutable(data);
+  await caller.db.collection(HANDOFF_COLLECTION).doc(id).delete();
+  return { id };
+}
+
+export async function listShiftNotes(caller) {
+  const snap = await caller.db.collection(HANDOFF_COLLECTION)
     .orderBy('createdAt', 'desc')
-    .limit(75)
+    .limit(200)
     .get();
-  return snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+  const notes = snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+  return visibleHandoffs(notes).slice(0, 75);
 }
 
 export default async function handler(req, res) {
@@ -161,6 +203,14 @@ export default async function handler(req, res) {
     }
     if (action === 'add-shift-note') {
       res.status(201).json({ ok: true, note: await addShiftNote(caller, req.body) });
+      return;
+    }
+    if (action === 'update-shift-note') {
+      res.status(200).json({ ok: true, note: await updateShiftNote(caller, req.body) });
+      return;
+    }
+    if (action === 'delete-shift-note') {
+      res.status(200).json({ ok: true, ...(await deleteShiftNote(caller, req.body)) });
       return;
     }
     const result = await mutateTrip(caller, req.body || {});

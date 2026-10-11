@@ -527,6 +527,110 @@ export function sampleIcal() {
 
 const LIVE_SCHEDULE_HOSTS = /jetinsight\.com|corsproxy\.io|allorigins\.win|codetabs\.com/i;
 
+// In-memory shift log so the home-screen handoff can be exercised in preview.
+// Includes one unsubmitted note (no edit/delete) and one note older than
+// seven days (the client must hide it).
+let handoffNotes = null;
+function shiftHandoffNotes() {
+  if (handoffNotes) return handoffNotes;
+  const now = Date.now();
+  const day = 24 * 60 * 60 * 1000;
+  handoffNotes = [
+    {
+      id: 'note-pinned',
+      text: 'TEB ramp is still closed for thunderstorms. Hold the 16:40 departure until the FBO confirms the aircraft can be boarded.',
+      category: 'handoff',
+      pinned: true,
+      status: 'submitted',
+      authorUid: STAFF[0].uid,
+      authorName: STAFF[0].name,
+      authorRole: 'admin',
+      createdAt: now - 40 * 60 * 1000,
+      submittedAt: now - 40 * 60 * 1000,
+    },
+    {
+      id: 'note-risk',
+      text: 'N444AM crew is inside two hours of the duty limit after the Hyannis leg. Do not add a recovery stop.',
+      category: 'risk',
+      pinned: false,
+      status: 'submitted',
+      authorUid: STAFF[1].uid,
+      authorName: STAFF[1].name,
+      authorRole: 'ops',
+      createdAt: now - 3 * 60 * 60 * 1000,
+      submittedAt: now - 3 * 60 * 60 * 1000,
+    },
+    {
+      id: 'note-draft',
+      text: 'Catering change for the PBI turn — not submitted yet.',
+      category: 'update',
+      pinned: false,
+      status: 'draft',
+      authorUid: STAFF[1].uid,
+      authorName: STAFF[1].name,
+      authorRole: 'ops',
+      createdAt: now - 25 * 60 * 1000,
+    },
+    {
+      id: 'note-old',
+      text: 'This turnover is nine days old and should not appear on the home screen.',
+      category: 'decision',
+      pinned: true,
+      status: 'submitted',
+      authorUid: STAFF[0].uid,
+      authorName: STAFF[0].name,
+      authorRole: 'admin',
+      createdAt: now - 9 * day,
+      submittedAt: now - 9 * day,
+    },
+  ];
+  return handoffNotes;
+}
+
+function opsControlResponse(action, body) {
+  const notes = shiftHandoffNotes();
+  const json = (payload, status = 200) => new Response(JSON.stringify(payload), {
+    status, headers: { 'Content-Type': 'application/json' },
+  });
+  if (action === 'list-shift-notes') return json({ ok: true, notes });
+  if (action === 'add-shift-note') {
+    const now = Date.now();
+    const note = {
+      id: `note-${now}`,
+      text: String(body.note || '').trim(),
+      category: body.category || 'handoff',
+      pinned: body.pinned === true,
+      status: 'submitted',
+      authorUid: STAFF[0].uid,
+      authorName: STAFF[0].name,
+      authorRole: 'admin',
+      createdAt: now,
+      submittedAt: now,
+    };
+    notes.unshift(note);
+    return json({ ok: true, note });
+  }
+  if (action === 'update-shift-note' || action === 'delete-shift-note') {
+    const index = notes.findIndex((note) => note.id === body.noteId);
+    const note = notes[index];
+    if (!note || note.status !== 'submitted') {
+      return json({ error: 'Only submitted handoffs can be edited or deleted' }, 409);
+    }
+    if (action === 'delete-shift-note') {
+      notes.splice(index, 1);
+      return json({ ok: true, id: note.id });
+    }
+    note.text = String(body.note || '').trim();
+    note.category = body.category || note.category;
+    note.pinned = body.pinned === true;
+    note.updatedAt = Date.now();
+    note.updatedByUid = STAFF[0].uid;
+    note.updatedByName = STAFF[0].name;
+    return json({ ok: true, note: { ...note } });
+  }
+  return json({ ok: true });
+}
+
 export function installFetchStub() {
   const real = window.fetch ? window.fetch.bind(window) : null;
 
@@ -603,6 +707,7 @@ export function installFetchStub() {
         missing: ['GOOGLE_MAPS_API_KEY'],
       }), { status: 503, headers: { 'Content-Type': 'application/json' } });
     }
+    if (path === '/api/ops-control-action') return opsControlResponse(action, body);
     if (path.startsWith('/api/flightaware-track-log')) {
       const ident = (() => {
         try { return new URL(url, window.location.origin).searchParams.get('ident'); } catch { return ''; }

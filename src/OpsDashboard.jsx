@@ -35,6 +35,7 @@ import { resolveManagedTails } from './fleet-config.js';
 import { buildFleetMapScene } from './fleet-tracking.js';
 import { buildActiveOpsTrips, computeOutstanding } from './ops-readiness.js';
 import FleetTrackingPanel from './FleetTrackingPanel.jsx';
+import OpsShiftLog from './OpsShiftLog.jsx';
 import { demoPositionsMap } from './reviewer-demo-track.js';
 import { readReviewerDatabaseFlag } from './reviewer-sandbox.js';
 
@@ -754,6 +755,10 @@ export default function OpsDashboard({
           </SectionCard>
         </div>
 
+        {/* Shift handoff is part of the home screen for ops and admin.
+            OpsShiftLog renders nothing for every other role. */}
+        <OpsShiftLog currentUser={currentUser} />
+
         {/* Posture strip */}
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
           <PostureTile
@@ -881,13 +886,6 @@ export default function OpsDashboard({
               detail={`${summary.legsToday} legs today · ${summary.completedToday} completed`}
               tone={summary.remainingToday ? 'accent' : 'success'}
               onClick={() => onOpenDispatch?.('schedule')}
-            />
-            <ModuleCard
-              icon={ClipboardList}
-              title="Shift handoff"
-              value="LOG"
-              detail="Risks, decisions and pinned turnover notes"
-              onClick={() => onOpenDispatch?.('handoff')}
             />
             <ModuleCard
               icon={Navigation}
