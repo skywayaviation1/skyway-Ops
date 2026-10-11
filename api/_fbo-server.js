@@ -4,7 +4,6 @@
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import { reviewerSessionBlock } from '../src/reviewer-account.js';
-import { cronArrivalFollowUp, scrubFirestoreWrites } from '../src/omit-undefined.js';
 import { getAirportTimezone } from '../src/airports.js';
 import {
   FBO_DIRECTORY,
@@ -75,7 +74,7 @@ export function fboAdminApp() {
 }
 
 export function fboDb() {
-  return scrubFirestoreWrites(getFirestore(fboAdminApp(), 'appusers'));
+  return getFirestore(fboAdminApp(), 'appusers');
 }
 
 function readBody(req) {
@@ -665,7 +664,6 @@ function cronRelevant(leg, settings, now) {
 }
 
 export async function runFboCron({ db = fboDb(), now = Date.now() } = {}) {
-  db = scrubFirestoreWrites(db);
   const settings = await loadSettings(db);
   const snap = await db.collection(FBO_LEGS).get();
   const summary = {
@@ -721,7 +719,12 @@ export async function runFboCron({ db = fboDb(), now = Date.now() } = {}) {
       if (result.ok) {
         leg = {
           ...leg,
-          arrival: cronArrivalFollowUp(leg, kind),
+          arrival: {
+            ...(leg.arrival || {}),
+            arrivalStatus: kind === 'time-change' ? 'needs_reconfirm' : 'sent',
+            sentForEnd: leg.end,
+            timeChangeForEnd: kind === 'time-change' ? leg.end : leg.arrival?.timeChangeForEnd,
+          },
         };
       }
     }

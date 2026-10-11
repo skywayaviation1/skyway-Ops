@@ -8,7 +8,19 @@
 import { flightBuckets, restOutlook } from './duty-crew-change.js';
 import { evaluateCurrent } from './duty-legality.js';
 import { EXTENDED_REST_TIER_3_MS, LIMITS } from './duty-limits.js';
-import { omitUndefined } from './omit-undefined.js';
+
+/** Firestore rejects undefined. Drop those keys from duty patches and audit docs. */
+export function omitUndefined(value) {
+  if (Array.isArray(value)) return value.map((item) => omitUndefined(item));
+  if (!value || typeof value !== 'object') return value;
+  if (Object.getPrototypeOf(value) !== Object.prototype) return value;
+  const out = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (child === undefined) continue;
+    out[key] = omitUndefined(child);
+  }
+  return out;
+}
 
 const MS_HOUR = 3600 * 1000;
 const MS_DAY = 24 * MS_HOUR;

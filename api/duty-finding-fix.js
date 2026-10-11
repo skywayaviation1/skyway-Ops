@@ -8,8 +8,7 @@ import { reviewerSessionBlock } from '../src/reviewer-account.js';
 
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
-import { planFindingFix, planFingerprint, undoPlan } from '../src/duty-findings.js';
-import { omitUndefined } from '../src/omit-undefined.js';
+import { omitUndefined, planFindingFix, planFingerprint, undoPlan } from '../src/duty-findings.js';
 
 export const config = { runtime: 'nodejs', maxDuration: 60 };
 
