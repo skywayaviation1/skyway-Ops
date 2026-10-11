@@ -4,9 +4,15 @@ import test from 'node:test';
 import {
   applyTestRecipient,
   arrivalAutoDecision,
+  arrivalPlanView,
+  arrivalScheduleDecision,
   arrivalView,
   buildArrivalEmail,
+  buildArrivalTimeChangeEmail,
+  buildArrivalUpdateEmail,
   buildDepartureEmail,
+  buildInboundEmail,
+  DEFAULT_ARRIVAL_LEAD_HOURS,
   composeFboHtml,
   contactFromMatch,
   departureReminderDecision,
@@ -17,8 +23,11 @@ import {
   legSyncRecord,
   matchFbo,
   mergeSyncedLeg,
+  inboundDecision,
   paxLabel,
+  pickDepartureSignal,
   publicLegView,
+  resolveGlobalLeadHours,
   resolveTestMode,
   scoreFboNames,
   tripIdLabel,
@@ -166,6 +175,148 @@ test('arrival auto-send stays off unless a lead time is configured', () => {
     arrival: { ...sample.arrival, arrivalStatus: 'sent', sentForEnd: sample.end },
   };
   assert.equal(arrivalAutoDecision(sent, now, 1).reason, 'already-sent');
+});
+
+test('advance arrival defaults to 24 hours and can be overridden or turned off', () => {
+  const now = Date.now();
+  assert.equal(DEFAULT_ARRIVAL_LEAD_HOURS, 24);
+  assert.equal(resolveGlobalLeadHours({}, false), 24);
+  assert.equal(resolveGlobalLeadHours({ arrivalAutoLeadHours: 'off' }, true), null);
+
+  const later = leg({ end: new Date(now + 30 * HOUR).toISOString() });
+  const waiting = arrivalScheduleDecision(later, now, 24);
+  assert.equal(waiting.action, 'wait');
+  assert.equal(waiting.leadHours, 24);
+  assert.ok(waiting.dueAt > now);
+
+  const due = leg({ end: new Date(now + 20 * HOUR).toISOString() });
+  const first = arrivalScheduleDecision(due, now, 24);
+  assert.equal(first.action, 'send');
+  const sent = {
+    ...due,
+    arrival: { ...due.arrival, arrivalStatus: 'sent', sentForEnd: due.end },
+  };
+  assert.equal(arrivalScheduleDecision(sent, now, 24).reason, 'already-sent');
+
+  const offTrip = {
+    ...due,
+    arrival: { ...due.arrival, scheduleDisabled: true },
+  };
+  assert.equal(arrivalScheduleDecision(offTrip, now, 24).reason, 'advance-off');
+
+  const sooner = {
+    ...later,
+    arrival: { ...later.arrival, leadHours: 6 },
+  };
+  assert.equal(arrivalScheduleDecision(sooner, now, 24).action, 'wait');
+  assert.equal(arrivalScheduleDecision(sooner, now, 24).leadHours, 6);
+
+  const at = new Date(now - 60 * 1000).toISOString();
+  const timed = {
+    ...later,
+    arrival: { ...later.arrival, sendAt: at },
+  };
+  assert.equal(arrivalScheduleDecision(timed, now, null).action, 'send');
+  assert.equal(arrivalScheduleDecision(timed, now, null).mode, 'at');
+});
+
+test('a material ETA change updates before confirmation and asks for a reconfirm after', () => {
+  const now = Date.now();
+  const end = new Date(now + 10 * HOUR).toISOString();
+  const previous = new Date(now + 8 * HOUR).toISOString();
+  const sent = leg({
+    end,
+    arrival: {
+      airport: 'KTEB', aid: 'mer', name: 'Meridian', email: 'teb@meridian.example',
+      matchStatus: 'confirmed', arrivalStatus: 'sent', sentForEnd: previous, services: 'GPU',
+    },
+  });
+  const update = arrivalScheduleDecision(sent, now, 24);
+  assert.equal(update.action, 'update');
+  assert.match(update.key, /arr-update/);
+
+  const nudge = leg({
+    end: new Date(new Date(previous).getTime() + 5 * 60 * 1000).toISOString(),
+    arrival: { ...sent.arrival, sentForEnd: previous },
+  });
+  assert.equal(arrivalScheduleDecision(nudge, now, 24).reason, 'already-sent');
+
+  const confirmed = {
+    ...sent,
+    arrival: { ...sent.arrival, arrivalStatus: 'confirmed', confirmedBy: 'Dana Ruiz' },
+  };
+  const change = arrivalScheduleDecision(confirmed, now, 24);
+  assert.equal(change.action, 'time-change');
+  const noticed = {
+    ...confirmed,
+    arrival: { ...confirmed.arrival, timeChangeForEnd: end, arrivalStatus: 'needs_reconfirm', sentForEnd: end },
+  };
+  assert.equal(arrivalScheduleDecision(noticed, now, 24).reason, 'awaiting-reconfirm');
+
+  const view = arrivalPlanView(sent, 24, now);
+  assert.equal(view.scheduleAction, 'update');
+  assert.ok(view.dueAt);
+});
+
+test('inbound mail waits for an actual departure and sends once', () => {
+  const now = Date.now();
+  const sample = leg({ start: new Date(now - 20 * 60 * 1000).toISOString() });
+  assert.equal(inboundDecision(sample, now, null, null).reason, 'not-departed');
+  assert.equal(pickDepartureSignal(sample), null);
+
+  const wheels = pickDepartureSignal(sample, {
+    tripState: { statuses: { wheels_up: { timestamp: now - 10 * 60 * 1000 } } },
+  });
+  assert.equal(wheels.source, 'wheels_up');
+  const taxiOnly = pickDepartureSignal(sample, {
+    tripState: { statuses: { taxi_dep: { timestamp: now - 15 * 60 * 1000 } } },
+  });
+  assert.equal(taxiOnly.source, 'taxi_dep');
+
+  const fa = pickDepartureSignal(sample, {
+    flightaware: { actualOff: new Date(now - 12 * 60 * 1000).toISOString(), origin: 'APF', destination: 'KTEB' },
+  });
+  assert.equal(fa.source, 'flightaware');
+  const other = pickDepartureSignal(sample, {
+    flightaware: { actualOff: new Date(now - 12 * 60 * 1000).toISOString(), origin: 'KOPF', destination: 'KTEB' },
+  });
+  assert.equal(other, null);
+
+  const manual = pickDepartureSignal({ ...sample, departedManualAt: new Date(now - 5 * 60 * 1000).toISOString() });
+  assert.equal(manual.source, 'manual');
+
+  const due = inboundDecision(sample, now, null, wheels);
+  assert.equal(due.action, 'send');
+  assert.match(due.key, /:inbound$/);
+  const mailed = {
+    ...sample,
+    arrival: { ...sample.arrival, inboundStatus: 'sent' },
+  };
+  assert.equal(inboundDecision(mailed, now, null, wheels).reason, 'already-sent');
+
+  const inbound = buildInboundEmail(sample, 'https://www.skyway.app/fbo-confirm?token=abc', {
+    timeZone: 'America/New_York',
+    originTimeZone: 'America/New_York',
+    departedAt: wheels.at,
+  });
+  assert.match(inbound.text, /Inbound — departed KAPF at /);
+  assert.match(inbound.text, /WEQVQD/);
+  assert.match(inbound.text, /subject to change/);
+  assert.match(inbound.subject, /inbound/i);
+  assert.doesNotMatch(`${inbound.html} ${inbound.text}`, /Jane|Doe/);
+
+  const updateMail = buildArrivalUpdateEmail(sample, 'https://www.skyway.app/fbo-confirm?token=abc', {
+    timeZone: 'America/New_York',
+    previousEta: sample.end,
+  });
+  assert.match(updateMail.subject, /update/);
+  assert.match(updateMail.text, /updated schedule/);
+  const changeMail = buildArrivalTimeChangeEmail(sample, 'https://www.skyway.app/fbo-confirm?token=abc', {
+    timeZone: 'America/New_York',
+    previousEta: sample.end,
+  });
+  assert.match(changeMail.subject, /time change/);
+  assert.match(changeMail.text, /reconfirm/);
 });
 
 test('test mode redirects to Jake and the banner names the FBO', () => {

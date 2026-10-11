@@ -850,7 +850,7 @@ function fboPreviewResponse(path, url, body) {
     return json({ ok: true, view });
   }
   if (path === '/api/fbo-settings') {
-    const settings = window.__FBO_PREVIEW_SETTINGS__ || { testMode: true, live: false, arrivalAutoLeadHours: null };
+    const settings = window.__FBO_PREVIEW_SETTINGS__ || { testMode: true, live: false, arrivalAutoLeadHours: 24 };
     if (body && body.testMode != null) {
       settings.testMode = body.testMode !== false;
       settings.live = settings.testMode === false;
@@ -908,6 +908,19 @@ function fboPreviewResponse(path, url, body) {
       const side = body.side === 'departure' ? 'departure' : 'arrival';
       leg[side] = { ...leg[side], email: body.email };
     }
+    if (body.action === 'set-arrival-schedule') {
+      leg.arrival = {
+        ...leg.arrival,
+        scheduleDisabled: body.scheduleDisabled === true || body.leadHours === 'off',
+        leadHours: body.leadHours ?? null,
+        sendAt: body.clearSendAt ? null : (body.sendAt || leg.arrival?.sendAt || null),
+      };
+    }
+    if (body.action === 'mark-departed') {
+      leg.departedAt = new Date().toISOString();
+      leg.departedSource = 'manual';
+      leg.arrival = { ...leg.arrival, inboundStatus: 'sent', inboundSentAt: Date.now() };
+    }
     if (body.action === 'mark-notice-read') return json({ ok: true });
     return json({ ok: true, leg });
   }
@@ -925,7 +938,7 @@ function fboPreviewResponse(path, url, body) {
   };
   return json({
     ok: true,
-    settings: window.__FBO_PREVIEW_SETTINGS__ || { testMode: true, live: false, arrivalAutoLeadHours: null },
+    settings: window.__FBO_PREVIEW_SETTINGS__ || { testMode: true, live: false, arrivalAutoLeadHours: 24 },
     counts: deskCounts(legs),
     unread: 1,
     legs: filterDeskLegs(legs, filters),

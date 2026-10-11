@@ -15,10 +15,13 @@ import {
   PUBLIC_APP_ORIGIN,
   TOKEN_AFTER_ARRIVAL_MS,
   applyMatchToSide,
-  arrivalAutoDecision,
+  arrivalScheduleDecision,
   blankSide,
   buildArrivalEmail,
+  buildArrivalTimeChangeEmail,
+  buildArrivalUpdateEmail,
   buildDepartureEmail,
+  buildInboundEmail,
   buildOpsNoticeEmail,
   clean,
   clipText,
@@ -30,6 +33,7 @@ import {
   deskCounts,
   directoryDocId,
   filterDeskLegs,
+  inboundDecision,
   isCancelledLeg,
   isHandlingProvider,
   iso,
@@ -38,7 +42,9 @@ import {
   mergeSyncedLeg,
   normalizeAirport,
   normalizeLeadHours,
+  pickDepartureSignal,
   publicLegView,
+  resolveGlobalLeadHours,
   resolveTestMode,
   toMillis,
   validEmail,
@@ -120,7 +126,7 @@ export async function loadSettings(db = fboDb()) {
   const settings = {
     ...defaultFboSettings(),
     ...data,
-    arrivalAutoLeadHours: normalizeLeadHours(data.arrivalAutoLeadHours),
+    arrivalAutoLeadHours: resolveGlobalLeadHours(data, snap.exists),
   };
   if (settings.testMode !== false) settings.testMode = true;
   settings.live = settings.testMode === false && settings.live === true;
@@ -492,7 +498,15 @@ export async function sendDepartureReminder(leg, { db = fboDb(), now = Date.now(
   return { ok: result.status === 'sent', ...result };
 }
 
-export async function sendArrivalSchedule(leg, { db = fboDb(), now = Date.now(), settings, actor, services, notes } = {}) {
+function arrivalMailFor(kind, leg, link, timeZone, previousEta) {
+  if (kind === 'update') return buildArrivalUpdateEmail(leg, link, { timeZone, previousEta });
+  if (kind === 'time-change') return buildArrivalTimeChangeEmail(leg, link, { timeZone, previousEta });
+  return buildArrivalEmail(leg, link, { timeZone });
+}
+
+export async function sendArrivalSchedule(leg, {
+  db = fboDb(), now = Date.now(), settings, actor, services, notes, kind = 'schedule', idempotencyKey,
+} = {}) {
   const live = settings || await loadSettings(db);
   if (isCancelledLeg(leg)) return { ok: false, error: 'Cancelled legs are not scheduled' };
   if (leg.emailsDisabled || leg.arrival?.suppressed) return { ok: false, error: 'Emails are disabled for this trip' };
@@ -501,7 +515,7 @@ export async function sendArrivalSchedule(leg, { db = fboDb(), now = Date.now(),
   if (row?.optedOut || leg.arrival?.optedOut) return { ok: false, error: 'This FBO is opted out of email' };
   const intended = validEmail(row?.email) ? row.email : leg.arrival?.email;
   if (!validEmail(intended)) return { ok: false, error: 'Arrival FBO has no email' };
-  let issuedAt = now;
+  const issuedAt = leg.arrival?.tokenIssuedAt || now;
   let token;
   try {
     token = signFboToken(leg.legUid, issuedAt);
@@ -509,42 +523,144 @@ export async function sendArrivalSchedule(leg, { db = fboDb(), now = Date.now(),
     return { ok: false, error: error.message, code: error.code || null };
   }
   const origin = process.env.PUBLIC_APP_ORIGIN || PUBLIC_APP_ORIGIN;
+  const previousEta = leg.arrival?.sentForEnd
+    ? new Date(leg.arrival.sentForEnd).toISOString()
+    : '';
+  const timeZone = zoneFor(leg.to, leg.arrivalTimeZone);
   const nextArrival = {
     ...(leg.arrival || {}),
     email: intended,
     services: services != null ? clipText(services, 2000) : (leg.arrival?.services || ''),
     opsNotes: notes != null ? clipText(notes, 2000) : (leg.arrival?.opsNotes || ''),
-    arrivalStatus: 'sending',
     sendLockAt: now,
+    pendingKey: idempotencyKey || null,
     tokenIssuedAt: issuedAt,
   };
   const withNotes = { ...leg, arrival: nextArrival };
-  const built = buildArrivalEmail(withNotes, confirmPagePath(origin, token), {
-    timeZone: zoneFor(leg.to, leg.arrivalTimeZone),
-  });
+  const built = arrivalMailFor(kind, withNotes, confirmPagePath(origin, token), timeZone, previousEta);
   const result = await deliverFbo({
     db,
     leg: withNotes,
-    type: 'arrival_schedule',
+    type: built.type,
     built,
     intendedTo: intended,
     testMode: live.testMode !== false,
-    idempotencyKey: `${leg.legUid}:arr:${iso(leg.end) || issuedAt}`,
+    idempotencyKey: idempotencyKey || `${leg.legUid}:arr:${iso(leg.end) || issuedAt}`,
   });
-  const status = result.status === 'sent' ? 'sent' : 'failed';
+  const sent = result.status === 'sent';
+  let arrivalStatus = leg.arrival?.arrivalStatus || 'not_sent';
+  if (sent && kind === 'time-change') arrivalStatus = 'needs_reconfirm';
+  else if (sent) arrivalStatus = 'sent';
+  else if (kind === 'schedule' && arrivalStatus === 'sending') arrivalStatus = 'not_sent';
   await db.collection(FBO_LEGS).doc(leg.legUid).set({
     arrival: {
       ...nextArrival,
-      arrivalStatus: status === 'sent' ? 'sent' : (leg.arrival?.arrivalStatus || 'not_sent'),
-      sentAt: status === 'sent' ? now : (leg.arrival?.sentAt || null),
-      sentForEnd: status === 'sent' ? (leg.end || null) : (leg.arrival?.sentForEnd || null),
+      arrivalStatus,
+      sentAt: sent ? now : (leg.arrival?.sentAt || null),
+      sentForEnd: sent ? (leg.end || null) : (leg.arrival?.sentForEnd || null),
+      timeChangeForEnd: sent && kind === 'time-change' ? (leg.end || null) : (leg.arrival?.timeChangeForEnd || null),
       sendLockAt: null,
+      pendingKey: null,
       lastSendError: result.error,
       lastSentBy: actor?.name || 'Skyway Ops',
     },
     updatedAt: now,
   }, { merge: true });
-  return { ok: result.status === 'sent', ...result, tokenIssuedAt: issuedAt };
+  return { ok: sent, ...result, tokenIssuedAt: issuedAt, kind };
+}
+
+export async function sendInboundNotice(leg, {
+  db = fboDb(), now = Date.now(), settings, actor, departedAt, source, idempotencyKey,
+} = {}) {
+  const live = settings || await loadSettings(db);
+  if (isCancelledLeg(leg)) return { ok: false, error: 'Cancelled legs are not notified' };
+  if (leg.emailsDisabled || leg.arrival?.suppressed) return { ok: false, error: 'Emails are disabled for this trip' };
+  if (leg.arrival?.inboundStatus === 'sent') return { ok: true, skipped: 'already-sent' };
+  const directory = await loadDirectoryMap(db, [leg.to]);
+  const row = directoryRow(directory, leg.to, leg.arrival?.aid);
+  if (row?.optedOut || leg.arrival?.optedOut) return { ok: false, error: 'This FBO is opted out of email' };
+  const intended = validEmail(row?.email) ? row.email : leg.arrival?.email;
+  if (!validEmail(intended)) return { ok: false, error: 'Arrival FBO has no email' };
+  const issuedAt = leg.arrival?.tokenIssuedAt || now;
+  let token;
+  try {
+    token = signFboToken(leg.legUid, issuedAt);
+  } catch (error) {
+    return { ok: false, error: error.message, code: error.code || null };
+  }
+  const origin = process.env.PUBLIC_APP_ORIGIN || PUBLIC_APP_ORIGIN;
+  const when = departedAt || leg.departedAt || leg.actualOff || leg.start;
+  const nextArrival = {
+    ...(leg.arrival || {}),
+    email: intended,
+    inboundStatus: 'sending',
+    inboundLockAt: now,
+    tokenIssuedAt: issuedAt,
+  };
+  const built = buildInboundEmail({ ...leg, arrival: nextArrival }, confirmPagePath(origin, token), {
+    timeZone: zoneFor(leg.to, leg.arrivalTimeZone),
+    originTimeZone: zoneFor(leg.from, leg.departureTimeZone),
+    departedAt: when,
+  });
+  const result = await deliverFbo({
+    db,
+    leg,
+    type: 'inbound_notice',
+    built,
+    intendedTo: intended,
+    testMode: live.testMode !== false,
+    idempotencyKey: idempotencyKey || `${leg.legUid}:inbound`,
+  });
+  const sent = result.status === 'sent';
+  await db.collection(FBO_LEGS).doc(leg.legUid).set({
+    departedAt: iso(when),
+    departedSource: source || leg.departedSource || null,
+    arrival: {
+      ...nextArrival,
+      inboundStatus: sent ? 'sent' : 'failed',
+      inboundSentAt: sent ? now : (leg.arrival?.inboundSentAt || null),
+      inboundLockAt: null,
+      inboundError: result.error,
+    },
+    updatedAt: now,
+  }, { merge: true });
+  return { ok: sent, ...result, kind: 'inbound' };
+}
+
+async function loadDepartureSignal(leg, db) {
+  let tripState = null;
+  let flightaware = null;
+  try {
+    const snap = await db.collection('trip-state').doc(leg.legUid).get();
+    if (snap.exists) tripState = snap.data() || {};
+  } catch (error) {
+    console.warn('[fbo-cron] trip-state read failed', leg.legUid, error.message);
+  }
+  try {
+    const tail = clean(leg.tail).toUpperCase();
+    if (tail) {
+      const snap = await db.collection('flightaware-state').doc(tail).get();
+      if (snap.exists) flightaware = snap.data() || {};
+    }
+  } catch (error) {
+    console.warn('[fbo-cron] flightaware-state read failed', leg.tail, error.message);
+  }
+  return pickDepartureSignal(leg, { tripState, flightaware });
+}
+
+function cronRelevant(leg, settings, now) {
+  const startMs = toMillis(leg.start);
+  const endMs = toMillis(leg.end);
+  const override = normalizeLeadHours(leg.arrival?.leadHours);
+  const globalLead = normalizeLeadHours(settings.arrivalAutoLeadHours) || 0;
+  const lead = Math.max(globalLead, override || 0, 24);
+  if (startMs != null && startMs > now - 12 * 60 * 60 * 1000 && startMs < now + 3 * 60 * 60 * 1000) return true;
+  if (endMs != null && endMs > now - 2 * 60 * 60 * 1000 && endMs < now + (lead + 1) * 60 * 60 * 1000) return true;
+  const sendAt = toMillis(leg.arrival?.sendAt);
+  if (sendAt != null && sendAt < now + 15 * 60 * 1000 && endMs != null && endMs > now) return true;
+  if (leg.arrival?.sentForEnd && iso(leg.arrival.sentForEnd) !== iso(leg.end) && endMs != null && endMs > now) return true;
+  if (leg.actualOff || leg.actualOut || leg.departedManualAt || leg.departedAt) return true;
+  return false;
 }
 
 export async function runFboCron({ db = fboDb(), now = Date.now() } = {}) {
@@ -557,15 +673,15 @@ export async function runFboCron({ db = fboDb(), now = Date.now() } = {}) {
     departureFailed: 0,
     arrivalSent: 0,
     arrivalFailed: 0,
+    arrivalUpdated: 0,
+    timeChangeSent: 0,
+    inboundSent: 0,
+    inboundFailed: 0,
     matched: 0,
   };
   for (const doc of snap.docs) {
     let leg = { legUid: doc.id, ...doc.data() };
-    const startMs = toMillis(leg.start);
-    const endMs = toMillis(leg.end);
-    const relevant = (startMs != null && startMs > now - 2 * 60 * 60 * 1000 && startMs < now + 3 * 60 * 60 * 1000)
-      || (endMs != null && settings.arrivalAutoLeadHours && endMs > now && endMs < now + (settings.arrivalAutoLeadHours + 1) * 60 * 60 * 1000);
-    if (!relevant || isCancelledLeg(leg)) {
+    if (!cronRelevant(leg, settings, now) || isCancelledLeg(leg)) {
       summary.departureSkipped += 1;
       continue;
     }
@@ -589,12 +705,43 @@ export async function runFboCron({ db = fboDb(), now = Date.now() } = {}) {
       else summary.departureFailed += 1;
     } else summary.departureSkipped += 1;
 
-    const arrival = arrivalAutoDecision(leg, now, settings.arrivalAutoLeadHours, directory);
-    if (arrival.action === 'send') {
+    const arrival = arrivalScheduleDecision(leg, now, settings.arrivalAutoLeadHours, directory);
+    if (arrival.action === 'send' || arrival.action === 'update' || arrival.action === 'time-change') {
+      const kind = arrival.action === 'update' ? 'update' : (arrival.action === 'time-change' ? 'time-change' : 'schedule');
       // eslint-disable-next-line no-await-in-loop
-      const result = await sendArrivalSchedule(leg, { db, now, settings, actor: { name: 'FBO cron' } });
-      if (result.ok) summary.arrivalSent += 1;
+      const result = await sendArrivalSchedule(leg, {
+        db, now, settings, actor: { name: 'FBO cron' }, kind, idempotencyKey: arrival.key,
+      });
+      if (result.ok && kind === 'time-change') summary.timeChangeSent += 1;
+      else if (result.ok && kind === 'update') summary.arrivalUpdated += 1;
+      else if (result.ok) summary.arrivalSent += 1;
       else summary.arrivalFailed += 1;
+      if (result.ok) {
+        leg = {
+          ...leg,
+          arrival: {
+            ...(leg.arrival || {}),
+            arrivalStatus: kind === 'time-change' ? 'needs_reconfirm' : 'sent',
+            sentForEnd: leg.end,
+            timeChangeForEnd: kind === 'time-change' ? leg.end : leg.arrival?.timeChangeForEnd,
+          },
+        };
+      }
+    }
+
+    const signal = await loadDepartureSignal(leg, db);
+    if (signal && iso(leg.departedAt) !== signal.at) {
+      leg = { ...leg, departedAt: signal.at, departedSource: signal.source, actualOff: leg.actualOff || (signal.source === 'flightaware' || signal.source === 'actual_off' || signal.source === 'wheels_up' ? signal.at : leg.actualOff) };
+    }
+    const inbound = inboundDecision(leg, now, directory, signal);
+    if (inbound.action === 'send') {
+      // eslint-disable-next-line no-await-in-loop
+      const result = await sendInboundNotice(leg, {
+        db, now, settings, actor: { name: 'FBO cron' },
+        departedAt: signal.at, source: signal.source, idempotencyKey: inbound.key,
+      });
+      if (result.ok && !result.skipped) summary.inboundSent += 1;
+      else if (!result.ok) summary.inboundFailed += 1;
     }
   }
   return summary;
@@ -727,6 +874,42 @@ export async function runFboAction({ action, payload, actor, db = fboDb(), now =
     return { ok: true, leg: { ...leg, arrival } };
   }
 
+  if (action === 'set-arrival-schedule') {
+    const disabled = payload.scheduleDisabled === true || payload.leadHours === 'off';
+    const leadHours = disabled ? 'off' : (payload.leadHours == null || payload.leadHours === '' || payload.leadHours === 'default'
+      ? null
+      : normalizeLeadHours(payload.leadHours));
+    const sendAt = payload.clearSendAt || disabled ? null : (payload.sendAt ? iso(payload.sendAt) : null);
+    const arrival = sidePatch(leg, 'arrival', {
+      scheduleDisabled: disabled,
+      leadHours: disabled ? 'off' : leadHours,
+      sendAt,
+    });
+    if (payload.arrivalScheduleOff != null && leg.arrival?.aid) {
+      await upsertDirectory({
+        airport: leg.to,
+        aid: leg.arrival.aid,
+        name: leg.arrival.name,
+        arrivalScheduleOff: payload.arrivalScheduleOff === true,
+        actor,
+        db,
+      });
+    }
+    await ref.set({ arrival, updatedAt: now }, { merge: true });
+    return { ok: true, leg: { ...leg, arrival } };
+  }
+
+  if (action === 'mark-departed') {
+    const departedManualAt = iso(now);
+    const next = { ...leg, departedManualAt, departedAt: departedManualAt, departedSource: 'manual' };
+    await ref.set({ departedManualAt, departedSource: 'manual', updatedAt: now }, { merge: true });
+    const result = await sendInboundNotice(next, {
+      db, now, actor, departedAt: departedManualAt, source: 'manual', idempotencyKey: `${leg.legUid}:inbound`,
+    });
+    const fresh = await ref.get();
+    return { ...result, leg: { legUid, ...fresh.data() } };
+  }
+
   if (action === 'send-arrival' || action === 'resend-arrival') {
     if (!['auto', 'confirmed', 'manual'].includes(leg.arrival?.matchStatus)) {
       leg = await ensureMatches(leg, db);
@@ -784,7 +967,7 @@ export async function runFboAction({ action, payload, actor, db = fboDb(), now =
 }
 
 export async function upsertDirectory({
-  airport, aid, name, email, phone, contact, preferred, optedOut, actor, db = fboDb(),
+  airport, aid, name, email, phone, contact, preferred, optedOut, arrivalScheduleOff, actor, db = fboDb(),
 }) {
   const code = normalizeAirport(airport);
   if (!code || !clean(aid)) {
@@ -810,6 +993,7 @@ export async function upsertDirectory({
     contact: contact != null ? clipText(contact, 120) : (before.contact || ''),
     preferred: preferred != null ? preferred === true : before.preferred === true,
     optedOut: optedOut != null ? optedOut === true : before.optedOut === true,
+    arrivalScheduleOff: arrivalScheduleOff != null ? arrivalScheduleOff === true : before.arrivalScheduleOff === true,
     updatedAt: Date.now(),
     updatedByUid: actor?.uid || null,
     updatedByName: actor?.name || null,

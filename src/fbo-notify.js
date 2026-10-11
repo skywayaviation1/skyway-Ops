@@ -14,6 +14,9 @@ export const FBO_OPS_PHONE = '727-605-5000';
 export const PUBLIC_APP_ORIGIN = 'https://www.skyway.app';
 export const DEPARTURE_LEAD_MS = 60 * 60 * 1000;
 export const REMINDER_LOCK_MS = 3 * 60 * 1000;
+export const DEFAULT_ARRIVAL_LEAD_HOURS = 24;
+export const MATERIAL_ETA_MS = 15 * 60 * 1000;
+export const DEPARTURE_MATCH_WINDOW_MS = 8 * 60 * 60 * 1000;
 export const TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const TOKEN_AFTER_ARRIVAL_MS = 36 * 60 * 60 * 1000;
 export const AUTO_CONFIRM_SCORE = 0.84;
@@ -68,8 +71,16 @@ export function defaultFboSettings() {
   return {
     testMode: true,
     live: false,
-    arrivalAutoLeadHours: null,
+    arrivalAutoLeadHours: DEFAULT_ARRIVAL_LEAD_HOURS,
   };
+}
+
+/** Missing settings use 24 hours. An explicit null or "off" stays off. */
+export function resolveGlobalLeadHours(data, exists = true) {
+  if (!exists || !data || !Object.prototype.hasOwnProperty.call(data, 'arrivalAutoLeadHours')) {
+    return DEFAULT_ARRIVAL_LEAD_HOURS;
+  }
+  return normalizeLeadHours(data.arrivalAutoLeadHours);
 }
 
 /**
@@ -244,12 +255,12 @@ export function iso(value) {
   return ms == null ? null : new Date(ms).toISOString();
 }
 
-export function formatSubjectToChange(value, timeZone) {
+export function formatLocalClock(value, timeZone) {
   const ms = toMillis(value);
-  if (ms == null) return 'Time not set (subject to change)';
+  if (ms == null) return 'Time not set';
   const zone = timeZone || 'UTC';
   try {
-    const clock = new Intl.DateTimeFormat('en-US', {
+    return new Intl.DateTimeFormat('en-US', {
       timeZone: zone,
       weekday: 'short',
       month: 'short',
@@ -258,10 +269,15 @@ export function formatSubjectToChange(value, timeZone) {
       minute: '2-digit',
       timeZoneName: 'short',
     }).format(new Date(ms));
-    return `${clock} (subject to change)`;
   } catch {
-    return `${new Date(ms).toISOString()} UTC (subject to change)`;
+    return `${new Date(ms).toISOString()} UTC`;
   }
+}
+
+export function formatSubjectToChange(value, timeZone) {
+  const clock = formatLocalClock(value, timeZone);
+  if (clock === 'Time not set') return 'Time not set (subject to change)';
+  return `${clock} (subject to change)`;
 }
 
 function sideOf(leg, side) {
@@ -314,31 +330,172 @@ export function departureReminderDecision(leg, now = Date.now(), directory = nul
   return { ...base, action: 'send', reason: previous && previous !== iso(leg.start) ? 'retimed' : 'due' };
 }
 
-export function arrivalAutoDecision(leg, now, leadHours, directory = null) {
-  const hours = normalizeLeadHours(leadHours);
+function directoryRowFor(directory, side) {
+  if (!side?.aid) return null;
+  return directory?.get?.(directoryDocId(side.airport, side.aid))
+    || directory?.[directoryDocId(side.airport, side.aid)]
+    || null;
+}
+
+export function directoryArrivalScheduleOff(directory, side) {
+  return directoryRowFor(directory, side)?.arrivalScheduleOff === true;
+}
+
+/**
+ * When the advance arrival email is due.
+ * A per-leg "off" or a specific send time wins over the global lead.
+ * A per-leg hour override wins over the global default (24h).
+ */
+export function arrivalSendPlan(leg, globalLeadHours = DEFAULT_ARRIVAL_LEAD_HOURS) {
+  const side = sideOf(leg, 'arrival');
   const endMs = toMillis(leg?.end);
-  const base = { endMs, dueAt: endMs == null || hours == null ? null : endMs - hours * 60 * 60 * 1000 };
-  if (hours == null) return { ...base, action: 'skip', reason: 'auto-off' };
+  if (side.scheduleDisabled === true || side.leadHours === 'off' || side.leadHours === 0) {
+    return { mode: 'off', dueAt: null, leadHours: null, endMs };
+  }
+  const sendAt = toMillis(side.sendAt);
+  if (sendAt != null) return { mode: 'at', dueAt: sendAt, leadHours: null, endMs };
+  const override = side.leadHours != null && side.leadHours !== ''
+    ? normalizeLeadHours(side.leadHours)
+    : null;
+  const hours = override != null ? override : normalizeLeadHours(globalLeadHours);
+  if (hours == null) return { mode: 'off', dueAt: null, leadHours: null, endMs };
+  return {
+    mode: override != null ? 'override' : 'default',
+    dueAt: endMs == null ? null : endMs - hours * 60 * 60 * 1000,
+    leadHours: hours,
+    endMs,
+  };
+}
+
+function etaMoved(leg) {
+  const endMs = toMillis(leg?.end);
+  const sentMs = toMillis(leg?.arrival?.sentForEnd);
+  if (endMs == null || sentMs == null) return false;
+  return Math.abs(endMs - sentMs) >= MATERIAL_ETA_MS;
+}
+
+function freshLock(side, now, key) {
+  return Number(side?.sendLockAt) > now - REMINDER_LOCK_MS && side?.pendingKey && side.pendingKey === key;
+}
+
+/**
+ * Advance arrival mail: initial request, an update when the ETA moves before
+ * confirmation, or a time-change notice after the FBO has already confirmed.
+ */
+export function arrivalScheduleDecision(leg, now = Date.now(), globalLeadHours = DEFAULT_ARRIVAL_LEAD_HOURS, directory = null) {
+  const plan = arrivalSendPlan(leg, globalLeadHours);
+  const side = sideOf(leg, 'arrival');
+  const endMs = plan.endMs;
+  const uid = leg?.legUid || leg?.uid || 'leg';
+  const base = { ...plan, key: null };
   if (isCancelledLeg(leg)) return { ...base, action: 'skip', reason: 'cancelled' };
   const blocked = emailsBlocked(leg, 'arrival', directory);
   if (blocked) return { ...base, action: 'skip', reason: blocked };
-  const side = sideOf(leg, 'arrival');
   if (!validEmail(side.email)) return { ...base, action: 'skip', reason: 'missing-email' };
-  const confirmed = side.matchStatus === 'confirmed' || side.matchStatus === 'manual' || side.matchStatus === 'auto';
-  if (!confirmed) return { ...base, action: 'skip', reason: 'unconfirmed' };
-  if (['confirmed', 'scheduled_manual', 'question'].includes(side.arrivalStatus)) {
-    return { ...base, action: 'skip', reason: 'already-closed' };
-  }
+  const matched = side.matchStatus === 'confirmed' || side.matchStatus === 'manual' || side.matchStatus === 'auto';
+  if (!matched) return { ...base, action: 'skip', reason: 'unconfirmed' };
   if (endMs == null) return { ...base, action: 'skip', reason: 'no-eta' };
-  if (now < base.dueAt) return { ...base, action: 'wait', reason: 'before-window' };
   if (now >= endMs) return { ...base, action: 'skip', reason: 'already-arrived' };
-  if ((side.arrivalStatus === 'sent' || side.arrivalStatus === 'opened') && iso(side.sentForEnd) === iso(leg.end)) {
-    return { ...base, action: 'skip', reason: 'already-sent' };
+
+  const status = side.arrivalStatus || 'not_sent';
+  const moved = etaMoved(leg);
+  const endKey = endMs;
+
+  if (status === 'confirmed' && moved) {
+    const key = `${uid}:arr-change:${endKey}`;
+    if (iso(side.timeChangeForEnd) === iso(leg.end)) return { ...base, action: 'skip', reason: 'already-notified', key };
+    if (freshLock(side, now, key)) return { ...base, action: 'skip', reason: 'in-flight', key };
+    return { ...base, action: 'time-change', reason: 'eta-moved', key, kind: 'arrival_time_change' };
   }
-  if (side.arrivalStatus === 'sending' && Number(side.sendLockAt) > now - REMINDER_LOCK_MS) {
+  if (status === 'needs_reconfirm') {
+    const key = `${uid}:arr-change:${endKey}`;
+    if (iso(side.timeChangeForEnd) === iso(leg.end) || !moved) {
+      return { ...base, action: 'skip', reason: 'awaiting-reconfirm', key };
+    }
+    if (freshLock(side, now, key)) return { ...base, action: 'skip', reason: 'in-flight', key };
+    return { ...base, action: 'time-change', reason: 'eta-moved', key, kind: 'arrival_time_change' };
+  }
+
+  if (['sent', 'opened', 'question'].includes(status) && moved) {
+    const key = `${uid}:arr-update:${endKey}`;
+    if (directoryArrivalScheduleOff(directory, side) || side.scheduleDisabled === true) {
+      return { ...base, action: 'skip', reason: 'advance-off', key };
+    }
+    if (freshLock(side, now, key)) return { ...base, action: 'skip', reason: 'in-flight', key };
+    return { ...base, action: 'update', reason: 'eta-moved', key, kind: 'arrival_update' };
+  }
+
+  if (directoryArrivalScheduleOff(directory, side) || side.scheduleDisabled === true) {
+    return { ...base, mode: 'off', action: 'skip', reason: 'advance-off' };
+  }
+  if (status === 'scheduled_manual') return { ...base, action: 'skip', reason: 'marked-scheduled' };
+  if (['sent', 'opened', 'question', 'confirmed'].includes(status)) {
+    return { ...base, action: 'skip', reason: 'already-sent', key: `${uid}:arr:${endKey}` };
+  }
+  if (plan.mode === 'off' || plan.dueAt == null) return { ...base, action: 'skip', reason: 'auto-off' };
+  const key = `${uid}:arr:${endKey}`;
+  if (freshLock(side, now, key) || (status === 'sending' && Number(side.sendLockAt) > now - REMINDER_LOCK_MS)) {
+    return { ...base, action: 'skip', reason: 'in-flight', key };
+  }
+  if (now < plan.dueAt) return { ...base, action: 'wait', reason: 'before-window', key };
+  return { ...base, action: 'send', reason: 'due', key, kind: 'arrival_schedule' };
+}
+
+export function arrivalAutoDecision(leg, now, leadHours, directory = null) {
+  const decision = arrivalScheduleDecision(leg, now, leadHours, directory);
+  if (decision.action === 'update' || decision.action === 'time-change') {
+    return { ...decision, action: 'send' };
+  }
+  return decision;
+}
+
+/**
+ * Actual departure, preferring FlightAware / off-block / wheels-up over a
+ * manual "departed" tap. Scheduled time alone does not count as departed.
+ */
+export function pickDepartureSignal(leg, { tripState = null, flightaware = null } = {}) {
+  const candidates = [];
+  const push = (at, source, rank) => {
+    const ms = toMillis(at);
+    if (ms == null) return;
+    candidates.push({ at: new Date(ms).toISOString(), ms, source, rank });
+  };
+  push(leg?.actualOff, 'actual_off', 1);
+  const statuses = tripState?.statuses || leg?.statuses || {};
+  push(statuses.wheels_up?.timestamp, 'wheels_up', 1);
+  push(leg?.actualOut, 'actual_out', 2);
+  push(statuses.taxi_dep?.timestamp, 'taxi_dep', 2);
+  if (flightaware?.actualOff && sameAirport(flightaware.origin, leg?.from)) {
+    const offMs = toMillis(flightaware.actualOff);
+    const startMs = toMillis(leg?.start);
+    const near = startMs == null || (offMs != null && Math.abs(offMs - startMs) <= DEPARTURE_MATCH_WINDOW_MS);
+    const destOk = !flightaware.destination || sameAirport(flightaware.destination, leg?.to);
+    if (near && destOk) push(flightaware.actualOff, 'flightaware', 1);
+  }
+  push(leg?.departedManualAt, 'manual', 5);
+  candidates.sort((a, b) => a.rank - b.rank || a.ms - b.ms);
+  return candidates[0] || null;
+}
+
+export function inboundDecision(leg, now = Date.now(), directory = null, departed = null) {
+  const uid = leg?.legUid || leg?.uid || 'leg';
+  const key = `${uid}:inbound`;
+  const side = sideOf(leg, 'arrival');
+  const base = { key, departedAt: departed?.at || null, source: departed?.source || null };
+  if (isCancelledLeg(leg)) return { ...base, action: 'skip', reason: 'cancelled' };
+  const blocked = emailsBlocked(leg, 'arrival', directory);
+  if (blocked) return { ...base, action: 'skip', reason: blocked };
+  if (!validEmail(side.email)) return { ...base, action: 'skip', reason: 'missing-email' };
+  const matched = side.matchStatus === 'confirmed' || side.matchStatus === 'manual' || side.matchStatus === 'auto';
+  if (!matched) return { ...base, action: 'skip', reason: 'unconfirmed' };
+  if (side.inboundStatus === 'sent') return { ...base, action: 'skip', reason: 'already-sent' };
+  if (side.inboundStatus === 'sending' && Number(side.inboundLockAt) > now - REMINDER_LOCK_MS) {
     return { ...base, action: 'skip', reason: 'in-flight' };
   }
-  return { ...base, action: 'send', reason: 'due' };
+  if (!departed?.at) return { ...base, action: 'skip', reason: 'not-departed' };
+  const endMs = toMillis(leg?.end);
+  if (endMs != null && now > endMs + 60 * 60 * 1000) return { ...base, action: 'skip', reason: 'too-late' };
+  return { ...base, action: 'send', reason: departed.source || 'departed', kind: 'inbound_notice' };
 }
 
 export function reminderView(leg, now = Date.now(), directory = null) {
@@ -373,6 +530,25 @@ export function arrivalView(side = {}) {
     confirmedAt: side.confirmedAt || null,
     notes: side.csrNotes || side.manualNote || '',
     question: side.question || '',
+    inboundStatus: side.inboundStatus || 'not_sent',
+    inboundSentAt: side.inboundSentAt || null,
+  };
+}
+
+export function arrivalPlanView(leg, globalLeadHours = DEFAULT_ARRIVAL_LEAD_HOURS, now = Date.now()) {
+  const decision = arrivalScheduleDecision(leg, now, globalLeadHours);
+  const inbound = inboundDecision(leg, now, null, pickDepartureSignal(leg));
+  return {
+    ...arrivalView(leg?.arrival || {}),
+    dueAt: decision.dueAt,
+    mode: decision.mode,
+    leadHours: decision.leadHours,
+    scheduleReason: decision.reason,
+    scheduleAction: decision.action,
+    inboundAction: inbound.action,
+    inboundReason: inbound.reason,
+    departedAt: inbound.departedAt || leg?.departedAt || null,
+    departedSource: inbound.source || leg?.departedSource || null,
   };
 }
 
@@ -381,6 +557,7 @@ export function arrivalStatusLabel(status, side = {}) {
     const who = clean(side.confirmedBy) || 'CSR';
     return `Confirmed by ${who}`;
   }
+  if (status === 'needs_reconfirm') return 'Needs re-confirm';
   if (status === 'question') return 'Question from FBO';
   if (status === 'opened') return 'Opened';
   if (status === 'sent') return 'Sent';
@@ -494,6 +671,106 @@ export function buildArrivalEmail(leg, confirmLink, { timeZone } = {}) {
   return { subject, html, text, type: 'arrival_schedule' };
 }
 
+function arrivalDetailEmail(leg, confirmLink, { timeZone, intro, subject, type, previousEta } = {}) {
+  const tripId = tripIdLabel(leg);
+  const eta = formatSubjectToChange(leg.end || leg.start, timeZone);
+  const services = clean(leg.arrival?.services) || 'None listed';
+  const notes = clean(leg.arrival?.opsNotes) || 'None';
+  const link = escapeHtml(confirmLink);
+  const rows = [
+    ['Tail', escapeHtml(clean(leg.tail) || '—')],
+    ['Trip ID', escapeHtml(tripId)],
+    ...(previousEta ? [['Previous ETA', escapeHtml(formatLocalClock(previousEta, timeZone))]] : []),
+    ['ETA', escapeHtml(eta)],
+    ['Passengers', escapeHtml(paxLabel(leg))],
+    ['Services requested', escapeHtml(services)],
+    ['Notes', escapeHtml(notes)],
+    ['Skyway ops', `${escapeHtml(FBO_OPS_EMAIL)} · ${escapeHtml(FBO_OPS_PHONE)}`],
+  ];
+  const html = `<p style="margin:0 0 12px 0;font-family:-apple-system,Segoe UI,sans-serif;font-size:15px;color:#111827;">${intro}</p>
+    ${detailTable(rows)}
+    <p style="margin:16px 0;">
+      <a href="${link}" style="display:inline-block;background:#0a0a0a;color:#ffffff;text-decoration:none;font-family:-apple-system,Segoe UI,sans-serif;font-size:14px;font-weight:600;padding:12px 18px;border-radius:8px;">You're on our schedule</a>
+    </p>
+    <p style="margin:0;font-family:-apple-system,Segoe UI,sans-serif;font-size:12px;color:#6b7280;">Or open this link: <a href="${link}" style="color:#12708C;">${link}</a></p>`;
+  const text = [
+    intro.replace(/<[^>]+>/g, ''),
+    '',
+    `Tail: ${clean(leg.tail) || '—'}`,
+    `Trip ID: ${tripId}`,
+    ...(previousEta ? [`Previous ETA: ${formatLocalClock(previousEta, timeZone)}`] : []),
+    `ETA: ${eta}`,
+    `Passengers: ${paxLabel(leg)}`,
+    `Services requested: ${services}`,
+    `Notes: ${notes}`,
+    `Skyway ops: ${FBO_OPS_EMAIL} · ${FBO_OPS_PHONE}`,
+    '',
+    `Confirm: ${confirmLink}`,
+  ].join('\n');
+  return { subject, html, text, type };
+}
+
+export function buildArrivalUpdateEmail(leg, confirmLink, { timeZone, previousEta } = {}) {
+  const tripId = tripIdLabel(leg);
+  return arrivalDetailEmail(leg, confirmLink, {
+    timeZone,
+    previousEta,
+    type: 'arrival_update',
+    subject: `Skyway arrival update · ${clean(leg.tail) || 'Aircraft'} · Trip ${tripId} · ${normalizeAirport(leg.to)}`,
+    intro: 'The arrival time changed before this flight was confirmed. Please confirm the updated schedule.',
+  });
+}
+
+export function buildArrivalTimeChangeEmail(leg, confirmLink, { timeZone, previousEta } = {}) {
+  const tripId = tripIdLabel(leg);
+  return arrivalDetailEmail(leg, confirmLink, {
+    timeZone,
+    previousEta,
+    type: 'arrival_time_change',
+    subject: `Skyway arrival time change · ${clean(leg.tail) || 'Aircraft'} · Trip ${tripId} · ${normalizeAirport(leg.to)}`,
+    intro: 'This arrival was confirmed, and the time has since changed. Please reconfirm you are still on our schedule.',
+  });
+}
+
+export function buildInboundEmail(leg, confirmLink, { timeZone, originTimeZone, departedAt } = {}) {
+  const tripId = tripIdLabel(leg);
+  const origin = normalizeAirport(leg.from) || 'origin';
+  const departed = formatLocalClock(departedAt, originTimeZone);
+  const eta = formatSubjectToChange(leg.end || leg.start, timeZone);
+  const services = clean(leg.arrival?.services) || 'None listed';
+  const headline = `Inbound — departed ${origin} at ${departed}`;
+  const subject = `Skyway inbound · ${clean(leg.tail) || 'Aircraft'} · Trip ${tripId} · departed ${origin}`;
+  const link = escapeHtml(confirmLink);
+  const rows = [
+    ['Tail', escapeHtml(clean(leg.tail) || '—')],
+    ['Trip ID', escapeHtml(tripId)],
+    ['Departed', escapeHtml(`${origin} at ${departed}`)],
+    ['Passengers', escapeHtml(paxLabel(leg))],
+    ['ETA', escapeHtml(eta)],
+    ['Services requested', escapeHtml(services)],
+    ['Skyway ops', `${escapeHtml(FBO_OPS_EMAIL)} · ${escapeHtml(FBO_OPS_PHONE)}`],
+  ];
+  const html = `<p style="margin:0 0 12px 0;font-family:-apple-system,Segoe UI,sans-serif;font-size:15px;color:#111827;">${escapeHtml(headline)}</p>
+    ${detailTable(rows)}
+    <p style="margin:16px 0;">
+      <a href="${link}" style="display:inline-block;background:#0a0a0a;color:#ffffff;text-decoration:none;font-family:-apple-system,Segoe UI,sans-serif;font-size:14px;font-weight:600;padding:12px 18px;border-radius:8px;">You're on our schedule</a>
+    </p>
+    <p style="margin:0;font-family:-apple-system,Segoe UI,sans-serif;font-size:12px;color:#6b7280;">Or open this link: <a href="${link}" style="color:#12708C;">${link}</a></p>`;
+  const text = [
+    headline,
+    '',
+    `Tail: ${clean(leg.tail) || '—'}`,
+    `Trip ID: ${tripId}`,
+    `Passengers: ${paxLabel(leg)}`,
+    `ETA: ${eta}`,
+    `Services requested: ${services}`,
+    `Skyway ops: ${FBO_OPS_EMAIL} · ${FBO_OPS_PHONE}`,
+    '',
+    `Confirm: ${confirmLink}`,
+  ].join('\n');
+  return { subject, html, text, type: 'inbound_notice' };
+}
+
 export function buildOpsNoticeEmail({ kind, leg, csrName, notes }) {
   const tripId = tripIdLabel(leg);
   const verb = kind === 'question' ? 'asked a question' : 'confirmed the arrival';
@@ -572,6 +849,8 @@ export function legSyncRecord(trip, extras = {}) {
     toHints: Array.isArray(extras.toHints) ? extras.toHints.map(clean).filter(Boolean).slice(0, 8) : [],
     cancelled,
     archived: extras.archived === true,
+    actualOff: iso(extras.actualOff) || null,
+    actualOut: iso(extras.actualOut) || null,
   };
 }
 
@@ -602,6 +881,11 @@ export function mergeSyncedLeg(existing, incoming, now = Date.now()) {
     droppedFromSchedule: false,
     fromFboName: incoming.fromFboName || prev.fromFboName || null,
     toFboName: incoming.toFboName || prev.toFboName || null,
+    actualOff: incoming.actualOff || prev.actualOff || null,
+    actualOut: incoming.actualOut || prev.actualOut || null,
+    departedManualAt: prev.departedManualAt || null,
+    departedAt: prev.departedAt || null,
+    departedSource: prev.departedSource || null,
     syncedAt: now,
     updatedAt: now,
   };
@@ -672,6 +956,15 @@ export function blankSide(seed = {}) {
     manualNote: '',
     manualAt: null,
     sendLockAt: null,
+    pendingKey: null,
+    leadHours: null,
+    sendAt: null,
+    scheduleDisabled: false,
+    timeChangeForEnd: null,
+    inboundStatus: 'not_sent',
+    inboundSentAt: null,
+    inboundLockAt: null,
+    inboundError: null,
   };
 }
 
@@ -726,7 +1019,7 @@ export function applyMatchToSide(side, match, directoryRow) {
   };
 }
 
-const OPEN_ARRIVAL = new Set(['not_sent', 'sent', 'opened', 'sending', 'question', '']);
+const OPEN_ARRIVAL = new Set(['not_sent', 'sent', 'opened', 'sending', 'question', 'needs_reconfirm', '']);
 
 export function arrivalStillOpen(leg) {
   const status = leg?.arrival?.arrivalStatus || 'not_sent';
@@ -759,6 +1052,7 @@ export function filterDeskLegs(legs, filters = {}, now = Date.now()) {
     if (status === 'missing-email') return missing;
     if (status === 'reminder-failed') return leg.departure?.reminderStatus === 'failed';
     if (status === 'question') return arrival === 'question';
+    if (status === 'needs_reconfirm' || status === 'needs-reconfirm') return arrival === 'needs_reconfirm';
     if (status === 'confirmed') return arrival === 'confirmed' || arrival === 'scheduled_manual';
     return arrival === status;
   }).sort((a, b) => (toMillis(a.start) || 0) - (toMillis(b.start) || 0));

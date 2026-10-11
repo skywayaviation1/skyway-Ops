@@ -7437,7 +7437,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
           </Suspense>
         ) : tab === 'fbo' ? (
           <Suspense fallback={<div className="flex items-center justify-center py-16 text-content-muted"><Loader2 className="mr-2 h-4 w-4 animate-spin" />Loading FBO handling…</div>}>
-            <FboLegPanelLazy trip={trip} fromFbo={fromFbo} toFbo={toFbo} currentUser={currentUser} />
+            <FboLegPanelLazy trip={trip} fromFbo={fromFbo} toFbo={toFbo} currentUser={currentUser} statuses={statuses} />
           </Suspense>
         ) : tab === 'notify' ? (
           <div className="p-6 max-w-2xl">

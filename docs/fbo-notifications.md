@@ -33,11 +33,24 @@ forces test mode even after the toggle.
 Per-FBO opt-out lives on the directory entry. Per-trip disable is on the leg.
 Every attempt is written to `fbo-email-log`.
 
-Departure mail is sent by `GET /api/fbo-departure-cron` every 5 minutes, only
-when `Authorization: Bearer $CRON_SECRET` matches. Cancelled legs are skipped.
+Departure mail, advance arrival mail, and the inbound notice are sent by
+`GET /api/fbo-departure-cron` every 5 minutes, only when
+`Authorization: Bearer $CRON_SECRET` matches. Cancelled legs are skipped.
 The same departure time is not mailed twice. A changed departure time is a new
-send, one hour before the new time. Automatic arrival mail stays off until an
-administrator picks a lead time.
+send, one hour before the new time.
+
+Advance arrival mail goes out 24 hours before the scheduled arrival unless an
+administrator changes the global lead, a leg overrides it, or ops turns it off
+for that trip or FBO. Ops can also pick an exact send time. The same ETA is
+not mailed twice. If the ETA moves by 15 minutes or more before the FBO
+confirms, an update is sent. If they already confirmed, a time-change notice
+is sent and the leg is marked needs re-confirm.
+
+The inbound notice goes to the arrival FBO when the aircraft has actually
+departed. The cron reads FlightAware `flightaware-state/{tail}` (`actualOff`
+matching the origin) and trip-state wheels-up / taxi (off-block) timestamps.
+Scheduled time alone does not send it. Ops can press **Departed** on the leg
+when there is no actual time. Each leg is mailed once.
 
 ## Go live
 

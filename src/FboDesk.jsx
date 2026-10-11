@@ -10,6 +10,7 @@ import {
   Button, Card, CardHeader, EmptyState, MetricTile, PageHeader, StatusChip, cx,
 } from './ui.jsx';
 import {
+  arrivalPlanView,
   arrivalView,
   deskCounts,
   legInSyncWindow,
@@ -104,10 +105,13 @@ function ToneStatus({ status }) {
     ? 'success'
     : status === 'failed' || status === 'question'
       ? 'danger'
+      : status === 'needs_reconfirm'
+      ? 'warning'
       : status === 'opened'
         ? 'info'
         : 'warning';
   const label = status === 'scheduled_manual' ? 'Marked scheduled'
+    : status === 'needs_reconfirm' ? 'Needs re-confirm'
     : status === 'not_sent' ? 'Not sent'
       : status === 'reminder-failed' ? 'Failed'
         : String(status || 'scheduled').replace(/_/g, ' ');
@@ -235,11 +239,13 @@ function SideCard({
   );
 }
 
-export function FboLegPanel({ trip, fromFbo, toFbo, currentUser }) {
+export function FboLegPanel({ trip, fromFbo, toFbo, currentUser, statuses }) {
   const write = canWrite(currentUser);
   const [leg, setLeg] = useState(null);
   const [providers, setProviders] = useState({ from: [], to: [] });
   const [directory, setDirectory] = useState({ from: [], to: [] });
+  const [globalLead, setGlobalLead] = useState(24);
+  const [sendAtInput, setSendAtInput] = useState('');
   const [services, setServices] = useState('');
   const [notes, setNotes] = useState('');
   const [manualNote, setManualNote] = useState('');
@@ -250,7 +256,21 @@ export function FboLegPanel({ trip, fromFbo, toFbo, currentUser }) {
   const record = useMemo(() => legSyncRecord(trip, {
     fromFboName: fromFbo,
     toFboName: toFbo,
-  }), [trip, fromFbo, toFbo]);
+    actualOff: statuses?.wheels_up?.timestamp,
+    actualOut: statuses?.taxi_dep?.timestamp,
+  }), [trip, fromFbo, toFbo, statuses?.wheels_up?.timestamp, statuses?.taxi_dep?.timestamp]);
+
+  useEffect(() => {
+    let cancel = false;
+    fboFetch('/api/fbo-settings')
+      .then((data) => {
+        if (cancel) return;
+        const hours = data.settings?.arrivalAutoLeadHours;
+        setGlobalLead(hours == null ? null : hours);
+      })
+      .catch(() => {});
+    return () => { cancel = true; };
+  }, []);
 
   const reload = useCallback(async () => {
     if (!record.legUid) return;
@@ -336,6 +356,20 @@ export function FboLegPanel({ trip, fromFbo, toFbo, currentUser }) {
 
   const departureView = reminderView(leg || {});
   const arrival = arrivalView(leg?.arrival || {});
+  const plan = arrivalPlanView(leg || { ...record, arrival: {} }, globalLead);
+  const shownLead = leg?.arrival?.scheduleDisabled || leg?.arrival?.leadHours === 'off'
+    ? 'off'
+    : (leg?.arrival?.leadHours ? String(leg.arrival.leadHours) : 'default');
+
+  function saveLead(choice) {
+    if (choice === 'off') {
+      return act('set-arrival-schedule', { scheduleDisabled: true, leadHours: 'off', clearSendAt: true });
+    }
+    if (choice === 'default') {
+      return act('set-arrival-schedule', { scheduleDisabled: false, leadHours: null, clearSendAt: true });
+    }
+    return act('set-arrival-schedule', { scheduleDisabled: false, leadHours: Number(choice), clearSendAt: true });
+  }
   const tripId = record.tripId || 'Trip ID not on this leg';
 
   return (
@@ -432,6 +466,18 @@ export function FboLegPanel({ trip, fromFbo, toFbo, currentUser }) {
                 <ToneStatus status={arrival.status} />
               </div>
               <p className="text-sm text-content">{arrival.label}</p>
+              <p className="text-[12px] text-content-muted">
+                {plan.mode === 'off' || leg?.arrival?.scheduleDisabled
+                  ? 'Advance arrival email is off for this trip.'
+                  : plan.dueAt
+                    ? `Arrival email scheduled ${clock(new Date(plan.dueAt).toISOString())}.`
+                    : 'Arrival email is not scheduled yet.'}
+                {plan.inboundStatus === 'sent'
+                  ? ` Inbound sent ${clock(plan.inboundSentAt)}.`
+                  : plan.departedAt
+                    ? ' Aircraft has departed. Inbound email is next.'
+                    : ' Inbound email waits for actual departure.'}
+              </p>
               {arrival.notes && <p className="text-[12px] text-content-muted">{arrival.notes}</p>}
               {arrival.question && <p className="text-[12px] text-warning">{arrival.question}</p>}
               <label className="block">
@@ -465,10 +511,74 @@ export function FboLegPanel({ trip, fromFbo, toFbo, currentUser }) {
                   <Button size="sm" variant="outline" disabled={busy} onClick={() => act('mark-scheduled', { note: manualNote })}>
                     Mark scheduled
                   </Button>
+                  <Button size="sm" variant="outline" disabled={busy || plan.inboundStatus === 'sent'} onClick={() => act('mark-departed')}>
+                    Departed
+                  </Button>
                 </div>
               )}
               {write && (
                 <Field label="Ops note for a manual confirm" value={manualNote} onChange={setManualNote} placeholder="Who you spoke with" />
+              )}
+              {write && (
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-semibold text-content-subtle">Advance send</span>
+                    <select
+                      aria-label="Arrival lead time"
+                      value={shownLead}
+                      disabled={busy}
+                      onChange={(event) => saveLead(event.target.value)}
+                      className="w-full rounded-lg border border-edge bg-surface px-3 py-2.5 text-sm"
+                    >
+                      <option value="default">Default ({globalLead ? `${globalLead}h` : 'off'})</option>
+                      <option value="off">Off for this trip</option>
+                      <option value="6">6 hours before ETA</option>
+                      <option value="12">12 hours before ETA</option>
+                      <option value="24">24 hours before ETA</option>
+                      <option value="2">2 hours before ETA</option>
+                    </select>
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-semibold text-content-subtle">Or send at</span>
+                    <input
+                      type="datetime-local"
+                      aria-label="Arrival send time"
+                      value={sendAtInput}
+                      disabled={busy}
+                      onChange={(event) => setSendAtInput(event.target.value)}
+                      className="w-full rounded-lg border border-edge bg-surface px-3 py-2.5 text-sm"
+                    />
+                  </label>
+                  <div className="flex flex-wrap gap-2 sm:col-span-2">
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={busy || !sendAtInput}
+                      onClick={() => act('set-arrival-schedule', {
+                        scheduleDisabled: false,
+                        leadHours: null,
+                        sendAt: new Date(sendAtInput).toISOString(),
+                      })}
+                    >
+                      Schedule this time
+                    </Button>
+                  </div>
+                  <label className="flex min-h-11 items-center gap-2 text-sm text-content sm:col-span-2">
+                    <input
+                      type="checkbox"
+                      checked={directoryRow(directory.to, leg?.arrival?.aid)?.arrivalScheduleOff === true}
+                      disabled={busy || !leg?.arrival?.aid}
+                      onChange={(event) => act('set-arrival-schedule', {
+                        scheduleDisabled: leg?.arrival?.scheduleDisabled === true,
+                        leadHours: leg?.arrival?.leadHours ?? null,
+                        sendAt: leg?.arrival?.sendAt || null,
+                        clearSendAt: !leg?.arrival?.sendAt,
+                        arrivalScheduleOff: event.target.checked,
+                      })}
+                    />
+                    No advance emails for this FBO
+                  </label>
+                </div>
               )}
             </div>
           )}
@@ -547,7 +657,7 @@ export function FboHomeCard({ onOpen }) {
 export function FboEmailSafety() {
   const [settings, setSettings] = useState(null);
   const [canEdit, setCanEdit] = useState(false);
-  const [lead, setLead] = useState('off');
+  const [lead, setLead] = useState('24');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
 
@@ -592,7 +702,7 @@ export function FboEmailSafety() {
     <Card>
       <CardHeader
         title="FBO email safety"
-        subtitle="Test mode is the default. An administrator turns live delivery on here."
+        subtitle="Test mode is the default. Advance arrival mail goes out 24 hours before ETA unless you change it."
         icon={Mail}
       />
       <div className={cx(
@@ -619,12 +729,12 @@ export function FboEmailSafety() {
           className="w-full rounded-lg border border-edge bg-surface px-3 py-2.5 text-sm outline-none focus:border-accent disabled:opacity-60"
         >
           <option value="off">Off — ops sends arrival emails</option>
+          <option value="24">24 hours before ETA (default)</option>
           <option value="1">1 hour before ETA</option>
           <option value="2">2 hours before ETA</option>
           <option value="3">3 hours before ETA</option>
           <option value="6">6 hours before ETA</option>
           <option value="12">12 hours before ETA</option>
-          <option value="24">24 hours before ETA</option>
         </select>
       </label>
       {canEdit && (
@@ -641,12 +751,13 @@ export function FboEmailSafety() {
   );
 }
 
-function LegRow({ leg, write, busy, onAction, onChanged }) {
+function LegRow({ leg, write, busy, onAction, onChanged, globalLead }) {
   const [email, setEmail] = useState('');
   const [note, setNote] = useState('');
   const [open, setOpen] = useState(false);
   const reminder = reminderView(leg);
   const arrival = arrivalView(leg.arrival || {});
+  const plan = arrivalPlanView(leg, globalLead);
   const missingDep = !validEmail(leg.departure?.email);
   const missingArr = !validEmail(leg.arrival?.email);
   const targetSide = missingArr ? 'arrival' : 'departure';
@@ -662,6 +773,14 @@ function LegRow({ leg, write, busy, onAction, onChanged }) {
             <span className="font-mono text-[12px] text-content-muted">{leg.tripId || 'No trip ID'}</span>
           </div>
           <p className="mt-1 text-[12px] text-content-muted">{clock(leg.start)} departure · {clock(leg.end)} ETA</p>
+          <p className="mt-1 text-[12px] text-content-muted">
+            {plan.mode === 'off' || leg.arrival?.scheduleDisabled
+              ? 'Advance arrival off'
+              : plan.dueAt
+                ? `Arrival email ${clock(new Date(plan.dueAt).toISOString())}`
+                : 'Arrival email not scheduled'}
+            {plan.inboundStatus === 'sent' ? ' · inbound sent' : plan.departedAt ? ' · departed' : ' · inbound waiting'}
+          </p>
           <div className="mt-2 flex flex-wrap gap-2">
             <span className="text-[11px] text-content-subtle">Dep {leg.departure?.name || leg.fromFboName || 'unmatched'}</span>
             <ToneStatus status={reminder.status === 'failed' ? 'failed' : reminder.status} />
@@ -678,6 +797,9 @@ function LegRow({ leg, write, busy, onAction, onChanged }) {
             <Button size="sm" variant="secondary" disabled={busy} onClick={() => onAction(leg, 'resend-departure')}>Resend reminder</Button>
             <Button size="sm" variant="outline" disabled={busy} onClick={() => setOpen((value) => !value)}>
               {open ? 'Close' : 'Confirm / email'}
+            </Button>
+            <Button size="sm" variant="outline" disabled={busy || plan.inboundStatus === 'sent'} onClick={() => onAction(leg, 'mark-departed')}>
+              Departed
             </Button>
           </div>
         )}
@@ -864,6 +986,7 @@ export default function FboDesk({ currentUser, onSelectTrip }) {
                 <option value="opened">Opened</option>
                 <option value="confirmed">Confirmed</option>
                 <option value="question">Question</option>
+                <option value="needs_reconfirm">Needs re-confirm</option>
                 <option value="missing-email">Missing email</option>
                 <option value="reminder-failed">Reminder failed</option>
               </select>
@@ -883,6 +1006,7 @@ export default function FboDesk({ currentUser, onSelectTrip }) {
               busy={busy}
               onAction={onAction}
               onChanged={load}
+              globalLead={desk?.settings ? desk.settings.arrivalAutoLeadHours : 24}
             />
           ))}
         </Card>
