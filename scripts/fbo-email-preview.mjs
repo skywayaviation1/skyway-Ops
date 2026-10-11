@@ -7,7 +7,10 @@ import { applySkywaySignature } from '../api/_email-signature.js';
 import {
   FBO_TEST_RECIPIENT,
   buildArrivalEmail,
+  buildArrivalTimeChangeEmail,
+  buildArrivalUpdateEmail,
   buildDepartureEmail,
+  buildInboundEmail,
   composeFboHtml,
   confirmPagePath,
 } from '../src/fbo-notify.js';
@@ -76,10 +79,27 @@ const arrival = buildArrivalEmail(
   { timeZone: 'America/New_York' },
 );
 const reposition = buildDepartureEmail(empty, { timeZone: 'America/New_York' });
+const link = confirmPagePath('https://www.skyway.app', 'preview-token');
+const update = buildArrivalUpdateEmail(revenue, link, {
+  timeZone: 'America/New_York',
+  previousEta: '2026-10-12T20:10:00.000Z',
+});
+const timeChange = buildArrivalTimeChangeEmail(revenue, link, {
+  timeZone: 'America/New_York',
+  previousEta: '2026-10-12T20:10:00.000Z',
+});
+const inbound = buildInboundEmail(revenue, link, {
+  timeZone: 'America/New_York',
+  originTimeZone: 'America/New_York',
+  departedAt: '2026-10-12T18:42:00.000Z',
+});
 
 const files = [
   ['departure-reminder.html', departure, 'apf.csr@signatureflight.com'],
   ['arrival-schedule.html', arrival, 'teb.csr@signatureflight.com'],
+  ['arrival-update.html', update, 'teb.csr@signatureflight.com'],
+  ['arrival-time-change.html', timeChange, 'teb.csr@signatureflight.com'],
+  ['inbound-departed.html', inbound, 'teb.csr@signatureflight.com'],
   ['departure-empty-reposition.html', reposition, 'pbi.csr@atlanticaviation.com'],
 ];
 
