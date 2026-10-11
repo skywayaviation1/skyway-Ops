@@ -9,7 +9,7 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  Activity, AlertTriangle, CheckCircle2, ChevronDown, ChevronUp, Clock,
+  Activity, AlertTriangle, ChevronDown, ChevronUp, Clock,
   Download, FileText, Plane, Search, Shield, Users, X,
 } from 'lucide-react';
 import {
@@ -17,9 +17,19 @@ import {
   subscribeOutsideReportForAllPilots,
   RETENTION_DAYS,
 } from './firebase-duty-v2.js';
-import { evaluateCurrent, LIMITS } from './duty-legality.js';
-import { flightBuckets } from './duty-crew-change.js';
+import { evaluateCurrent } from './duty-legality.js';
 import { crewLimitSnapshot, groupLiveCrew } from './duty-board.js';
+import {
+  applyPlanToPeriods,
+  confirmationCounts,
+  durationMs,
+  findOverlaps,
+  fmtHours,
+  hours,
+  isSuperseded,
+  recordIssues,
+} from './duty-findings.js';
+import DutyAttentionBoard, { DutyLinkPartner } from './DutyAttentionBoard.jsx';
 import {
   Button, Card, EmptyState, MetricTile, PageHeader, Spinner, StatusChip, cx, notify,
 } from './ui.jsx';
@@ -36,14 +46,6 @@ const RANGE_OPTIONS = [
   { value: 365, label: '365 days' },
 ];
 
-function hours(ms) {
-  return Number.isFinite(ms) ? ms / MS_HOUR : 0;
-}
-
-function fmtHours(ms, digits = 1) {
-  return `${hours(ms).toFixed(digits)}h`;
-}
-
 function fmtDateTime(ms) {
   if (!Number.isFinite(ms)) return '—';
   return new Date(ms).toLocaleString([], {
@@ -57,129 +59,6 @@ function fmtDate(ms) {
   return new Date(ms).toLocaleDateString([], {
     month: 'short', day: 'numeric', year: 'numeric',
   });
-}
-
-function durationMs(period, now = Date.now()) {
-  if (!Number.isFinite(period?.dutyOnAt)) return 0;
-  const end = Number.isFinite(period.dutyOffAt) ? period.dutyOffAt : now;
-  return Math.max(0, end - period.dutyOnAt);
-}
-
-function confirmationCounts(period) {
-  return !period.confirmStatus
-    || period.confirmStatus === 'self-attested'
-    || period.confirmStatus === 'admin-attested';
-}
-
-function findOverlaps(periods, now) {
-  const ids = new Set();
-  const byPilot = new Map();
-  periods.forEach((p) => {
-    if (!p.pilotUid || !Number.isFinite(p.dutyOnAt)) return;
-    if (!byPilot.has(p.pilotUid)) byPilot.set(p.pilotUid, []);
-    byPilot.get(p.pilotUid).push(p);
-  });
-  byPilot.forEach((list) => {
-    const sorted = [...list].sort((a, b) => a.dutyOnAt - b.dutyOnAt);
-    for (let i = 0; i < sorted.length; i += 1) {
-      const a = sorted[i];
-      const aEnd = Number.isFinite(a.dutyOffAt) ? a.dutyOffAt : now;
-      for (let j = i + 1; j < sorted.length; j += 1) {
-        const b = sorted[j];
-        if (b.dutyOnAt >= aEnd) break;
-        const bEnd = Number.isFinite(b.dutyOffAt) ? b.dutyOffAt : now;
-        if (b.dutyOnAt < aEnd && bEnd > a.dutyOnAt) {
-          ids.add(a.id);
-          ids.add(b.id);
-        }
-      }
-    }
-  });
-  return ids;
-}
-
-function recordIssues(period, periodById, overlapIds, now) {
-  const issues = [];
-  const duty = durationMs(period, now);
-  const buckets = flightBuckets(period);
-
-  const add = (code, label, tone = 'warning', kind = 'compliance') => {
-    const approval = period.findingApprovals?.[code] || null;
-    issues.push({
-      code,
-      label,
-      tone,
-      kind,
-      approved: approval?.status === 'approved',
-      approval,
-    });
-  };
-
-  if (!Number.isFinite(period.dutyOnAt)) add('MISSING_ON', 'Missing duty-on time', 'danger', 'data');
-  if (period.status === 'off' && !Number.isFinite(period.dutyOffAt)) {
-    add('MISSING_OFF', 'Closed record has no duty-off time', 'danger', 'data');
-  }
-  if (Number.isFinite(period.dutyOffAt) && period.dutyOffAt <= period.dutyOnAt) {
-    add('INVALID_TIME', 'Duty-off is not after duty-on', 'danger', 'data');
-  }
-  if (overlapIds.has(period.id)) add('OVERLAP', 'Overlaps another record for this pilot', 'danger', 'data');
-
-  if (period.confirmStatus === 'pending') add('PENDING', `${period.role || 'Crew'} confirmation pending`, 'warning');
-  if (period.confirmStatus === 'declined') add('DECLINED', 'Pilot declined paired duty', 'danger');
-  if (confirmationCounts(period) && period.fitForDuty !== true) {
-    add('FIT', 'Fit-for-duty attestation missing', 'danger');
-  }
-  if (confirmationCounts(period) && !Number.isFinite(period.priorRestMs)) {
-    add('REST_MISSING', 'Prior rest not recorded', 'warning', 'data');
-  } else if (confirmationCounts(period) && period.priorRestMs < LIMITS.REST_REQUIRED_BEFORE_MS) {
-    add('REST_LOW', `Prior rest ${fmtHours(period.priorRestMs)} below 10h`, 'danger');
-  }
-
-  if (period.assignmentType === 'regular' && duty > LIMITS.REGULAR_DUTY_MAX_MS) {
-    add('OVER_14', `Regular duty ${fmtHours(duty)} exceeds 14h`, 'danger');
-  }
-  if (period.status === 'on' && duty > 16 * MS_HOUR) {
-    add('OPEN_LONG', `Duty still open after ${fmtHours(duty)}`, 'danger', 'data');
-  }
-  if (buckets.singleMs > LIMITS.SINGLE_PILOT_FLIGHT_MAX_MS) {
-    add('FLIGHT_LIMIT', `${fmtHours(buckets.singleMs)} single-pilot flight exceeds 8h`, 'danger');
-    if (!period.excursionReason) {
-      add('NO_EXCURSION_REASON', 'Flight-time excursion has no reason', 'danger', 'data');
-    }
-  }
-  if (buckets.twoMs > LIMITS.TWO_PILOT_FLIGHT_MAX_MS) {
-    add('FLIGHT_LIMIT_TWO', `${fmtHours(buckets.twoMs)} two-pilot flight exceeds 10h`, 'danger');
-    if (!period.excursionReason) {
-      add('NO_EXCURSION_REASON', 'Flight-time excursion has no reason', 'danger', 'data');
-    }
-  }
-
-  if (period.overrideStatus === 'requested') add('OVERRIDE_PENDING', 'Override awaiting approval', 'danger');
-  if (period.overrideStatus === 'approved' && !period.overrideApprovedBy) {
-    add('OVERRIDE_AUDIT', 'Approved override missing approver', 'danger', 'data');
-  }
-
-  if (period.partnerPeriodId) {
-    const partner = periodById.get(period.partnerPeriodId);
-    if (!partner) add('ORPHAN_PAIR', 'Linked partner record not found', 'danger', 'data');
-    else if (partner.partnerPeriodId !== period.id) {
-      const historical = Array.isArray(partner.crewSegments)
-        && partner.crewSegments.some((segment) => segment.partnerPeriodId === period.id);
-      if (!historical) add('ONE_WAY_PAIR', 'Partner link is not reciprocal', 'danger', 'data');
-    }
-  } else if ((period.crewType === 'two' || period.awaitingPartner === true) && period.status === 'on') {
-    add('NO_LINKED_CREW', 'Paired duty has no linked crew', 'warning', 'data');
-  }
-
-  if (!period.pilotUid || !period.pilotName) add('PILOT', 'Pilot identity incomplete', 'danger', 'data');
-  if (!period.location) add('LOCATION', 'Location missing', 'warning', 'data');
-  if (!period.role) add('ROLE', 'PIC/SIC role missing', 'warning', 'data');
-  if (!['single', 'two'].includes(period.crewType)) add('CREW_TYPE', 'Crew type missing or invalid', 'warning', 'data');
-  if (!['regular', 'unscheduled'].includes(period.assignmentType)) {
-    add('ASSIGNMENT', 'Assignment type missing or invalid', 'warning', 'data');
-  }
-
-  return issues;
 }
 
 function statusTone(status) {
@@ -362,7 +241,7 @@ export default function AdminDutyReport({ currentUser, users = [], trips = [], o
 
   const cutoff = now - rangeDays * MS_DAY;
   const rangePeriods = useMemo(
-    () => periods.filter(p => Number.isFinite(p.dutyOnAt) && p.dutyOnAt >= cutoff),
+    () => periods.filter(p => !isSuperseded(p) && Number.isFinite(p.dutyOnAt) && p.dutyOnAt >= cutoff),
     [periods, cutoff],
   );
   const rangeOutside = useMemo(
@@ -653,29 +532,14 @@ export default function AdminDutyReport({ currentUser, users = [], trips = [], o
         </div>
       </Card>
 
-      <section>
-        <SectionHeading
-          icon={AlertTriangle}
-          title="Requires attention"
-          count={new Set([...exceptionRecords, ...dataIssueRecords].map(p => p.id)).size}
-        />
-        {[...new Map([...exceptionRecords, ...dataIssueRecords].map(p => [p.id, p])).values()].length === 0 ? (
-          <Card><EmptyState icon={CheckCircle2} title="No exceptions in this range" description="No compliance or data-quality findings were detected." /></Card>
-        ) : (
-          <div className="grid gap-3 lg:grid-cols-2">
-            {[...new Map([...exceptionRecords, ...dataIssueRecords].map(p => [p.id, p])).values()]
-              .slice(0, 12)
-              .map((p) => (
-                <ExceptionCard
-                  key={p.id}
-                  period={p}
-                  issues={issuesById.get(p.id) || []}
-                  onOpen={() => setSelectedPeriod(p)}
-                />
-              ))}
-          </div>
-        )}
-      </section>
+      <DutyAttentionBoard
+        visible={rangePeriods}
+        catalog={periods.filter((period) => !isSuperseded(period))}
+        now={now}
+        trips={trips}
+        pilots={pilots}
+        onApplied={(records) => setPeriods((current) => applyPlanToPeriods(current, { ok: true, records }))}
+      />
 
       <section>
         <SectionHeading icon={Users} title="Pilot summary" count={pilotSummaries.length} />
@@ -757,6 +621,8 @@ export default function AdminDutyReport({ currentUser, users = [], trips = [], o
           issues={issuesById.get(selectedPeriod.id) || []}
           approvedIssues={approvedIssuesById.get(selectedPeriod.id) || []}
           partner={selectedPeriod.partnerPeriodId ? periodById.get(selectedPeriod.partnerPeriodId) : null}
+          allPeriods={periods.filter((period) => !isSuperseded(period))}
+          onApplied={(records) => setPeriods((current) => applyPlanToPeriods(current, { ok: true, records }))}
           onClose={() => setSelectedPeriod(null)}
         />
       )}
@@ -840,34 +706,6 @@ function SectionHeading({ icon: Icon, title, count }) {
       <h2 className="text-sm font-semibold text-content">{title}</h2>
       <span className="font-mono text-2xs text-content-subtle">{count}</span>
     </div>
-  );
-}
-
-function ExceptionCard({ period, issues, onOpen }) {
-  const danger = issues.some(i => i.tone === 'danger');
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className={cx(
-        'rounded-xl border p-4 text-left transition-colors hover:border-edge-strong',
-        danger ? 'border-danger-border bg-danger-soft' : 'border-warning-border bg-warning-soft',
-      )}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="text-sm font-semibold text-content">{period.pilotName || 'Unknown pilot'}</p>
-          <p className="mt-0.5 font-mono text-2xs text-content-muted">
-            {fmtDateTime(period.dutyOnAt)} · {period.tail || 'No tail'} · {period.role || 'No role'}
-          </p>
-        </div>
-        <StatusChip tone={danger ? 'danger' : 'warning'} size="sm">{issues.length} finding{issues.length === 1 ? '' : 's'}</StatusChip>
-      </div>
-      <div className="mt-3 flex flex-wrap gap-1.5">
-        {issues.slice(0, 4).map(i => <StatusChip key={i.code} tone={i.tone} size="sm">{i.label}</StatusChip>)}
-        {issues.length > 4 && <StatusChip size="sm">+{issues.length - 4}</StatusChip>}
-      </div>
-    </button>
   );
 }
 
@@ -988,7 +826,7 @@ function etInputToUtcMs(value) {
   return candidate + (desired - rendered);
 }
 
-function DutyRecordDrawer({ period, issues, approvedIssues = [], partner, onClose }) {
+function DutyRecordDrawer({ period, issues, approvedIssues = [], partner, allPeriods = [], onApplied, onClose }) {
   const [editing, setEditing] = useState(false);
   const [dutyOn, setDutyOn] = useState(() => utcMsToEtInput(period.dutyOnAt));
   const [dutyOff, setDutyOff] = useState(() => utcMsToEtInput(period.dutyOffAt));
@@ -1130,6 +968,7 @@ function DutyRecordDrawer({ period, issues, approvedIssues = [], partner, onClos
           </div>
         </div>
         <div className="flex-1 overflow-y-auto p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+          <DutyLinkPartner period={period} periods={allPeriods} onApplied={onApplied} />
           {editing && (
             <Card className="mb-4 border-accent-border bg-accent-soft">
               <h3 className="text-sm font-semibold text-content">Edit linked duty times</h3>

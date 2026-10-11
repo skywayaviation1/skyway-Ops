@@ -7,6 +7,7 @@ import {
   brokerEmailFor, emailFor, tripStates,
 } from './sample-data.js';
 import { deskCounts, filterDeskLegs } from '../src/fbo-notify.js';
+import { applyPlanToPeriods, planFindingFix, undoPlan } from '../src/duty-findings.js';
 
 const T = TENANT;
 
@@ -754,9 +755,75 @@ export function installFetchStub() {
     }
 
     if (path.startsWith('/api/fbo-')) return fboPreviewResponse(path, url, body);
+    if (path === '/api/duty-finding-fix') return dutyFixPreview(body);
 
     return json({ ok: true });
   };
+}
+
+function dutyFixPreview(body) {
+  const periods = window.__DUTY_PREVIEW_PERIODS__ || [];
+  const json = (payload, status = 200) => new Response(JSON.stringify(payload), {
+    status, headers: { 'Content-Type': 'application/json' },
+  });
+  if (body.mode === 'list') {
+    return json({ ok: true, audits: window.__DUTY_FIX_AUDITS__ || [] });
+  }
+  if (body.mode === 'undo') {
+    const audits = window.__DUTY_FIX_AUDITS__ || [];
+    const audit = audits.find((item) => item.id === body.auditId);
+    const plan = undoPlan(audit, { reason: body.reason, actorName: 'Preview Admin' });
+    if (!plan.ok) return json({ ok: false, error: plan.error });
+    const records = (plan.after || []).map((row) => ({ id: row.id, ...(row.data || row) }));
+    window.__DUTY_PREVIEW_PERIODS__ = applyPlanToPeriods(periods, { ok: true, records });
+    if (audit) audit.undoneAt = Date.now();
+    return json({ ok: true, records, summary: plan.summary, auditId: `undo-${Date.now()}` });
+  }
+  const plan = planFindingFix({
+    ...body,
+    periods,
+    actorName: 'Preview Admin',
+    now: Date.now(),
+  });
+  if (!plan.ok) return json({ ok: false, error: plan.error });
+  if (body.mode === 'preview') {
+    return json({
+      ok: true,
+      mode: 'preview',
+      summary: plan.summary,
+      warnings: plan.warnings || [],
+      fingerprint: plan.fingerprint,
+      bulkActions: plan.bulkActions || [],
+      changes: plan.changes || [],
+      limits: plan.limits || [],
+    });
+  }
+  if (body.fingerprint && body.fingerprint !== plan.fingerprint) {
+    return json({ ok: false, error: 'The duty record changed. Review the fix again.' });
+  }
+  const records = plan.after.map((row) => ({ id: row.id, ...row.data }));
+  window.__DUTY_PREVIEW_PERIODS__ = applyPlanToPeriods(periods, plan);
+  const audit = {
+    id: `audit-${Date.now()}`,
+    at: Date.now(),
+    byName: 'Preview Admin',
+    reason: plan.reason,
+    kind: plan.kind,
+    summary: plan.summary,
+    source: 'finding-fix',
+    before: plan.before,
+    after: plan.after,
+    undoneAt: null,
+  };
+  window.__DUTY_FIX_AUDITS__ = [audit, ...(window.__DUTY_FIX_AUDITS__ || [])];
+  return json({
+    ok: true,
+    records,
+    summary: plan.summary,
+    auditId: audit.id,
+    limits: plan.limits || [],
+    warnings: plan.warnings || [],
+  });
 }
 
 function fboPreviewLegs() {

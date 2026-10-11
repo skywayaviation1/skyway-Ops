@@ -3,6 +3,17 @@
 // group below via re-export shims.
 
 import { FLEET_TAILS as FLEET_TAILS_SAMPLE, MEL_ITEMS, SQUAWKS, dutyPeriods } from '../sample-data.js';
+import { attentionFixture } from '../../src/duty-attention-fixture.js';
+
+function previewDutyPeriods() {
+  if (typeof window === 'undefined') return dutyPeriods();
+  const scenario = new URLSearchParams(window.location.search).get('dutyScenario');
+  if (scenario !== 'attention') return dutyPeriods();
+  if (!Array.isArray(window.__DUTY_PREVIEW_PERIODS__)) {
+    window.__DUTY_PREVIEW_PERIODS__ = attentionFixture();
+  }
+  return window.__DUTY_PREVIEW_PERIODS__;
+}
 
 const emitValue = (value) => (cb) => {
   if (typeof cb === 'function') cb(value);
@@ -173,5 +184,5 @@ export const fetchOutsideFlyingForPilot = async () => [];
 export const fetchOutsideFlyingForPilotInRange = async () => [];
 export const fetchPeriodsForPilotInRange = async () => dutyPeriods();
 export const fetchPeriodsByTailInRange = async () => dutyPeriods();
-export const subscribeDutyReportForAllPilots = (_days, cb) => emitValue(dutyPeriods())(cb);
+export const subscribeDutyReportForAllPilots = (_days, cb) => emitValue(previewDutyPeriods())(cb);
 export const subscribeOutsideReportForAllPilots = (_days, cb) => emitValue([])(cb);
