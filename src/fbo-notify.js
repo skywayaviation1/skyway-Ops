@@ -43,6 +43,24 @@ export function clean(value) {
   return String(value ?? '').replace(/\u00a0/g, ' ').trim();
 }
 
+/**
+ * Firestore rejects `undefined` anywhere in a document write. Omit those
+ * keys instead of turning on ignoreUndefinedProperties for the whole app.
+ * Null is kept: it is how an optional field is explicitly cleared.
+ */
+export function omitUndefined(value) {
+  if (Array.isArray(value)) return value.map((item) => omitUndefined(item));
+  if (!value || typeof value !== 'object' || Object.getPrototypeOf(value) !== Object.prototype) {
+    return value;
+  }
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (item === undefined) continue;
+    out[key] = omitUndefined(item);
+  }
+  return out;
+}
+
 export function normalizeAirport(value) {
   return clean(value).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 7);
 }
@@ -873,7 +891,7 @@ export function mergeSyncedLeg(existing, incoming, now = Date.now()) {
     to: incoming.to || prev.to || '',
     start: incoming.start || prev.start || null,
     end: incoming.end || prev.end || null,
-    pax: incoming.pax,
+    pax: Number.isFinite(Number(incoming.pax)) ? Number(incoming.pax) : (Number.isFinite(Number(prev.pax)) ? Number(prev.pax) : 0),
     legType: incoming.legType || prev.legType || '',
     category: incoming.category || prev.category || '',
     cancelled: incoming.cancelled === true || incoming.archived === true,
