@@ -1,0 +1,27 @@
+rules_version = '2';
+// Shift handoff fragment for the named Firestore database `appusers`.
+//
+// DO NOT deploy this file by itself. Production `appusers` rules are not
+// stored in this repository. firebase.json deploys rules only for the
+// `appreview` database. Deploying this fragment as the database ruleset
+// would replace every other collection's rules.
+//
+// Merge the match below into the deployed `appusers` rules so it is the
+// only match that applies to `ops-shift-log`. Firestore ORs every matching
+// allow, so a wildcard `match /{document=**}` that allows signed-in users
+// would override this deny. Exclude `ops-shift-log` from that wildcard.
+//
+// Clients never read or write this collection. Create, edit, and delete go
+// through /api/ops-control-action with the Admin SDK, which bypasses
+// security rules. That API admits only active, approved ops and admin
+// users, and it allows edit and delete only when the document is
+// submitted. A daily cron deletes documents older than 7 days. A direct
+// client write would skip those checks.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /ops-shift-log/{noteId} {
+      allow read, write: if false;
+    }
+  }
+}

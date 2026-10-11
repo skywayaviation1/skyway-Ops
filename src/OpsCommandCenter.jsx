@@ -39,6 +39,7 @@ import {
   Button, Card, CardHeader, EmptyState, MetricTile, PageHeader, StatusChip, cx,
 } from './ui.jsx';
 import { resolveAircraftMeta, resolveManagedTails } from './fleet-config.js';
+import OpsShiftLog from './OpsShiftLog.jsx';
 const FlightBoardLazy = lazy(() => import('./FlightBoard.jsx'));
 
 // ====================================================================
@@ -494,6 +495,9 @@ export default function OpsCommandCenter({ currentUser, trips, config, onSelectT
             icon={Wrench}
           />
         </div>
+
+        {/* Ops only. Sales share this home; OpsShiftLog hides itself for them. */}
+        <OpsShiftLog currentUser={currentUser} />
 
         <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
           <Card padded={false} className="overflow-hidden">

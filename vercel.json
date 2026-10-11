@@ -23,6 +23,10 @@
     {
       "path": "/api/cleanup-pax-ids",
       "schedule": "30 7 * * *"
+    },
+    {
+      "path": "/api/shift-handoff-cleanup",
+      "schedule": "15 9 * * *"
     }
   ],
   "functions": {
@@ -37,6 +41,9 @@
       "maxDuration": 60
     },
     "api/currency-alerts.js": {
+      "maxDuration": 60
+    },
+    "api/shift-handoff-cleanup.js": {
       "maxDuration": 60
     }
   },
