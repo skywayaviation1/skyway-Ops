@@ -16,6 +16,11 @@
  */
 
 import crypto from 'node:crypto';
+import {
+  AIRPORT_CACHE_COLLECTION,
+  AIRPORT_CACHE_META_ID,
+  cacheDocIdForCode,
+} from './_airport-cache.js';
 import { parseCsv } from './_iflightplanner.js';
 
 export const CACHE_COLLECTION = 'aviowiki-cache';
@@ -938,8 +943,16 @@ export function createAviowikiRuntime({
     let identity = null;
     if (db) {
       try {
+        const coll = db.collection(AIRPORT_CACHE_COLLECTION);
+        const metaSnap = await coll.doc(AIRPORT_CACHE_META_ID).get();
+        const shardRanges = metaSnap.exists ? (metaSnap.data()?.shardRangesByPrefix || {}) : {};
         for (const code of codes) {
-          const snap = await db.collection('airport-cache-ourairports').doc(code[0]).get();
+          // Legacy caches have no shard ranges, so this is the letter doc.
+          // Sharded prefixes resolve to `{letter}~00N` and do not read a
+          // stale letter doc that the refresh has not deleted yet.
+          const docId = cacheDocIdForCode(code, shardRanges);
+          if (!docId) continue;
+          const snap = await coll.doc(docId).get();
           const entry = snap.exists ? snap.data()?.entries?.[code] : null;
           if (entry) {
             identity = { ident: code, ...entry };
