@@ -51,6 +51,7 @@ import { evaluateCurrent, LIMITS } from './duty-legality.js';
 import { wasClosedByPartnerDutyOff } from './duty-crew-change.js';
 import { assignedTailFor, findAssignedTrip } from './duty-assignment.js';
 import { dutyClockState, partnerOnCrewDay } from './crew-day.js';
+import { getAppTimezone } from './app-timezone.js';
 import { DutyExportButtons } from './DutyExport.jsx';
 import TzAwareDateTimeInput from './TzAwareInput.jsx';
 import { Button, Card, InfoRow, StatusChip, cx } from './ui.jsx';
@@ -411,6 +412,7 @@ export default function DutyV2({ currentUser, myTrips = [], users = [] }) {
           myTrips={myTrips}
           users={users}
           currentUserUid={uid}
+          currentUserName={name}
         />
       )}
 
@@ -541,7 +543,7 @@ function fmtClock(ms) {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
 }
 
-function OffDutyCard({ busy, openForm, setOpenForm, periods, now, onStart, onResume, resumable, myTrips, users, currentUserUid }) {
+function OffDutyCard({ busy, openForm, setOpenForm, periods, now, onStart, onResume, resumable, myTrips, users, currentUserUid, currentUserName }) {
   const starting = openForm === 'start';
   const resuming = openForm === 'resume';
   // Show rest-status info: if most-recent closed period ended within
@@ -709,7 +711,7 @@ function OnDutyCard({ period, now, busy, openForm, setOpenForm, legality, onEnd,
       {!ending && !linking && period.partnerPeriodId && (
         <div className="flex items-start gap-2 rounded-lg border border-info-border bg-info-soft px-3 py-2.5 text-2xs text-info">
           <Users className="mt-px h-3.5 w-3.5 shrink-0" />
-          <span>Linked crew. Ending duty asks whether only you go off or the whole crew does. A crew change keeps your partner on the original duty-on time. Partner compliance data stays private.</span>
+          <span>Linked crew. Duty off asks “Crew off duty” (both, the default) or “Just me — swapping with another pilot.” Just me leaves your partner on duty, on the original duty-on time, still designated as a paired crew. Partner compliance data stays private.</span>
         </div>
       )}
 
@@ -1019,6 +1021,12 @@ function StartDutyForm({ busy, onCancel, onConfirm, myTrips = [], users = [], cu
   // a trip match (so we show a "auto-detected" hint).
   const [partnerUid, setPartnerUid] = useState(null);
   const [partnerSourceTripId, setPartnerSourceTripId] = useState(null);
+  const dutyTimeZone = getAppTimezone() || 'America/New_York';
+  const crewDay = useMemo(
+    () => partnerOnCrewDay(myTrips, currentUserName, dutyOnAt, dutyTimeZone),
+    [myTrips, currentUserName, dutyOnAt, dutyTimeZone],
+  );
+  const scheduledPair = Boolean(crewDay?.name);
 
   // Eligible crew users to show in the dropdown — active, approved pilots,
   // excluding self. Do not create duty records for disabled/pending accounts.
@@ -1088,10 +1096,13 @@ function StartDutyForm({ busy, onCancel, onConfirm, myTrips = [], users = [], cu
   // PIC sees the dropdown.
   //
   useEffect(() => {
+    if (scheduledPair && crewType !== 'two') {
+      setCrewType('two');
+      return;
+    }
     if (crewType !== 'two') return;
-    // One PIC+SIC pair for this local day sets the seat before we read
+    // One PIC+SIC pair for this Eastern duty day sets the seat before we read
     // the complementary name, so a SIC is not matched as if they were PIC.
-    const crewDay = partnerOnCrewDay(myTrips, currentUserName, dutyOnAt);
     if (crewDay?.myRole && role !== crewDay.myRole) {
       setRole(crewDay.myRole);
       return;
@@ -1122,7 +1133,7 @@ function StartDutyForm({ busy, onCancel, onConfirm, myTrips = [], users = [], cu
       setPartnerUid(null);
       setPartnerSourceTripId(null);
     }
-  }, [matchedTrip, role, crewType, crewUsers, tripId, myTrips, currentUserName, dutyOnAt]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [matchedTrip, role, crewType, crewUsers, tripId, myTrips, currentUserName, dutyOnAt, scheduledPair, crewDay]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Resolved partner object — for display
   const partnerUser = useMemo(
@@ -1229,15 +1240,25 @@ function StartDutyForm({ busy, onCancel, onConfirm, myTrips = [], users = [], cu
       <div className="grid grid-cols-2 gap-3">
         <div>
           <Label>ROLE</Label>
-          <Toggle options={['PIC', 'SIC']} value={role} onChange={setRole} />
+          {scheduledPair ? (
+            <p className="rounded border border-slate-700 px-2 py-2 text-[11px] text-slate-100">{crewDay.myRole}</p>
+          ) : (
+            <Toggle options={['PIC', 'SIC']} value={role} onChange={setRole} />
+          )}
         </div>
         <div>
           <Label>CREW</Label>
-          <Toggle
-            options={[{ value: 'single', label: '1 PILOT' }, { value: 'two', label: '2 PILOTS' }]}
-            value={crewType}
-            onChange={setCrewType}
-          />
+          {scheduledPair ? (
+            <p className="rounded border border-cyan-500/40 bg-cyan-500/5 px-2 py-2 text-[11px] leading-relaxed text-cyan-100" data-testid="scheduled-crew-lock">
+              Scheduled with {crewDay.name} on this tail. Duty on starts both pilots together.
+            </p>
+          ) : (
+            <Toggle
+              options={[{ value: 'single', label: '1 PILOT' }, { value: 'two', label: '2 PILOTS' }]}
+              value={crewType}
+              onChange={setCrewType}
+            />
+          )}
         </div>
       </div>
 
@@ -1247,7 +1268,8 @@ function StartDutyForm({ busy, onCancel, onConfirm, myTrips = [], users = [], cu
           partnerUid={partnerUid}
           setPartnerUid={setPartnerUid}
           partnerUser={partnerUser}
-          autoDetected={Boolean(partnerSourceTripId && partnerSourceTripId === tripId)}
+          autoDetected={Boolean(partnerSourceTripId && partnerSourceTripId === tripId) || scheduledPair}
+          locked={scheduledPair}
           partnerRole={role === 'PIC' ? 'SIC' : 'PIC'}
           matchedTripPartnerName={role === 'PIC' ? matchedTrip?.info?.sic : matchedTrip?.info?.pic}
         />
@@ -1301,8 +1323,10 @@ function StartDutyForm({ busy, onCancel, onConfirm, myTrips = [], users = [], cu
 
       {showPartnerPicker && partnerUser && (
         <div className="text-[10px] text-cyan-300 bg-cyan-500/5 border border-cyan-500/30 p-2">
-          When you confirm, <strong>{partnerUser.name || partnerUser.displayName}</strong> will
-          be duty-on at the same time and receive a card to confirm their own fit-for-duty.
+          When you confirm, <strong>{partnerUser.name || partnerUser.displayName}</strong> duties
+          on with you. If they are already on duty from a crew swap, you join that crew and
+          their original duty-on time stays. They still confirm their own fit-for-duty when
+          the record was opened for them.
         </div>
       )}
 
@@ -1344,6 +1368,7 @@ function PartnerPicker({
   setPartnerUid,
   partnerUser,
   autoDetected,
+  locked = false,
   partnerRole,
   matchedTripPartnerName,
 }) {
@@ -1364,14 +1389,16 @@ function PartnerPicker({
                 </div>
               </div>
             </div>
-            <button
-              type="button"
-              onClick={() => setPartnerUid(null)}
-              className="text-[10px] text-slate-400 hover:text-cyan-300 px-2 py-1 border border-slate-700 hover:border-cyan-400"
-              style={{ fontFamily: 'JetBrains Mono, monospace' }}
-            >
-              CHANGE
-            </button>
+            {!locked && (
+              <button
+                type="button"
+                onClick={() => setPartnerUid(null)}
+                className="text-[10px] text-slate-400 hover:text-cyan-300 px-2 py-1 border border-slate-700 hover:border-cyan-400"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}
+              >
+                CHANGE
+              </button>
+            )}
           </div>
         </div>
       ) : (
@@ -1393,9 +1420,14 @@ function PartnerPicker({
               Trip says {partnerRole} is "{matchedTripPartnerName}" but couldn't find a clear match. Pick manually above.
             </div>
           )}
-          {!matchedTripPartnerName && (
+          {!matchedTripPartnerName && !locked && (
             <div className="text-[10px] text-slate-500">
               No {partnerRole} found in trip data. Pick the assigned partner manually, or change Crew to 1 Pilot.
+            </div>
+          )}
+          {locked && !partnerUser && (
+            <div className="text-[10px] text-amber-400">
+              This day is a scheduled crew. Pick {partnerRole} so both pilots duty on together.
             </div>
           )}
         </div>
@@ -1469,7 +1501,7 @@ function EndDutyForm({ period, busy, onCancel, onConfirm, users = [], currentUse
   );
   const [excursionReason, setExcursionReason] = useState('');
   const [over14Verified, setOver14Verified] = useState(false);
-  const [scope, setScope] = useState(paired ? (initialIntent === 'crew-change' ? 'self' : null) : 'self');
+  const [scope, setScope] = useState(paired ? (initialIntent === 'crew-change' ? 'self' : 'crew') : 'self');
   const [replacementUid, setReplacementUid] = useState('');
   const crew = eligibleCrew(users, currentUserUid);
   const replacement = crew.find((u) => (u.uid || u.id) === replacementUid);
@@ -1488,17 +1520,30 @@ function EndDutyForm({ period, busy, onCancel, onConfirm, users = [], currentUse
   const canSubmit = offAtMs != null && offAtMs > period.dutyOnAt && offAtMs <= Date.now() + 60000
     && (!paired || scope === 'self' || scope === 'crew');
   const confirmLabel = scope === 'crew'
-    ? 'END BOTH PILOTS’ DUTY'
+    ? 'CREW OFF DUTY'
     : replacement
-      ? 'END MY DUTY, BRING ON REPLACEMENT'
-      : 'END ONLY MY DUTY';
+      ? 'JUST ME — BRING ON REPLACEMENT'
+      : 'JUST ME — SWAPPING';
 
   return (
     <div className="space-y-3 mt-2" data-testid="end-duty-form" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
       {paired && (
         <div data-testid="end-scope" className="space-y-2">
           <Label>WHO IS ENDING DUTY?</Label>
-          <label className="flex items-start gap-2 border border-cyan-500/40 bg-cyan-500/5 p-2.5 cursor-pointer">
+          <label className={`flex items-start gap-2 p-2.5 cursor-pointer ${scope === 'crew' ? 'border border-cyan-500/40 bg-cyan-500/5' : 'border border-slate-700'}`}>
+            <input
+              type="radio"
+              name="end-scope"
+              data-testid="end-scope-crew"
+              checked={scope === 'crew'}
+              onChange={() => { setScope('crew'); setReplacementUid(''); }}
+              className="mt-0.5 accent-cyan-400"
+            />
+            <span className="text-[11px] leading-relaxed text-slate-100">
+              <strong>Crew off duty</strong> (default). Both pilots go off duty together.
+            </span>
+          </label>
+          <label className={`flex items-start gap-2 p-2.5 cursor-pointer ${scope === 'self' ? 'border border-cyan-500/40 bg-cyan-500/5' : 'border border-slate-700'}`}>
             <input
               type="radio"
               name="end-scope"
@@ -1508,32 +1553,19 @@ function EndDutyForm({ period, busy, onCancel, onConfirm, users = [], currentUse
               className="mt-0.5 accent-cyan-400"
             />
             <span className="text-[11px] leading-relaxed text-slate-100">
-              <strong>End only my duty.</strong> My partner stays on duty. Their original duty-on time does not change.
-            </span>
-          </label>
-          <label className="flex items-start gap-2 border border-slate-700 p-2.5 cursor-pointer">
-            <input
-              type="radio"
-              name="end-scope"
-              data-testid="end-scope-crew"
-              checked={scope === 'crew'}
-              onChange={() => { setScope('crew'); setReplacementUid(''); }}
-              className="mt-0.5 accent-red-400"
-            />
-            <span className="text-[11px] leading-relaxed text-slate-100">
-              <strong>End the whole crew.</strong> Both pilots go off duty together.
+              <strong>Just me — swapping with another pilot.</strong> Only my duty ends. My partner stays on duty under the paired crew designation. Their duty-on time does not reset.
             </span>
           </label>
           {scope === 'self' && (
             <div>
-              <Label>REPLACE CREW MEMBER</Label>
+              <Label>REPLACEMENT PILOT</Label>
               <select
                 data-testid="replacement-select"
                 value={replacementUid}
                 onChange={(e) => setReplacementUid(e.target.value)}
                 className="w-full bg-slate-950/80 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-400"
               >
-                <option value="">No replacement yet — partner stays on</option>
+                <option value="">Not named yet — they can duty on and join this crew</option>
                 {crew.map((u) => (
                   <option key={u.uid || u.id} value={u.uid || u.id}>
                     {u.name || u.displayName || u.email}
@@ -1541,7 +1573,7 @@ function EndDutyForm({ period, busy, onCancel, onConfirm, users = [], currentUse
                 ))}
               </select>
               <p className="mt-1 text-[10px] leading-relaxed text-slate-400">
-                A crew change defaults to ending only your duty. The pilot who is staying keeps the original duty-on time, and the replacement confirms their own fit-for-duty.
+                Just me ends only your duty. The pilot who stays keeps the original duty-on time and the paired designation, including while the seat is open. The replacement duties on and links to this crew.
               </p>
             </div>
           )}

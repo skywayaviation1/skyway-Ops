@@ -4,10 +4,12 @@ import test from 'node:test';
 import {
   etDayBounds,
   extendedRestForPeriod,
+  flightBuckets,
   flightTimeChecks,
   planDutyOff,
   planOct1CrewCorrection,
   planRelink,
+  planScheduledDutyOn,
   resolveDutyEndScope,
   restOutlook,
   wasClosedByPartnerDutyOff,
@@ -352,6 +354,143 @@ test('Oct 1 correction restores one continuous two-pilot duty and clears the 16-
   assert.equal(legality.blockers.length, 0);
   assert.equal(legality.checks.find((check) => check.code === 'REST_24H').details.requiredMs, 10 * HOUR);
   assert.equal(legality.checks.some((check) => check.code === 'FT_24H_SINGLE'), false);
+});
+
+test('just me keeps the stayer paired, then the replacement duties on and 9.3h is not an 8h or 16h flag', () => {
+  const day = etDayBounds(2026, 10, 1);
+  const on = day.start + 8 * HOUR;
+  const swapAt = on + 5 * HOUR;
+  const off = on + 14 * HOUR;
+  const morning = etDayBounds(2026, 10, 2).start + 8 * HOUR;
+  const matt = period({
+    id: 'matt-period',
+    dutyOnAt: on,
+    flightTimeMs: 4 * HOUR,
+    role: 'SIC',
+    partnerPeriodId: 'daniel-period',
+  });
+  const daniel = period({
+    id: 'daniel-period',
+    pilotUid: 'daniel',
+    pilotName: 'Daniel Cho',
+    role: 'PIC',
+    partnerPeriodId: 'matt-period',
+    dutyOnAt: on,
+    flightTimeMs: 3.1 * HOUR,
+  });
+
+  const swap = planDutyOff({
+    period: daniel,
+    partner: matt,
+    dutyOffAt: swapAt,
+    flightTimeMs: 3.1 * HOUR,
+    scope: 'self',
+    actorName: 'Daniel Cho',
+    now: swapAt,
+  });
+  assert.equal(swap.ok, true);
+  assert.equal(swap.scope, 'self');
+  const danielPatch = swap.writes.find((write) => write.id === 'daniel-period').patch;
+  const mattPatch = swap.writes.find((write) => write.id === 'matt-period').patch;
+  assert.equal(danielPatch.status, 'off');
+  assert.equal(danielPatch.dutyOffAt, swapAt);
+  assert.equal(mattPatch.status, 'on');
+  assert.equal(mattPatch.dutyOnAt, on);
+  assert.equal(mattPatch.dutyOffAt, null);
+  assert.equal(mattPatch.crewType, 'two');
+  assert.equal(mattPatch.awaitingPartner, true);
+  assert.equal(mattPatch.partnerPeriodId, null);
+  assert.equal(mattPatch.crewSegments.at(-1).crewType, 'two');
+  assert.equal(mattPatch.crewSegments.at(-1).awaitingReplacement, true);
+  assert.notEqual(mattPatch.crewSegments.at(-1).crewType, 'single');
+
+  const staying = {
+    ...matt,
+    ...mattPatch,
+    flightTimeMs: 9.3 * HOUR,
+  };
+  const openGap = flightBuckets(staying);
+  assert.equal(openGap.singleMs, 0);
+  assert.equal(openGap.twoMs, 9.3 * HOUR);
+
+  const join = planScheduledDutyOn({
+    callerUid: 'kameron',
+    pic: { pilotUid: 'kameron', pilotName: 'Kameron Blake' },
+    sic: { pilotUid: 'matt', pilotName: 'Matt Hale' },
+    picOpen: null,
+    sicOpen: staying,
+    dutyOnAt: swapAt + 10 * 60_000,
+    actorName: 'Kameron Blake',
+    now: swapAt + 10 * 60_000,
+    partnerAttestation: { fitForDuty: true, priorRestMs: 12 * HOUR, role: 'PIC' },
+  });
+  assert.equal(join.ok, true);
+  assert.equal(join.mode, 'join');
+  const mattJoined = join.writes.find((write) => write.id === 'matt-period').patch;
+  const kameron = join.writes.find((write) => write.op === 'create');
+  assert.equal(mattJoined.dutyOnAt, on);
+  assert.equal(mattJoined.status, 'on');
+  assert.equal(mattJoined.crewType, 'two');
+  assert.equal(mattJoined.flightTimeMs, undefined);
+  assert.equal(kameron.doc.pilotUid, 'kameron');
+  assert.equal(kameron.doc.dutyOnAt, swapAt + 10 * 60_000);
+  assert.equal(kameron.doc.partnerPeriodId, 'matt-period');
+  assert.equal(kameron.doc.confirmStatus, 'self-attested');
+  assert.equal(kameron.doc.fitForDuty, true);
+  assert.notEqual(kameron.doc.dutyOnAt, on);
+
+  const finished = {
+    ...staying,
+    ...mattJoined,
+    dutyOffAt: off,
+    status: 'off',
+    flightTimeMs: 9.3 * HOUR,
+    confirmStatus: 'self-attested',
+    crewSegments: mattJoined.crewSegments.map((segment, index, list) => (
+      index === list.length - 1 ? { ...segment, endedAt: off } : segment
+    )),
+  };
+  assert.equal(finished.crewSegments.every((segment) => segment.crewType === 'two'), true);
+  const legal = evaluateCurrent([finished], [], morning, 'two');
+  assert.equal(legal.checks.some((check) => check.code === 'FT_24H_SINGLE' && check.severity === 'block'), false);
+  assert.equal(legal.blockers.some((check) => check.code === 'FT_24H_SINGLE'), false);
+  const rest = legal.checks.find((check) => check.code === 'REST_24H');
+  assert.equal(rest.details.requiredMs, LIMITS.REST_REQUIRED_BEFORE_MS);
+  assert.notEqual(rest.details.requiredMs, 16 * HOUR);
+  const outlook = restOutlook([finished], morning);
+  assert.equal(outlook.requiredMs, 10 * HOUR);
+  assert.equal(outlook.blocked, false);
+});
+
+test('a scheduled pair with nobody on duty starts together, and a live third pilot blocks a join', () => {
+  const on = Date.parse('2026-10-01T12:00:00Z');
+  const fresh = planScheduledDutyOn({
+    callerUid: 'daniel',
+    pic: { pilotUid: 'daniel', pilotName: 'Daniel Cho' },
+    sic: { pilotUid: 'matt', pilotName: 'Matt Hale' },
+    dutyOnAt: on,
+    actorName: 'Daniel Cho',
+    now: on,
+  });
+  assert.equal(fresh.ok, true);
+  assert.equal(fresh.mode, 'start-pair');
+
+  const blocked = planScheduledDutyOn({
+    callerUid: 'kameron',
+    pic: { pilotUid: 'kameron', pilotName: 'Kameron Blake' },
+    sic: { pilotUid: 'matt', pilotName: 'Matt Hale' },
+    sicOpen: period({
+      id: 'matt-period',
+      dutyOnAt: on,
+      partnerPeriodId: 'daniel-period',
+      awaitingPartner: false,
+      partnerLive: true,
+    }),
+    dutyOnAt: on + HOUR,
+    now: on + HOUR,
+  });
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.status, 409);
 });
 
 test('ambiguous pilot names produce a report and no writes', () => {

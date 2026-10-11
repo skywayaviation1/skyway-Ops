@@ -1,4 +1,5 @@
 import { reviewerSessionBlock } from '../src/reviewer-account.js';
+import { planScheduledDutyOn } from '../src/duty-crew-change.js';
 // Atomic, symmetric PIC/SIC duty-on.
 //
 // Either assigned crewmember can initiate. Both operational records begin at
@@ -158,6 +159,132 @@ export default async function handler(req, res) {
     const sic = { ...sicOpts, pilotName: sicProfile.name || sicOpts.pilotName || 'Unknown' };
     const picId = `${pic.pilotUid}_${dutyOnAt}`;
     const sicId = `${sic.pilotUid}_${dutyOnAt}`;
+
+    const loadOpen = async (pilotUid) => {
+      const snap = await database.collection(COLL)
+        .where('pilotUid', '==', pilotUid)
+        .where('status', '==', 'on')
+        .get();
+      if (snap.empty) return null;
+      const docSnap = snap.docs[0];
+      const data = { id: docSnap.id, ...docSnap.data() };
+      let partnerLive = false;
+      if (data.partnerPeriodId && data.awaitingPartner !== true) {
+        const partnerSnap = await database.collection(COLL).doc(data.partnerPeriodId).get();
+        const partner = partnerSnap.exists ? partnerSnap.data() : null;
+        partnerLive = Boolean(
+          partner
+          && partner.status === 'on'
+          && partner.pilotUid
+          && partner.pilotUid !== caller.uid,
+        );
+      }
+      return { ...data, partnerLive };
+    };
+
+    const [picOpen, sicOpen] = await Promise.all([
+      loadOpen(pic.pilotUid),
+      loadOpen(sic.pilotUid),
+    ]);
+    const callerRole = caller.uid === pic.pilotUid ? 'PIC' : 'SIC';
+    const joinPlan = planScheduledDutyOn({
+      callerUid: caller.uid,
+      pic,
+      sic,
+      picOpen,
+      sicOpen,
+      dutyOnAt,
+      actorName: caller.uid === pic.pilotUid ? pic.pilotName : sic.pilotName,
+      now,
+      partnerAttestation: {
+        fitForDuty: true,
+        priorRestMs: finite(callerOpts.priorRestMs),
+        location: shared.location,
+        tail: shared.tail,
+        tripId: shared.tripId,
+        assignmentType: shared.assignmentType,
+        role: callerRole,
+      },
+    });
+    if (!joinPlan.ok) {
+      return res.status(joinPlan.status || 400).json({ ok: false, error: joinPlan.error });
+    }
+    if (joinPlan.mode === 'join') {
+      const attestation = {
+        fitForDuty: true,
+        priorRestMs: finite(callerOpts.priorRestMs),
+        location: shared.location,
+        tail: shared.tail,
+        tripId: shared.tripId,
+        assignmentType: shared.assignmentType,
+        role: callerRole,
+      };
+      const ownPeriod = await database.runTransaction(async (tx) => {
+        const [picFreshSnap, sicFreshSnap] = await Promise.all([
+          tx.get(database.collection(COLL).where('pilotUid', '==', pic.pilotUid).where('status', '==', 'on')),
+          tx.get(database.collection(COLL).where('pilotUid', '==', sic.pilotUid).where('status', '==', 'on')),
+        ]);
+        const openFrom = (snap) => (snap.empty ? null : { id: snap.docs[0].id, ...snap.docs[0].data() });
+        let picFresh = openFrom(picFreshSnap);
+        let sicFresh = openFrom(sicFreshSnap);
+        const partnerRefs = [picFresh, sicFresh]
+          .filter((open) => open?.partnerPeriodId && open.awaitingPartner !== true)
+          .map((open) => database.collection(COLL).doc(open.partnerPeriodId));
+        const partnerSnaps = await Promise.all(partnerRefs.map((ref) => tx.get(ref)));
+        const partnerById = new Map(
+          partnerSnaps.filter((snap) => snap.exists).map((snap) => [snap.id, snap.data()]),
+        );
+        const withLive = (open) => {
+          if (!open) return null;
+          const partner = open.partnerPeriodId ? partnerById.get(open.partnerPeriodId) : null;
+          const partnerLive = Boolean(
+            partner && partner.status === 'on' && partner.pilotUid && partner.pilotUid !== caller.uid,
+          );
+          return { ...open, partnerLive };
+        };
+        picFresh = withLive(picFresh);
+        sicFresh = withLive(sicFresh);
+        const fresh = planScheduledDutyOn({
+          callerUid: caller.uid,
+          pic,
+          sic,
+          picOpen: picFresh,
+          sicOpen: sicFresh,
+          dutyOnAt,
+          actorName: caller.uid === pic.pilotUid ? pic.pilotName : sic.pilotName,
+          now,
+          partnerAttestation: attestation,
+        });
+        if (!fresh.ok || fresh.mode !== 'join') {
+          throw new Error(fresh.error || 'The on-duty crew changed before the join could be saved');
+        }
+        const createRefs = fresh.writes
+          .filter((write) => write.op === 'create')
+          .map((write) => database.collection(COLL).doc(write.id));
+        const existingSnaps = await Promise.all(createRefs.map((ref) => tx.get(ref)));
+        if (existingSnaps.some((snap) => snap.exists)) {
+          throw new Error('A duty record already exists at this start time');
+        }
+        let own = null;
+        for (const write of fresh.writes) {
+          const ref = database.collection(COLL).doc(write.id);
+          if (write.op === 'create') {
+            tx.create(ref, write.doc);
+            if (write.doc.pilotUid === caller.uid) own = write.doc;
+          } else {
+            tx.update(ref, write.patch);
+          }
+        }
+        if (!own) throw new Error('Joined crew but the caller record was not created');
+        return own;
+      });
+      return res.status(200).json({
+        ok: true,
+        period: ownPeriod,
+        linked: true,
+        joinedExistingCrew: true,
+      });
+    }
 
     // Query guards are repeated inside one transaction. The query reads make
     // concurrent paired starts conflict when either pilot's result set changes,
