@@ -1,9 +1,11 @@
 import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // /api/faa-notams.js
 //
-// Fetch active NOTAMs for an airport from the FAA NMS (NOTAM Management
-// System) API. Server-side OAuth + caching so the FAA API isn't hit
-// every time a broker refreshes their tracking page.
+// Fetch active NOTAMs for an airport. Primary source is the FAA NMS
+// (NOTAM Management System) API. When FAA credentials are missing or the
+// FAA request fails — including the current client-credentials 401
+// invalid_client — the handler falls back to AVWX
+// (GET https://avwx.rest/api/notam/{icao}).
 //
 // Query: GET /api/faa-notams?icao=KJFK
 //
@@ -14,6 +16,8 @@ import { reviewerSessionBlock } from '../src/reviewer-account.js';
 //     fetchedAt: 1717286400000,
 //     count: 12,
 //     filteredCount: 3,
+//     cached: false,
+//     source: "faa" | "avwx",
 //     notams: [
 //       {
 //         id: "!JFK 06/021",
@@ -24,6 +28,7 @@ import { reviewerSessionBlock } from '../src/reviewer-account.js';
 //         effectiveStart: <ms>,
 //         effectiveEnd:   <ms>,
 //         severity: "high" | "medium" | "low",
+//         qcode: "QMRLC",
 //       }, ...
 //     ],
 //     // significantOnly: pre-filtered list of operationally important NOTAMs
@@ -33,24 +38,46 @@ import { reviewerSessionBlock } from '../src/reviewer-account.js';
 //     significantOnly: [...same shape, filtered subset...]
 //   }
 //
-// Response (error or no data):
-//   { ok: true, icao: "...", count: 0, notams: [], significantOnly: [] }
+// Response (error or no data from both sources):
+//   { ok: true, icao, fetchedAt, count: 0, filteredCount: 0, notams: [],
+//     significantOnly: [], source: null, cached: false, error }
 //
 // Auth required for callers: Firebase idToken (same as airport-weather).
 // Server auths to FAA with OAuth client credentials grant.
+// AVWX auth is the raw AVWX_API_KEY in the Authorization header. AVWX
+// accepts that value alone or with a TOKEN/BEARER prefix.
 //
-// Cache: 10 minutes in Firestore at flightaware-cache/notam_<ICAO>. Even
-// in a major operational event, 10 min freshness is more than acceptable
-// — NOTAMs publish hours-to-days in advance, not seconds.
+// FAA endpoints default to production and can be overridden:
+//   FAA_NMS_TOKEN_URL  (default https://api-nms.aim.faa.gov/v1/auth/token)
+//   FAA_NMS_API_BASE   (default https://api-nms.aim.faa.gov/nmsapi)
 //
-// IMPORTANT: this endpoint NEVER returns the raw FAA OAuth token to the
-// client. The token stays server-side. The endpoint is rate-limited
-// inherently by the Firestore cache.
+// Cache: 10 minutes in Firestore at flightaware-cache/notam_<ICAO>. The
+// cached payload includes `source`, so a fallback result is not refetched
+// on every broker refresh. Even in a major operational event, 10 min
+// freshness is more than acceptable — NOTAMs publish hours-to-days in
+// advance, not seconds.
+//
+// If FAA answers 401 repeatedly (invalid_client does not recover on its
+// own), this instance skips FAA for a cooldown and goes straight to AVWX.
+// The breaker is in-memory, same scope as the OAuth token cache.
+//
+// IMPORTANT: this endpoint NEVER returns the raw FAA OAuth token or the
+// AVWX key to the client. Tokens stay server-side.
 
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 
 export const config = { runtime: 'nodejs' };
+
+export const DEFAULT_FAA_TOKEN_URL = 'https://api-nms.aim.faa.gov/v1/auth/token';
+export const DEFAULT_FAA_API_BASE = 'https://api-nms.aim.faa.gov/nmsapi';
+export const AVWX_NOTAM_URL = 'https://avwx.rest/api/notam';
+export const CACHE_TTL_MS = 10 * 60 * 1000;          // 10 min
+const TOKEN_CACHE_TTL_MS = 50 * 60 * 1000;           // 50 min (tokens usually last 60)
+// Two consecutive 401s means the client is rejected, not a one-off blip.
+// Skip FAA for 15 minutes so later airports don't repeat the dead call.
+export const FAA_AUTH_FAILURE_THRESHOLD = 2;
+export const FAA_AUTH_COOLDOWN_MS = 15 * 60 * 1000;
 
 let adminApp = null;
 let _db = null;
@@ -66,15 +93,94 @@ function getDb() {
   return _db;
 }
 
-const TOKEN_URL = 'https://api-nms.aim.faa.gov/v1/auth/token';
-const NMS_API = 'https://api-nms.aim.faa.gov/nmsapi';
-const CACHE_TTL_MS = 10 * 60 * 1000;          // 10 min
-const TOKEN_CACHE_TTL_MS = 50 * 60 * 1000;    // 50 min (tokens usually last 60)
-
 // In-memory OAuth token cache per Vercel function instance. When the
 // instance cold-starts the cache resets — that's fine, we just refresh
 // the token on the first request after a cold start.
-let _tokenCache = null; // { token, expiresAt }
+const defaultTokenCache = { token: null, expiresAt: 0 };
+
+export function createFaaAuthCircuit({
+  threshold = FAA_AUTH_FAILURE_THRESHOLD,
+  cooldownMs = FAA_AUTH_COOLDOWN_MS,
+} = {}) {
+  let streak = 0;
+  let bypassUntil = 0;
+  return {
+    bypassed(now = Date.now()) {
+      return bypassUntil > now;
+    },
+    record401(now = Date.now()) {
+      streak += 1;
+      if (streak >= threshold) {
+        const opening = bypassUntil <= now;
+        bypassUntil = now + cooldownMs;
+        if (opening) {
+          console.warn(
+            `[faa-notams] FAA returned 401 ${streak} time(s); skipping FAA for ${Math.round(cooldownMs / 60000)} min`,
+          );
+        }
+      }
+      return streak;
+    },
+    recordSuccess() {
+      streak = 0;
+      bypassUntil = 0;
+    },
+    reset() {
+      streak = 0;
+      bypassUntil = 0;
+    },
+  };
+}
+
+const defaultCircuit = createFaaAuthCircuit();
+
+// Test seams. Production leaves these unset and uses process.env, global
+// fetch, and Firestore.
+let testHooks = null;
+export function setNotamTestHooks(hooks) {
+  testHooks = hooks || null;
+}
+export function resetNotamTestHooks() {
+  testHooks = null;
+  defaultTokenCache.token = null;
+  defaultTokenCache.expiresAt = 0;
+  defaultCircuit.reset();
+}
+
+function activeEnv() {
+  return testHooks?.env || process.env;
+}
+function activeFetch() {
+  return testHooks?.fetchImpl || fetch;
+}
+function activeNow() {
+  return typeof testHooks?.now === 'function' ? testHooks.now() : Date.now();
+}
+function activeDb() {
+  return testHooks?.db || getDb();
+}
+
+export function faaEndpoints(env = process.env) {
+  const tokenUrl = String(env.FAA_NMS_TOKEN_URL || DEFAULT_FAA_TOKEN_URL).trim();
+  const apiBase = String(env.FAA_NMS_API_BASE || DEFAULT_FAA_API_BASE).trim().replace(/\/$/, '');
+  return { tokenUrl, apiBase };
+}
+
+function faaConfigured(env) {
+  return Boolean(env.FAA_NMS_CLIENT_ID && env.FAA_NMS_CLIENT_SECRET);
+}
+
+function httpError(message, status) {
+  const err = new Error(message);
+  err.status = status;
+  return err;
+}
+
+export function isFaa401(err) {
+  if (!err) return false;
+  if (err.status === 401) return true;
+  return /\b401\b/.test(String(err.message || ''));
+}
 
 // ---- Auth helpers ----
 
@@ -102,17 +208,20 @@ async function authorize(req) {
 // in-memory until expiry.
 //
 // Throws on failure. Caller decides whether to surface or swallow.
-async function getFaaToken() {
-  const now = Date.now();
-  if (_tokenCache && _tokenCache.expiresAt > now + 30_000) {
+async function getFaaToken(ctx) {
+  const now = ctx.now;
+  const tokenCache = ctx.tokenCache;
+  if (tokenCache?.token && tokenCache.expiresAt > now + 30_000) {
     // 30s safety margin — don't use a token that's about to expire
-    return _tokenCache.token;
+    return tokenCache.token;
   }
-  const clientId = process.env.FAA_NMS_CLIENT_ID;
-  const clientSecret = process.env.FAA_NMS_CLIENT_SECRET;
+  const clientId = ctx.env.FAA_NMS_CLIENT_ID;
+  const clientSecret = ctx.env.FAA_NMS_CLIENT_SECRET;
   if (!clientId || !clientSecret) {
     throw new Error('FAA_NMS_CLIENT_ID / FAA_NMS_CLIENT_SECRET not configured');
   }
+
+  const { tokenUrl } = faaEndpoints(ctx.env);
 
   // The FAA NMS auth endpoint uses client_credentials. Two patterns are
   // common — try the most likely one first (form-encoded body), fall
@@ -123,7 +232,7 @@ async function getFaaToken() {
     client_secret: clientSecret,
   }).toString();
 
-  let r = await fetch(TOKEN_URL, {
+  let r = await ctx.fetchImpl(tokenUrl, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
@@ -135,7 +244,7 @@ async function getFaaToken() {
   if (!r.ok && (r.status === 415 || r.status === 400)) {
     // Try Basic auth header + form body — another common OAuth pattern
     const basic = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
-    r = await fetch(TOKEN_URL, {
+    r = await ctx.fetchImpl(tokenUrl, {
       method: 'POST',
       headers: {
         'Authorization': `Basic ${basic}`,
@@ -148,25 +257,24 @@ async function getFaaToken() {
 
   if (!r.ok) {
     const errText = await r.text().catch(() => '');
-    throw new Error(`FAA token request failed: ${r.status} ${errText.slice(0, 200)}`);
+    throw httpError(`FAA token request failed: ${r.status} ${errText.slice(0, 200)}`, r.status);
   }
   const data = await r.json();
   const token = data.access_token || data.accessToken || data.token;
   if (!token) throw new Error('FAA token response missing access_token');
   const expiresIn = Number(data.expires_in || data.expiresIn || 3600);
-  _tokenCache = {
-    token,
-    expiresAt: now + Math.min(expiresIn * 1000, TOKEN_CACHE_TTL_MS),
-  };
+  tokenCache.token = token;
+  tokenCache.expiresAt = now + Math.min(expiresIn * 1000, TOKEN_CACHE_TTL_MS);
   return token;
 }
 
 // ---- NOTAM fetching + parsing ----
 
-async function fetchNotamsFromFaa(icao) {
-  const token = await getFaaToken();
-  const url = `${NMS_API}/v1/notams?location=${encodeURIComponent(icao)}`;
-  const r = await fetch(url, {
+async function fetchNotamsFromFaa(icao, ctx) {
+  const token = await getFaaToken(ctx);
+  const { apiBase } = faaEndpoints(ctx.env);
+  const url = `${apiBase}/v1/notams?location=${encodeURIComponent(icao)}`;
+  const r = await ctx.fetchImpl(url, {
     headers: {
       'Authorization': `Bearer ${token}`,
       'Accept': 'application/json',
@@ -178,9 +286,42 @@ async function fetchNotamsFromFaa(icao) {
     // empty rather than error. Anything else is a real problem.
     if (r.status === 404) return { type: 'FeatureCollection', features: [] };
     const errText = await r.text().catch(() => '');
-    throw new Error(`FAA NOTAM fetch failed: ${r.status} ${errText.slice(0, 200)}`);
+    throw httpError(`FAA NOTAM fetch failed: ${r.status} ${errText.slice(0, 200)}`, r.status);
   }
   return r.json();
+}
+
+// AVWX documents the token in the Authorization header. The value may be
+// the raw token (what AVWX_API_KEY stores) or a TOKEN/BEARER prefixed
+// string — AVWX accepts either, so the header is the key unchanged.
+export async function fetchNotamsFromAvwx(icao, ctx = {}) {
+  const env = ctx.env || activeEnv();
+  const fetchImpl = ctx.fetchImpl || activeFetch();
+  const key = String(env.AVWX_API_KEY || '').trim();
+  if (!key) throw new Error('AVWX_API_KEY not configured');
+  const url = `${AVWX_NOTAM_URL}/${encodeURIComponent(icao)}`;
+  const r = await fetchImpl(url, {
+    method: 'GET',
+    headers: {
+      'Authorization': key,
+      'Accept': 'application/json',
+    },
+  });
+  if (r.status === 404) return [];
+  if (!r.ok) {
+    const errText = await r.text().catch(() => '');
+    throw httpError(`AVWX NOTAM fetch failed: ${r.status} ${errText.slice(0, 200)}`, r.status);
+  }
+  const text = await r.text();
+  if (!text || !text.trim()) return [];
+  let data;
+  try { data = JSON.parse(text); }
+  catch (_) { throw new Error('AVWX NOTAM response was not JSON'); }
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.data)) return data.data;
+  if (Array.isArray(data?.notams)) return data.notams;
+  if (data?.error) throw new Error(`AVWX NOTAM fetch failed: ${String(data.error).slice(0, 200)}`);
+  return [];
 }
 
 // Classify a NOTAM by its text / fields. The FAA NOTAM format has
@@ -189,7 +330,7 @@ async function fetchNotamsFromFaa(icao) {
 // on the message text.
 //
 // Returns: { type, severity, summary }
-function classifyNotam(notamText, props = {}) {
+export function classifyNotam(notamText, props = {}) {
   const text = String(notamText || '').toUpperCase();
   // Q-code classification — first letter group after Q identifies subject
   // QMR = movement area / runway, QMX = taxiway, QFA = airport facilities,
@@ -248,11 +389,22 @@ function classifyNotam(notamText, props = {}) {
   return { type, severity, summary };
 }
 
+function toMs(v) {
+  if (v == null || v === '') return null;
+  if (typeof v === 'number') return v < 1e12 ? v * 1000 : v;
+  if (typeof v === 'object') {
+    if (v.dt != null && v.dt !== '') return toMs(v.dt);
+    return null;
+  }
+  const t = new Date(v).getTime();
+  return Number.isFinite(t) ? t : null;
+}
+
 // Parse a single NOTAM record from the FAA GEOJSON response into our
 // flat shape. The exact field names in the FAA response vary depending
 // on the version of their API, so we read defensively — try multiple
 // candidate names for each value.
-function parseNotam(feature) {
+export function parseNotam(feature) {
   if (!feature || typeof feature !== 'object') return null;
   const p = feature.properties || feature;       // GEOJSON or flat
   // ID
@@ -260,13 +412,6 @@ function parseNotam(feature) {
   // Text — try several candidate fields
   const text = p.text || p.notamText || p.traditionalMessage || p.icaoMessage
             || p.message || p.simpleText || '';
-  // Effective dates — millisecond timestamps after normalization
-  const toMs = (v) => {
-    if (v == null || v === '') return null;
-    if (typeof v === 'number') return v < 1e12 ? v * 1000 : v;
-    const t = new Date(v).getTime();
-    return Number.isFinite(t) ? t : null;
-  };
   const effectiveStart = toMs(p.effectiveStart || p.startDateTime || p.startDate || p.beginValidity);
   const effectiveEnd   = toMs(p.effectiveEnd || p.endDateTime || p.endDate || p.endValidity);
   // Classification (FDC, DOM, INTL, MIL)
@@ -287,10 +432,75 @@ function parseNotam(feature) {
   };
 }
 
+// AVWX NotamData uses `number` as a string. Some payloads wrap it like
+// the shared Number type (`{ repr, value }`). Qualifiers in the published
+// schema have subject + condition codes rather than a single `code`
+// field; accept `qualifiers.code` when a feed includes it, otherwise
+// rebuild the ICAO Q-code (Q + subject + condition) so classifyNotam
+// still sees QMRLC / QMXLT / etc.
+function avwxNotamId(number) {
+  if (number == null || number === '') return null;
+  if (typeof number === 'string' || typeof number === 'number') return String(number);
+  if (typeof number === 'object') {
+    const repr = number.repr ?? number.value;
+    if (repr == null || repr === '') return null;
+    return String(repr);
+  }
+  return null;
+}
+
+function avwxQcode(qualifiers) {
+  if (!qualifiers) return '';
+  if (typeof qualifiers === 'string') {
+    const fromLine = qualifiers.toUpperCase().match(/\b(Q[A-Z0-9]{4})\b/);
+    return fromLine ? fromLine[1] : qualifiers.toUpperCase();
+  }
+  const code = qualifiers.code ?? qualifiers.qcode ?? qualifiers.qCode;
+  if (typeof code === 'string' && code.trim()) return code.trim().toUpperCase();
+  if (code && typeof code === 'object') {
+    const repr = code.repr || code.value || '';
+    if (String(repr).trim()) return String(repr).trim().toUpperCase();
+  }
+  const subject = String(qualifiers.subject?.repr || '').toUpperCase();
+  const condition = String(qualifiers.condition?.repr || '').toUpperCase();
+  if (/^[A-Z0-9]{2}$/.test(subject) && /^[A-Z0-9]{2}$/.test(condition)) {
+    return `Q${subject}${condition}`;
+  }
+  const fromRepr = String(qualifiers.repr || '').toUpperCase().match(/\b(Q[A-Z0-9]{4})\b/);
+  return fromRepr ? fromRepr[1] : '';
+}
+
+function avwxClassification(type) {
+  if (type == null || type === '') return '';
+  if (typeof type === 'string' || typeof type === 'number') return String(type);
+  if (typeof type === 'object') return String(type.repr || type.value || '');
+  return '';
+}
+
+export function mapAvwxNotam(item) {
+  if (!item || typeof item !== 'object') return null;
+  const text = (typeof item.raw === 'string' && item.raw.trim())
+    ? item.raw
+    : (typeof item.sanitized === 'string' ? item.sanitized : '');
+  const qcode = avwxQcode(item.qualifiers);
+  const { type, severity, summary } = classifyNotam(text, { qcode });
+  return {
+    id: avwxNotamId(item.number),
+    classification: avwxClassification(item.type),
+    type,
+    severity,
+    summary,
+    text: String(text).slice(0, 4000),
+    effectiveStart: toMs(item.start_time),
+    effectiveEnd: toMs(item.end_time),
+    qcode: qcode || null,
+  };
+}
+
 // Decide whether a NOTAM is "operationally significant" — what the
 // broker badge should surface vs. what's noise. Conservative filter:
 // high severity always, medium for runway/fuel/approach issues.
-function isSignificant(n) {
+export function isSignificant(n) {
   if (!n) return false;
   if (n.severity === 'high') return true;
   if (n.severity === 'medium' && ['NAVAID', 'FUEL', 'RWY', 'TFR', 'AIRPORT'].includes(n.type)) {
@@ -301,11 +511,85 @@ function isSignificant(n) {
 
 // Drop NOTAMs whose effective window has already ended. The FAA API
 // occasionally returns recently-expired NOTAMs in the response; we want
-// only currently-active or future-effective items.
-function isActive(n, now = Date.now()) {
+// only currently-active or future-effective items. AVWX may serve reports
+// for up to 10 days after the end date — same filter applies.
+export function isActive(n, now = Date.now()) {
   if (!n) return false;
   if (n.effectiveEnd && n.effectiveEnd < now) return false;
   return true;
+}
+
+function faaFeatureList(raw) {
+  if (Array.isArray(raw?.features)) return raw.features;
+  if (Array.isArray(raw?.notams)) return raw.notams;
+  if (Array.isArray(raw)) return raw;
+  return [];
+}
+
+export function buildNotamPayload(icao, parsed, source, now) {
+  const active = (parsed || []).filter((n) => n && isActive(n, now));
+  const significantOnly = active.filter(isSignificant);
+  return {
+    icao,
+    fetchedAt: now,
+    count: active.length,
+    filteredCount: significantOnly.length,
+    notams: active,
+    significantOnly,
+    source,
+  };
+}
+
+function requestContext(options = {}) {
+  return {
+    env: options.env || activeEnv(),
+    fetchImpl: options.fetchImpl || activeFetch(),
+    now: options.now ?? activeNow(),
+    tokenCache: options.tokenCache || defaultTokenCache,
+    circuit: options.circuit || defaultCircuit,
+  };
+}
+
+// Try FAA, then AVWX. Throws only when both sources fail.
+export async function resolveNotams(icao, options = {}) {
+  const ctx = requestContext(options);
+  const { env, circuit, now, tokenCache } = ctx;
+  let faaError = null;
+
+  if (!faaConfigured(env)) {
+    faaError = new Error('FAA_NMS_CLIENT_ID / FAA_NMS_CLIENT_SECRET not configured');
+    console.warn('[faa-notams] FAA credentials missing, using AVWX');
+  } else if (circuit.bypassed(now)) {
+    faaError = new Error('FAA auth skipped after repeated 401 responses');
+  } else {
+    try {
+      const raw = await fetchNotamsFromFaa(icao, ctx);
+      circuit.recordSuccess();
+      const parsed = faaFeatureList(raw).map(parseNotam);
+      return buildNotamPayload(icao, parsed, 'faa', now);
+    } catch (err) {
+      if (isFaa401(err)) {
+        tokenCache.token = null;
+        tokenCache.expiresAt = 0;
+        circuit.record401(now);
+      }
+      faaError = err;
+      console.warn('[faa-notams] FAA failed, falling back to AVWX:', err?.message);
+    }
+  }
+
+  try {
+    const items = await fetchNotamsFromAvwx(icao, ctx);
+    const parsed = items.map(mapAvwxNotam);
+    return buildNotamPayload(icao, parsed, 'avwx', now);
+  } catch (avwxErr) {
+    const error = new Error(
+      `FAA: ${faaError?.message || 'unavailable'}; AVWX: ${avwxErr?.message || 'unavailable'}`,
+    );
+    error.faaError = faaError;
+    error.avwxError = avwxErr;
+    throw error;
+  }
 }
 
 // ---- Handler ----
@@ -328,7 +612,7 @@ export default async function handler(req, res) {
   // The FAA NMS API uses ICAO codes, so KJFK works but JFK doesn't.
   if (icao.length === 3 && /^[A-Z]{3}$/.test(icao)) icao = 'K' + icao;
 
-  const db = getDb();
+  const db = activeDb();
   const cacheRef = db.collection('flightaware-cache').doc(`notam_${icao}`);
 
   // Check Firestore cache
@@ -342,31 +626,13 @@ export default async function handler(req, res) {
     }
   } catch (_) { /* cache miss — fall through */ }
 
-  // Cache miss — fetch fresh from FAA
+  // Cache miss — FAA first, AVWX if FAA cannot answer.
   try {
-    const raw = await fetchNotamsFromFaa(icao);
-    const features = Array.isArray(raw.features) ? raw.features
-                   : Array.isArray(raw.notams) ? raw.notams
-                   : Array.isArray(raw) ? raw
-                   : [];
-    const now = Date.now();
-    const parsed = features
-      .map(parseNotam)
-      .filter((n) => n && isActive(n, now));
-    const significantOnly = parsed.filter(isSignificant);
-
-    const payload = {
-      icao,
-      fetchedAt: now,
-      count: parsed.length,
-      filteredCount: significantOnly.length,
-      notams: parsed,
-      significantOnly,
-    };
+    const payload = await resolveNotams(icao);
 
     // Persist to cache. If this write fails (rare), we still return the
     // fresh result — next request just refetches.
-    try { await cacheRef.set({ payload, cachedAt: now }); } catch (_) {}
+    try { await cacheRef.set({ payload, cachedAt: payload.fetchedAt }); } catch (_) {}
 
     return res.status(200).json({ ok: true, ...payload, cached: false });
   } catch (err) {
@@ -377,10 +643,13 @@ export default async function handler(req, res) {
     return res.status(200).json({
       ok: true,
       icao,
+      fetchedAt: Date.now(),
       count: 0,
       filteredCount: 0,
       notams: [],
       significantOnly: [],
+      source: null,
+      cached: false,
       error: err?.message || 'NOTAM fetch failed',
     });
   }

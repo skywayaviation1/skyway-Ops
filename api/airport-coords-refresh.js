@@ -2,8 +2,10 @@ import { reviewerSessionBlock } from '../src/reviewer-account.js';
 // api/airport-coords-refresh.js
 //
 // Fetches the OurAirports CSV, parses it, filters to operational airports,
-// chunks by first-letter prefix, and writes to Firestore. This is the ONLY
-// place we hit OurAirports — the lookup endpoint just reads what this wrote.
+// and writes to Firestore. Prefixes that fit stay one document per letter.
+// Larger prefixes are split into smaller shard docs so a write stays under
+// Firestore's per-document index-entry cap. This is the ONLY place we hit
+// OurAirports — the lookup endpoint just reads what this wrote.
 //
 // SEPARATE FROM LOOKUP on purpose: the fetch+parse+write is slow (10-20s)
 // and would time out the lookup endpoint. By giving the refresh its own
@@ -21,6 +23,11 @@ import { reviewerSessionBlock } from '../src/reviewer-account.js';
 
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
+import {
+  AIRPORT_CACHE_COLLECTION,
+  AIRPORT_CACHE_META_ID,
+  buildAirportCachePlan,
+} from './_airport-cache.js';
 
 const OURAIRPORTS_CSV_URL = 'https://davidmegginson.github.io/ourairports-data/airports.csv';
 const INCLUDED_TYPES = new Set([
@@ -118,27 +125,33 @@ async function fetchAndParseOurAirports() {
   return out;
 }
 
+// Firestore batches cap at 500 writes. Today's sharded plan is ~100 ops,
+// so a refresh commits in one batch: shards, _meta, and deletes of letter
+// docs that the shards replace. Chunk only if a future extract outgrows that.
+const MAX_BATCH_OPS = 450;
+
+async function commitCacheOperations(db, operations) {
+  const collRef = db.collection(AIRPORT_CACHE_COLLECTION);
+  for (let i = 0; i < operations.length; i += MAX_BATCH_OPS) {
+    const batch = db.batch();
+    for (const op of operations.slice(i, i + MAX_BATCH_OPS)) {
+      const ref = collRef.doc(op.id);
+      if (op.type === 'delete') batch.delete(ref);
+      else batch.set(ref, op.data);
+    }
+    await batch.commit();
+  }
+}
+
 async function refreshFirestoreCache(db) {
   const map = await fetchAndParseOurAirports();
-  // Chunk by first letter to stay under the 1MB-per-doc limit
-  const chunks = {};
-  for (const [code, entry] of map.entries()) {
-    const prefix = code[0] || '_';
-    if (!chunks[prefix]) chunks[prefix] = {};
-    chunks[prefix][code] = entry;
-  }
-  const batch = db.batch();
-  const collRef = db.collection('airport-cache-ourairports');
-  for (const [prefix, codes] of Object.entries(chunks)) {
-    batch.set(collRef.doc(prefix), { entries: codes });
-  }
-  batch.set(collRef.doc('_meta'), {
-    refreshedAt: Date.now(),
-    totalCodes: map.size,
-    chunkPrefixes: Object.keys(chunks).sort(),
-    source: 'ourairports.com',
-  });
-  await batch.commit();
+  const collRef = db.collection(AIRPORT_CACHE_COLLECTION);
+  const metaSnap = await collRef.doc(AIRPORT_CACHE_META_ID).get();
+  const previousMeta = metaSnap.exists ? metaSnap.data() : null;
+  // Letter docs that fit stay one doc. Larger letters are sliced so each
+  // document stays under the 40,000 index-entry cap (and under 1 MiB).
+  const plan = buildAirportCachePlan(map, previousMeta);
+  await commitCacheOperations(db, plan.operations);
   return map.size;
 }
 

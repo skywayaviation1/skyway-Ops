@@ -27,6 +27,7 @@
 
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
+import { AIRPORT_CACHE_COLLECTION, mergeCacheDocuments } from './_airport-cache.js';
 
 let adminApp = null;
 let _db = null;
@@ -52,21 +53,17 @@ function getDb() {
 let memCache = null;     // Map<CODE, {lat,lng,name}>
 
 /**
- * Load the full cache from Firestore. ~30 doc reads, ~3 MB total.
- * Cached in-memory after first call.
+ * Load the full cache from Firestore. One read per letter doc and per
+ * shard (~100 docs, a few MB). Cached in-memory after first call.
+ * Legacy letter docs and `{letter}~000` shards share the `entries` map.
+ * Shard ids sort after the letter doc, so a fresher shard wins if both
+ * are present during a refresh.
  */
 async function loadCacheFromFirestore(db) {
-  const snap = await db.collection('airport-cache-ourairports').get();
-  const map = new Map();
-  snap.forEach((d) => {
-    if (d.id === '_meta') return;
-    const data = d.data();
-    if (!data?.entries) return;
-    for (const [code, entry] of Object.entries(data.entries)) {
-      map.set(code, entry);
-    }
-  });
-  return map;
+  const snap = await db.collection(AIRPORT_CACHE_COLLECTION).get();
+  const docs = [];
+  snap.forEach((d) => docs.push([d.id, d.data()]));
+  return mergeCacheDocuments(docs);
 }
 
 async function ensureCache() {
