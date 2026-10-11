@@ -18,10 +18,13 @@ import {
   RETENTION_DAYS,
 } from './firebase-duty-v2.js';
 import { evaluateCurrent, LIMITS } from './duty-legality.js';
+import { flightBuckets } from './duty-crew-change.js';
+import { crewLimitSnapshot, groupLiveCrew } from './duty-board.js';
 import {
   Button, Card, EmptyState, MetricTile, PageHeader, Spinner, StatusChip, cx, notify,
 } from './ui.jsx';
 import DutyPairSync from './DutyPairSync.jsx';
+import DutyScheduleResync from './DutyScheduleResync.jsx';
 import { brand } from './brand.js';
 
 const MS_HOUR = 3600 * 1000;
@@ -98,10 +101,7 @@ function findOverlaps(periods, now) {
 function recordIssues(period, periodById, overlapIds, now) {
   const issues = [];
   const duty = durationMs(period, now);
-  const flightLimit = period.crewType === 'single'
-    ? LIMITS.SINGLE_PILOT_FLIGHT_MAX_MS
-    : LIMITS.TWO_PILOT_FLIGHT_MAX_MS;
-  const flight = Number.isFinite(period.flightTimeMs) ? period.flightTimeMs : 0;
+  const buckets = flightBuckets(period);
 
   const add = (code, label, tone = 'warning', kind = 'compliance') => {
     const approval = period.findingApprovals?.[code] || null;
@@ -141,8 +141,14 @@ function recordIssues(period, periodById, overlapIds, now) {
   if (period.status === 'on' && duty > 16 * MS_HOUR) {
     add('OPEN_LONG', `Duty still open after ${fmtHours(duty)}`, 'danger', 'data');
   }
-  if (flight > flightLimit) {
-    add('FLIGHT_LIMIT', `${fmtHours(flight)} flight exceeds ${fmtHours(flightLimit, 0)} ${period.crewType || 'crew'} limit`, 'danger');
+  if (buckets.singleMs > LIMITS.SINGLE_PILOT_FLIGHT_MAX_MS) {
+    add('FLIGHT_LIMIT', `${fmtHours(buckets.singleMs)} single-pilot flight exceeds 8h`, 'danger');
+    if (!period.excursionReason) {
+      add('NO_EXCURSION_REASON', 'Flight-time excursion has no reason', 'danger', 'data');
+    }
+  }
+  if (buckets.twoMs > LIMITS.TWO_PILOT_FLIGHT_MAX_MS) {
+    add('FLIGHT_LIMIT_TWO', `${fmtHours(buckets.twoMs)} two-pilot flight exceeds 10h`, 'danger');
     if (!period.excursionReason) {
       add('NO_EXCURSION_REASON', 'Flight-time excursion has no reason', 'danger', 'data');
     }
@@ -157,8 +163,12 @@ function recordIssues(period, periodById, overlapIds, now) {
     const partner = periodById.get(period.partnerPeriodId);
     if (!partner) add('ORPHAN_PAIR', 'Linked partner record not found', 'danger', 'data');
     else if (partner.partnerPeriodId !== period.id) {
-      add('ONE_WAY_PAIR', 'Partner link is not reciprocal', 'danger', 'data');
+      const historical = Array.isArray(partner.crewSegments)
+        && partner.crewSegments.some((segment) => segment.partnerPeriodId === period.id);
+      if (!historical) add('ONE_WAY_PAIR', 'Partner link is not reciprocal', 'danger', 'data');
     }
+  } else if ((period.crewType === 'two' || period.awaitingPartner === true) && period.status === 'on') {
+    add('NO_LINKED_CREW', 'Paired duty has no linked crew', 'warning', 'data');
   }
 
   if (!period.pilotUid || !period.pilotName) add('PILOT', 'Pilot identity incomplete', 'danger', 'data');
@@ -270,9 +280,8 @@ function printAdminReport({ summaries, periods, outside, issuesById, rangeDays, 
     return `<tr><td>${esc(p.pilotName)}</td><td>${esc(fmtDateTime(p.dutyOnAt))}</td><td>${esc(p.status === 'on' ? 'OPEN' : fmtDateTime(p.dutyOffAt))}</td><td>${esc(fmtHours(durationMs(p)))}</td><td>${esc(fmtHours(p.flightTimeMs))}</td><td>${Number.isFinite(p.priorRestMs) ? esc(fmtHours(p.priorRestMs)) : 'Missing'}</td><td>${esc(p.tail || '—')}<br>${esc(p.tripId || '')}</td><td>${esc(p.role || '—')} · ${esc(p.crewType || '—')}<br>${esc(p.assignmentType || '—')}</td><td>${esc(p.confirmStatus || 'legacy')}</td><td>${esc(p.overrideStatus || 'none')}</td><td class="${findings.some(i => i.tone === 'danger') ? 'danger' : findings.length ? 'warn' : ''}">${esc(findings.map(i => i.label).join('; ') || 'None')}</td></tr>`;
   }).join('')}</tbody></table>
   <div class="footer">
-    Active legality checks shown by the application: 10-hour rest window, 14-hour regular duty, and quarterly 13×24-hour rest.
-    The rolling 8/10-hour flight-time check is disabled in the production engine because the available period-level data cannot place flight time accurately inside a rolling 24-hour window.
-    Per-record 8/10-hour overages are still flagged in this report. Prior rest is pilot-attested and shown separately from computed gaps.
+    Active legality checks: 10-hour rest, 14-hour regular duty, quarterly 13×24-hour rest, and 14 CFR 135.267(b) flight time split by crew segment (8h single-pilot, 10h two-pilot).
+    A crew swap does not reclassify the pilot who stays as single-pilot. Prior rest is pilot-attested and shown separately from computed gaps.
   </div>
   <script>window.addEventListener('load',()=>setTimeout(()=>window.print(),250))</script>
   </body></html>`;
@@ -291,6 +300,7 @@ export default function AdminDutyReport({ currentUser, users = [], trips = [], o
   const [outsideLoaded, setOutsideLoaded] = useState(false);
   const [rangeDays, setRangeDays] = useState(30);
   const [pilotFilter, setPilotFilter] = useState('all');
+  const [tailFilter, setTailFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
   const [search, setSearch] = useState('');
   const [selectedPeriod, setSelectedPeriod] = useState(null);
@@ -420,6 +430,7 @@ export default function AdminDutyReport({ currentUser, users = [], trips = [], o
     const q = search.trim().toLowerCase();
     return rangePeriods.filter((p) => {
       if (pilotFilter !== 'all' && p.pilotUid !== pilotFilter) return false;
+      if (tailFilter !== 'all' && (p.tail || '') !== tailFilter) return false;
       const issues = issuesById.get(p.id) || [];
       if (statusFilter === 'active' && p.status !== 'on') return false;
       if (statusFilter === 'closed' && p.status !== 'off') return false;
@@ -432,7 +443,20 @@ export default function AdminDutyReport({ currentUser, users = [], trips = [], o
         p.confirmStatus, p.overrideStatus, p.excursionReason,
       ].some(v => String(v || '').toLowerCase().includes(q));
     });
-  }, [rangePeriods, pilotFilter, statusFilter, search, issuesById, approvedIssuesById]);
+  }, [rangePeriods, pilotFilter, tailFilter, statusFilter, search, issuesById, approvedIssuesById]);
+
+  const tails = useMemo(
+    () => [...new Set(periods.map((period) => period.tail).filter(Boolean))].sort(),
+    [periods],
+  );
+  const liveCrews = useMemo(() => {
+    const open = periods.filter((period) => {
+      if (pilotFilter !== 'all' && period.pilotUid !== pilotFilter) return false;
+      if (tailFilter !== 'all' && (period.tail || '') !== tailFilter) return false;
+      return true;
+    });
+    return groupLiveCrew(open);
+  }, [periods, pilotFilter, tailFilter]);
 
   const filteredOutside = useMemo(() => rangeOutside.filter(o => (
     pilotFilter === 'all' || o.pilotUid === pilotFilter
@@ -496,6 +520,7 @@ export default function AdminDutyReport({ currentUser, users = [], trips = [], o
               Print / PDF
             </Button>
             <DutyPairSync trips={trips} />
+            <DutyScheduleResync trips={trips} pilots={pilots} />
             {onOpenAdminTools && (
               <Button variant="primary" size="sm" icon={FileText} onClick={onOpenAdminTools}>
                 Admin tools
@@ -512,6 +537,10 @@ export default function AdminDutyReport({ currentUser, users = [], trips = [], o
         <FilterSelect label="Pilot" value={pilotFilter} onChange={setPilotFilter}>
           <option value="all">All pilots</option>
           {pilots.map(p => <option key={p.uid} value={p.uid}>{p.name}</option>)}
+        </FilterSelect>
+        <FilterSelect label="Tail" value={tailFilter} onChange={setTailFilter}>
+          <option value="all">All tails</option>
+          {tails.map((tail) => <option key={tail} value={tail}>{tail}</option>)}
         </FilterSelect>
         <FilterSelect label="Records" value={statusFilter} onChange={setStatusFilter}>
           <option value="all">All records</option>
@@ -548,18 +577,69 @@ export default function AdminDutyReport({ currentUser, users = [], trips = [], o
         />
       </div>
 
+      <section data-testid="live-duty-board">
+        <SectionHeading icon={Activity} title="On duty now" count={liveCrews.reduce((sum, crew) => sum + crew.members.length, 0)} />
+        {liveCrews.length === 0 ? (
+          <Card><EmptyState icon={Users} title="Nobody on duty" description="Open duty periods show up here as soon as a pilot starts." /></Card>
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {liveCrews.map((crew) => (
+              <LiveCrewCard
+                key={crew.id}
+                crew={crew}
+                now={now}
+                issuesById={issuesById}
+                onOpen={setSelectedPeriod}
+              />
+            ))}
+          </div>
+        )}
+      </section>
+
+      {pilotFilter !== 'all' && (
+        <section data-testid="pilot-history">
+          <SectionHeading icon={Clock} title="Pilot history" count={filteredPeriods.length} />
+          <div className="space-y-2">
+            {filteredPeriods.length === 0 ? (
+              <Card><EmptyState icon={Clock} title="No duty in this range" description="Widen the date range to see this pilot’s history." /></Card>
+            ) : filteredPeriods.map((period) => (
+              <button
+                key={period.id}
+                type="button"
+                onClick={() => setSelectedPeriod(period)}
+                className="w-full rounded-xl border border-edge bg-surface p-3 text-left hover:border-edge-strong"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-content">{fmtDateTime(period.dutyOnAt)}</p>
+                    <p className="mt-0.5 text-2xs text-content-muted">
+                      {period.tail || 'No tail'} · {period.crewType === 'two' ? 'Paired crew' : 'Single-pilot'} · {fmtHours(period.flightTimeMs)} flight
+                    </p>
+                  </div>
+                  <StatusChip tone={period.status === 'on' ? 'accent' : 'neutral'} size="sm">{period.status === 'on' ? 'On duty' : 'Off'}</StatusChip>
+                </div>
+                <p className="mt-2 text-2xs text-content-subtle">
+                  {(period.adminEdits || []).length} audit entr{(period.adminEdits || []).length === 1 ? 'y' : 'ies'}
+                  {(period.adminEdits || []).length > 0 ? ` · last ${period.adminEdits[period.adminEdits.length - 1].by || 'unknown'} · ${period.adminEdits[period.adminEdits.length - 1].field || 'edit'}` : ''}
+                </p>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+
       <Card className="border-info-border bg-info-soft">
         <div className="flex items-start gap-3">
           <Shield className="mt-0.5 h-5 w-5 shrink-0 text-info" />
           <div className="min-w-0">
             <h2 className="text-sm font-semibold text-content">Compliance scope and data confidence</h2>
             <p className="mt-1 text-2xs leading-relaxed text-content-muted">
-              Current legality evaluates the 10-hour rest window, 14-hour regular-duty limit,
-              and quarterly 13×24-hour rest requirement against the full retained history.
-              The rolling 8/10-hour flight-time check is intentionally disabled in the live
-              engine because period-level totals cannot be placed accurately inside a rolling
-              24-hour window. This report still flags any single record over its 8/10-hour limit.
-              Prior rest is pilot-attested; missing or below-10-hour entries are shown as findings.
+              Legality uses the retained history for the 10-hour rest window, the 14-hour
+              regular-duty limit, and the quarterly 13×24-hour rest requirement. Flight time
+              is split by crew segment: two-pilot time against 10 hours and single-pilot time
+              against 8 hours (14 CFR 135.267(b)). A crew swap keeps the pilot who stays on
+              the paired designation, so that time is not judged as single-pilot. Prior rest
+              is pilot-attested; missing or below-10-hour entries are shown as findings.
             </p>
             <div className="mt-2 flex flex-wrap gap-1.5">
               <StatusChip tone="danger" size="sm">{exceptionRecords.length} compliance record{exceptionRecords.length === 1 ? '' : 's'}</StatusChip>
@@ -681,6 +761,60 @@ export default function AdminDutyReport({ currentUser, users = [], trips = [], o
         />
       )}
     </div>
+  );
+}
+
+function LiveCrewCard({ crew, now, issuesById, onOpen }) {
+  const flags = crew.members.flatMap((member) => (issuesById.get(member.id) || []).map((issue) => ({
+    ...issue,
+    pilotName: member.pilotName,
+  })));
+  return (
+    <Card className="p-3">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <p className="text-sm font-semibold text-content">
+            {crew.members.map((member) => member.pilotName || 'Pilot').join(' · ')}
+          </p>
+          <p className="mt-0.5 font-mono text-2xs text-content-muted">
+            {crew.tail || 'No tail'} · {crew.linked ? 'Linked crew' : crew.brokenLink ? 'Broken link' : 'No linked crew'}
+          </p>
+        </div>
+        <StatusChip tone={crew.linked ? 'success' : 'warning'} size="sm">{crew.linked ? 'Crew' : 'Unlinked'}</StatusChip>
+      </div>
+      <div className="mt-3 space-y-2">
+        {crew.members.map((member) => {
+          const limits = crewLimitSnapshot(member, now);
+          const dutyLeft = limits.remainingDutyMs;
+          return (
+            <button
+              key={member.id}
+              type="button"
+              onClick={() => onOpen(member)}
+              className="w-full rounded-lg border border-edge bg-surface-sunken px-3 py-2 text-left hover:border-edge-strong"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-semibold text-content">{member.pilotName}</span>
+                <span className="font-mono text-2xs text-content-muted">{member.role || 'Crew'}</span>
+              </div>
+              <p className="mt-1 font-mono text-2xs text-content">
+                {fmtHours(limits.elapsedMs)} on
+                {dutyLeft == null ? '' : ` · ${dutyLeft >= 0 ? `${fmtHours(dutyLeft)} duty left` : `${fmtHours(-dutyLeft)} over 14h`}`}
+                {' · '}
+                {fmtHours(limits.flightMs)} / {fmtHours(limits.flightLimitMs, 0)} flight
+              </p>
+            </button>
+          );
+        })}
+      </div>
+      {flags.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {flags.slice(0, 4).map((flag) => (
+            <StatusChip key={`${flag.pilotName}-${flag.code}`} tone={flag.tone} size="sm">{flag.label}</StatusChip>
+          ))}
+        </div>
+      )}
+    </Card>
   );
 }
 
@@ -810,23 +944,56 @@ async function runAdminDutyAction(payload) {
   return result;
 }
 
-function toLocalInput(ms) {
-  if (!Number.isFinite(ms)) return '';
-  const date = new Date(ms);
-  const offset = date.getTimezoneOffset() * 60000;
-  return new Date(ms - offset).toISOString().slice(0, 16);
+function etParts(ms) {
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  });
+  const map = {};
+  for (const part of fmt.formatToParts(new Date(ms))) {
+    if (part.type !== 'literal') map[part.type] = part.value;
+  }
+  if (map.hour === '24') map.hour = '00';
+  return map;
 }
 
-function fromLocalInput(value) {
-  const ms = new Date(value).getTime();
-  return Number.isFinite(ms) ? ms : null;
+function utcMsToEtInput(ms) {
+  if (!Number.isFinite(ms)) return '';
+  const parts = etParts(ms);
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+}
+
+function etInputToUtcMs(value) {
+  if (!value) return null;
+  const [dateStr, timeStr] = value.split('T');
+  if (!dateStr || !timeStr) return null;
+  const [year, month, day] = dateStr.split('-').map(Number);
+  const [hour, minute] = timeStr.split(':').map(Number);
+  if ([year, month, day, hour, minute].some((part) => !Number.isFinite(part))) return null;
+  const candidate = Date.UTC(year, month - 1, day, hour, minute);
+  const parts = etParts(candidate);
+  const rendered = Date.UTC(
+    Number(parts.year),
+    Number(parts.month) - 1,
+    Number(parts.day),
+    Number(parts.hour),
+    Number(parts.minute),
+  );
+  const desired = Date.UTC(year, month - 1, day, hour, minute);
+  return candidate + (desired - rendered);
 }
 
 function DutyRecordDrawer({ period, issues, approvedIssues = [], partner, onClose }) {
   const [editing, setEditing] = useState(false);
-  const [dutyOn, setDutyOn] = useState(() => toLocalInput(period.dutyOnAt));
-  const [dutyOff, setDutyOff] = useState(() => toLocalInput(period.dutyOffAt));
+  const [dutyOn, setDutyOn] = useState(() => utcMsToEtInput(period.dutyOnAt));
+  const [dutyOff, setDutyOff] = useState(() => utcMsToEtInput(period.dutyOffAt));
   const [editNote, setEditNote] = useState('');
+  const [applyToPartner, setApplyToPartner] = useState(false);
   const [verifyOver14, setVerifyOver14] = useState(false);
   const [approvalNotes, setApprovalNotes] = useState({});
   const [findingVerifications, setFindingVerifications] = useState({});
@@ -834,16 +1001,20 @@ function DutyRecordDrawer({ period, issues, approvedIssues = [], partner, onClos
 
   useEffect(() => {
     if (editing) return;
-    setDutyOn(toLocalInput(period.dutyOnAt));
-    setDutyOff(toLocalInput(period.dutyOffAt));
+    setDutyOn(utcMsToEtInput(period.dutyOnAt));
+    setDutyOff(utcMsToEtInput(period.dutyOffAt));
   }, [period.dutyOnAt, period.dutyOffAt, editing]);
 
-  const onMs = fromLocalInput(dutyOn);
-  const offMs = dutyOff ? fromLocalInput(dutyOff) : null;
+  const onMs = etInputToUtcMs(dutyOn);
+  const offMs = dutyOff ? etInputToUtcMs(dutyOff) : null;
   const editedDuration = onMs != null ? (offMs ?? Date.now()) - onMs : 0;
   const editedOver14 = editedDuration > 14 * MS_HOUR;
 
   const saveTimes = async () => {
+    if (!editNote.trim()) {
+      notify.error('A reason is required to correct a duty record.');
+      return;
+    }
     if (onMs == null || (offMs != null && offMs <= onMs)) {
       notify.error('Duty-off must be after duty-on.');
       return;
@@ -857,7 +1028,8 @@ function DutyRecordDrawer({ period, issues, approvedIssues = [], partner, onClos
         dutyOffAt: offMs,
         status: offMs == null ? 'on' : 'off',
         over14Verified: verifyOver14,
-        note: editNote.trim() || undefined,
+        note: editNote.trim(),
+        applyToPartner,
       });
       setEditing(false);
       setVerifyOver14(false);
@@ -962,12 +1134,12 @@ function DutyRecordDrawer({ period, issues, approvedIssues = [], partner, onClos
             <Card className="mb-4 border-accent-border bg-accent-soft">
               <h3 className="text-sm font-semibold text-content">Edit linked duty times</h3>
               <p className="mt-1 text-2xs leading-relaxed text-content-muted">
-                When this record has a linked PIC/SIC partner, both periods receive the same
-                duty-on and duty-off times with an audit entry.
+                Times are Eastern. A linked partner keeps their own duty and flight times
+                unless you explicitly apply this correction to them. A reason is required.
               </p>
               <div className="mt-3 grid gap-3 sm:grid-cols-2">
                 <label>
-                  <span className="mb-1 block text-[10px] uppercase tracking-wider text-content-subtle">Duty on</span>
+                  <span className="mb-1 block text-[10px] uppercase tracking-wider text-content-subtle">Duty on (Eastern)</span>
                   <input
                     type="datetime-local"
                     value={dutyOn}
@@ -976,7 +1148,7 @@ function DutyRecordDrawer({ period, issues, approvedIssues = [], partner, onClos
                   />
                 </label>
                 <label>
-                  <span className="mb-1 block text-[10px] uppercase tracking-wider text-content-subtle">Duty off (blank = open)</span>
+                  <span className="mb-1 block text-[10px] uppercase tracking-wider text-content-subtle">Duty off, Eastern (blank = open)</span>
                   <input
                     type="datetime-local"
                     value={dutyOff}
@@ -986,14 +1158,26 @@ function DutyRecordDrawer({ period, issues, approvedIssues = [], partner, onClos
                 </label>
               </div>
               <label className="mt-3 block">
-                <span className="mb-1 block text-[10px] uppercase tracking-wider text-content-subtle">Correction note</span>
+                <span className="mb-1 block text-[10px] uppercase tracking-wider text-content-subtle">Reason (required)</span>
                 <input
                   value={editNote}
                   onChange={(event) => setEditNote(event.target.value)}
-                  placeholder="Why were these times corrected?"
+                  placeholder="Why is this record being corrected?"
                   className="h-10 w-full rounded-lg border border-edge bg-surface px-3 text-sm text-content"
+                  data-testid="duty-edit-reason"
                 />
               </label>
+              {partner && (
+                <label className="mt-3 flex items-start gap-2 text-xs text-content">
+                  <input
+                    type="checkbox"
+                    checked={applyToPartner}
+                    onChange={(event) => setApplyToPartner(event.target.checked)}
+                    className="mt-0.5"
+                  />
+                  <span>Also apply these times to {partner.pilotName || 'the linked pilot'}. Leave this off when the pilots swapped and their times differ.</span>
+                </label>
+              )}
               {editedOver14 && (
                 <label className="mt-3 flex cursor-pointer items-start gap-2 rounded-lg border border-danger-border bg-danger-soft p-3">
                   <input
@@ -1013,7 +1197,7 @@ function DutyRecordDrawer({ period, issues, approvedIssues = [], partner, onClos
                   variant={editedOver14 ? 'danger' : 'primary'}
                   size="sm"
                   onClick={saveTimes}
-                  disabled={busyAction === 'times' || (editedOver14 && !verifyOver14)}
+                  disabled={busyAction === 'times' || !editNote.trim() || (editedOver14 && !verifyOver14)}
                 >
                   {busyAction === 'times' ? 'Saving…' : 'Save duty times'}
                 </Button>

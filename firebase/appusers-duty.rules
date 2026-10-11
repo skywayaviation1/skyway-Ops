@@ -1,0 +1,25 @@
+// Fragment for the named Firestore database `appusers`.
+// Merge these match blocks into the deployed appusers ruleset.
+// Do not replace the database ruleset with this file alone.
+// Do not copy this file onto `appreview`.
+//
+// Duty resync previews and the duty audit log are written only by the
+// Admin SDK (api/duty-schedule-resync.js). Clients, including signed-in
+// admins using the web SDK, do not read or write them. Denying client
+// access keeps a broad `match /{document=**}` grant from exposing the
+// schedule snapshot stored on a preview or the before/after audit.
+//
+// No backfill runs because these collections did not exist. Existing
+// duty-periods-v2 documents are unchanged until an admin confirms a resync.
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /duty-schedule-resync-previews/{id} {
+      allow read, write: if false;
+    }
+    match /duty-audit-log/{id} {
+      allow read, write: if false;
+    }
+  }
+}

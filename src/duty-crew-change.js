@@ -58,10 +58,18 @@ export function wasClosedByPartnerDutyOff(period) {
 }
 
 export function segmentCountsAs(segment) {
-  // 'awaiting' is a gap with no second pilot recorded yet, so it is not
-  // two-pilot time. An explicit crewType of 'two' is two-pilot time,
-  // including legacy paired records that predate segments.
-  if (segment?.crewType === 'two') return 'two';
+  // An explicit two-pilot segment is two-pilot time, including legacy
+  // paired records that predate segments.
+  //
+  // 'awaiting' / awaitingReplacement is the gap after one pilot swaps out
+  // and before the replacement links. That gap stays on the paired crew
+  // designation. It is not converted to single-pilot, so it is not judged
+  // against the 8-hour single-pilot limit or the 16-hour rest tier.
+  if (
+    segment?.crewType === 'two'
+    || segment?.crewType === 'awaiting'
+    || segment?.awaitingReplacement === true
+  ) return 'two';
   return 'single';
 }
 
@@ -317,10 +325,19 @@ function closeOpenSegment(segments, endedAt, periodFlightTotal) {
   return next;
 }
 
-function openSegment({ crewType, partnerPeriodId, partnerUid, partnerName, role, startedAt }) {
+function openSegment({
+  crewType,
+  partnerPeriodId,
+  partnerUid,
+  partnerName,
+  role,
+  startedAt,
+  awaitingReplacement = false,
+}) {
   return {
-    id: `seg_${startedAt}_${crewType}_${partnerUid || 'none'}`,
+    id: `seg_${startedAt}_${crewType}_${partnerUid || (awaitingReplacement ? 'swap' : 'none')}`,
     crewType,
+    awaitingReplacement: awaitingReplacement === true,
     partnerPeriodId: partnerPeriodId || null,
     partnerUid: partnerUid || null,
     partnerName: partnerName || null,
@@ -564,10 +581,13 @@ export function planDutyOff({
         }),
       ];
     } else {
+      // The seat is open, but the pilot who is staying was paired for this
+      // day. Keep the paired designation until the replacement duties on.
       partnerSegments = [
         ...partnerSegments,
         openSegment({
-          crewType: 'awaiting',
+          crewType: 'two',
+          awaitingReplacement: true,
           partnerPeriodId: null,
           partnerUid: null,
           partnerName: null,
@@ -713,6 +733,26 @@ export function planDutyOff({
  * not move. A single-pilot period becomes paired from joinAt forward; flight
  * time already recorded stays on the single-pilot segment.
  */
+function joiningPilotPatch(partnerAttestation, now) {
+  if (!partnerAttestation) return {};
+  const patch = {};
+  if (partnerAttestation.fitForDuty === true) {
+    patch.fitForDuty = true;
+    patch.confirmStatus = 'self-attested';
+    patch.pendingCreatedBy = null;
+    patch.confirmedAt = now;
+    patch.priorRestMs = Number.isFinite(partnerAttestation.priorRestMs)
+      ? partnerAttestation.priorRestMs
+      : null;
+  }
+  if (partnerAttestation.location) patch.location = partnerAttestation.location;
+  if (partnerAttestation.tail) patch.tail = partnerAttestation.tail;
+  if (partnerAttestation.tripId) patch.tripId = partnerAttestation.tripId;
+  if (partnerAttestation.assignmentType) patch.assignmentType = partnerAttestation.assignmentType;
+  if (partnerAttestation.role) patch.role = partnerAttestation.role;
+  return patch;
+}
+
 export function planRelink({
   stayer,
   partnerUser,
@@ -720,6 +760,7 @@ export function planRelink({
   joinAt,
   actorName,
   now = Date.now(),
+  partnerAttestation = null,
 }) {
   if (!stayer?.id) return { ok: false, status: 400, error: 'period required' };
   if (!partnerUser?.pilotUid) return { ok: false, status: 400, error: 'replacement pilot required' };
@@ -830,6 +871,7 @@ export function planRelink({
         awaitingPartner: false,
         crewSegments: partnerSegments,
         updatedAt: now,
+        ...joiningPilotPatch(partnerAttestation, now),
         adminEdits: appendAudit(partnerOpenPeriod, audit({
           by: actorName || 'pilot',
           at: now,
@@ -887,11 +929,76 @@ export function planRelink({
         createdAt: now,
         updatedAt: now,
         status: 'on',
+        ...joiningPilotPatch(partnerAttestation, now),
       }),
     });
   }
 
   return { ok: true, resuming, writes };
+}
+
+/**
+ * Duty-on for a scheduled PIC/SIC pair.
+ * Neither pilot on duty → the caller should create both records together.
+ * The other pilot already on duty and not paired with someone else who is
+ * still on → the caller joins that crew. The stayer's duty-on is not moved
+ * and their designation stays paired.
+ */
+export function planScheduledDutyOn({
+  callerUid,
+  pic,
+  sic,
+  picOpen = null,
+  sicOpen = null,
+  dutyOnAt,
+  actorName,
+  now = Date.now(),
+  partnerAttestation = null,
+}) {
+  if (!pic?.pilotUid || !sic?.pilotUid) {
+    return { ok: false, status: 400, error: 'PIC and SIC are required' };
+  }
+  if (pic.pilotUid === sic.pilotUid) {
+    return { ok: false, status: 400, error: 'PIC and SIC must be different pilots' };
+  }
+  if (![pic.pilotUid, sic.pilotUid].includes(callerUid)) {
+    return { ok: false, status: 403, error: 'caller must be the PIC or SIC being started' };
+  }
+  if (!Number.isFinite(dutyOnAt)) {
+    return { ok: false, status: 400, error: 'dutyOnAt required' };
+  }
+  const callerOpen = callerUid === pic.pilotUid ? picOpen : sicOpen;
+  const otherOpen = callerUid === pic.pilotUid ? sicOpen : picOpen;
+  const callerUser = callerUid === pic.pilotUid ? pic : sic;
+  if (callerOpen?.status === 'on') {
+    return { ok: false, status: 409, error: 'You already have an open duty period' };
+  }
+  if (!otherOpen) return { ok: true, mode: 'start-pair' };
+  if (otherOpen.status !== 'on' || otherOpen.confirmStatus === 'declined') {
+    return { ok: true, mode: 'start-pair' };
+  }
+  const pairedWithSomeoneElse = otherOpen.partnerLive === true && otherOpen.awaitingPartner !== true;
+  if (pairedWithSomeoneElse) {
+    return {
+      ok: false,
+      status: 409,
+      error: 'That pilot is already paired with another pilot who is still on duty.',
+    };
+  }
+  const join = planRelink({
+    stayer: otherOpen,
+    partnerUser: {
+      pilotUid: callerUser.pilotUid,
+      pilotName: callerUser.pilotName || 'Unknown',
+      role: callerUid === pic.pilotUid ? 'PIC' : 'SIC',
+    },
+    joinAt: dutyOnAt,
+    actorName,
+    now,
+    partnerAttestation,
+  });
+  if (!join.ok) return join;
+  return { ok: true, mode: 'join', ...join };
 }
 
 export function snapshotDuty(period) {

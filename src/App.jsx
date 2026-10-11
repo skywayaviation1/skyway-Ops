@@ -68,7 +68,6 @@ const PushSettingsLazy = lazy(() => import('./PushSettings.jsx'));
 
 // Code-split: Ops Console loads only when ops/admin opens that section.
 const OpsConsoleLazy = lazy(() => import('./OpsConsole.jsx'));
-const OpsShiftLogLazy = lazy(() => import('./OpsShiftLog.jsx'));
 const AccountingLazy = lazy(() => import('./Accounting.jsx'));
 
 // Code-split: MuteToggle loads only when a chat surface renders.
@@ -27866,7 +27865,7 @@ export default function CharterOps() {
   const [showProfile, setShowProfile] = useState(false);
   const [showAdminDutyTools, setShowAdminDutyTools] = useState(false);
   const [adminDutyView, setAdminDutyView] = useState('report'); // report | calendar
-  const [dispatchView, setDispatchView] = useState('control'); // control | schedule | handoff
+  const [dispatchView, setDispatchView] = useState('control'); // control | schedule
   // UI theme — 'dark' (default cyan/slate) or 'classy' (warm + gold).
   // Persisted in localStorage so the choice survives reloads. The actual
   // visual switch happens via the data-theme attribute on the html
@@ -28270,7 +28269,9 @@ export default function CharterOps() {
     }
     return realUser;
   }, [profile, impersonateUid, users, sandboxView]);
-  const activeDispatchView = dispatchView;
+  // Shift handoff lives on the home screen. A leftover handoff dispatch
+  // view falls back to flight control.
+  const activeDispatchView = dispatchView === 'schedule' ? 'schedule' : 'control';
 
   // Tick clock
   useEffect(() => {
@@ -29501,8 +29502,9 @@ export default function CharterOps() {
 
         {/* === OPERATIONS CONTROL CENTER ===
             Admins get the complete OCC command view; ops users get the same
-            flight-control, schedule and handoff workflows without admin-only
-            fleet-wide duty/qualification subscriptions. */}
+            flight-control and schedule workflows without admin-only
+            fleet-wide duty/qualification subscriptions. Shift handoff is
+            on the home screen, not a tab here. */}
         {section === 'ops' && ['ops', 'admin'].includes(currentUser?.role) && (
           <div className="flex min-h-0 flex-1 flex-col bg-surface-sunken">
             <div className="shrink-0 border-b border-edge bg-surface px-3 py-2 md:px-6">
@@ -29510,7 +29512,6 @@ export default function CharterOps() {
                 {[
                   { id: 'control', label: 'Flight control', icon: Zap },
                   { id: 'schedule', label: 'Schedule & feeds', icon: Calendar },
-                  { id: 'handoff', label: 'Shift handoff', icon: FileText },
                 ].map((item) => (
                   <button
                     key={item.id}
@@ -29559,12 +29560,6 @@ export default function CharterOps() {
                   hasIcalUrl={!!config.icalUrl}
                   onOpenPaste={() => setShowSettings(true)}
                 />
-              )}
-
-              {activeDispatchView === 'handoff' && (
-                <Suspense fallback={<div className="flex items-center justify-center py-16 text-content-muted"><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading shift handoff…</div>}>
-                  <OpsShiftLogLazy currentUser={currentUser} />
-                </Suspense>
               )}
             </div>
           </div>
