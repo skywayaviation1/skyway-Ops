@@ -136,6 +136,11 @@ function SideCard({
   }, [side?.email, side?.phone, side?.contact, side?.aid, side?.optedOut]);
 
   const missing = !validEmail(email);
+  const listed = providers || [];
+  const known = Boolean(side?.aid) && listed.some((item) => item.aid === side.aid);
+  const choices = known || !side?.aid
+    ? listed
+    : [{ aid: side.aid, name: side.name || 'Saved FBO' }, ...listed];
   return (
     <Card className="min-w-0">
       <CardHeader
@@ -161,8 +166,8 @@ function SideCard({
             }}
             className="w-full rounded-lg border border-edge bg-surface px-3 py-2.5 text-sm text-content outline-none focus:border-accent disabled:opacity-60"
           >
-            <option value="">{side?.name || 'Choose an FBO'}</option>
-            {(providers || []).map((provider) => (
+            <option value="">{side?.aid ? 'Choose an FBO' : (side?.name || 'Choose an FBO')}</option>
+            {choices.map((provider) => (
               <option key={provider.aid} value={provider.aid}>{provider.name}</option>
             ))}
           </select>
