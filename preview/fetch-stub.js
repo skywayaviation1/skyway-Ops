@@ -707,6 +707,43 @@ export function installFetchStub() {
         missing: ['GOOGLE_MAPS_API_KEY'],
       }), { status: 503, headers: { 'Content-Type': 'application/json' } });
     }
+    if (path === '/api/iflightplanner-fbos' || path === '/api/aviowiki-fbos' || path === '/api/aviowiki-airport') {
+      const fixture = window.__AVIOWIKI_FIXTURE__ || null;
+      const params = (() => {
+        try { return new URL(url, window.location.origin).searchParams; } catch { return new URLSearchParams(); }
+      })();
+      if (fixture && path === '/api/aviowiki-airport') {
+        const icao = (params.get('icao') || '').toUpperCase();
+        const table = fixture.airportByIcao || {};
+        const match = table[icao] || table[`K${icao}`] || Object.values(table).find((item) => (
+          item?.airport?.icao === icao || item?.requested === icao
+        ));
+        return json(match || { ok: true, configured: false, airport: { icao, name: '' }, runways: [], notes: [], availability: null });
+      }
+      if (fixture && path === '/api/aviowiki-fbos') return json(fixture.fbos);
+      if (fixture && path === '/api/iflightplanner-fbos') return json(fixture.iflight);
+      if (path.startsWith('/api/aviowiki')) {
+        return json({
+          ok: true,
+          configured: false,
+          source: 'aviowiki',
+          airports: [],
+          runways: [],
+          notes: [],
+          availability: null,
+          airport: { icao: params.get('icao') || '', name: '' },
+        });
+      }
+      return json({
+        ok: true,
+        configured: false,
+        source: 'iFlightPlanner',
+        fetchedAt: Date.now(),
+        recordCount: 0,
+        airports: [],
+        disclaimer: 'Posted retail prices can change without notice. Confirm price, fees, and availability with the FBO before dispatch or quoting.',
+      });
+    }
     if (path === '/api/ops-control-action') return opsControlResponse(action, body);
     if (path.startsWith('/api/flightaware-track-log')) {
       const ident = (() => {
