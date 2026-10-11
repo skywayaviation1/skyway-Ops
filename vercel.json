@@ -27,10 +27,6 @@
     {
       "path": "/api/shift-handoff-cleanup",
       "schedule": "15 9 * * *"
-    },
-    {
-      "path": "/api/fbo-departure-cron",
-      "schedule": "*/5 * * * *"
     }
   ],
   "functions": {
