@@ -7,6 +7,7 @@ import test from 'node:test';
 import {
   CACHE_COLLECTION,
   CACHE_TTL_MS,
+  localDayStartIso,
   aidsFromWebhookPayload,
   compareFeatured,
   createAviowikiRuntime,
@@ -289,6 +290,11 @@ test('cache TTLs are honored and stale data is served when aviowiki fails', asyn
   assert.equal(fresh.runways[0].identifier, '06');
   assert.ok(fresh.runways[0].lengthFt > 6000);
   assert.equal(fresh.availability.fireCover[0].detail.includes('ICAO IV'), true);
+  assert.equal(fresh.availability.hoursSummary, '06:00-23:00 Full');
+  const availabilityCall = calls.find((call) => call.includes('/availability'));
+  assert.match(availabilityCall, /local=true/);
+  assert.match(availabilityCall, /dateTime=2023-11-14T00%3A00%3A00/);
+  assert.equal(localDayStartIso('America/New_York', new Date(clock)), '2023-11-14T00:00:00');
   assert.equal(fresh.notes[0].notes.includes('Runway 6/24'), true);
   assert.equal(store.docs.size > 0, true);
   assert.equal([...store.docs.values()].some((doc) => JSON.stringify(doc).includes(TOKEN)), false);
@@ -484,6 +490,7 @@ test('token stays server-side and the screen keeps both sources', async () => {
   assert.equal(CACHE_TTL_MS.airport, 30 * 24 * 60 * 60 * 1000);
   assert.equal(CACHE_TTL_MS.providers, 24 * 60 * 60 * 1000);
   assert.equal(CACHE_TTL_MS.fuel, 6 * 60 * 60 * 1000);
+  assert.equal(CACHE_TTL_MS.availability, 24 * 60 * 60 * 1000);
   assert.match(client, /\/free\/airports\/icao\//);
   assert.match(client, /\/providers\/\$\{encodeURIComponent\(provider\.aid\)\}\/fuelProducts\/all/);
   assert.match(fbos, /authorizeFlightOps/);

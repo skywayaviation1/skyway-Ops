@@ -26,15 +26,20 @@ project that serves `www.skyway.app`, then redeploy. Until it is set,
 
 1. `GET /free/airports/icao/{icao}` resolves an identifier to an aviowiki aid.
    A FAA 3-letter code that misses is retried with a `K` prefix (`TEB` then `KTEB`).
-2. `GET /airports/{aid}` plus runways, availability, and operational notes.
+2. `GET /airports/{aid}` plus runways and operational notes.
+   `GET /airports/{aid}/availability?local=true&dateTime={local midnight}`
+   loads hours, customs, ATC, and fire cover for that airport's local day.
 3. `GET /airports/{aid}/providers/all`, keeping `HANDLING` and `FUEL` only.
    An FBO is a handling provider whose `handlingProvider.serviceLevel` is `FBO`.
 4. `GET /providers/{aid}/fuelProducts/all` for each of those providers.
    Prices in litres or imperial gallons are converted to US gallons. A price
    whose currency is not USD is flagged and is not treated as a US dollar price.
-5. Results are cached in Firestore collection `aviowiki-cache` (airport 30 days,
-   providers 24 hours, fuel 6 hours), with a short in-memory copy, coalesced
-   duplicate loads, and stale data if aviowiki errors.
+5. Results are cached in Firestore collection `aviowiki-cache` (airport identity,
+   runways, and notes 30 days; the local-day availability window 24 hours;
+   providers 24 hours; fuel 6 hours), with a short in-memory copy, coalesced
+   duplicate loads, and stale data if aviowiki errors. The availability cache
+   is separate so a corrected local-day window is not stuck behind the 30-day
+   airport document.
 
 `/api/aviowiki-fbos` and `/api/aviowiki-airport` use the same Firebase session
 and role check as `/api/iflightplanner-fbos` (`crew`, `pilot`, `sales`, `ops`,

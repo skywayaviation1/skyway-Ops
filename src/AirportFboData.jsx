@@ -225,12 +225,14 @@ function statusTone(status) {
 
 function AvailabilityColumn({ title, icon: Icon, blocks, summary }) {
   if (!blocks?.length && !summary) return null;
+  const showBlocks = summary !== '24 hours';
   return (
     <div className="rounded-lg border border-edge bg-surface-sunken p-3">
       <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-content-subtle">
         <Icon className="h-3.5 w-3.5" /> {title}
       </div>
       {summary && <div className="mt-1 text-xs font-medium text-content">{summary}</div>}
+      {showBlocks && (
       <div className="mt-2 space-y-1.5">
         {(blocks || []).map((block, index) => (
           <div key={`${block.from}-${block.to}-${index}`} className="text-[10px] text-content-muted">
@@ -241,6 +243,7 @@ function AvailabilityColumn({ title, icon: Icon, blocks, summary }) {
           </div>
         ))}
       </div>
+      )}
     </div>
   );
 }
@@ -319,6 +322,7 @@ function AirportResult({ result, gallons }) {
 
             {result.availability && (
               <div className="grid gap-2 md:grid-cols-2">
+                <div className="md:col-span-2 text-[10px] text-content-subtle">Times are local to the airport, from local midnight.</div>
                 <AvailabilityColumn title="Hours" icon={Clock} blocks={result.availability.hours} summary={result.availability.hoursSummary} />
                 <AvailabilityColumn title="Customs" icon={Shield} blocks={result.availability.customs} />
                 <AvailabilityColumn title="ATC" icon={Radio} blocks={result.availability.atc} />

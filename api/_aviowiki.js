@@ -6,7 +6,8 @@
  *   AVIOWIKI_WEBHOOK_SECRET  subscription HMAC secret; not required to read data
  *
  * Firestore collection `aviowiki-cache`:
- *   airport identity / runways / hours / notes  30 days
+ *   airport identity / runways / notes          30 days
+ *   local-day availability (hours, customs)     24 hours
  *   handling & fuel providers                   24 hours
  *   fuel products                               6 hours
  *
@@ -26,6 +27,7 @@ export const OURAIRPORTS_RUNWAYS_URL = 'https://davidmegginson.github.io/ourairp
 
 export const CACHE_TTL_MS = {
   airport: 30 * 24 * 60 * 60 * 1000,
+  availability: 24 * 60 * 60 * 1000,
   providers: 24 * 60 * 60 * 1000,
   fuel: 6 * 60 * 60 * 1000,
 };
@@ -409,11 +411,35 @@ export function normalizeAvailability(availability) {
   };
 }
 
+export function localDayStartIso(timeZone, now = new Date()) {
+  const zone = clean(timeZone) || 'UTC';
+  let parts;
+  try {
+    parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: zone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(now);
+  } catch {
+    parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'UTC',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(now);
+  }
+  const part = (type) => parts.find((item) => item.type === type)?.value || '00';
+  return `${part('year')}-${part('month')}-${part('day')}T00:00:00`;
+}
+
 function summarizeHours(hours) {
   if (!hours.length) return '';
   const allFull = hours.every((block) => block.status === 'FULL');
-  const coversDay = hours.some((block) => block.fromClock.startsWith('00:') && /23:5/.test(block.toClock || ''));
-  if (hours.length === 1 && allFull && (coversDay || hours[0].fromClock === '00:00')) return '24 hours';
+  const froms = hours.map((block) => block.fromClock).filter(Boolean).sort();
+  const tos = hours.map((block) => block.toClock).filter(Boolean).sort();
+  const coversDay = Boolean(froms[0]?.startsWith('00:')) && /23:5/.test(tos[tos.length - 1] || '');
+  if (allFull && coversDay) return '24 hours';
   return hours
     .map((block) => `${block.fromClock || '—'}-${block.toClock || '—'} ${humanizeCode(block.status)}`)
     .join(', ');
@@ -776,10 +802,9 @@ export function createAviowikiRuntime({
 
   async function loadAirportDetail(aid) {
     const encoded = encodeURIComponent(aid);
-    const [airportRes, runwayRes, availabilityRes, notesRes] = await Promise.allSettled([
+    const [airportRes, runwayRes, notesRes] = await Promise.allSettled([
       aviowikiGet(`/airports/${encoded}`),
       aviowikiGet(`/airports/${encoded}/runways/all`),
-      aviowikiGet(`/airports/${encoded}/availability?local=true`),
       aviowikiGet(`/airports/${encoded}/operationalNotes`),
     ]);
     const airportBody = airportRes.status === 'fulfilled' ? unwrapAirport(airportRes.value) : null;
@@ -792,10 +817,9 @@ export function createAviowikiRuntime({
     }
     const airport = normalizeAirport(airportBody);
     const runways = runwayRes.status === 'fulfilled' ? normalizeRunways(asList(runwayRes.value)) : [];
-    const availability = availabilityRes.status === 'fulfilled' ? normalizeAvailability(availabilityRes.value) : null;
     const notes = notesRes.status === 'fulfilled' ? normalizeNotes(asList(notesRes.value)) : [];
-    const failed = [runwayRes, availabilityRes, notesRes].filter((result) => result.status === 'rejected');
-    const data = { airport, runways, availability, notes };
+    const failed = [runwayRes, notesRes].filter((result) => result.status === 'rejected');
+    const data = { airport, runways, notes };
     const aids = [
       aid,
       airport.aid,
@@ -813,6 +837,18 @@ export function createAviowikiRuntime({
     return { kind: 'airport', aids, data };
   }
 
+  async function loadAvailability(aid, timeZone) {
+    const dateTime = localDayStartIso(timeZone, new Date(now()));
+    const body = await aviowikiGet(
+      `/airports/${encodeURIComponent(aid)}/availability?local=true&dateTime=${encodeURIComponent(dateTime)}`,
+    );
+    return {
+      kind: 'availability',
+      aids: [aid],
+      data: normalizeAvailability(body),
+    };
+  }
+
   async function getAirportBundle(requested) {
     const resolved = await resolveAirport(requested);
     const airport = resolved.data;
@@ -821,15 +857,29 @@ export function createAviowikiRuntime({
       CACHE_TTL_MS.airport,
       () => loadAirportDetail(airport.aid),
     );
+    const zone = airport.timezone || detail.data?.airport?.timezone || 'UTC';
+    let availability = null;
+    let availabilityStale = false;
+    try {
+      const record = await getOrLoad(
+        cacheDocId('avl', airport.aid),
+        CACHE_TTL_MS.availability,
+        () => loadAvailability(airport.aid, zone),
+      );
+      availability = record.data || null;
+      availabilityStale = Boolean(record.stale);
+    } catch (error) {
+      console.error('[aviowiki] availability lookup failed', redact(error.message, env.AVIOWIKI_API_TOKEN));
+    }
     return {
       requested: icaoCandidates(requested)[0] || clean(requested).toUpperCase(),
-      stale: Boolean(resolved.stale || detail.stale),
+      stale: Boolean(resolved.stale || detail.stale || availabilityStale),
       partial: Boolean(detail.partial),
       fetchedAt: detail.fetchedAt,
       source: 'aviowiki',
       airport: detail.data.airport || airport,
       runways: detail.data.runways || [],
-      availability: detail.data.availability || null,
+      availability,
       notes: detail.data.notes || [],
     };
   }
