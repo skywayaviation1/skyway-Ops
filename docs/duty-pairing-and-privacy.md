@@ -32,21 +32,37 @@ Either pilot can initiate:
 
 1. `/api/duty-start-pair` verifies the Firebase caller is one of the two pilots.
 2. It verifies both profiles are active and approved.
-3. One transaction refuses an existing open period and creates two reciprocal
-   records at the same `dutyOnAt`.
+3. If neither pilot is on duty, one transaction creates two reciprocal records
+   at the same `dutyOnAt`. If the other pilot is already on duty and is not
+   paired with someone else who is still on, the caller joins that crew. The
+   caller’s own open period is still refused.
 4. The caller is self-attested. The partner record is operationally on-duty but
    pending until that pilot personally confirms fitness/rest.
 5. The response includes only the caller's own record.
 6. `/api/duty-end-pair` accepts crew-supplied time/flight details only against
-   the caller's own period. When a partner is on duty the caller chooses
-   `scope: "self"` (only my duty) or `scope: "crew"` (whole crew). A crew
-   change sends the replacement and ends only the caller; the pilot who is
-   staying keeps the original duty-on time and is linked to the replacement.
-   Whole-crew duty-off is the only path that closes both records.
+   the caller's own period. When a partner is on duty the duty-off prompt
+   defaults to **Crew off duty** (`scope: "crew"`, both pilots). **Just me —
+   swapping with another pilot** (`scope: "self"`) ends only the caller. The
+   pilot who stays keeps the original duty-on, the recorded flight time, and
+   the paired designation, including while the replacement has not linked yet.
+   A named replacement is linked immediately. A replacement who duties on later
+   joins that open crew through `/api/duty-start-pair` (`joinedExistingCrew`)
+   instead of opening a second single-pilot day. Their own duty-on is the join
+   time. The server still refuses a paired duty-off that omits `scope`.
+7. A scheduled same-day tail and trip pair locks the start form to that crew.
+   The duty day is Eastern unless the app timezone override is set. Resync
+   (`/api/duty-schedule-resync`) is admin-only, dry-run first, and is described
+   in `docs/duty-audit.md`.
 
 ## Historical repair
 
-The administrator report has **Sync paired crew**:
+The administrator report has **Sync paired crew** and **Resync with schedule**.
+Sync paired crew is the conservative 365-day backfill below. Resync with
+schedule is scoped to a day, a date range, or one pilot. It only relinks
+records that already exist, shows the before/after diff and the limit change,
+and writes after the admin confirms. See `docs/duty-audit.md`.
+
+**Sync paired crew:**
 
 1. Preview stores a server-side, 30-minute audit snapshot.
 2. Apply recomputes against current duty records; browser-supplied action ids

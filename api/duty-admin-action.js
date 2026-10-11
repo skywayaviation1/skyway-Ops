@@ -55,6 +55,11 @@ async function updateTimes(database, periodId, body, actor) {
   const period = { id: snap.id, ...snap.data() };
   const dutyOnAt = Number(body.dutyOnAt);
   const dutyOffAt = body.status === 'on' && body.dutyOffAt == null ? null : Number(body.dutyOffAt);
+  if (!String(body.note || '').trim()) {
+    const err = new Error('A reason is required to correct a duty record');
+    err.status = 400;
+    throw err;
+  }
   if (!Number.isFinite(dutyOnAt)) throw new Error('valid dutyOnAt required');
   if (dutyOffAt != null && (!Number.isFinite(dutyOffAt) || dutyOffAt <= dutyOnAt)) {
     throw new Error('dutyOffAt must be after dutyOnAt');
@@ -104,14 +109,17 @@ async function updateTimes(database, periodId, body, actor) {
       field: 'dutyTimes',
       from: { dutyOnAt: record.dutyOnAt, dutyOffAt: record.dutyOffAt, status: record.status },
       to: { dutyOnAt, dutyOffAt, status: dutyOffAt == null ? 'on' : 'off' },
-      note: body.note || (over14 ? 'Admin verified duty exceeded 14 hours' : 'Admin corrected duty times'),
+      reason: String(body.note).trim(),
+      note: String(body.note).trim(),
     }],
   });
 
   const batch = database.batch();
   batch.update(ref, makePatch(period));
   let partner = null;
-  if (period.partnerPeriodId) {
+  // A crew change gives each pilot their own duty-on and duty-off. Copying
+  // times onto the linked record is explicit, never the default.
+  if (period.partnerPeriodId && body.applyToPartner === true) {
     const partnerRef = database.collection(COLL).doc(period.partnerPeriodId);
     const partnerSnap = await partnerRef.get();
     if (partnerSnap.exists) {
