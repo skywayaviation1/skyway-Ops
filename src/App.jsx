@@ -80,6 +80,9 @@ const FlightBoardLazy = lazy(() => import('./FlightBoard.jsx'));
 // Pilots and crew see PilotHomeScreen instead. Lazy because those roles
 // never render it.
 const OpsCommandCenterLazy = lazy(() => import('./OpsCommandCenter.jsx'));
+const FboDeskLazy = lazy(() => import('./FboDesk.jsx'));
+const FboLegPanelLazy = lazy(() => import('./FboDesk.jsx').then((m) => ({ default: m.FboLegPanel })));
+const FboLegSyncLazy = lazy(() => import('./FboDesk.jsx').then((m) => ({ default: m.FboLegSync })));
 
 // Code-split: the administrator operations control board. It opens several
 // live Firestore subscriptions and pulls in the map, so it must not load for
@@ -5245,7 +5248,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   const requestedTripTab = () => {
     if (typeof window === 'undefined') return null;
     const id = window.location.hash.replace(/^#/, '').toLowerCase();
-    return ['status', 'pax', 'sheet', 'notes', 'weather', 'plan', 'frat', 'lodging', 'chat', 'notify', 'delay'].includes(id)
+    return ['status', 'pax', 'sheet', 'notes', 'weather', 'plan', 'frat', 'lodging', 'chat', 'notify', 'delay', 'fbo'].includes(id)
       ? id
       : null;
   };
@@ -6956,6 +6959,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
             // hotel info for the trip. Hidden on non-ops (HOLD/MX/etc)
             // since they don't have crew lodging in the operational sense.
             { id: 'lodging', label: 'Lodging', icon: Hotel, hidden: !trip.info.isOps },
+            { id: 'fbo', label: 'FBO', icon: Building2, hidden: !trip.info.isOps },
             { id: 'chat', label: 'Comms', icon: MessageSquare, unread: tripChatUnread },
             { id: 'email', label: 'Email', icon: Mail, hidden: !['admin', 'sales'].includes(currentUser?.role) },
             { id: 'notify', label: 'Notify', icon: Bell, hidden: !trip.info.isOps },
@@ -6971,7 +6975,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
               id: 'operations',
               label: 'Operations',
               icon: Navigation,
-              children: pick(['sheet', 'weather', 'plan', 'frat', 'lodging', 'notes', 'notify', 'delay']),
+              children: pick(['sheet', 'fbo', 'weather', 'plan', 'frat', 'lodging', 'notes', 'notify', 'delay']),
             },
             { id: 'chat', label: 'Comms', icon: MessageSquare, children: pick(['chat', 'email']) },
           ].filter(g => g.children.length > 0);
@@ -7430,6 +7434,10 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
             </div>
           }>
             <TripEmailPanelLazy tripUid={trip.uid} currentUser={currentUser} />
+          </Suspense>
+        ) : tab === 'fbo' ? (
+          <Suspense fallback={<div className="flex items-center justify-center py-16 text-content-muted"><Loader2 className="mr-2 h-4 w-4 animate-spin" />Loading FBO handling…</div>}>
+            <FboLegPanelLazy trip={trip} fromFbo={fromFbo} toFbo={toFbo} currentUser={currentUser} />
           </Suspense>
         ) : tab === 'notify' ? (
           <div className="p-6 max-w-2xl">
@@ -21944,6 +21952,7 @@ const NAV_SECTIONS = [
   { id: 'availability', label: 'Availability', icon: Plane,     roles: ['ops', 'admin'] },
   { id: 'airport-data', label: 'Airport & Fuel', icon: Fuel,    roles: ['crew', 'sales', 'ops', 'admin'] },
   { id: 'ops',       label: 'Dispatch',    icon: Zap,           roles: ['ops', 'admin'] },
+  { id: 'fbo',       label: 'FBO desk',    icon: Building2,     roles: ['ops', 'admin'] },
   { id: 'tracking',  label: 'Tracking',    icon: Navigation,    roles: ['ops', 'admin'] },
   { id: 'manifests', label: 'Manifests',   icon: FileText,      roles: ['crew', 'ops', 'admin'] },
   { id: 'lodging',   label: 'Lodging',     icon: Hotel,         roles: ['crew', 'ops', 'admin'] },
@@ -21971,7 +21980,7 @@ const NAV_SECTIONS = [
 
 const NAV_GROUPS = [
   { id: 'home',     label: 'Home',     icon: Home,          children: ['home'] },
-  { id: 'flights',  label: 'Flights',  icon: Plane,         children: ['schedule', 'availability', 'airport-data', 'ops', 'tracking', 'manifests', 'lodging', 'archive'] },
+  { id: 'flights',  label: 'Flights',  icon: Plane,         children: ['schedule', 'availability', 'airport-data', 'ops', 'fbo', 'tracking', 'manifests', 'lodging', 'archive'] },
   { id: 'comms',    label: 'Comms',    icon: MessageSquare, children: ['comms'] },
   { id: 'teams',    label: 'Teams',    icon: Users,         children: ['teams'] },
   { id: 'email',    label: 'Email',    icon: Mail,          children: ['mailbox', 'inbox'] },
@@ -29013,6 +29022,12 @@ export default function CharterOps() {
               ops / sales — the existing command centre
               everyone else — the personalized PilotHomeScreen
             Gating here keeps each home component independent of the others. */}
+        {['ops', 'admin'].includes(currentUser?.role) && !currentUser?.appReviewer && (
+          <Suspense fallback={null}>
+            <FboLegSyncLazy trips={allTrips} ready={syncStatus.status === 'ok' || allTrips.length > 0} />
+          </Suspense>
+        )}
+
         {section === 'home' && (
           currentUser?.appReviewer && sandboxView === 'crew' ? (
             <PilotHomeScreen
@@ -29118,6 +29133,15 @@ export default function CharterOps() {
         )}
 
         {/* === AIRPORT DATA — iFlightPlanner FBO and posted fuel prices === */}
+        {section === 'fbo' && ['ops', 'admin'].includes(currentUser?.role) && (
+          <Suspense fallback={<div className="flex flex-1 items-center justify-center text-content-muted"><Loader2 className="mr-2 h-5 w-5 animate-spin" />Loading FBO desk…</div>}>
+            <FboDeskLazy
+              currentUser={currentUser}
+              onSelectTrip={(uid) => { setSelectedId(uid); setSection('schedule'); }}
+            />
+          </Suspense>
+        )}
+
         {section === 'airport-data' && (
           <Suspense
             fallback={(

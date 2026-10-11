@@ -1,0 +1,39 @@
+// Fragment for the named Firestore database `appusers`.
+// Merge these match blocks into the deployed appusers ruleset.
+// Do not replace the database ruleset with this file alone.
+// Do not deploy this file by itself.
+// Do not copy this file onto `appreview`.
+//
+// FBO legs, the saved directory, the email audit log, and ops notices are
+// written only by the Admin SDK (api/fbo-*.js). Clients, including signed-in
+// ops users, read the desk through those routes. Denying client access keeps
+// a broad `match /{document=**}` grant from exposing confirmation tokens,
+// CSR notes, or the audit log, and keeps a browser from forging a "sent"
+// reminder.
+//
+// app-config/fbo-notify (test mode, live switch, arrival lead time) is also
+// Admin SDK only. The default when the document is missing is test mode ON.
+//
+// No backfill runs. Existing trip-state and trip documents are not modified
+// by the rules. fbo-legs documents are created when ops opens the schedule.
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /fbo-legs/{id} {
+      allow read, write: if false;
+    }
+    match /fbo-directory/{id} {
+      allow read, write: if false;
+    }
+    match /fbo-email-log/{id} {
+      allow read, write: if false;
+    }
+    match /fbo-ops-notices/{id} {
+      allow read, write: if false;
+    }
+    match /app-config/fbo-notify {
+      allow read, write: if false;
+    }
+  }
+}

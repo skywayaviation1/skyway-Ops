@@ -58,6 +58,9 @@ const FlightBoard = lazy(() => import('../src/FlightBoard.jsx'));
 const AdminDutyReport = lazy(() => import('../src/AdminDutyReport.jsx'));
 const TripTrackPage = lazy(() => import('../src/TripTrack.jsx'));
 const AirportFboData = lazy(() => import('../src/AirportFboData.jsx'));
+const FboDesk = lazy(() => import('../src/FboDesk.jsx'));
+const FboLegPanel = lazy(() => import('../src/FboDesk.jsx').then((m) => ({ default: m.FboLegPanel })));
+const FboConfirmPage = lazy(() => import('../src/FboConfirmPage.jsx'));
 
 const SURFACES = {
   dashboard: {
@@ -143,6 +146,51 @@ const SURFACES = {
   airport: {
     label: 'Airport, FBO and fuel',
     render: () => <AirportFboData />,
+  },
+
+  fbo: {
+    label: 'FBO desk',
+    render: () => (
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+        <FboDesk currentUser={CURRENT_USER} />
+      </div>
+    ),
+  },
+
+  'fbo-leg': {
+    label: 'Trip FBO section',
+    render: () => (
+      <div style={{ overflowY: 'auto', height: '100%' }}>
+        <FboLegPanel
+          trip={{
+            uid: 'leg-apf-teb',
+            start: new Date(Date.now() + 3 * 3600_000),
+            end: new Date(Date.now() + 6 * 3600_000),
+            info: {
+              isFlight: true,
+              isOps: true,
+              tail: 'N444AM',
+              from: 'KAPF',
+              to: 'KTEB',
+              tripId: 'WEQVQD',
+              tripCode: 'WEQVQD',
+              pax: 4,
+              legType: 'REVENUE',
+              fromFbo: 'Signature Aviation',
+              toFbo: 'Signature Flight Support',
+            },
+          }}
+          fromFbo="Signature Aviation"
+          toFbo="Signature Flight Support"
+          currentUser={CURRENT_USER}
+        />
+      </div>
+    ),
+  },
+
+  'fbo-confirm': {
+    label: 'FBO arrival confirmation',
+    render: () => <FboConfirmPage token="preview" />,
   },
 
   dutyreport: {

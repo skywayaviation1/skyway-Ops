@@ -6,6 +6,7 @@ import {
   BASE, CHARTER_INBOX, COMPANY, COMPANY_LEGAL, DOMAIN, SCHEDULE, TENANT,
   brokerEmailFor, emailFor, tripStates,
 } from './sample-data.js';
+import { deskCounts, filterDeskLegs } from '../src/fbo-notify.js';
 
 const T = TENANT;
 
@@ -752,6 +753,191 @@ export function installFetchStub() {
       return json(sampleTrackLog(ident));
     }
 
+    if (path.startsWith('/api/fbo-')) return fboPreviewResponse(path, url, body);
+
     return json({ ok: true });
   };
+}
+
+function fboPreviewLegs() {
+  if (!window.__FBO_PREVIEW_LEGS__) {
+    const now = Date.now();
+    const hour = 60 * 60 * 1000;
+    window.__FBO_PREVIEW_LEGS__ = [
+      {
+        legUid: 'leg-apf-teb',
+        tripId: 'WEQVQD',
+        tail: 'N444AM',
+        from: 'KAPF',
+        to: 'KTEB',
+        start: new Date(now + 3 * hour).toISOString(),
+        end: new Date(now + 6 * hour).toISOString(),
+        pax: 4,
+        legType: 'REVENUE',
+        fromFboName: 'Signature Aviation',
+        toFboName: 'Signature Flight Support',
+        departure: {
+          airport: 'KAPF', aid: 'sig-apf', name: 'Signature Aviation',
+          email: 'apf.csr@signatureflight.com', phone: '(239) 555-0142', contact: 'Front desk',
+          matchStatus: 'auto', matchScore: 0.94, hintName: 'Signature Aviation',
+          reminderStatus: 'scheduled',
+        },
+        arrival: {
+          airport: 'KTEB', aid: 'sig-teb', name: 'Signature Flight Support',
+          email: 'teb.csr@signatureflight.com', phone: '(201) 555-0190', contact: '',
+          matchStatus: 'confirmed', matchScore: 0.91, hintName: 'Signature Flight Support',
+          arrivalStatus: 'not_sent', services: 'GPU, coffee, ice', opsNotes: 'Crew will call 20 minutes out.',
+        },
+      },
+      {
+        legUid: 'leg-pbi-empty',
+        tripId: 'M4R8KQ',
+        tail: 'N168ZZ',
+        from: 'KPBI',
+        to: 'KAPF',
+        start: new Date(now + 8 * hour).toISOString(),
+        end: new Date(now + 9 * hour).toISOString(),
+        pax: 0,
+        legType: 'REPO',
+        fromFboName: 'Atlantic Aviation',
+        toFboName: 'Signature Aviation',
+        departure: {
+          airport: 'KPBI', aid: 'atl-pbi', name: 'Atlantic Aviation',
+          email: '', phone: '(561) 555-0104', contact: '',
+          matchStatus: 'suggested', matchScore: 0.9, hintName: 'Atlantic Aviation',
+          reminderStatus: 'scheduled',
+        },
+        arrival: {
+          airport: 'KAPF', aid: 'sig-apf', name: 'Signature Aviation',
+          email: 'apf.csr@signatureflight.com', phone: '(239) 555-0142',
+          matchStatus: 'auto', matchScore: 0.94, hintName: 'Signature Aviation',
+          arrivalStatus: 'sent', sentAt: now - hour,
+        },
+      },
+    ];
+  }
+  return window.__FBO_PREVIEW_LEGS__;
+}
+
+function fboPreviewResponse(path, url, body) {
+  const json = (payload, status = 200) => new Response(JSON.stringify(payload), {
+    status, headers: { 'Content-Type': 'application/json' },
+  });
+  const params = (() => {
+    try { return new URL(url, window.location.origin).searchParams; } catch { return new URLSearchParams(); }
+  })();
+  if (path === '/api/fbo-public') {
+    const view = {
+      tail: 'N444AM',
+      tripId: 'WEQVQD',
+      from: 'KAPF',
+      to: 'KTEB',
+      airportName: 'Teterboro',
+      fboName: 'Signature Flight Support',
+      eta: 'Today, 4:10 PM EDT (subject to change)',
+      passengers: '4',
+      services: 'GPU, coffee, ice',
+      notes: 'Crew will call 20 minutes out.',
+      opsEmail: 'charters@flyskyway.com',
+      opsPhone: '727-605-5000',
+      arrivalStatus: 'opened',
+      expired: false,
+    };
+    if (body?.csrName) {
+      view.arrivalStatus = body.kind === 'question' ? 'question' : 'confirmed';
+      view.confirmedBy = body.csrName;
+    }
+    return json({ ok: true, view });
+  }
+  if (path === '/api/fbo-settings') {
+    const settings = window.__FBO_PREVIEW_SETTINGS__ || { testMode: true, live: false, arrivalAutoLeadHours: null };
+    if (body && body.testMode != null) {
+      settings.testMode = body.testMode !== false;
+      settings.live = settings.testMode === false;
+      settings.arrivalAutoLeadHours = body.arrivalAutoLeadHours || null;
+      window.__FBO_PREVIEW_SETTINGS__ = settings;
+    }
+    return json({ ok: true, settings, canEdit: true });
+  }
+  if (path === '/api/fbo-directory') {
+    if (!window.__FBO_PREVIEW_DIRECTORY__) {
+      window.__FBO_PREVIEW_DIRECTORY__ = [
+        {
+          id: 'KAPF__sig-apf', airport: 'KAPF', aid: 'sig-apf', name: 'Signature Aviation',
+          email: 'apf.csr@signatureflight.com', phone: '(239) 555-0142', contact: 'Front desk',
+          preferred: true, optedOut: false,
+        },
+      ];
+    }
+    const rows = window.__FBO_PREVIEW_DIRECTORY__;
+    if (body?.aid && body?.airport) {
+      const airport = String(body.airport).toUpperCase();
+      const next = { ...body, airport, id: `${airport}__${body.aid}` };
+      const index = rows.findIndex((row) => row.airport === airport && row.aid === body.aid);
+      if (index >= 0) rows[index] = { ...rows[index], ...next };
+      else rows.push(next);
+      return json({ ok: true, entry: next });
+    }
+    const airport = String(params.get('airport') || '').toUpperCase();
+    return json({
+      ok: true,
+      directory: airport ? rows.filter((row) => row.airport === airport) : rows,
+    });
+  }
+  if (path === '/api/fbo-match') {
+    const airport = String(body.airport || params.get('airport') || '').toUpperCase();
+    return json({
+      ok: true,
+      airport,
+      providers: [
+        { aid: 'sig', name: 'Signature Flight Support', email: 'csr@signatureflight.com', phone: '(201) 555-0190', fbo: true, category: 'HANDLING' },
+        { aid: 'atl', name: 'Atlantic Aviation', email: '', phone: '(561) 555-0104', fbo: true, category: 'HANDLING' },
+      ],
+    });
+  }
+  if (path === '/api/fbo-desk' && body?.legs) return json({ ok: true, written: body.legs.length });
+  if (path === '/api/fbo-action' && body?.action) {
+    const legs = fboPreviewLegs();
+    const leg = legs.find((item) => item.legUid === body.legUid) || legs[0];
+    if (body.action === 'send-arrival') leg.arrival = { ...leg.arrival, arrivalStatus: 'sent', sentAt: Date.now() };
+    if (body.action === 'manual-confirm') {
+      leg.arrival = { ...leg.arrival, arrivalStatus: 'confirmed', confirmedBy: 'Ops: Jim Skyway', csrNotes: body.note || '', confirmedAt: Date.now() };
+    }
+    if (body.action === 'mark-scheduled') leg.arrival = { ...leg.arrival, arrivalStatus: 'scheduled_manual', manualNote: body.note || '' };
+    if (body.action === 'save-contact' && body.email) {
+      const side = body.side === 'departure' ? 'departure' : 'arrival';
+      leg[side] = { ...leg[side], email: body.email };
+    }
+    if (body.action === 'mark-notice-read') return json({ ok: true });
+    return json({ ok: true, leg });
+  }
+  if (path === '/api/fbo-action') {
+    const leg = fboPreviewLegs().find((item) => item.legUid === params.get('legUid')) || fboPreviewLegs()[0];
+    return json({ ok: true, leg });
+  }
+  const legs = fboPreviewLegs();
+  const filters = {
+    status: params.get('status') || 'open',
+    airport: params.get('airport') || '',
+    missingEmail: params.get('missingEmail'),
+    fromMs: params.get('fromMs'),
+    toMs: params.get('toMs'),
+  };
+  return json({
+    ok: true,
+    settings: window.__FBO_PREVIEW_SETTINGS__ || { testMode: true, live: false, arrivalAutoLeadHours: null },
+    counts: deskCounts(legs),
+    unread: 1,
+    legs: filterDeskLegs(legs, filters),
+    notices: [{
+      id: 'note-1', kind: 'question', legUid: 'leg-apf-teb', tripId: 'WEQVQD', tail: 'N444AM',
+      airport: 'KTEB', fboName: 'Signature Flight Support', csrName: 'Dana Ruiz',
+      notes: 'Can you confirm GPU on arrival?', createdAt: Date.now() - 20 * 60 * 1000, read: false,
+    }],
+    audit: [{
+      id: 'log-1', at: Date.now() - 5 * 60 * 1000, type: 'departure_reminder', tripId: 'WEQVQD',
+      legUid: 'leg-apf-teb', intendedTo: 'apf.csr@signatureflight.com',
+      deliveredTo: 'jake@flyskyway.com', testMode: true, status: 'sent', subject: 'Skyway departure reminder',
+    }],
+  });
 }
