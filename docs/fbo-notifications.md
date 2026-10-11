@@ -33,9 +33,15 @@ forces test mode even after the toggle.
 Per-FBO opt-out lives on the directory entry. Per-trip disable is on the leg.
 Every attempt is written to `fbo-email-log`.
 
-Departure mail, advance arrival mail, and the inbound notice are sent by
-`GET /api/fbo-departure-cron` every 5 minutes, only when
-`Authorization: Bearer $CRON_SECRET` matches. Cancelled legs are skipped.
+Automatic departure mail, advance arrival mail, and the inbound notice are
+**disabled**. `GET /api/fbo-departure-cron` is not on the Vercel cron
+schedule. When `FBO_AUTO_NOTIFY_DISABLED=1`, that route returns
+`{ ok: true, disabled: true }` immediately and does not read or write
+Firestore or send mail. Manual send, resend, schedule, and confirm from the
+FBO desk still work. If the kill switch is off and the route is called
+directly, it still requires `Authorization: Bearer $CRON_SECRET`. Cancelled
+legs are skipped.
+
 The same departure time is not mailed twice. A changed departure time is a new
 send, one hour before the new time.
 
@@ -47,7 +53,9 @@ confirms, an update is sent. If they already confirmed, a time-change notice
 is sent and the leg is marked needs re-confirm.
 
 The inbound notice goes to the arrival FBO when the aircraft has actually
-departed. The cron reads FlightAware `flightaware-state/{tail}` (`actualOff`
+departed. While automatic sending is disabled, that notice is not sent on a
+schedule. If `/api/fbo-departure-cron` runs with the kill switch off, it reads
+FlightAware `flightaware-state/{tail}` (`actualOff`
 matching the origin) and trip-state wheels-up / taxi (off-block) timestamps.
 Scheduled time alone does not send it. Ops can press **Departed** on the leg
 when there is no actual time. Each leg is mailed once.
@@ -82,5 +90,6 @@ when there is no actual time. Each leg is mailed once.
 | `app-config/fbo-notify` | Test mode and arrival lead time |
 
 The schedule itself still comes from the JetInsight feed. Ops clients sync the
-next week of legs onto `fbo-legs` when the app is open. The cron reads that
-collection; it does not fetch the feed itself.
+next week of legs onto `fbo-legs` when the app is open. Automatic mail from
+`/api/fbo-departure-cron` is disabled. When that route does run, it reads
+`fbo-legs`; it does not fetch the feed itself.
