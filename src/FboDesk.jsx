@@ -42,6 +42,25 @@ async function fboFetch(path, options = {}) {
   return data;
 }
 
+async function loadDirectory(airport) {
+  if (!airport) return [];
+  const data = await fboFetch(`/api/fbo-directory?airport=${encodeURIComponent(airport)}`);
+  return data.directory || [];
+}
+
+async function saveDirectoryEntry(entry) {
+  if (!entry?.airport || !entry?.aid) return null;
+  return fboFetch('/api/fbo-directory', {
+    method: 'POST',
+    body: JSON.stringify(entry),
+  });
+}
+
+function directoryRow(rows, aid) {
+  if (!aid) return null;
+  return (rows || []).find((row) => row.aid === aid) || null;
+}
+
 function canWrite(user) {
   return user?.role === 'ops' || user?.role === 'admin';
 }
@@ -118,6 +137,7 @@ function SideCard({
   providers,
   write,
   busy,
+  directoryPreferred,
   onSelect,
   onSave,
   onConfirmMatch,
@@ -126,14 +146,15 @@ function SideCard({
   const [email, setEmail] = useState(side?.email || '');
   const [phone, setPhone] = useState(side?.phone || '');
   const [contact, setContact] = useState(side?.contact || '');
-  const [preferred, setPreferred] = useState(false);
+  const [preferred, setPreferred] = useState(directoryPreferred === true);
   const [optedOut, setOptedOut] = useState(side?.optedOut === true);
   useEffect(() => {
     setEmail(side?.email || '');
     setPhone(side?.phone || '');
     setContact(side?.contact || '');
+    setPreferred(directoryPreferred === true);
     setOptedOut(side?.optedOut === true);
-  }, [side?.email, side?.phone, side?.contact, side?.aid, side?.optedOut]);
+  }, [side?.email, side?.phone, side?.contact, side?.aid, side?.optedOut, directoryPreferred]);
 
   const missing = !validEmail(email);
   const listed = providers || [];
@@ -161,7 +182,7 @@ function SideCard({
             disabled={!write || busy}
             value={side?.aid || ''}
             onChange={(event) => {
-              const provider = (providers || []).find((item) => item.aid === event.target.value);
+              const provider = choices.find((item) => item.aid === event.target.value);
               if (provider) onSelect(provider);
             }}
             className="w-full rounded-lg border border-edge bg-surface px-3 py-2.5 text-sm text-content outline-none focus:border-accent disabled:opacity-60"
@@ -218,6 +239,7 @@ export function FboLegPanel({ trip, fromFbo, toFbo, currentUser }) {
   const write = canWrite(currentUser);
   const [leg, setLeg] = useState(null);
   const [providers, setProviders] = useState({ from: [], to: [] });
+  const [directory, setDirectory] = useState({ from: [], to: [] });
   const [services, setServices] = useState('');
   const [notes, setNotes] = useState('');
   const [manualNote, setManualNote] = useState('');
@@ -259,6 +281,11 @@ export function FboLegPanel({ trip, fromFbo, toFbo, currentUser }) {
           fboFetch('/api/fbo-match', { method: 'POST', body: JSON.stringify({ airport: record.to, hints: [record.toFboName].filter(Boolean) }) }),
         ]);
         if (!cancel) setProviders({ from: fromMatch.providers || [], to: toMatch.providers || [] });
+        const [fromDirectory, toDirectory] = await Promise.all([
+          loadDirectory(record.from),
+          loadDirectory(record.to),
+        ]);
+        if (!cancel) setDirectory({ from: fromDirectory, to: toDirectory });
       } catch (err) {
         if (!cancel) setError(err.message);
       }
@@ -266,11 +293,12 @@ export function FboLegPanel({ trip, fromFbo, toFbo, currentUser }) {
     return () => { cancel = true; };
   }, [record.legUid, record.from, record.to, record.fromFboName, record.toFboName, record.start, reload]);
 
-  async function act(action, extra = {}) {
+  async function act(action, extra = {}, before) {
     setBusy(true);
     setError('');
     setMessage('');
     try {
+      if (before) await before();
       const data = await fboFetch('/api/fbo-action', {
         method: 'POST',
         body: JSON.stringify({ action, legUid: record.legUid, ...extra }),
@@ -281,6 +309,14 @@ export function FboLegPanel({ trip, fromFbo, toFbo, currentUser }) {
         setNotes(data.leg.arrival?.opsNotes || '');
       } else {
         await reload();
+      }
+      if (action === 'save-contact' || action === 'select-fbo') {
+        const airport = extra.side === 'arrival' ? record.to : record.from;
+        const rows = await loadDirectory(airport);
+        setDirectory((current) => ({
+          ...current,
+          [extra.side === 'arrival' ? 'to' : 'from']: rows,
+        }));
       }
       setMessage('Saved.');
     } catch (err) {
@@ -328,11 +364,24 @@ export function FboLegPanel({ trip, fromFbo, toFbo, currentUser }) {
           airport={record.from}
           side={{ ...(leg?.departure || {}), hintName: record.fromFboName || leg?.departure?.hintName }}
           providers={providers.from}
+          directoryPreferred={directoryRow(directory.from, leg?.departure?.aid)?.preferred === true}
           write={write}
           busy={busy}
-          onSelect={(provider) => act('select-fbo', { side: 'departure', ...provider, saveDirectory: true })}
+          onSelect={(provider) => act('select-fbo', { side: 'departure', ...provider }, () => saveDirectoryEntry({
+            airport: record.from,
+            aid: provider.aid,
+            name: provider.name,
+            email: provider.email,
+            phone: provider.phone,
+            contact: provider.contact,
+          }))}
           onConfirmMatch={() => act('confirm-match', { side: 'departure' })}
-          onSave={(contact) => act('save-contact', { side: 'departure', ...contact, saveDirectory: true })}
+          onSave={(contact) => act('save-contact', { side: 'departure', ...contact }, () => saveDirectoryEntry({
+            airport: record.from,
+            aid: leg?.departure?.aid,
+            name: leg?.departure?.name,
+            ...contact,
+          }))}
           extra={(
             <div className="border-t border-edge pt-3">
               <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -358,11 +407,24 @@ export function FboLegPanel({ trip, fromFbo, toFbo, currentUser }) {
           airport={record.to}
           side={{ ...(leg?.arrival || {}), hintName: record.toFboName || leg?.arrival?.hintName }}
           providers={providers.to}
+          directoryPreferred={directoryRow(directory.to, leg?.arrival?.aid)?.preferred === true}
           write={write}
           busy={busy}
-          onSelect={(provider) => act('select-fbo', { side: 'arrival', ...provider, saveDirectory: true })}
+          onSelect={(provider) => act('select-fbo', { side: 'arrival', ...provider }, () => saveDirectoryEntry({
+            airport: record.to,
+            aid: provider.aid,
+            name: provider.name,
+            email: provider.email,
+            phone: provider.phone,
+            contact: provider.contact,
+          }))}
           onConfirmMatch={() => act('confirm-match', { side: 'arrival' })}
-          onSave={(contact) => act('save-contact', { side: 'arrival', ...contact, saveDirectory: true })}
+          onSave={(contact) => act('save-contact', { side: 'arrival', ...contact }, () => saveDirectoryEntry({
+            airport: record.to,
+            aid: leg?.arrival?.aid,
+            name: leg?.arrival?.name,
+            ...contact,
+          }))}
           extra={(
             <div className="space-y-2 border-t border-edge pt-3">
               <div className="flex flex-wrap items-center gap-2">
@@ -628,16 +690,14 @@ function LegRow({ leg, write, busy, onAction, onChanged }) {
             <Button
               size="sm"
               disabled={busy || !validEmail(email)}
-              onClick={async () => {
-                await onAction(leg, 'save-contact', {
-                  side: targetSide,
-                  email,
-                  aid: target?.aid,
-                  name: target?.name,
-                  saveDirectory: true,
-                });
-                onChanged?.();
-              }}
+              onClick={() => onAction(leg, 'save-contact', {
+                side: targetSide,
+                email,
+                aid: target?.aid,
+                name: target?.name,
+                phone: target?.phone,
+                contact: target?.contact,
+              })}
             >
               Save FBO email
             </Button>
@@ -700,6 +760,16 @@ export default function FboDesk({ currentUser, onSelectTrip }) {
     setBusy(true);
     setError('');
     try {
+      if (action === 'save-contact') {
+        await saveDirectoryEntry({
+          airport: extra.side === 'arrival' ? leg.to : leg.from,
+          aid: extra.aid,
+          name: extra.name,
+          email: extra.email,
+          phone: extra.phone,
+          contact: extra.contact,
+        });
+      }
       await fboFetch('/api/fbo-action', {
         method: 'POST',
         body: JSON.stringify({ action, legUid: leg.legUid, ...extra }),

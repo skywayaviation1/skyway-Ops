@@ -859,6 +859,31 @@ function fboPreviewResponse(path, url, body) {
     }
     return json({ ok: true, settings, canEdit: true });
   }
+  if (path === '/api/fbo-directory') {
+    if (!window.__FBO_PREVIEW_DIRECTORY__) {
+      window.__FBO_PREVIEW_DIRECTORY__ = [
+        {
+          id: 'KAPF__sig-apf', airport: 'KAPF', aid: 'sig-apf', name: 'Signature Aviation',
+          email: 'apf.csr@signatureflight.com', phone: '(239) 555-0142', contact: 'Front desk',
+          preferred: true, optedOut: false,
+        },
+      ];
+    }
+    const rows = window.__FBO_PREVIEW_DIRECTORY__;
+    if (body?.aid && body?.airport) {
+      const airport = String(body.airport).toUpperCase();
+      const next = { ...body, airport, id: `${airport}__${body.aid}` };
+      const index = rows.findIndex((row) => row.airport === airport && row.aid === body.aid);
+      if (index >= 0) rows[index] = { ...rows[index], ...next };
+      else rows.push(next);
+      return json({ ok: true, entry: next });
+    }
+    const airport = String(params.get('airport') || '').toUpperCase();
+    return json({
+      ok: true,
+      directory: airport ? rows.filter((row) => row.airport === airport) : rows,
+    });
+  }
   if (path === '/api/fbo-match') {
     const airport = String(body.airport || params.get('airport') || '').toUpperCase();
     return json({
