@@ -5,8 +5,8 @@
   "backgroundColor": "#060c16",
   "ios": {
     "backgroundColor": "#060c16",
-    "contentInset": "automatic",
-    "preferredContentMode": "mobile"
+    "contentInset": "never",
+    "preferredContentMode": "desktop"
   },
   "android": {
     "backgroundColor": "#060c16",

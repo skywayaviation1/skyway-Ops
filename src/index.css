@@ -222,7 +222,10 @@ body {
 #root {
   height: 100%;
   /* Auth / public portals (AOG, track links) scroll here. The authenticated
-     app shell uses overflow:hidden + inner flex scroll regions instead. */
+     app shell uses overflow:hidden + inner flex scroll regions instead.
+     clip (not visible) so a wide decorative layer cannot scroll the page
+     sideways on a 375px iPhone. */
+  overflow-x: clip;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
 }
@@ -233,10 +236,36 @@ html[data-native] #root {
   overflow: hidden;
 }
 
-/* Prefer dynamic viewport units for full-height shells when available. */
+/* Prefer dynamic viewport units. 100vh on iOS includes the area behind the
+   URL bar, so shells and modals sized with it sit under the browser chrome
+   or leave a gap when the bar collapses. Tailwind's vh utilities are
+   remapped here; inline styles that still say 100vh should use 100dvh. */
 @supports (height: 100dvh) {
   .h-screen { height: 100dvh; }
   .min-h-screen { min-height: 100dvh; }
+  .max-h-screen { max-height: 100dvh; }
+  .h-\[100vh\] { height: 100dvh; }
+  .min-h-\[100vh\] { min-height: 100dvh; }
+  .max-h-\[100vh\] { max-height: 100dvh; }
+  .max-h-\[95vh\] { max-height: 95dvh; }
+  .max-h-\[90vh\] { max-height: 90dvh; }
+  .max-h-\[85vh\] { max-height: 85dvh; }
+  .max-h-\[80vh\] { max-height: 80dvh; }
+  .max-h-\[75vh\] { max-height: 75dvh; }
+  .max-h-\[70vh\] { max-height: 70dvh; }
+  .max-h-\[55vh\] { max-height: 55dvh; }
+  .max-h-\[calc\(100vh-14rem\)\] { max-height: calc(100dvh - 14rem); }
+}
+
+/* 100vw includes the scrollbar and overflows the visual viewport on iOS. */
+.w-screen { width: 100%; max-width: 100%; }
+
+/* iOS Safari zooms the page when a focused field is under 16px. Checkboxes
+   and radios are excluded so the control size stays put. */
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]):not([type="hidden"]):not([type="button"]):not([type="submit"]):not([type="reset"]),
+select,
+textarea {
+  font-size: 16px !important;
 }
 
 /* Faint graph paper. Reserved for large empty panels (detail placeholders),
@@ -307,6 +336,13 @@ a:focus:not(:focus-visible) { outline: none; }
   padding-bottom: env(safe-area-inset-bottom, 0px);
   padding-left: env(safe-area-inset-left, 0px);
 }
+
+/* Map chrome. In the app shell the frame is already inside the safe area.
+   Fullscreen adds .sw-safe-inset on the frame, which insets this chrome
+   with the notch / home indicator without a second copy of the same inset. */
+.sw-map-controls { top: 0.75rem; right: 0.75rem; }
+.sw-map-legend { bottom: 0.75rem; left: 0.75rem; }
+.sw-map-overlay { top: 0.75rem; left: 0.75rem; }
 .sw-bottom-nav-offset {
   padding-bottom: calc(var(--sw-bottom-nav-h) + env(safe-area-inset-bottom, 0px));
 }

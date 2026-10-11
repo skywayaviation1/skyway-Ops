@@ -28907,7 +28907,7 @@ export default function CharterOps() {
         currentUser={currentUser}
         getIdToken={getFirebaseIdToken}
       >
-      <div className="h-full min-h-0 flex flex-col">
+      <div className="flex h-full min-h-0 flex-col overflow-hidden">
         {/* iOS install banner — dismissible, shown only on iOS Safari
             when the app isn't already installed. Surfaces the Share →
             Add to Home Screen flow because iOS Safari has no built-in
