@@ -27,6 +27,17 @@ import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import { verifyTripToken } from './_trip-token.js';
 import { demoTrackingResponse, isDemoTrackingToken } from '../src/reviewer-demo-track.js';
+import { loadLiveSchedule } from './_schedule-cache.js';
+import {
+  activeTail,
+  deriveShareRule,
+  evaluateLinkAccess,
+  lastLegLandedAt,
+  overlayLiveLegData,
+  publicTripFromLegs,
+  assembleLiveItinerary,
+  TRIP_CHANGED_REASON,
+} from '../src/trip-itinerary.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -46,10 +57,6 @@ function db() {
   _db = getFirestore(getAdmin(), 'appusers');
   return _db;
 }
-
-// Hours of grace after the last leg's actual landing before the link dies.
-// Per product spec: 24h.
-const GRACE_HOURS_AFTER_LAST_LEG = 24;
 
 async function loadValidTrip(token) {
   const v = verifyTripToken(token);
@@ -175,22 +182,28 @@ function sanitizeTrip(tripId, data, legs, liveLegData = {}) {
   };
 }
 
-// Compute "last leg actual landing time" from the statuses timeline so we
-// can apply the 24h grace expiry.
-function lastLegLandedAt(statuses) {
-  if (!statuses || typeof statuses !== 'object') return null;
-  let latestTs = null;
-  for (const byEvent of Object.values(statuses)) {
-    if (!byEvent || typeof byEvent !== 'object') continue;
-    // 'landed' / 'arrived' / 'completed' — accept any "land" event flavor
-    for (const [name, payload] of Object.entries(byEvent)) {
-      if (!payload || typeof payload !== 'object') continue;
-      if (!/land|arriv|complete/i.test(name)) continue;
-      const at = payload.at || payload.ts;
-      if (typeof at === 'number' && (!latestTs || at > latestTs)) latestTs = at;
-    }
+async function respondWithFlight(res, trip) {
+  const airportCodes = [];
+  for (const leg of trip.legs || []) {
+    if (leg.from) airportCodes.push(leg.from);
+    if (leg.to) airportCodes.push(leg.to);
   }
-  return latestTs;
+  const hasDepartedLeg = (trip.legs || []).some((leg) => leg.status?.wheels_up);
+  const hasAirborneLeg = (trip.legs || []).some((leg) => leg.status?.wheels_up && !leg.status?.landed);
+  const tail = trip.tail || null;
+  const [position, trail, weather] = await Promise.all([
+    fetchPosition(tail),
+    hasDepartedLeg && tail ? fetchActualPath(tail) : Promise.resolve(null),
+    fetchWeather(airportCodes),
+  ]);
+  return res.status(200).json({
+    ok: true,
+    trip,
+    position,
+    trail,
+    trailLive: hasAirborneLeg,
+    weather,
+  });
 }
 
 // Live position for the trip's aircraft tail — best-effort, via FlightAware.
@@ -486,6 +499,9 @@ async function fetchLiveLegData(legs) {
         // Only a stored boolean overrides the snapshot; a missing field means
         // ops never made a catering decision on this leg.
         hasCatering: typeof sd.hasCatering === 'boolean' ? sd.hasCatering : undefined,
+        fromFbo: sd.fromFbo || null,
+        toFbo: sd.toFbo || null,
+        tail: sd.tail || sd.tripMeta?.tail || null,
       };
     } catch (e) {
       // Swallow — broker page renders fine without live overlay for this leg.
@@ -516,13 +532,73 @@ export default async function handler(req, res) {
   if (r.error) return res.status(r.error.code).json(r.error.body);
   const { tripId, data } = r;
 
-  // 24-hour grace expiry after last-leg landing.
-  const landedAt = lastLegLandedAt(data.statuses);
-  if (landedAt && (Date.now() - landedAt) > GRACE_HOURS_AFTER_LAST_LEG * 3600 * 1000) {
-    return res.status(410).json({ ok: false, reason: 'link expired after trip completion' });
+  const derived = deriveShareRule(data, tripId);
+  if (derived.backfill && derived.rule) {
+    db().collection('trip-state').doc(tripId).set({ shareRule: derived.rule }, { merge: true })
+      .catch((error) => console.warn('[trip-public] share rule backfill failed', error?.message || error));
   }
 
-  const legs = legsFromTrip(data);
+  let schedule = null;
+  try {
+    schedule = await loadLiveSchedule({ db: db() });
+  } catch (error) {
+    console.warn('[trip-public] live schedule unavailable:', error?.message || error);
+  }
+
+  const scheduleAvailable = Boolean(schedule && Array.isArray(schedule.legs));
+  if (scheduleAvailable) {
+    const assembled = assembleLiveItinerary(schedule.legs, derived.rule, Date.now());
+    if (assembled.tripChanged) {
+      return res.status(200).json({
+        ok: true,
+        tripChanged: true,
+        reason: assembled.reason || TRIP_CHANGED_REASON,
+        trip: null,
+        position: null,
+        trail: null,
+        trailLive: false,
+        weather: {},
+      });
+    }
+    if (assembled.legs.length > 0) {
+      const liveLegData = await fetchLiveLegData(assembled.legs);
+      const overlaid = overlayLiveLegData(assembled.legs, liveLegData);
+      const landedAt = lastLegLandedAt(overlaid);
+      const access = evaluateLinkAccess(data, { issuedAt: Number.MAX_SAFE_INTEGER }, Date.now(), landedAt);
+      if (!access.ok && access.code === 410) {
+        return res.status(410).json({ ok: false, reason: access.reason });
+      }
+      const trip = publicTripFromLegs(tripId, derived.rule, overlaid);
+      trip.anchorPromoted = Boolean(assembled.promotedFrom);
+      const tail = activeTail(overlaid) || trip.tail;
+      trip.tail = tail || trip.tail;
+      return respondWithFlight(res, trip);
+    }
+  }
+
+  // Live lookup found nothing (feed down, or this anchor is not on the
+  // schedule). Legacy links still have the browser snapshot.
+  const snapshotLegs = legsFromTrip(data);
+  if (!snapshotLegs.length) {
+    return res.status(200).json({
+      ok: true,
+      trip: {
+        tripId,
+        tripCode: derived.rule?.tripCode || data.tripCode || null,
+        tail: derived.rule?.tail || data.tail || null,
+        aircraftType: null,
+        legs: [],
+        statuses: {},
+        itinerarySource: 'empty',
+      },
+      position: null,
+      trail: null,
+      trailLive: false,
+      weather: {},
+    });
+  }
+
+  const legs = snapshotLegs;
 
   // Re-read per-leg trip-state docs to overlay LIVE data on top of the
   // share-time snapshot. Without this overlay, post-share events never
@@ -532,50 +608,11 @@ export default async function handler(req, res) {
   const liveLegData = await fetchLiveLegData(legs);
 
   const sanitized = sanitizeTrip(tripId, data, legs, liveLegData);
-
-  // Re-check the 24h post-landing expiry against the live data we just
-  // pulled. The earlier check used the anchor's stale `data.statuses` —
-  // if a leg's `landed` event has fired more than 24h ago but the snapshot
-  // doesn't know about it, we'd be serving a "completed" trip indefinitely.
-  // Pull the latest landed timestamp across all legs from the LIVE data and
-  // bounce the request if past grace.
-  let lastLanded = landedAt;
-  for (const tid of Object.keys(liveLegData)) {
-    const lt = liveLegData[tid]?.statuses?.landed?.at;
-    if (Number.isFinite(lt) && (!lastLanded || lt > lastLanded)) lastLanded = lt;
+  sanitized.itinerarySource = 'snapshot';
+  const lastLanded = lastLegLandedAt(sanitized.legs);
+  const access = evaluateLinkAccess(data, { issuedAt: Number.MAX_SAFE_INTEGER }, Date.now(), lastLanded);
+  if (!access.ok && access.code === 410) {
+    return res.status(410).json({ ok: false, reason: access.reason });
   }
-  if (lastLanded && (Date.now() - lastLanded) > GRACE_HOURS_AFTER_LAST_LEG * 3600 * 1000) {
-    return res.status(410).json({ ok: false, reason: 'link expired after trip completion' });
-  }
-
-  // Weather for every airport on the trip, and the flown path for any leg that
-  // has departed. Both are fetched in parallel with the position read.
-  const airportCodes = [];
-  for (const leg of sanitized.legs) {
-    if (leg.from) airportCodes.push(leg.from);
-    if (leg.to) airportCodes.push(leg.to);
-  }
-
-  // A leg that has departed has a path worth drawing, airborne or not. Only a
-  // trip where nothing has left the ground skips the track-log call, so we
-  // never spend an AeroAPI unit drawing a line for a flight that hasn't flown.
-  const hasDepartedLeg = sanitized.legs.some((l) => l.status?.wheels_up);
-  const hasAirborneLeg = sanitized.legs.some((l) => l.status?.wheels_up && !l.status?.landed);
-
-  const [position, trail, weather] = await Promise.all([
-    fetchPosition(sanitized.tail),
-    hasDepartedLeg && sanitized.tail ? fetchActualPath(sanitized.tail) : Promise.resolve(null),
-    fetchWeather(airportCodes),
-  ]);
-
-  return res.status(200).json({
-    ok: true,
-    trip: sanitized,
-    position,
-    // Track-log points as { lat, lon, altitude_ft, groundspeed_kt, time } so
-    // the broker map can colour the trail by altitude.
-    trail,
-    trailLive: hasAirborneLeg,
-    weather,
-  });
+  return respondWithFlight(res, sanitized);
 }

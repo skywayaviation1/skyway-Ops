@@ -80,7 +80,7 @@ function fmtAirportTimeShort(iso, iataCode) {
 // Computes the single most important state and renders it large for the
 // broker to see at a glance.
 function HeroCard({ trip, position }) {
-  const legs = Array.isArray(trip?.legs) ? trip.legs : [];
+  const legs = (Array.isArray(trip?.legs) ? trip.legs : []).filter((leg) => !leg.cancelled);
   if (legs.length === 0) return null;
 
   // Find the "active" leg in priority order:
@@ -299,7 +299,10 @@ function LegProgress({ leg, position }) {
   );
 }
 
-function categoryBadge(cat) {
+function categoryBadge(cat, cancelled) {
+  if (cancelled) {
+    return { text: 'CANCELLED', cls: 'bg-red-500/15 text-red-300 border-red-500/40' };
+  }
   const c = String(cat || 'REVENUE').toUpperCase();
   if (c === 'REPO' || c === 'FERRY' || c === 'REPOSITIONING') {
     return { text: 'REPOSITIONING', cls: 'bg-amber-500/20 text-amber-300 border-amber-500/40' };
@@ -698,7 +701,7 @@ function PaxRow({ pax, iataCode }) {
 }
 
 function Leg({ leg, isActive, position }) {
-  const cat = categoryBadge(leg.category);
+  const cat = categoryBadge(leg.category, leg.cancelled === true);
   // Status lives directly on the leg (server-attached per-leg from each
   // trip-state doc). No need for the legacy statuses[leg.legNumber] map.
   const legStatuses = leg.status || {};
@@ -721,7 +724,7 @@ function Leg({ leg, isActive, position }) {
   const isRevenue = String(leg.category || '').toUpperCase() === 'REVENUE';
 
   return (
-    <div className={`border ${isActive ? 'border-cyan-400/60 shadow-[0_0_24px_rgba(34,211,238,0.12)]' : 'border-slate-700'} bg-slate-900/40 mb-3 overflow-hidden`}>
+    <div className={`border ${leg.cancelled ? 'border-red-500/30 opacity-70' : isActive ? 'border-cyan-400/60 shadow-[0_0_24px_rgba(34,211,238,0.12)]' : 'border-slate-700'} bg-slate-900/40 mb-3 overflow-hidden`}>
       {/* Progress bar runs across the top edge of the card */}
       <LegProgress leg={leg} position={position} />
 
@@ -824,7 +827,7 @@ function Leg({ leg, isActive, position }) {
 
 const EMPTY_STATE = {
   loading: false, err: null, trip: null, position: null,
-  trail: null, trailLive: false, weather: {},
+  trail: null, trailLive: false, weather: {}, tripChanged: false,
 };
 
 export default function TripTrackPage({ token }) {
@@ -856,9 +859,14 @@ export default function TripTrackPage({ token }) {
         setState({ ...EMPTY_STATE, err: data?.reason || 'unable to load trip' });
         return;
       }
+      if (data.tripChanged) {
+        setState({ ...EMPTY_STATE, tripChanged: true });
+        return;
+      }
       setState({
         loading: false,
         err: null,
+        tripChanged: false,
         trip: data.trip,
         position: data.position,
         trail: data.trail || null,
@@ -892,6 +900,25 @@ export default function TripTrackPage({ token }) {
     );
   }
 
+  if (state.tripChanged) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-6">
+        <div className="max-w-md text-center">
+          <AlertCircle className="w-10 h-10 mx-auto mb-3 text-amber-400" />
+          <h1 className="text-2xl tracking-wider mb-2" style={{ fontFamily: 'Bebas Neue, sans-serif' }}>
+            TRIP CHANGED
+          </h1>
+          <p className="text-sm text-slate-400 mb-2">
+            Trip changed — contact your broker
+          </p>
+          <p className="text-xs text-slate-500 mt-4">
+            {brand().legalName} · {brand().contactEmail} · {brand().contactPhone}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   if (state.err || !state.trip) {
     return (
       <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-6">
@@ -920,7 +947,7 @@ export default function TripTrackPage({ token }) {
   const { trip, position, trail, trailLive, weather } = state;
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
+    <div className="h-screen overflow-y-auto bg-slate-950 text-slate-100">
       {/* Header */}
       <header className="border-b border-slate-800 bg-slate-900/50 px-4 py-4 sticky top-0 z-10 backdrop-blur">
         <div className="max-w-3xl mx-auto flex items-center justify-between gap-3">
@@ -988,7 +1015,7 @@ export default function TripTrackPage({ token }) {
             // The "active" leg is whichever one is currently airborne (or
             // mid-preflight if none airborne yet). Drives the LIVE badge,
             // border glow, and progress bar emphasis.
-            const isAirborneLeg = !!(leg.status?.wheels_up && !leg.status?.landed);
+            const isAirborneLeg = !leg.cancelled && !!(leg.status?.wheels_up && !leg.status?.landed);
             return (
               <Leg
                 key={leg.legNumber}
@@ -1001,7 +1028,7 @@ export default function TripTrackPage({ token }) {
         </section>
 
         <footer className="text-[10px] text-slate-600 text-center py-6 border-t border-slate-800" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-          QUESTIONS? · CHARTERS@FLYSKYWAY.COM · 727-605-5000
+          QUESTIONS? · {brand().contactEmail.toUpperCase()} · {brand().contactPhone}
           <br />
           THIS LINK EXPIRES 24 HOURS AFTER FINAL LEG LANDING
         </footer>

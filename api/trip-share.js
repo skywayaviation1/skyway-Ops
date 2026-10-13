@@ -18,6 +18,11 @@ import { reviewerSessionBlock } from '../src/reviewer-account.js';
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import { signTripToken } from './_trip-token.js';
+import {
+  linkPatchFromRequest,
+  trackingSubjectMeta,
+  trackingUrl,
+} from '../src/trip-itinerary.js';
 
 export const config = { runtime: 'nodejs' };
 
@@ -57,90 +62,28 @@ async function authorize(req, body) {
 function publicUrl(req, token) {
   const host = req.headers.host || process.env.VERCEL_PROJECT_PRODUCTION_URL || 'skyway-ops.vercel.app';
   const proto = host.includes('localhost') ? 'http' : 'https';
-  return `${proto}://${host}/trip-track.html?token=${encodeURIComponent(token)}`;
+  return trackingUrl(`${proto}://${host}`, token);
 }
 
 async function ensureTokenIssued(tripId, opts = {}) {
   const ref = db().collection('trip-state').doc(tripId);
   const snap = await ref.get();
   const data = snap.exists ? (snap.data() || {}) : {};
-  // Generate-fresh (rotate) or reuse the existing issuedAt.
   const now = Date.now();
-  const reuse = !opts.rotate && typeof data.linkTokenIssuedAt === 'number' && !data.linkRevoked;
-  const issuedAt = reuse ? data.linkTokenIssuedAt : now;
-  // Validate + sanitize the publicTripData payload from the client. We accept
-  // it (with shape checks) because the trip-state doc itself doesn't carry
-  // legs — each leg is its own doc — so the broker page needs this snapshot
-  // to show the itinerary.
-  const incoming = opts.publicTripData;
-  let publicTripData = null;
-  if (incoming && typeof incoming === 'object' && Array.isArray(incoming.legs)) {
-    publicTripData = {
-      tail: String(incoming.tail || '').slice(0, 16),
-      aircraftType: incoming.aircraftType ? String(incoming.aircraftType).slice(0, 80) : null,
-      legs: incoming.legs.slice(0, 20).map((leg, i) => ({
-        tripId: leg.tripId ? String(leg.tripId).slice(0, 200) : null,
-        legNumber: Number.isFinite(leg.legNumber) ? leg.legNumber : (i + 1),
-        from: leg.from ? String(leg.from).slice(0, 8) : null,
-        to: leg.to ? String(leg.to).slice(0, 8) : null,
-        fromFbo: leg.fromFbo ? String(leg.fromFbo).slice(0, 120) : null,
-        toFbo: leg.toFbo ? String(leg.toFbo).slice(0, 120) : null,
-        departure: leg.departure || null,   // ISO string
-        arrival: leg.arrival || null,
-        category: leg.category ? String(leg.category).slice(0, 16) : 'REVENUE',
-        picName: leg.picName ? String(leg.picName).slice(0, 80) : null,
-        sicName: leg.sicName ? String(leg.sicName).slice(0, 80) : null,
-        // Pax visibility flag (per privacy spec). Even if pax array is
-        // present, the broker page must honor showPax — defensive defense.
-        showPax: leg.showPax === true,
-        // Absent on shares created before catering could be turned off, and
-        // those trips did have catering, so only an explicit false hides it.
-        hasCatering: leg.hasCatering !== false,
-        // Per-pax records: each entry is an object the broker page can
-        // render with individual check-in indicators. Whitelist the four
-        // fields we care about; reject anything else (covers PII leakage
-        // if a future caller mistakenly forwards DOB/weight/etc).
-        pax: Array.isArray(leg.pax)
-          ? leg.pax.slice(0, 30).map((p) => {
-              if (!p || typeof p !== 'object') return null;
-              const name = String(p.name || '').slice(0, 80).trim();
-              if (!name) return null;
-              const status = ['checked_in', 'pending', 'skipped', 'no_show'].includes(p.status)
-                ? p.status : 'pending';
-              const checkedInAt = Number.isFinite(p.checkedInAt) ? p.checkedInAt : null;
-              return { name, status, checkedInAt, walkUp: p.walkUp === true };
-            }).filter(Boolean)
-          : [],
-        // Per-leg status timeline. Whitelist the known keys + only the
-        // numeric `at` timestamp per entry. Reject anything else.
-        status: leg.status && typeof leg.status === 'object'
-          ? ['crew_onsite', 'aircraft_ready', 'catering_aboard', 'pax_arrived', 'pax_boarded', 'taxi_dep', 'wheels_up', 'landed']
-              .reduce((acc, key) => {
-                const v = leg.status[key];
-                if (v && typeof v === 'object' && typeof v.at === 'number') {
-                  acc[key] = { at: v.at };
-                }
-                return acc;
-              }, {})
-          : {},
-      })),
-      updatedAt: now,
-    };
-  }
-  // Write whichever fields are needed. Always upsert so trips that have never
-  // had their state touched still get a token.
-  const patch = {};
-  if (!reuse) {
-    patch.linkTokenIssuedAt = issuedAt;
-    patch.linkRevoked = false;
-    patch.linkUpdatedAt = now;
-  }
-  if (publicTripData) patch.publicTripData = publicTripData;
+  // The link stores a selection rule. The browser itinerary is ignored —
+  // trip-public rebuilds legs from the live schedule on every read.
+  const { patch, issuedAt, reused, shareRule } = linkPatchFromRequest({
+    existing: data,
+    tripId,
+    rotate: opts.rotate === true,
+    shareSelection: opts.shareSelection || null,
+    now,
+  });
   if (Object.keys(patch).length > 0) {
     await ref.set(patch, { merge: true });
   }
   const token = signTripToken(tripId, issuedAt);
-  return { token, issuedAt, reused: reuse, persistedPublicTripData: !!publicTripData };
+  return { token, issuedAt, reused, shareRule: shareRule || data.shareRule || null };
 }
 
 async function sendBrokerEmail(req, { to, url, tripCode, tail, tripId, message, fromOpsName, idToken }) {
@@ -248,16 +191,14 @@ export default async function handler(req, res) {
     try { body = JSON.parse(body); } catch { return res.status(400).json({ ok: false, error: 'invalid JSON' }); }
   }
 
-  // DIAGNOSTIC: log what came in so we can verify publicTripData is being
-  // sent by the client. Safe to leave in — body is small, no PII.
-  const ptd = body?.publicTripData;
+  const selection = body?.shareSelection;
   console.log('[trip-share] incoming', {
     action: body?.action,
     tripId: body?.tripId,
-    hasPublicTripData: !!ptd,
-    ptdHasLegs: Array.isArray(ptd?.legs),
-    ptdLegCount: Array.isArray(ptd?.legs) ? ptd.legs.length : 0,
-    ptdTail: ptd?.tail || null,
+    hasSelection: !!selection,
+    tripCode: selection?.tripCode || null,
+    tail: selection?.tail || null,
+    pinned: Array.isArray(selection?.pinnedLegUids) ? selection.pinnedLegUids.length : 0,
   });
 
   const auth = await authorize(req, body);
@@ -269,31 +210,23 @@ export default async function handler(req, res) {
 
   try {
     if (action === 'generate') {
-      const r = await ensureTokenIssued(tripId, { rotate: false, publicTripData: body?.publicTripData });
+      const r = await ensureTokenIssued(tripId, { rotate: false, shareSelection: body?.shareSelection });
       return res.status(200).json({
         ok: true,
         url: publicUrl(req, r.token),
         token: r.token,
+        issuedAt: r.issuedAt,
         reused: r.reused,
-        // DIAGNOSTIC: confirms what the server received + persisted
-        _diag: {
-          received_publicTripData: !!body?.publicTripData,
-          received_legCount: Array.isArray(body?.publicTripData?.legs) ? body.publicTripData.legs.length : 0,
-          received_tail: body?.publicTripData?.tail || null,
-          persisted: r.persistedPublicTripData === true,
-        },
       });
     }
     if (action === 'rotate') {
-      const r = await ensureTokenIssued(tripId, { rotate: true, publicTripData: body?.publicTripData });
+      const r = await ensureTokenIssued(tripId, { rotate: true, shareSelection: body?.shareSelection });
       return res.status(200).json({
-        ok: true, url: publicUrl(req, r.token), token: r.token, rotated: true,
-        _diag: {
-          received_publicTripData: !!body?.publicTripData,
-          received_legCount: Array.isArray(body?.publicTripData?.legs) ? body.publicTripData.legs.length : 0,
-          received_tail: body?.publicTripData?.tail || null,
-          persisted: r.persistedPublicTripData === true,
-        },
+        ok: true,
+        url: publicUrl(req, r.token),
+        token: r.token,
+        issuedAt: r.issuedAt,
+        rotated: true,
       });
     }
     if (action === 'revoke') {
@@ -328,7 +261,21 @@ export default async function handler(req, res) {
         recipients.push(e);
         if (recipients.length >= 20) break;
       }
-      const r = await ensureTokenIssued(tripId, { rotate: false });
+      // A full selection replaces the rule. An email from an older client
+      // that only has a recipient must not wipe the rule down to that address.
+      const shareSelection = body?.shareSelection && typeof body.shareSelection === 'object'
+        ? {
+            ...body.shareSelection,
+            brokerEmail: body.shareSelection.brokerEmail || recipients[0],
+            theme: body?.theme || body.shareSelection.theme,
+          }
+        : null;
+      const r = await ensureTokenIssued(tripId, { rotate: false, shareSelection });
+      if (!shareSelection) {
+        const emailPatch = { brokerEmail: recipients[0] };
+        if (body?.theme === 'classic' || body?.theme === 'premium') emailPatch.theme = body.theme;
+        await db().collection('trip-state').doc(tripId).set({ shareRule: emailPatch }, { merge: true });
+      }
       let url = publicUrl(req, r.token);
       // Append the broker-page theme if ops opted into the classic view.
       // Premium is the default — leave the URL clean in that case.
@@ -336,11 +283,13 @@ export default async function handler(req, res) {
         url = `${url}${url.includes('?') ? '&' : '?'}theme=classic`;
       }
 
-      // Pull trip code + tail for the subject line.
+      // Trip code and tail come from the selection rule (or the trip-state
+      // fields ops already saved). The old browser snapshot is not read.
       const snap = await db().collection('trip-state').doc(tripId).get();
       const data = snap.exists ? snap.data() : {};
-      const tripCode = data?.tripCode || data?.tripMeta?.tripCode || null;
-      const tail = data?.tail || data?.tripMeta?.tail || null;
+      const meta = trackingSubjectMeta(data, r.shareRule);
+      const tripCode = meta.tripCode;
+      const tail = meta.tail;
 
       // Forward the user's idToken to email-enqueue so it can authenticate
       // EVEN IF the internal-secret env var is missing or mismatched. The

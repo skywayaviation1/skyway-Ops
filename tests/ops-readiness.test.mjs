@@ -108,13 +108,13 @@ test('broker page hides catering only when there is none and none was recorded',
   assert.equal(showsCateringStatus(undefined), true);
 });
 
-test('catering flag reaches the broker page through share, API and render', async () => {
-  const app = await source('src/App.jsx');
+test('catering flag reaches the broker page through trip state, API and render', async () => {
+  const data = await source('src/firebase-data.js');
   const share = await source('api/trip-share.js');
   const publicApi = await source('api/trip-public.js');
   const page = await source('src/TripTrack.jsx');
-  assert.match(app, /hasCatering: state\.hasCatering !== false/);
-  assert.match(share, /hasCatering: leg\.hasCatering !== false/);
+  assert.match(data, /patch\.hasCatering = state\.hasCatering !== false/);
+  assert.match(share, /shareSelection/);
   assert.match(publicApi, /hasCatering/);
   assert.match(page, /showsCateringStatus\(leg\) &&/);
 });
