@@ -947,7 +947,7 @@ export default function TripTrackPage({ token }) {
   const { trip, position, trail, trailLive, weather } = state;
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
+    <div className="h-screen overflow-y-auto bg-slate-950 text-slate-100">
       {/* Header */}
       <header className="border-b border-slate-800 bg-slate-900/50 px-4 py-4 sticky top-0 z-10 backdrop-blur">
         <div className="max-w-3xl mx-auto flex items-center justify-between gap-3">
