@@ -47,7 +47,8 @@ test('fleet maps follow airborne positions until the user pans, then Fit all res
   assert.match(map, /if \(!fittingRef\.current\) userMovedRef\.current = true/);
   const app = await readFile(path.join(root, 'src/App.jsx'), 'utf8');
   assert.match(app, /followFleet/);
-  assert.match(app, /Trip\\s\*ID/);
+  const ical = await readFile(path.join(root, 'src/ical-parse.js'), 'utf8');
+  assert.match(ical, /Trip\\s\*ID/);
   const panel = await readFile(path.join(root, 'src/FleetTrackingPanel.jsx'), 'utf8');
   assert.match(panel, /followFleet/);
 });

@@ -143,14 +143,12 @@ import {
   buildCrewDayPairings,
   classifyFlightTiming,
   crewNamesMatch,
-  finalizeScheduleCategory,
   isCrewAssignmentRecord,
   isRealFlightLeg,
   legsVisibleToCrew,
   resolveCrewTimeZone,
   selectFocusTrip,
   showTimeMs,
-  splitScheduleTypeSuffix,
 } from './crew-day.js';
 import { createPortal } from 'react-dom';
 import {
@@ -189,7 +187,8 @@ import {
 import { compareNames } from './name-matching.js';
 import { lookupCoords } from './airport-coords.js';
 import { resolveManagedTails } from './fleet-config.js';
-import { buildFleetMapScene, readTripId } from './fleet-tracking.js';
+import { buildFleetMapScene } from './fleet-tracking.js';
+import { DEFAULT_ICAL_URL, buildTripsFromEvents, parseICal } from './ical-parse.js';
 import { DUTY_TRACKER_ENABLED } from './duty-feature.js';
 import { applyBrandAccent, brand } from './brand.js';
 import {
@@ -198,158 +197,11 @@ import {
   frameDifference,
 } from './id-auto-capture.js';
 
-/* ============================================================
-   iCal parser — handles line folding & VEVENT extraction
-   ============================================================ */
-function parseICal(text) {
-  if (!text) return [];
-  // unfold continuation lines (CRLF + space/tab)
-  const unfolded = text.replace(/\r?\n[ \t]/g, '');
-  const lines = unfolded.split(/\r?\n/);
-  const events = [];
-  let current = null;
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (trimmed === 'BEGIN:VEVENT') current = {};
-    else if (trimmed === 'END:VEVENT') {
-      if (current) events.push(current);
-      current = null;
-    } else if (current) {
-      const colonIdx = line.indexOf(':');
-      if (colonIdx === -1) continue;
-      const keyPart = line.substring(0, colonIdx);
-      const value = line.substring(colonIdx + 1)
-        .replace(/\\n/g, '\n').replace(/\\,/g, ',').replace(/\\;/g, ';');
-      const baseKey = keyPart.split(';')[0];
-      current[baseKey] = value;
-    }
-  }
-  return events;
-}
-
-function parseICalDate(s) {
-  if (!s) return null;
-  const m = s.match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2}))?(Z)?/);
-  if (!m) return null;
-  const [, y, mo, d, h = '0', mi = '0', se = '0', z] = m;
-  if (z === 'Z') return new Date(Date.UTC(+y, +mo - 1, +d, +h, +mi, +se));
-  return new Date(+y, +mo - 1, +d, +h, +mi, +se);
-}
-
-function extractTripInfo(event) {
-  const summary = event.SUMMARY || '';
-  const description = event.DESCRIPTION || '';
-  const location = event.LOCATION || '';
-  const url = event.URL || '';
-
-  // JetInsight format: [TAIL] CUSTOMER (FROM - TO) - TYPE
-  // (HOLD: prefix or no parens for non-flight events)
-  //
-  // First extract the tail bracket. Then look for the route by finding the
-  // LAST parenthesized "(CODE - CODE)" pattern in the string. This handles
-  // customer names that themselves contain dashes (e.g. "Air Charter Service
-  // -  Los Angeles"), which would otherwise confuse a greedy/non-greedy
-  // regex that assumes there's only one dash before the parens.
-  const tailMatch = summary.match(/^\s*(?:HOLD:\s*)?\[([^\]]+)\]\s*(.*)$/);
-
-  let tail = 'TBD';
-  let customer = '';
-  let from = location || '----';
-  let to = '----';
-  let tripType = '';
-
-  if (tailMatch) {
-    tail = tailMatch[1].trim();
-    let rest = tailMatch[2] || '';
-
-    // Find LAST parenthesized airport-pair "(XXX - YYY)" — must be 2-5 alphanumeric
-    // codes separated by space-dash-space. Allow flexible whitespace inside.
-    const routeRegex = /\(\s*([A-Z0-9]{2,5})\s*-\s*([A-Z0-9]{2,5})\s*\)/gi;
-    let lastRoute = null;
-    let lastRouteIdx = -1;
-    let match;
-    while ((match = routeRegex.exec(rest)) !== null) {
-      lastRoute = match;
-      lastRouteIdx = match.index;
-    }
-
-    if (lastRoute) {
-      from = lastRoute[1].trim().toUpperCase();
-      to = lastRoute[2].trim().toUpperCase();
-      // Customer = everything before the last "(XXX - YYY)" group
-      customer = rest.substring(0, lastRouteIdx).replace(/[\s,-]+$/, '').trim();
-      // Trip type = everything after the closing paren, leading "- " stripped
-      const afterRoute = rest.substring(lastRouteIdx + lastRoute[0].length);
-      tripType = afterRoute.replace(/^\s*-\s*/, '').trim();
-    } else {
-      // No "(XXX - YYY)" found. JetInsight still appends the event kind
-      // after a dash ("Crew 525CR - Crew assignment"). Split that off so
-      // the kind is categorized instead of becoming part of the customer.
-      customer = rest.replace(/[,\s]+$/, '').trim();
-      const split = splitScheduleTypeSuffix(customer);
-      if (split) {
-        customer = split.customer;
-        tripType = split.tripType;
-      }
-    }
-  } else {
-    // Fallback heuristic for non-JetInsight feeds
-    const tailMatch = summary.match(/\bN\d{1,5}[A-Z]{0,2}\b/);
-    if (tailMatch) tail = tailMatch[0];
-    const haystack = `${summary} ${description} ${location}`;
-    const exclude = new Set(['PAX', 'TAIL', 'FROM', 'DEST', 'CREW', 'CAPT', 'TRIP', 'HOLD']);
-    const codes = (haystack.match(/\b[A-Z0-9]{3,5}\b/g) || [])
-      .filter(c => !exclude.has(c) && !/^N\d/.test(c));
-    if (codes[0]) from = codes[0];
-    if (codes[1]) to = codes[1];
-  }
-
-  // Pax / PIC / SIC from description
-  const paxMatch = description.match(/pax[\s:=]*(\d+)/i);
-  const pax = paxMatch ? parseInt(paxMatch[1]) : 0;
-  const picMatch = description.match(/PIC[:\s]+([^\n]+)/i);
-  const sicMatch = description.match(/SIC[:\s]+([^\n]+)/i);
-  const pic = picMatch ? picMatch[1].trim() : '';
-  const sic = sicMatch ? sicMatch[1].trim() : '';
-
-  // JetInsight trip ID (6–7 characters, e.g. WEQVQD). A numeric trip number
-  // in the same description is a different field and is left unused.
-  const tripIdMatch = description.match(/\bTrip\s*ID\s*[:=]\s*([A-Z0-9]{6,7})\b/i);
-  const tripCode = readTripId(tripIdMatch ? tripIdMatch[1] : '');
-
-  // Notes — anything in description that's NOT pax/pic/sic
-  const notes = description
-    .split(/\n+/)
-    .map(l => l.trim())
-    .filter(l => l && !/^(pax|pic|sic)\s*:/i.test(l))
-    .join(' • ');
-
-  // A crew-assignment block, a same-airport hold, a "needs repositioning"
-  // flag, or a missing route is not a flight. See crew-day.js.
-  const classified = finalizeScheduleCategory({
-    tripType, summary, customer, from, to, pax, description,
-  });
-
-  return {
-    tail, customer, from, to, pax, pic, sic, notes,
-    tripCode,
-    tripType,
-    category: classified.category,
-    legType: classified.legType,
-    isFlight: classified.isFlight,
-    isOps: classified.isOps,
-    url,
-    rawSummary: summary,
-    rawDescription: description,
-    rawLocation: location,
-  };
-}
+/* iCal parsing lives in src/ical-parse.js so the broker link can use it server-side. */
 
 /* ============================================================
    Storage helpers — wrap window.storage with safe defaults
    ============================================================ */
-const DEFAULT_ICAL_URL = 'https://portal.jetinsight.com/schedule/7a32dd47-6a5c-4c9c-b53b-864381bacebf/1243136b-b3ab-4dff-b0cf-edf264e20fbf.ics';
-
 // Hardcoded ops email — copied on broker notifications. Cannot be changed
 // per-user (was previously a settings field, but ops policy is that all status
 // emails go to charters@flyskyway.com regardless of user).
@@ -8064,382 +7916,52 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
   };
   const effectiveUrl = themedUrl(url);
 
-  // Compute the public trip data we want to ship to the server. The trip-state
-  // doc itself doesn't store legs — each leg is its own doc — so we have to
-  // gather sibling legs from allTrips by matching tail + same calendar day.
-  // This is the data the BROKER will see; it's a sanitized snapshot.
-  //
-  // ANCHORS on `canonicalTrip` so multi-leg charters present the same
-  // view regardless of which leg ops clicked SHARE from. The canonical
-  // is the first revenue leg of the charter (see findCanonicalCharterLeg).
-  async function buildPublicTripData() {
+  // The broker page rebuilds the itinerary from the live feed. This
+  // dialog only records which legs ops pinned or excluded, plus the
+  // passenger-visibility policy. Times and airports are not sent.
+  function buildShareSelection() {
     const anchor = canonicalTrip;
-    const tail = (anchor.info?.tail || '').toUpperCase();
-    if (!tail) return null;
-
-    const anchorStartMs = anchor.start ? new Date(anchor.start).getTime() : Date.now();
-    // ±48h matches shareCandidateLegs above. Without this match, ops
-    // could check a day-2 leg in the picker but buildPublicTripData
-    // would silently drop it from the actual broker payload.
-    const WINDOW = 48 * 3600 * 1000;
-
-    // Candidate set: same tail, within ±24h, sorted chronologically.
-    // CRITICAL: skip non-flight events (crew holds, MX blocks, training).
-    // A subtle gotcha: the iCal parser collapses HOLD into legType='REPO'
-    // (since HOLD blocks share the REPO status-flow UI), so we MUST check
-    // the original `category` field, NOT the legType-fallback. Otherwise
-    // HOLD legs slip through and show as REPOSITIONING on the broker page
-    // (e.g. PBI→PBI crew-hold blocks between flights).
-    const candidates = (allTrips || [])
-      .filter((t) => t && t.info && (t.info.tail || '').toUpperCase() === tail)
-      .filter((t) => {
-        // Primary signal: isFlight is set by the iCal parser specifically
-        // to distinguish HOLD/MX/TRAINING from real flights.
-        if (t.info.isFlight === false) return false;
-        // Secondary: check the RAW category field (not legType-fallback).
-        const rawCat = String(t.info.category || '').toUpperCase();
-        if (['HOLD', 'MX', 'TRAINING'].includes(rawCat)) return false;
-        // Defensive: same-airport "flight" with no real route. Normalize
-        // both sides (uppercase, strip leading K) before comparing because
-        // raw codes can be ICAO ("KPBI") on one side and IATA ("PBI") on
-        // the other for the same airport.
-        const norm = (c) => {
-          const u = String(c || '').toUpperCase().trim();
-          return u.length === 4 && u.startsWith('K') ? u.slice(1) : u;
-        };
-        if (t.info.from && t.info.to && norm(t.info.from) === norm(t.info.to)) return false;
-        return true;
-      })
-      .filter((t) => {
-        if (!t.start) return false;
-        const ms = new Date(t.start).getTime();
-        return Number.isFinite(ms) && Math.abs(ms - anchorStartMs) <= WINDOW;
-      })
-      .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
-
-    // Make sure the canonical anchor is in there (dedupe by uid).
-    // Using `anchor` (the canonical) here so the sort/order is keyed
-    // to the leg the link is keyed to, not the leg ops clicked.
-    const seen = new Set();
-    const ordered = [anchor, ...candidates].filter((t) => {
-      if (!t || !t.uid) return false;
-      if (seen.has(t.uid)) return false;
-      seen.add(t.uid);
-      return true;
-    }).sort((a, b) => new Date(a.start || 0).getTime() - new Date(b.start || 0).getTime());
-
-    // Fetch preloadedPax + statuses for every candidate (so we can match
-    // pax against anchor AND show per-leg status timelines on the broker
-    // page). Done in parallel.
-    let fetchTripStateForShare;
-    try {
-      ({ fetchTripStateForShare } = await import('./firebase-data.js'));
-    } catch (e) {
-      console.warn('[share] could not load fetchTripStateForShare — pax + status disabled');
-    }
-    const stateByUid = {};
-    if (fetchTripStateForShare) {
-      await Promise.all(
-        ordered.map(async (t) => {
-          try { stateByUid[t.uid] = await fetchTripStateForShare(t.uid); }
-          catch (_) { stateByUid[t.uid] = { preloadedPax: [], statuses: {} }; }
-        })
-      );
-    }
-
-    // Anchor identifiers — derived from `anchor` (the canonical leg),
-    // not `trip` (the leg ops clicked SHARE from). For a single-leg
-    // charter these are the same; for multi-leg they differ when ops
-    // opens SHARE from a non-canonical leg.
-    const anchorIdx = ordered.findIndex((t) => t.uid === anchor.uid);
-    const anchorBroker = String(anchor.info?.broker || '').trim().toLowerCase();
-    const anchorPax = ((stateByUid[anchor.uid] || {}).preloadedPax || []).map(paxKey).filter(Boolean);
-    const anchorPaxSet = new Set(anchorPax);
-
-    // Decide for each candidate whether to INCLUDE it, and whether to
-    // SHOW its pax.
-    function paxKey(p) {
-      if (!p) return '';
-      const f = String(p.firstName || '').trim().toLowerCase();
-      const l = String(p.lastName || '').trim().toLowerCase();
-      return f && l ? `${f} ${l}` : (f || l);
-    }
-    function brokerOf(t) {
-      return String(t.info?.broker || '').trim().toLowerCase();
-    }
-    function isRepo(t) {
-      const cat = String(t.info?.legType || t.info?.category || '').toUpperCase();
-      return cat === 'REPO' || cat === 'FERRY';
-    }
-    function paxOverlap(t) {
-      const list = ((stateByUid[t.uid] || {}).preloadedPax || []).map(paxKey).filter(Boolean);
-      return list.some((k) => anchorPaxSet.has(k));
-    }
-    function sameBroker(t) {
-      const b = brokerOf(t);
-      return !!anchorBroker && b === anchorBroker;
-    }
-
-    // Airport-code comparison that handles ICAO/IATA mix (e.g. KPBI vs PBI).
-    const sameAirport = (a, b) => {
-      const norm = (c) => {
-        const u = String(c || '').toUpperCase().trim();
-        return u.length === 4 && u.startsWith('K') ? u.slice(1) : u;
-      };
-      return !!a && !!b && norm(a) === norm(b);
+    const anchorState = tripStatesByUid[anchor.uid] || {};
+    const tripCode = anchor.info?.tripCode || anchorState.tripSheetData?.tripCode || null;
+    const paxKey = (person) => {
+      if (!person) return '';
+      const first = String(person.firstName || '').trim().toLowerCase();
+      const last = String(person.lastName || '').trim().toLowerCase();
+      return first && last ? `${first} ${last}` : (first || last);
     };
-
-    const anchorFrom = anchor.info?.from;
-    const anchorTo = anchor.info?.to;
-
-    // CHAIN WALK — fix for the 6/14/26 broker-link bug. The old rules
-    // included ANY same-window leg with empty broker, and ANY prior repo
-    // whose `to` matched the anchor's `from`. Both nets were too wide:
-    //   - Empty-broker rule scooped up unrelated repos from earlier
-    //     same-day trips (JetInsight commonly leaves the broker field
-    //     blank on repos).
-    //   - "Any prior repo to matching airport" rule had no continuity
-    //     check, so e.g. yesterday's MYEF→MYNN repo would attach itself
-    //     to today's MYNN→X charter just because the airports lined up.
-    // The fix: walk OUT from the anchor in both directions, including
-    // each adjacent leg only if it CHAINS — either by exact/fuzzy broker
-    // match OR by airport continuity AND being a repo / empty-broker.
-    // The chain breaks the first time a leg fails both tests, which
-    // correctly cuts off legs from unrelated earlier trips even when
-    // their airports happen to line up.
-    const chainUids = new Set([anchor.uid]);
-    const continuesChain = (other, expectedAirport, direction) => {
-      const otherBroker = brokerOf(other);
-      const brokerOk = !!anchorBroker && (
-        otherBroker === anchorBroker
-        || (otherBroker && brokersMatchFuzzy(otherBroker, anchorBroker))
-      );
-      const otherEdge = direction === 'back' ? other.info?.to : other.info?.from;
-      const airportOk = sameAirport(otherEdge, expectedAirport);
-      // Airport continuity counts as chain-extending ONLY for repos or
-      // empty-broker legs. A different-broker REVENUE leg that happens
-      // to land at our airport is not part of our trip.
-      return brokerOk || (airportOk && (!otherBroker || isRepo(other)));
-    };
-    // Walk backward from anchor.
-    {
-      let expected = anchorFrom;
-      for (let i = anchorIdx - 1; i >= 0; i--) {
-        const prev = ordered[i];
-        if (!continuesChain(prev, expected, 'back')) break;
-        chainUids.add(prev.uid);
-        expected = prev.info?.from;
+    const anchorPax = new Set((anchorState.preloadedPax || []).map(paxKey).filter(Boolean));
+    const pinned = Array.from(selectedUids);
+    if (!pinned.includes(anchor.uid)) pinned.unshift(anchor.uid);
+    const excluded = allCandidateLegs
+      .map((leg) => leg.uid)
+      .filter((uid) => uid && !selectedUids.has(uid));
+    const showPaxByLeg = {};
+    for (const uid of pinned) {
+      if (uid === anchor.uid) {
+        showPaxByLeg[uid] = true;
+        continue;
       }
+      const state = tripStatesByUid[uid];
+      const keys = (state?.preloadedPax || []).map(paxKey).filter(Boolean);
+      const overlap = anchorPax.size > 0 && keys.some((key) => anchorPax.has(key));
+      const leg = allCandidateLegs.find((item) => item.uid === uid);
+      const cat = String(leg?.info?.legType || leg?.info?.category || '').toUpperCase();
+      const repo = cat === 'REPO' || cat === 'FERRY' || cat === 'DEADHEAD';
+      showPaxByLeg[uid] = !repo && (overlap || anchorPax.size === 0);
     }
-    // Walk forward from anchor (return-positioning, multi-stop legs).
-    {
-      let expected = anchorTo;
-      for (let i = anchorIdx + 1; i < ordered.length; i++) {
-        const next = ordered[i];
-        if (!continuesChain(next, expected, 'fwd')) break;
-        chainUids.add(next.uid);
-        expected = next.info?.to;
-      }
-    }
-
-    const included = [];
-    ordered.forEach((t) => {
-      if (t.uid === anchor.uid) {
-        // Anchor — always included, always shows pax
-        included.push({ t, showPax: true });
-        return;
-      }
-      const tBroker = brokerOf(t);
-      // EXACT or FUZZY broker match — include unconditionally. Brokers
-      // sometimes have separate trips on the same aircraft on the same
-      // day; they want to see all of them. showPax gated by pax overlap
-      // so the broker doesn't see passenger data from a different
-      // booking of theirs.
-      if (anchorBroker && tBroker && (
-        tBroker === anchorBroker || brokersMatchFuzzy(tBroker, anchorBroker)
-      )) {
-        included.push({ t, showPax: paxOverlap(t) });
-        return;
-      }
-      // EMPTY-BROKER or REPO leg — include ONLY if it's part of the
-      // chain (chain walk above). This is the fix for unrelated
-      // same-day repos showing up on the broker page.
-      if (chainUids.has(t.uid)) {
-        // Repos have no pax; empty-broker non-repo legs check pax overlap.
-        included.push({ t, showPax: isRepo(t) ? false : paxOverlap(t) });
-        return;
-      }
-      // OTHER-BROKER REVENUE LEGS — never shown (privacy). A different
-      // broker's charter on the same plane same day stays invisible.
-    });
-
-    // FINAL FILTER — apply the user's leg selection from the LEGS TO
-    // SHARE panel. By default, only the canonical anchor is selected.
-    // Anything else ops checks gets added; anything they uncheck stays
-    // out. The chain-walk / broker-match logic above still runs but
-    // its output is filtered here — the broker page sees ONLY what's
-    // explicitly checked.
-    {
-      const sel = selectedUids;
-      const alreadyUids = new Set(included.map(x => x.t.uid));
-      // First add any extras the user checked that aren't in the
-      // auto-walk result — needs pax data we may not have fetched.
-      const extrasNeeded = (allTrips || []).filter(t =>
-        sel.has(t?.uid) && !alreadyUids.has(t.uid)
-      );
-      if (extrasNeeded.length > 0 && fetchTripStateForShare) {
-        await Promise.all(extrasNeeded.map(async (t) => {
-          if (!stateByUid[t.uid]) {
-            try { stateByUid[t.uid] = await fetchTripStateForShare(t.uid); }
-            catch { stateByUid[t.uid] = { preloadedPax: [], statuses: {} }; }
-          }
-        }));
-      }
-      for (const t of extrasNeeded) {
-        included.push({ t, showPax: paxOverlap(t) });
-      }
-      // Now filter to selected ∪ canonical
-      const filtered = included.filter(({ t }) =>
-        t.uid === anchor.uid || sel.has(t.uid)
-      );
-      included.length = 0;
-      included.push(...filtered);
-      // Re-sort by start time so legs appear chronologically regardless
-      // of insertion order.
-      included.sort((a, b) =>
-        new Date(a.t.start || 0).getTime() - new Date(b.t.start || 0).getTime()
-      );
-    }
-
-    // Renumber legs sequentially as they appear in the final included list.
-    const legs = included.map(({ t, showPax }, i) => {
-      const state = stateByUid[t.uid] || { preloadedPax: [], passengers: [], statuses: {} };
-
-      // Build per-pax records that the broker page can render with
-      // individual check-in indicators. Join logic:
-      //   - For each preloadedPax (on the original manifest), look for a
-      //     scanned passenger with matching preloadedRefId. If found,
-      //     pull verifiedAt / checkInStatus from that record.
-      //   - For each scanned passenger with no preloadedRefId, emit a
-      //     WALK-UP record (passenger added at the gate, not on manifest).
-      //
-      // The broker payload includes JUST what's needed to render: name,
-      // status, and the check-in timestamp. No DOB, weight, gender, GPS,
-      // or audit identifier — those are PII the broker doesn't need.
-      const scanned = Array.isArray(state.passengers) ? state.passengers : [];
-      const scannedByRef = new Map();
-      const walkUps = [];
-      for (const sp of scanned) {
-        if (sp.preloadedRefId) {
-          scannedByRef.set(sp.preloadedRefId, sp);
-        } else {
-          walkUps.push(sp);
-        }
-      }
-      const paxRecords = [];
-      // Preloaded pax first (manifest order)
-      for (const p of (state.preloadedPax || [])) {
-        const first = String(p?.firstName || '').trim();
-        const last = String(p?.lastName || '').trim();
-        const name = [first, last].filter(Boolean).join(' ');
-        if (!name) continue;
-        const scan = p.id ? scannedByRef.get(p.id) : null;
-        // Status mapping for the broker:
-        //   Any crew-accepted identity state → 'checked_in'. Mismatch is
-        //   included because it can only be produced after an explicit crew
-        //   override; carried-over is a verified previous-leg identity.
-        //   skipped → 'skipped'; anything else → 'pending'.
-        const cs = p.checkInStatus || '';
-        let status = 'pending';
-        if (['matched', 'mismatch', 'manual_override', 'child_verified', 'carried_over'].includes(cs)) {
-          status = 'checked_in';
-        }
-        else if (cs === 'skipped') status = 'skipped';
-        // Pax marked no-show at boarding time get a distinct status so the
-        // broker can see they weren't on the actual flight.
-        if (scan?.noShow) status = 'no_show';
-        paxRecords.push({
-          name,
-          status,
-          checkedInAt: scan?.verifiedAt || scan?.scannedAt || p?.carriedAt || null,
-          walkUp: false,
-        });
-      }
-      // Walk-ups appended at the end with a flag so the renderer can
-      // badge them.
-      for (const sp of walkUps) {
-        const first = String(sp?.firstName || '').trim();
-        const last = String(sp?.lastName || '').trim();
-        const name = [first, last].filter(Boolean).join(' ');
-        if (!name) continue;
-        paxRecords.push({
-          name,
-          status: sp.noShow ? 'no_show' : 'checked_in',
-          checkedInAt: sp.verifiedAt || sp.scannedAt || null,
-          walkUp: true,
-        });
-      }
-      // Each trip-state doc represents ONE leg, so `statuses` is a flat
-      // map of { step_id: { timestamp, coords, author, notified } }.
-      // Whitelist the steps we want to expose to the broker and reduce
-      // each entry to just the timestamp (broker doesn't need to know
-      // which crew member tapped the button or the GPS coordinates).
-      const statusBag = (state.statuses && typeof state.statuses === 'object') ? state.statuses : {};
-      const cleanStatus = {};
-      const BROKER_STATUS_KEYS = [
-        'crew_onsite', 'aircraft_ready', 'catering_aboard',
-        'pax_arrived', 'pax_boarded', 'taxi_dep',
-        'wheels_up', 'landed',
-      ];
-      for (const key of BROKER_STATUS_KEYS) {
-        const v = statusBag[key];
-        if (v && typeof v === 'object' && Number.isFinite(v.timestamp)) {
-          cleanStatus[key] = { at: v.timestamp };
-        }
-      }
-
-      // FBO sourcing — for the SPECIFIC leg ops opened SHARE from, the
-      // live React-state values from TripDetail win. These are what the
-      // hero card displays, so this guarantees the broker page and the
-      // hero card never drift out of sync. For other legs in the
-      // payload (siblings, the canonical when ops is on a non-canonical
-      // leg), fall through to trip-state then trip.info as before.
-      //
-      // Without this override, mid-session FBO updates (PDF auto-extract,
-      // manual admin edit) would only refresh the broker page if ops
-      // closed and re-opened SHARE — confusing.
-      const isCurrentLeg = t.uid === trip.uid;
-      const liveFromFbo = isCurrentLeg ? liveAnchorFromFbo : null;
-      const liveToFbo   = isCurrentLeg ? liveAnchorToFbo   : null;
-      return {
-        tripId: t.uid,
-        legNumber: i + 1,
-        from: t.info?.from || null,
-        to: t.info?.to || null,
-        // FBO sourcing — trip-state (manually-set or backfilled) wins
-        // over t.info (iCal-parsed). The iCal feed often doesn't include
-        // FBO details in the DESCRIPTION field, so admin manually sets
-        // them in trip-state. Without this preference, manually-set
-        // FBOs never reach the broker page.
-        fromFbo: liveFromFbo || state.fromFbo || t.info?.fromFbo || null,
-        toFbo:   liveToFbo   || state.toFbo   || t.info?.toFbo   || null,
-        departure: t.start || null,
-        arrival: t.end || null,
-        category: t.info?.legType || t.info?.category || 'REVENUE',
-        picName: t.info?.pic || null,
-        sicName: t.info?.sic || null,
-        showPax,
-        pax: showPax ? paxRecords : [],
-        // Drives whether the broker sees a catering milestone at all.
-        hasCatering: state.hasCatering !== false,
-        status: cleanStatus,
-      };
-    });
-
+    const start = anchor.start ? new Date(anchor.start) : null;
     return {
-      tail,
-      aircraftType: anchor.info?.aircraftType || anchor.info?.tripType || null,
-      legs,
+      tripCode,
+      broker: anchor.info?.broker || anchor.info?.customer || null,
+      tail: String(anchor.info?.tail || '').toUpperCase(),
+      windowMs: 48 * 3600 * 1000,
+      anchorStart: start && !Number.isNaN(start.getTime()) ? start.toISOString() : null,
+      pinnedLegUids: pinned,
+      excludedLegUids: excluded,
+      showPax: true,
+      showPaxByLeg,
+      theme: brokerTheme,
+      brokerEmail: (defaultEmail || '').trim() || null,
     };
   }
 
@@ -8471,18 +7993,15 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
     }
   }
 
-  // On open AND whenever ops manually toggles an "OTHER LEG" checkbox:
-  // generate (or refresh) the current token + URL with up-to-date
-  // publicTripData. The first run on mount fetches/issues the token;
-  // subsequent runs triggered by selectedUids changes refresh the
-  // cached broker-page payload on the server WITHOUT rotating the
-  // token — same URL, fresh leg list.
+  // On open AND whenever ops toggles a leg: issue or reuse the token and
+  // store the selection rule. The broker page reads the live schedule, so
+  // this does not send an itinerary snapshot.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const publicTripData = await buildPublicTripData();
-        const data = await callShare('generate', { publicTripData });
+        const shareSelection = buildShareSelection();
+        const data = await callShare('generate', { shareSelection });
         if (cancelled) return;
         setUrl(data.url || '');
         setTokenIssuedAt(data.issuedAt || null);
@@ -8498,7 +8017,7 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
     // a PDF auto-extract or admin edit while the dialog is open instantly
     // pushes the new FBO to the broker page without needing a reopen.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedUids, liveAnchorFromFbo, liveAnchorToFbo]);
+  }, [selectedUids, brokerTheme, Object.keys(tripStatesByUid).join('|')]);
 
   const handleCopy = async () => {
     if (!effectiveUrl) return;
@@ -8548,6 +8067,7 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
         to: recipients,
         message: emailMessage.trim(),
         theme: brokerTheme,
+        shareSelection: { ...buildShareSelection(), brokerEmail: recipients[0] },
       });
       setInfo(recipients.length === 1
         ? `Email sent to ${recipients[0]}.`
@@ -8561,8 +8081,8 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
   const handleRotate = async () => {
     if (!window.confirm('Rotate the link? Any tracking links you previously sent will stop working. A new URL will be generated.')) return;
     try {
-      const publicTripData = await buildPublicTripData();
-      const data = await callShare('rotate', { publicTripData });
+      const shareSelection = buildShareSelection();
+      const data = await callShare('rotate', { shareSelection });
       setUrl(data.url || '');
       setTokenIssuedAt(data.issuedAt || null);
       setRevoked(false);
@@ -28612,18 +28132,6 @@ export default function CharterOps() {
     })();
     return () => { cancelled = true; };
   }, [allTrips, selectedId, now]);
-
-  function buildTripsFromEvents(events) {
-    return events
-      .map(ev => {
-        const start = parseICalDate(ev.DTSTART) || parseICalDate(ev['DTSTART;VALUE=DATE']);
-        const end = parseICalDate(ev.DTEND);
-        const uid = ev.UID || `auto-${Math.random().toString(36).slice(2, 10)}`;
-        return { uid, start, end, info: extractTripInfo(ev), raw: ev };
-      })
-      .filter(t => t.start)
-      .sort((a, b) => a.start - b.start);
-  }
 
   const loadFromText = async (text) => {
     setSyncStatus({ status: 'syncing', message: 'Parsing iCal...' });

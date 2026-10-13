@@ -451,6 +451,18 @@ function sampleTrackLog(ident) {
 }
 
 function brokerPayload() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('brokerState') === 'changed') {
+    return {
+      ok: true,
+      tripChanged: true,
+      reason: 'Trip changed — contact your broker',
+      trip: null,
+      position: null,
+      trail: null,
+      weather: {},
+    };
+  }
   const from = AIRPORT_COORDS[LEAD.from];
   const to = AIRPORT_COORDS[LEAD.to];
   const progress = 0.74;
@@ -466,9 +478,36 @@ function brokerPayload() {
     time: now() - Math.round((1 - t / progress) * 74) * MIN,
   }));
 
+  const trip = brokerTrip();
+  if (params.get('brokerState') === 'live') {
+    const first = trip.legs[0];
+    first.departure = new Date(now() - 40 * MIN).toISOString();
+    first.tail = LEAD.tail;
+    trip.tail = LEAD.tail;
+    trip.legs.push({
+      legNumber: 3,
+      from: NEXT_LEG.to,
+      to: 'PBI',
+      fromFbo: 'Atlantic Aviation',
+      toFbo: 'Signature Flight Support',
+      departure: new Date(now() + 8 * HOUR).toISOString(),
+      arrival: new Date(now() + 10 * HOUR).toISOString(),
+      category: 'REVENUE',
+      tail: LEAD.tail,
+      pic: LEAD.pic,
+      sic: LEAD.sic,
+      showPax: false,
+      hasCatering: false,
+      pax: [],
+      status: {},
+      cancelled: true,
+    });
+    trip.itinerarySource = 'live';
+  }
+
   return {
     ok: true,
-    trip: brokerTrip(),
+    trip,
     position: {
       ident: LEAD.tail, airborne: true,
       latitude: lat, longitude: lon,
