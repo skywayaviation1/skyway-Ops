@@ -51,7 +51,7 @@ export async function fetchPreloadedPax(tripId) {
  * One-shot fetch combining preloadedPax + statuses + scanned passengers
  * for a trip. Used by SHARE WITH BROKER to grab everything needed for
  * the broker snapshot in a single read per leg.
- *   { preloadedPax: [], passengers: [], statuses: {} }
+ *   { preloadedPax: [], passengers: [], statuses: {}, shareRule, tripSheetData, tripCode }
  * Empty arrays/object if the doc doesn't exist or fields are missing.
  */
 export async function fetchTripStateForShare(tripId) {
@@ -65,6 +65,9 @@ export async function fetchTripStateForShare(tripId) {
       preloadedPax: Array.isArray(data.preloadedPax) ? data.preloadedPax : [],
       passengers: Array.isArray(data.passengers) ? data.passengers : [],
       statuses: (data.statuses && typeof data.statuses === 'object') ? data.statuses : {},
+      tripSheetData: data.tripSheetData && typeof data.tripSheetData === 'object' ? data.tripSheetData : null,
+      tripCode: data.tripCode || data.tripSheetData?.tripCode || null,
+      shareRule: data.shareRule && typeof data.shareRule === 'object' ? data.shareRule : null,
     };
   } catch (err) {
     console.error('[firebase-data] fetchTripStateForShare failed:', tripId, err);

@@ -1,21 +1,19 @@
 // Live broker itinerary.
 //
-// A tracking link stores a selection rule (which trip, which legs the operator
-// pinned or excluded, whether passengers are visible). The page is rebuilt
-// from the current schedule on every read. Times, airports, tails, and which
-// legs exist come from that schedule, not from whatever the browser sent when
-// the link was created.
+// A tracking link stores a selection rule. The page is rebuilt from the
+// current schedule on every read, so times, airports, and tails stay current.
+// Which legs appear is the selection itself: the legs the operator pinned,
+// unless they turned on "include entire trip". That mode follows the 6–7
+// character trip ID (not a numeric trip number) onto every aircraft.
 
 import { normalizeAirport } from './crew-day.js';
+import { readTripId } from './fleet-tracking.js';
 
 export const SHARE_WINDOW_MS = 48 * 60 * 60 * 1000;
 export const CANCEL_GRACE_MS = 24 * 60 * 60 * 1000;
 export const SCHEDULE_CACHE_TTL_MS = 3 * 60 * 1000;
 export const LINK_EXPIRE_AFTER_LANDING_MS = 24 * 60 * 60 * 1000;
 export const TRIP_CHANGED_REASON = 'Trip changed — contact your broker';
-
-const CHAIN_GAP_MS = 30 * 60 * 60 * 1000;
-const POST_REPO_GAP_MS = 12 * 60 * 60 * 1000;
 
 export function legDocId(uid) {
   return String(uid || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 200);
@@ -31,23 +29,6 @@ export function legStartMs(leg) {
   if (!raw) return null;
   const t = Date.parse(raw);
   return Number.isNaN(t) ? null : t;
-}
-
-export function brokersMatchFuzzy(a, b) {
-  if (!a || !b) return false;
-  const norm = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
-  const na = norm(a);
-  const nb = norm(b);
-  if (!na || !nb) return false;
-  if (na === nb) return true;
-  const shorter = na.length <= nb.length ? na : nb;
-  const longer = na.length <= nb.length ? nb : na;
-  if (shorter.length < 5) return false;
-  return longer.includes(shorter);
-}
-
-function brokerOf(leg) {
-  return String(leg?.broker || leg?.customer || '').trim().toLowerCase();
 }
 
 function isRepoLeg(leg) {
@@ -69,11 +50,6 @@ export function isShareEligible(leg) {
   if (['HOLD', 'MX', 'TRAINING'].includes(rawCat)) return false;
   if (leg.from && leg.to && sameAirport(leg.from, leg.to)) return false;
   return legStartMs(leg) != null;
-}
-
-function withinWindow(leg, centerMs, windowMs) {
-  const ms = legStartMs(leg);
-  return ms != null && Math.abs(ms - centerMs) <= windowMs;
 }
 
 export function cancelledStillVisible(leg, now) {
@@ -177,6 +153,10 @@ export function sanitizeShareSelection(raw, tripId) {
     showPaxByLeg,
     theme: source.theme === 'classic' ? 'classic' : 'premium',
     brokerEmail: source.brokerEmail ? String(source.brokerEmail).trim().slice(0, 200) : null,
+    // Off unless the operator explicitly asked for every leg of this trip ID.
+    // A missing flag on an older link stays off, so those links keep only the
+    // legs that were pinned (or, for a legacy snapshot, the legs it listed).
+    includeEntireTrip: source.includeEntireTrip === true,
   };
 }
 
@@ -216,6 +196,7 @@ export function deriveShareRule(data, tripId) {
     showPaxByLeg,
     theme: data?.shareTheme === 'classic' ? 'classic' : 'premium',
     brokerEmail: data?.brokerEmail || (typeof data?.lastSharedTo === 'string' ? data.lastSharedTo.split(',')[0].trim() : null),
+    includeEntireTrip: false,
   }, tripId);
   return { rule, backfill: true, hadSnapshot: snapLegs.length > 0 };
 }
@@ -269,46 +250,23 @@ function showPaxFor(rule, leg, fallback) {
   return fallback === true;
 }
 
-function chainUids(ordered, anchor, anchorIdx) {
-  const anchorBroker = brokerOf(anchor);
-  const chain = new Set([anchor.uid]);
-  const continues = (other, expectedAirport, direction) => {
-    const otherBroker = brokerOf(other);
-    const brokerOk = !!anchorBroker && (
-      otherBroker === anchorBroker
-      || (otherBroker && brokersMatchFuzzy(otherBroker, anchorBroker))
-    );
-    const otherEdge = direction === 'back' ? other.to : other.from;
-    const airportOk = sameAirport(otherEdge, expectedAirport);
-    return brokerOk || (airportOk && (!otherBroker || isRepoLeg(other)));
-  };
-  {
-    let expected = anchor.from;
-    for (let i = anchorIdx - 1; i >= 0; i -= 1) {
-      const prev = ordered[i];
-      if (!continues(prev, expected, 'back')) break;
-      chain.add(prev.uid);
-      expected = prev.from;
-    }
-  }
-  {
-    let expected = anchor.to;
-    for (let i = anchorIdx + 1; i < ordered.length; i += 1) {
-      const next = ordered[i];
-      if (!continues(next, expected, 'fwd')) break;
-      chain.add(next.uid);
-      expected = next.to;
-    }
-  }
-  return chain;
+function legStillOnItinerary(leg, now) {
+  if (!leg?.uid) return false;
+  if (leg.cancelled) return cancelledStillVisible(leg, now);
+  return isShareEligible(leg);
 }
 
 /**
  * Rebuild the broker itinerary from live legs.
  * Returns { tripChanged, reason, legs, anchorUid, promotedFrom }.
  * `legs` is empty when nothing matched (caller may fall back to a legacy snapshot).
- * `tripChanged` is set when the anchor was cancelled and no later leg of the
- * same trip code is left to fly.
+ *
+ * Default links contain only the pinned legs. A change to one of those legs
+ * (a new time, airport, or tail, or a cancellation still inside the grace
+ * window) is shown. Adjacent legs and other legs of the same trip are not
+ * added. `includeEntireTrip` is the exception: every live leg whose trip ID
+ * matches is included, on any tail, and a leg added to that trip ID later
+ * appears on the next read.
  */
 export function assembleLiveItinerary(scheduleLegs, rule, now = Date.now()) {
   const selection = sanitizeShareSelection(rule, rule?.anchorUid);
@@ -318,113 +276,66 @@ export function assembleLiveItinerary(scheduleLegs, rule, now = Date.now()) {
   for (const leg of scheduleLegs || []) {
     if (leg?.uid) byUid.set(leg.uid, leg);
   }
-  const excluded = new Set(selection.excludedLegUids || []);
-  const pinned = new Set(selection.pinnedLegUids || []);
-  const code = String(selection.tripCode || '').toUpperCase();
 
-  let anchor = byUid.get(selection.anchorUid) || null;
-  const anchorWasCancelled = Boolean(anchor?.cancelled);
-  const anchorMissing = !anchor;
+  const pinned = new Set(selection.pinnedLegUids || []);
+  const tripId = readTripId(selection.tripCode);
+  const entireTrip = selection.includeEntireTrip === true && Boolean(tripId);
+
+  const chosen = new Map();
+  const take = (leg) => {
+    if (!legStillOnItinerary(leg, now)) return;
+    if (!chosen.has(leg.uid)) chosen.set(leg.uid, leg);
+  };
+
+  if (entireTrip) {
+    for (const leg of scheduleLegs || []) {
+      if (readTripId(leg?.tripCode) === tripId) take(leg);
+    }
+  }
+  for (const uid of pinned) take(byUid.get(uid));
+
+  const original = byUid.get(selection.anchorUid) || null;
+  const originalCancelled = Boolean(original?.cancelled);
+  let anchor = chosen.get(selection.anchorUid) || null;
   let promotedFrom = null;
 
   if (!anchor || anchor.cancelled) {
-    const floor = anchor ? (legStartMs(anchor) || 0) : (Date.parse(selection.anchorStart || '') || 0);
-    const next = (scheduleLegs || [])
-      .filter((leg) => leg && leg.uid !== selection.anchorUid && !leg.cancelled && isShareEligible(leg))
-      .filter((leg) => code && String(leg.tripCode || '').toUpperCase() === code)
+    const floor = original
+      ? (legStartMs(original) || 0)
+      : (Date.parse(selection.anchorStart || '') || 0);
+    const next = [...chosen.values()]
+      .filter((leg) => leg.uid !== selection.anchorUid && !leg.cancelled && isShareEligible(leg))
       .filter((leg) => {
         const ms = legStartMs(leg);
         return ms != null && ms >= floor;
       })
       .sort((a, b) => legStartMs(a) - legStartMs(b))[0];
     if (next) {
+      // The link stays on the same URL. Position and track follow the next
+      // selected leg once the original anchor is no longer flying.
       promotedFrom = selection.anchorUid;
       anchor = next;
-    } else if (anchorWasCancelled) {
-      return { tripChanged: true, reason: TRIP_CHANGED_REASON, legs: [], anchorUid: selection.anchorUid, promotedFrom: null };
-    } else if (anchorMissing) {
+    } else if (originalCancelled && chosen.size === 0) {
+      return {
+        tripChanged: true,
+        reason: TRIP_CHANGED_REASON,
+        legs: [],
+        anchorUid: selection.anchorUid,
+        promotedFrom: null,
+      };
+    } else if (!original && chosen.size === 0) {
       return { tripChanged: false, legs: [], anchorUid: selection.anchorUid, promotedFrom: null };
     }
   }
 
-  if (!anchor) {
+  if (chosen.size === 0) {
     return { tripChanged: false, legs: [], anchorUid: selection.anchorUid, promotedFrom: null };
   }
 
-  const center = legStartMs(anchor) || Date.parse(selection.anchorStart || '') || now;
-  const windowMs = selection.windowMs || SHARE_WINDOW_MS;
-  const tail = String(anchor.tail || selection.tail || '').toUpperCase();
-  const anchorBroker = brokerOf(anchor) || String(selection.broker || '').trim().toLowerCase();
+  const sorted = [...chosen.values()]
+    .sort((a, b) => (legStartMs(a) || 0) - (legStartMs(b) || 0));
 
-  const inWindow = (leg) => withinWindow(leg, center, windowMs);
-  const sameCode = (leg) => {
-    const legCode = String(leg?.tripCode || '').toUpperCase();
-    return Boolean(code && legCode && legCode === code);
-  };
-
-  const pool = (scheduleLegs || [])
-    .filter((leg) => leg?.uid && isShareEligible(leg))
-    .filter((leg) => String(leg.tail || '').toUpperCase() === tail)
-    .filter((leg) => inWindow(leg))
-    .sort((a, b) => legStartMs(a) - legStartMs(b));
-
-  if (!pool.some((leg) => leg.uid === anchor.uid) && isShareEligible(anchor)) {
-    pool.push(anchor);
-    pool.sort((a, b) => legStartMs(a) - legStartMs(b));
-  }
-  const anchorIdx = Math.max(0, pool.findIndex((leg) => leg.uid === anchor.uid));
-  const chained = pool.length ? chainUids(pool, anchor, anchorIdx) : new Set([anchor.uid]);
-
-  const included = new Map();
-  const add = (leg, paxFallback) => {
-    if (!leg?.uid) return;
-    if (excluded.has(leg.uid) && leg.uid !== anchor.uid && leg.uid !== selection.anchorUid) return;
-    if (leg.cancelled && !cancelledStillVisible(leg, now)) return;
-    const showPax = showPaxFor(selection, leg, paxFallback);
-    if (!included.has(leg.uid)) included.set(leg.uid, { leg, showPax });
-  };
-
-  add(anchor, true);
-
-  for (const leg of scheduleLegs || []) {
-    if (!sameCode(leg)) continue;
-    if (leg.cancelled) {
-      if (cancelledStillVisible(leg, now)) add(leg, false);
-      continue;
-    }
-    if (!isShareEligible(leg)) continue;
-    if (!inWindow(leg) && !pinned.has(leg.uid)) continue;
-    add(leg, !isRepoLeg(leg));
-  }
-
-  for (const leg of pool) {
-    if (leg.uid === anchor.uid) continue;
-    if (!chained.has(leg.uid)) continue;
-    const legBroker = brokerOf(leg);
-    const brokerOk = anchorBroker && legBroker && (
-      legBroker === anchorBroker || brokersMatchFuzzy(legBroker, anchorBroker)
-    );
-    if (brokerOk) add(leg, !isRepoLeg(leg));
-    else if (!legBroker || isRepoLeg(leg)) add(leg, false);
-  }
-
-  for (const uid of pinned) {
-    const leg = byUid.get(uid);
-    if (!leg) continue;
-    if (leg.cancelled && !cancelledStillVisible(leg, now)) continue;
-    if (!leg.cancelled && !isShareEligible(leg)) continue;
-    add(leg, uid === anchor.uid);
-  }
-
-  if (anchorWasCancelled) {
-    const original = byUid.get(selection.anchorUid);
-    if (original?.cancelled && cancelledStillVisible(original, now)) add(original, false);
-  }
-
-  const sorted = [...included.values()]
-    .sort((a, b) => (legStartMs(a.leg) || 0) - (legStartMs(b.leg) || 0));
-
-  const legs = sorted.map(({ leg, showPax }, index) => ({
+  const legs = sorted.map((leg, index) => ({
     tripId: leg.uid,
     uid: leg.uid,
     legNumber: index + 1,
@@ -438,19 +349,20 @@ export function assembleLiveItinerary(scheduleLegs, rule, now = Date.now()) {
     tail: leg.tail || null,
     picName: leg.pic || null,
     sicName: leg.sic || null,
-    tripCode: leg.tripCode || null,
-    showPax: showPax === true,
+    tripCode: readTripId(leg.tripCode) || null,
+    showPax: showPaxFor(selection, leg, leg.uid === selection.anchorUid || !isRepoLeg(leg)),
     cancelled: leg.cancelled === true,
     aircraftType: leg.aircraftType || null,
   }));
 
+  const open = legs.filter((leg) => !leg.cancelled);
   return {
     tripChanged: false,
     reason: null,
     legs,
-    anchorUid: anchor.uid,
+    anchorUid: anchor?.uid || selection.anchorUid,
     promotedFrom,
-    tail: legs.find((leg) => !leg.cancelled)?.tail || anchor.tail || selection.tail || null,
+    tail: (open.find((leg) => leg.uid === anchor?.uid) || open[0] || legs[0])?.tail || selection.tail || null,
   };
 }
 
@@ -497,6 +409,7 @@ export function toPublicLeg(leg) {
   return {
     legNumber: leg.legNumber,
     tripId: leg.tripId || leg.uid || null,
+    tail: leg.tail || null,
     from: leg.from || null,
     to: leg.to || null,
     fromFbo: leg.fromFbo || null,

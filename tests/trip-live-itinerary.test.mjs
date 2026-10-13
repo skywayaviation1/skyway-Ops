@@ -112,7 +112,7 @@ test('a route change replaces the airports stored at share time', () => {
   assert.equal(live.legs[0].to, 'OPF');
 });
 
-test('a leg added to the same trip code is included and renumbered', () => {
+test('an unselected leg after the live leg is not added', () => {
   const events = [
     ...baseEvents(),
     {
@@ -125,12 +125,122 @@ test('a leg added to the same trip code is included and renumbered', () => {
       start: NOW + 6 * HOUR,
       end: NOW + 7 * HOUR,
     },
+    {
+      uid: 'leg-next-tail',
+      tail: 'N525CR',
+      customer: 'Platinum Air',
+      from: 'TPA',
+      to: 'TEB',
+      tripCode: 'P3LHXA',
+      start: NOW + 9 * HOUR,
+      end: NOW + 11 * HOUR,
+    },
   ];
   const live = assembleLiveItinerary(legsFrom(events, NOW), rule(), NOW);
-  assert.deepEqual(live.legs.map((leg) => leg.tripId), ['leg-out', 'leg-back']);
-  assert.deepEqual(live.legs.map((leg) => leg.legNumber), [1, 2]);
-  assert.equal(live.legs[1].from, 'MIA');
-  assert.equal(live.legs[1].showPax, true);
+  assert.deepEqual(live.legs.map((leg) => leg.tripId), ['leg-out']);
+  assert.equal(live.legs.some((leg) => leg.tripId === 'leg-back'), false);
+  assert.equal(live.legs.some((leg) => leg.tripId === 'leg-next-tail'), false);
+
+  const checked = assembleLiveItinerary(
+    legsFrom(events, NOW),
+    rule({ pinnedLegUids: ['leg-out', 'leg-back'] }),
+    NOW,
+  );
+  assert.deepEqual(checked.legs.map((leg) => leg.tripId), ['leg-out', 'leg-back']);
+  assert.equal(checked.legs.some((leg) => leg.tripId === 'leg-next-tail'), false);
+});
+
+test('include entire trip adds every leg of that trip id, including a new one on another tail', () => {
+  const events = [
+    {
+      uid: 'leg-later',
+      tail: 'N444AM',
+      customer: 'Platinum Air',
+      from: 'TEB',
+      to: 'PBI',
+      tripCode: 'WEQVQD',
+      start: NOW + 10 * HOUR,
+      end: NOW + 13 * HOUR,
+    },
+    ...baseEvents(),
+    {
+      uid: 'leg-other-tail',
+      tail: 'N20UF',
+      customer: 'Someone Else',
+      from: 'MIA',
+      to: 'OPF',
+      tripCode: 'WEQVQD',
+      start: NOW + 6 * HOUR,
+      end: NOW + 7 * HOUR,
+    },
+    {
+      uid: 'leg-other-trip',
+      tail: 'N525CR',
+      customer: 'Platinum Air',
+      from: 'MIA',
+      to: 'TPA',
+      tripCode: 'P3LHXA',
+      start: NOW + 8 * HOUR,
+      end: NOW + 9 * HOUR,
+    },
+    {
+      uid: 'leg-trip-number',
+      tail: 'N999XX',
+      customer: 'Platinum Air',
+      from: 'SRQ',
+      to: 'BCT',
+      tripCode: '104281',
+      start: NOW + 4 * HOUR,
+      end: NOW + 5 * HOUR,
+    },
+  ];
+  const live = assembleLiveItinerary(
+    legsFrom(events, NOW),
+    rule({ includeEntireTrip: true, pinnedLegUids: ['leg-out'] }),
+    NOW,
+  );
+  assert.deepEqual(live.legs.map((leg) => leg.tripId), ['leg-out', 'leg-other-tail', 'leg-later']);
+  assert.deepEqual(live.legs.map((leg) => leg.legNumber), [1, 2, 3]);
+  assert.deepEqual(live.legs.map((leg) => leg.tail), ['N525CR', 'N20UF', 'N444AM']);
+  assert.equal(live.legs.every((leg) => leg.tripCode === 'WEQVQD'), true);
+  assert.equal(live.legs.some((leg) => leg.tripId === 'leg-other-trip'), false);
+  assert.equal(live.legs.some((leg) => leg.tripId === 'leg-trip-number'), false);
+});
+
+test('a numeric trip number does not turn on entire-trip matching', () => {
+  const events = [
+    {
+      uid: 'leg-num-a',
+      tail: 'N525CR',
+      customer: 'Platinum Air',
+      from: 'TPA',
+      to: 'MIA',
+      tripCode: '104281',
+      start: NOW + 3 * HOUR,
+      end: NOW + 4 * HOUR,
+    },
+    {
+      uid: 'leg-num-b',
+      tail: 'N20UF',
+      customer: 'Platinum Air',
+      from: 'MIA',
+      to: 'TEB',
+      tripCode: '104281',
+      start: NOW + 6 * HOUR,
+      end: NOW + 8 * HOUR,
+    },
+  ];
+  const live = assembleLiveItinerary(
+    legsFrom(events, NOW),
+    rule({
+      anchorUid: 'leg-num-a',
+      tripCode: '104281',
+      includeEntireTrip: true,
+      pinnedLegUids: ['leg-num-a'],
+    }),
+    NOW,
+  );
+  assert.deepEqual(live.legs.map((leg) => leg.tripId), ['leg-num-a']);
 });
 
 test('a removed leg stays visible as cancelled during the grace period, then drops', () => {
@@ -153,7 +263,7 @@ test('a removed leg stays visible as cancelled during the grace period, then dro
   assert.equal(cancelled.cancelled, true);
   assert.equal(cancelled.from, 'TPA');
   assert.equal(shown.tripChanged, false);
-  assert.ok(shown.legs.some((leg) => leg.tripId === 'leg-back' && !leg.cancelled));
+  assert.equal(shown.legs.some((leg) => leg.tripId === 'leg-back'), false);
 
   const later = NOW + CANCEL_GRACE_MS + 60 * 1000;
   const expired = reconcileSchedule(during, remaining, later);
@@ -174,7 +284,7 @@ test('a tail swap follows the aircraft now assigned to the leg', () => {
   assert.equal(overlaid[0].hasCatering, true);
 });
 
-test('a cancelled anchor promotes the next leg of the same trip, or says the trip changed', () => {
+test('a cancelled anchor stays on the link and does not pull in an unselected leg', () => {
   const previous = legsFrom(baseEvents(), NOW);
   const survivor = legsFrom([
     {
@@ -189,17 +299,37 @@ test('a cancelled anchor promotes the next leg of the same trip, or says the tri
     },
   ], NOW);
   const schedule = reconcileSchedule(previous, survivor, NOW);
-  const promoted = assembleLiveItinerary(schedule, rule(), NOW);
-  assert.equal(promoted.tripChanged, false);
-  assert.equal(promoted.promotedFrom, 'leg-out');
-  assert.equal(promoted.anchorUid, 'leg-back');
-  assert.equal(promoted.legs.find((leg) => leg.tripId === 'leg-out').cancelled, true);
+  const pinnedOnly = assembleLiveItinerary(schedule, rule(), NOW);
+  assert.equal(pinnedOnly.tripChanged, false);
+  assert.equal(pinnedOnly.promotedFrom, null);
+  assert.deepEqual(pinnedOnly.legs.map((leg) => leg.tripId), ['leg-out']);
+  assert.equal(pinnedOnly.legs[0].cancelled, true);
+
+  const entire = assembleLiveItinerary(schedule, rule({ includeEntireTrip: true }), NOW);
+  assert.equal(entire.tripChanged, false);
+  assert.equal(entire.promotedFrom, 'leg-out');
+  assert.equal(entire.anchorUid, 'leg-back');
+  assert.equal(entire.legs.find((leg) => leg.tripId === 'leg-out').cancelled, true);
+  assert.equal(entire.legs.find((leg) => leg.tripId === 'leg-back').cancelled, false);
 
   const onlyAnchor = reconcileSchedule(previous, [], NOW);
-  const changed = assembleLiveItinerary(onlyAnchor, rule(), NOW);
-  assert.equal(changed.tripChanged, true);
-  assert.equal(changed.reason, TRIP_CHANGED_REASON);
-  assert.deepEqual(changed.legs, []);
+  const stillVisible = assembleLiveItinerary(onlyAnchor, rule(), NOW);
+  assert.equal(stillVisible.tripChanged, false);
+  assert.equal(stillVisible.legs[0].cancelled, true);
+
+  const later = NOW + CANCEL_GRACE_MS + 60 * 1000;
+  const gone = reconcileSchedule(onlyAnchor, [], later);
+  const dropped = assembleLiveItinerary(gone, rule(), later);
+  assert.equal(dropped.tripChanged, false);
+  assert.deepEqual(dropped.legs, []);
+
+  const expiredInPlace = assembleLiveItinerary(
+    [{ ...onlyAnchor.find((leg) => leg.uid === 'leg-out'), cancelled: true, cancelledAt: later - CANCEL_GRACE_MS - 1000 }],
+    rule(),
+    later,
+  );
+  assert.equal(expiredInPlace.tripChanged, true);
+  assert.equal(expiredInPlace.reason, TRIP_CHANGED_REASON);
 });
 
 test('rotate and revoke invalidate the previous token without changing its shape', () => {
@@ -279,9 +409,24 @@ test('an old snapshot is only a fallback, and email does not read it', () => {
   const derived = deriveShareRule(legacy, 'leg-out');
   assert.equal(derived.backfill, true);
   assert.deepEqual(derived.rule.pinnedLegUids, ['leg-out']);
+  assert.equal(derived.rule.includeEntireTrip, false);
   assert.equal(derived.rule.tail, 'N525CR');
 
-  const live = assembleLiveItinerary(legsFrom(baseEvents({ from: 'SRQ', to: 'TEB' }), NOW), derived.rule, NOW);
+  const withNeighbor = legsFrom([
+    ...baseEvents({ from: 'SRQ', to: 'TEB' }),
+    {
+      uid: 'leg-unselected',
+      tail: 'N525CR',
+      customer: 'Platinum Air',
+      from: 'TEB',
+      to: 'PBI',
+      tripCode: 'WEQVQD',
+      start: NOW + 8 * HOUR,
+      end: NOW + 10 * HOUR,
+    },
+  ], NOW);
+  const live = assembleLiveItinerary(withNeighbor, derived.rule, NOW);
+  assert.deepEqual(live.legs.map((leg) => leg.tripId), ['leg-out']);
   assert.equal(live.legs[0].from, 'SRQ');
   assert.equal(live.legs[0].to, 'TEB');
 
@@ -392,4 +537,53 @@ test('client itinerary fields are not part of the stored link', () => {
   assert.equal(patch.patch.shareRule.legs, undefined);
   assert.equal(patch.patch.shareRule.brokerEmail, 'broker@platinumair.example');
   assert.equal(patch.patch.shareRule.theme, 'premium');
+  assert.equal(patch.patch.shareRule.includeEntireTrip, false);
+});
+
+test('toggling include entire trip updates the stored rule and keeps the token', () => {
+  const issued = linkPatchFromRequest({
+    existing: {},
+    tripId: 'leg-out',
+    rotate: false,
+    shareSelection: rule({ includeEntireTrip: false }),
+    now: 1_000,
+  });
+  const token = signTripToken('leg-out', issued.issuedAt);
+  const toggled = linkPatchFromRequest({
+    existing: { linkTokenIssuedAt: issued.issuedAt, linkRevoked: false, shareRule: issued.patch.shareRule },
+    tripId: 'leg-out',
+    rotate: false,
+    shareSelection: rule({ includeEntireTrip: true }),
+    now: 9_000,
+  });
+  assert.equal(toggled.reused, true);
+  assert.equal(toggled.issuedAt, issued.issuedAt);
+  assert.equal(toggled.patch.linkTokenIssuedAt, undefined);
+  assert.equal(toggled.patch.shareRule.includeEntireTrip, true);
+  assert.equal(verifyTripToken(token).ok, true);
+  const access = evaluateLinkAccess(
+    { linkTokenIssuedAt: issued.issuedAt, linkRevoked: false },
+    verifyTripToken(token),
+    9_000,
+    null,
+  );
+  assert.equal(access.ok, true);
+
+  const twoLegs = {
+    publicTripData: {
+      tail: 'N525CR',
+      legs: [
+        { tripId: 'leg-out', showPax: true },
+        { tripId: 'leg-back', showPax: false },
+      ],
+    },
+  };
+  const fromSnapshot = deriveShareRule(twoLegs, 'leg-out');
+  assert.deepEqual(fromSnapshot.rule.pinnedLegUids, ['leg-out', 'leg-back']);
+  assert.equal(fromSnapshot.rule.includeEntireTrip, false);
+
+  const dialog = read('src/App.jsx');
+  assert.match(dialog, /INCLUDE ENTIRE TRIP/);
+  assert.match(dialog, /includeEntireTrip/);
+  assert.match(read('src/TripTrack.jsx'), /leg\.tail/);
 });

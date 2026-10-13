@@ -161,6 +161,7 @@ function sanitizeTrip(tripId, data, legs, liveLegData = {}) {
       departure: leg.departure || null,    // ISO
       arrival: leg.arrival || null,        // ISO
       category: leg.category || 'REVENUE', // REVENUE/REPO/FERRY
+      tail: leg.tail || data.tail || null,
       pic: leg.picName || null,            // NAME ONLY — no contact info
       sic: leg.sicName || null,            // NAME ONLY — no contact info
       // Pax list — LIVE overlay if available, snapshot fallback. showPax
@@ -188,9 +189,17 @@ async function respondWithFlight(res, trip) {
     if (leg.from) airportCodes.push(leg.from);
     if (leg.to) airportCodes.push(leg.to);
   }
-  const hasDepartedLeg = (trip.legs || []).some((leg) => leg.status?.wheels_up);
-  const hasAirborneLeg = (trip.legs || []).some((leg) => leg.status?.wheels_up && !leg.status?.landed);
-  const tail = trip.tail || null;
+  // Position and the flown track follow the leg that is actually in the
+  // air, or the next one when nothing is airborne. Each leg keeps its own
+  // tail, so a trip flown on two aircraft does not plot the wrong one.
+  const tail = activeTail(trip.legs) || trip.tail || null;
+  if (tail) trip.tail = tail;
+  const sameTail = (leg) => {
+    const legTail = String(leg?.tail || tail || '').toUpperCase();
+    return legTail && legTail === String(tail || '').toUpperCase();
+  };
+  const hasDepartedLeg = (trip.legs || []).some((leg) => !leg.cancelled && leg.status?.wheels_up && sameTail(leg));
+  const hasAirborneLeg = (trip.legs || []).some((leg) => !leg.cancelled && leg.status?.wheels_up && !leg.status?.landed && sameTail(leg));
   const [position, trail, weather] = await Promise.all([
     fetchPosition(tail),
     hasDepartedLeg && tail ? fetchActualPath(tail) : Promise.resolve(null),

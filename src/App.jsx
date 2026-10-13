@@ -187,7 +187,7 @@ import {
 import { compareNames } from './name-matching.js';
 import { lookupCoords } from './airport-coords.js';
 import { resolveManagedTails } from './fleet-config.js';
-import { buildFleetMapScene } from './fleet-tracking.js';
+import { buildFleetMapScene, readTripId } from './fleet-tracking.js';
 import { DEFAULT_ICAL_URL, buildTripsFromEvents, parseICal } from './ical-parse.js';
 import { DUTY_TRACKER_ENABLED } from './duty-feature.js';
 import { applyBrandAccent, brand } from './brand.js';
@@ -7732,7 +7732,7 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
   // buildPublicTripData already does at URL-generation time — we're just
   // running it earlier so it can inform the picker too.
   const [tripStatesByUid, setTripStatesByUid] = useState({});
-  const [enriching, setEnriching] = useState(false);
+  const [enriching, setEnriching] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -7871,6 +7871,34 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
   const [selectedUids, setSelectedUids] = useState(
     () => new Set([canonicalTrip.uid])
   );
+  // Off by default. On means every leg with this trip ID, on any tail,
+  // including legs added after the link was sent. The URL does not change.
+  const [includeEntireTrip, setIncludeEntireTrip] = useState(false);
+  const [selectionReady, setSelectionReady] = useState(false);
+  const hydratedRule = useRef(false);
+  const shareTripId = readTripId(
+    canonicalTrip.info?.tripCode,
+    tripStatesByUid[canonicalTrip.uid]?.tripSheetData?.tripCode,
+    tripStatesByUid[canonicalTrip.uid]?.tripCode,
+  );
+
+  // Restore the rule already stored on this link before the first save,
+  // so opening the dialog does not snap "include entire trip" back off
+  // or drop legs the operator had checked.
+  useEffect(() => {
+    if (enriching || hydratedRule.current) return;
+    hydratedRule.current = true;
+    const rule = tripStatesByUid[canonicalTrip.uid]?.shareRule;
+    if (rule && typeof rule === 'object') {
+      if (rule.includeEntireTrip === true) setIncludeEntireTrip(true);
+      if (Array.isArray(rule.pinnedLegUids) && rule.pinnedLegUids.length) {
+        const next = new Set(rule.pinnedLegUids.map((uid) => String(uid)));
+        next.add(canonicalTrip.uid);
+        setSelectedUids(next);
+      }
+    }
+    setSelectionReady(true);
+  }, [enriching, tripStatesByUid, canonicalTrip.uid]);
   const toggleLeg = (uid) => {
     if (uid === canonicalTrip.uid) return; // anchor can't be unchecked
     setSelectedUids(prev => {
@@ -7962,6 +7990,7 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
       showPaxByLeg,
       theme: brokerTheme,
       brokerEmail: (defaultEmail || '').trim() || null,
+      includeEntireTrip: includeEntireTrip === true && Boolean(shareTripId),
     };
   }
 
@@ -7997,6 +8026,7 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
   // store the selection rule. The broker page reads the live schedule, so
   // this does not send an itinerary snapshot.
   useEffect(() => {
+    if (!selectionReady) return undefined;
     let cancelled = false;
     (async () => {
       try {
@@ -8012,12 +8042,10 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
       }
     })();
     return () => { cancelled = true; };
-    // Re-run when the leg selection changes so the broker page reflects
-    // the latest set. Also re-run when the live anchor FBOs change so
-    // a PDF auto-extract or admin edit while the dialog is open instantly
-    // pushes the new FBO to the broker page without needing a reopen.
+    // Re-run when the leg selection or the entire-trip toggle changes.
+    // generate reuses the existing token, so the URL stays the same.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedUids, brokerTheme, Object.keys(tripStatesByUid).join('|')]);
+  }, [selectionReady, selectedUids, includeEntireTrip, brokerTheme, Object.keys(tripStatesByUid).join('|')]);
 
   const handleCopy = async () => {
     if (!effectiveUrl) return;
@@ -8120,6 +8148,33 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
           </button>
         </div>
 
+        {/* INCLUDE ENTIRE TRIP — every leg with this trip ID, any tail.
+            Stored on the existing link, so the URL the broker already has
+            keeps working. Off means only the checked legs. */}
+        <div className="border-b border-slate-700 bg-slate-900/40 px-4 py-2.5">
+          <label className={`flex items-start gap-2 ${shareTripId ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}>
+            <input
+              type="checkbox"
+              checked={includeEntireTrip && Boolean(shareTripId)}
+              disabled={!shareTripId || busy}
+              onChange={(e) => setIncludeEntireTrip(e.target.checked)}
+              className="mt-0.5 w-3.5 h-3.5 accent-cyan-500 shrink-0 disabled:opacity-50"
+            />
+            <span className="min-w-0">
+              <span className="block text-[10px] tracking-widest text-slate-200"
+                style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+                INCLUDE ENTIRE TRIP{shareTripId ? ` · ${shareTripId}` : ''}
+              </span>
+              <span className="block text-[9px] text-slate-500 mt-0.5"
+                style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                {shareTripId
+                  ? 'Every leg with this trip ID, on any aircraft, in time order. Legs added to the trip later show up on this same link.'
+                  : 'This leg has no 6–7 character trip ID, so only the legs you check can be shared.'}
+              </span>
+            </span>
+          </label>
+        </div>
+
         {/* LEGS TO SHARE — unified leg selector. Lists every same-day
             same-tail leg as a checkbox row. Only the anchor (★) is
             pre-checked; ops explicitly checks any additional legs they
@@ -8136,8 +8191,9 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
             </div>
             <div className="text-[9px] text-slate-500 mb-2"
               style={{ fontFamily: 'JetBrains Mono, monospace' }}>
-              Only the anchor (★) is checked by default. Check any
-              additional legs you want the broker to see.
+              {includeEntireTrip && shareTripId
+                ? `The link follows trip ${shareTripId} on every aircraft. These checkboxes are paused, and a later leg with a different trip ID stays off the page. The URL does not change.`
+                : 'Only the anchor (★) is checked by default. Check any additional legs you want the broker to see. A later leg is not included unless you check it.'}
               {openedFromNonCanonical && (
                 <> The leg you clicked is marked <span className="text-cyan-400">← OPENED FROM</span>.</>
               )}
@@ -8178,7 +8234,7 @@ function ShareTripWithBrokerDialog({ trip, allTrips, defaultEmail, currentUser, 
                     <input
                       type="checkbox"
                       checked={isChecked}
-                      disabled={isAnchor || busy}
+                      disabled={isAnchor || busy || (includeEntireTrip && Boolean(shareTripId))}
                       onChange={() => toggleLeg(leg.uid)}
                       className="mt-0.5 w-3.5 h-3.5 accent-cyan-500 shrink-0 disabled:opacity-50"
                     />

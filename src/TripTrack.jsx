@@ -735,6 +735,11 @@ function Leg({ leg, isActive, position }) {
               <span className="text-[10px] tracking-widest text-slate-500" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
                 LEG {leg.legNumber}
               </span>
+              {leg.tail && (
+                <span className="text-[10px] tracking-widest text-slate-200" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
+                  {leg.tail}
+                </span>
+              )}
               <span className={`text-[10px] tracking-widest border px-1.5 py-0.5 ${cat.cls}`} style={{ fontFamily: 'JetBrains Mono, monospace' }}>
                 {cat.text}
               </span>
@@ -1014,14 +1019,18 @@ export default function TripTrackPage({ token }) {
           {(trip.legs || []).map((leg) => {
             // The "active" leg is whichever one is currently airborne (or
             // mid-preflight if none airborne yet). Drives the LIVE badge,
-            // border glow, and progress bar emphasis.
+            // border glow, and progress bar emphasis. Position and track
+            // belong to that leg's own tail.
             const isAirborneLeg = !leg.cancelled && !!(leg.status?.wheels_up && !leg.status?.landed);
+            const legTail = String(leg.tail || '').toUpperCase();
+            const positionTail = String(position?.ident || trip.tail || '').toUpperCase();
+            const positionMatchesLeg = !legTail || !positionTail || legTail === positionTail;
             return (
               <Leg
                 key={leg.legNumber}
                 leg={leg}
                 isActive={isAirborneLeg}
-                position={isAirborneLeg ? position : null}
+                position={isAirborneLeg && positionMatchesLeg ? position : null}
               />
             );
           })}

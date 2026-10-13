@@ -479,7 +479,46 @@ function brokerPayload() {
   }));
 
   const trip = brokerTrip();
-  if (params.get('brokerState') === 'live') {
+  const state = params.get('brokerState');
+  if (state === 'selected') {
+    trip.tripCode = LEAD.tripCode;
+    trip.legs = [trip.legs[0]];
+    trip.legs[0].tail = LEAD.tail;
+    trip.legs[0].legNumber = 1;
+    trip.itinerarySource = 'live';
+  }
+  if (state === 'entire') {
+    const other = SCHEDULE.find((leg) => leg.tail !== LEAD.tail && leg.tripCode) || SCHEDULE[2];
+    trip.tripCode = LEAD.tripCode;
+    trip.tail = LEAD.tail;
+    trip.legs = [
+      {
+        ...trip.legs[0],
+        tail: LEAD.tail,
+        legNumber: 1,
+      },
+      {
+        legNumber: 2,
+        from: other.from,
+        to: other.to,
+        fromFbo: 'Signature Flight Support',
+        toFbo: 'Atlantic Aviation',
+        departure: new Date(now() + 5 * HOUR).toISOString(),
+        arrival: new Date(now() + 7 * HOUR).toISOString(),
+        category: 'REVENUE',
+        tail: other.tail,
+        pic: other.pic,
+        sic: other.sic,
+        showPax: true,
+        hasCatering: false,
+        pax: [],
+        status: {},
+        cancelled: false,
+      },
+    ];
+    trip.itinerarySource = 'live';
+  }
+  if (state === 'live') {
     const first = trip.legs[0];
     first.departure = new Date(now() - 40 * MIN).toISOString();
     first.tail = LEAD.tail;
@@ -717,6 +756,34 @@ export function installFetchStub() {
     }
 
     if (path === '/api/trip-public') return json(brokerPayload());
+    if (path === '/api/trip-share') {
+      if (!window.__SHARE_PREVIEW__) {
+        window.__SHARE_PREVIEW__ = {
+          issuedAt: 1_700_000_000_000,
+          url: `${window.location.origin}/trip-track.html?token=preview-share-token`,
+          revoked: false,
+        };
+      }
+      const store = window.__SHARE_PREVIEW__;
+      if (body.action === 'revoke') {
+        store.revoked = true;
+        return json({ ok: true, revoked: true });
+      }
+      if (body.action === 'rotate') {
+        store.issuedAt = Date.now();
+        store.url = `${window.location.origin}/trip-track.html?token=preview-share-${store.issuedAt}`;
+        store.revoked = false;
+      }
+      if (body.shareSelection) store.rule = body.shareSelection;
+      return json({
+        ok: true,
+        url: store.url,
+        token: 'preview-share-token',
+        issuedAt: store.issuedAt,
+        reused: body.action !== 'rotate',
+        revoked: store.revoked === true,
+      });
+    }
     if (path === '/api/user-mail') return json(mailResponse(action, true));
     if (path === '/api/charter-mail') return json(mailResponse(action, false));
     if (path === '/api/teams') return json(teamsResponse(action));
