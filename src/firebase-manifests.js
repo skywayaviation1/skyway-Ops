@@ -5,6 +5,11 @@
 // manifests (W&B fields and configuration are aircraft-specific).
 //
 // Document ID: `${YYYY-MM-DD}_${tail}` (sanitized)
+//
+// After submit, the top-level fields are the current revision. `revisions[]`
+// keeps every filing (revision number, who, when, note, field diff, and a
+// snapshot of the form). Amendments append; they do not replace that array.
+// No extra Firestore index: history lives on the manifest document.
 
 import { db } from './firebase.js';
 import {
