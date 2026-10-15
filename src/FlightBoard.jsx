@@ -1166,7 +1166,7 @@ function TvFlightBoard({
             style={{
               height: strip.height,
               gridTemplateColumns: `repeat(${strip.perRow}, minmax(0, 1fr))`,
-              gridTemplateRows: `repeat(${strip.rows}, ${strip.rowHeight}px)`,
+              gridTemplateRows: `repeat(${strip.rows}, minmax(0, 1fr))`,
             }}
           >
             {cards.map((card) => (
