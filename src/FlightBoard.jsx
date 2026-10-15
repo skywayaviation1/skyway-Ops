@@ -33,20 +33,21 @@ import { lookupCoords } from './airport-coords.js';
 import { appleMapType, loadAppleMapKit } from './apple-mapkit.js';
 import { resolveManagedTails } from './fleet-config.js';
 import {
-  TV_COLUMN_HEAD_PX,
   TV_HEADER_PX,
-  TV_TYPE,
+  TV_PANEL_PX,
   TV_WX_REFRESH_MS,
   boardWeatherAirports,
+  buildOccAirports,
+  buildOccRoutes,
+  buildOccTimeline,
   buildTvAircraftCard,
   buildTvBoardRow,
   buildTvMapScene,
   formatBoardClocks,
   formatBoardWeather,
   normalizeBoardAirport,
-  tvAircraftStrip,
-  tvLegLayout,
-  tvListHeight,
+  occGanttMetrics,
+  occPanelBudget,
 } from './flight-board-tv.js';
 import { watchAppleMapKit } from './mapkit-fallback.js';
 import { statusEventAt } from './trip-status.js';
@@ -973,26 +974,17 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
 }
 
 // ====================================================================
-// FULL-SCREEN TV (?board=1)
+// FULL-SCREEN TV (?board=1) — operations control video wall
 // ====================================================================
 
-const BOARD_BG = '#070d18';
-const BOARD_LINE = 'rgba(255,255,255,0.08)';
-const BOARD_TEXT = '#f4f7fb';
-const BOARD_MUTED = '#8b95a8';
-const BOARD_FONT = "'DM Sans', system-ui, sans-serif";
-const BOARD_COLS = '88px 96px 104px minmax(96px, 1fr) 64px 64px 268px';
-const BOARD_COLS_NARROW = '72px 80px 88px minmax(0, 1fr) 56px 56px 52px';
-
-const TV_PILL = {
-  airborne: { color: '#34d399', background: 'rgba(52,211,153,0.14)' },
-  preflight: { color: '#fbbf24', background: 'rgba(251,191,36,0.14)' },
-  pending: { color: '#94a3b8', background: 'rgba(148,163,184,0.12)' },
-  landed: { color: '#94a3b8', background: 'transparent' },
-  completed: { color: '#94a3b8', background: 'transparent' },
-};
-
-const TV_CATEGORY = {
+const OCC_BG = '#060a10';
+const OCC_PANEL = 'rgba(8, 14, 22, 0.88)';
+const OCC_LINE = 'rgba(186, 214, 224, 0.16)';
+const OCC_TEXT = '#e7eef3';
+const OCC_MUTED = '#8ea0b0';
+const OCC_ACCENT = '#2dd4bf';
+const OCC_FONT = "'DM Sans', system-ui, sans-serif";
+const OCC_CATEGORY = {
   VFR: '#34d399',
   MVFR: '#60a5fa',
   IFR: '#f87171',
@@ -1051,6 +1043,27 @@ function useBoardWeather(codes) {
   return weather;
 }
 
+function metarFor(weather, code) {
+  const key = normalizeBoardAirport(code);
+  if (!key || !weather) return null;
+  const payload = weather[key];
+  return formatBoardWeather(payload?.metar || payload?.parsed || payload);
+}
+
+function tailPhase(rows, tail) {
+  const mine = rows.filter((row) => String(row.tail || '').toUpperCase() === String(tail || '').toUpperCase());
+  if (mine.some((row) => row.phase === 'airborne')) return 'airborne';
+  if (mine.some((row) => row.phase === 'preflight')) return 'preflight';
+  return 'ground';
+}
+
+function ganttColor(phase) {
+  if (phase === 'airborne') return OCC_ACCENT;
+  if (phase === 'preflight') return '#fbbf24';
+  if (phase === 'landed' || phase === 'completed') return 'rgba(142,160,176,0.4)';
+  return 'rgba(45,212,191,0.5)';
+}
+
 function TvFlightBoard({
   allTrips,
   today,
@@ -1067,8 +1080,8 @@ function TvFlightBoard({
     () => (Array.isArray(managedFleetTails) ? managedFleetTails : resolveManagedTails(null)),
     [managedFleetTails],
   );
-
-  const scene = useMemo(() => buildTvMapScene({
+  const phaseOf = (trip) => effectivePhase(trip, stateMap.get(trip.uid));
+  const baseScene = buildTvMapScene({
     fleetTails: tails,
     positions: faPositions,
     trips: allTrips,
@@ -1076,12 +1089,11 @@ function TvFlightBoard({
     aircraftByTail: aircraftByTail || {},
     now,
     timeZone,
-  }), [tails, faPositions, allTrips, stateMap, aircraftByTail, now, timeZone]);
-
+  });
   const rows = (today || []).map((trip) => buildTvBoardRow({
     trip,
     state: stateMap.get(trip.uid),
-    phase: effectivePhase(trip, stateMap.get(trip.uid)),
+    phase: phaseOf(trip),
     faPosition: faPositions[(trip.info?.tail || '').toUpperCase()],
     now,
     timeZone,
@@ -1095,86 +1107,66 @@ function TvFlightBoard({
     timeZone,
   }));
   const weather = useBoardWeather(boardWeatherAirports(rows, cards));
-  const strip = tvAircraftStrip(cards.length);
-  const layout = tvLegLayout(rows.length, tvListHeight(cards.length));
-  const counts = rows.reduce((acc, row) => {
-    if (row.phase === 'airborne') acc.airborne += 1;
-    else if (row.phase === 'preflight') acc.preflight += 1;
-    else if (row.phase === 'pending') acc.pending += 1;
-    return acc;
-  }, { airborne: 0, preflight: 0, pending: 0 });
+  const scene = {
+    ...baseScene,
+    routes: buildOccRoutes({ trips: today, phaseOf, aircraft: baseScene.aircraft }),
+    airports: buildOccAirports(today, weather),
+  };
+  const airborne = rows.filter((row) => row.phase === 'airborne');
+  const departures = rows.filter((row) => row.phase === 'pending' || row.phase === 'preflight');
+  const completed = rows.filter((row) => row.phase === 'landed' || row.phase === 'completed').length;
+  const available = cards.filter((card) => card.statusLabel !== 'AIRBORNE').length;
+  const gantt = occGanttMetrics(cards.length);
+  const panelHeight = 1080 - TV_HEADER_PX - gantt.height;
+  const stack = occPanelBudget({
+    airborneCount: airborne.length,
+    departureCount: departures.length,
+    tailCount: cards.length,
+    height: panelHeight,
+  });
+  const timeline = buildOccTimeline({
+    tails,
+    trips: today,
+    tripStates: stateMap,
+    phaseOf,
+    now,
+    timeZone,
+  });
   const clocks = formatBoardClocks(now, timeZone);
-  const columns = layout.columns === 2 ? BOARD_COLS_NARROW : BOARD_COLS;
-  const showWxDetail = layout.columns === 1;
+  const airBlock = airborne.length === 0
+    ? 0
+    : airborne.length * stack.airCard + Math.max(0, airborne.length - 1) * stack.airGap;
 
   return (
     <TvDesignFrame>
       <div
         className="flex h-full w-full flex-col overflow-hidden"
-        style={{ background: BOARD_BG, color: BOARD_TEXT, fontFamily: BOARD_FONT, fontVariantNumeric: 'tabular-nums' }}
+        style={{ background: OCC_BG, color: OCC_TEXT, fontFamily: OCC_FONT, fontVariantNumeric: 'tabular-nums' }}
       >
         <header
-          className="flex items-center justify-between"
-          style={{ height: TV_HEADER_PX, padding: '0 16px', borderBottom: `1px solid ${BOARD_LINE}` }}
+          className="flex shrink-0 items-center"
+          style={{ height: TV_HEADER_PX, gap: 16, padding: '0 16px', borderBottom: `1px solid ${OCC_LINE}`, background: 'rgba(6,10,16,0.94)' }}
         >
-          <div className="flex min-w-0 items-center" style={{ gap: 16 }}>
-            <Wordmark className="h-8 w-auto" surface="dark" />
-            <div className="min-w-0" style={{ borderLeft: `1px solid ${BOARD_LINE}`, paddingLeft: 16 }}>
-              <h1 style={{ fontSize: TV_TYPE.body, fontWeight: 600, letterSpacing: '0.14em', lineHeight: '20px' }}>FLIGHT OPERATIONS</h1>
-              <p className="truncate" style={{ fontSize: TV_TYPE.meta, color: BOARD_MUTED, lineHeight: '16px' }}>
-                {clocks.day} · {faDiag.message}
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center" style={{ gap: 24 }}>
-            <TvCount value={counts.airborne} label="AIRBORNE" />
-            <TvCount value={counts.preflight} label="PRE-FLIGHT" />
-            <TvCount value={rows.length} label="TODAY" />
-            <TvClock time={clocks.local} label={clocks.zone || 'LOCAL'} />
-            <TvClock time={clocks.utc} label="UTC" />
-          </div>
+          <Wordmark className="h-7 w-auto shrink-0" surface="dark" />
+          <div className="shrink-0" style={{ width: 1, height: 28, background: OCC_LINE }} />
+          <h1 className="shrink-0" style={{ fontSize: 13, fontWeight: 600, letterSpacing: '0.18em', lineHeight: '16px' }}>
+            OPERATIONS CONTROL
+          </h1>
+          <div className="flex-1" />
+          <OccClock time={clocks.local} label={clocks.zone || 'LOCAL'} />
+          <OccClock time={clocks.utc} label="UTC" />
+          <OccClock time={clocks.zulu} label="ZULU" />
+          <div className="shrink-0" style={{ width: 1, height: 28, background: OCC_LINE }} />
+          <OccKpi value={airborne.length} label="AIRBORNE" />
+          <OccKpi value={rows.length} label="SCHEDULED TODAY" />
+          <OccKpi value={completed} label="COMPLETED" />
+          <OccKpi value={available} label="FLEET AVAILABLE" />
+          <div className="shrink-0" style={{ width: 1, height: 28, background: OCC_LINE }} />
+          <OccFreshness diag={faDiag} />
         </header>
 
-        <div className="grid min-h-0 flex-1 overflow-hidden" style={{ gridTemplateColumns: 'minmax(0, 1.15fr) minmax(0, 1fr)' }}>
-          <div className="flex min-h-0 min-w-0 flex-col overflow-hidden" style={{ borderRight: `1px solid ${BOARD_LINE}` }}>
-            <div
-              className="grid min-h-0 flex-1 overflow-hidden"
-              data-board-legs=""
-              data-board-columns={layout.columns}
-              style={{ gridTemplateColumns: `repeat(${layout.columns}, minmax(0, 1fr))` }}
-            >
-              {rows.length === 0 ? (
-                <div className="flex h-full items-center justify-center" style={{ fontSize: TV_TYPE.body, color: BOARD_MUTED, letterSpacing: '0.12em' }}>
-                  NO FLIGHTS TODAY
-                </div>
-              ) : (
-                Array.from({ length: layout.columns }, (_, column) => {
-                  const slice = rows.slice(column * layout.rows, (column + 1) * layout.rows);
-                  return (
-                    <div
-                      key={column}
-                      className="flex min-h-0 min-w-0 flex-col overflow-hidden"
-                      style={{ borderLeft: column > 0 ? `1px solid ${BOARD_LINE}` : undefined }}
-                    >
-                      <TvColumnHead columns={columns} />
-                      <div
-                        className="min-h-0 overflow-hidden"
-                        style={{
-                          display: 'grid',
-                          gridTemplateRows: `repeat(${layout.rows}, ${layout.rowHeight}px)`,
-                        }}
-                      >
-                        {slice.map((row) => (
-                          <TvFlightRow key={row.uid || `${row.tail}-${row.tripId}-${row.etdLabel}`} row={row} columns={columns} weather={weather} detail={showWxDetail} />
-                        ))}
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-          <div className="relative h-full min-h-0 overflow-hidden" style={{ background: BOARD_BG }}>
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          <div data-occ-map="" className="relative min-h-0 min-w-0 flex-1 overflow-hidden" style={{ background: '#060c16' }}>
             <TrackingMap
               scene={scene}
               followFleet
@@ -1183,178 +1175,316 @@ function TvFlightBoard({
               compactCallouts={true}
               basemapDefault="dark"
               radarDefault={true}
-              radarOpacity={0.5}
+              radarOpacity={0.45}
               showLegend={false}
               showTrailToggle={false}
               className="h-full w-full"
             />
           </div>
-        </div>
-
-        {cards.length > 0 && (
-          <div
-            className="grid overflow-hidden"
-            data-board-fleet=""
+          <aside
+            data-occ-panel=""
+            className="flex shrink-0 flex-col overflow-hidden"
             style={{
-              height: strip.height,
-              borderTop: `1px solid ${BOARD_LINE}`,
-              gridTemplateColumns: `repeat(${strip.perRow}, minmax(0, 1fr))`,
-              gridTemplateRows: `repeat(${strip.rows}, minmax(0, 1fr))`,
+              width: TV_PANEL_PX,
+              background: OCC_PANEL,
+              borderLeft: `1px solid ${OCC_LINE}`,
+              backdropFilter: 'blur(16px)',
+              boxShadow: '-12px 0 32px rgba(0,0,0,0.25)',
             }}
           >
-            {cards.map((card) => (
-              <TvAircraftCard key={card.tail} card={card} weather={weather} />
-            ))}
-          </div>
-        )}
+            <OccSection label="AIRBORNE" count={airborne.length} />
+            {airborne.length > 0 && (
+              <div
+                style={{
+                  height: airBlock,
+                  display: 'grid',
+                  gridTemplateRows: `repeat(${airborne.length}, ${stack.airCard}px)`,
+                  gap: stack.airGap,
+                  padding: '0 12px',
+                }}
+              >
+                {airborne.map((row) => (
+                  <OccAirborneCard key={row.uid || `${row.tail}-${row.tripId}`} row={row} weather={weather} tall={stack.airCard >= 58} />
+                ))}
+              </div>
+            )}
+
+            <OccSection label="NEXT DEPARTURES" count={departures.length} />
+            <div className="min-h-0 overflow-hidden" style={{ height: departures.length * stack.depRow }}>
+              {departures.map((row) => (
+                <OccDepartureRow key={row.uid || `${row.tail}-${row.tripId}-${row.etdLabel}`} row={row} height={stack.depRow} weather={weather} />
+              ))}
+            </div>
+
+            <OccSection label="FLEET" count={cards.length} />
+            <div
+              data-board-fleet=""
+              style={{
+                height: stack.fleetRows * stack.fleetRow,
+                display: 'grid',
+                gridTemplateColumns: `repeat(${Math.max(1, stack.fleetCols)}, minmax(0, 1fr))`,
+                padding: '0 12px',
+              }}
+            >
+              {cards.map((card) => {
+                const phase = tailPhase(rows, card.tail);
+                const dot = phase === 'airborne' ? OCC_ACCENT : phase === 'preflight' ? '#fbbf24' : '#64748b';
+                return (
+                  <div
+                    key={card.tail}
+                    data-tail={card.tail}
+                    className="flex min-w-0 items-center overflow-hidden"
+                    style={{ height: stack.fleetRow, gap: 6 }}
+                  >
+                    <span
+                      style={{
+                        width: 7,
+                        height: 7,
+                        borderRadius: '50%',
+                        background: dot,
+                        boxShadow: phase === 'airborne' ? `0 0 6px ${dot}` : 'none',
+                        flex: '0 0 auto',
+                      }}
+                    />
+                    <span className="truncate" style={{ fontSize: 12, fontWeight: 600, lineHeight: '16px' }}>{card.tail}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </aside>
+        </div>
+
+        <OccGantt timeline={timeline} metrics={gantt} />
       </div>
     </TvDesignFrame>
   );
 }
 
-function TvCount({ value, label }) {
+function OccClock({ time, label }) {
   return (
-    <div className="text-right">
-      <div style={{ fontSize: TV_TYPE.body, fontWeight: 600, lineHeight: '20px', color: BOARD_TEXT }}>{value}</div>
-      <div style={{ fontSize: TV_TYPE.meta, lineHeight: '16px', letterSpacing: '0.08em', color: BOARD_MUTED }}>{label}</div>
+    <div className="shrink-0 text-right" style={{ minWidth: 68 }}>
+      <div style={{ fontSize: 18, fontWeight: 500, lineHeight: '20px', color: OCC_TEXT }}>{time || '—'}</div>
+      <div style={{ fontSize: 10, letterSpacing: '0.12em', lineHeight: '12px', color: OCC_MUTED }}>{label}</div>
     </div>
   );
 }
 
-function TvClock({ time, label }) {
+function OccKpi({ value, label }) {
   return (
-    <div className="text-right">
-      <div style={{ fontSize: TV_TYPE.display, fontWeight: 500, lineHeight: '32px', color: BOARD_TEXT }}>{time}</div>
-      <div style={{ fontSize: TV_TYPE.meta, lineHeight: '16px', letterSpacing: '0.08em', color: BOARD_MUTED }}>{label}</div>
+    <div data-board-kpi={label} className="shrink-0 text-right" style={{ minWidth: 64 }}>
+      <div style={{ fontSize: 18, fontWeight: 600, lineHeight: '20px', color: OCC_TEXT }}>{value}</div>
+      <div style={{ fontSize: 10, letterSpacing: '0.08em', lineHeight: '12px', color: OCC_MUTED, whiteSpace: 'nowrap' }}>{label}</div>
     </div>
   );
 }
 
-function TvColumnHead({ columns }) {
-  const titles = ['STATUS', 'TRIP', 'TAIL', 'FROM  →  TO', 'ETD', 'ETA', 'WX'];
+function OccFreshness({ diag }) {
+  const status = diag?.status || 'idle';
+  const color = status === 'ok' ? OCC_ACCENT : status === 'error' ? '#fbbf24' : OCC_MUTED;
+  return (
+    <div className="flex min-w-0 items-center" data-board-freshness={status} style={{ gap: 8, maxWidth: 210 }}>
+      <span
+        style={{
+          width: 7,
+          height: 7,
+          borderRadius: '50%',
+          background: color,
+          boxShadow: status === 'ok' ? `0 0 8px ${color}` : 'none',
+          flex: '0 0 auto',
+        }}
+      />
+      <span className="truncate" style={{ fontSize: 11, lineHeight: '14px', color: OCC_MUTED }}>{diag?.message || 'Fleet data'}</span>
+    </div>
+  );
+}
+
+function OccSection({ label, count }) {
   return (
     <div
-      style={{
-        height: TV_COLUMN_HEAD_PX,
-        display: 'grid',
-        gridTemplateColumns: columns,
-        columnGap: 8,
-        alignItems: 'center',
-        padding: '0 16px',
-        borderBottom: `1px solid ${BOARD_LINE}`,
-        fontSize: TV_TYPE.meta,
-        letterSpacing: '0.08em',
-        color: BOARD_MUTED,
-      }}
+      className="flex shrink-0 items-center justify-between"
+      style={{ height: 22, padding: '0 14px' }}
     >
-      {titles.map((title) => (
-        <span key={title} className="truncate">{title}</span>
-      ))}
+      <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.16em', color: OCC_ACCENT }}>{label}</span>
+      <span style={{ fontSize: 11, color: OCC_MUTED }}>{count}</span>
     </div>
   );
 }
 
-function TvCell({ children, title }) {
-  return (
-    <span className="min-w-0 truncate" title={title || undefined} style={{ fontSize: TV_TYPE.body, lineHeight: '20px' }}>
-      {children}
-    </span>
-  );
-}
-
-function TvStatus({ phase, label }) {
-  const tone = TV_PILL[phase] || TV_PILL.pending;
+function OccWxChip({ category }) {
+  if (!category) return null;
+  const color = OCC_CATEGORY[category] || OCC_MUTED;
   return (
     <span
-      className="truncate"
       style={{
-        justifySelf: 'start',
-        maxWidth: '100%',
-        fontSize: TV_TYPE.meta,
+        fontSize: 10,
         fontWeight: 600,
-        lineHeight: '16px',
-        letterSpacing: '0.06em',
-        color: tone.color,
-        background: tone.background,
-        borderRadius: 2,
-        padding: '2px 6px',
+        letterSpacing: '0.04em',
+        lineHeight: '14px',
+        color,
+        border: `1px solid ${color}66`,
+        borderRadius: 3,
+        padding: '0 4px',
       }}
     >
-      {label}
-    </span>
-  );
-}
-
-function TvCategory({ category }) {
-  if (!category) return null;
-  return (
-    <span style={{ fontSize: TV_TYPE.meta, fontWeight: 600, lineHeight: '16px', letterSpacing: '0.06em', color: TV_CATEGORY[category] || BOARD_MUTED }}>
       {category}
     </span>
   );
 }
 
-function TvWeatherCell({ from, to, weather, detail }) {
-  const fromWx = formatBoardWeather(weather[normalizeBoardAirport(from)]?.metar || weather[normalizeBoardAirport(from)]?.parsed);
-  const toWx = formatBoardWeather(weather[normalizeBoardAirport(to)]?.metar || weather[normalizeBoardAirport(to)]?.parsed);
-  const detailLine = detail ? (toWx || fromWx) : null;
-  return (
-    <span className="flex min-w-0 items-center" style={{ gap: 8 }} data-board-wx={`${normalizeBoardAirport(from) || ''},${normalizeBoardAirport(to) || ''}`}>
-      <TvCategory category={fromWx?.category} />
-      <TvCategory category={toWx?.category} />
-      {detailLine && (
-        <span className="min-w-0 truncate" style={{ fontSize: TV_TYPE.meta, color: BOARD_MUTED }}>
-          {[detailLine.wind, detailLine.visibility, detailLine.ceiling].filter(Boolean).join(' · ')}
-        </span>
-      )}
-    </span>
-  );
-}
-
-function TvFlightRow({ row, columns, weather, detail }) {
+function OccAirborneCard({ row, weather, tall }) {
+  const wx = metarFor(weather, row.to) || metarFor(weather, row.from);
+  const progress = Number.isFinite(row.progress) ? row.progress : null;
+  const meta = [row.altitudeLabel, row.speedLabel].filter(Boolean).join(' · ');
   return (
     <div
+      className="flex min-w-0 flex-col justify-center overflow-hidden"
       style={{
-        display: 'grid',
-        gridTemplateColumns: columns,
-        columnGap: 8,
-        alignItems: 'center',
-        height: '100%',
-        padding: '0 16px',
-        borderBottom: `1px solid ${BOARD_LINE}`,
-        overflow: 'hidden',
-        color: BOARD_TEXT,
+        padding: '4px 10px',
+        borderRadius: 6,
+        border: `1px solid ${OCC_LINE}`,
+        background: 'rgba(45,212,191,0.05)',
+        boxShadow: '0 0 18px rgba(45,212,191,0.05)',
       }}
     >
-      <TvStatus phase={row.phase} label={row.statusLabel} />
-      <TvCell title={row.tripId || ''}>
-        <span data-trip-id={row.tripId || ''}>{row.tripId || '—'}</span>
-      </TvCell>
-      <TvCell>{row.tail || '—'}</TvCell>
-      <TvCell>{row.from || '—'} <span style={{ color: BOARD_MUTED }}>→</span> {row.to || '—'}</TvCell>
-      <TvCell>{row.etdLabel || '—'}</TvCell>
-      <TvCell>{row.etaLabel || '—'}</TvCell>
-      <TvWeatherCell from={row.from} to={row.to} weather={weather} detail={detail} />
+      <div className="flex items-baseline justify-between" style={{ gap: 8 }}>
+        <span className="truncate" style={{ fontSize: 14, fontWeight: 600, lineHeight: '16px' }}>{row.tail || '—'}</span>
+        <span className="shrink-0" data-trip-id={row.tripId || ''} style={{ fontSize: 12, lineHeight: '14px' }}>{row.tripId || '—'}</span>
+        <span style={{ fontSize: 12, color: OCC_ACCENT }}>{progress == null ? '' : `${progress}%`}</span>
+      </div>
+      <div className="flex min-w-0 items-center justify-between" style={{ gap: 8 }}>
+        <span className="min-w-0 truncate" style={{ fontSize: 12, lineHeight: '14px', color: OCC_MUTED }}>
+          {row.from || '—'} → {row.to || '—'}
+        </span>
+        <span className="shrink-0" style={{ fontSize: 12, lineHeight: '14px' }}>ETA {row.etaLabel || '—'}</span>
+        {!tall && <OccWxChip category={wx?.category} />}
+      </div>
+      {progress != null && (
+        <div style={{ height: 3, marginTop: 4, borderRadius: 2, background: 'rgba(255,255,255,0.08)' }}>
+          <div style={{ width: `${progress}%`, height: '100%', borderRadius: 2, background: OCC_ACCENT, boxShadow: '0 0 8px rgba(45,212,191,0.65)' }} />
+        </div>
+      )}
+      {tall && (
+        <div className="flex min-w-0 items-center justify-between" style={{ gap: 8, marginTop: 3 }}>
+          <span className="min-w-0 truncate" style={{ fontSize: 12, lineHeight: '14px' }}>
+            {meta || '—'}
+          </span>
+          <OccWxChip category={wx?.category} />
+        </div>
+      )}
     </div>
   );
 }
 
-function TvAircraftCard({ card, weather }) {
-  const wx = formatBoardWeather(weather[card.weatherAirport]?.metar || weather[card.weatherAirport]?.parsed);
-  const when = card.timeKind === 'eta' ? 'ETA' : 'ETD';
-  const clock = String(card.timeLabel || '').match(/\d{1,2}:\d{2}/)?.[0] || '—';
+function OccDepartureRow({ row, height, weather }) {
+  const wx = metarFor(weather, row.to) || metarFor(weather, row.from);
   return (
     <div
-      className="flex min-w-0 items-center overflow-hidden"
-      data-tail={card.tail}
-      style={{ gap: 8, padding: '0 16px', borderRight: `1px solid ${BOARD_LINE}` }}
+      className="grid min-w-0 items-center overflow-hidden"
+      style={{
+        height,
+        gridTemplateColumns: '72px 76px minmax(0, 1fr) 68px 42px',
+        columnGap: 8,
+        padding: '0 14px',
+        borderTop: `1px solid ${OCC_LINE}`,
+      }}
     >
-      <span className="truncate" style={{ fontSize: TV_TYPE.body, fontWeight: 600, lineHeight: '20px' }}>{card.tail}</span>
-      <TvStatus phase={card.statusLabel === 'AIRBORNE' ? 'airborne' : 'pending'} label={card.statusLabel} />
-      <span className="truncate" style={{ fontSize: TV_TYPE.meta, color: BOARD_MUTED }}>{card.location || '—'}</span>
-      <span className="shrink-0" style={{ fontSize: TV_TYPE.body, lineHeight: '20px' }}>{when} {clock}</span>
-      <span className="shrink-0 truncate" data-trip-id={card.tripId || ''} style={{ fontSize: TV_TYPE.body }}>{card.tripId || '—'}</span>
-      <span data-board-wx={card.weatherAirport || ''} className="shrink-0"><TvCategory category={wx?.category} /></span>
+      <span className="truncate" style={{ fontSize: 12, fontWeight: 600, color: row.countdown === 'DUE' ? '#fbbf24' : OCC_TEXT }}>
+        {row.countdown || '—'}
+      </span>
+      <span className="truncate" style={{ fontSize: 12, fontWeight: 600 }}>{row.tail || '—'}</span>
+      <span className="truncate" style={{ fontSize: 12, color: OCC_MUTED }}>{row.from || '—'} → {row.to || '—'}</span>
+      <span className="truncate" data-trip-id={row.tripId || ''} style={{ fontSize: 12 }}>{row.tripId || '—'}</span>
+      <span className="flex justify-end"><OccWxChip category={wx?.category} /></span>
+    </div>
+  );
+}
+
+function OccGantt({ timeline, metrics }) {
+  if (!metrics.height) return null;
+  const barHeight = Math.max(6, metrics.row - 10);
+  return (
+    <div
+      data-occ-gantt=""
+      className="relative shrink-0 overflow-hidden"
+      style={{
+        height: metrics.height,
+        borderTop: `1px solid ${OCC_LINE}`,
+        background: 'rgba(6,10,16,0.94)',
+      }}
+    >
+      <div className="relative" style={{ height: metrics.axis, marginLeft: 84, marginRight: 16 }}>
+        {timeline.ticks.map((tick) => (
+          <span
+            key={tick.label}
+            style={{
+              position: 'absolute',
+              left: `${tick.ratio * 100}%`,
+              top: 2,
+              fontSize: 10,
+              letterSpacing: '0.08em',
+              lineHeight: '14px',
+              color: OCC_MUTED,
+              transform: tick.ratio === 0 ? 'none' : 'translateX(-50%)',
+            }}
+          >
+            {tick.label}
+          </span>
+        ))}
+      </div>
+      {timeline.rows.map((row) => (
+        <div key={row.tail} data-tail={row.tail} className="flex items-center" style={{ height: metrics.row }}>
+          <div className="truncate" style={{ width: 84, paddingLeft: 14, fontSize: 11, fontWeight: 600 }}>{row.tail}</div>
+          <div className="relative min-w-0" style={{ flex: 1, height: '100%', marginRight: 16 }}>
+            {row.bars.map((bar) => (
+              <div
+                key={bar.uid}
+                data-trip-id={bar.tripId || ''}
+                title={[bar.tripId, bar.from && `${bar.from} → ${bar.to}`].filter(Boolean).join('  ')}
+                style={{
+                  position: 'absolute',
+                  left: `${bar.left * 100}%`,
+                  width: `${Math.min(100 - bar.left * 100, bar.width * 100)}%`,
+                  top: Math.max(2, Math.floor((metrics.row - barHeight) / 2)),
+                  height: barHeight,
+                  borderRadius: 2,
+                  background: ganttColor(bar.phase),
+                  boxShadow: bar.phase === 'airborne' ? '0 0 8px rgba(45,212,191,0.45)' : 'none',
+                  overflow: 'hidden',
+                }}
+              >
+                {bar.width > 0.04 && bar.tripId ? (
+                  <span
+                    style={{
+                      display: 'block',
+                      paddingLeft: 4,
+                      fontSize: 10,
+                      fontWeight: 600,
+                      lineHeight: `${barHeight}px`,
+                      color: bar.phase === 'airborne' || bar.phase === 'preflight' ? '#04221e' : '#e7eef3',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {bar.tripId}
+                  </span>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+      <div
+        data-occ-now=""
+        style={{
+          position: 'absolute',
+          top: 0,
+          bottom: 0,
+          left: `calc(84px + (100% - 100px) * ${timeline.nowRatio})`,
+          width: 1,
+          background: OCC_ACCENT,
+          boxShadow: '0 0 8px rgba(45,212,191,0.85)',
+          pointerEvents: 'none',
+        }}
+      />
     </div>
   );
 }

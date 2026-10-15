@@ -3,23 +3,27 @@ import test from 'node:test';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { declutterCallouts } from '../src/tracking-map.js';
+import { aircraftIcon, groundedIcon } from '../src/tracking-map.js';
 import {
-  TV_COLUMN_HEAD_PX,
-  TV_FONT_FLOOR,
+  TV_DESIGN_HEIGHT,
+  TV_DESIGN_WIDTH,
   TV_HEADER_PX,
-  TV_ROW_PX,
-  TV_TYPE,
+  TV_PANEL_PX,
   boardWeatherAirports,
+  buildOccAirports,
+  buildOccRoutes,
+  buildOccTimeline,
   buildTvAircraftCard,
   buildTvBoardRow,
   buildTvMapScene,
   formatBoardClocks,
   formatBoardWeather,
+  formatDepartureCountdown,
   isTvBoardRequest,
-  tvAircraftStrip,
+  occGanttMetrics,
+  occMapShare,
+  occPanelBudget,
   tvBoardScale,
-  tvLegLayout,
-  tvListHeight,
 } from '../src/flight-board-tv.js';
 
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
@@ -31,28 +35,26 @@ test('the 1080p frame scales by min(viewport / 1920, viewport / 1080) and 4K is 
   assert.equal(tvBoardScale(1280, 720), 1280 / 1920);
 });
 
-test('every leg fits one view at a uniform row height, splitting only when it must', () => {
-  const strip = tvAircraftStrip(8);
-  const listHeight = tvListHeight(8);
-  assert.equal(TV_HEADER_PX + TV_COLUMN_HEAD_PX + strip.height + listHeight, 1080);
-  assert.ok(strip.perRow * strip.rows >= 8);
-  assert.equal(TV_TYPE.body, TV_FONT_FLOOR);
-  assert.deepEqual(Object.keys(TV_TYPE).sort(), ['body', 'display', 'meta']);
+test('the operations wall keeps the map near 70 percent and fits the rail without scrolling', () => {
+  const share = occMapShare();
+  assert.ok(share >= 0.65 && share <= 0.72, `map share ${share}`);
+  assert.equal(TV_DESIGN_WIDTH - TV_PANEL_PX, 1320);
 
-  const quiet = tvLegLayout(3, listHeight);
-  assert.equal(quiet.columns, 1);
-  assert.equal(quiet.rowHeight, TV_ROW_PX);
-  assert.ok(quiet.rowHeight * quiet.rows <= listHeight);
+  const gantt = occGanttMetrics(8);
+  assert.equal(gantt.height, gantt.axis + 8 * gantt.row);
+  assert.ok(gantt.height <= 200);
+  const panelHeight = TV_DESIGN_HEIGHT - TV_HEADER_PX - gantt.height;
+  assert.equal(TV_HEADER_PX + panelHeight + gantt.height, 1080);
 
-  const busy = tvLegLayout(16, listHeight);
-  assert.equal(busy.columns, 1);
-  assert.equal(busy.rowHeight, TV_ROW_PX);
-  assert.ok(busy.rowHeight * busy.rows <= listHeight);
-
-  const packed = tvLegLayout(40, listHeight);
-  assert.equal(packed.columns, 2);
-  assert.ok(packed.rowHeight * packed.rows <= listHeight + 0.001);
-  assert.ok(packed.rowHeight <= TV_ROW_PX);
+  for (const counts of [
+    { airborneCount: 2, departureCount: 16, tailCount: 8 },
+    { airborneCount: 0, departureCount: 18, tailCount: 8 },
+    { airborneCount: 6, departureCount: 24, tailCount: 12 },
+  ]) {
+    const stack = occPanelBudget({ ...counts, height: panelHeight });
+    assert.ok(stack.used <= panelHeight, JSON.stringify({ counts, stack }));
+    assert.ok(stack.fleetRows * stack.fleetCols >= counts.tailCount);
+  }
 });
 
 test('board rows use the 6–7 character trip id and never a trip number', () => {
@@ -253,7 +255,94 @@ test('aircraft cards and leg weather use the trip id and the METAR fields', () =
   const clocks = formatBoardClocks(NOW, 'America/New_York');
   assert.match(clocks.local, /PM|AM/);
   assert.match(clocks.utc, /^\d{2}:\d{2}$/);
+  assert.equal(clocks.zulu, '1900Z');
   assert.equal(clocks.zone, 'EDT');
+  assert.equal(formatDepartureCountdown('2026-08-10T20:12:00Z', NOW), '1h 12m');
+  assert.equal(formatDepartureCountdown('2026-08-10T19:42:00Z', NOW), '42m');
+  assert.equal(formatDepartureCountdown('2026-08-10T18:00:00Z', NOW), 'DUE');
+});
+
+test('airborne routes split into a solid flown arc and a dashed remainder', () => {
+  const scene = buildTvMapScene({
+    fleetTails: ['N444AM', 'N20UF'],
+    positions: {
+      N444AM: { airborne: true, latitude: 39.2, longitude: -75.5, destination: 'KHYA' },
+      N20UF: { airborne: false, groundedAt: 'KTEB', groundedLat: 40.85, groundedLon: -74.06 },
+    },
+    trips: [],
+    now: NOW,
+  });
+  const trips = [
+    {
+      uid: 'air',
+      start: '2026-08-10T18:00:00Z',
+      end: '2026-08-10T21:00:00Z',
+      info: { tail: 'N444AM', from: 'IAD', to: 'HYA', tripCode: 'WEQVQD' },
+    },
+    {
+      uid: 'next',
+      start: '2026-08-10T22:00:00Z',
+      end: '2026-08-11T01:00:00Z',
+      info: { tail: 'N20UF', from: 'TEB', to: 'PBI', tripCode: 'M8VTQD' },
+    },
+  ];
+  const phaseOf = (trip) => (trip.uid === 'air' ? 'airborne' : 'pending');
+  const routes = buildOccRoutes({ trips, phaseOf, aircraft: scene.aircraft });
+  const flown = routes.filter((route) => route.dashed === false && route.color !== '#94a3b8');
+  const remaining = routes.filter((route) => route.dashed === true);
+  assert.equal(flown.length, 1);
+  assert.ok(flown[0].points.length > 2);
+  assert.ok(remaining.length >= 2);
+  assert.ok(remaining.some((route) => route.points.length > 2));
+
+  const airports = buildOccAirports(trips, {
+    KIAD: { metar: { flightCategory: 'VFR', windKt: 0, visibilitySm: 10 } },
+    KHYA: { metar: { flightCategory: 'MVFR', windKt: 8, visibilitySm: 4, ceilingFt: 2500 } },
+  });
+  assert.equal(airports.find((item) => item.code === 'KIAD').color, '#34d399');
+  assert.equal(airports.find((item) => item.code === 'KHYA').category, 'MVFR');
+
+  const timeline = buildOccTimeline({
+    tails: ['N444AM', 'N20UF'],
+    trips,
+    phaseOf,
+    now: NOW,
+    timeZone: 'America/New_York',
+  });
+  assert.equal(timeline.rows.length, 2);
+  assert.equal(timeline.rows[0].bars[0].tripId, 'WEQVQD');
+  assert.ok(timeline.nowRatio > 0 && timeline.nowRatio < 1);
+  assert.ok(timeline.rows.every((row) => row.bars.every((bar) => bar.left >= 0 && bar.left + bar.width <= 1.001)));
+});
+
+const wallIcon = { divIcon: (opts) => opts };
+
+test('wall callouts carry destination and ETA, and parked tails say ETD', () => {
+  const air = aircraftIcon(wallIcon, {
+    compactCallout: true,
+    tail: 'N444AM',
+    tripId: 'WEQVQD',
+    destination: 'KHYA',
+    etaLabel: '4:12 PM EDT',
+    heading: 90,
+  });
+  assert.match(air.html, /N444AM/);
+  assert.match(air.html, /WEQVQD/);
+  assert.match(air.html, /→ KHYA/);
+  assert.match(air.html, /ETA 4:12/);
+  assert.match(air.html, /rotate\(90deg\)/);
+  const parked = groundedIcon(wallIcon, {
+    compactCallout: true,
+    tail: 'N20UF',
+    tripId: 'M8VTQD',
+    destination: 'KPBI',
+    departureLabel: '6:30 PM EDT',
+  });
+  assert.match(parked.html, /N20UF/);
+  assert.match(parked.html, /M8VTQD/);
+  assert.match(parked.html, /→ KPBI/);
+  assert.match(parked.html, /ETD 6:30/);
+  assert.doesNotMatch(`${air.html} ${parked.html}`, /104281/);
 });
 
 test('map callouts that share a pixel neighborhood are shifted apart', () => {
@@ -277,8 +366,10 @@ test('the full-screen board is the only path that mounts the passive fleet map',
   const compact = board.slice(legacy);
   assert.match(tv, /<TvFlightBoard/);
   assert.doesNotMatch(tv, /<RouteMap/);
-  assert.match(board, /<TrackingMap[\s\S]*followFleet[\s\S]*frameAllTails=\{true\}[\s\S]*passive[\s\S]*compactCallouts=\{true\}[\s\S]*radarDefault=\{true\}[\s\S]*radarOpacity=\{0\.5\}/);
-  assert.match(board, /FLIGHT OPERATIONS/);
+  assert.match(board, /<TrackingMap[\s\S]*followFleet[\s\S]*frameAllTails=\{true\}[\s\S]*passive[\s\S]*compactCallouts=\{true\}[\s\S]*radarDefault=\{true\}[\s\S]*radarOpacity=\{0\.45\}/);
+  assert.match(board, /OPERATIONS CONTROL/);
+  assert.match(board, /data-occ-gantt/);
+  assert.match(board, /data-occ-now/);
   assert.match(board, /DM Sans/);
   const tvUi = board.slice(board.indexOf('function TvFlightBoard'), board.indexOf('function FlightBoard'));
   assert.doesNotMatch(tvUi, /font-mono|text-cyan/);
@@ -295,6 +386,7 @@ test('the full-screen board is the only path that mounts the passive fleet map',
   assert.doesNotMatch(compact, /frameAllTails/);
   assert.doesNotMatch(compact, /radarDefault/);
   assert.doesNotMatch(compact, /data-board-fleet/);
+  assert.doesNotMatch(compact, /OPERATIONS CONTROL/);
   assert.doesNotMatch(compact, /FLIGHT OPERATIONS/);
 
   const map = await readFile(path.join(root, 'src/TrackingMap.jsx'), 'utf8');

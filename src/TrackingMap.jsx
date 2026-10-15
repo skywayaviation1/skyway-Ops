@@ -27,7 +27,7 @@ import {
 import {
   loadLeaflet, BASEMAP_ORDER, applyBasemap, clearBasemap, createRadarLayer,
   currentMapTheme, drawAltitudeTrail, ALTITUDE_LEGEND, altitudeColor, aircraftIcon,
-  airportIcon, groundedIcon, standardBasemapSpec, declutterCallouts,
+  airportIcon, groundedIcon, standardBasemapSpec, declutterCallouts, compactCalloutLine,
 } from './tracking-map.js';
 import {
   APPLE_BASEMAP_LABELS,
@@ -441,7 +441,7 @@ export default function TrackingMap({
     airports.forEach((a) => {
       if (!Number.isFinite(a?.lat) || !Number.isFinite(a?.lon)) return;
       L.marker([a.lat, a.lon], {
-        icon: airportIcon(L, { code: a.code, tone: a.tone || 'neutral', small: a.small }),
+        icon: airportIcon(L, { code: a.code, tone: a.tone || 'neutral', small: a.small, color: a.color || null }),
         interactive: false,
         zIndexOffset: 400,
       }).addTo(group);
@@ -449,13 +449,24 @@ export default function TrackingMap({
 
     const labelDy = {};
     if (compactCallouts && mapRef.current) {
-      const points = aircraft
-        .filter((item) => Number.isFinite(item?.lat) && Number.isFinite(item?.lon))
-        .map((item) => {
-          const point = mapRef.current.latLngToContainerPoint([item.lat, item.lon]);
-          return { id: item.id, x: point.x, y: point.y };
+      const locatedAircraft = aircraft.filter((item) => Number.isFinite(item?.lat) && Number.isFinite(item?.lon));
+      const labelWidth = locatedAircraft.reduce((width, item) => {
+        const text = compactCalloutLine({
+          airborne: item.airborne === true,
+          tail: item.tail,
+          tripId: item.tripId,
+          destination: item.destination,
+          etaLabel: item.etaLabel,
+          departureLabel: item.departureLabel,
         });
-      declutterCallouts(points).forEach((item) => { labelDy[item.id] = item.dy; });
+        return Math.max(width, Math.min(340, Math.ceil(text.length * 7.1) + 18));
+      }, 160);
+      const points = locatedAircraft.map((item) => {
+        const point = mapRef.current.latLngToContainerPoint([item.lat, item.lon]);
+        return { id: item.id, x: point.x, y: point.y };
+      });
+      declutterCallouts(points, { labelWidth, labelHeight: 20, gap: 6, anchor: 20 })
+        .forEach((item) => { labelDy[item.id] = item.dy; });
     }
 
     // Parked aircraft first so airborne markers and their labels sit on top.
@@ -471,6 +482,7 @@ export default function TrackingMap({
             selected,
             muted: Boolean(selectedId) && !selected,
             tripId: a.tripId,
+            destination: a.destination,
             departureLabel: a.departureLabel,
             compactCallout: compactCallouts,
             labelDy: labelDy[a.id] || 0,
@@ -570,15 +582,27 @@ export default function TrackingMap({
     if (!mapRef.current || !window.L) return;
     const located = aircraft.filter((item) => Number.isFinite(item?.lat) && Number.isFinite(item?.lon));
     const targets = frameAllTails ? located : fleetFitPositions(aircraft);
-    if (targets.length === 0) return;
+    const latLngs = targets.map((item) => [item.lat, item.lon]);
+    if (frameAllTails) {
+      airports.forEach((item) => {
+        if (Number.isFinite(item?.lat) && Number.isFinite(item?.lon)) latLngs.push([item.lat, item.lon]);
+      });
+      routes.forEach((route) => {
+        if (!Array.isArray(route?.points)) return;
+        route.points.forEach((point) => {
+          if (Array.isArray(point) && Number.isFinite(point[0]) && Number.isFinite(point[1])) latLngs.push(point);
+        });
+      });
+    }
+    if (latLngs.length === 0) return;
     fittingRef.current = true;
     try {
-      if (targets.length === 1) {
-        mapRef.current.setView([targets[0].lat, targets[0].lon], 8, { animate: true });
+      if (latLngs.length === 1) {
+        mapRef.current.setView(latLngs[0], 8, { animate: true });
       } else {
-        mapRef.current.fitBounds(window.L.latLngBounds(targets.map((item) => [item.lat, item.lon])), {
-          paddingTopLeft: [48, 48],
-          paddingBottomRight: frameAllTails ? [72, 200] : [56, 160],
+        mapRef.current.fitBounds(window.L.latLngBounds(latLngs), {
+          paddingTopLeft: [56, 40],
+          paddingBottomRight: frameAllTails ? [220, 36] : [56, 160],
           maxZoom: frameAllTails ? 7 : 8,
           animate: true,
           duration: 0.45,
@@ -586,7 +610,7 @@ export default function TrackingMap({
       }
     } catch { /* degenerate bounds */ }
     queueMicrotask(() => { fittingRef.current = false; });
-  }, [aircraft, frameAllTails]);
+  }, [aircraft, airports, routes, frameAllTails]);
 
   const fitAll = useCallback(() => {
     userMovedRef.current = false;
@@ -594,11 +618,15 @@ export default function TrackingMap({
   }, [fitFleetBounds]);
 
   const fleetSignature = frameAllTails
-    ? aircraft
-      .filter((item) => Number.isFinite(item?.lat) && Number.isFinite(item?.lon))
-      .map((item) => `${item.id}:${Number(item.lat).toFixed(3)},${Number(item.lon).toFixed(3)}`)
-      .sort()
-      .join('|')
+    ? [
+      aircraft
+        .filter((item) => Number.isFinite(item?.lat) && Number.isFinite(item?.lon))
+        .map((item) => `${item.id}:${Number(item.lat).toFixed(3)},${Number(item.lon).toFixed(3)}`)
+        .sort()
+        .join('|'),
+      airports.map((item) => item.code).join(','),
+      String(routes.length),
+    ].join('::')
     : fleetFitSignature(aircraft);
   useEffect(() => {
     if (!ready || !followFleet || userMovedRef.current || !fleetSignature) return;

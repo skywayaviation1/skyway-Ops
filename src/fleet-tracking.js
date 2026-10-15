@@ -228,9 +228,10 @@ export function fleetMarkerCallout({
     };
   }
 
+  const nextStop = upcoming?.info?.to ? String(upcoming.info.to).trim().toUpperCase() : null;
   return {
     tripId: readTripId(stateForTrip(tripStates, upcoming?.uid), upcoming),
-    destination: null,
+    destination: nextStop,
     etaLabel: null,
     departureLabel: formatMarkerTime(upcoming?.start, timeZone),
   };
