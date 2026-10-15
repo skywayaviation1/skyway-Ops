@@ -463,15 +463,15 @@ export function buildOccRoutes({ trips = [], phaseOf, aircraft = [] } = {}) {
       routes.push({
         points: greatCircleArc(from, here),
         color: OCC_ACCENT,
-        weight: 2.25,
+        weight: 2.75,
         opacity: 0.95,
         dashed: false,
       });
       routes.push({
         points: greatCircleArc(here, to),
         color: OCC_ACCENT,
-        weight: 2,
-        opacity: 0.8,
+        weight: 2.25,
+        opacity: 0.85,
         dashed: true,
       });
     } else if (phase === 'landed' || phase === 'completed') {
@@ -486,8 +486,8 @@ export function buildOccRoutes({ trips = [], phaseOf, aircraft = [] } = {}) {
       routes.push({
         points: greatCircleArc(from, to, 24),
         color: OCC_ACCENT,
-        weight: 1.5,
-        opacity: 0.5,
+        weight: 1.75,
+        opacity: 0.62,
         dashed: true,
       });
     }
@@ -515,6 +515,7 @@ export function buildOccAirports(trips, weather) {
         small: true,
         category: wx?.category || null,
         color: OCC_CATEGORY[wx?.category] || '#8b9aab',
+        hideCode: true,
       });
     }
   }

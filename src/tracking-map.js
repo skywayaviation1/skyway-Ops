@@ -392,6 +392,12 @@ function shortClock(label) {
   return match ? match[0] : '';
 }
 
+function displayAirport(code) {
+  const value = String(code || '').trim().toUpperCase();
+  if (/^[A-Z]{3}$/.test(value)) return `K${value}`;
+  return value;
+}
+
 /** One-line wall callout. `dy` is the declutter shift in pixels. */
 function compactCalloutHtml(size, text, dy = 0) {
   const shift = Number(dy) || 0;
@@ -410,7 +416,8 @@ export function compactCalloutLine({
   etaLabel,
   departureLabel,
 } = {}) {
-  const dest = destination ? `→ ${destination}` : '';
+  const shown = displayAirport(destination);
+  const dest = shown ? `→ ${shown}` : '';
   if (airborne) {
     const clock = shortClock(etaLabel);
     return [tail, tripId, dest, clock ? `ETA ${clock}` : ''].filter(Boolean).join('  ');

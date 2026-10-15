@@ -978,12 +978,13 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
 // ====================================================================
 
 const OCC_BG = '#060a10';
-const OCC_PANEL = 'rgba(8, 14, 22, 0.88)';
 const OCC_LINE = 'rgba(186, 214, 224, 0.16)';
 const OCC_TEXT = '#e7eef3';
 const OCC_MUTED = '#8ea0b0';
 const OCC_ACCENT = '#2dd4bf';
 const OCC_FONT = "'DM Sans', system-ui, sans-serif";
+const OCC_FIT = { top: 28, left: 64, right: 860, bottom: 48 };
+
 const OCC_CATEGORY = {
   VFR: '#34d399',
   MVFR: '#60a5fa',
@@ -1165,12 +1166,13 @@ function TvFlightBoard({
           <OccFreshness diag={faDiag} />
         </header>
 
-        <div className="flex min-h-0 flex-1 overflow-hidden">
-          <div data-occ-map="" className="relative min-h-0 min-w-0 flex-1 overflow-hidden" style={{ background: '#060c16' }}>
+        <div className="relative min-h-0 flex-1 overflow-hidden">
+          <div data-occ-map="" className="absolute inset-0" style={{ background: '#060c16', zIndex: 0, isolation: 'isolate' }}>
             <TrackingMap
               scene={scene}
               followFleet
               frameAllTails={true}
+              fitPadding={OCC_FIT}
               passive
               compactCallouts={true}
               basemapDefault="dark"
@@ -1183,13 +1185,14 @@ function TvFlightBoard({
           </div>
           <aside
             data-occ-panel=""
-            className="flex shrink-0 flex-col overflow-hidden"
+            className="absolute bottom-0 right-0 top-0 flex flex-col overflow-hidden"
             style={{
               width: TV_PANEL_PX,
-              background: OCC_PANEL,
+              zIndex: 2,
+              background: 'rgba(8, 14, 22, 0.9)',
               borderLeft: `1px solid ${OCC_LINE}`,
-              backdropFilter: 'blur(16px)',
-              boxShadow: '-12px 0 32px rgba(0,0,0,0.25)',
+              backdropFilter: 'blur(18px)',
+              boxShadow: '-20px 0 48px rgba(0,0,0,0.28)',
             }}
           >
             <OccSection label="AIRBORNE" count={airborne.length} />
@@ -1216,6 +1219,7 @@ function TvFlightBoard({
               ))}
             </div>
 
+            <div className="mt-auto">
             <OccSection label="FLEET" count={cards.length} />
             <div
               data-board-fleet=""
@@ -1250,6 +1254,7 @@ function TvFlightBoard({
                   </div>
                 );
               })}
+            </div>
             </div>
           </aside>
         </div>
@@ -1431,6 +1436,20 @@ function OccGantt({ timeline, metrics }) {
           </span>
         ))}
       </div>
+      {timeline.ticks.map((tick) => (
+        <div
+          key={`grid-${tick.label}`}
+          style={{
+            position: 'absolute',
+            top: metrics.axis,
+            bottom: 0,
+            left: `calc(84px + (100% - 100px) * ${tick.ratio})`,
+            width: 1,
+            background: 'rgba(186,214,224,0.1)',
+            pointerEvents: 'none',
+          }}
+        />
+      ))}
       {timeline.rows.map((row) => (
         <div key={row.tail} data-tail={row.tail} className="flex items-center" style={{ height: metrics.row }}>
           <div className="truncate" style={{ width: 84, paddingLeft: 14, fontSize: 11, fontWeight: 600 }}>{row.tail}</div>
@@ -1484,7 +1503,9 @@ function OccGantt({ timeline, metrics }) {
           boxShadow: '0 0 8px rgba(45,212,191,0.85)',
           pointerEvents: 'none',
         }}
-      />
+      >
+        <span style={{ position: 'absolute', top: 1, left: 4, fontSize: 10, fontWeight: 600, letterSpacing: '0.12em', color: OCC_ACCENT }}>NOW</span>
+      </div>
     </div>
   );
 }

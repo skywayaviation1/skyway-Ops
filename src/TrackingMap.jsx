@@ -79,6 +79,7 @@ export default function TrackingMap({
    * and keeps following as those positions move.
    */
   frameAllTails = false,
+  fitPadding = null,
   /**
    * Wall display. No zoom control, layer menu, radar button, or gestures,
    * so followFleet keeps framing the fleet after an accidental touch.
@@ -441,7 +442,12 @@ export default function TrackingMap({
     airports.forEach((a) => {
       if (!Number.isFinite(a?.lat) || !Number.isFinite(a?.lon)) return;
       L.marker([a.lat, a.lon], {
-        icon: airportIcon(L, { code: a.code, tone: a.tone || 'neutral', small: a.small, color: a.color || null }),
+        icon: airportIcon(L, {
+          code: a.hideCode ? null : a.code,
+          tone: a.tone || 'neutral',
+          small: a.small,
+          color: a.color || null,
+        }),
         interactive: false,
         zIndexOffset: 400,
       }).addTo(group);
@@ -600,17 +606,21 @@ export default function TrackingMap({
       if (latLngs.length === 1) {
         mapRef.current.setView(latLngs[0], 8, { animate: true });
       } else {
+        const padRight = frameAllTails ? (fitPadding?.right ?? 220) : 56;
+        const padBottom = frameAllTails ? (fitPadding?.bottom ?? 36) : 160;
+        const padLeft = frameAllTails ? (fitPadding?.left ?? 56) : 48;
+        const padTop = frameAllTails ? (fitPadding?.top ?? 40) : 48;
         mapRef.current.fitBounds(window.L.latLngBounds(latLngs), {
-          paddingTopLeft: [56, 40],
-          paddingBottomRight: frameAllTails ? [220, 36] : [56, 160],
-          maxZoom: frameAllTails ? 7 : 8,
+          paddingTopLeft: [padLeft, padTop],
+          paddingBottomRight: [padRight, padBottom],
+          maxZoom: frameAllTails ? 6.5 : 8,
           animate: true,
           duration: 0.45,
         });
       }
     } catch { /* degenerate bounds */ }
     queueMicrotask(() => { fittingRef.current = false; });
-  }, [aircraft, airports, routes, frameAllTails]);
+  }, [aircraft, airports, routes, frameAllTails, fitPadding]);
 
   const fitAll = useCallback(() => {
     userMovedRef.current = false;
