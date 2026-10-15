@@ -33,17 +33,18 @@ import { lookupCoords } from './airport-coords.js';
 import { appleMapType, loadAppleMapKit } from './apple-mapkit.js';
 import { resolveManagedTails } from './fleet-config.js';
 import {
-  TV_DESIGN_HEIGHT,
-  TV_DESIGN_WIDTH,
   TV_HEADER_PX,
-  TV_PAGE_CHROME_PX,
-  TV_PAGE_MS,
-  TV_ROW_PX,
+  TV_WX_REFRESH_MS,
+  boardWeatherAirports,
+  buildTvAircraftCard,
   buildTvBoardRow,
   buildTvMapScene,
   formatBoardClock,
-  tvPageSize,
-  tvPageSlice,
+  formatBoardWeather,
+  normalizeBoardAirport,
+  tvAircraftStrip,
+  tvLegLayout,
+  tvListHeight,
 } from './flight-board-tv.js';
 import { watchAppleMapKit } from './mapkit-fallback.js';
 import { statusEventAt } from './trip-status.js';
@@ -977,28 +978,81 @@ const TV_PHASE = {
   pending: { box: 'border-slate-600 bg-slate-800/80 text-slate-300', label: 'PENDING' },
   preflight: { box: 'border-amber-400/70 bg-amber-500/20 text-amber-200', label: 'PRE-FLT' },
   airborne: { box: 'border-cyan-300/70 bg-cyan-500/25 text-cyan-100', label: 'AIRBORNE' },
+  landed: { box: 'border-emerald-500/50 bg-emerald-500/15 text-emerald-200', label: 'LANDED' },
+  completed: { box: 'border-slate-600 bg-slate-800/60 text-slate-400', label: 'DONE' },
 };
+
+const TV_CATEGORY = {
+  VFR: 'text-emerald-300',
+  MVFR: 'text-blue-300',
+  IFR: 'text-red-300',
+  LIFR: 'text-fuchsia-300',
+};
+
+const _boardWxCache = new Map();
+
+async function fetchBoardAirportWx(icao) {
+  const key = normalizeBoardAirport(icao);
+  if (!key) return null;
+  const now = Date.now();
+  const cached = _boardWxCache.get(key);
+  if (cached && (now - cached.fetchedAt) < TV_WX_REFRESH_MS) return cached.data;
+  try {
+    const { auth } = await import('./firebase.js');
+    const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : null;
+    if (!idToken) return null;
+    const response = await fetch(`/api/airport-weather?icao=${encodeURIComponent(key)}`, {
+      headers: { Authorization: `Bearer ${idToken}` },
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    _boardWxCache.set(key, { data, fetchedAt: now });
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+function useBoardWeather(codes) {
+  const [weather, setWeather] = useState({});
+  const key = (Array.isArray(codes) ? codes : []).join(',');
+
+  useEffect(() => {
+    if (!key) {
+      setWeather({});
+      return undefined;
+    }
+    let cancelled = false;
+    const load = async () => {
+      const entries = await Promise.all(key.split(',').map(async (code) => {
+        const data = await fetchBoardAirportWx(code);
+        return [code, data];
+      }));
+      if (!cancelled) setWeather(Object.fromEntries(entries));
+    };
+    load();
+    const id = setInterval(load, TV_WX_REFRESH_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [key]);
+
+  return weather;
+}
 
 function TvFlightBoard({
   allTrips,
-  visible,
+  today,
   stateMap,
   faPositions,
   effectivePhase,
-  stats,
   faDiag,
   managedFleetTails,
   aircraftByTail,
   timeZone,
 }) {
-  const originRef = useRef(Date.now());
-  const [pageNow, setPageNow] = useState(originRef.current);
-
-  useEffect(() => {
-    const id = setInterval(() => setPageNow(Date.now()), TV_PAGE_MS);
-    return () => clearInterval(id);
-  }, []);
-
+  const now = Date.now();
   const tails = useMemo(
     () => (Array.isArray(managedFleetTails) ? managedFleetTails : resolveManagedTails(null)),
     [managedFleetTails],
@@ -1010,20 +1064,35 @@ function TvFlightBoard({
     trips: allTrips,
     tripStates: stateMap,
     aircraftByTail: aircraftByTail || {},
-    now: pageNow,
+    now,
     timeZone,
-  }), [tails, faPositions, allTrips, stateMap, aircraftByTail, pageNow, timeZone]);
+  }), [tails, faPositions, allTrips, stateMap, aircraftByTail, now, timeZone]);
 
-  const pageSize = tvPageSize(TV_DESIGN_WIDTH, TV_DESIGN_HEIGHT);
-  const rows = visible.map((trip) => buildTvBoardRow({
+  const rows = (today || []).map((trip) => buildTvBoardRow({
     trip,
     state: stateMap.get(trip.uid),
     phase: effectivePhase(trip, stateMap.get(trip.uid)),
     faPosition: faPositions[(trip.info?.tail || '').toUpperCase()],
-    now: pageNow,
+    now,
     timeZone,
   }));
-  const page = tvPageSlice(rows, pageNow, { originMs: originRef.current, pageSize });
+  const cards = tails.map((tail) => buildTvAircraftCard({
+    tail,
+    telemetry: faPositions[String(tail).toUpperCase()] || null,
+    trips: allTrips,
+    tripStates: stateMap,
+    now,
+    timeZone,
+  }));
+  const weather = useBoardWeather(boardWeatherAirports(rows, cards));
+  const strip = tvAircraftStrip(cards.length);
+  const layout = tvLegLayout(rows.length, tvListHeight(cards.length));
+  const counts = rows.reduce((acc, row) => {
+    if (row.phase === 'airborne') acc.airborne += 1;
+    else if (row.phase === 'preflight') acc.preflight += 1;
+    else if (row.phase === 'pending') acc.pending += 1;
+    return acc;
+  }, { airborne: 0, preflight: 0, pending: 0 });
   const diagColor = faDiag.status === 'ok'
     ? 'text-emerald-400'
     : faDiag.status === 'error'
@@ -1037,64 +1106,74 @@ function TvFlightBoard({
           className="flex items-center justify-between border-b-2 border-cyan-500/30 bg-slate-950 px-8"
           style={{ height: TV_HEADER_PX }}
         >
-          <div className="flex items-center gap-6">
-            <Wordmark className="h-16 w-auto" surface="dark" />
-            <div className="border-l border-cyan-500/30 pl-6">
-              <h1 className="font-mono text-4xl font-bold tracking-widest text-cyan-300">FLIGHT BOARD</h1>
-              <p className="mt-1 font-mono text-xl text-slate-200">{formatBoardClock(pageNow, timeZone)}</p>
-              <p className={`font-mono text-sm tracking-widest ${diagColor}`}>FA · {faDiag.message}</p>
+          <div className="flex items-center gap-5">
+            <Wordmark className="h-12 w-auto" surface="dark" />
+            <div className="border-l border-cyan-500/30 pl-5">
+              <h1 className="font-mono text-3xl font-bold tracking-widest text-cyan-300">FLIGHT BOARD</h1>
+              <p className="font-mono text-lg text-slate-200">{formatBoardClock(now, timeZone)}</p>
             </div>
           </div>
-          <div className="flex items-center gap-10 font-mono">
-            <TvCount value={stats.airborne} label="AIRBORNE" valueClass="text-cyan-300" />
-            <TvCount value={stats.preflight} label="PRE-FLIGHT" valueClass="text-amber-300" />
-            <TvCount value={stats.pending} label="PENDING" valueClass="text-slate-200" />
-            <TvCount value={stats.total} label="TOTAL TODAY" valueClass="text-slate-50" divider />
+          <div className="flex items-center gap-8 font-mono">
+            <p className={`font-mono text-sm tracking-widest ${diagColor}`}>FA · {faDiag.message}</p>
+            <TvCount value={counts.airborne} label="AIRBORNE" valueClass="text-cyan-300" />
+            <TvCount value={counts.preflight} label="PRE-FLIGHT" valueClass="text-amber-300" />
+            <TvCount value={counts.pending} label="PENDING" valueClass="text-slate-200" />
+            <TvCount value={rows.length} label="TODAY" valueClass="text-slate-50" divider />
           </div>
         </header>
 
-        <div className="grid min-h-0 flex-1 grid-cols-2">
-          <div className="flex min-h-0 flex-col overflow-hidden border-r border-slate-800">
-            <div className="min-h-0 flex-1 overflow-hidden">
-              {page.rows.length === 0 ? (
-                <div className="flex h-full items-center justify-center font-mono text-3xl tracking-widest text-slate-500">
-                  NO ACTIVE FLIGHTS
-                </div>
-              ) : (
-                page.rows.map((row) => <TvFlightRow key={row.uid} row={row} />)
-              )}
-            </div>
-            {page.pageCount > 1 && (
-              <div
-                className="flex items-center justify-center gap-3 border-t border-slate-800 font-mono text-lg tracking-widest text-slate-300"
-                style={{ height: TV_PAGE_CHROME_PX }}
-                data-board-page={`${page.index + 1}/${page.pageCount}`}
-                aria-live="polite"
-              >
-                {Array.from({ length: page.pageCount }, (_, i) => (
-                  <span
-                    key={i}
-                    className={i === page.index ? 'bg-cyan-300' : 'bg-slate-600'}
-                    style={{ width: 12, height: 12, borderRadius: 999 }}
-                  />
-                ))}
-                <span>{page.index + 1} / {page.pageCount}</span>
+        <div className="grid min-h-0 flex-1 grid-cols-2 overflow-hidden">
+          <div
+            className="min-h-0 overflow-hidden border-r border-slate-800"
+            data-board-legs=""
+            data-board-columns={layout.columns}
+            style={rows.length === 0 ? undefined : {
+              display: 'grid',
+              gridAutoFlow: 'column',
+              gridTemplateColumns: `repeat(${layout.columns}, minmax(0, 1fr))`,
+              gridTemplateRows: `repeat(${layout.rows}, ${layout.rowHeight}px)`,
+            }}
+          >
+            {rows.length === 0 ? (
+              <div className="flex h-full items-center justify-center font-mono text-3xl tracking-widest text-slate-500">
+                NO FLIGHTS TODAY
               </div>
+            ) : (
+              rows.map((row) => (
+                <TvFlightRow key={row.uid} row={row} density={layout.density} weather={weather} />
+              ))
             )}
           </div>
-          <div className="relative h-full min-h-0 bg-slate-950">
+          <div className="relative h-full min-h-0 overflow-hidden bg-slate-950">
             <TrackingMap
               scene={scene}
               followFleet
+              frameAllTails={true}
               passive
               basemapDefault="dark"
-              radarDefault={false}
+              radarDefault={true}
               showLegend={false}
               showTrailToggle={false}
               className="h-full w-full"
             />
           </div>
         </div>
+
+        {cards.length > 0 && (
+          <div
+            className="grid overflow-hidden border-t border-slate-700"
+            data-board-fleet=""
+            style={{
+              height: strip.height,
+              gridTemplateColumns: `repeat(${strip.perRow}, minmax(0, 1fr))`,
+              gridTemplateRows: `repeat(${strip.rows}, ${strip.rowHeight}px)`,
+            }}
+          >
+            {cards.map((card) => (
+              <TvAircraftCard key={card.tail} card={card} weather={weather} />
+            ))}
+          </div>
+        )}
       </div>
     </TvDesignFrame>
   );
@@ -1102,50 +1181,95 @@ function TvFlightBoard({
 
 function TvCount({ value, label, valueClass, divider = false }) {
   return (
-    <div className={divider ? 'border-l border-slate-700 pl-10 text-center' : 'text-center'}>
-      <div className={`text-6xl font-bold tabular-nums ${valueClass}`}>{value}</div>
-      <div className="text-sm tracking-widest text-slate-400">{label}</div>
+    <div className={divider ? 'border-l border-slate-700 pl-8 text-center' : 'text-center'}>
+      <div className={`text-4xl font-bold tabular-nums leading-none ${valueClass}`}>{value}</div>
+      <div className="text-xs tracking-widest text-slate-400">{label}</div>
     </div>
   );
 }
 
-function TvFlightRow({ row }) {
-  const tone = TV_PHASE[row.phase] || TV_PHASE.pending;
-  const crew = row.crew.length > 0 ? row.crew.join(' / ') : '— no crew —';
+function TvWeatherLine({ code, payload, fontSize }) {
+  const metar = payload?.metar || payload?.parsed || null;
+  const weather = formatBoardWeather(metar);
+  const category = weather?.category;
   return (
-    <div
-      className="grid items-center gap-4 border-b border-slate-800 px-6"
-      style={{ height: TV_ROW_PX, gridTemplateColumns: '168px 250px 280px minmax(0, 1fr)' }}
-    >
-      <div>
-        <div className={`border px-2 py-1 text-center font-mono text-lg font-semibold tracking-widest ${tone.box}`}>
+    <span className="truncate font-mono" style={{ fontSize }} data-board-wx={normalizeBoardAirport(code) || ''}>
+      <span className="text-slate-400">{code || '—'}</span>
+      {weather ? (
+        <>
+          {' '}
+          <span className={TV_CATEGORY[category] || 'text-slate-300'}>{weather.line}</span>
+        </>
+      ) : (
+        <span className="text-slate-600"> · …</span>
+      )}
+    </span>
+  );
+}
+
+function TvFlightRow({ row, density, weather }) {
+  const tone = TV_PHASE[row.phase] || TV_PHASE.pending;
+  const crew = row.crew.length > 0 ? row.crew.join(' / ') : '';
+  const timeNote = row.timeKind === 'eta'
+    ? `ETA${row.remainLabel ? ` ${row.remainLabel}` : ''}`
+    : 'ETD';
+  return (
+    <div className="flex min-w-0 flex-col justify-center overflow-hidden border-b border-slate-800 px-4">
+      <div className="flex min-w-0 items-baseline gap-3">
+        <span
+          className={`shrink-0 border px-1.5 font-mono font-semibold tracking-widest ${tone.box}`}
+          style={{ fontSize: density.status }}
+        >
           {row.statusLabel}
-        </div>
-        {row.stepLabel && (
-          <div className="mt-1 text-center font-mono text-sm tracking-wide text-amber-200">{row.stepLabel}</div>
+        </span>
+        <span className="shrink-0 font-mono tabular-nums text-slate-100" style={{ fontSize: density.time }}>
+          {row.timeLabel || '--:--'}
+        </span>
+        <span className="shrink-0 font-mono tracking-widest text-cyan-300" style={{ fontSize: density.meta }}>
+          {timeNote}
+        </span>
+        <span className="shrink-0 truncate font-mono font-semibold text-slate-50" style={{ fontSize: density.tail }}>
+          {row.tail || '?'}
+        </span>
+        <span className="shrink-0 truncate font-mono text-amber-200" style={{ fontSize: density.meta }} data-trip-id={row.tripId || ''}>
+          {row.tripId || ''}
+        </span>
+        <span className="min-w-0 flex-1 truncate font-mono text-slate-50" style={{ fontSize: density.route }}>
+          {row.from || '—'} <span className="text-cyan-400">→</span> {row.to || '—'}
+        </span>
+        {crew && (
+          <span className="max-w-[34%] shrink truncate text-slate-300" style={{ fontSize: density.meta }}>
+            {crew}
+          </span>
         )}
       </div>
-      <div>
-        <div className="font-mono text-3xl tabular-nums text-slate-100">{row.timeLabel || '--:--'}</div>
-        <div className="font-mono text-sm tracking-widest text-cyan-300">
-          {row.timeKind === 'eta'
-            ? `ETA${row.remainLabel ? ` · ${row.remainLabel}` : ''}`
-            : 'ETD'}
-        </div>
+      <div className="mt-0.5 flex min-w-0 gap-4">
+        <TvWeatherLine code={row.from} payload={weather[normalizeBoardAirport(row.from)]} fontSize={density.wx} />
+        <TvWeatherLine code={row.to} payload={weather[normalizeBoardAirport(row.to)]} fontSize={density.wx} />
       </div>
-      <div className="min-w-0">
-        <div className="truncate font-mono text-3xl font-semibold text-slate-50">{row.tail || '?'}</div>
-        <div className="truncate font-mono text-xl text-amber-200" data-trip-id={row.tripId || ''}>{row.tripId || ''}</div>
+    </div>
+  );
+}
+
+function TvAircraftCard({ card, weather }) {
+  const tone = card.statusLabel === 'AIRBORNE' ? 'text-cyan-200' : 'text-slate-300';
+  const when = card.timeKind === 'eta' ? 'ETA' : 'ETD';
+  return (
+    <div className="flex min-w-0 flex-col justify-center overflow-hidden border-r border-slate-800 px-4" data-tail={card.tail}>
+      <div className="flex min-w-0 items-baseline gap-3">
+        <span className="truncate font-mono text-2xl font-semibold text-slate-50">{card.tail}</span>
+        <span className={`shrink-0 font-mono text-sm tracking-widest ${tone}`}>{card.statusLabel}</span>
       </div>
-      <div className="min-w-0">
-        <div className="truncate font-mono text-4xl text-slate-50">
-          {row.from || '—'} <span className="text-cyan-400">→</span> {row.to || '—'}
-        </div>
-        <div className="mt-1 truncate text-xl text-slate-300">
-          {crew}
-          {row.pax != null && <span className="ml-3 font-mono text-base text-slate-500">{row.pax} PAX</span>}
-        </div>
+      <div className="truncate font-mono text-lg text-slate-200">
+        {card.location || '—'}
+        <span className="text-cyan-300"> · {when} {card.timeLabel || '--:--'}</span>
+        {card.tripId && <span className="text-amber-200" data-trip-id={card.tripId}> · {card.tripId}</span>}
       </div>
+      <TvWeatherLine
+        code={card.location}
+        payload={weather[card.weatherAirport]}
+        fontSize={14}
+      />
     </div>
   );
 }
@@ -1405,11 +1529,10 @@ function FlightBoard({
     return (
       <TvFlightBoard
         allTrips={allTrips}
-        visible={visible}
+        today={active}
         stateMap={stateMap}
         faPositions={faPositions}
         effectivePhase={effectivePhase}
-        stats={stats}
         faDiag={faDiag}
         managedFleetTails={managedFleetTails}
         aircraftByTail={aircraftByTail}

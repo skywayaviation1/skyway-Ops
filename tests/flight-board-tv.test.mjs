@@ -3,14 +3,19 @@ import test from 'node:test';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import {
-  TV_PAGE_MS,
-  TV_PAGE_ROWS,
+  TV_DENSITY,
+  TV_FONT_FLOOR,
+  TV_HEADER_PX,
+  boardWeatherAirports,
+  buildTvAircraftCard,
   buildTvBoardRow,
   buildTvMapScene,
+  formatBoardWeather,
   isTvBoardRequest,
+  tvAircraftStrip,
   tvBoardScale,
-  tvPageSize,
-  tvPageSlice,
+  tvLegLayout,
+  tvListHeight,
 } from '../src/flight-board-tv.js';
 
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
@@ -20,30 +25,31 @@ test('the 1080p frame scales by min(viewport / 1920, viewport / 1080) and 4K is 
   assert.equal(tvBoardScale(1920, 1080), 1);
   assert.equal(tvBoardScale(3840, 2160), 2);
   assert.equal(tvBoardScale(1280, 720), 1280 / 1920);
-  assert.equal(tvPageSize(1920, 1080), TV_PAGE_ROWS);
-  assert.equal(tvPageSize(3840, 2160), 8);
-  assert.equal(TV_PAGE_MS, 12_000);
 });
 
-test('rows page every 12 seconds and wrap, and a short list stays on one page', () => {
-  const rows = Array.from({ length: 10 }, (_, index) => index);
-  const first = tvPageSlice(rows, NOW, { originMs: NOW, pageSize: 8, intervalMs: TV_PAGE_MS });
-  assert.equal(first.index, 0);
-  assert.equal(first.pageCount, 2);
-  assert.deepEqual(first.rows, [0, 1, 2, 3, 4, 5, 6, 7]);
+test('every leg fits one view: a short list stays large, a busy day uses two columns', () => {
+  const strip = tvAircraftStrip(8);
+  const listHeight = tvListHeight(8);
+  assert.equal(TV_HEADER_PX + strip.height + listHeight, 1080);
+  assert.equal(strip.rows, 1);
 
-  const second = tvPageSlice(rows, NOW + 12_000, { originMs: NOW, pageSize: 8, intervalMs: TV_PAGE_MS });
-  assert.equal(second.index, 1);
-  assert.deepEqual(second.rows, [8, 9]);
+  const quiet = tvLegLayout(3, listHeight);
+  assert.equal(quiet.columns, 1);
+  assert.equal(quiet.density, TV_DENSITY.lg);
+  assert.ok(quiet.rowHeight * quiet.rows <= listHeight);
 
-  const wrapped = tvPageSlice(rows, NOW + 24_000, { originMs: NOW, pageSize: 8, intervalMs: TV_PAGE_MS });
-  assert.equal(wrapped.index, 0);
-  assert.deepEqual(wrapped.rows, first.rows);
+  const busy = tvLegLayout(16, listHeight);
+  assert.equal(busy.columns, 2);
+  assert.equal(busy.rows, 8);
+  assert.ok(busy.rowHeight * busy.rows <= listHeight + 0.001);
+  assert.ok(busy.density.time >= TV_FONT_FLOOR);
+  assert.equal(busy.density, TV_DENSITY.lg);
 
-  const single = tvPageSlice([1, 2, 3], NOW + 12_000, { originMs: NOW, pageSize: 8 });
-  assert.equal(single.pageCount, 1);
-  assert.equal(single.index, 0);
-  assert.deepEqual(single.rows, [1, 2, 3]);
+  const packed = tvLegLayout(40, listHeight);
+  assert.equal(packed.columns, 2);
+  assert.ok(packed.rowHeight * packed.rows <= listHeight + 0.001);
+  assert.ok(packed.density.time >= TV_FONT_FLOOR);
+  assert.ok(packed.density.route >= TV_FONT_FLOOR);
 });
 
 test('board rows use the 6–7 character trip id and never a trip number', () => {
@@ -174,6 +180,71 @@ test('the TV map scene keeps airborne ETA bubbles and parked ETD bubbles', () =>
   assert.doesNotMatch(`${air.tripId} ${ground.tripId} ${ground.departureLabel}`, /104281|1005/);
 });
 
+test('aircraft cards and leg weather use the trip id and the METAR fields', () => {
+  const card = buildTvAircraftCard({
+    tail: 'N444AM',
+    telemetry: {
+      airborne: true,
+      destination: 'KHYA',
+      estimatedOn: '2026-08-10T20:12:00Z',
+    },
+    trips: [{
+      uid: 'now',
+      start: new Date(NOW - 30 * 60_000),
+      end: new Date(NOW + 72 * 60_000),
+      info: { tail: 'N444AM', from: 'IAD', to: 'HYA', isFlight: true, tripCode: 'WEQVQD', tripNumber: '104281' },
+    }],
+    now: NOW,
+    timeZone: 'America/New_York',
+  });
+  assert.equal(card.statusLabel, 'AIRBORNE');
+  assert.equal(card.tripId, 'WEQVQD');
+  assert.equal(card.timeKind, 'eta');
+  assert.equal(card.weatherAirport, 'KHYA');
+  assert.doesNotMatch(JSON.stringify(card), /104281/);
+
+  const parked = buildTvAircraftCard({
+    tail: 'N20UF',
+    telemetry: { airborne: false, groundedAt: 'KTEB' },
+    trips: [{
+      uid: 'next',
+      start: new Date(NOW + 90 * 60_000),
+      end: new Date(NOW + 3 * 3600_000),
+      info: { tail: 'N20UF', from: 'TEB', to: 'PBI', isFlight: true, tripCode: 'M8VTQD', tripNumber: '1005' },
+    }],
+    now: NOW,
+    timeZone: 'America/New_York',
+  });
+  assert.equal(parked.statusLabel, 'ON GROUND');
+  assert.equal(parked.tripId, 'M8VTQD');
+  assert.equal(parked.timeKind, 'etd');
+  assert.equal(parked.location, 'KTEB');
+  assert.equal(parked.weatherAirport, 'KTEB');
+  assert.doesNotMatch(JSON.stringify(parked), /1005/);
+
+  const wx = formatBoardWeather({
+    flightCategory: 'IFR',
+    windDir: 180,
+    windKt: 16,
+    windGustKt: 24,
+    visibilitySm: 2,
+    ceilingFt: 700,
+  });
+  assert.equal(wx.category, 'IFR');
+  assert.equal(wx.wind, '180°/16kt G24');
+  assert.equal(wx.visibility, '2 SM');
+  assert.equal(wx.ceiling, '700 ft');
+  assert.match(wx.line, /IFR/);
+  assert.equal(formatBoardWeather(null), null);
+  assert.equal(formatBoardWeather({ flightCategory: 'VFR', windDir: 0, windKt: 0, visibilitySm: 10, ceilingFt: null }).ceiling, 'CLR');
+
+  const codes = boardWeatherAirports(
+    [{ from: 'IAD', to: 'HYA' }, { from: 'TEB', to: 'PBI' }],
+    [card, parked],
+  );
+  assert.deepEqual(codes, ['KHYA', 'KIAD', 'KPBI', 'KTEB']);
+});
+
 test('the full-screen board is the only path that mounts the passive fleet map', async () => {
   const board = await readFile(path.join(root, 'src/FlightBoard.jsx'), 'utf8');
   const gate = board.indexOf('if (!compact)');
@@ -183,7 +254,10 @@ test('the full-screen board is the only path that mounts the passive fleet map',
   const compact = board.slice(legacy);
   assert.match(tv, /<TvFlightBoard/);
   assert.doesNotMatch(tv, /<RouteMap/);
-  assert.match(board, /<TrackingMap[\s\S]*followFleet[\s\S]*passive/);
+  assert.match(board, /<TrackingMap[\s\S]*followFleet[\s\S]*frameAllTails=\{true\}[\s\S]*passive[\s\S]*radarDefault=\{true\}/);
+  assert.doesNotMatch(board, /tvPageSlice|TV_PAGE_MS|data-board-page/);
+  assert.match(board, /\/api\/airport-weather/);
+  assert.match(board, /data-board-fleet/);
   assert.match(compact, /<RouteMap/);
   assert.match(compact, /TAIL · ROUTE/);
   assert.match(compact, /FLIGHT_ROW_GRID/);
@@ -191,6 +265,9 @@ test('the full-screen board is the only path that mounts the passive fleet map',
   assert.doesNotMatch(compact, /<TrackingMap/);
   assert.doesNotMatch(compact, /followFleet/);
   assert.doesNotMatch(compact, /\bpassive\b/);
+  assert.doesNotMatch(compact, /frameAllTails/);
+  assert.doesNotMatch(compact, /radarDefault/);
+  assert.doesNotMatch(compact, /data-board-fleet/);
 
   const map = await readFile(path.join(root, 'src/TrackingMap.jsx'), 'utf8');
   assert.match(map, /passive = false/);

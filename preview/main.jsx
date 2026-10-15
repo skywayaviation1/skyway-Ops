@@ -62,14 +62,19 @@ const FboDesk = lazy(() => import('../src/FboDesk.jsx'));
 const FboLegPanel = lazy(() => import('../src/FboDesk.jsx').then((m) => ({ default: m.FboLegPanel })));
 const FboConfirmPage = lazy(() => import('../src/FboConfirmPage.jsx'));
 
-/** Extra today's legs so the wall board has more than one page. Preview only. */
-function overflowBoardTrips(trips) {
+/** Extra today's legs so a busy wall shows 15+ flights on one screen. Preview only. */
+function busyBoardTrips(trips) {
   const extra = [
     ['N286N', 'BNA', 'CHS', 'K4LMNQ', 'Cade Kaftel', 'Jenelle Szelest', 2],
     ['N551FP', 'OPF', 'FXE', 'Q8WERT', 'Jenelle Szelest', 'Grant Ellis', 1],
     ['N168ZZ', 'MDW', 'TEB', 'H7PLMX', 'Grant Ellis', 'Andre Cole', 3],
     ['N525CR', 'CHS', 'PBI', 'T2NVQA', 'Andre Cole', 'Maxwell Hagberg', 4],
     ['N9021Q', 'IAD', 'BNA', 'C5DKJR', 'Melissa Rippy', 'Dana Whitfield', 2],
+    ['N444AM', 'TEB', 'PBI', 'L9QWRT', 'Maxwell Hagberg', 'Timothy Woods', 4],
+    ['N651TW', 'DFW', 'APF', 'P2MXKA', 'Melissa Rippy', 'Andre Cole', 3],
+    ['N20UF', 'PBI', 'TEB', 'V6HNQD', 'Dana Whitfield', 'Grant Ellis', 6],
+    ['N551FP', 'FXE', 'CHS', 'R3TYPL', 'Jenelle Szelest', 'Cade Kaftel', 2],
+    ['N168ZZ', 'TEB', 'BNA', 'M4CKWQ', 'Grant Ellis', 'Maxwell Hagberg', 5],
   ];
   return [
     ...trips,
@@ -168,7 +173,7 @@ const SURFACES = {
     label: 'Flight board display',
     render: () => (
       <FlightBoard
-        allTrips={params.get('boardCase') === 'overflow' ? overflowBoardTrips(TRIPS) : TRIPS}
+        allTrips={params.get('boardCase') === 'busy' ? busyBoardTrips(TRIPS) : TRIPS}
         fleetTails={CONFIG.fleetTails}
         aircraftByTail={CONFIG.aircraftByTail}
         timeZone="America/New_York"

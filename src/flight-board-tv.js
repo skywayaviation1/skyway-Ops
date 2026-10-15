@@ -1,15 +1,22 @@
 // Pure helpers for the full-screen TV flight board (?board=1).
 // The compact schedule card does not use this module.
 
-import { buildFleetMapScene, formatMarkerTime, readTripId } from './fleet-tracking.js';
+import { buildFleetMapScene, fleetMarkerCallout, formatMarkerTime, readTripId } from './fleet-tracking.js';
 
 export const TV_DESIGN_WIDTH = 1920;
 export const TV_DESIGN_HEIGHT = 1080;
-export const TV_HEADER_PX = 132;
-export const TV_PAGE_CHROME_PX = 36;
-export const TV_ROW_PX = 114;
-export const TV_PAGE_ROWS = 8;
-export const TV_PAGE_MS = 12_000;
+export const TV_HEADER_PX = 80;
+export const TV_STRIP_ROW_PX = 96;
+export const TV_STRIP_MIN_CARD = 220;
+/** Primary type never drops below this, so a packed day is still readable across the room. */
+export const TV_FONT_FLOOR = 16;
+export const TV_WX_REFRESH_MS = 5 * 60 * 1000;
+
+export const TV_DENSITY = {
+  lg: { time: 30, route: 26, tail: 26, meta: 16, wx: 15, status: 15, minRow: 100 },
+  md: { time: 22, route: 20, tail: 20, meta: 14, wx: 13, status: 13, minRow: 72 },
+  sm: { time: TV_FONT_FLOOR, route: TV_FONT_FLOOR, tail: TV_FONT_FLOOR, meta: 12, wx: 12, status: 12, minRow: 56 },
+};
 
 const CREW_STEPS = [
   { id: 'crew_onsite', label: 'CREW ONSITE' },
@@ -24,6 +31,8 @@ const PHASE_LABEL = {
   pending: 'PENDING',
   preflight: 'PRE-FLT',
   airborne: 'AIRBORNE',
+  landed: 'LANDED',
+  completed: 'DONE',
 };
 
 /** CSS scale for the 1920×1080 frame: min(100vw/1920, 100vh/1080). */
@@ -34,47 +43,48 @@ export function tvBoardScale(viewportWidth, viewportHeight) {
   return Math.min(width / TV_DESIGN_WIDTH, height / TV_DESIGN_HEIGHT);
 }
 
+/** One row of aircraft cards across the 1920 frame, wrapping only when the fleet exceeds it. */
+export function tvAircraftStrip(tailCount, frameWidth = TV_DESIGN_WIDTH) {
+  const count = Math.max(0, Number(tailCount) || 0);
+  if (count === 0) return { perRow: 1, rows: 0, rowHeight: 0, height: 0 };
+  const perRow = Math.max(1, Math.min(count, Math.floor(frameWidth / TV_STRIP_MIN_CARD)));
+  const rows = Math.ceil(count / perRow);
+  return { perRow, rows, rowHeight: TV_STRIP_ROW_PX, height: rows * TV_STRIP_ROW_PX };
+}
+
+/** Pixels left for the leg list after the header and the aircraft strip. */
+export function tvListHeight(tailCount, frameHeight = TV_DESIGN_HEIGHT) {
+  return frameHeight - TV_HEADER_PX - tvAircraftStrip(tailCount).height;
+}
+
 /**
- * Rows that fit the 1080p frame. A 4K viewport scales that frame by 2, so
- * the count stays the same and the type gets larger.
+ * Fit every leg on one screen. A short list stays one column with large type.
+ * A long list becomes two columns and the row height shrinks to the count.
+ * There is no leftover page and no scroll.
  */
-export function tvPageSize(viewportWidth = TV_DESIGN_WIDTH, viewportHeight = TV_DESIGN_HEIGHT) {
-  const scale = tvBoardScale(viewportWidth, viewportHeight);
-  const frameHeight = Number(viewportHeight) / scale;
-  const usedHeight = Math.min(frameHeight, TV_DESIGN_HEIGHT);
-  const listHeight = usedHeight - TV_HEADER_PX - TV_PAGE_CHROME_PX;
-  const fit = Math.floor(listHeight / TV_ROW_PX);
-  return Math.max(1, fit || TV_PAGE_ROWS);
-}
-
-export function tvPageCount(rowCount, pageSize = TV_PAGE_ROWS) {
-  const size = Math.max(1, Number(pageSize) || TV_PAGE_ROWS);
-  const count = Math.max(0, Number(rowCount) || 0);
-  return Math.max(1, Math.ceil(count / size));
-}
-
-export function tvPageIndex(nowMs, rowCount, {
-  pageSize = TV_PAGE_ROWS,
-  intervalMs = TV_PAGE_MS,
-  originMs = 0,
-} = {}) {
-  const pages = tvPageCount(rowCount, pageSize);
-  if (pages <= 1) return 0;
-  const elapsed = Math.max(0, Number(nowMs) - Number(originMs));
-  const interval = Math.max(1, Number(intervalMs) || TV_PAGE_MS);
-  return Math.floor(elapsed / interval) % pages;
-}
-
-export function tvPageSlice(rows, nowMs, options = {}) {
-  const list = Array.isArray(rows) ? rows : [];
-  const pageSize = options.pageSize ?? TV_PAGE_ROWS;
-  const index = tvPageIndex(nowMs, list.length, { ...options, pageSize });
-  const start = index * pageSize;
-  return {
-    index,
-    pageCount: tvPageCount(list.length, pageSize),
-    rows: list.slice(start, start + pageSize),
-  };
+export function tvLegLayout(legCount, listHeight) {
+  const count = Math.max(0, Number(legCount) || 0);
+  const height = Math.max(1, Number(listHeight) || 1);
+  if (count === 0) {
+    return { columns: 1, rows: 1, rowHeight: height, density: TV_DENSITY.lg };
+  }
+  const singleHeight = height / count;
+  if (singleHeight >= TV_DENSITY.lg.minRow) {
+    return {
+      columns: 1,
+      rows: count,
+      rowHeight: Math.min(singleHeight, 148),
+      density: TV_DENSITY.lg,
+    };
+  }
+  const rows = Math.ceil(count / 2);
+  const rowHeight = height / rows;
+  const density = rowHeight >= TV_DENSITY.lg.minRow
+    ? TV_DENSITY.lg
+    : rowHeight >= TV_DENSITY.md.minRow
+      ? TV_DENSITY.md
+      : TV_DENSITY.sm;
+  return { columns: 2, rows, rowHeight, density };
 }
 
 export function isTvBoardRequest(search = '') {
@@ -166,5 +176,105 @@ export function buildTvMapScene(args) {
   return {
     ...scene,
     aircraft: (scene.aircraft || []).map((item) => ({ ...item, showLabel: true })),
+  };
+}
+
+/** US 3-letter identifiers become the K-prefixed ICAO the weather API stores. */
+export function normalizeBoardAirport(code) {
+  const value = String(code || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (!value) return null;
+  if (value.length === 3 && /^[A-Z]{3}$/.test(value)) return `K${value}`;
+  return value;
+}
+
+function formatBoardWind(dir, kt, gustKt) {
+  if (kt == null || kt === '') return null;
+  const speed = Number(kt);
+  if (!Number.isFinite(speed)) return null;
+  if (speed === 0) return 'CALM';
+  const direction = dir != null && dir !== '' && Number.isFinite(Number(dir))
+    ? `${String(dir).padStart(3, '0')}°`
+    : 'VRB';
+  const gust = Number(gustKt);
+  const gustText = Number.isFinite(gust) && gust > speed ? ` G${gust}` : '';
+  return `${direction}/${speed}kt${gustText}`;
+}
+
+/**
+ * METAR line for the wall: flight category, wind, visibility, ceiling.
+ * A missing ceiling is clear. Returns null when there is no observation.
+ */
+export function formatBoardWeather(metar) {
+  if (!metar || typeof metar !== 'object') return null;
+  const category = metar.flightCategory ? String(metar.flightCategory).toUpperCase() : null;
+  const wind = formatBoardWind(metar.windDir, metar.windKt, metar.windGustKt);
+  const visibility = metar.visibilitySm != null && metar.visibilitySm !== '' && Number.isFinite(Number(metar.visibilitySm))
+    ? `${metar.visibilitySm} SM`
+    : null;
+  const hasCeiling = metar.ceilingFt != null && metar.ceilingFt !== '' && Number.isFinite(Number(metar.ceilingFt));
+  const ceiling = hasCeiling ? `${metar.ceilingFt} ft` : (category || wind || visibility ? 'CLR' : null);
+  if (!category && !wind && !visibility && !ceiling) return null;
+  return {
+    category,
+    wind,
+    visibility,
+    ceiling,
+    line: [category, wind, visibility, ceiling].filter(Boolean).join(' · '),
+  };
+}
+
+/** Departure and arrival of every listed leg, plus each aircraft's weather airport. */
+export function boardWeatherAirports(rows, cards) {
+  const codes = new Set();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const from = normalizeBoardAirport(row?.from);
+    const to = normalizeBoardAirport(row?.to);
+    if (from) codes.add(from);
+    if (to) codes.add(to);
+  }
+  for (const card of Array.isArray(cards) ? cards : []) {
+    const airport = normalizeBoardAirport(card?.weatherAirport);
+    if (airport) codes.add(airport);
+  }
+  return [...codes].sort();
+}
+
+/**
+ * One managed tail for the aircraft strip. Trip identity is the same
+ * readTripId path the map bubbles use. Weather is the airport the aircraft
+ * is at, or the next airport when it is airborne or its position is unknown.
+ */
+export function buildTvAircraftCard({
+  tail,
+  telemetry = null,
+  trips = [],
+  tripStates = null,
+  now = Date.now(),
+  timeZone,
+} = {}) {
+  const callout = fleetMarkerCallout({
+    tail, telemetry, trips, tripStates, now, timeZone,
+  });
+  const airborne = telemetry?.airborne === true;
+  const upcoming = (Array.isArray(trips) ? trips : [])
+    .filter((trip) => String(trip?.info?.tail || '').toUpperCase() === String(tail || '').toUpperCase())
+    .filter((trip) => {
+      const start = new Date(trip.start).getTime();
+      return Number.isFinite(start) && start > now;
+    })
+    .sort((a, b) => new Date(a.start) - new Date(b.start))[0] || null;
+  const nextAirport = upcoming?.info?.from || null;
+  const currentAirport = telemetry?.groundedAt || telemetry?.lastKnownAirport || null;
+  const location = airborne
+    ? (callout.destination || telemetry?.destination || null)
+    : (currentAirport || nextAirport);
+  return {
+    tail: tail || '',
+    statusLabel: airborne ? 'AIRBORNE' : 'ON GROUND',
+    location: location ? String(location).trim().toUpperCase() : '',
+    timeKind: airborne ? 'eta' : 'etd',
+    timeLabel: airborne ? callout.etaLabel : callout.departureLabel,
+    tripId: callout.tripId,
+    weatherAirport: normalizeBoardAirport(location),
   };
 }

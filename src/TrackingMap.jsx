@@ -75,8 +75,13 @@ export default function TrackingMap({
    */
   followFleet = false,
   /**
+   * Wall display frames every managed tail, not only the airborne ones,
+   * and keeps following as those positions move.
+   */
+  frameAllTails = false,
+  /**
    * Wall display. No zoom control, layer menu, radar button, or gestures,
-   * so followFleet keeps framing airborne tails after an accidental touch.
+   * so followFleet keeps framing the fleet after an accidental touch.
    */
   passive = false,
 }) {
@@ -543,7 +548,8 @@ export default function TrackingMap({
   const fittingRef = useRef(false);
   const fitFleetBounds = useCallback(() => {
     if (!mapRef.current || !window.L) return;
-    const targets = fleetFitPositions(aircraft);
+    const located = aircraft.filter((item) => Number.isFinite(item?.lat) && Number.isFinite(item?.lon));
+    const targets = frameAllTails ? located : fleetFitPositions(aircraft);
     if (targets.length === 0) return;
     fittingRef.current = true;
     try {
@@ -552,22 +558,28 @@ export default function TrackingMap({
       } else {
         mapRef.current.fitBounds(window.L.latLngBounds(targets.map((item) => [item.lat, item.lon])), {
           paddingTopLeft: [48, 48],
-          paddingBottomRight: [56, 160],
-          maxZoom: 8,
+          paddingBottomRight: frameAllTails ? [72, 200] : [56, 160],
+          maxZoom: frameAllTails ? 7 : 8,
           animate: true,
           duration: 0.45,
         });
       }
     } catch { /* degenerate bounds */ }
     queueMicrotask(() => { fittingRef.current = false; });
-  }, [aircraft]);
+  }, [aircraft, frameAllTails]);
 
   const fitAll = useCallback(() => {
     userMovedRef.current = false;
     fitFleetBounds();
   }, [fitFleetBounds]);
 
-  const fleetSignature = fleetFitSignature(aircraft);
+  const fleetSignature = frameAllTails
+    ? aircraft
+      .filter((item) => Number.isFinite(item?.lat) && Number.isFinite(item?.lon))
+      .map((item) => `${item.id}:${Number(item.lat).toFixed(3)},${Number(item.lon).toFixed(3)}`)
+      .sort()
+      .join('|')
+    : fleetFitSignature(aircraft);
   useEffect(() => {
     if (!ready || !followFleet || userMovedRef.current || !fleetSignature) return;
     fitFleetBounds();
@@ -719,6 +731,15 @@ export default function TrackingMap({
           />
         </div>
       </div>}
+
+      {passive && radarOn && (
+        <div
+          className="pointer-events-none absolute bottom-3 right-3 z-[500] rounded border border-cyan-400/40 bg-slate-950/80 px-2 py-1 font-mono text-sm tracking-widest text-cyan-200"
+          data-board-radar={radarLabel || 'live'}
+        >
+          RADAR {radarLabel || 'LIVE'}
+        </div>
+      )}
 
       {showLegend && trailOn && scene.trail && (
         <div className="sw-map-legend absolute z-[500] rounded-lg border border-edge bg-surface/90 px-2.5 py-2 shadow-card backdrop-blur">
