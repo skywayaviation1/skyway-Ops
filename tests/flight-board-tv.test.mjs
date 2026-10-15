@@ -2,14 +2,18 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { declutterCallouts } from '../src/tracking-map.js';
 import {
-  TV_DENSITY,
+  TV_COLUMN_HEAD_PX,
   TV_FONT_FLOOR,
   TV_HEADER_PX,
+  TV_ROW_PX,
+  TV_TYPE,
   boardWeatherAirports,
   buildTvAircraftCard,
   buildTvBoardRow,
   buildTvMapScene,
+  formatBoardClocks,
   formatBoardWeather,
   isTvBoardRequest,
   tvAircraftStrip,
@@ -27,29 +31,28 @@ test('the 1080p frame scales by min(viewport / 1920, viewport / 1080) and 4K is 
   assert.equal(tvBoardScale(1280, 720), 1280 / 1920);
 });
 
-test('every leg fits one view: a short list stays large, a busy day uses two columns', () => {
+test('every leg fits one view at a uniform row height, splitting only when it must', () => {
   const strip = tvAircraftStrip(8);
   const listHeight = tvListHeight(8);
-  assert.equal(TV_HEADER_PX + strip.height + listHeight, 1080);
-  assert.equal(strip.rows, 1);
+  assert.equal(TV_HEADER_PX + TV_COLUMN_HEAD_PX + strip.height + listHeight, 1080);
+  assert.ok(strip.perRow * strip.rows >= 8);
+  assert.equal(TV_TYPE.body, TV_FONT_FLOOR);
+  assert.deepEqual(Object.keys(TV_TYPE).sort(), ['body', 'display', 'meta']);
 
   const quiet = tvLegLayout(3, listHeight);
   assert.equal(quiet.columns, 1);
-  assert.equal(quiet.density, TV_DENSITY.lg);
+  assert.equal(quiet.rowHeight, TV_ROW_PX);
   assert.ok(quiet.rowHeight * quiet.rows <= listHeight);
 
   const busy = tvLegLayout(16, listHeight);
-  assert.equal(busy.columns, 2);
-  assert.equal(busy.rows, 8);
-  assert.ok(busy.rowHeight * busy.rows <= listHeight + 0.001);
-  assert.ok(busy.density.time >= TV_FONT_FLOOR);
-  assert.equal(busy.density, TV_DENSITY.lg);
+  assert.equal(busy.columns, 1);
+  assert.equal(busy.rowHeight, TV_ROW_PX);
+  assert.ok(busy.rowHeight * busy.rows <= listHeight);
 
   const packed = tvLegLayout(40, listHeight);
   assert.equal(packed.columns, 2);
   assert.ok(packed.rowHeight * packed.rows <= listHeight + 0.001);
-  assert.ok(packed.density.time >= TV_FONT_FLOOR);
-  assert.ok(packed.density.route >= TV_FONT_FLOOR);
+  assert.ok(packed.rowHeight <= TV_ROW_PX);
 });
 
 test('board rows use the 6–7 character trip id and never a trip number', () => {
@@ -78,6 +81,8 @@ test('board rows use the 6–7 character trip id and never a trip number', () =>
   assert.equal(pending.stepLabel, 'PAX BOARDED');
   assert.equal(pending.timeKind, 'etd');
   assert.match(pending.timeLabel, /EDT/);
+  assert.match(pending.etdLabel, /^\d{2}:\d{2}$/);
+  assert.equal(pending.etaLabel, null);
   assert.deepEqual(pending.crew, ['Ada Lovelace', 'Grace Hopper']);
   assert.equal(pending.from, 'IAD');
   assert.equal(pending.to, 'HYA');
@@ -126,6 +131,7 @@ test('board rows use the 6–7 character trip id and never a trip number', () =>
   assert.equal(airborne.timeKind, 'eta');
   assert.equal(airborne.remainLabel, '1h 12m');
   assert.match(airborne.timeLabel, /4:12 PM EDT/);
+  assert.equal(airborne.etaLabel, '16:12');
   assert.equal(airborne.stepLabel, null);
 });
 
@@ -243,6 +249,23 @@ test('aircraft cards and leg weather use the trip id and the METAR fields', () =
     [card, parked],
   );
   assert.deepEqual(codes, ['KHYA', 'KIAD', 'KPBI', 'KTEB']);
+
+  const clocks = formatBoardClocks(NOW, 'America/New_York');
+  assert.match(clocks.local, /PM|AM/);
+  assert.match(clocks.utc, /^\d{2}:\d{2}$/);
+  assert.equal(clocks.zone, 'EDT');
+});
+
+test('map callouts that share a pixel neighborhood are shifted apart', () => {
+  const shifts = declutterCallouts([
+    { id: 'a', x: 100, y: 100 },
+    { id: 'b', x: 110, y: 104 },
+    { id: 'c', x: 400, y: 400 },
+  ]);
+  const byId = Object.fromEntries(shifts.map((item) => [item.id, item.dy]));
+  assert.equal(byId.a, 0);
+  assert.notEqual(byId.b, 0);
+  assert.equal(byId.c, 0);
 });
 
 test('the full-screen board is the only path that mounts the passive fleet map', async () => {
@@ -254,7 +277,11 @@ test('the full-screen board is the only path that mounts the passive fleet map',
   const compact = board.slice(legacy);
   assert.match(tv, /<TvFlightBoard/);
   assert.doesNotMatch(tv, /<RouteMap/);
-  assert.match(board, /<TrackingMap[\s\S]*followFleet[\s\S]*frameAllTails=\{true\}[\s\S]*passive[\s\S]*radarDefault=\{true\}/);
+  assert.match(board, /<TrackingMap[\s\S]*followFleet[\s\S]*frameAllTails=\{true\}[\s\S]*passive[\s\S]*compactCallouts=\{true\}[\s\S]*radarDefault=\{true\}[\s\S]*radarOpacity=\{0\.5\}/);
+  assert.match(board, /FLIGHT OPERATIONS/);
+  assert.match(board, /DM Sans/);
+  const tvUi = board.slice(board.indexOf('function TvFlightBoard'), board.indexOf('function FlightBoard'));
+  assert.doesNotMatch(tvUi, /font-mono|text-cyan/);
   assert.doesNotMatch(board, /tvPageSlice|TV_PAGE_MS|data-board-page/);
   assert.match(board, /\/api\/airport-weather/);
   assert.match(board, /data-board-fleet/);
@@ -268,6 +295,7 @@ test('the full-screen board is the only path that mounts the passive fleet map',
   assert.doesNotMatch(compact, /frameAllTails/);
   assert.doesNotMatch(compact, /radarDefault/);
   assert.doesNotMatch(compact, /data-board-fleet/);
+  assert.doesNotMatch(compact, /FLIGHT OPERATIONS/);
 
   const map = await readFile(path.join(root, 'src/TrackingMap.jsx'), 'utf8');
   assert.match(map, /passive = false/);

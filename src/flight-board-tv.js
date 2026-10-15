@@ -5,18 +5,15 @@ import { buildFleetMapScene, fleetMarkerCallout, formatMarkerTime, readTripId } 
 
 export const TV_DESIGN_WIDTH = 1920;
 export const TV_DESIGN_HEIGHT = 1080;
-export const TV_HEADER_PX = 80;
-export const TV_STRIP_ROW_PX = 96;
-export const TV_STRIP_MIN_CARD = 220;
-/** Primary type never drops below this, so a packed day is still readable across the room. */
+export const TV_HEADER_PX = 72;
+export const TV_COLUMN_HEAD_PX = 32;
+export const TV_ROW_PX = 48;
+export const TV_STRIP_ROW_PX = 48;
+export const TV_STRIP_MIN_CARD = 460;
+/** Body type. The board uses only this, 12px meta, and 32px display. */
 export const TV_FONT_FLOOR = 16;
+export const TV_TYPE = { display: 32, body: TV_FONT_FLOOR, meta: 12 };
 export const TV_WX_REFRESH_MS = 5 * 60 * 1000;
-
-export const TV_DENSITY = {
-  lg: { time: 30, route: 26, tail: 26, meta: 16, wx: 15, status: 15, minRow: 100 },
-  md: { time: 22, route: 20, tail: 20, meta: 14, wx: 13, status: 13, minRow: 72 },
-  sm: { time: TV_FONT_FLOOR, route: TV_FONT_FLOOR, tail: TV_FONT_FLOOR, meta: 12, wx: 12, status: 12, minRow: 56 },
-};
 
 const CREW_STEPS = [
   { id: 'crew_onsite', label: 'CREW ONSITE' },
@@ -52,39 +49,70 @@ export function tvAircraftStrip(tailCount, frameWidth = TV_DESIGN_WIDTH) {
   return { perRow, rows, rowHeight: TV_STRIP_ROW_PX, height: rows * TV_STRIP_ROW_PX };
 }
 
-/** Pixels left for the leg list after the header and the aircraft strip. */
+/** Pixels left for the leg rows after the header, column titles, and aircraft strip. */
 export function tvListHeight(tailCount, frameHeight = TV_DESIGN_HEIGHT) {
-  return frameHeight - TV_HEADER_PX - tvAircraftStrip(tailCount).height;
+  return frameHeight - TV_HEADER_PX - TV_COLUMN_HEAD_PX - tvAircraftStrip(tailCount).height;
 }
 
 /**
- * Fit every leg on one screen. A short list stays one column with large type.
- * A long list becomes two columns and the row height shrinks to the count.
- * There is no leftover page and no scroll.
+ * Uniform FIDS rows. They stay one column at the standard height until that
+ * would overflow, then split into two columns and shrink only as far as the
+ * count requires. Rows are never stretched to fill leftover space.
  */
 export function tvLegLayout(legCount, listHeight) {
   const count = Math.max(0, Number(legCount) || 0);
   const height = Math.max(1, Number(listHeight) || 1);
-  if (count === 0) {
-    return { columns: 1, rows: 1, rowHeight: height, density: TV_DENSITY.lg };
-  }
-  const singleHeight = height / count;
-  if (singleHeight >= TV_DENSITY.lg.minRow) {
-    return {
-      columns: 1,
-      rows: count,
-      rowHeight: Math.min(singleHeight, 148),
-      density: TV_DENSITY.lg,
-    };
+  if (count === 0) return { columns: 1, rows: 1, rowHeight: TV_ROW_PX };
+  if (count * TV_ROW_PX <= height) {
+    return { columns: 1, rows: count, rowHeight: TV_ROW_PX };
   }
   const rows = Math.ceil(count / 2);
-  const rowHeight = height / rows;
-  const density = rowHeight >= TV_DENSITY.lg.minRow
-    ? TV_DENSITY.lg
-    : rowHeight >= TV_DENSITY.md.minRow
-      ? TV_DENSITY.md
-      : TV_DENSITY.sm;
-  return { columns: 2, rows, rowHeight, density };
+  return { columns: 2, rows, rowHeight: Math.min(TV_ROW_PX, height / rows) };
+}
+
+/** Local wall clock plus UTC. The zone name sits with the local clock. */
+export function formatBoardClocks(now, timeZone) {
+  const date = new Date(now);
+  if (Number.isNaN(date.getTime())) return { local: '', utc: '', zone: '', day: '' };
+  const localOptions = { hour: 'numeric', minute: '2-digit', hour12: true };
+  const utcOptions = { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: 'UTC' };
+  const dayOptions = { weekday: 'short', month: 'short', day: 'numeric' };
+  if (timeZone) {
+    localOptions.timeZone = timeZone;
+    dayOptions.timeZone = timeZone;
+  }
+  let local = '';
+  let utc = '';
+  let day = '';
+  let zone = 'LOCAL';
+  try {
+    local = date.toLocaleTimeString('en-US', localOptions);
+    utc = date.toLocaleTimeString('en-US', utcOptions);
+    day = date.toLocaleDateString('en-US', dayOptions);
+    const named = date.toLocaleTimeString('en-US', {
+      hour: 'numeric', minute: '2-digit', timeZoneName: 'short', ...(timeZone ? { timeZone } : {}),
+    });
+    zone = named.split(' ').pop() || zone;
+  } catch {
+    local = date.toLocaleTimeString('en-US', { ...localOptions, timeZone: 'UTC' });
+    utc = date.toLocaleTimeString('en-US', utcOptions);
+    day = date.toLocaleDateString('en-US', { ...dayOptions, timeZone: 'UTC' });
+    zone = 'UTC';
+  }
+  return { local, utc, zone, day };
+}
+
+/** 24-hour table time so ETD and ETA columns align. */
+export function formatBoardTableTime(value, timeZone) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const options = { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' };
+  if (timeZone) options.timeZone = timeZone;
+  try {
+    return date.toLocaleTimeString('en-US', options);
+  } catch {
+    return date.toLocaleTimeString('en-US', { ...options, timeZone: 'UTC' });
+  }
 }
 
 export function isTvBoardRequest(search = '') {
@@ -160,6 +188,8 @@ export function buildTvBoardRow({
     stepLabel: phase === 'preflight' ? currentCrewStep(state) : null,
     timeLabel: formatMarkerTime(timeSource, timeZone),
     timeKind: airborne ? 'eta' : 'etd',
+    etdLabel: formatBoardTableTime(airborne ? (faPosition?.actualOff || trip?.start) : trip?.start, timeZone),
+    etaLabel: formatBoardTableTime(airborne ? (faPosition?.estimatedOn || trip?.end) : trip?.end, timeZone),
     remainLabel: airborne ? remainLabel(etaMs, now) : null,
     tail: info.tail || '',
     tripId,

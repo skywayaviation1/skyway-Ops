@@ -33,13 +33,15 @@ import { lookupCoords } from './airport-coords.js';
 import { appleMapType, loadAppleMapKit } from './apple-mapkit.js';
 import { resolveManagedTails } from './fleet-config.js';
 import {
+  TV_COLUMN_HEAD_PX,
   TV_HEADER_PX,
+  TV_TYPE,
   TV_WX_REFRESH_MS,
   boardWeatherAirports,
   buildTvAircraftCard,
   buildTvBoardRow,
   buildTvMapScene,
-  formatBoardClock,
+  formatBoardClocks,
   formatBoardWeather,
   normalizeBoardAirport,
   tvAircraftStrip,
@@ -974,19 +976,27 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
 // FULL-SCREEN TV (?board=1)
 // ====================================================================
 
-const TV_PHASE = {
-  pending: { box: 'border-slate-600 bg-slate-800/80 text-slate-300', label: 'PENDING' },
-  preflight: { box: 'border-amber-400/70 bg-amber-500/20 text-amber-200', label: 'PRE-FLT' },
-  airborne: { box: 'border-cyan-300/70 bg-cyan-500/25 text-cyan-100', label: 'AIRBORNE' },
-  landed: { box: 'border-emerald-500/50 bg-emerald-500/15 text-emerald-200', label: 'LANDED' },
-  completed: { box: 'border-slate-600 bg-slate-800/60 text-slate-400', label: 'DONE' },
+const BOARD_BG = '#070d18';
+const BOARD_LINE = 'rgba(255,255,255,0.08)';
+const BOARD_TEXT = '#f4f7fb';
+const BOARD_MUTED = '#8b95a8';
+const BOARD_FONT = "'DM Sans', system-ui, sans-serif";
+const BOARD_COLS = '88px 96px 104px minmax(96px, 1fr) 64px 64px 268px';
+const BOARD_COLS_NARROW = '72px 80px 88px minmax(0, 1fr) 56px 56px 52px';
+
+const TV_PILL = {
+  airborne: { color: '#34d399', background: 'rgba(52,211,153,0.14)' },
+  preflight: { color: '#fbbf24', background: 'rgba(251,191,36,0.14)' },
+  pending: { color: '#94a3b8', background: 'rgba(148,163,184,0.12)' },
+  landed: { color: '#94a3b8', background: 'transparent' },
+  completed: { color: '#94a3b8', background: 'transparent' },
 };
 
 const TV_CATEGORY = {
-  VFR: 'text-emerald-300',
-  MVFR: 'text-blue-300',
-  IFR: 'text-red-300',
-  LIFR: 'text-fuchsia-300',
+  VFR: '#34d399',
+  MVFR: '#60a5fa',
+  IFR: '#f87171',
+  LIFR: '#e879f9',
 };
 
 const _boardWxCache = new Map();
@@ -1093,65 +1103,87 @@ function TvFlightBoard({
     else if (row.phase === 'pending') acc.pending += 1;
     return acc;
   }, { airborne: 0, preflight: 0, pending: 0 });
-  const diagColor = faDiag.status === 'ok'
-    ? 'text-emerald-400'
-    : faDiag.status === 'error'
-      ? 'text-red-400'
-      : 'text-slate-500';
+  const clocks = formatBoardClocks(now, timeZone);
+  const columns = layout.columns === 2 ? BOARD_COLS_NARROW : BOARD_COLS;
+  const showWxDetail = layout.columns === 1;
 
   return (
     <TvDesignFrame>
-      <div className="flex h-full w-full flex-col overflow-hidden bg-slate-950 text-slate-100">
+      <div
+        className="flex h-full w-full flex-col overflow-hidden"
+        style={{ background: BOARD_BG, color: BOARD_TEXT, fontFamily: BOARD_FONT, fontVariantNumeric: 'tabular-nums' }}
+      >
         <header
-          className="flex items-center justify-between border-b-2 border-cyan-500/30 bg-slate-950 px-8"
-          style={{ height: TV_HEADER_PX }}
+          className="flex items-center justify-between"
+          style={{ height: TV_HEADER_PX, padding: '0 16px', borderBottom: `1px solid ${BOARD_LINE}` }}
         >
-          <div className="flex items-center gap-5">
-            <Wordmark className="h-12 w-auto" surface="dark" />
-            <div className="border-l border-cyan-500/30 pl-5">
-              <h1 className="font-mono text-3xl font-bold tracking-widest text-cyan-300">FLIGHT BOARD</h1>
-              <p className="font-mono text-lg text-slate-200">{formatBoardClock(now, timeZone)}</p>
+          <div className="flex min-w-0 items-center" style={{ gap: 16 }}>
+            <Wordmark className="h-8 w-auto" surface="dark" />
+            <div className="min-w-0" style={{ borderLeft: `1px solid ${BOARD_LINE}`, paddingLeft: 16 }}>
+              <h1 style={{ fontSize: TV_TYPE.body, fontWeight: 600, letterSpacing: '0.14em', lineHeight: '20px' }}>FLIGHT OPERATIONS</h1>
+              <p className="truncate" style={{ fontSize: TV_TYPE.meta, color: BOARD_MUTED, lineHeight: '16px' }}>
+                {clocks.day} · {faDiag.message}
+              </p>
             </div>
           </div>
-          <div className="flex items-center gap-8 font-mono">
-            <p className={`font-mono text-sm tracking-widest ${diagColor}`}>FA · {faDiag.message}</p>
-            <TvCount value={counts.airborne} label="AIRBORNE" valueClass="text-cyan-300" />
-            <TvCount value={counts.preflight} label="PRE-FLIGHT" valueClass="text-amber-300" />
-            <TvCount value={counts.pending} label="PENDING" valueClass="text-slate-200" />
-            <TvCount value={rows.length} label="TODAY" valueClass="text-slate-50" divider />
+          <div className="flex items-center" style={{ gap: 24 }}>
+            <TvCount value={counts.airborne} label="AIRBORNE" />
+            <TvCount value={counts.preflight} label="PRE-FLIGHT" />
+            <TvCount value={rows.length} label="TODAY" />
+            <TvClock time={clocks.local} label={clocks.zone || 'LOCAL'} />
+            <TvClock time={clocks.utc} label="UTC" />
           </div>
         </header>
 
-        <div className="grid min-h-0 flex-1 grid-cols-2 overflow-hidden">
-          <div
-            className="min-h-0 overflow-hidden border-r border-slate-800"
-            data-board-legs=""
-            data-board-columns={layout.columns}
-            style={rows.length === 0 ? undefined : {
-              display: 'grid',
-              gridAutoFlow: 'column',
-              gridTemplateColumns: `repeat(${layout.columns}, minmax(0, 1fr))`,
-              gridTemplateRows: `repeat(${layout.rows}, ${layout.rowHeight}px)`,
-            }}
-          >
-            {rows.length === 0 ? (
-              <div className="flex h-full items-center justify-center font-mono text-3xl tracking-widest text-slate-500">
-                NO FLIGHTS TODAY
-              </div>
-            ) : (
-              rows.map((row) => (
-                <TvFlightRow key={row.uid} row={row} density={layout.density} weather={weather} />
-              ))
-            )}
+        <div className="grid min-h-0 flex-1 overflow-hidden" style={{ gridTemplateColumns: 'minmax(0, 1.15fr) minmax(0, 1fr)' }}>
+          <div className="flex min-h-0 min-w-0 flex-col overflow-hidden" style={{ borderRight: `1px solid ${BOARD_LINE}` }}>
+            <div
+              className="grid min-h-0 flex-1 overflow-hidden"
+              data-board-legs=""
+              data-board-columns={layout.columns}
+              style={{ gridTemplateColumns: `repeat(${layout.columns}, minmax(0, 1fr))` }}
+            >
+              {rows.length === 0 ? (
+                <div className="flex h-full items-center justify-center" style={{ fontSize: TV_TYPE.body, color: BOARD_MUTED, letterSpacing: '0.12em' }}>
+                  NO FLIGHTS TODAY
+                </div>
+              ) : (
+                Array.from({ length: layout.columns }, (_, column) => {
+                  const slice = rows.slice(column * layout.rows, (column + 1) * layout.rows);
+                  return (
+                    <div
+                      key={column}
+                      className="flex min-h-0 min-w-0 flex-col overflow-hidden"
+                      style={{ borderLeft: column > 0 ? `1px solid ${BOARD_LINE}` : undefined }}
+                    >
+                      <TvColumnHead columns={columns} />
+                      <div
+                        className="min-h-0 overflow-hidden"
+                        style={{
+                          display: 'grid',
+                          gridTemplateRows: `repeat(${layout.rows}, ${layout.rowHeight}px)`,
+                        }}
+                      >
+                        {slice.map((row) => (
+                          <TvFlightRow key={row.uid || `${row.tail}-${row.tripId}-${row.etdLabel}`} row={row} columns={columns} weather={weather} detail={showWxDetail} />
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
           </div>
-          <div className="relative h-full min-h-0 overflow-hidden bg-slate-950">
+          <div className="relative h-full min-h-0 overflow-hidden" style={{ background: BOARD_BG }}>
             <TrackingMap
               scene={scene}
               followFleet
               frameAllTails={true}
               passive
+              compactCallouts={true}
               basemapDefault="dark"
               radarDefault={true}
+              radarOpacity={0.5}
               showLegend={false}
               showTrailToggle={false}
               className="h-full w-full"
@@ -1161,10 +1193,11 @@ function TvFlightBoard({
 
         {cards.length > 0 && (
           <div
-            className="grid overflow-hidden border-t border-slate-700"
+            className="grid overflow-hidden"
             data-board-fleet=""
             style={{
               height: strip.height,
+              borderTop: `1px solid ${BOARD_LINE}`,
               gridTemplateColumns: `repeat(${strip.perRow}, minmax(0, 1fr))`,
               gridTemplateRows: `repeat(${strip.rows}, minmax(0, 1fr))`,
             }}
@@ -1179,97 +1212,149 @@ function TvFlightBoard({
   );
 }
 
-function TvCount({ value, label, valueClass, divider = false }) {
+function TvCount({ value, label }) {
   return (
-    <div className={divider ? 'border-l border-slate-700 pl-8 text-center' : 'text-center'}>
-      <div className={`text-4xl font-bold tabular-nums leading-none ${valueClass}`}>{value}</div>
-      <div className="text-xs tracking-widest text-slate-400">{label}</div>
+    <div className="text-right">
+      <div style={{ fontSize: TV_TYPE.body, fontWeight: 600, lineHeight: '20px', color: BOARD_TEXT }}>{value}</div>
+      <div style={{ fontSize: TV_TYPE.meta, lineHeight: '16px', letterSpacing: '0.08em', color: BOARD_MUTED }}>{label}</div>
     </div>
   );
 }
 
-function TvWeatherLine({ code, payload, fontSize }) {
-  const metar = payload?.metar || payload?.parsed || null;
-  const weather = formatBoardWeather(metar);
-  const category = weather?.category;
+function TvClock({ time, label }) {
   return (
-    <span className="truncate font-mono" style={{ fontSize }} data-board-wx={normalizeBoardAirport(code) || ''}>
-      <span className="text-slate-400">{code || '—'}</span>
-      {weather ? (
-        <>
-          {' '}
-          <span className={TV_CATEGORY[category] || 'text-slate-300'}>{weather.line}</span>
-        </>
-      ) : (
-        <span className="text-slate-600"> · …</span>
+    <div className="text-right">
+      <div style={{ fontSize: TV_TYPE.display, fontWeight: 500, lineHeight: '32px', color: BOARD_TEXT }}>{time}</div>
+      <div style={{ fontSize: TV_TYPE.meta, lineHeight: '16px', letterSpacing: '0.08em', color: BOARD_MUTED }}>{label}</div>
+    </div>
+  );
+}
+
+function TvColumnHead({ columns }) {
+  const titles = ['STATUS', 'TRIP', 'TAIL', 'FROM  →  TO', 'ETD', 'ETA', 'WX'];
+  return (
+    <div
+      style={{
+        height: TV_COLUMN_HEAD_PX,
+        display: 'grid',
+        gridTemplateColumns: columns,
+        columnGap: 8,
+        alignItems: 'center',
+        padding: '0 16px',
+        borderBottom: `1px solid ${BOARD_LINE}`,
+        fontSize: TV_TYPE.meta,
+        letterSpacing: '0.08em',
+        color: BOARD_MUTED,
+      }}
+    >
+      {titles.map((title) => (
+        <span key={title} className="truncate">{title}</span>
+      ))}
+    </div>
+  );
+}
+
+function TvCell({ children, title }) {
+  return (
+    <span className="min-w-0 truncate" title={title || undefined} style={{ fontSize: TV_TYPE.body, lineHeight: '20px' }}>
+      {children}
+    </span>
+  );
+}
+
+function TvStatus({ phase, label }) {
+  const tone = TV_PILL[phase] || TV_PILL.pending;
+  return (
+    <span
+      className="truncate"
+      style={{
+        justifySelf: 'start',
+        maxWidth: '100%',
+        fontSize: TV_TYPE.meta,
+        fontWeight: 600,
+        lineHeight: '16px',
+        letterSpacing: '0.06em',
+        color: tone.color,
+        background: tone.background,
+        borderRadius: 2,
+        padding: '2px 6px',
+      }}
+    >
+      {label}
+    </span>
+  );
+}
+
+function TvCategory({ category }) {
+  if (!category) return null;
+  return (
+    <span style={{ fontSize: TV_TYPE.meta, fontWeight: 600, lineHeight: '16px', letterSpacing: '0.06em', color: TV_CATEGORY[category] || BOARD_MUTED }}>
+      {category}
+    </span>
+  );
+}
+
+function TvWeatherCell({ from, to, weather, detail }) {
+  const fromWx = formatBoardWeather(weather[normalizeBoardAirport(from)]?.metar || weather[normalizeBoardAirport(from)]?.parsed);
+  const toWx = formatBoardWeather(weather[normalizeBoardAirport(to)]?.metar || weather[normalizeBoardAirport(to)]?.parsed);
+  const detailLine = detail ? (toWx || fromWx) : null;
+  return (
+    <span className="flex min-w-0 items-center" style={{ gap: 8 }} data-board-wx={`${normalizeBoardAirport(from) || ''},${normalizeBoardAirport(to) || ''}`}>
+      <TvCategory category={fromWx?.category} />
+      <TvCategory category={toWx?.category} />
+      {detailLine && (
+        <span className="min-w-0 truncate" style={{ fontSize: TV_TYPE.meta, color: BOARD_MUTED }}>
+          {[detailLine.wind, detailLine.visibility, detailLine.ceiling].filter(Boolean).join(' · ')}
+        </span>
       )}
     </span>
   );
 }
 
-function TvFlightRow({ row, density, weather }) {
-  const tone = TV_PHASE[row.phase] || TV_PHASE.pending;
-  const crew = row.crew.length > 0 ? row.crew.join(' / ') : '';
-  const timeNote = row.timeKind === 'eta'
-    ? `ETA${row.remainLabel ? ` ${row.remainLabel}` : ''}`
-    : 'ETD';
+function TvFlightRow({ row, columns, weather, detail }) {
   return (
-    <div className="flex min-w-0 flex-col justify-center overflow-hidden border-b border-slate-800 px-4">
-      <div className="flex min-w-0 items-baseline gap-3">
-        <span
-          className={`shrink-0 border px-1.5 font-mono font-semibold tracking-widest ${tone.box}`}
-          style={{ fontSize: density.status }}
-        >
-          {row.statusLabel}
-        </span>
-        <span className="shrink-0 font-mono tabular-nums text-slate-100" style={{ fontSize: density.time }}>
-          {row.timeLabel || '--:--'}
-        </span>
-        <span className="shrink-0 font-mono tracking-widest text-cyan-300" style={{ fontSize: density.meta }}>
-          {timeNote}
-        </span>
-        <span className="shrink-0 truncate font-mono font-semibold text-slate-50" style={{ fontSize: density.tail }}>
-          {row.tail || '?'}
-        </span>
-        <span className="shrink-0 truncate font-mono text-amber-200" style={{ fontSize: density.meta }} data-trip-id={row.tripId || ''}>
-          {row.tripId || ''}
-        </span>
-        <span className="min-w-0 flex-1 truncate font-mono text-slate-50" style={{ fontSize: density.route }}>
-          {row.from || '—'} <span className="text-cyan-400">→</span> {row.to || '—'}
-        </span>
-        {crew && (
-          <span className="max-w-[34%] shrink truncate text-slate-300" style={{ fontSize: density.meta }}>
-            {crew}
-          </span>
-        )}
-      </div>
-      <div className="mt-0.5 flex min-w-0 gap-4">
-        <TvWeatherLine code={row.from} payload={weather[normalizeBoardAirport(row.from)]} fontSize={density.wx} />
-        <TvWeatherLine code={row.to} payload={weather[normalizeBoardAirport(row.to)]} fontSize={density.wx} />
-      </div>
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns: columns,
+        columnGap: 8,
+        alignItems: 'center',
+        height: '100%',
+        padding: '0 16px',
+        borderBottom: `1px solid ${BOARD_LINE}`,
+        overflow: 'hidden',
+        color: BOARD_TEXT,
+      }}
+    >
+      <TvStatus phase={row.phase} label={row.statusLabel} />
+      <TvCell title={row.tripId || ''}>
+        <span data-trip-id={row.tripId || ''}>{row.tripId || '—'}</span>
+      </TvCell>
+      <TvCell>{row.tail || '—'}</TvCell>
+      <TvCell>{row.from || '—'} <span style={{ color: BOARD_MUTED }}>→</span> {row.to || '—'}</TvCell>
+      <TvCell>{row.etdLabel || '—'}</TvCell>
+      <TvCell>{row.etaLabel || '—'}</TvCell>
+      <TvWeatherCell from={row.from} to={row.to} weather={weather} detail={detail} />
     </div>
   );
 }
 
 function TvAircraftCard({ card, weather }) {
-  const tone = card.statusLabel === 'AIRBORNE' ? 'text-cyan-200' : 'text-slate-300';
+  const wx = formatBoardWeather(weather[card.weatherAirport]?.metar || weather[card.weatherAirport]?.parsed);
   const when = card.timeKind === 'eta' ? 'ETA' : 'ETD';
+  const clock = String(card.timeLabel || '').match(/\d{1,2}:\d{2}/)?.[0] || '—';
   return (
-    <div className="flex min-w-0 flex-col justify-center overflow-hidden border-r border-slate-800 px-4" data-tail={card.tail}>
-      <div className="flex min-w-0 items-baseline gap-3">
-        <span className="truncate font-mono text-2xl font-semibold text-slate-50">{card.tail}</span>
-        <span className={`shrink-0 font-mono text-sm tracking-widest ${tone}`}>{card.statusLabel}</span>
-      </div>
-      <div className="truncate font-mono text-lg text-slate-200">
-        {card.location || '—'}
-        <span className="text-cyan-300"> · {when} {card.timeLabel || '--:--'}</span>
-        {card.tripId && <span className="text-amber-200" data-trip-id={card.tripId}> · {card.tripId}</span>}
-      </div>
-      <TvWeatherLine
-        code={card.location}
-        payload={weather[card.weatherAirport]}
-        fontSize={14}
-      />
+    <div
+      className="flex min-w-0 items-center overflow-hidden"
+      data-tail={card.tail}
+      style={{ gap: 8, padding: '0 16px', borderRight: `1px solid ${BOARD_LINE}` }}
+    >
+      <span className="truncate" style={{ fontSize: TV_TYPE.body, fontWeight: 600, lineHeight: '20px' }}>{card.tail}</span>
+      <TvStatus phase={card.statusLabel === 'AIRBORNE' ? 'airborne' : 'pending'} label={card.statusLabel} />
+      <span className="truncate" style={{ fontSize: TV_TYPE.meta, color: BOARD_MUTED }}>{card.location || '—'}</span>
+      <span className="shrink-0" style={{ fontSize: TV_TYPE.body, lineHeight: '20px' }}>{when} {clock}</span>
+      <span className="shrink-0 truncate" data-trip-id={card.tripId || ''} style={{ fontSize: TV_TYPE.body }}>{card.tripId || '—'}</span>
+      <span data-board-wx={card.weatherAirport || ''} className="shrink-0"><TvCategory category={wx?.category} /></span>
     </div>
   );
 }

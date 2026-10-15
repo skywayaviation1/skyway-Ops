@@ -27,7 +27,7 @@ import {
 import {
   loadLeaflet, BASEMAP_ORDER, applyBasemap, clearBasemap, createRadarLayer,
   currentMapTheme, drawAltitudeTrail, ALTITUDE_LEGEND, altitudeColor, aircraftIcon,
-  airportIcon, groundedIcon, standardBasemapSpec,
+  airportIcon, groundedIcon, standardBasemapSpec, declutterCallouts,
 } from './tracking-map.js';
 import {
   APPLE_BASEMAP_LABELS,
@@ -84,6 +84,10 @@ export default function TrackingMap({
    * so followFleet keeps framing the fleet after an accidental touch.
    */
   passive = false,
+  /** Wall board: one-line callouts shifted so they do not cover each other. */
+  compactCallouts = false,
+  /** Radar layer opacity. The wall board holds it near one half. */
+  radarOpacity = 0.55,
 }) {
   const containerRef = useRef(null);
   const googleContainerRef = useRef(null);
@@ -107,6 +111,7 @@ export default function TrackingMap({
   const [layersOpen, setLayersOpen] = useState(false);
   const [mapProvider, setMapProvider] = useState('checking');
   const [theme, setTheme] = useState(currentMapTheme);
+  const [viewEpoch, setViewEpoch] = useState(0);
 
   const aircraft = Array.isArray(scene.aircraft) ? scene.aircraft : [];
   const airports = Array.isArray(scene.airports) ? scene.airports : [];
@@ -372,13 +377,13 @@ export default function TrackingMap({
       return;
     }
     radarRef.current = createRadarLayer(window.L, mapRef.current, {
-      opacity: 0.55,
+      opacity: radarOpacity,
       onFrame: (epochSeconds) => setRadarFrameAt(epochSeconds * 1000),
     });
     return () => {
       if (radarRef.current) { radarRef.current.destroy(); radarRef.current = null; }
     };
-  }, [ready, radarOn]);
+  }, [ready, radarOn, radarOpacity]);
 
   /* ─── Keep Leaflet's size cache honest ─────────────────────────────────── */
   useEffect(() => {
@@ -442,6 +447,17 @@ export default function TrackingMap({
       }).addTo(group);
     });
 
+    const labelDy = {};
+    if (compactCallouts && mapRef.current) {
+      const points = aircraft
+        .filter((item) => Number.isFinite(item?.lat) && Number.isFinite(item?.lon))
+        .map((item) => {
+          const point = mapRef.current.latLngToContainerPoint([item.lat, item.lon]);
+          return { id: item.id, x: point.x, y: point.y };
+        });
+      declutterCallouts(points).forEach((item) => { labelDy[item.id] = item.dy; });
+    }
+
     // Parked aircraft first so airborne markers and their labels sit on top.
     aircraft
       .filter((a) => a.airborne !== true)
@@ -456,6 +472,8 @@ export default function TrackingMap({
             muted: Boolean(selectedId) && !selected,
             tripId: a.tripId,
             departureLabel: a.departureLabel,
+            compactCallout: compactCallouts,
+            labelDy: labelDy[a.id] || 0,
           }),
           interactive: !passive,
           zIndexOffset: selected ? 700 : 50,
@@ -480,13 +498,15 @@ export default function TrackingMap({
             tripId: a.tripId,
             destination: a.destination,
             etaLabel: a.etaLabel,
+            compactCallout: compactCallouts,
+            labelDy: labelDy[a.id] || 0,
           }),
           interactive: !passive,
           zIndexOffset: selected ? 1000 : 200,
         }).addTo(group);
         if (!passive && onSelectAircraft) marker.on('click', () => onSelectAircraft(a.id));
       });
-  }, [ready, scene, routes, airports, aircraft, selectedId, onSelectAircraft, trailOn, passive]);
+  }, [ready, scene, routes, airports, aircraft, selectedId, onSelectAircraft, trailOn, passive, compactCallouts, viewEpoch]);
 
   /* ─── Fit ─────────────────────────────────────────────────────────────── */
   const fitScene = useCallback(() => {
@@ -598,6 +618,14 @@ export default function TrackingMap({
       map.off('zoomstart', noteUserGesture);
     };
   }, [ready, followFleet, passive]);
+
+  useEffect(() => {
+    if (!ready || !compactCallouts || !mapRef.current) return undefined;
+    const map = mapRef.current;
+    const bump = () => setViewEpoch((value) => value + 1);
+    map.on('moveend', bump);
+    return () => map.off('moveend', bump);
+  }, [ready, compactCallouts]);
 
   const radarLabel = radarFrameAt
     ? new Date(radarFrameAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -734,8 +762,17 @@ export default function TrackingMap({
 
       {passive && radarOn && (
         <div
-          className="pointer-events-none absolute bottom-3 right-3 z-[500] rounded border border-cyan-400/40 bg-slate-950/80 px-2 py-1 font-mono text-sm tracking-widest text-cyan-200"
+          className="pointer-events-none absolute z-[500]"
           data-board-radar={radarLabel || 'live'}
+          style={{
+            right: 8,
+            bottom: 8,
+            fontFamily: "'DM Sans', system-ui, sans-serif",
+            fontSize: 12,
+            letterSpacing: '0.08em',
+            color: '#8b95a8',
+            textShadow: '0 1px 2px #070d18',
+          }}
         >
           RADAR {radarLabel || 'LIVE'}
         </div>
