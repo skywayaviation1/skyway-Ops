@@ -9,7 +9,30 @@ import { TRIPS } from '../sample-data.js';
 
 const noop = async () => {};
 
-export const subscribeFleetPositions = (cb) => emit(fleetPositions())(cb);
+function positionsForBoard() {
+  const positions = fleetPositions();
+  if (typeof window === 'undefined') return positions;
+  const boardCase = new URLSearchParams(window.location.search).get('boardCase');
+  if (boardCase !== 'parked') return positions;
+  const parked = {};
+  for (const [tail, raw] of Object.entries(positions)) {
+    if (raw?.airborne === true && Number.isFinite(raw.latitude) && Number.isFinite(raw.longitude)) {
+      parked[tail] = {
+        ...raw,
+        airborne: false,
+        estimatedOn: null,
+        groundedLat: raw.latitude,
+        groundedLon: raw.longitude,
+        groundedAt: raw.destination || raw.origin || null,
+      };
+    } else {
+      parked[tail] = raw;
+    }
+  }
+  return parked;
+}
+
+export const subscribeFleetPositions = (cb) => emit(positionsForBoard())(cb);
 export const subscribeAllTripStates = (cb) => emit(tripStates())(cb);
 export const subscribeAirportCache = (cb) => emit({})(cb);
 export const subscribeManualTrips = (cb) => emit([])(cb);

@@ -62,6 +62,37 @@ const FboDesk = lazy(() => import('../src/FboDesk.jsx'));
 const FboLegPanel = lazy(() => import('../src/FboDesk.jsx').then((m) => ({ default: m.FboLegPanel })));
 const FboConfirmPage = lazy(() => import('../src/FboConfirmPage.jsx'));
 
+/** Extra today's legs so the wall board has more than one page. Preview only. */
+function overflowBoardTrips(trips) {
+  const extra = [
+    ['N286N', 'BNA', 'CHS', 'K4LMNQ', 'Cade Kaftel', 'Jenelle Szelest', 2],
+    ['N551FP', 'OPF', 'FXE', 'Q8WERT', 'Jenelle Szelest', 'Grant Ellis', 1],
+    ['N168ZZ', 'MDW', 'TEB', 'H7PLMX', 'Grant Ellis', 'Andre Cole', 3],
+    ['N525CR', 'CHS', 'PBI', 'T2NVQA', 'Andre Cole', 'Maxwell Hagberg', 4],
+    ['N9021Q', 'IAD', 'BNA', 'C5DKJR', 'Melissa Rippy', 'Dana Whitfield', 2],
+  ];
+  return [
+    ...trips,
+    ...extra.map((item, index) => ({
+      uid: `overflow-${index}`,
+      start: new Date(Date.now() + (20 + index * 25) * 60_000),
+      end: new Date(Date.now() + (90 + index * 25) * 60_000),
+      info: {
+        tail: item[0],
+        from: item[1],
+        to: item[2],
+        tripCode: item[3],
+        pic: item[4],
+        sic: item[5],
+        pax: item[6],
+        legType: 'REVENUE',
+        isFlight: true,
+        isOps: true,
+      },
+    })),
+  ];
+}
+
 const SURFACES = {
   dashboard: {
     label: 'Operations control dashboard',
@@ -135,7 +166,14 @@ const SURFACES = {
 
   board: {
     label: 'Flight board display',
-    render: () => <FlightBoard allTrips={TRIPS} />,
+    render: () => (
+      <FlightBoard
+        allTrips={params.get('boardCase') === 'overflow' ? overflowBoardTrips(TRIPS) : TRIPS}
+        fleetTails={CONFIG.fleetTails}
+        aircraftByTail={CONFIG.aircraftByTail}
+        timeZone="America/New_York"
+      />
+    ),
   },
 
   broker: {

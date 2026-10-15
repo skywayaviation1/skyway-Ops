@@ -74,6 +74,11 @@ export default function TrackingMap({
    * the user pans or zooms. Single-flight maps keep the fitKey behaviour.
    */
   followFleet = false,
+  /**
+   * Wall display. No zoom control, layer menu, radar button, or gestures,
+   * so followFleet keeps framing airborne tails after an accidental touch.
+   */
+  passive = false,
 }) {
   const containerRef = useRef(null);
   const googleContainerRef = useRef(null);
@@ -131,8 +136,22 @@ export default function TrackingMap({
           zoomControl: false,
           attributionControl: true,
           worldCopyJump: false,
+          dragging: !passive,
+          scrollWheelZoom: !passive,
+          doubleClickZoom: !passive,
+          touchZoom: !passive,
+          boxZoom: !passive,
+          keyboard: !passive,
         });
-        L.control.zoom({ position: 'bottomright' }).addTo(map);
+        if (!passive) L.control.zoom({ position: 'bottomright' }).addTo(map);
+        if (passive) {
+          map.dragging?.disable();
+          map.scrollWheelZoom?.disable();
+          map.doubleClickZoom?.disable();
+          map.touchZoom?.disable();
+          map.boxZoom?.disable();
+          map.keyboard?.disable();
+        }
         if (map.attributionControl) map.attributionControl.setPrefix(false);
 
         const hideApple = () => {
@@ -312,8 +331,9 @@ export default function TrackingMap({
       }
     };
     // basemapDefault is an initial value only; switching is handled below.
+    // passive is read at creation because it decides whether gestures exist.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [passive]);
 
   /* ─── Basemap switching ────────────────────────────────────────────────── */
   useEffect(() => {
@@ -432,9 +452,10 @@ export default function TrackingMap({
             tripId: a.tripId,
             departureLabel: a.departureLabel,
           }),
+          interactive: !passive,
           zIndexOffset: selected ? 700 : 50,
         }).addTo(group);
-        if (onSelectAircraft) marker.on('click', () => onSelectAircraft(a.id));
+        if (!passive && onSelectAircraft) marker.on('click', () => onSelectAircraft(a.id));
       });
 
     aircraft
@@ -455,11 +476,12 @@ export default function TrackingMap({
             destination: a.destination,
             etaLabel: a.etaLabel,
           }),
+          interactive: !passive,
           zIndexOffset: selected ? 1000 : 200,
         }).addTo(group);
-        if (onSelectAircraft) marker.on('click', () => onSelectAircraft(a.id));
+        if (!passive && onSelectAircraft) marker.on('click', () => onSelectAircraft(a.id));
       });
-  }, [ready, scene, routes, airports, aircraft, selectedId, onSelectAircraft, trailOn]);
+  }, [ready, scene, routes, airports, aircraft, selectedId, onSelectAircraft, trailOn, passive]);
 
   /* ─── Fit ─────────────────────────────────────────────────────────────── */
   const fitScene = useCallback(() => {
@@ -553,7 +575,7 @@ export default function TrackingMap({
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!ready || !followFleet || !map) return undefined;
+    if (!ready || !followFleet || passive || !map) return undefined;
     const noteUserGesture = () => {
       if (!fittingRef.current) userMovedRef.current = true;
     };
@@ -563,7 +585,7 @@ export default function TrackingMap({
       map.off('dragstart', noteUserGesture);
       map.off('zoomstart', noteUserGesture);
     };
-  }, [ready, followFleet]);
+  }, [ready, followFleet, passive]);
 
   const radarLabel = radarFrameAt
     ? new Date(radarFrameAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -582,6 +604,7 @@ export default function TrackingMap({
       ref={frameRef}
       className={cx(
         'relative overflow-hidden bg-slate-950',
+        passive && 'pointer-events-none',
         fullscreen ? 'fixed inset-0 z-[2000] sw-safe-inset' : className,
       )}
       style={fullscreen ? undefined : style}
@@ -617,8 +640,9 @@ export default function TrackingMap({
       )}
 
       {/* Controls. Leaflet's own panes sit below z-400, so 500+ keeps these
-          above tiles and markers without fighting the zoom control. */}
-      <div className={cx('sw-map-controls absolute z-[500] flex flex-col items-end', compact ? 'gap-1.5' : 'gap-2')}>
+          above tiles and markers without fighting the zoom control.
+          A passive wall display has none of them. */}
+      {!passive && <div className={cx('sw-map-controls absolute z-[500] flex flex-col items-end', compact ? 'gap-1.5' : 'gap-2')}>
         <div className="flex gap-1.5">
           <MapButton
             icon={CloudRain}
@@ -694,7 +718,7 @@ export default function TrackingMap({
             title={fullscreen ? 'Exit fullscreen' : 'Fullscreen map'}
           />
         </div>
-      </div>
+      </div>}
 
       {showLegend && trailOn && scene.trail && (
         <div className="sw-map-legend absolute z-[500] rounded-lg border border-edge bg-surface/90 px-2.5 py-2 shadow-card backdrop-blur">

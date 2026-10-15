@@ -31,8 +31,24 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { lookupCoords } from './airport-coords.js';
 import { appleMapType, loadAppleMapKit } from './apple-mapkit.js';
+import { resolveManagedTails } from './fleet-config.js';
+import {
+  TV_DESIGN_HEIGHT,
+  TV_DESIGN_WIDTH,
+  TV_HEADER_PX,
+  TV_PAGE_CHROME_PX,
+  TV_PAGE_MS,
+  TV_ROW_PX,
+  buildTvBoardRow,
+  buildTvMapScene,
+  formatBoardClock,
+  tvPageSize,
+  tvPageSlice,
+} from './flight-board-tv.js';
 import { watchAppleMapKit } from './mapkit-fallback.js';
 import { statusEventAt } from './trip-status.js';
+import TrackingMap from './TrackingMap.jsx';
+import TvDesignFrame from './TvDesignFrame.jsx';
 import { Wordmark } from './ui.jsx';
 
 // ====================================================================
@@ -954,6 +970,187 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
 }
 
 // ====================================================================
+// FULL-SCREEN TV (?board=1)
+// ====================================================================
+
+const TV_PHASE = {
+  pending: { box: 'border-slate-600 bg-slate-800/80 text-slate-300', label: 'PENDING' },
+  preflight: { box: 'border-amber-400/70 bg-amber-500/20 text-amber-200', label: 'PRE-FLT' },
+  airborne: { box: 'border-cyan-300/70 bg-cyan-500/25 text-cyan-100', label: 'AIRBORNE' },
+};
+
+function TvFlightBoard({
+  allTrips,
+  visible,
+  stateMap,
+  faPositions,
+  effectivePhase,
+  stats,
+  faDiag,
+  managedFleetTails,
+  aircraftByTail,
+  timeZone,
+}) {
+  const originRef = useRef(Date.now());
+  const [pageNow, setPageNow] = useState(originRef.current);
+
+  useEffect(() => {
+    const id = setInterval(() => setPageNow(Date.now()), TV_PAGE_MS);
+    return () => clearInterval(id);
+  }, []);
+
+  const tails = useMemo(
+    () => (Array.isArray(managedFleetTails) ? managedFleetTails : resolveManagedTails(null)),
+    [managedFleetTails],
+  );
+
+  const scene = useMemo(() => buildTvMapScene({
+    fleetTails: tails,
+    positions: faPositions,
+    trips: allTrips,
+    tripStates: stateMap,
+    aircraftByTail: aircraftByTail || {},
+    now: pageNow,
+    timeZone,
+  }), [tails, faPositions, allTrips, stateMap, aircraftByTail, pageNow, timeZone]);
+
+  const pageSize = tvPageSize(TV_DESIGN_WIDTH, TV_DESIGN_HEIGHT);
+  const rows = visible.map((trip) => buildTvBoardRow({
+    trip,
+    state: stateMap.get(trip.uid),
+    phase: effectivePhase(trip, stateMap.get(trip.uid)),
+    faPosition: faPositions[(trip.info?.tail || '').toUpperCase()],
+    now: pageNow,
+    timeZone,
+  }));
+  const page = tvPageSlice(rows, pageNow, { originMs: originRef.current, pageSize });
+  const diagColor = faDiag.status === 'ok'
+    ? 'text-emerald-400'
+    : faDiag.status === 'error'
+      ? 'text-red-400'
+      : 'text-slate-500';
+
+  return (
+    <TvDesignFrame>
+      <div className="flex h-full w-full flex-col overflow-hidden bg-slate-950 text-slate-100">
+        <header
+          className="flex items-center justify-between border-b-2 border-cyan-500/30 bg-slate-950 px-8"
+          style={{ height: TV_HEADER_PX }}
+        >
+          <div className="flex items-center gap-6">
+            <Wordmark className="h-16 w-auto" surface="dark" />
+            <div className="border-l border-cyan-500/30 pl-6">
+              <h1 className="font-mono text-4xl font-bold tracking-widest text-cyan-300">FLIGHT BOARD</h1>
+              <p className="mt-1 font-mono text-xl text-slate-200">{formatBoardClock(pageNow, timeZone)}</p>
+              <p className={`font-mono text-sm tracking-widest ${diagColor}`}>FA · {faDiag.message}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-10 font-mono">
+            <TvCount value={stats.airborne} label="AIRBORNE" valueClass="text-cyan-300" />
+            <TvCount value={stats.preflight} label="PRE-FLIGHT" valueClass="text-amber-300" />
+            <TvCount value={stats.pending} label="PENDING" valueClass="text-slate-200" />
+            <TvCount value={stats.total} label="TOTAL TODAY" valueClass="text-slate-50" divider />
+          </div>
+        </header>
+
+        <div className="grid min-h-0 flex-1 grid-cols-2">
+          <div className="flex min-h-0 flex-col overflow-hidden border-r border-slate-800">
+            <div className="min-h-0 flex-1 overflow-hidden">
+              {page.rows.length === 0 ? (
+                <div className="flex h-full items-center justify-center font-mono text-3xl tracking-widest text-slate-500">
+                  NO ACTIVE FLIGHTS
+                </div>
+              ) : (
+                page.rows.map((row) => <TvFlightRow key={row.uid} row={row} />)
+              )}
+            </div>
+            {page.pageCount > 1 && (
+              <div
+                className="flex items-center justify-center gap-3 border-t border-slate-800 font-mono text-lg tracking-widest text-slate-300"
+                style={{ height: TV_PAGE_CHROME_PX }}
+                data-board-page={`${page.index + 1}/${page.pageCount}`}
+                aria-live="polite"
+              >
+                {Array.from({ length: page.pageCount }, (_, i) => (
+                  <span
+                    key={i}
+                    className={i === page.index ? 'bg-cyan-300' : 'bg-slate-600'}
+                    style={{ width: 12, height: 12, borderRadius: 999 }}
+                  />
+                ))}
+                <span>{page.index + 1} / {page.pageCount}</span>
+              </div>
+            )}
+          </div>
+          <div className="relative h-full min-h-0 bg-slate-950">
+            <TrackingMap
+              scene={scene}
+              followFleet
+              passive
+              basemapDefault="dark"
+              radarDefault={false}
+              showLegend={false}
+              showTrailToggle={false}
+              className="h-full w-full"
+            />
+          </div>
+        </div>
+      </div>
+    </TvDesignFrame>
+  );
+}
+
+function TvCount({ value, label, valueClass, divider = false }) {
+  return (
+    <div className={divider ? 'border-l border-slate-700 pl-10 text-center' : 'text-center'}>
+      <div className={`text-6xl font-bold tabular-nums ${valueClass}`}>{value}</div>
+      <div className="text-sm tracking-widest text-slate-400">{label}</div>
+    </div>
+  );
+}
+
+function TvFlightRow({ row }) {
+  const tone = TV_PHASE[row.phase] || TV_PHASE.pending;
+  const crew = row.crew.length > 0 ? row.crew.join(' / ') : '— no crew —';
+  return (
+    <div
+      className="grid items-center gap-4 border-b border-slate-800 px-6"
+      style={{ height: TV_ROW_PX, gridTemplateColumns: '168px 250px 280px minmax(0, 1fr)' }}
+    >
+      <div>
+        <div className={`border px-2 py-1 text-center font-mono text-lg font-semibold tracking-widest ${tone.box}`}>
+          {row.statusLabel}
+        </div>
+        {row.stepLabel && (
+          <div className="mt-1 text-center font-mono text-sm tracking-wide text-amber-200">{row.stepLabel}</div>
+        )}
+      </div>
+      <div>
+        <div className="font-mono text-3xl tabular-nums text-slate-100">{row.timeLabel || '--:--'}</div>
+        <div className="font-mono text-sm tracking-widest text-cyan-300">
+          {row.timeKind === 'eta'
+            ? `ETA${row.remainLabel ? ` · ${row.remainLabel}` : ''}`
+            : 'ETD'}
+        </div>
+      </div>
+      <div className="min-w-0">
+        <div className="truncate font-mono text-3xl font-semibold text-slate-50">{row.tail || '?'}</div>
+        <div className="truncate font-mono text-xl text-amber-200" data-trip-id={row.tripId || ''}>{row.tripId || ''}</div>
+      </div>
+      <div className="min-w-0">
+        <div className="truncate font-mono text-4xl text-slate-50">
+          {row.from || '—'} <span className="text-cyan-400">→</span> {row.to || '—'}
+        </div>
+        <div className="mt-1 truncate text-xl text-slate-300">
+          {crew}
+          {row.pax != null && <span className="ml-3 font-mono text-base text-slate-500">{row.pax} PAX</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ====================================================================
 // MAIN COMPONENT
 // ====================================================================
 
@@ -969,7 +1166,13 @@ function RouteMap({ trips, stateMap, faPositions, effectivePhase }) {
 // (logo + stats grid), stacks list/map vertically, and caps total
 // height so the board fits as a card on a regular page. The TRACKING
 // route renders without the prop, getting the full dashboard layout.
-function FlightBoard({ allTrips, compact = false }) {
+function FlightBoard({
+  allTrips,
+  compact = false,
+  fleetTails: managedFleetTails = null,
+  aircraftByTail = null,
+  timeZone,
+}) {
   const [stateMap, setStateMap] = useState(new Map());
   const [, setTick] = useState(0); // forces a tick every minute for time display
   // FlightAware live data: keyed by tail. Read from Firestore, where the
@@ -1197,6 +1400,25 @@ function FlightBoard({ allTrips, compact = false }) {
     });
   } catch (_) {}
 
+  // Full-screen wall display. Compact embeds keep the schedule card below.
+  if (!compact) {
+    return (
+      <TvFlightBoard
+        allTrips={allTrips}
+        visible={visible}
+        stateMap={stateMap}
+        faPositions={faPositions}
+        effectivePhase={effectivePhase}
+        stats={stats}
+        faDiag={faDiag}
+        managedFleetTails={managedFleetTails}
+        aircraftByTail={aircraftByTail}
+        timeZone={timeZone}
+      />
+    );
+  }
+
+  // Compact embeds (pilot home, ops command center) keep this schedule card.
   return (
     <div className={compact
       ? 'w-full bg-slate-950 flex flex-col border border-slate-800'
