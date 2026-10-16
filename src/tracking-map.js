@@ -387,9 +387,93 @@ function esc(value) {
     .replace(/"/g, '&quot;');
 }
 
+function shortClock(label) {
+  const match = String(label || '').match(/\d{1,2}:\d{2}/);
+  return match ? match[0] : '';
+}
+
+function displayAirport(code) {
+  const value = String(code || '').trim().toUpperCase();
+  if (/^[A-Z]{3}$/.test(value)) return `K${value}`;
+  return value;
+}
+
+/** One-line wall callout. `dy` is the declutter shift in pixels. */
+function compactCalloutHtml(size, text, dy = 0) {
+  const shift = Number(dy) || 0;
+  return `
+    <div style="position:absolute; left:${size + 8}px; top:50%; transform:translateY(calc(-50% + ${shift}px)); pointer-events:none; white-space:nowrap; z-index:2;">
+      <div style="font-family:'DM Sans',system-ui,sans-serif; font-size:12px; font-weight:500; line-height:16px; letter-spacing:0.01em; color:#e7eef3; background:rgba(6,10,16,0.88); border:1px solid rgba(45,212,191,0.35); border-radius:3px; padding:2px 7px; font-variant-numeric:tabular-nums; box-shadow:0 0 12px rgba(45,212,191,0.14);">${text}</div>
+    </div>`;
+}
+
+/** Wall-board callout: tail, trip id, destination, and ETA — ETD when parked. */
+export function compactCalloutLine({
+  airborne = false,
+  tail,
+  tripId,
+  destination,
+  etaLabel,
+  departureLabel,
+} = {}) {
+  const shown = displayAirport(destination);
+  const dest = shown ? `→ ${shown}` : '';
+  if (airborne) {
+    const clock = shortClock(etaLabel);
+    return [tail, tripId, dest, clock ? `ETA ${clock}` : ''].filter(Boolean).join('  ');
+  }
+  const clock = shortClock(departureLabel);
+  return [tail, tripId, dest, clock ? `ETD ${clock}` : ''].filter(Boolean).join('  ');
+}
+
+/**
+ * Push overlapping callouts apart. Markers are pixel positions of the icon.
+ * Returns `{ id, dy }` with dy applied to the label, not the aircraft.
+ */
+export function declutterCallouts(markers, {
+  labelWidth = 148,
+  labelHeight = 18,
+  gap = 4,
+  anchor = 22,
+} = {}) {
+  const placed = [];
+  const result = [];
+  const list = (Array.isArray(markers) ? markers : [])
+    .filter((item) => Number.isFinite(item?.x) && Number.isFinite(item?.y))
+    .sort((a, b) => a.y - b.y || a.x - b.x);
+  const hits = (rect) => placed.some((item) => (
+    rect.x < item.x + item.w + gap
+    && rect.x + rect.w + gap > item.x
+    && rect.y < item.y + item.h + gap
+    && rect.y + rect.h + gap > item.y
+  ));
+  for (const marker of list) {
+    const rectAt = (dy) => ({
+      x: marker.x + anchor,
+      y: marker.y - labelHeight / 2 + dy,
+      w: labelWidth,
+      h: labelHeight,
+    });
+    let dy = 0;
+    if (hits(rectAt(0))) {
+      for (let step = 1; step <= 12; step += 1) {
+        const down = step * (labelHeight + gap);
+        if (!hits(rectAt(down))) { dy = down; break; }
+        const up = -down;
+        if (!hits(rectAt(up))) { dy = up; break; }
+        dy = down;
+      }
+    }
+    placed.push(rectAt(dy));
+    result.push({ id: marker.id, dy });
+  }
+  return result;
+}
+
 /**
  * Aircraft marker. `heading` rotates the silhouette; the label block carries
  * tail, altitude and speed so the map is readable without a side panel.
+ * `compactCallout` is the wall board: one short line, shifted by declutter.
  */
 export function aircraftIcon(L, {
   tail,
@@ -402,7 +486,27 @@ export function aircraftIcon(L, {
   tripId = null,
   destination = null,
   etaLabel = null,
+  compactCallout = false,
+  labelDy = 0,
 } = {}) {
+  if (compactCallout) {
+    const size = 16;
+    const text = esc(compactCalloutLine({
+      airborne: true, tail, tripId, destination, etaLabel,
+    }));
+    return L.divIcon({
+      className: '',
+      iconSize: [size, size],
+      iconAnchor: [size / 2, size / 2],
+      html: `
+        <div style="position:relative; width:${size}px; height:${size}px;">
+          <svg width="${size}" height="${size}" viewBox="0 0 24 24" style="transform:rotate(${heading}deg); transform-origin:center;">
+            <path d="${PLANE_PATH}" fill="#f4f7fb" stroke="#070d18" stroke-width="0.8"/>
+          </svg>
+          ${showLabel && text ? compactCalloutHtml(size, text, labelDy) : ''}
+        </div>`,
+    });
+  }
   const size = selected ? 38 : muted ? 22 : 28;
   const color = selected ? '#5FD4F0' : muted ? '#6B8A96' : '#8FCADF';
   const glow = selected
@@ -450,25 +554,47 @@ const AIRPORT_TONES = {
 };
 
 /** Airport pin with its identifier set beside the dot. */
-export function airportIcon(L, { code, tone = 'neutral', small = false } = {}) {
+export function airportIcon(L, { code, tone = 'neutral', small = false, color = null } = {}) {
   const t = AIRPORT_TONES[tone] || AIRPORT_TONES.neutral;
+  const dotColor = color || t.dot;
   const dot = small ? 8 : 11;
+  const font = color
+    ? "'DM Sans', system-ui, sans-serif"
+    : "'JetBrains Mono', monospace";
+  const textColor = color || t.text;
   return L.divIcon({
     className: '',
     iconSize: [dot, dot],
     iconAnchor: [dot / 2, dot / 2],
     html: `
       <div style="position:relative;">
-        <div style="width:${dot}px; height:${dot}px; border-radius:50%; background:${t.dot}; border:2px solid #020617; box-shadow:0 0 0 2px ${t.dot}44;"></div>
-        ${code ? `<div style="position:absolute; left:${dot + 5}px; top:50%; transform:translateY(-50%); font-family:'JetBrains Mono',monospace; font-size:${small ? 9 : 10}px; font-weight:600; color:${t.text}; background:rgba(2,6,23,0.85); padding:1px 5px; border-radius:3px; white-space:nowrap;">${code}</div>` : ''}
+        <div style="width:${dot}px; height:${dot}px; border-radius:50%; background:${dotColor}; border:2px solid #020617; box-shadow:0 0 0 2px ${dotColor}44;"></div>
+        ${code ? `<div style="position:absolute; left:${dot + 5}px; top:50%; transform:translateY(-50%); font-family:${font}; font-size:${small ? 9 : 10}px; font-weight:600; color:${textColor}; background:rgba(2,6,23,0.85); padding:1px 5px; border-radius:3px; white-space:nowrap;">${code}</div>` : ''}
       </div>`,
   });
 }
 
 /** Parked aircraft: muted silhouette so airborne vs grounded is obvious. */
 export function groundedIcon(L, {
-  tail, at, selected = false, muted = false, tripId = null, departureLabel = null,
+  tail, at, selected = false, muted = false, tripId = null, destination = null, departureLabel = null,
+  compactCallout = false, labelDy = 0,
 } = {}) {
+  if (compactCallout) {
+    const size = 12;
+    const text = esc(compactCalloutLine({
+      airborne: false, tail, tripId, destination, departureLabel,
+    }));
+    return L.divIcon({
+      className: '',
+      iconSize: [size, size],
+      iconAnchor: [size / 2, size / 2],
+      html: `
+        <div style="position:relative; width:${size}px; height:${size}px;">
+          <div style="width:${size}px; height:${size}px; border-radius:50%; background:#8b95a8; border:2px solid #070d18;"></div>
+          ${text ? compactCalloutHtml(size, text, labelDy) : ''}
+        </div>`,
+    });
+  }
   const size = selected ? 22 : muted ? 14 : 16;
   const fill = selected ? '#cbd5e1' : muted ? '#475569' : '#94a3b8';
   const ring = selected

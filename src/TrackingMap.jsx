@@ -27,7 +27,7 @@ import {
 import {
   loadLeaflet, BASEMAP_ORDER, applyBasemap, clearBasemap, createRadarLayer,
   currentMapTheme, drawAltitudeTrail, ALTITUDE_LEGEND, altitudeColor, aircraftIcon,
-  airportIcon, groundedIcon, standardBasemapSpec,
+  airportIcon, groundedIcon, standardBasemapSpec, declutterCallouts, compactCalloutLine,
 } from './tracking-map.js';
 import {
   APPLE_BASEMAP_LABELS,
@@ -74,6 +74,21 @@ export default function TrackingMap({
    * the user pans or zooms. Single-flight maps keep the fitKey behaviour.
    */
   followFleet = false,
+  /**
+   * Wall display frames every managed tail, not only the airborne ones,
+   * and keeps following as those positions move.
+   */
+  frameAllTails = false,
+  fitPadding = null,
+  /**
+   * Wall display. No zoom control, layer menu, radar button, or gestures,
+   * so followFleet keeps framing the fleet after an accidental touch.
+   */
+  passive = false,
+  /** Wall board: one-line callouts shifted so they do not cover each other. */
+  compactCallouts = false,
+  /** Radar layer opacity. The wall board holds it near one half. */
+  radarOpacity = 0.55,
 }) {
   const containerRef = useRef(null);
   const googleContainerRef = useRef(null);
@@ -97,6 +112,7 @@ export default function TrackingMap({
   const [layersOpen, setLayersOpen] = useState(false);
   const [mapProvider, setMapProvider] = useState('checking');
   const [theme, setTheme] = useState(currentMapTheme);
+  const [viewEpoch, setViewEpoch] = useState(0);
 
   const aircraft = Array.isArray(scene.aircraft) ? scene.aircraft : [];
   const airports = Array.isArray(scene.airports) ? scene.airports : [];
@@ -131,8 +147,22 @@ export default function TrackingMap({
           zoomControl: false,
           attributionControl: true,
           worldCopyJump: false,
+          dragging: !passive,
+          scrollWheelZoom: !passive,
+          doubleClickZoom: !passive,
+          touchZoom: !passive,
+          boxZoom: !passive,
+          keyboard: !passive,
         });
-        L.control.zoom({ position: 'bottomright' }).addTo(map);
+        if (!passive) L.control.zoom({ position: 'bottomright' }).addTo(map);
+        if (passive) {
+          map.dragging?.disable();
+          map.scrollWheelZoom?.disable();
+          map.doubleClickZoom?.disable();
+          map.touchZoom?.disable();
+          map.boxZoom?.disable();
+          map.keyboard?.disable();
+        }
         if (map.attributionControl) map.attributionControl.setPrefix(false);
 
         const hideApple = () => {
@@ -312,8 +342,9 @@ export default function TrackingMap({
       }
     };
     // basemapDefault is an initial value only; switching is handled below.
+    // passive is read at creation because it decides whether gestures exist.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [passive]);
 
   /* ─── Basemap switching ────────────────────────────────────────────────── */
   useEffect(() => {
@@ -347,13 +378,13 @@ export default function TrackingMap({
       return;
     }
     radarRef.current = createRadarLayer(window.L, mapRef.current, {
-      opacity: 0.55,
+      opacity: radarOpacity,
       onFrame: (epochSeconds) => setRadarFrameAt(epochSeconds * 1000),
     });
     return () => {
       if (radarRef.current) { radarRef.current.destroy(); radarRef.current = null; }
     };
-  }, [ready, radarOn]);
+  }, [ready, radarOn, radarOpacity]);
 
   /* ─── Keep Leaflet's size cache honest ─────────────────────────────────── */
   useEffect(() => {
@@ -411,11 +442,38 @@ export default function TrackingMap({
     airports.forEach((a) => {
       if (!Number.isFinite(a?.lat) || !Number.isFinite(a?.lon)) return;
       L.marker([a.lat, a.lon], {
-        icon: airportIcon(L, { code: a.code, tone: a.tone || 'neutral', small: a.small }),
+        icon: airportIcon(L, {
+          code: a.hideCode ? null : a.code,
+          tone: a.tone || 'neutral',
+          small: a.small,
+          color: a.color || null,
+        }),
         interactive: false,
         zIndexOffset: 400,
       }).addTo(group);
     });
+
+    const labelDy = {};
+    if (compactCallouts && mapRef.current) {
+      const locatedAircraft = aircraft.filter((item) => Number.isFinite(item?.lat) && Number.isFinite(item?.lon));
+      const labelWidth = locatedAircraft.reduce((width, item) => {
+        const text = compactCalloutLine({
+          airborne: item.airborne === true,
+          tail: item.tail,
+          tripId: item.tripId,
+          destination: item.destination,
+          etaLabel: item.etaLabel,
+          departureLabel: item.departureLabel,
+        });
+        return Math.max(width, Math.min(340, Math.ceil(text.length * 7.1) + 18));
+      }, 160);
+      const points = locatedAircraft.map((item) => {
+        const point = mapRef.current.latLngToContainerPoint([item.lat, item.lon]);
+        return { id: item.id, x: point.x, y: point.y };
+      });
+      declutterCallouts(points, { labelWidth, labelHeight: 20, gap: 6, anchor: 20 })
+        .forEach((item) => { labelDy[item.id] = item.dy; });
+    }
 
     // Parked aircraft first so airborne markers and their labels sit on top.
     aircraft
@@ -430,11 +488,15 @@ export default function TrackingMap({
             selected,
             muted: Boolean(selectedId) && !selected,
             tripId: a.tripId,
+            destination: a.destination,
             departureLabel: a.departureLabel,
+            compactCallout: compactCallouts,
+            labelDy: labelDy[a.id] || 0,
           }),
+          interactive: !passive,
           zIndexOffset: selected ? 700 : 50,
         }).addTo(group);
-        if (onSelectAircraft) marker.on('click', () => onSelectAircraft(a.id));
+        if (!passive && onSelectAircraft) marker.on('click', () => onSelectAircraft(a.id));
       });
 
     aircraft
@@ -454,12 +516,15 @@ export default function TrackingMap({
             tripId: a.tripId,
             destination: a.destination,
             etaLabel: a.etaLabel,
+            compactCallout: compactCallouts,
+            labelDy: labelDy[a.id] || 0,
           }),
+          interactive: !passive,
           zIndexOffset: selected ? 1000 : 200,
         }).addTo(group);
-        if (onSelectAircraft) marker.on('click', () => onSelectAircraft(a.id));
+        if (!passive && onSelectAircraft) marker.on('click', () => onSelectAircraft(a.id));
       });
-  }, [ready, scene, routes, airports, aircraft, selectedId, onSelectAircraft, trailOn]);
+  }, [ready, scene, routes, airports, aircraft, selectedId, onSelectAircraft, trailOn, passive, compactCallouts, viewEpoch]);
 
   /* ─── Fit ─────────────────────────────────────────────────────────────── */
   const fitScene = useCallback(() => {
@@ -521,31 +586,58 @@ export default function TrackingMap({
   const fittingRef = useRef(false);
   const fitFleetBounds = useCallback(() => {
     if (!mapRef.current || !window.L) return;
-    const targets = fleetFitPositions(aircraft);
-    if (targets.length === 0) return;
+    const located = aircraft.filter((item) => Number.isFinite(item?.lat) && Number.isFinite(item?.lon));
+    const targets = frameAllTails ? located : fleetFitPositions(aircraft);
+    const latLngs = targets.map((item) => [item.lat, item.lon]);
+    if (frameAllTails) {
+      airports.forEach((item) => {
+        if (Number.isFinite(item?.lat) && Number.isFinite(item?.lon)) latLngs.push([item.lat, item.lon]);
+      });
+      routes.forEach((route) => {
+        if (!Array.isArray(route?.points)) return;
+        route.points.forEach((point) => {
+          if (Array.isArray(point) && Number.isFinite(point[0]) && Number.isFinite(point[1])) latLngs.push(point);
+        });
+      });
+    }
+    if (latLngs.length === 0) return;
     fittingRef.current = true;
     try {
-      if (targets.length === 1) {
-        mapRef.current.setView([targets[0].lat, targets[0].lon], 8, { animate: true });
+      if (latLngs.length === 1) {
+        mapRef.current.setView(latLngs[0], 8, { animate: true });
       } else {
-        mapRef.current.fitBounds(window.L.latLngBounds(targets.map((item) => [item.lat, item.lon])), {
-          paddingTopLeft: [48, 48],
-          paddingBottomRight: [56, 160],
-          maxZoom: 8,
+        const padRight = frameAllTails ? (fitPadding?.right ?? 220) : 56;
+        const padBottom = frameAllTails ? (fitPadding?.bottom ?? 36) : 160;
+        const padLeft = frameAllTails ? (fitPadding?.left ?? 56) : 48;
+        const padTop = frameAllTails ? (fitPadding?.top ?? 40) : 48;
+        mapRef.current.fitBounds(window.L.latLngBounds(latLngs), {
+          paddingTopLeft: [padLeft, padTop],
+          paddingBottomRight: [padRight, padBottom],
+          maxZoom: frameAllTails ? 6.5 : 8,
           animate: true,
           duration: 0.45,
         });
       }
     } catch { /* degenerate bounds */ }
     queueMicrotask(() => { fittingRef.current = false; });
-  }, [aircraft]);
+  }, [aircraft, airports, routes, frameAllTails, fitPadding]);
 
   const fitAll = useCallback(() => {
     userMovedRef.current = false;
     fitFleetBounds();
   }, [fitFleetBounds]);
 
-  const fleetSignature = fleetFitSignature(aircraft);
+  const fleetSignature = frameAllTails
+    ? [
+      aircraft
+        .filter((item) => Number.isFinite(item?.lat) && Number.isFinite(item?.lon))
+        .map((item) => `${item.id}:${Number(item.lat).toFixed(3)},${Number(item.lon).toFixed(3)}`)
+        .sort()
+        .join('|'),
+      airports.map((item) => item.code).join(','),
+      String(routes.length),
+    ].join('::')
+    : fleetFitSignature(aircraft);
   useEffect(() => {
     if (!ready || !followFleet || userMovedRef.current || !fleetSignature) return;
     fitFleetBounds();
@@ -553,7 +645,7 @@ export default function TrackingMap({
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!ready || !followFleet || !map) return undefined;
+    if (!ready || !followFleet || passive || !map) return undefined;
     const noteUserGesture = () => {
       if (!fittingRef.current) userMovedRef.current = true;
     };
@@ -563,7 +655,15 @@ export default function TrackingMap({
       map.off('dragstart', noteUserGesture);
       map.off('zoomstart', noteUserGesture);
     };
-  }, [ready, followFleet]);
+  }, [ready, followFleet, passive]);
+
+  useEffect(() => {
+    if (!ready || !compactCallouts || !mapRef.current) return undefined;
+    const map = mapRef.current;
+    const bump = () => setViewEpoch((value) => value + 1);
+    map.on('moveend', bump);
+    return () => map.off('moveend', bump);
+  }, [ready, compactCallouts]);
 
   const radarLabel = radarFrameAt
     ? new Date(radarFrameAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -582,6 +682,7 @@ export default function TrackingMap({
       ref={frameRef}
       className={cx(
         'relative overflow-hidden bg-slate-950',
+        passive && 'pointer-events-none',
         fullscreen ? 'fixed inset-0 z-[2000] sw-safe-inset' : className,
       )}
       style={fullscreen ? undefined : style}
@@ -617,8 +718,9 @@ export default function TrackingMap({
       )}
 
       {/* Controls. Leaflet's own panes sit below z-400, so 500+ keeps these
-          above tiles and markers without fighting the zoom control. */}
-      <div className={cx('sw-map-controls absolute z-[500] flex flex-col items-end', compact ? 'gap-1.5' : 'gap-2')}>
+          above tiles and markers without fighting the zoom control.
+          A passive wall display has none of them. */}
+      {!passive && <div className={cx('sw-map-controls absolute z-[500] flex flex-col items-end', compact ? 'gap-1.5' : 'gap-2')}>
         <div className="flex gap-1.5">
           <MapButton
             icon={CloudRain}
@@ -694,7 +796,25 @@ export default function TrackingMap({
             title={fullscreen ? 'Exit fullscreen' : 'Fullscreen map'}
           />
         </div>
-      </div>
+      </div>}
+
+      {passive && radarOn && (
+        <div
+          className="pointer-events-none absolute z-[500]"
+          data-board-radar={radarLabel || 'live'}
+          style={{
+            right: 8,
+            bottom: 8,
+            fontFamily: "'DM Sans', system-ui, sans-serif",
+            fontSize: 12,
+            letterSpacing: '0.08em',
+            color: '#8b95a8',
+            textShadow: '0 1px 2px #070d18',
+          }}
+        >
+          RADAR {radarLabel || 'LIVE'}
+        </div>
+      )}
 
       {showLegend && trailOn && scene.trail && (
         <div className="sw-map-legend absolute z-[500] rounded-lg border border-edge bg-surface/90 px-2.5 py-2 shadow-card backdrop-blur">

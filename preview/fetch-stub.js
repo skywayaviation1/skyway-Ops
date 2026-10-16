@@ -790,7 +790,30 @@ export function installFetchStub() {
     if (path === '/api/quickbooks-workspace') return json(quickbooksResponse(action));
     if (path === '/api/quickbooks-status') return json(QBO_CONNECTION);
     if (path === '/api/faa-notams') return json({ ok: true, notams: [] });
-    if (path.startsWith('/api/airport-weather')) return json({ ok: true, parsed: null });
+    if (path.startsWith('/api/airport-weather')) {
+      const requested = new URL(url, 'http://preview.local').searchParams.get('icao') || '';
+      const icao = requested.toUpperCase();
+      const samples = {
+        KIAD: { flightCategory: 'VFR', windDir: 280, windKt: 8, visibilitySm: 10, ceilingFt: null },
+        KHYA: { flightCategory: 'MVFR', windDir: 220, windKt: 14, visibilitySm: 4, ceilingFt: 1800 },
+        KAPF: { flightCategory: 'VFR', windDir: 140, windKt: 6, visibilitySm: 10, ceilingFt: null },
+        KDFW: { flightCategory: 'IFR', windDir: 180, windKt: 16, windGustKt: 24, visibilitySm: 2, ceilingFt: 700 },
+        KTEB: { flightCategory: 'MVFR', windDir: 310, windKt: 12, visibilitySm: 5, ceilingFt: 2200 },
+        KPBI: { flightCategory: 'VFR', windDir: 90, windKt: 9, visibilitySm: 10, ceilingFt: null },
+        KOPF: { flightCategory: 'VFR', windDir: 120, windKt: 7, visibilitySm: 10, ceilingFt: null },
+        KFXE: { flightCategory: 'VFR', windDir: 110, windKt: 5, visibilitySm: 10, ceilingFt: null },
+        KFLL: { flightCategory: 'VFR', windDir: 130, windKt: 11, visibilitySm: 8, ceilingFt: null },
+        KMDW: { flightCategory: 'MVFR', windDir: 200, windKt: 15, visibilitySm: 4, ceilingFt: 2500 },
+        KCHS: { flightCategory: 'VFR', windDir: 40, windKt: 6, visibilitySm: 10, ceilingFt: null },
+        KBNA: { flightCategory: 'VFR', windDir: 250, windKt: 10, visibilitySm: 10, ceilingFt: null },
+        KTVC: { flightCategory: 'VFR', windDir: 300, windKt: 4, visibilitySm: 10, ceilingFt: null },
+      };
+      const metar = {
+        observedTime: new Date().toISOString(),
+        ...(samples[icao] || { flightCategory: 'VFR', windDir: 270, windKt: 8, visibilitySm: 10, ceilingFt: null }),
+      };
+      return json({ ok: true, icao, metar, parsed: metar });
+    }
     if (path === '/api/apple-mapkit-token') {
       // ?mapkit=fail mounts MapKit with a token Apple will reject, so the
       // screenshot harness can prove the cream grid is replaced by tiles.
