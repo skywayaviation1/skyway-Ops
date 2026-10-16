@@ -398,30 +398,48 @@ function displayAirport(code) {
   return value;
 }
 
-/** One-line wall callout. `dy` is the declutter shift in pixels. */
+/** Parked wall callout. Airborne callouts are a larger block. */
 function compactCalloutHtml(size, text, dy = 0) {
   const shift = Number(dy) || 0;
   return `
-    <div style="position:absolute; left:${size + 8}px; top:50%; transform:translateY(calc(-50% + ${shift}px)); pointer-events:none; white-space:nowrap; z-index:2;">
-      <div style="font-family:'DM Sans',system-ui,sans-serif; font-size:12px; font-weight:500; line-height:16px; letter-spacing:0.01em; color:#e7eef3; background:rgba(6,10,16,0.88); border:1px solid rgba(45,212,191,0.35); border-radius:3px; padding:2px 7px; font-variant-numeric:tabular-nums; box-shadow:0 0 12px rgba(45,212,191,0.14);">${text}</div>
+    <div style="position:absolute; left:${size + 6}px; top:50%; transform:translateY(calc(-50% + ${shift}px)); pointer-events:none; white-space:nowrap; z-index:2;">
+      <div style="font-family:'DM Sans',system-ui,sans-serif; font-size:14px; font-weight:500; line-height:18px; letter-spacing:0.01em; color:#c5d0da; background:rgba(6,10,16,0.82); border:1px solid rgba(148,163,184,0.28); border-radius:3px; padding:2px 7px; font-variant-numeric:tabular-nums;">${text}</div>
     </div>`;
 }
 
-/** Wall-board callout: tail, trip id, destination, and ETA — ETD when parked. */
+function airborneCalloutHtml(size, { tail, route, eta, tripId }, dy = 0) {
+  const shift = Number(dy) || 0;
+  return `
+    <div style="position:absolute; left:${size + 10}px; top:50%; transform:translateY(calc(-50% + ${shift}px)); pointer-events:none; white-space:nowrap; z-index:3;">
+      <div style="font-family:'DM Sans',system-ui,sans-serif; color:#e7eef3; background:rgba(4,16,14,0.92); border:1px solid rgba(52,211,153,0.7); border-radius:6px; padding:6px 10px; font-variant-numeric:tabular-nums; box-shadow:0 0 18px rgba(52,211,153,0.35);">
+        <div style="font-size:20px; font-weight:700; line-height:22px; letter-spacing:0.04em;">${tail}</div>
+        ${route ? `<div style="font-size:16px; font-weight:600; line-height:20px; margin-top:1px;">${route}</div>` : ''}
+        ${eta ? `<div style="font-size:22px; font-weight:700; line-height:26px; color:#34d399; margin-top:1px;">${eta}</div>` : ''}
+        ${tripId ? `<div style="font-size:13px; line-height:16px; color:#9fb0bd; margin-top:1px;">${tripId}</div>` : ''}
+      </div>
+    </div>`;
+}
+
+/** Wall-board callout. Airborne lines lead with the route and a large ETA. */
 export function compactCalloutLine({
   airborne = false,
   tail,
   tripId,
+  origin,
   destination,
   etaLabel,
+  remainLabel,
   departureLabel,
 } = {}) {
   const shown = displayAirport(destination);
-  const dest = shown ? `→ ${shown}` : '';
+  const from = displayAirport(origin);
   if (airborne) {
+    const route = [from, shown].filter(Boolean).join(' → ');
     const clock = shortClock(etaLabel);
-    return [tail, tripId, dest, clock ? `ETA ${clock}` : ''].filter(Boolean).join('  ');
+    const eta = [clock ? `ETA ${clock}` : '', remainLabel].filter(Boolean).join('  ');
+    return [tail, route, eta, tripId].filter(Boolean).join('  ');
   }
+  const dest = shown ? `→ ${shown}` : '';
   const clock = shortClock(departureLabel);
   return [tail, tripId, dest, clock ? `ETD ${clock}` : ''].filter(Boolean).join('  ');
 }
@@ -440,7 +458,7 @@ export function declutterCallouts(markers, {
   const result = [];
   const list = (Array.isArray(markers) ? markers : [])
     .filter((item) => Number.isFinite(item?.x) && Number.isFinite(item?.y))
-    .sort((a, b) => a.y - b.y || a.x - b.x);
+    .sort((a, b) => (b.priority || 0) - (a.priority || 0) || a.y - b.y || a.x - b.x);
   const hits = (rect) => placed.some((item) => (
     rect.x < item.x + item.w + gap
     && rect.x + rect.w + gap > item.x
@@ -448,16 +466,19 @@ export function declutterCallouts(markers, {
     && rect.y + rect.h + gap > item.y
   ));
   for (const marker of list) {
+    const width = marker.w || labelWidth;
+    const height = marker.h || labelHeight;
+    const markAnchor = marker.anchor ?? anchor;
     const rectAt = (dy) => ({
-      x: marker.x + anchor,
-      y: marker.y - labelHeight / 2 + dy,
-      w: labelWidth,
-      h: labelHeight,
+      x: marker.x + markAnchor,
+      y: marker.y - height / 2 + dy,
+      w: width,
+      h: height,
     });
     let dy = 0;
     if (hits(rectAt(0))) {
-      for (let step = 1; step <= 12; step += 1) {
-        const down = step * (labelHeight + gap);
+      for (let step = 1; step <= 16; step += 1) {
+        const down = step * (height + gap);
         if (!hits(rectAt(down))) { dy = down; break; }
         const up = -down;
         if (!hits(rectAt(up))) { dy = up; break; }
@@ -485,25 +506,39 @@ export function aircraftIcon(L, {
   muted = false,
   tripId = null,
   destination = null,
+  origin = null,
   etaLabel = null,
+  remainLabel = null,
   compactCallout = false,
   labelDy = 0,
 } = {}) {
   if (compactCallout) {
-    const size = 16;
-    const text = esc(compactCalloutLine({
-      airborne: true, tail, tripId, destination, etaLabel,
-    }));
+    const size = 32;
+    const fromCode = displayAirport(origin);
+    const destCode = displayAirport(destination);
+    const route = fromCode && destCode ? `${fromCode} → ${destCode}` : destCode ? `→ ${destCode}` : fromCode;
+    const clock = shortClock(etaLabel);
+    const eta = esc([clock ? `ETA ${clock}` : '', remainLabel].filter(Boolean).join('  '));
+    const text = compactCalloutLine({
+      airborne: true, tail, tripId, origin, destination, etaLabel, remainLabel,
+    });
     return L.divIcon({
       className: '',
       iconSize: [size, size],
       iconAnchor: [size / 2, size / 2],
       html: `
         <div style="position:relative; width:${size}px; height:${size}px;">
-          <svg width="${size}" height="${size}" viewBox="0 0 24 24" style="transform:rotate(${heading}deg); transform-origin:center;">
-            <path d="${PLANE_PATH}" fill="#f4f7fb" stroke="#070d18" stroke-width="0.8"/>
+          <span style="position:absolute; inset:-10px; border-radius:50%; border:2px solid rgba(52,211,153,0.85); box-shadow:0 0 16px rgba(52,211,153,0.85); animation:occPulse 1.8s ease-out infinite;"></span>
+          <svg width="${size}" height="${size}" viewBox="0 0 24 24" style="position:relative; transform:rotate(${heading}deg); transform-origin:center; filter:drop-shadow(0 0 6px rgba(52,211,153,0.95));">
+            <path d="${PLANE_PATH}" fill="#34d399" stroke="#04221e" stroke-width="0.7"/>
           </svg>
-          ${showLabel && text ? compactCalloutHtml(size, text, labelDy) : ''}
+          ${showLabel && text ? airborneCalloutHtml(size, {
+            tail: esc(tail),
+            route: esc(route),
+            eta,
+            tripId: esc(tripId || ''),
+          }, labelDy) : ''}
+          <style>@keyframes occPulse { from { transform: scale(0.75); opacity: 0.9; } to { transform: scale(1.55); opacity: 0; } }</style>
         </div>`,
     });
   }
@@ -580,7 +615,7 @@ export function groundedIcon(L, {
   compactCallout = false, labelDy = 0,
 } = {}) {
   if (compactCallout) {
-    const size = 12;
+    const size = 10;
     const text = esc(compactCalloutLine({
       airborne: false, tail, tripId, destination, departureLabel,
     }));

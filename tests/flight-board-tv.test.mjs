@@ -42,7 +42,9 @@ test('the operations wall keeps the map near 70 percent and fits the rail withou
 
   const gantt = occGanttMetrics(8);
   assert.equal(gantt.height, gantt.axis + 8 * gantt.row);
-  assert.ok(gantt.height <= 200);
+  assert.ok(gantt.row >= 30, `gantt row ${gantt.row}`);
+  assert.ok(gantt.label >= 120, `tail column ${gantt.label}`);
+  assert.ok(gantt.height <= 320, `gantt height ${gantt.height}`);
   const panelHeight = TV_DESIGN_HEIGHT - TV_HEADER_PX - gantt.height;
   assert.equal(TV_HEADER_PX + panelHeight + gantt.height, 1080);
 
@@ -312,6 +314,14 @@ test('airborne routes split into a solid flown arc and a dashed remainder', () =
   assert.equal(timeline.rows.length, 2);
   assert.equal(timeline.rows[0].bars[0].tripId, 'WEQVQD');
   assert.ok(timeline.nowRatio > 0 && timeline.nowRatio < 1);
+  assert.match(timeline.nowLabel, /\d{1,2}:\d{2}/);
+  assert.ok(timeline.ticks.length >= 8, `hour ticks ${timeline.ticks.length}`);
+  assert.match(timeline.ticks[0].label, /^\d{1,2}[ap]$/);
+  const spanHours = (timeline.endMs - timeline.startMs) / 3_600_000;
+  assert.ok(spanHours <= 16 && spanHours >= 11, `window ${spanHours}h`);
+  const airBar = timeline.rows[0].bars[0];
+  assert.equal(airBar.phase, 'airborne');
+  assert.ok(airBar.progress > 0.2 && airBar.progress < 0.5, `progress ${airBar.progress}`);
   assert.ok(timeline.rows.every((row) => row.bars.every((bar) => bar.left >= 0 && bar.left + bar.width <= 1.001)));
 });
 

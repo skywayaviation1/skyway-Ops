@@ -9,10 +9,38 @@ import { TRIPS } from '../sample-data.js';
 
 const noop = async () => {};
 
+/** The shape the cron used to store: flag false, off-block only, or a string flag. */
+function productionShape(positions) {
+  const out = {};
+  let flying = 0;
+  for (const [tail, raw] of Object.entries(positions)) {
+    if (raw?.airborne !== true) {
+      out[tail] = raw;
+      continue;
+    }
+    flying += 1;
+    if (flying === 1) {
+      out[tail] = {
+        ...raw,
+        airborne: false,
+        actualOff: null,
+        actualOut: raw.actualOff || raw.actualOut || new Date().toISOString(),
+        actualOn: null,
+        latitude: null,
+        longitude: null,
+      };
+    } else {
+      out[tail] = { ...raw, airborne: 'true' };
+    }
+  }
+  return out;
+}
+
 function positionsForBoard() {
   const positions = fleetPositions();
   if (typeof window === 'undefined') return positions;
   const boardCase = new URLSearchParams(window.location.search).get('boardCase');
+  if (boardCase === 'production') return productionShape(positions);
   if (boardCase !== 'parked') return positions;
   const parked = {};
   for (const [tail, raw] of Object.entries(positions)) {
@@ -20,7 +48,15 @@ function positionsForBoard() {
       parked[tail] = {
         ...raw,
         airborne: false,
+        actualOff: null,
+        actualOut: null,
+        actualOn: raw.estimatedOn || raw.actualOff || null,
+        progressPercent: null,
+        groundspeed: 0,
+        altitude: 0,
         estimatedOn: null,
+        latitude: null,
+        longitude: null,
         groundedLat: raw.latitude,
         groundedLon: raw.longitude,
         groundedAt: raw.destination || raw.origin || null,
