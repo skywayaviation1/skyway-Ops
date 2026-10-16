@@ -1,0 +1,31 @@
+rules_version = '2';
+// White-label board fragment for the named Firestore database `appusers`.
+//
+// DO NOT deploy this file by itself. Production `appusers` rules are not
+// stored in this repository. firebase.json deploys rules only for the
+// `appreview` database. Deploying this fragment as the database ruleset
+// would replace every other collection's rules.
+//
+// Merge the matches below into the deployed `appusers` rules so they are
+// the only matches that apply to these collections. Firestore ORs every
+// matching allow, so a wildcard `match /{document=**}` that allows any
+// signed-in read would expose feed URLs. Exclude both collections from
+// that wildcard.
+//
+// Clients never read or write these collections. Create, edit, delete,
+// token rotation, and logo metadata go through /api/white-label-boards,
+// which admits only active, approved ops and admin users. The public wall
+// reads one board through /api/white-label-board and never receives the
+// feed URL. The Admin SDK bypasses these rules; a direct client read or
+// write would skip that gate.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /white-label-boards/{boardId} {
+      allow read, write: if false;
+    }
+    match /white-label-feed-cache/{boardId} {
+      allow read, write: if false;
+    }
+  }
+}

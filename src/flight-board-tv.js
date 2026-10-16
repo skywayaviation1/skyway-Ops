@@ -620,8 +620,9 @@ export function placeBoardAircraft(aircraft, {
  * aircraft and dashed onward. Upcoming legs are dashed. Landed legs are a
  * muted solid.
  */
-export function buildOccRoutes({ trips = [], phaseOf, aircraft = [] } = {}) {
+export function buildOccRoutes({ trips = [], phaseOf, aircraft = [], accent = OCC_ACCENT } = {}) {
   const routes = [];
+  const routeAccent = accent || OCC_ACCENT;
   for (const trip of trips) {
     const from = airportLatLon(trip?.info?.from);
     const to = airportLatLon(trip?.info?.to);
@@ -656,7 +657,7 @@ export function buildOccRoutes({ trips = [], phaseOf, aircraft = [] } = {}) {
     } else {
       routes.push({
         points: greatCircleArc(from, to, 24),
-        color: OCC_ACCENT,
+        color: routeAccent,
         weight: 1.75,
         opacity: 0.62,
         dashed: true,

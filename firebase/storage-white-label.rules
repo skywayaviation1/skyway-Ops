@@ -1,0 +1,26 @@
+rules_version = '2';
+// White-label logo fragment for Firebase Storage.
+//
+// DO NOT deploy this file by itself. Storage rules are not deployed by
+// firebase.json. Deploying this fragment as the bucket ruleset would
+// replace every other object's rules.
+//
+// Merge the match below into the deployed Storage rules so it is the only
+// match for this prefix. Storage ORs every matching allow, so a wildcard
+// that allows signed-in reads would publish every company logo (and any
+// object an admin upload put here) without the board token. Exclude
+// `white-label-boards/` from that wildcard.
+//
+// Clients never read or write these objects. Uploads go through
+// /api/white-label-boards (active, approved ops and admin only). Public
+// bytes are streamed by /api/white-label-logo after the board token is
+// checked and only while that board is enabled. The Admin SDK bypasses
+// these rules.
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /white-label-boards/{boardId}/{fileName} {
+      allow read, write: if false;
+    }
+  }
+}

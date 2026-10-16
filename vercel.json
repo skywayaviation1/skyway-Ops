@@ -58,6 +58,12 @@
     },
     "api/schedule-legs-cron.js": {
       "maxDuration": 60
+    },
+    "api/white-label-board.js": {
+      "maxDuration": 30
+    },
+    "api/white-label-boards.js": {
+      "maxDuration": 30
     }
   },
   "rewrites": [
