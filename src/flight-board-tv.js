@@ -2,7 +2,12 @@
 // The compact schedule card does not use this module.
 
 import { lookupCoords } from './airport-coords.js';
+import { positionSaysAirborne } from './flightaware-active.js';
 import { buildFleetMapScene, fleetMarkerCallout, formatMarkerTime, readTripId } from './fleet-tracking.js';
+
+/** A departure this close to its ETD is treated as out, matching the office TV. */
+export const BOARD_AIRBORNE_EARLY_MS = 40 * 60 * 1000;
+const BOARD_AIRBORNE_LATE_MS = 45 * 60 * 1000;
 
 export const TV_DESIGN_WIDTH = 1920;
 export const TV_DESIGN_HEIGHT = 1080;
@@ -55,12 +60,12 @@ export function occMapShare(frameWidth = TV_DESIGN_WIDTH, panelWidth = TV_PANEL_
  * Compact Gantt under the map. Row height shrinks so every tail stays on
  * screen, and the strip itself stays short enough that the map remains the hero.
  */
-export function occGanttMetrics(tailCount, { maxHeight = 200 } = {}) {
+export function occGanttMetrics(tailCount, { maxHeight = 320 } = {}) {
   const count = Math.max(0, Number(tailCount) || 0);
-  if (count === 0) return { axis: 0, row: 0, height: 0 };
-  const axis = 18;
-  const row = Math.max(16, Math.min(22, Math.floor((maxHeight - axis) / count)));
-  return { axis, row, height: axis + count * row };
+  if (count === 0) return { axis: 0, row: 0, height: 0, label: 0 };
+  const axis = 28;
+  const row = Math.max(30, Math.min(40, Math.floor((maxHeight - axis) / count)));
+  return { axis, row, height: axis + count * row, label: 124 };
 }
 
 /**
@@ -76,15 +81,15 @@ export function occPanelBudget({
   const airN = Math.max(0, Number(airborneCount) || 0);
   const depN = Math.max(0, Number(departureCount) || 0);
   const tails = Math.max(0, Number(tailCount) || 0);
-  const label = 22;
+  const label = 26;
   const fleetCols = 4;
   const fleetRows = tails === 0 ? 0 : Math.max(1, Math.ceil(tails / fleetCols));
-  const fleetRow = 24;
+  const fleetRow = 26;
   const pad = 8;
   const fixed = label * 3 + fleetRows * fleetRow + pad;
   const room = Math.max(0, height - fixed);
-  const airIdeal = 66;
-  const depIdeal = 30;
+  const airIdeal = 96;
+  const depIdeal = 32;
   const airGap = 6;
   const airGaps = airN > 1 ? (airN - 1) * airGap : 0;
   let airCard = airN === 0 ? 0 : airIdeal;
@@ -444,6 +449,165 @@ export function greatCircleArc(from, to, steps = 32) {
   return points;
 }
 
+function boardAirportsMatch(a, b) {
+  const left = String(a || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const right = String(b || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (!left || !right) return false;
+  if (left === right) return true;
+  const strip = (code) => (code.length === 4 && code.startsWith('K') ? code.slice(1) : code);
+  return strip(left) === strip(right);
+}
+
+function boardState(tripStates, uid) {
+  if (!tripStates || !uid) return null;
+  if (typeof tripStates.get === 'function') return tripStates.get(uid) || null;
+  return tripStates[uid] || null;
+}
+
+function boardLegTimes(trip) {
+  const start = new Date(trip?.start).getTime();
+  const endRaw = new Date(trip?.end).getTime();
+  const end = Number.isFinite(endRaw) ? endRaw : (Number.isFinite(start) ? start + 2.5 * 3_600_000 : NaN);
+  return { start, end };
+}
+
+function legHasLanded(state) {
+  return Boolean(state?.completed || state?.archived || state?.statuses?.landed);
+}
+
+/**
+ * One airborne leg per tail.
+ *
+ * FlightAware's boolean is not required. A leg inside its block, up to 40
+ * minutes before ETD, or still inside 45 minutes after the scheduled arrival
+ * is airborne unless the crew or FlightAware has recorded the landing.
+ * That is the case the office TV showed as "N341CJ GYH ETD 9:00" at 8:37.
+ */
+export function boardAirbornePlan({ trips = [], positions = {}, tripStates = null, now = Date.now() } = {}) {
+  const byTail = new Map();
+  for (const trip of trips) {
+    const tail = String(trip?.info?.tail || '').toUpperCase();
+    if (!tail) continue;
+    if (!byTail.has(tail)) byTail.set(tail, []);
+    byTail.get(tail).push(trip);
+  }
+  const chosen = new Map();
+  for (const [tail, legs] of byTail) {
+    const fa = positions?.[tail] || null;
+    const evidence = positionSaysAirborne(fa);
+    const landedAfterStart = (trip) => {
+      const { start } = boardLegTimes(trip);
+      const on = new Date(fa?.actualOn).getTime();
+      return Number.isFinite(on) && Number.isFinite(start) && on >= start;
+    };
+    const scored = legs
+      .filter((trip) => !legHasLanded(boardState(tripStates, trip.uid)))
+      .filter((trip) => !landedAfterStart(trip))
+      .map((trip) => {
+        const { start, end } = boardLegTimes(trip);
+        const inBlock = Number.isFinite(start) && Number.isFinite(end) && now >= start && now < end;
+        const early = Number.isFinite(start) && now >= start - BOARD_AIRBORNE_EARLY_MS && now < start;
+        const late = Number.isFinite(end) && now >= end && now < end + BOARD_AIRBORNE_LATE_MS;
+        let score = 0;
+        if (evidence && boardAirportsMatch(trip?.info?.from, fa?.origin)) score += 100;
+        if (evidence && boardAirportsMatch(trip?.info?.to, fa?.destination)) score += 40;
+        if (inBlock) score += 50;
+        if (early) score += 20;
+        if (late) score += 25;
+        return { trip, score, start };
+      })
+      .filter((item) => item.score > 0)
+      .sort((a, b) => b.score - a.score || Math.abs((a.start || 0) - now) - Math.abs((b.start || 0) - now));
+    if (scored[0]) chosen.set(tail, scored[0].trip);
+  }
+  return chosen;
+}
+
+/** Phase for one leg once boardAirbornePlan has picked the flying leg. */
+export function boardLegPhase({ trip, stepPhase = 'pending', airborneTrip = null, now = Date.now() } = {}) {
+  if (stepPhase === 'completed' || stepPhase === 'landed') return stepPhase;
+  if (airborneTrip && trip?.uid && airborneTrip.uid === trip.uid) return 'airborne';
+  const start = new Date(trip?.start).getTime();
+  if ((stepPhase === 'pending' || stepPhase === 'preflight') && Number.isFinite(start) && now > start + 15 * 60_000) {
+    return 'delayed';
+  }
+  return stepPhase || 'pending';
+}
+
+function pointOnArc(from, to, fraction) {
+  const arc = greatCircleArc(from, to, 24);
+  if (arc.length === 0) return null;
+  const index = Math.max(0, Math.min(arc.length - 1, Math.round(fraction * (arc.length - 1))));
+  return { lat: arc[index][0], lon: arc[index][1] };
+}
+
+function routeBearing(from, to) {
+  const lat1 = (from.lat * Math.PI) / 180;
+  const lat2 = (to.lat * Math.PI) / 180;
+  const dLon = ((to.lon - from.lon) * Math.PI) / 180;
+  const y = Math.sin(dLon) * Math.cos(lat2);
+  const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+
+/**
+ * Promote the planned airborne tails on a fleet scene. When FlightAware has
+ * no live coordinate, the icon rides the great-circle at the elapsed fraction
+ * instead of sitting on the departure airport with an ETD tag.
+ */
+export function placeBoardAircraft(aircraft, {
+  plan,
+  positions = {},
+  tripStates = null,
+  now = Date.now(),
+  timeZone,
+} = {}) {
+  const list = Array.isArray(aircraft) ? aircraft.map((item) => ({ ...item })) : [];
+  const byTail = new Map(list.map((item) => [String(item.tail || '').toUpperCase(), item]));
+  for (const [tail, trip] of plan || []) {
+    const from = airportLatLon(trip?.info?.from);
+    const to = airportLatLon(trip?.info?.to);
+    const fa = positions?.[tail] || null;
+    const { start, end } = boardLegTimes(trip);
+    const elapsed = Number.isFinite(start) && Number.isFinite(end) && end > start
+      ? Math.max(0.04, Math.min(0.96, (now - start) / (end - start)))
+      : 0.35;
+    const reported = Number(fa?.progressPercent);
+    const fraction = Number.isFinite(reported) ? Math.max(0.04, Math.min(0.96, reported / 100)) : elapsed;
+    const live = positionSaysAirborne(fa)
+      && Number.isFinite(Number(fa?.latitude))
+      && Number.isFinite(Number(fa?.longitude))
+      ? { lat: Number(fa.latitude), lon: Number(fa.longitude) }
+      : null;
+    const here = live || (from && to ? pointOnArc(from, to, fraction) : null);
+    const etaSource = fa?.estimatedOn || trip?.end || null;
+    const etaMs = new Date(etaSource).getTime();
+    let marker = byTail.get(tail);
+    if (!marker && here) {
+      marker = { id: tail, tail, showLabel: true };
+      list.push(marker);
+      byTail.set(tail, marker);
+    }
+    if (!marker || !here) continue;
+    marker.lat = here.lat;
+    marker.lon = here.lon;
+    marker.airborne = true;
+    marker.heading = Number.isFinite(Number(fa?.heading)) ? Number(fa.heading) : (from && to ? routeBearing(from, to) : marker.heading || 0);
+    marker.altitude = Number.isFinite(Number(fa?.altitude)) ? Number(fa.altitude) : marker.altitude;
+    marker.groundspeed = Number.isFinite(Number(fa?.groundspeed)) ? Number(fa.groundspeed) : marker.groundspeed;
+    marker.origin = trip?.info?.from ? String(trip.info.from).toUpperCase() : null;
+    marker.destination = (fa?.destination || trip?.info?.to || marker.destination || '')
+      ? String(fa?.destination || trip?.info?.to || '').toUpperCase()
+      : null;
+    marker.tripId = readTripId(boardState(tripStates, trip?.uid), trip) || marker.tripId;
+    marker.etaLabel = formatMarkerTime(etaSource, timeZone);
+    marker.remainLabel = Number.isFinite(etaMs) ? remainLabel(etaMs, now) : null;
+    marker.departureLabel = null;
+    marker.progress = Math.round(fraction * 100);
+  }
+  return list;
+}
+
 /**
  * Today's legs as great-circle routes. Airborne legs are solid up to the
  * aircraft and dashed onward. Upcoming legs are dashed. Landed legs are a
@@ -462,16 +626,16 @@ export function buildOccRoutes({ trips = [], phaseOf, aircraft = [] } = {}) {
       const here = { lat: live.lat, lon: live.lon };
       routes.push({
         points: greatCircleArc(from, here),
-        color: OCC_ACCENT,
-        weight: 2.75,
-        opacity: 0.95,
+        color: '#34d399',
+        weight: 3.5,
+        opacity: 1,
         dashed: false,
       });
       routes.push({
         points: greatCircleArc(here, to),
-        color: OCC_ACCENT,
-        weight: 2.25,
-        opacity: 0.85,
+        color: '#34d399',
+        weight: 2.5,
+        opacity: 0.9,
         dashed: true,
       });
     } else if (phase === 'landed' || phase === 'completed') {
@@ -559,16 +723,66 @@ export function boardDayBounds(now, timeZone) {
   return { startMs, endMs: startMs + 86_400_000 };
 }
 
-/**
- * One horizontal bar per leg, grouped by tail, across the local day.
- * `nowRatio` places the current-time line.
- */
-function stateForTimeline(tripStates, uid) {
-  if (!tripStates || !uid) return null;
-  if (typeof tripStates.get === 'function') return tripStates.get(uid) || null;
-  return tripStates[uid] || null;
+function timelineHourLabel(ms, timeZone) {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: timeZone || 'UTC',
+      hour: 'numeric',
+      hour12: true,
+    }).formatToParts(new Date(ms));
+    const hour = parts.find((part) => part.type === 'hour')?.value || '';
+    const period = (parts.find((part) => part.type === 'dayPeriod')?.value || '').toLowerCase();
+    return `${hour}${period.startsWith('a') ? 'a' : 'p'}`;
+  } catch {
+    return `${new Date(ms).getUTCHours()}z`;
+  }
 }
 
+function timelineClock(ms, timeZone) {
+  try {
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: timeZone || 'UTC',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    }).format(new Date(ms));
+  } catch {
+    return new Date(ms).toISOString().slice(11, 16);
+  }
+}
+
+/**
+ * Visible day strip. Starts two hours ago and runs ten hours ahead, then
+ * grows just enough to include today's legs so the right side is not an
+ * empty half of a 24-hour axis.
+ */
+export function occTimelineWindow({ trips = [], now = Date.now() } = {}) {
+  let startMs = now - 2 * 3_600_000;
+  let endMs = now + 10 * 3_600_000;
+  for (const trip of trips) {
+    const { start, end } = boardLegTimes(trip);
+    if (Number.isFinite(start)) startMs = Math.min(startMs, start - 30 * 60_000);
+    if (Number.isFinite(end)) endMs = Math.max(endMs, end + 30 * 60_000);
+    else if (Number.isFinite(start)) endMs = Math.max(endMs, start + 60 * 60_000);
+  }
+  if (endMs - startMs > 16 * 3_600_000) {
+    startMs = now - 2 * 3_600_000;
+    endMs = now + 10 * 3_600_000;
+    for (const trip of trips) {
+      const { start, end } = boardLegTimes(trip);
+      if (Number.isFinite(start) && start < endMs && (end || start) > startMs) {
+        startMs = Math.min(startMs, start - 20 * 60_000);
+        endMs = Math.max(endMs, (Number.isFinite(end) ? end : start + 3_600_000) + 20 * 60_000);
+      }
+    }
+  }
+  return { startMs, endMs };
+}
+
+/**
+ * One horizontal bar per leg, grouped by tail, across the operating window.
+ * `nowRatio` places the current-time line.
+ */
 export function buildOccTimeline({
   tails = [],
   trips = [],
@@ -577,37 +791,49 @@ export function buildOccTimeline({
   now = Date.now(),
   timeZone,
 } = {}) {
-  const { startMs, endMs } = boardDayBounds(now, timeZone);
-  const span = endMs - startMs;
+  const { startMs, endMs } = occTimelineWindow({ trips, now });
+  const span = Math.max(1, endMs - startMs);
   const clamp = (ms) => Math.min(endMs, Math.max(startMs, ms));
   const rows = (Array.isArray(tails) ? tails : []).map((tail) => {
     const key = String(tail || '').toUpperCase();
     const bars = (Array.isArray(trips) ? trips : [])
       .filter((trip) => String(trip?.info?.tail || '').toUpperCase() === key)
       .map((trip) => {
-        const start = new Date(trip.start).getTime();
-        const endRaw = new Date(trip.end).getTime();
-        const end = Number.isFinite(endRaw) ? endRaw : start + 60 * 60_000;
+        const { start, end } = boardLegTimes(trip);
         if (!Number.isFinite(start)) return null;
+        const finish = Number.isFinite(end) ? end : start + 60 * 60_000;
         const leftMs = clamp(start);
-        const rightMs = clamp(Math.max(end, start + 60_000));
+        const rightMs = clamp(Math.max(finish, start + 60_000));
+        if (rightMs <= startMs || leftMs >= endMs) return null;
+        const phase = typeof phaseOf === 'function' ? phaseOf(trip) : 'pending';
+        const progress = phase === 'airborne' && finish > start
+          ? Math.max(0.08, Math.min(0.98, (now - start) / (finish - start)))
+          : (phase === 'landed' || phase === 'completed' ? 1 : 0);
         return {
           uid: trip.uid || `${key}-${start}`,
-          tripId: readTripId(stateForTimeline(tripStates, trip.uid), trip),
+          tripId: readTripId(boardState(tripStates, trip.uid), trip),
           from: trip?.info?.from || '',
           to: trip?.info?.to || '',
-          phase: typeof phaseOf === 'function' ? phaseOf(trip) : 'pending',
+          phase,
           left: (leftMs - startMs) / span,
-          width: Math.max(0.008, (rightMs - leftMs) / span),
+          width: Math.max(0.02, (rightMs - leftMs) / span),
+          progress,
         };
       })
       .filter(Boolean);
     return { tail: key, bars };
   });
-  const nowRatio = Math.min(1, Math.max(0, (now - startMs) / span));
-  const ticks = [0, 6, 12, 18].map((hour) => ({
-    label: String(hour).padStart(2, '0'),
-    ratio: hour / 24,
-  }));
-  return { startMs, endMs, nowRatio, ticks, rows };
+  const ticks = [];
+  const firstHour = Math.ceil(startMs / 3_600_000) * 3_600_000;
+  for (let ms = firstHour; ms < endMs; ms += 3_600_000) {
+    ticks.push({ label: timelineHourLabel(ms, timeZone), ratio: (ms - startMs) / span, ms });
+  }
+  return {
+    startMs,
+    endMs,
+    nowRatio: Math.min(1, Math.max(0, (now - startMs) / span)),
+    nowLabel: timelineClock(now, timeZone),
+    ticks,
+    rows,
+  };
 }

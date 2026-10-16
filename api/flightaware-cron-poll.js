@@ -19,6 +19,7 @@ import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import { lookupAirport } from './_airports-data.js';
 import { DEFAULT_MANAGED_TAILS, normalizeFleetTails } from '../src/fleet-config.js';
+import { selectActiveFlight } from '../src/flightaware-active.js';
 
 const FA_API_BASE = 'https://aeroapi.flightaware.com/aeroapi';
 export const MAX_BROKERED_TAILS_PER_POLL = 20;
@@ -215,8 +216,9 @@ async function fetchTailState(ident, apiKey) {
   const flights = Array.isArray(data.flights) ? data.flights : [];
   const filedFlights = normalizeFiledFlights(flights);
 
-  // Active flight has actual_off but no actual_on
-  const active = flights.find(f => f.actual_off && !f.actual_on);
+  // Off-block (actual_out) and enroute progress count as airborne. Waiting
+  // for actual_off left early departures looking parked on the TV.
+  const active = selectActiveFlight(flights);
   if (active) {
     // Fetch the latest position for richer data
     let position = null;
@@ -247,7 +249,8 @@ async function fetchTailState(ident, apiKey) {
       destinationLon: active.destination?.longitude ?? null,
       destinationCity: active.destination?.city || null,
       destinationTz: active.destination?.timezone || null,
-      actualOff: active.actual_off,
+      actualOff: active.actual_off || active.actual_out || null,
+      actualOut: active.actual_out || null,
       actualOn: null,
       estimatedOn: active.estimated_on || null,
       scheduledOn: active.scheduled_on || null,

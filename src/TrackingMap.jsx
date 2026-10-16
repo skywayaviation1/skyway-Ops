@@ -456,22 +456,30 @@ export default function TrackingMap({
     const labelDy = {};
     if (compactCallouts && mapRef.current) {
       const locatedAircraft = aircraft.filter((item) => Number.isFinite(item?.lat) && Number.isFinite(item?.lon));
-      const labelWidth = locatedAircraft.reduce((width, item) => {
-        const text = compactCalloutLine({
-          airborne: item.airborne === true,
-          tail: item.tail,
-          tripId: item.tripId,
-          destination: item.destination,
-          etaLabel: item.etaLabel,
-          departureLabel: item.departureLabel,
-        });
-        return Math.max(width, Math.min(340, Math.ceil(text.length * 7.1) + 18));
-      }, 160);
       const points = locatedAircraft.map((item) => {
         const point = mapRef.current.latLngToContainerPoint([item.lat, item.lon]);
-        return { id: item.id, x: point.x, y: point.y };
+        const airborne = item.airborne === true;
+        const text = compactCalloutLine({
+          airborne,
+          tail: item.tail,
+          tripId: item.tripId,
+          origin: item.origin,
+          destination: item.destination,
+          etaLabel: item.etaLabel,
+          remainLabel: item.remainLabel,
+          departureLabel: item.departureLabel,
+        });
+        return {
+          id: item.id,
+          x: point.x,
+          y: point.y,
+          priority: airborne ? 2 : 0,
+          w: airborne ? 250 : Math.min(220, Math.ceil(text.length * 8) + 16),
+          h: airborne ? 78 : 22,
+          anchor: airborne ? 26 : 14,
+        };
       });
-      declutterCallouts(points, { labelWidth, labelHeight: 20, gap: 6, anchor: 20 })
+      declutterCallouts(points, { labelWidth: 180, labelHeight: 22, gap: 8, anchor: 16 })
         .forEach((item) => { labelDy[item.id] = item.dy; });
     }
 
@@ -514,8 +522,10 @@ export default function TrackingMap({
             muted: Boolean(selectedId) && !selected,
             showLabel: a.showLabel !== false,
             tripId: a.tripId,
+            origin: a.origin,
             destination: a.destination,
             etaLabel: a.etaLabel,
+            remainLabel: a.remainLabel,
             compactCallout: compactCallouts,
             labelDy: labelDy[a.id] || 0,
           }),
