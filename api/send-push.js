@@ -168,6 +168,165 @@ export function nameMatchesPilot(tripPilotName, userName) {
   return wordRe(first).test(target) && wordRe(last).test(target);
 }
 
+/**
+ * PIC + SIC (name-matched) + dispatchers. An explicit dispatcherUids list
+ * wins; otherwise every approved ops user is included. The sender is removed
+ * after matching so a person who is both PIC and sender is not notified.
+ */
+export function resolveTripPushRecipients({
+  users,
+  picName,
+  sicName,
+  dispatcherUids,
+  excludeUid,
+} = {}) {
+  const matchedUids = new Set();
+  const why = {};
+  const explicit = Array.isArray(dispatcherUids) && dispatcherUids.length > 0;
+  for (const user of users || []) {
+    if (!user?.uid || user.approved === false) continue;
+    if (picName && user.name && nameMatchesPilot(picName, user.name)) {
+      matchedUids.add(user.uid);
+      why[user.uid] = (why[user.uid] || []).concat(['PIC']);
+    }
+    if (sicName && user.name && nameMatchesPilot(sicName, user.name)) {
+      matchedUids.add(user.uid);
+      why[user.uid] = (why[user.uid] || []).concat(['SIC']);
+    }
+    if (explicit) {
+      if (dispatcherUids.includes(user.uid)) {
+        matchedUids.add(user.uid);
+        why[user.uid] = (why[user.uid] || []).concat(['dispatcher']);
+      }
+    } else if (user.role === 'ops') {
+      matchedUids.add(user.uid);
+      why[user.uid] = (why[user.uid] || []).concat(['ops-fallback']);
+    }
+  }
+  if (excludeUid) matchedUids.delete(excludeUid);
+  return { recipients: Array.from(matchedUids), why };
+}
+
+/**
+ * Visible on iOS and Android, data-only on web.
+ *
+ * Capacitor iPhones ignore a data message that only sets content-available,
+ * so the APNs alert is what draws the banner. Android gets its own
+ * notification block. Web is left without a notification payload because
+ * public/firebase-messaging-sw.js calls showNotification itself — a
+ * top-level or webpush notification would banner twice.
+ */
+export function buildPushMessage({ title, body, data = {}, webpushHeaders } = {}) {
+  const textTitle = String(title ?? '');
+  const textBody = String(body ?? '');
+  const safeData = {};
+  for (const [key, value] of Object.entries(data || {})) {
+    safeData[key] = value == null ? '' : String(value);
+  }
+  safeData.title = textTitle;
+  safeData.body = textBody;
+  return {
+    data: safeData,
+    android: {
+      priority: 'high',
+      notification: {
+        title: textTitle,
+        body: textBody,
+        sound: 'default',
+      },
+    },
+    apns: {
+      headers: {
+        'apns-priority': '10',
+        'apns-push-type': 'alert',
+      },
+      payload: {
+        aps: {
+          alert: { title: textTitle, body: textBody },
+          sound: 'default',
+        },
+      },
+    },
+    webpush: {
+      headers: webpushHeaders || { Urgency: 'high', TTL: '300' },
+    },
+  };
+}
+
+export async function dispatchToRecipients({
+  db,
+  messaging,
+  recipients,
+  title,
+  body,
+  data = {},
+  isAog = false,
+  muteKey,
+  webpushHeaders,
+} = {}) {
+  let dispatched = 0;
+  let suppressed = 0;
+  let pruned = 0;
+  const results = [];
+  const payload = buildPushMessage({ title, body, data, webpushHeaders });
+
+  await Promise.all((recipients || []).map(async (uid) => {
+    const profSnap = await db.collection('users').doc(uid).get();
+    const profile = profSnap.exists ? profSnap.data() : null;
+    let isMuted = false;
+    try {
+      const muteSnap = await db.collection('users').doc(uid)
+        .collection('comms-mutes').doc(muteKey).get();
+      isMuted = muteSnap.exists && muteSnap.data().muted === true;
+    } catch (_) { /* non-fatal */ }
+
+    const decision = shouldSendToUser({ recipientProfile: profile, isAog, isMuted });
+    if (!decision.send) {
+      suppressed++;
+      results.push({ uid, sent: false, reason: decision.reason });
+      return;
+    }
+
+    const tokSnap = await db.collection('users').doc(uid).collection('push-tokens').get();
+    if (tokSnap.empty) {
+      suppressed++;
+      results.push({ uid, sent: false, reason: 'no-tokens' });
+      return;
+    }
+
+    const tokens = [];
+    tokSnap.forEach((d) => { const t = d.data().token; if (t) tokens.push(t); });
+
+    try {
+      const response = await messaging.sendEachForMulticast({ tokens, ...payload });
+      dispatched += response.successCount;
+      results.push({ uid, sent: true, count: response.successCount, failed: response.failureCount });
+
+      for (let i = 0; i < response.responses.length; i++) {
+        const resp = response.responses[i];
+        if (!resp.success) {
+          const code = resp.error && (resp.error.code || resp.error.errorInfo?.code) || '';
+          if (
+            code.includes('registration-token-not-registered') ||
+            code.includes('invalid-registration-token') ||
+            code.includes('invalid-argument')
+          ) {
+            try {
+              await db.collection('users').doc(uid)
+                .collection('push-tokens').doc(tokens[i]).delete();
+              pruned++;
+            } catch (_) { /* non-fatal */ }
+          }
+        }
+      }
+    } catch (e) {
+      results.push({ uid, sent: false, reason: 'fcm-error: ' + (e.message || 'unknown') });
+    }
+  }));
+
+  return { dispatched, suppressed, pruned, results };
+}
+
 // ---- Auth + main handler -------------------------------------------------
 export default async function handler(req, res) {
   if (req.method !== 'POST') { res.status(405).json({ error: 'POST only' }); return; }
@@ -234,40 +393,22 @@ export default async function handler(req, res) {
       const allUsers = [];
       usersSnap.forEach((d) => allUsers.push({ uid: d.id, ...d.data() }));
 
-      const matchedUids = new Set();
-      const why = {};
+      // Dispatchers: prefer the explicit per-trip list when present;
+      // otherwise fall back to "all ops users" (Path 1 behavior for
+      // legacy trips without the dispatcherUids field). Self-skip: never
+      // notify the sender.
       const explicitDispatchers = (trip && Array.isArray(trip.dispatcherUids))
         ? trip.dispatcherUids
         : null;
-      const useExplicitDispatchers = explicitDispatchers && explicitDispatchers.length > 0;
-
-      for (const u of allUsers) {
-        if (!u.uid) continue;
-        if (u.approved === false) continue;
-        // PIC name match
-        if (picName && u.name && nameMatchesPilot(picName, u.name)) {
-          matchedUids.add(u.uid); why[u.uid] = (why[u.uid] || []).concat(['PIC']);
-        }
-        // SIC name match
-        if (sicName && u.name && nameMatchesPilot(sicName, u.name)) {
-          matchedUids.add(u.uid); why[u.uid] = (why[u.uid] || []).concat(['SIC']);
-        }
-        // Dispatchers: prefer the explicit per-trip list when present;
-        // otherwise fall back to "all ops users" (Path 1 behavior for
-        // legacy trips without the dispatcherUids field).
-        if (useExplicitDispatchers) {
-          if (explicitDispatchers.includes(u.uid)) {
-            matchedUids.add(u.uid); why[u.uid] = (why[u.uid] || []).concat(['dispatcher']);
-          }
-        } else if (u.role === 'ops') {
-          matchedUids.add(u.uid); why[u.uid] = (why[u.uid] || []).concat(['ops-fallback']);
-        }
-      }
-
-      // Self-skip: never notify the sender.
-      matchedUids.delete(decoded.uid);
-
-      recipients = Array.from(matchedUids);
+      const resolved = resolveTripPushRecipients({
+        users: allUsers,
+        picName,
+        sicName,
+        dispatcherUids: explicitDispatchers,
+        excludeUid: decoded.uid,
+      });
+      const why = resolved.why;
+      recipients = resolved.recipients;
       threadKind = 'trip';
 
       // Title includes tail + route so users can tell at a glance which
@@ -333,46 +474,15 @@ export default async function handler(req, res) {
     // Per-recipient: fetch profile + mute + tokens, apply filters, dispatch.
     const { getMessaging } = await import('firebase-admin/messaging');
     const messaging = getMessaging(cachedAdmin.app());
-
-    let dispatched = 0;
-    let suppressed = 0;
-    let pruned = 0;
-    const results = [];
-
-    await Promise.all(recipients.map(async (uid) => {
-      // Profile
-      const profSnap = await db.collection('users').doc(uid).get();
-      const profile = profSnap.exists ? profSnap.data() : null;
-      // Mute (users/{uid}/comms-mutes/{muteKey})
-      let isMuted = false;
-      try {
-        const muteSnap = await db.collection('users').doc(uid)
-          .collection('comms-mutes').doc(muteKey).get();
-        isMuted = muteSnap.exists && muteSnap.data().muted === true;
-      } catch (_) { /* non-fatal */ }
-
-      const decision = shouldSendToUser({ recipientProfile: profile, isAog: isAogFlag, isMuted });
-      if (!decision.send) {
-        suppressed++;
-        results.push({ uid, sent: false, reason: decision.reason });
-        return;
-      }
-
-      // Tokens — users/{uid}/push-tokens/{token}
-      const tokSnap = await db.collection('users').doc(uid).collection('push-tokens').get();
-      if (tokSnap.empty) {
-        suppressed++;
-        results.push({ uid, sent: false, reason: 'no-tokens' });
-        return;
-      }
-
-      const tokens = [];
-      tokSnap.forEach((d) => { const t = d.data().token; if (t) tokens.push(t); });
-
-      const payload = {
+    const summary = {
+      ok: true,
+      ...await dispatchToRecipients({
+        db,
+        messaging,
+        recipients,
+        title,
+        body,
         data: {
-          title,
-          body,
           url,
           conversationId: conversationId || '',
           tripId: tripId || '',
@@ -380,44 +490,11 @@ export default async function handler(req, res) {
           senderName,
           kind: threadKind,
         },
-        android: { priority: 'high' },
-        apns: {
-          headers: { 'apns-priority': '10' },
-          payload: { aps: { sound: 'default', contentAvailable: true } },
-        },
-        webpush: {
-          headers: { Urgency: 'high', TTL: '300' },
-        },
-      };
-
-      try {
-        const r = await messaging.sendEachForMulticast({ tokens, ...payload });
-        dispatched += r.successCount;
-        results.push({ uid, sent: true, count: r.successCount, failed: r.failureCount });
-
-        for (let i = 0; i < r.responses.length; i++) {
-          const resp = r.responses[i];
-          if (!resp.success) {
-            const code = resp.error && (resp.error.code || resp.error.errorInfo?.code) || '';
-            if (
-              code.includes('registration-token-not-registered') ||
-              code.includes('invalid-registration-token') ||
-              code.includes('invalid-argument')
-            ) {
-              try {
-                await db.collection('users').doc(uid)
-                  .collection('push-tokens').doc(tokens[i]).delete();
-                pruned++;
-              } catch (_) { /* non-fatal */ }
-            }
-          }
-        }
-      } catch (e) {
-        results.push({ uid, sent: false, reason: 'fcm-error: ' + (e.message || 'unknown') });
-      }
-    }));
-
-    const summary = { ok: true, dispatched, suppressed, pruned, results };
+        isAog: isAogFlag,
+        muteKey,
+      }),
+    };
+    const { dispatched, suppressed, pruned, results } = summary;
     // Log dispatch outcome so we can see per-recipient sent/skipped + reason
     // in Vercel logs (the resolving line above only shows who was MATCHED;
     // this line shows what happened to each matched uid downstream).

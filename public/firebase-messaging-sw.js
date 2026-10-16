@@ -44,13 +44,12 @@ const messaging = firebase.messaging();
 // onBackgroundMessage fires when:
 //   - the app is NOT in the foreground (tab closed, app backgrounded, PWA
 //     not active), AND
-//   - the push payload is a DATA payload (no `notification` field) — see
-//     api/send-push.js which sends data-only on purpose so we get to
-//     render the notification ourselves with our own click handler.
+//   - the push payload is a DATA payload (no web `notification` field).
 //
-// (If FCM sees a `notification` field it auto-renders WITHOUT calling us,
-// and the click-to-open behavior we want doesn't run. That's why send-push
-// only emits the `data` field.)
+// api/send-push.js puts a visible alert on APNs and Android so iPhones and
+// Android devices banner the message. Web stays data-only: this worker draws
+// the banner. A webpush or top-level `notification` field would make the
+// browser draw a second copy.
 messaging.onBackgroundMessage((payload) => {
   try {
     const data = payload.data || {};

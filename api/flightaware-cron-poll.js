@@ -4,8 +4,8 @@
 //
 // Polls FlightAware for the current state of all subscribed tails, compares
 // each tail's state to its previous poll, and on detected transitions:
-//   - Grounded → Airborne     → fire WHEELS UP status + email broker
-//   - Airborne → Grounded     → fire LANDED status + email + archive trip
+//   - Grounded → Airborne     → fire WHEELS UP status + email broker + trip-status push
+//   - Airborne → Grounded     → fire LANDED status + email + archive trip + trip-status push
 //
 // State is persisted in Firestore at flightaware-state/{tail} between polls.
 //
@@ -20,6 +20,9 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { lookupAirport } from './_airports-data.js';
 import { DEFAULT_MANAGED_TAILS, normalizeFleetTails } from '../src/fleet-config.js';
 import { selectActiveFlight } from '../src/flightaware-active.js';
+import { readTripId } from '../src/fleet-tracking.js';
+import { statusEventAt } from '../src/trip-status.js';
+import { dispatchToRecipients, resolveTripPushRecipients } from './send-push.js';
 
 const FA_API_BASE = 'https://aeroapi.flightaware.com/aeroapi';
 export const MAX_BROKERED_TAILS_PER_POLL = 20;
@@ -489,12 +492,292 @@ function buildBrokerEmail({ tail, eventType, originCode, destCode, originTz, des
   return { subject, body };
 }
 
+// === Crew / dispatcher push for wheels-up and landed ===
+//
+// Same recipients as a status-step push (PIC and SIC by name, plus
+// dispatchers). Broker email and FBO notices are unchanged. Each leg is
+// claimed in Firestore before a send so overlapping polls cannot double-notify.
+
+export const CREW_STATUS_PUSH_WINDOW_MS = 10 * 60 * 1000;
+export const FLIGHT_STATUS_PUSH_COLLECTION = 'flight-status-pushes';
+
+const PUSH_ZONE_LABEL = {
+  EDT: 'ET', EST: 'ET',
+  CDT: 'CT', CST: 'CT',
+  MDT: 'MT', MST: 'MT',
+  PDT: 'PT', PST: 'PT',
+  AKDT: 'AKT', AKST: 'AKT',
+  HDT: 'HT', HST: 'HT',
+  GMT: 'Z', UTC: 'Z',
+};
+
+export function formatPushClock(iso, timeZone) {
+  if (!iso) return '';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '';
+  if (!timeZone) {
+    const hh = String(date.getUTCHours()).padStart(2, '0');
+    const mm = String(date.getUTCMinutes()).padStart(2, '0');
+    return `${hh}:${mm}Z`;
+  }
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+      timeZoneName: 'short',
+    }).formatToParts(date);
+    const pick = (type) => parts.find((part) => part.type === type)?.value || '';
+    let hour = pick('hour');
+    if (hour === '24') hour = '00';
+    hour = hour.padStart(2, '0');
+    const minute = pick('minute').padStart(2, '0');
+    const zone = PUSH_ZONE_LABEL[pick('timeZoneName')] || pick('timeZoneName');
+    if (!hour || minute === '') return '';
+    return zone ? `${hour}:${minute} ${zone}` : `${hour}:${minute}`;
+  } catch {
+    return '';
+  }
+}
+
+/** Display copy. Trip identity is the 6–7 character trip ID, never a trip number. */
+export function buildFlightStatusPushText({
+  tail,
+  stepId,
+  from,
+  to,
+  tripId,
+  etaIso,
+  eventIso,
+  timeZone,
+} = {}) {
+  const verb = stepId === 'landed' ? 'landed' : 'wheels up';
+  const ident = String(tail || '').trim().toUpperCase();
+  const origin = String(from || '').trim().toUpperCase();
+  const dest = String(to || '').trim().toUpperCase();
+  const route = origin && dest ? `${origin} → ${dest}` : (origin || dest);
+  const parts = [[ident, verb, route].filter(Boolean).join(' ')];
+  const code = readTripId(tripId);
+  if (code) parts.push(`Trip ${code}`);
+  if (stepId === 'landed') {
+    const clock = formatPushClock(eventIso, timeZone);
+    if (clock) parts.push(clock);
+  } else {
+    const eta = formatPushClock(etaIso, timeZone);
+    if (eta) parts.push(`ETA ${eta}`);
+  }
+  return parts.join(' · ').slice(0, 220);
+}
+
+export function resolveFlightPushContext({ tripState, leg, tripDoc, eventState, stepId } = {}) {
+  const contacts = tripState?.tripSheetData?.crewContacts || {};
+  const info = (tripDoc && tripDoc.info) || {};
+  const nameOf = (value) => {
+    if (!value) return '';
+    if (typeof value === 'string') return value.trim();
+    return String(value.name || '').trim();
+  };
+  const tripId = readTripId(
+    tripState?.tripSheetData?.tripCode,
+    tripState?.tripCode,
+    tripState?.tripMeta?.tripCode,
+    leg?.tripCode,
+    info.tripCode,
+    info.tripId,
+    tripState,
+    leg,
+    tripDoc,
+  );
+  return {
+    picName: nameOf(leg?.pic) || nameOf(contacts.pic) || nameOf(info.pic) || nameOf(tripState?.tripMeta?.pic),
+    sicName: nameOf(leg?.sic) || nameOf(contacts.sic) || nameOf(info.sic) || nameOf(tripState?.tripMeta?.sic),
+    tripId,
+    tail: eventState?.ident || tripState?.tripMeta?.tail || leg?.tail || info.tail || '',
+    from: eventState?.origin || tripState?.tripMeta?.from || leg?.from || info.from || '',
+    to: eventState?.destination || tripState?.tripMeta?.to || leg?.to || info.to || '',
+    timeZone: eventState?.destinationTz || null,
+    stepId,
+  };
+}
+
+/** A crew tap already pushed this step. FlightAware's own write does not count. */
+export function recentCrewStatusTap(status, now = Date.now(), windowMs = CREW_STATUS_PUSH_WINDOW_MS) {
+  if (!status || typeof status !== 'object') return false;
+  if (status.autoFired === true) return false;
+  const author = String(status.author || '').trim();
+  if (!author || author === 'FlightAware Tracking') return false;
+  const at = statusEventAt(status);
+  if (at == null) return false;
+  const age = now - at;
+  return age >= 0 && age <= windowMs;
+}
+
+export function flightStatusPushClaimId(tripUid, stepId) {
+  const safe = String(tripUid || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 160);
+  const step = stepId === 'landed' ? 'landed' : 'wheels_up';
+  return `${safe}__${step}`;
+}
+
+export function isAlreadyExistsError(err) {
+  const code = err?.code;
+  return code === 6 || code === '6' || code === 'already-exists' || code === 'ALREADY_EXISTS'
+    || /ALREADY_EXISTS|already exists/i.test(String(err?.message || ''));
+}
+
+export async function claimFlightStatusPush(db, { tripUid, stepId, now = Date.now() } = {}) {
+  const id = flightStatusPushClaimId(tripUid, stepId);
+  const ref = db.collection(FLIGHT_STATUS_PUSH_COLLECTION).doc(id);
+  try {
+    await ref.create({
+      tripUid: String(tripUid || ''),
+      stepId,
+      claimedAt: now,
+      state: 'claimed',
+    });
+    return { claimed: true, id, ref };
+  } catch (err) {
+    if (isAlreadyExistsError(err)) return { claimed: false, id, reason: 'already-claimed' };
+    throw err;
+  }
+}
+
+function safeDocId(uid) {
+  return String(uid || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 200);
+}
+
+async function readOptionalDoc(db, collectionName, id) {
+  if (!db || !id) return null;
+  try {
+    const snap = await db.collection(collectionName).doc(id).get();
+    if (!snap?.exists) return null;
+    return typeof snap.data === 'function' ? (snap.data() || null) : null;
+  } catch (err) {
+    console.warn(`[cron-poll] ${collectionName}/${id} read failed:`, err.message);
+    return null;
+  }
+}
+
+async function loadPushUsers(db) {
+  const snap = await db.collection('users').get();
+  const users = [];
+  snap?.forEach?.((doc) => {
+    const data = typeof doc.data === 'function' ? (doc.data() || {}) : {};
+    users.push({ uid: doc.id, ...data });
+  });
+  return users;
+}
+
+/**
+ * One wheels-up or landed push per leg. Claims first. A crew member who
+ * already tapped the same step in the last ~10 minutes does not get a
+ * second banner, and that decision is claimed so a later poll cannot send it.
+ */
+export async function notifyFlightStatusPush({
+  db,
+  messaging,
+  tripUid,
+  tripState,
+  stepId,
+  eventState,
+  now = Date.now(),
+  users,
+  leg,
+  tripDoc,
+} = {}) {
+  if (stepId !== 'wheels_up' && stepId !== 'landed') return { skipped: 'unsupported-step' };
+  const status = tripState?.statuses?.[stepId];
+  const recentTap = recentCrewStatusTap(status, now);
+  const claim = await claimFlightStatusPush(db, { tripUid, stepId, now });
+  if (!claim.claimed) return { skipped: claim.reason || 'already-claimed' };
+  if (recentTap) {
+    await claim.ref.set({ state: 'suppressed', reason: 'recent-crew-tap' }, { merge: true }).catch(() => {});
+    return { skipped: 'recent-crew-tap' };
+  }
+
+  const loadedLeg = leg !== undefined ? leg : await readOptionalDoc(db, 'legs', safeDocId(tripUid));
+  const loadedTrip = tripDoc !== undefined ? tripDoc : await readOptionalDoc(db, 'trips', tripUid);
+  const ctx = resolveFlightPushContext({
+    tripState, leg: loadedLeg, tripDoc: loadedTrip, eventState, stepId,
+  });
+  const title = stepId === 'landed' ? 'Landed' : 'Wheels up';
+  const body = buildFlightStatusPushText({
+    tail: ctx.tail,
+    stepId,
+    from: ctx.from,
+    to: ctx.to,
+    tripId: ctx.tripId,
+    etaIso: eventState?.estimatedOn,
+    eventIso: eventState?.actualOn,
+    timeZone: ctx.timeZone,
+  });
+  const url = `/?trip=${encodeURIComponent(tripUid)}#status`;
+  const allUsers = users || await loadPushUsers(db);
+  const { recipients, why } = resolveTripPushRecipients({
+    users: allUsers,
+    picName: ctx.picName,
+    sicName: ctx.sicName,
+    dispatcherUids: Array.isArray(loadedTrip?.dispatcherUids) ? loadedTrip.dispatcherUids : null,
+  });
+  if (recipients.length === 0) {
+    await claim.ref.set({ state: 'skipped', reason: 'no-recipients', body }, { merge: true }).catch(() => {});
+    return { skipped: 'no-recipients', why, body };
+  }
+
+  const summary = await dispatchToRecipients({
+    db,
+    messaging,
+    recipients,
+    title,
+    body,
+    data: {
+      url,
+      conversationId: '',
+      tripId: String(tripUid || ''),
+      senderUid: 'flightaware',
+      senderName: 'FlightAware Tracking',
+      kind: 'trip-status',
+    },
+    isAog: false,
+    muteKey: `trip:${tripUid}`,
+  });
+  await claim.ref.set({
+    state: 'sent',
+    sentAt: Date.now(),
+    title,
+    body,
+    dispatched: summary.dispatched,
+    suppressed: summary.suppressed,
+  }, { merge: true }).catch(() => {});
+  return { ...summary, title, body, why, recipients: recipients.length };
+}
+
+async function attachFlightPush(db, args, result) {
+  try {
+    const { getMessaging } = await import('firebase-admin/messaging');
+    result.push = await notifyFlightStatusPush({
+      db,
+      messaging: getMessaging(getAdmin()),
+      tripUid: args.tripUid,
+      tripState: args.tripState,
+      stepId: args.stepId,
+      eventState: args.eventState,
+    });
+  } catch (err) {
+    console.warn('[cron-poll] flight status push failed:', err?.message || err);
+    result.push = { error: err?.message || 'push-failed' };
+  }
+  return result;
+}
+
 // === Fire a status update on a trip ===
 async function fireStatus({ db, host, tripUid, tripState, stepId, eventTimeMs, eventState, eventType }) {
   const existingStatuses = tripState.statuses || {};
   const autoFiredEvents = tripState.autoFiredEvents || {};
 
-  // Idempotent: if this step was auto-fired before, skip
+  // Idempotent: if this step was auto-fired before, skip the status write
+  // and the broker email. The push claim from the run that handled the
+  // transition already covers a retry, so this path does not send again.
   if (autoFiredEvents[stepId]) {
     return { skipped: 'already-auto-fired' };
   }
@@ -513,7 +796,9 @@ async function fireStatus({ db, host, tripUid, tripState, stepId, eventTimeMs, e
     await db.collection('trip-state').doc(tripUid).update({
       autoFiredEvents: { ...autoFiredEvents, [stepId]: `tracked-manual-${Date.now()}` },
     });
-    return { skipped: 'manual-already-fired-and-notified' };
+    return attachFlightPush(db, { tripUid, tripState, stepId, eventState }, {
+      skipped: 'manual-already-fired-and-notified',
+    });
   }
 
   // Build the new status (only if we're auto-firing for the first time)
@@ -545,7 +830,9 @@ async function fireStatus({ db, host, tripUid, tripState, stepId, eventTimeMs, e
     .filter(e => e.length > 0 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
 
   if (brokerEmails.length === 0 || tripState.autoNotify !== true) {
-    return { fired: !alreadyFired, isRecovery, emailed: false, reason: 'no-broker-or-autonotify-off' };
+    return attachFlightPush(db, { tripUid, tripState, stepId, eventState }, {
+      fired: !alreadyFired, isRecovery, emailed: false, reason: 'no-broker-or-autonotify-off',
+    });
   }
 
   const { subject, body } = buildBrokerEmail({
@@ -581,7 +868,9 @@ async function fireStatus({ db, host, tripUid, tripState, stepId, eventTimeMs, e
     }
   }
 
-  return { fired: !alreadyFired, isRecovery, emailed: sent };
+  return attachFlightPush(db, { tripUid, tripState, stepId, eventState }, {
+    fired: !alreadyFired, isRecovery, emailed: sent,
+  });
 }
 
 // === Main handler ===
