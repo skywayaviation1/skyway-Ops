@@ -527,11 +527,18 @@ export function boardAirbornePlan({ trips = [], positions = {}, tripStates = nul
 export function boardLegPhase({ trip, stepPhase = 'pending', airborneTrip = null, now = Date.now() } = {}) {
   if (stepPhase === 'completed' || stepPhase === 'landed') return stepPhase;
   if (airborneTrip && trip?.uid && airborneTrip.uid === trip.uid) return 'airborne';
-  const start = new Date(trip?.start).getTime();
-  if ((stepPhase === 'pending' || stepPhase === 'preflight') && Number.isFinite(start) && now > start + 15 * 60_000) {
+  const { start, end } = boardLegTimes(trip);
+  // The block is over and this leg was not the one still being flown.
+  if (Number.isFinite(end) && now >= end + BOARD_AIRBORNE_LATE_MS) return 'landed';
+  // wheels_up on a leg the plan did not pick is not a second flying airplane.
+  if (stepPhase === 'airborne') {
+    if (Number.isFinite(end) && now >= end) return 'landed';
+    if (Number.isFinite(start) && now < start) return 'preflight';
+  }
+  if ((stepPhase === 'pending' || stepPhase === 'preflight' || stepPhase === 'airborne') && Number.isFinite(start) && now > start + 15 * 60_000) {
     return 'delayed';
   }
-  return stepPhase || 'pending';
+  return stepPhase === 'airborne' ? 'preflight' : (stepPhase || 'pending');
 }
 
 function pointOnArc(from, to, fraction) {

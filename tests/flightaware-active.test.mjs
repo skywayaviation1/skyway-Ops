@@ -136,4 +136,10 @@ test('a landing recorded after departure is not promoted', () => {
     now: Date.parse('2026-08-10T13:50:00Z'),
   });
   assert.equal(plan.has('N20UF'), false);
+  assert.equal(boardLegPhase({
+    trip,
+    stepPhase: 'pending',
+    airborneTrip: null,
+    now: Date.parse('2026-08-10T15:10:00Z'),
+  }), 'landed');
 });

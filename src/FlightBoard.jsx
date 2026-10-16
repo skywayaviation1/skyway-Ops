@@ -52,7 +52,6 @@ import {
   occGanttMetrics,
   occPanelBudget,
 } from './flight-board-tv.js';
-import { positionSaysAirborne } from './flightaware-active.js';
 import { watchAppleMapKit } from './mapkit-fallback.js';
 import { statusEventAt } from './trip-status.js';
 import TrackingMap from './TrackingMap.jsx';
@@ -1664,7 +1663,7 @@ function FlightBoard({
   // Active trips: today (Eastern) + anything in progress (started <24h
   // ago, not marked complete). Same logic as OpsConsole — keep
   // operationally consistent.
-  const active = useMemo(() => {
+  const todayTrips = useMemo(() => {
     const now = Date.now();
     let todayStart = 0, todayEnd = now + 24 * 3600 * 1000;
     try {
@@ -1688,7 +1687,7 @@ function FlightBoard({
       if (t.info && t.info.isOps === false) return false;
       if (t.info && t.info.from && t.info.from === t.info.to && !t.info.pax) return false;
       const s = stateMap.get(t.uid);
-      if (s?.completed || s?.archived) return false;
+      if (s?.archived) return false;
       // STRICT TODAY ONLY. Previous "today + last 24h in-progress" caught
       // phantom airborne trips from yesterday (where wheels_up was logged
       // but landed never was). The phase staleness guard in tripPhase()
@@ -1702,6 +1701,12 @@ function FlightBoard({
     });
     return candidate;
   }, [allTrips, stateMap]);
+
+  // Compact embeds keep hiding finished legs. The wall grays them on the day strip.
+  const active = useMemo(
+    () => todayTrips.filter((t) => !stateMap.get(t.uid)?.completed),
+    [todayTrips, stateMap],
+  );
 
   // Distinct fleet tails appearing in today's flights — what we'll poll
   // FA for. Memo'd separately so the polling effect doesn't re-run on
@@ -1744,13 +1749,11 @@ function FlightBoard({
         // can see how fresh the data is.
         const values = Object.values(map);
         const polls = values.map((p) => p?.polledAt || 0).filter(Boolean);
-        let airborneCount = 0;
-        for (const p of values) if (positionSaysAirborne(p)) airborneCount++;
         if (polls.length === 0) {
           setFaDiag({
             status: values.length ? 'ok' : 'idle',
             message: values.length
-              ? `${airborneCount} airborne · feed time unknown`
+              ? 'Fleet feed time unknown'
               : 'Schedule only — fleet feed has not updated',
           });
         } else {
@@ -1759,7 +1762,9 @@ function FlightBoard({
           const ageMin = Math.floor(ageMs / 60_000);
           setFaDiag({
             status: ageMin > 5 ? 'error' : 'ok',
-            message: `${airborneCount} airborne · updated ${ageMin === 0 ? 'just now' : `${ageMin}m ago`}`,
+            message: ageMin > 5
+              ? `Fleet feed is ${ageMin}m old`
+              : `Fleet feed updated ${ageMin === 0 ? 'just now' : `${ageMin}m ago`}`,
           });
         }
       });
@@ -1855,7 +1860,7 @@ function FlightBoard({
     return (
       <TvFlightBoard
         allTrips={allTrips}
-        today={active}
+        today={todayTrips}
         stateMap={stateMap}
         faPositions={faPositions}
         effectivePhase={effectivePhase}

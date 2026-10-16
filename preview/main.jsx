@@ -62,6 +62,21 @@ const FboDesk = lazy(() => import('../src/FboDesk.jsx'));
 const FboLegPanel = lazy(() => import('../src/FboDesk.jsx').then((m) => ({ default: m.FboLegPanel })));
 const FboConfirmPage = lazy(() => import('../src/FboConfirmPage.jsx'));
 
+/** Push unfinished legs outside the airborne window so the wall is an all-parked day. */
+function parkedBoardTrips(trips) {
+  const now = Date.now();
+  let bump = 0;
+  return trips.map((trip) => {
+    const end = new Date(trip.end).getTime();
+    if (Number.isFinite(end) && end < now - 50 * 60_000) return trip;
+    const start = new Date(trip.start).getTime();
+    const dur = Math.max(45 * 60_000, (Number.isFinite(end) ? end : start) - start);
+    const startMs = now + (80 + bump * 40) * 60_000;
+    bump += 1;
+    return { ...trip, start: new Date(startMs), end: new Date(startMs + dur) };
+  });
+}
+
 /** Extra today's legs so a busy wall shows 15+ flights on one screen. Preview only. */
 function busyBoardTrips(trips) {
   const extra = [
@@ -80,8 +95,8 @@ function busyBoardTrips(trips) {
     ...trips,
     ...extra.map((item, index) => ({
       uid: `overflow-${index}`,
-      start: new Date(Date.now() + (20 + index * 25) * 60_000),
-      end: new Date(Date.now() + (90 + index * 25) * 60_000),
+      start: new Date(Date.now() + (70 + index * 28) * 60_000),
+      end: new Date(Date.now() + (150 + index * 28) * 60_000),
       info: {
         tail: item[0],
         from: item[1],
@@ -173,7 +188,11 @@ const SURFACES = {
     label: 'Flight board display',
     render: () => (
       <FlightBoard
-        allTrips={params.get('boardCase') === 'busy' ? busyBoardTrips(TRIPS) : TRIPS}
+        allTrips={
+          params.get('boardCase') === 'busy' ? busyBoardTrips(TRIPS)
+            : params.get('boardCase') === 'parked' ? parkedBoardTrips(TRIPS)
+              : TRIPS
+        }
         fleetTails={CONFIG.fleetTails}
         aircraftByTail={CONFIG.aircraftByTail}
         timeZone="America/New_York"
