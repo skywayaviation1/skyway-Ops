@@ -64,6 +64,63 @@ const TENANTS = {
     ],
   },
 
+  // Marketing-video day. Same invented fleet and crew as Skyway, with broker
+  // names that are not real operators. The brand stays Skyway because this id
+  // is not a brand in src/brand.js. Preview harness only.
+  film: {
+    id: 'film',
+    company: 'Skyway Aviation',
+    companyLegal: 'Skyway Aviation Services',
+    domain: 'flyskyway.com',
+    charterInbox: 'charters@flyskyway.com',
+    base: 'IAD',
+
+    fleet: [
+      { tail: 'N444AM', type: 'C56X', displayName: 'Citation XLS+', home: 'IAD' },
+      { tail: 'N286N', type: 'C25B', displayName: 'Citation CJ3', home: 'TVC' },
+      { tail: 'N651TW', type: 'C680', displayName: 'Citation Sovereign', home: 'APF' },
+      { tail: 'N20UF', type: 'CL35', displayName: 'Challenger 350', home: 'TEB' },
+      { tail: 'N551FP', type: 'E55P', displayName: 'Phenom 300', home: 'PBI' },
+      { tail: 'N168ZZ', type: 'H25B', displayName: 'Hawker 900XP', home: 'FXE' },
+      { tail: 'N525CR', type: 'C525', displayName: 'Citation CJ1', home: 'FLL' },
+      { tail: 'N9021Q', type: 'BE20', displayName: 'King Air 200', home: 'IAD' },
+    ],
+
+    crew: [
+      { uid: 'pilot-max', name: 'Maxwell Hagberg', first: 'Maxwell', role: 'crew' },
+      { uid: 'pilot-tim', name: 'Timothy Woods', first: 'Timothy', role: 'crew' },
+      { uid: 'pilot-mel', name: 'Melissa Rippy', first: 'Melissa', role: 'crew' },
+      { uid: 'pilot-dana', name: 'Dana Whitfield', first: 'Dana', role: 'crew' },
+      { uid: 'pilot-cade', name: 'Cade Kaftel', first: 'Cade', role: 'crew' },
+      { uid: 'pilot-jen', name: 'Jenelle Szelest', first: 'Jenelle', role: 'crew' },
+      { uid: 'pilot-grant', name: 'Grant Ellis', first: 'Grant', role: 'crew' },
+      { uid: 'pilot-andre', name: 'Andre Cole', first: 'Andre', role: 'crew' },
+    ],
+    staff: [
+      { uid: 'admin-1', name: 'Jim Skyway', first: 'Jim', role: 'admin', title: 'Director of Operations' },
+      { uid: 'ops-1', name: 'Jordan Vance', first: 'Jordan', role: 'ops', title: 'Operations Controller' },
+      { uid: 'sales-1', name: 'Rosa Delgado', first: 'Rosa', role: 'sales', title: 'Charter Sales' },
+      { uid: 'maint-1', name: 'Nina Park', first: 'Nina', role: 'maint', title: 'Director of Maintenance' },
+    ],
+
+    customers: [
+      'Northline Charter', 'Harborline Aviation', 'Copperline Brokers',
+      'Lumen Air Desk', 'Westfold Flight', 'Sable Route Charter',
+    ],
+    passengers: ['Helena Voss', 'Julian Voss', 'Naomi Kerr', 'Elliot Bray'],
+
+    schedule: [
+      { uid: 'leg-mnrc4k', tripCode: 'MNRC4K', tail: 'N286N', customer: 'Harborline Aviation', from: 'TVC', to: 'IAD', type: 'Charter', pax: 4, picIdx: 4, sicIdx: 5, startH: 0.2, endH: 2.4 },
+      { uid: 'leg-weqvqd', tripCode: 'WEQVQD', tail: 'N444AM', customer: 'Northline Charter', from: 'IAD', to: 'HYA', type: 'Charter', pax: 4, picIdx: 0, sicIdx: 1, startH: 2.8, endH: 4.4 },
+      { uid: 'leg-r4ncbx', tripCode: 'R4NCBX', tail: 'N651TW', customer: 'Copperline Brokers', from: 'APF', to: 'DFW', type: 'Charter', pax: 3, picIdx: 2, sicIdx: 7, startH: 3.2, endH: 6.1 },
+      { uid: 'leg-m8vtqd', tripCode: 'M8VTQD', tail: 'N20UF', customer: 'Lumen Air Desk', from: 'TEB', to: 'PBI', type: 'Charter', pax: 7, picIdx: 3, sicIdx: 6, startH: 4.6, endH: 7.4 },
+      { uid: 'leg-p3lhxa', tripCode: 'P3LHXA', tail: 'N444AM', customer: 'Northline Charter', from: 'HYA', to: 'TEB', type: 'Charter', pax: 4, picIdx: 0, sicIdx: 1, startH: 8, endH: 9.4 },
+      { uid: 'leg-d6crwn', tripCode: 'D6CRWN', tail: 'N551FP', customer: 'Skyway Aviation', from: 'PBI', to: 'OPF', type: 'Positioning', pax: 0, picIdx: 5, sicIdx: 6, startH: 9, endH: 9.9 },
+      { uid: 'leg-b9fqts', tripCode: 'B9FQTS', tail: 'N168ZZ', customer: 'Westfold Flight', from: 'FXE', to: 'MDW', type: 'Charter', pax: 5, picIdx: 6, sicIdx: 3, startH: 10.5, endH: 13.4 },
+      { uid: 'leg-h2ymla', tripCode: 'H2YMLA', tail: 'N525CR', customer: 'Sable Route Charter', from: 'FLL', to: 'CHS', type: 'Charter', pax: 4, picIdx: 7, sicIdx: 2, startH: 12, endH: 13.6 },
+    ],
+  },
+
   elite: {
     id: 'elite',
     company: 'Elite Jets',
