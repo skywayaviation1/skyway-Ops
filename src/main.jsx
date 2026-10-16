@@ -6,6 +6,7 @@ import { ServiceTechPage } from './ServiceRequests.jsx';
 import TripTrackPage from './TripTrack.jsx';
 import OperatorFlightPortal from './OperatorFlightPortal.jsx';
 import FboConfirmPage from './FboConfirmPage.jsx';
+import WhiteLabelBoardPage from './WhiteLabelBoardPage.jsx';
 import './index.css';
 
 // Chromium's install event is one-shot and can fire while Firebase is still
@@ -116,6 +117,11 @@ const isFboConfirmRoute =
   typeof window !== 'undefined'
   && window.location.pathname.replace(/\/+$/, '') === '/fbo-confirm';
 
+const whiteLabelMatch =
+  typeof window !== 'undefined'
+    ? window.location.pathname.replace(/\/+$/, '').match(/^\/board\/([A-Za-z0-9_-]{20,128})$/)
+    : null;
+
 /* ============================================================
    PWA SERVICE WORKER REGISTRATION
    ------------------------------------------------------------
@@ -134,7 +140,7 @@ const isFboConfirmRoute =
    ============================================================ */
 if (!isNativeApp() && typeof window !== 'undefined' && 'serviceWorker' in navigator
     && !isExternalTechRoute && !isServiceTechRoute && !isTripTrackRoute
-    && !isOperatorFlightRoute && !isFboConfirmRoute) {
+    && !isOperatorFlightRoute && !isFboConfirmRoute && !whiteLabelMatch) {
   // Register after the page has finished loading so we don't compete
   // with initial render for the network. The native shell is excluded by
   // Capacitor.isNativePlatform() above — web push is the wrong path there.
@@ -200,6 +206,12 @@ if (isExternalTechRoute) {
   rootEl.render(
     <React.StrictMode>
       <FboConfirmPage token={params.get('token') || ''} />
+    </React.StrictMode>
+  );
+} else if (whiteLabelMatch) {
+  rootEl.render(
+    <React.StrictMode>
+      <WhiteLabelBoardPage token={whiteLabelMatch[1]} />
     </React.StrictMode>
   );
 } else {

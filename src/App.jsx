@@ -89,6 +89,7 @@ const FboLegSyncLazy = lazy(() => import('./FboDesk.jsx').then((m) => ({ default
 // roles that never see it.
 const OpsDashboardLazy = lazy(() => import('./OpsDashboard.jsx'));
 const AdminSettingsLazy = lazy(() => import('./AdminSettings.jsx'));
+const WhiteLabelBoardsLazy = lazy(() => import('./WhiteLabelBoards.jsx'));
 
 // Code-split: Lodging tab loads only when a user opens it on a trip.
 // Trip detail is the most-touched screen — keeping this lazy means the
@@ -159,7 +160,7 @@ import {
   Download, Trash2, Plus, FileText, Zap, Radio, AlertCircle, Upload,
   Check, CheckCheck, UserCheck, Sparkles, Hash, Cloud, Wrench, Hotel, BookOpen, Search,
   Activity, Palette, ShieldCheck, Edit2, Home, CreditCard, Fuel, Building2,
-  MoreHorizontal, LogOut, ChevronRight,
+  MoreHorizontal, LogOut, ChevronRight, Monitor,
 } from 'lucide-react';
 // Shared design-system primitives. New UI should compose these rather than
 // re-deriving borders, spacing and tone colors inline.
@@ -21554,6 +21555,7 @@ const NAV_SECTIONS = [
   { id: 'wallet',    label: 'Wallet',      icon: CreditCard,    roles: ['crew', 'sales', 'ops', 'accounting', 'admin'] },
   { id: 'users',     label: 'Users',       icon: Users,         roles: ['ops', 'admin'] },
   { id: 'settings',  label: 'Settings',    icon: SettingsIcon,  roles: ['admin'] },
+  { id: 'white-label', label: 'TV boards', icon: Monitor, roles: ['ops', 'admin'] },
 ];
 
 const NAV_GROUPS = [
@@ -21565,7 +21567,7 @@ const NAV_GROUPS = [
   { id: 'crew',     label: 'Crew',     icon: Users,         children: ['duty', 'currency', 'wear', 'reports', 'expenses'] },
   { id: 'aircraft', label: 'Aircraft', icon: Wrench,        children: ['maint', 'aog'] },
   // Labelled "Finance" for roles without user administration.
-  { id: 'admin',    label: 'Admin',    icon: Building2,     altLabel: 'Finance', children: ['accounting', 'wallet', 'users', 'settings'] },
+  { id: 'admin',    label: 'Admin',    icon: Building2,     altLabel: 'Finance', children: ['accounting', 'wallet', 'users', 'white-label', 'settings'] },
 ];
 
 if (import.meta.env?.DEV) {
@@ -29300,6 +29302,16 @@ export default function CharterOps() {
               onImpersonate={setImpersonateUid}
             />
           </div>
+        )}
+
+        {section === 'white-label' && !currentUser?.appReviewer && (currentUser.role === 'admin' || currentUser.role === 'ops') && (
+          <Suspense fallback={
+            <div className="flex flex-1 items-center justify-center text-content-muted">
+              <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading TV boards…
+            </div>
+          }>
+            <WhiteLabelBoardsLazy currentUser={currentUser} getIdToken={getFirebaseIdToken} />
+          </Suspense>
         )}
 
         {/* === ADMIN SETTINGS === */}

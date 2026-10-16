@@ -711,6 +711,161 @@ function opsControlResponse(action, body) {
   return json({ ok: true });
 }
 
+const NORTHSTAR_TOKEN = 'northstarpreviewtoken1';
+const HARBOR_TOKEN = 'harborairpreviewtoken01';
+
+function whiteLabelBoards() {
+  if (!window.__WHITE_LABEL_BOARDS__) {
+    window.__WHITE_LABEL_BOARDS__ = [
+      {
+        id: 'bnorthstarpreview01',
+        companyName: 'Northstar Charter',
+        accentColor: '#E2B15A',
+        feedUrl: 'https://portal.jetinsight.com/schedule/demo/northstar.ics',
+        poweredBy: true,
+        enabled: true,
+        publicToken: NORTHSTAR_TOKEN,
+        publicPath: `/board/${NORTHSTAR_TOKEN}`,
+        hasLogo: true,
+        updatedAt: Date.now(),
+      },
+      {
+        id: 'bharborpreview000001',
+        companyName: 'Harbor Air Club',
+        accentColor: '#7DD3FC',
+        feedUrl: 'https://calendar.google.com/calendar/ical/harbor-demo/basic.ics',
+        poweredBy: false,
+        enabled: false,
+        publicToken: HARBOR_TOKEN,
+        publicPath: `/board/${HARBOR_TOKEN}`,
+        hasLogo: false,
+        updatedAt: Date.now() - 86_400_000,
+      },
+    ];
+  }
+  return window.__WHITE_LABEL_BOARDS__;
+}
+
+function whiteLabelPublicPayload() {
+  const hour = 3600_000;
+  const now = Date.now();
+  const iso = (delta) => new Date(now + delta).toISOString();
+  return {
+    ok: true,
+    companyName: 'Northstar Charter',
+    accentColor: '#E2B15A',
+    poweredBy: true,
+    hasLogo: true,
+    fetchedAt: now,
+    stale: false,
+    scheduleUnavailable: false,
+    tails: ['N510NS', 'N622NS', 'N734NS'],
+    trips: [
+      {
+        uid: 'ns-teb-pbi',
+        start: iso(-50 * 60_000),
+        end: iso(70 * 60_000),
+        info: { tail: 'N510NS', from: 'TEB', to: 'PBI', tripCode: 'NS4K2Q', isFlight: true, isOps: true },
+      },
+      {
+        uid: 'ns-apf-teb',
+        start: iso(80 * 60_000),
+        end: iso(80 * 60_000 + 2.4 * hour),
+        info: { tail: 'N622NS', from: 'APF', to: 'TEB', tripCode: 'NS8M1C', isFlight: true, isOps: true },
+      },
+      {
+        uid: 'ns-iad-hya',
+        start: iso(3 * hour),
+        end: iso(4.6 * hour),
+        info: { tail: 'N734NS', from: 'IAD', to: 'HYA', tripCode: 'NS2P7R', isFlight: true, isOps: true },
+      },
+      {
+        uid: 'ns-pbi-teb',
+        start: iso(3.5 * hour),
+        end: iso(6 * hour),
+        info: { tail: 'N510NS', from: 'PBI', to: 'TEB', tripCode: 'NS9D4L', isFlight: true, isOps: true },
+      },
+    ],
+    positions: {
+      N510NS: {
+        airborne: true,
+        latitude: 36.4,
+        longitude: -77.1,
+        altitude: 41000,
+        groundspeed: 438,
+        heading: 196,
+        origin: 'KTEB',
+        destination: 'KPBI',
+        progressPercent: 46,
+        estimatedOn: iso(70 * 60_000),
+        actualOff: iso(-40 * 60_000),
+        polledAt: now - 60_000,
+      },
+      N622NS: {
+        airborne: false,
+        groundedAt: 'KAPF',
+        groundedLat: 26.1526,
+        groundedLon: -81.7753,
+        polledAt: now - 90_000,
+      },
+    },
+    weather: {
+      KTEB: { metar: { flightCategory: 'VFR', windDir: 310, windKt: 8, visibilitySm: 10, ceilingFt: null } },
+      KPBI: { metar: { flightCategory: 'MVFR', windDir: 140, windKt: 12, visibilitySm: 5, ceilingFt: 2200 } },
+      KAPF: { metar: { flightCategory: 'VFR', windDir: 180, windKt: 6, visibilitySm: 10, ceilingFt: null } },
+      KIAD: { metar: { flightCategory: 'VFR', windDir: 280, windKt: 9, visibilitySm: 10, ceilingFt: null } },
+      KHYA: { metar: { flightCategory: 'MVFR', windDir: 220, windKt: 14, visibilitySm: 4, ceilingFt: 1800 } },
+    },
+    freshness: { status: 'ok', message: 'Fleet feed updated just now' },
+  };
+}
+
+function whiteLabelAdminPayload(body) {
+  const boards = whiteLabelBoards();
+  const action = body.action || 'list';
+  if (action === 'check-feed') {
+    return { ok: true, tripsToday: 4, tails: ['N510NS', 'N622NS', 'N734NS'] };
+  }
+  if (action === 'delete') {
+    const index = boards.findIndex((board) => board.id === body.boardId);
+    if (index >= 0) boards.splice(index, 1);
+    return { ok: true, id: body.boardId };
+  }
+  if (action === 'regenerate') {
+    const board = boards.find((item) => item.id === body.boardId);
+    if (!board) return { ok: false, error: 'Board not found' };
+    board.publicToken = `rotated${Date.now().toString(36)}token`;
+    board.publicPath = `/board/${board.publicToken}`;
+    board.updatedAt = Date.now();
+    return { ok: true, board: { ...board } };
+  }
+  if (action === 'create' || action === 'update') {
+    const record = {
+      id: body.boardId || `b${Date.now().toString(36)}`,
+      companyName: body.companyName || 'New board',
+      accentColor: body.accentColor || '#2DD4BF',
+      feedUrl: body.feedUrl || '',
+      poweredBy: body.poweredBy !== false,
+      enabled: body.enabled !== false,
+      publicToken: NORTHSTAR_TOKEN,
+      publicPath: `/board/${NORTHSTAR_TOKEN}`,
+      hasLogo: Boolean(body.logo?.dataBase64) || boards.find((item) => item.id === body.boardId)?.hasLogo || false,
+      updatedAt: Date.now(),
+    };
+    if (action === 'create') {
+      record.publicToken = `created${Date.now().toString(36)}tokenxx`;
+      record.publicPath = `/board/${record.publicToken}`;
+      boards.unshift(record);
+    } else {
+      const index = boards.findIndex((item) => item.id === body.boardId);
+      if (index >= 0) boards[index] = { ...boards[index], ...record, id: body.boardId, publicToken: boards[index].publicToken, publicPath: boards[index].publicPath };
+    }
+    const saved = boards.find((item) => item.id === record.id) || record;
+    return { ok: true, board: { ...saved } };
+  }
+  return { ok: true, boards: boards.map((board) => ({ ...board })) };
+}
+
 export function installFetchStub() {
   const real = window.fetch ? window.fetch.bind(window) : null;
 
@@ -755,6 +910,19 @@ export function installFetchStub() {
       });
     }
 
+    if (path === '/api/white-label-logo') {
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img">
+        <rect width="64" height="64" rx="14" fill="#102033"/>
+        <polygon points="32,8 38.5,26 58,26 42,37.5 48,56 32,44.5 16,56 22,37.5 6,26 25.5,26" fill="#E2B15A"/>
+      </svg>`;
+      return new Response(svg, { status: 200, headers: { 'Content-Type': 'image/svg+xml' } });
+    }
+    if (path === '/api/white-label-board') {
+      return json(whiteLabelPublicPayload());
+    }
+    if (path === '/api/white-label-boards') {
+      return json(whiteLabelAdminPayload(body));
+    }
     if (path === '/api/trip-public') return json(brokerPayload());
     if (path === '/api/trip-share') {
       if (!window.__SHARE_PREVIEW__) {

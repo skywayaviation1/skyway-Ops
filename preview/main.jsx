@@ -61,6 +61,8 @@ const AirportFboData = lazy(() => import('../src/AirportFboData.jsx'));
 const FboDesk = lazy(() => import('../src/FboDesk.jsx'));
 const FboLegPanel = lazy(() => import('../src/FboDesk.jsx').then((m) => ({ default: m.FboLegPanel })));
 const FboConfirmPage = lazy(() => import('../src/FboConfirmPage.jsx'));
+const WhiteLabelBoardPage = lazy(() => import('../src/WhiteLabelBoardPage.jsx'));
+const WhiteLabelBoards = lazy(() => import('../src/WhiteLabelBoards.jsx'));
 
 /** Push unfinished legs outside the airborne window so the wall is an all-parked day. */
 function parkedBoardTrips(trips) {
@@ -253,6 +255,21 @@ const SURFACES = {
   'fbo-confirm': {
     label: 'FBO arrival confirmation',
     render: () => <FboConfirmPage token="preview" />,
+  },
+
+  'white-label-board': {
+    label: 'White-label operations board',
+    render: () => <WhiteLabelBoardPage token="northstarpreviewtoken1" />,
+  },
+
+  'white-label-setup': {
+    label: 'White-label board setup',
+    render: () => (
+      <WhiteLabelBoards
+        currentUser={CURRENT_USER}
+        getIdToken={async () => 'preview-token'}
+      />
+    ),
   },
 
   dutyreport: {

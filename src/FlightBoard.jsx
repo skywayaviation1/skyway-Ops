@@ -1019,11 +1019,16 @@ async function fetchBoardAirportWx(icao) {
   }
 }
 
-function useBoardWeather(codes) {
+function useBoardWeather(codes, preset) {
   const [weather, setWeather] = useState({});
   const key = (Array.isArray(codes) ? codes : []).join(',');
+  const presetKey = preset ? JSON.stringify(preset) : '';
 
   useEffect(() => {
+    if (preset) {
+      setWeather(preset);
+      return undefined;
+    }
     if (!key) {
       setWeather({});
       return undefined;
@@ -1042,7 +1047,7 @@ function useBoardWeather(codes) {
       cancelled = true;
       clearInterval(id);
     };
-  }, [key]);
+  }, [key, presetKey]);
 
   return weather;
 }
@@ -1078,6 +1083,8 @@ function TvFlightBoard({
   managedFleetTails,
   aircraftByTail,
   timeZone,
+  brand = null,
+  weatherPreset = null,
 }) {
   const now = Date.now();
   const tails = useMemo(
@@ -1128,11 +1135,12 @@ function TvFlightBoard({
     now,
     timeZone,
   }));
-  const weather = useBoardWeather(boardWeatherAirports(rows, cards));
+  const weather = useBoardWeather(boardWeatherAirports(rows, cards), weatherPreset);
+  const accent = brand?.accent || OCC_ACCENT;
   const scene = {
     ...baseScene,
     aircraft: boardAircraft,
-    routes: buildOccRoutes({ trips: today, phaseOf, aircraft: boardAircraft }),
+    routes: buildOccRoutes({ trips: today, phaseOf, aircraft: boardAircraft, accent }),
     airports: buildOccAirports(today, weather),
   };
   const airborne = rows.filter((row) => row.phase === 'airborne');
@@ -1171,11 +1179,17 @@ function TvFlightBoard({
           className="flex shrink-0 items-center"
           style={{ height: TV_HEADER_PX, gap: 16, padding: '0 16px', borderBottom: `1px solid ${OCC_LINE}`, background: 'rgba(6,10,16,0.94)' }}
         >
-          <Wordmark className="h-8 w-auto shrink-0" surface="dark" />
-          <div className="shrink-0" style={{ width: 1, height: 32, background: OCC_LINE }} />
-          <h1 className="shrink-0" style={{ fontSize: 16, fontWeight: 650, letterSpacing: '0.16em', lineHeight: '20px' }}>
-            OPERATIONS CONTROL
-          </h1>
+          {brand ? (
+            <OccBrand brand={brand} accent={accent} />
+          ) : (
+            <>
+              <Wordmark className="h-8 w-auto shrink-0" surface="dark" />
+              <div className="shrink-0" style={{ width: 1, height: 32, background: OCC_LINE }} />
+              <h1 className="shrink-0" style={{ fontSize: 16, fontWeight: 650, letterSpacing: '0.16em', lineHeight: '20px' }}>
+                OPERATIONS CONTROL
+              </h1>
+            </>
+          )}
           <div className="flex-1" />
           <OccClock time={clocks.local} label={clocks.zone || 'LOCAL'} />
           <OccClock time={clocks.utc} label="UTC" />
@@ -1186,7 +1200,7 @@ function TvFlightBoard({
           <OccKpi value={completed} label="COMPLETED" />
           <OccKpi value={available} label="FLEET AVAILABLE" />
           <div className="shrink-0" style={{ width: 1, height: 28, background: OCC_LINE }} />
-          <OccFreshness diag={faDiag} />
+          <OccFreshness diag={faDiag} accent={accent} />
         </header>
 
         <div className="relative min-h-0 flex-1 overflow-hidden">
@@ -1218,7 +1232,7 @@ function TvFlightBoard({
               boxShadow: '-20px 0 48px rgba(0,0,0,0.28)',
             }}
           >
-            <OccSection label="AIRBORNE" count={airborne.length} />
+            <OccSection label="AIRBORNE" count={airborne.length} accent={accent} />
             {airborne.length > 0 && (
               <div
                 style={{
@@ -1235,7 +1249,7 @@ function TvFlightBoard({
               </div>
             )}
 
-            <OccSection label="NEXT DEPARTURES" count={departures.length} />
+            <OccSection label="NEXT DEPARTURES" count={departures.length} accent={accent} />
             <div className="min-h-0 overflow-hidden" style={{ height: departures.length * stack.depRow }}>
               {departures.map((row) => (
                 <OccDepartureRow key={row.uid || `${row.tail}-${row.tripId}-${row.etdLabel}`} row={row} height={stack.depRow} weather={weather} />
@@ -1243,7 +1257,7 @@ function TvFlightBoard({
             </div>
 
             <div className="mt-auto">
-            <OccSection label="FLEET" count={cards.length} />
+            <OccSection label="FLEET" count={cards.length} accent={accent} />
             <div
               data-board-fleet=""
               style={{
@@ -1306,9 +1320,35 @@ function OccKpi({ value, label }) {
   );
 }
 
-function OccFreshness({ diag }) {
+function OccBrand({ brand, accent }) {
+  return (
+    <div className="flex min-w-0 items-center" data-occ-brand="" style={{ gap: 12 }}>
+      {brand.logoUrl ? (
+        <img
+          alt=""
+          src={brand.logoUrl}
+          style={{ height: 36, width: 'auto', maxWidth: 148, objectFit: 'contain', flex: '0 0 auto' }}
+        />
+      ) : null}
+      <div className="min-w-0">
+        <div
+          className="truncate"
+          data-company-name=""
+          style={{ fontSize: 18, fontWeight: 700, letterSpacing: '0.06em', lineHeight: '22px', color: accent }}
+        >
+          {brand.companyName}
+        </div>
+        <div className="truncate" style={{ fontSize: 11, letterSpacing: '0.12em', lineHeight: '14px', color: OCC_MUTED }}>
+          OPERATIONS CONTROL{brand.poweredBy ? '  ·  Powered by SKYWAY.app' : ''}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function OccFreshness({ diag, accent = OCC_ACCENT }) {
   const status = diag?.status || 'idle';
-  const color = status === 'ok' ? OCC_ACCENT : status === 'error' ? '#fbbf24' : OCC_MUTED;
+  const color = status === 'ok' ? accent : status === 'error' ? '#fbbf24' : OCC_MUTED;
   return (
     <div className="flex min-w-0 items-center" data-board-freshness={status} title={diag?.message || ''} style={{ gap: 8, maxWidth: 240 }}>
       <span
@@ -1326,13 +1366,13 @@ function OccFreshness({ diag }) {
   );
 }
 
-function OccSection({ label, count }) {
+function OccSection({ label, count, accent = OCC_ACCENT }) {
   return (
     <div
       className="flex shrink-0 items-center justify-between"
       style={{ height: 26, padding: '0 14px' }}
     >
-      <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: '0.16em', color: OCC_ACCENT }}>{label}</span>
+      <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: '0.16em', color: accent }}>{label}</span>
       <span style={{ fontSize: 13, color: OCC_MUTED }}>{count}</span>
     </div>
   );
@@ -1604,6 +1644,11 @@ function FlightBoard({
   fleetTails: managedFleetTails = null,
   aircraftByTail = null,
   timeZone,
+  brand = null,
+  isolated = false,
+  externalPositions = null,
+  externalWeather = null,
+  externalDiag = null,
 }) {
   const [stateMap, setStateMap] = useState(new Map());
   const [, setTick] = useState(0); // forces a tick every minute for time display
@@ -1616,6 +1661,10 @@ function FlightBoard({
   const [faDiag, setFaDiag] = useState({ status: 'idle', message: 'Loading fleet data…' });
 
   useEffect(() => {
+    if (isolated) {
+      setStateMap(new Map());
+      return undefined;
+    }
     let unsub = () => {};
     (async () => {
       const m = await import('./firebase-data.js');
@@ -1624,7 +1673,7 @@ function FlightBoard({
       });
     })();
     return () => { try { unsub(); } catch (_) {} };
-  }, []);
+  }, [isolated]);
 
   // Subscribe to the FA-populated airport cache. As the cron sees new
   // airports it writes coords to `flightaware-airports`. We feed each
@@ -1632,6 +1681,7 @@ function FlightBoard({
   // so lookupCoords() picks them up transparently. Force a re-tick on
   // each update so the map redraws with newly-known airports.
   useEffect(() => {
+    if (isolated) return undefined;
     let unsub = () => {};
     (async () => {
       const fd = await import('./firebase-data.js');
@@ -1651,7 +1701,7 @@ function FlightBoard({
       });
     })();
     return () => { try { unsub(); } catch (_) {} };
-  }, []);
+  }, [isolated]);
 
   // Re-tick once a minute so the "now" time in the header updates and
   // the active filter rolls over correctly past midnight.
@@ -1731,6 +1781,11 @@ function FlightBoard({
   // The diagnostic line shows the last poll time for any tail in the
   // fleet (visible signal that the cron is actually running).
   useEffect(() => {
+    if (isolated) {
+      setFaPositions(externalPositions || {});
+      if (externalDiag) setFaDiag(externalDiag);
+      return undefined;
+    }
     let unsub = () => {};
     let settled = false;
     // The first snapshot can hang (rules, offline TV, cron never wrote).
@@ -1773,7 +1828,7 @@ function FlightBoard({
       clearTimeout(timer);
       try { unsub(); } catch (_) {}
     };
-  }, []);
+  }, [isolated, externalPositions, externalDiag]);
 
   // Compute the effective phase for a trip using BOTH Firestore status
   // steps AND FlightAware live data. FA reports one position per tail,
@@ -1868,6 +1923,8 @@ function FlightBoard({
         managedFleetTails={managedFleetTails}
         aircraftByTail={aircraftByTail}
         timeZone={timeZone}
+        brand={brand}
+        weatherPreset={isolated ? (externalWeather || {}) : null}
       />
     );
   }
