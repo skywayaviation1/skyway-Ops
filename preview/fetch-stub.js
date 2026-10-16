@@ -803,7 +803,30 @@ export function installFetchStub() {
     if (path === '/api/teams') return json(teamsResponse(action));
     if (path === '/api/quickbooks-workspace') return json(quickbooksResponse(action));
     if (path === '/api/quickbooks-status') return json(QBO_CONNECTION);
-    if (path === '/api/faa-notams') return json({ ok: true, notams: [] });
+    if (path === '/api/faa-notams') {
+      const demo = new URLSearchParams(window.location.search).get('demoLink') === '1';
+      if (!demo) return json({ ok: true, notams: [], significantOnly: [] });
+      const icao = (() => {
+        try { return new URL(url, window.location.origin).searchParams.get('icao') || ''; }
+        catch { return ''; }
+      })().toUpperCase();
+      const summary = icao.includes('HYA')
+        ? 'Runway 15/33 braking action reported medium'
+        : 'Taxiway B closed between B1 and B3';
+      return json({
+        ok: true,
+        source: 'faa',
+        icao,
+        notams: [],
+        significantOnly: [{
+          id: `demo-${icao || 'apt'}`,
+          severity: 'medium',
+          summary,
+          text: `${summary}. Preview sample, not a live FAA NOTAM.`,
+          effectiveEnd: Date.now() + 6 * 60 * 60 * 1000,
+        }],
+      });
+    }
     if (path.startsWith('/api/airport-weather')) {
       const requested = new URL(url, 'http://preview.local').searchParams.get('icao') || '';
       const icao = requested.toUpperCase();
