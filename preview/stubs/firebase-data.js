@@ -1,24 +1,43 @@
-import { fleetPositions, tripStates } from '../sample-data.js';
+import { fleetPositions, TRIPS, tripStates } from '../sample-data.js';
 
 const emit = (value) => (cb) => {
   if (typeof cb === 'function') cb(value);
   return () => {};
 };
 
-import { TRIPS } from '../sample-data.js';
+// Parsed trip-sheet flight numbers exist only for legs that are already in
+// motion, so the tracking ID row can show a segment without inventing one
+// for a leg that has no sheet.
+function previewTripStates() {
+  const map = tripStates();
+  let serial = 3218;
+  for (const trip of TRIPS) {
+    const state = map.get(trip.uid);
+    if (!state?.statuses?.wheels_up || state.statuses.landed) continue;
+    const tripCode = trip.info?.tripCode || null;
+    state.tripCode = tripCode;
+    state.tripSheetData = {
+      ...(state.tripSheetData || {}),
+      tripCode,
+      flightNumber: String(serial),
+    };
+    serial += 11;
+  }
+  return map;
+}
 
 const noop = async () => {};
 
 export const subscribeFleetPositions = (cb) => emit(fleetPositions())(cb);
-export const subscribeAllTripStates = (cb) => emit(tripStates())(cb);
+export const subscribeAllTripStates = (cb) => emit(previewTripStates())(cb);
 export const subscribeAirportCache = (cb) => emit({})(cb);
 export const subscribeManualTrips = (cb) => emit([])(cb);
 export const subscribeToManualTrips = (cb) => emit([])(cb);
-export const subscribeTripState = (uid, cb) => emit(tripStates().get(uid) || { statuses: {} })(cb);
-export const subscribeToTripState = (uid, cb) => emit(tripStates().get(uid) || { statuses: {} })(cb);
-export const fetchTripState = async (uid) => tripStates().get(uid)
+export const subscribeTripState = (uid, cb) => emit(previewTripStates().get(uid) || { statuses: {} })(cb);
+export const subscribeToTripState = (uid, cb) => emit(previewTripStates().get(uid) || { statuses: {} })(cb);
+export const fetchTripState = async (uid) => previewTripStates().get(uid)
   || { statuses: {}, preloadedPax: [], passengers: [] };
-export const fetchTripStateForShare = async (uid) => tripStates().get(uid)
+export const fetchTripStateForShare = async (uid) => previewTripStates().get(uid)
   || { statuses: {}, preloadedPax: [], passengers: [] };
 export const fetchPreloadedPax = async () => [];
 export const saveTripState = noop;

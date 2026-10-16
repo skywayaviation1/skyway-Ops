@@ -23,10 +23,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Layers, CloudRain, Maximize2, Minimize2, Crosshair, Loader2, Route, Check,
+  Map as MapIcon, Cuboid, Info,
 } from 'lucide-react';
 import {
   loadLeaflet, BASEMAP_ORDER, applyBasemap, clearBasemap, createRadarLayer,
-  currentMapTheme, drawAltitudeTrail, ALTITUDE_LEGEND, altitudeColor, aircraftIcon,
+  createSatelliteCloudLayer, currentMapTheme, drawAltitudeTrail, drawFlightTrack,
+  FLIGHT_REMAINING_COLOR, ALTITUDE_LEGEND, altitudeColor, aircraftIcon,
   airportIcon, groundedIcon, standardBasemapSpec,
 } from './tracking-map.js';
 import {
@@ -74,6 +76,14 @@ export default function TrackingMap({
    * the user pans or zooms. Single-flight maps keep the fitKey behaviour.
    */
   followFleet = false,
+  /**
+   * `flight` is the single-aircraft detail look: dashed white track, solid
+   * remaining route, magenta aircraft, infrared clouds. Every other surface
+   * stays on `ops`.
+   */
+  presentation = 'ops',
+  /** { top, right, bottom, left } in pixels, used when fitting a flight. */
+  fitInsets = null,
 }) {
   const containerRef = useRef(null);
   const googleContainerRef = useRef(null);
@@ -86,13 +96,18 @@ export default function TrackingMap({
   const appleWatchRef = useRef(null);
   const overlayGroupRef = useRef(null);
   const radarRef = useRef(null);
+  const cloudRef = useRef(null);
 
   const [ready, setReady] = useState(false);
   const [error, setError] = useState(null);
-  const [basemap, setBasemap] = useState(basemapDefault);
+  const [basemap, setBasemap] = useState(presentation === 'flight' ? 'satellite' : basemapDefault);
   const [radarOn, setRadarOn] = useState(radarDefault);
   const [radarFrameAt, setRadarFrameAt] = useState(null);
+  const [cloudsOn, setCloudsOn] = useState(presentation === 'flight');
+  const [cloudFrameAt, setCloudFrameAt] = useState(null);
   const [trailOn, setTrailOn] = useState(true);
+  const [trailStyle, setTrailStyle] = useState(presentation === 'flight' ? 'path' : 'altitude');
+  const [infoOpen, setInfoOpen] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [layersOpen, setLayersOpen] = useState(false);
   const [mapProvider, setMapProvider] = useState('checking');
@@ -282,6 +297,7 @@ export default function TrackingMap({
     return () => {
       cancelled = true;
       if (radarRef.current) { radarRef.current.destroy(); radarRef.current = null; }
+      if (cloudRef.current) { cloudRef.current.destroy(); cloudRef.current = null; }
       if (mapRef.current) {
         if (mapRef.current.__swGoogleSync) {
           mapRef.current.off('move zoom resize', mapRef.current.__swGoogleSync);
@@ -330,6 +346,24 @@ export default function TrackingMap({
     }
   }, [ready, basemap, mapProvider, theme]);
 
+  /* Single-flight mode opens on satellite with the cloud overlay. Leaving it
+     restores the caller's basemap and the altitude trail. */
+  const presentationRef = useRef(presentation);
+  useEffect(() => {
+    if (presentationRef.current === presentation) return;
+    presentationRef.current = presentation;
+    if (presentation === 'flight') {
+      setBasemap('satellite');
+      setCloudsOn(true);
+      setTrailStyle('path');
+      setRadarOn(false);
+    } else {
+      setBasemap(basemapDefault);
+      setCloudsOn(false);
+      setTrailStyle('altitude');
+    }
+  }, [presentation, basemapDefault]);
+
   useEffect(() => {
     const el = document.documentElement;
     const sync = () => setTheme(currentMapTheme());
@@ -354,6 +388,23 @@ export default function TrackingMap({
       if (radarRef.current) { radarRef.current.destroy(); radarRef.current = null; }
     };
   }, [ready, radarOn]);
+
+  /* ─── Infrared cloud overlay ──────────────────────────────────────────── */
+  useEffect(() => {
+    if (!ready || !mapRef.current) return undefined;
+    if (!cloudsOn) {
+      if (cloudRef.current) { cloudRef.current.destroy(); cloudRef.current = null; }
+      setCloudFrameAt(null);
+      return undefined;
+    }
+    cloudRef.current = createSatelliteCloudLayer(window.L, mapRef.current, {
+      opacity: 0.92,
+      onFrame: (epochSeconds) => setCloudFrameAt(epochSeconds * 1000),
+    });
+    return () => {
+      if (cloudRef.current) { cloudRef.current.destroy(); cloudRef.current = null; }
+    };
+  }, [ready, cloudsOn]);
 
   /* ─── Keep Leaflet's size cache honest ─────────────────────────────────── */
   useEffect(() => {
@@ -398,13 +449,19 @@ export default function TrackingMap({
     });
 
     if (trailOn && scene.trail) {
-      drawAltitudeTrail(L, group, scene.trail, { weight: 4, opacity: 0.95 });
+      if (trailStyle === 'path') drawFlightTrack(L, group, scene.trail);
+      else drawAltitudeTrail(L, group, scene.trail, { weight: 4, opacity: 0.95 });
     }
 
     if (Array.isArray(scene.projected) && scene.projected.length >= 2) {
+      const flightLook = presentation === 'flight';
       L.polyline(scene.projected, {
-        color: '#3FA9CC', weight: 2.5, opacity: 0.5,
-        dashArray: '6 8', lineCap: 'round', lineJoin: 'round',
+        color: flightLook ? FLIGHT_REMAINING_COLOR : '#3FA9CC',
+        weight: flightLook ? 3.5 : 2.5,
+        opacity: flightLook ? 0.95 : 0.5,
+        dashArray: flightLook ? undefined : '6 8',
+        lineCap: 'round',
+        lineJoin: 'round',
       }).addTo(group);
     }
 
@@ -449,17 +506,18 @@ export default function TrackingMap({
             altitude: a.altitude,
             groundspeed: a.groundspeed,
             selected,
-            muted: Boolean(selectedId) && !selected,
-            showLabel: a.showLabel !== false,
+            muted: presentation === 'flight' ? false : Boolean(selectedId) && !selected,
+            showLabel: presentation === 'flight' ? false : a.showLabel !== false,
             tripId: a.tripId,
             destination: a.destination,
             etaLabel: a.etaLabel,
+            variant: presentation === 'flight' ? 'flight' : 'ops',
           }),
           zIndexOffset: selected ? 1000 : 200,
         }).addTo(group);
         if (onSelectAircraft) marker.on('click', () => onSelectAircraft(a.id));
       });
-  }, [ready, scene, routes, airports, aircraft, selectedId, onSelectAircraft, trailOn]);
+  }, [ready, scene, routes, airports, aircraft, selectedId, onSelectAircraft, trailOn, trailStyle, presentation]);
 
   /* ─── Fit ─────────────────────────────────────────────────────────────── */
   const fitScene = useCallback(() => {
@@ -491,14 +549,19 @@ export default function TrackingMap({
     }
     if (pts.length >= 2) {
       try {
+        const insets = fitInsets && typeof fitInsets === 'object' ? fitInsets : null;
         mapRef.current.fitBounds(L.latLngBounds(pts), {
-          padding: [40, 40], maxZoom: 10, animate: true, duration: 0.6,
+          paddingTopLeft: insets ? [insets.left || 40, insets.top || 40] : [40, 40],
+          paddingBottomRight: insets ? [insets.right || 40, insets.bottom || 40] : [40, 40],
+          maxZoom: 10,
+          animate: true,
+          duration: 0.6,
         });
       } catch { /* degenerate bounds */ }
     } else if (pts.length === 1) {
       mapRef.current.setView(pts[0], 9, { animate: true });
     }
-  }, [aircraft, airports, routes, scene.trail, focusIds]);
+  }, [aircraft, airports, routes, scene.trail, focusIds, fitInsets]);
 
   // Re-fit when the caller signals a meaningful change (selection, trip, first
   // data arrival). Position updates alone must not steal the user's pan/zoom.
@@ -568,6 +631,22 @@ export default function TrackingMap({
   const radarLabel = radarFrameAt
     ? new Date(radarFrameAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     : null;
+  const cloudLabel = cloudFrameAt
+    ? new Date(cloudFrameAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : null;
+  const flightLook = presentation === 'flight';
+  const basemapLabel = (id) => (
+    mapProvider === 'google'
+      ? GOOGLE_BASEMAP_LABELS[id]
+      : mapProvider === 'apple'
+        ? APPLE_BASEMAP_LABELS[id]
+        : standardBasemapSpec(id, theme).label
+  );
+  const cycleBasemap = () => {
+    const index = BASEMAP_ORDER.indexOf(basemap);
+    const next = BASEMAP_ORDER[(index + 1) % BASEMAP_ORDER.length];
+    setBasemap(next);
+  };
 
   if (error) {
     return (
@@ -618,7 +697,34 @@ export default function TrackingMap({
 
       {/* Controls. Leaflet's own panes sit below z-400, so 500+ keeps these
           above tiles and markers without fighting the zoom control. */}
-      <div className={cx('sw-map-controls absolute z-[500] flex flex-col items-end', compact ? 'gap-1.5' : 'gap-2')}>
+      <div className={cx(
+        'sw-map-controls absolute z-[500] flex flex-col items-end',
+        flightLook && 'sw-map-controls-flight',
+        compact ? 'gap-1.5' : 'gap-2',
+      )}>
+        {flightLook ? (
+          <FlightMapControls
+            layersOpen={layersOpen}
+            setLayersOpen={setLayersOpen}
+            infoOpen={infoOpen}
+            setInfoOpen={setInfoOpen}
+            basemap={basemap}
+            setBasemap={setBasemap}
+            basemapLabel={basemapLabel}
+            mapProvider={mapProvider}
+            cloudsOn={cloudsOn}
+            setCloudsOn={setCloudsOn}
+            cloudLabel={cloudLabel}
+            radarOn={radarOn}
+            setRadarOn={setRadarOn}
+            radarLabel={radarLabel}
+            trailStyle={trailStyle}
+            setTrailStyle={setTrailStyle}
+            onCycleBasemap={cycleBasemap}
+            onFit={fitScene}
+          />
+        ) : (
+        <>
         <div className="flex gap-1.5">
           <MapButton
             icon={CloudRain}
@@ -694,9 +800,11 @@ export default function TrackingMap({
             title={fullscreen ? 'Exit fullscreen' : 'Fullscreen map'}
           />
         </div>
+        </>
+        )}
       </div>
 
-      {showLegend && trailOn && scene.trail && (
+      {showLegend && trailOn && trailStyle !== 'path' && scene.trail && (
         <div className="sw-map-legend absolute z-[500] rounded-lg border border-edge bg-surface/90 px-2.5 py-2 shadow-card backdrop-blur">
           <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-content-subtle">Altitude</p>
           <div className="flex items-center gap-1.5">
@@ -710,6 +818,116 @@ export default function TrackingMap({
         </div>
       )}
     </div>
+  );
+}
+
+function FlightMapControls({
+  layersOpen, setLayersOpen, infoOpen, setInfoOpen,
+  basemap, setBasemap, basemapLabel, mapProvider,
+  cloudsOn, setCloudsOn, cloudLabel,
+  radarOn, setRadarOn, radarLabel,
+  trailStyle, setTrailStyle, onCycleBasemap, onFit,
+}) {
+  return (
+    <>
+      {(layersOpen || infoOpen) && (
+        <div className="w-52 rounded-xl border border-white/12 bg-slate-950/90 p-1.5 text-slate-100 shadow-overlay backdrop-blur">
+          {layersOpen && (
+            <>
+              <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Map style</p>
+              {BASEMAP_ORDER.map((id) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => { setBasemap(id); setLayersOpen(false); }}
+                  className={cx(
+                    'flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-[11px]',
+                    basemap === id ? 'bg-white/10 text-white' : 'text-slate-300 hover:bg-white/5',
+                  )}
+                >
+                  {basemapLabel(id)}
+                  {basemap === id && <Check className="h-3.5 w-3.5" />}
+                </button>
+              ))}
+              <div className="my-1 border-t border-white/10" />
+              <button
+                type="button"
+                onClick={() => setCloudsOn((v) => !v)}
+                className="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-[11px] text-slate-200 hover:bg-white/5"
+              >
+                <span>Clouds · IR{cloudLabel ? ` ${cloudLabel}` : ''}</span>
+                {cloudsOn && <Check className="h-3.5 w-3.5 text-fuchsia-300" />}
+              </button>
+              <button
+                type="button"
+                onClick={() => setRadarOn((v) => !v)}
+                className="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-[11px] text-slate-200 hover:bg-white/5"
+              >
+                <span>Radar{radarOn && radarLabel ? ` ${radarLabel}` : ''}</span>
+                {radarOn && <Check className="h-3.5 w-3.5 text-fuchsia-300" />}
+              </button>
+              <button
+                type="button"
+                onClick={() => setTrailStyle((style) => (style === 'path' ? 'altitude' : 'path'))}
+                className="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-[11px] text-slate-200 hover:bg-white/5"
+              >
+                <span>{trailStyle === 'path' ? 'Flown track' : 'Altitude trail'}</span>
+                <Check className="h-3.5 w-3.5 text-fuchsia-300" />
+              </button>
+              <button
+                type="button"
+                onClick={onFit}
+                className="flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-[11px] text-slate-200 hover:bg-white/5"
+              >
+                <Crosshair className="h-3.5 w-3.5" /> Fit route
+              </button>
+            </>
+          )}
+          {infoOpen && (
+            <div className="space-y-1 px-2 py-1.5 text-[11px] leading-relaxed text-slate-300">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Map</p>
+              <p>{basemapLabel(basemap)}</p>
+              <p>
+                {mapProvider === 'google'
+                  ? 'Basemap by Google Maps'
+                  : mapProvider === 'apple'
+                    ? 'Basemap by Apple Maps'
+                    : 'Standard map fallback'}
+              </p>
+              <p>Positions from FlightAware. Clouds are the latest infrared satellite frame.</p>
+              <p>3D terrain needs a single map camera, so that control stays off.</p>
+            </div>
+          )}
+        </div>
+      )}
+      <div className="flex flex-col overflow-hidden rounded-xl border border-white/15 bg-slate-950/80 shadow-overlay backdrop-blur">
+        <FlightControl icon={Layers} title="Layers" pressed={layersOpen} onClick={() => { setInfoOpen(false); setLayersOpen((v) => !v); }} />
+        <FlightControl icon={MapIcon} title="Map style" onClick={() => { setLayersOpen(false); setInfoOpen(false); onCycleBasemap(); }} />
+        <FlightControl icon={Cuboid} title="Terrain view needs a single map camera" disabled />
+        <FlightControl icon={Info} title="Map info" pressed={infoOpen} onClick={() => { setLayersOpen(false); setInfoOpen((v) => !v); }} />
+      </div>
+    </>
+  );
+}
+
+function FlightControl({ icon: Icon, title, onClick, pressed = false, disabled = false }) {
+  return (
+    <button
+      type="button"
+      title={title}
+      aria-label={title}
+      aria-pressed={disabled ? undefined : pressed}
+      aria-disabled={disabled || undefined}
+      disabled={disabled}
+      onClick={onClick}
+      className={cx(
+        'flex h-10 w-10 items-center justify-center border-b border-white/10 text-slate-200 last:border-b-0',
+        disabled ? 'cursor-not-allowed text-slate-500' : 'hover:bg-white/10',
+        pressed && 'bg-white/10 text-white',
+      )}
+    >
+      <Icon className="h-4 w-4" />
+    </button>
   );
 }
 

@@ -435,6 +435,8 @@ export function subscribeAllTripStates(onUpdate) {
           toFbo: data.toFbo || null,
           hasCatering: data.hasCatering !== false,
           paxOverride: typeof data.paxOverride === 'number' ? data.paxOverride : null,
+          tripCode: data.tripCode || data.tripSheetData?.tripCode || null,
+          tripSheetData: data.tripSheetData && typeof data.tripSheetData === 'object' ? data.tripSheetData : null,
         });
       });
       onUpdate(map);

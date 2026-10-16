@@ -249,6 +249,153 @@ export function createRadarLayer(L, map, { opacity = 0.55, onFrame } = {}) {
   };
 }
 
+/**
+ * GOES clean-infrared tiles paint the whole earth. Keep only the bright,
+ * cold cloud tops and draw those in magenta so the satellite ground shows
+ * through. RainViewer frames skip this and use the pane tint instead.
+ */
+function magentaCloudLayer(L, url, options) {
+  const Layer = L.TileLayer.extend({
+    createTile(coords, done) {
+      const tile = document.createElement('canvas');
+      tile.width = 256;
+      tile.height = 256;
+      const image = new Image();
+      image.crossOrigin = 'anonymous';
+      image.onload = () => {
+        const ctx = tile.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(image, 0, 0, 256, 256);
+        try {
+          const frame = ctx.getImageData(0, 0, 256, 256);
+          const data = frame.data;
+          for (let i = 0; i < data.length; i += 4) {
+            const lum = data[i] * 0.3 + data[i + 1] * 0.59 + data[i + 2] * 0.11;
+            const span = (lum - 168) / 52;
+            const alpha = span <= 0 ? 0 : Math.min(210, Math.round(span * 210));
+            data[i] = 255;
+            data[i + 1] = 42;
+            data[i + 2] = 166;
+            data[i + 3] = alpha;
+          }
+          ctx.putImageData(frame, 0, 0);
+        } catch {
+          ctx.clearRect(0, 0, 256, 256);
+        }
+        done(null, tile);
+      };
+      image.onerror = () => done(null, tile);
+      image.src = this.getTileUrl(coords);
+      return tile;
+    },
+  });
+  return new Layer(url, { ...options, maxNativeZoom: 6, tileSize: 256 });
+}
+
+/**
+ * Infrared satellite clouds from the same RainViewer index as the radar.
+ * The tile pane is tinted toward magenta so the overlay reads as weather
+ * rather than a second copy of the ground imagery. Observed frames only.
+ */
+export function createSatelliteCloudLayer(L, map, { opacity = 0.62, onFrame } = {}) {
+  let layer = null;
+  let timer = null;
+  let destroyed = false;
+
+  if (!map.getPane('swClouds')) {
+    const pane = map.createPane('swClouds');
+    pane.style.zIndex = 350;
+    pane.style.pointerEvents = 'none';
+    pane.classList.add('sw-cloud-tint');
+  }
+
+  async function refresh() {
+    try {
+      let url = null;
+      let frameTime = null;
+      let attribution = '<a href="https://www.rainviewer.com">RainViewer</a>';
+      let recolor = false;
+      try {
+        const res = await fetch(RADAR_INDEX_URL);
+        if (res.ok) {
+          const index = await res.json();
+          const frames = Array.isArray(index?.satellite?.infrared) ? index.satellite.infrared : [];
+          const frame = frames[frames.length - 1];
+          if (frame?.path && index.host) {
+            url = `${index.host}${frame.path}/256/{z}/{x}/{y}/0/0_0.png`;
+            frameTime = frame.time;
+          }
+        }
+      } catch { /* fall through to GOES */ }
+      if (!url) {
+        // RainViewer often publishes an empty infrared list. GOES-East band 13
+        // is the same observed infrared frame. It is opaque, so the tile is
+        // recolored and only the cold cloud tops are kept.
+        url = 'https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/GOES-East_ABI_Band13_Clean_Infrared/default/GoogleMapsCompatible_Level6/{z}/{y}/{x}.png';
+        attribution = 'NASA GIBS / NOAA GOES';
+        recolor = true;
+      }
+      if (destroyed) return;
+      const pane = map.getPane('swClouds');
+      if (pane) pane.classList.toggle('sw-cloud-tint', !recolor);
+      const next = recolor
+        ? magentaCloudLayer(L, url, { opacity, pane: 'swClouds', attribution })
+        : L.tileLayer(url, { opacity, pane: 'swClouds', attribution });
+      next.addTo(map);
+      if (layer) {
+        try { map.removeLayer(layer); } catch { /* already gone */ }
+      }
+      layer = next;
+      if (onFrame && frameTime) onFrame(frameTime);
+    } catch {
+      /* Clouds are supplementary — a missing frame must not break the map. */
+    }
+  }
+
+  refresh();
+  timer = setInterval(refresh, RADAR_REFRESH_MS);
+
+  return {
+    destroy() {
+      destroyed = true;
+      if (timer) clearInterval(timer);
+      if (layer) {
+        try { map.removeLayer(layer); } catch { /* already gone */ }
+      }
+      layer = null;
+    },
+  };
+}
+
+export const FLIGHT_TRACK_COLOR = '#F7F8FA';
+export const FLIGHT_REMAINING_COLOR = '#FF2D8A';
+
+/**
+ * Single-flight track: one dashed white line for the path already flown.
+ * The altitude-coloured trail stays available as an alternate style.
+ */
+export function drawFlightTrack(L, group, trail, { weight = 3.25, opacity = 0.95 } = {}) {
+  const pts = normalizeTrail(trail);
+  if (pts.length < 2) return pts.map((p) => [p.lat, p.lon]);
+  const latlngs = pts.map((p) => [p.lat, p.lon]);
+  L.polyline(latlngs, {
+    color: '#07080C',
+    weight: weight + 3,
+    opacity: 0.55,
+    dashArray: '1 14',
+    lineCap: 'round',
+    lineJoin: 'round',
+  }).addTo(group);
+  L.polyline(latlngs, {
+    color: FLIGHT_TRACK_COLOR,
+    weight,
+    opacity,
+    dashArray: '7 8',
+    lineCap: 'round',
+    lineJoin: 'round',
+  }).addTo(group);
+  return latlngs;
+}
+
 /* ─── ALTITUDE-CODED TRAIL ───────────────────────────────────────────────────
    Colouring the flown path by altitude is how every serious tracking product
    renders a trail: climb, cruise and descent become readable at a glance
@@ -402,17 +549,23 @@ export function aircraftIcon(L, {
   tripId = null,
   destination = null,
   etaLabel = null,
+  variant = 'ops',
 } = {}) {
-  const size = selected ? 38 : muted ? 22 : 28;
-  const color = selected ? '#5FD4F0' : muted ? '#6B8A96' : '#8FCADF';
-  const glow = selected
-    ? 'filter: drop-shadow(0 0 8px rgba(63,169,204,0.95));'
-    : muted
-      ? 'filter: drop-shadow(0 0 2px rgba(14,165,233,0.25));'
-      : 'filter: drop-shadow(0 0 4px rgba(14,165,233,0.55));';
-  const ring = selected
-    ? `<span style="position:absolute; inset:-6px; border-radius:50%; border:1.5px solid rgba(63,169,204,0.85); box-shadow:0 0 12px rgba(63,169,204,0.45);"></span>`
-    : `<span style="position:absolute; inset:-4px; border-radius:50%; border:1px solid rgba(63,169,204,0.28);"></span>`;
+  const flight = variant === 'flight';
+  const size = flight ? 34 : selected ? 38 : muted ? 22 : 28;
+  const color = flight ? '#FF2D8A' : selected ? '#5FD4F0' : muted ? '#6B8A96' : '#8FCADF';
+  const glow = flight
+    ? 'filter: drop-shadow(0 0 10px rgba(255,45,138,0.95));'
+    : selected
+      ? 'filter: drop-shadow(0 0 8px rgba(63,169,204,0.95));'
+      : muted
+        ? 'filter: drop-shadow(0 0 2px rgba(14,165,233,0.25));'
+        : 'filter: drop-shadow(0 0 4px rgba(14,165,233,0.55));';
+  const ring = flight
+    ? `<span class="sw-ac-pulse"></span><span class="sw-ac-ring"></span>`
+    : selected
+      ? `<span style="position:absolute; inset:-6px; border-radius:50%; border:1.5px solid rgba(63,169,204,0.85); box-shadow:0 0 12px rgba(63,169,204,0.45);"></span>`
+      : `<span style="position:absolute; inset:-4px; border-radius:50%; border:1px solid rgba(63,169,204,0.28);"></span>`;
 
   const readout = [formatAltitude(altitude), formatSpeed(groundspeed)].filter(Boolean).join(' · ');
   const title = [tail, tripId].filter(Boolean).map(esc).join(' · ');
@@ -436,7 +589,7 @@ export function aircraftIcon(L, {
       <div style="position:relative; width:${size}px; height:${size}px; cursor:pointer;">
         ${ring}
         <svg width="${size}" height="${size}" viewBox="0 0 24 24" style="position:relative; transform:rotate(${heading}deg); transform-origin:center; ${glow}">
-          <path d="${PLANE_PATH}" fill="${color}" stroke="#082f49" stroke-width="0.6"/>
+          <path d="${PLANE_PATH}" fill="${color}" stroke="${flight ? '#4A0824' : '#082f49'}" stroke-width="0.6"/>
         </svg>
         ${label}
       </div>`,

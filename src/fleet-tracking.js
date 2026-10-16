@@ -131,6 +131,32 @@ export function resolveFleetMapPosition({
   return null;
 }
 
+/**
+ * The schedule leg that belongs with this tail right now. An airborne
+ * FlightAware origin/destination wins over the clock when both are present,
+ * so a delayed or diverted leg is not replaced by the next calendar block.
+ */
+export function selectFlightLeg(tail, trips, telemetry = null, now = Date.now()) {
+  const legs = flightLegsForTail(tail, trips);
+  const origin = telemetry?.airborne ? telemetry.origin : null;
+  const destination = telemetry?.airborne ? telemetry.destination : null;
+  if (origin && destination) {
+    const matched = [...legs].reverse().find((leg) => (
+      sameAirport(leg?.info?.from, origin) && sameAirport(leg?.info?.to, destination)
+    ));
+    if (matched) return matched;
+  }
+  const active = legs.find((trip) => {
+    const start = toMs(trip.start);
+    const end = toMs(trip.end);
+    return start != null && start <= now && (end == null || end >= now);
+  });
+  if (active) return active;
+  const upcoming = legs.find((trip) => (toMs(trip.start) || 0) > now);
+  if (upcoming) return upcoming;
+  return [...legs].reverse().find((trip) => (toMs(trip.end) || Infinity) <= now) || null;
+}
+
 /** Airport code first, then any coordinates FlightAware already supplied. */
 export function resolveAirportPoint(code, apiLat, apiLon) {
   const hit = airportPoint(code);
@@ -169,6 +195,15 @@ function stateForTrip(tripStates, uid) {
   if (!tripStates || !uid) return null;
   if (typeof tripStates.get === 'function') return tripStates.get(uid) || null;
   return tripStates[uid] || null;
+}
+
+function sameAirport(a, b) {
+  const left = String(a || '').trim().toUpperCase();
+  const right = String(b || '').trim().toUpperCase();
+  if (!left || !right) return false;
+  if (left === right) return true;
+  const strip = (code) => (code.length === 4 && code.startsWith('K') ? code.slice(1) : code);
+  return strip(left) === strip(right);
 }
 
 function flightLegsForTail(tail, trips) {

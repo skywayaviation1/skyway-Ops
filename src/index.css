@@ -341,8 +341,97 @@ a:focus:not(:focus-visible) { outline: none; }
    Fullscreen adds .sw-safe-inset on the frame, which insets this chrome
    with the notch / home indicator without a second copy of the same inset. */
 .sw-map-controls { top: 0.75rem; right: 0.75rem; }
+.sw-map-controls-flight {
+  top: auto;
+  right: max(0.75rem, env(safe-area-inset-right, 0px));
+  bottom: calc(16.25rem + env(safe-area-inset-bottom, 0px));
+}
+@media (min-width: 1024px) {
+  .sw-map-controls-flight {
+    top: 46%;
+    right: calc(18.75rem + env(safe-area-inset-right, 0px));
+    bottom: auto;
+    transform: translateY(-30%);
+  }
+}
 .sw-map-legend { bottom: 0.75rem; left: 0.75rem; }
 .sw-map-overlay { top: 0.75rem; left: 0.75rem; }
+
+/* Single-flight tracking chrome. Scoped so the broker page and the fleet
+   dashboard keep the shared map's existing controls. */
+.sw-flight-glass {
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(8, 10, 14, 0.72);
+  color: #f4f5f7;
+  backdrop-filter: blur(18px) saturate(1.25);
+  -webkit-backdrop-filter: blur(18px) saturate(1.25);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+}
+.sw-flight-vignette {
+  background:
+    radial-gradient(ellipse at center, transparent 42%, rgba(4, 6, 12, 0.38) 100%),
+    linear-gradient(180deg, rgba(48, 8, 36, 0.18), transparent 28%, transparent 72%, rgba(0, 0, 0, 0.28));
+}
+.sw-route-tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.15em;
+  height: 1.35em;
+  padding: 0 0.08em;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(0, 0, 0, 0.35));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: clamp(22px, 3.4vw, 44px);
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0;
+  color: #f7f8fa;
+}
+@media (max-width: 1023px) {
+  .sw-route-tile { font-size: 20px; height: 1.28em; }
+}
+.sw-live-dot {
+  position: relative;
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 999px;
+  background: #34d399;
+  box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.7);
+  animation: sw-live-pulse 1.8s ease-out infinite;
+}
+.sw-ac-pulse,
+.sw-ac-ring {
+  position: absolute;
+  border-radius: 999px;
+  pointer-events: none;
+}
+.sw-ac-ring {
+  inset: -5px;
+  border: 1.5px solid rgba(255, 45, 138, 0.9);
+}
+.sw-ac-pulse {
+  inset: -6px;
+  border: 2px solid rgba(255, 45, 138, 0.85);
+  animation: sw-ac-pulse 1.8s ease-out infinite;
+}
+@keyframes sw-live-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.55); }
+  100% { box-shadow: 0 0 0 8px rgba(52, 211, 153, 0); }
+}
+@keyframes sw-ac-pulse {
+  0% { transform: scale(0.72); opacity: 0.85; }
+  100% { transform: scale(1.85); opacity: 0; }
+}
+.sw-cloud-tint {
+  /* Infrared frames are near-black except for the cloud tops. Screen
+     drops that black, and the hue shift turns the tops magenta. */
+  filter: contrast(1.7) brightness(1.2) sepia(1) saturate(6.5) hue-rotate(296deg);
+  mix-blend-mode: screen;
+}
 .sw-bottom-nav-offset {
   padding-bottom: calc(var(--sw-bottom-nav-h) + env(safe-area-inset-bottom, 0px));
 }

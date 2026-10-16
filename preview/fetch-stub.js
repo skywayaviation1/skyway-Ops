@@ -423,6 +423,66 @@ function brokerTrip() {
   };
 }
 
+function sampleAirportWeather(rawUrl) {
+  let icao = 'KIAD';
+  try {
+    icao = new URL(rawUrl, 'http://preview.local').searchParams.get('icao') || icao;
+  } catch { /* keep the default station */ }
+  const code = String(icao).toUpperCase();
+  const coastal = /HYA|ACK|PBI|TEB|BOS|DCA/.test(code);
+  const metar = coastal
+    ? { flightCategory: 'MVFR', windDir: 210, windKt: 12, windGustKt: 18, tempC: 16, visibilitySm: 4 }
+    : { flightCategory: 'VFR', windDir: 280, windKt: 8, windGustKt: null, tempC: 18, visibilitySm: 10 };
+  return { ok: true, icao: code, metar, parsed: metar, taf: null };
+}
+
+function sampleWindsAloft() {
+  const levels = [
+    [3000, 250, 18, 14],
+    [6000, 260, 24, 8],
+    [9000, 270, 31, 2],
+    [12000, 280, 38, -6],
+    [18000, 290, 46, -18],
+    [24000, 300, 58, -32],
+    [30000, 290, 72, -46],
+    [34000, 280, 81, -52],
+    [39000, 270, 64, -56],
+  ].map(([altitude, windDir, windKt, tempC]) => ({ altitude, windDir, windKt, tempC }));
+  return { ok: true, levels };
+}
+
+function sampleFlightDetail(rawUrl) {
+  let ident = '';
+  try {
+    ident = new URL(rawUrl, 'http://preview.local').searchParams.get('ident') || '';
+  } catch { /* ident stays blank */ }
+  const tail = String(ident).toUpperCase();
+  const hoursNow = (Date.now() - BASE) / HOUR;
+  const leg = SCHEDULE.find((item) => item.tail === tail && item.startH <= hoursNow && item.endH >= hoursNow)
+    || SCHEDULE.find((item) => item.tail === tail);
+  const aircraft = TENANT.fleet.find((item) => item.tail === tail);
+  if (!leg) return { ok: true, ident: tail, flight: null };
+  const start = BASE + leg.startH * HOUR;
+  const end = BASE + leg.endH * HOUR;
+  const airborne = Date.now() >= start && Date.now() <= end;
+  return {
+    ok: true,
+    ident: tail,
+    flight: {
+      ident: tail,
+      aircraftType: aircraft?.displayName || '',
+      origin: { code: `K${leg.from}`, city: '' },
+      destination: { code: `K${leg.to}`, city: '' },
+      actualOff: airborne || Date.now() > end ? new Date(start).toISOString() : null,
+      actualOn: !airborne && Date.now() > end ? new Date(end).toISOString() : null,
+      estimatedOn: airborne ? new Date(end).toISOString() : null,
+      scheduledOff: new Date(start).toISOString(),
+      scheduledOn: new Date(end).toISOString(),
+      progressPercent: airborne ? Math.round(((Date.now() - start) / (end - start)) * 100) : null,
+    },
+  };
+}
+
 function sampleTrackLog(ident) {
   const tail = String(ident || '').toUpperCase();
   const airborne = SCHEDULE.find((leg) => {
@@ -789,8 +849,10 @@ export function installFetchStub() {
     if (path === '/api/teams') return json(teamsResponse(action));
     if (path === '/api/quickbooks-workspace') return json(quickbooksResponse(action));
     if (path === '/api/quickbooks-status') return json(QBO_CONNECTION);
-    if (path === '/api/faa-notams') return json({ ok: true, notams: [] });
-    if (path.startsWith('/api/airport-weather')) return json({ ok: true, parsed: null });
+    if (path === '/api/faa-notams') return json({ ok: true, notams: [], significantOnly: [] });
+    if (path.startsWith('/api/airport-weather')) return json(sampleAirportWeather(url));
+    if (path.startsWith('/api/winds-aloft')) return json(sampleWindsAloft());
+    if (path.startsWith('/api/flightaware-flight-detail')) return json(sampleFlightDetail(url));
     if (path === '/api/apple-mapkit-token') {
       // ?mapkit=fail mounts MapKit with a token Apple will reject, so the
       // screenshot harness can prove the cream grid is replaced by tiles.

@@ -301,7 +301,7 @@ test('shared TrackingMap uses Apple for imagery and Leaflet for operations overl
 });
 
 test('all tracking surfaces continue using the shared map component', async () => {
-  const app = await source('src/App.jsx');
+  const app = await source('src/TrackingScreen.jsx');
   const broker = await source('src/TripTrack.jsx');
   const operator = await source('src/OperatorFlightPortal.jsx');
   const dashboard = await source('src/OpsDashboard.jsx');
