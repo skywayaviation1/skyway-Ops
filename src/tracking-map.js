@@ -669,6 +669,108 @@ export function flightCategoryStyle(category) {
   };
 }
 
+/** Leaflet pixel size. A fresh full-bleed frame often reports 0×0. */
+export function mapHasLayout(size) {
+  const width = Number(size?.x ?? size?.width ?? 0);
+  const height = Number(size?.y ?? size?.height ?? 0);
+  return Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0;
+}
+
+/** Programmatic framing must not animate. An in-flight zoom leaves the map pane blank until the next gesture. */
+export function programmaticViewOptions() {
+  return { animate: false };
+}
+
+const FIT_AXIS_RESERVE_PX = 80;
+
+/**
+ * Shrink chrome insets until each axis still has room for the route.
+ * Padding larger than the map makes Leaflet compute a NaN zoom, which
+ * stays blank until the user zooms.
+ */
+export function clampedFitPadding(mapSize, insets) {
+  const width = Number(mapSize?.x ?? mapSize?.width ?? 0);
+  const height = Number(mapSize?.y ?? mapSize?.height ?? 0);
+  const raw = {
+    left: Math.max(0, Number(insets?.left) || 0),
+    top: Math.max(0, Number(insets?.top) || 0),
+    right: Math.max(0, Number(insets?.right) || 0),
+    bottom: Math.max(0, Number(insets?.bottom) || 0),
+  };
+  const scale = (sum, limit) => (sum > limit && sum > 0 ? limit / sum : 1);
+  const scaleX = scale(raw.left + raw.right, Math.max(0, width - FIT_AXIS_RESERVE_PX));
+  const scaleY = scale(raw.top + raw.bottom, Math.max(0, height - FIT_AXIS_RESERVE_PX));
+  return {
+    left: Math.round(raw.left * scaleX),
+    top: Math.round(raw.top * scaleY),
+    right: Math.round(raw.right * scaleX),
+    bottom: Math.round(raw.bottom * scaleY),
+  };
+}
+
+function leafletDragging(map) {
+  return Boolean(map?.dragging?._dragging);
+}
+
+/**
+ * Recompute Leaflet's cached size and, once the container is actually
+ * visible, re-apply the current view without animation. Vendor basemaps
+ * only hear `move` otherwise, so `sync` runs in the same turn.
+ */
+export function settleLeafletFrame(map, { sync, forceView = false } = {}) {
+  if (!map || typeof map.getSize !== 'function') {
+    return { settled: false, laidOut: false, gainedLayout: false };
+  }
+  if (leafletDragging(map)) {
+    return { settled: false, laidOut: mapHasLayout(map.getSize()), gainedLayout: false };
+  }
+  let hadLayout = false;
+  try { hadLayout = mapHasLayout(map.getSize()); } catch { hadLayout = false; }
+  try { map.invalidateSize?.({ animate: false, pan: false }); } catch { /* torn down */ }
+  let laidOut = false;
+  try { laidOut = mapHasLayout(map.getSize()); } catch { laidOut = false; }
+  const gainedLayout = laidOut && !hadLayout;
+  if (!laidOut) return { settled: false, laidOut: false, gainedLayout: false };
+  if ((forceView || gainedLayout) && !leafletDragging(map)) {
+    // Stop only a programmatic animation. A resize while the user is
+    // already dragging returns above and leaves that gesture alone.
+    try { map.stop?.(); } catch { /* no animation in progress */ }
+    try {
+      const center = map.getCenter?.();
+      const zoom = map.getZoom?.();
+      if (center && Number.isFinite(zoom)) {
+        map.setView(center, zoom, programmaticViewOptions());
+      }
+    } catch { /* view not ready */ }
+  }
+  try { sync?.(); } catch { /* vendor basemap is best-effort */ }
+  return { settled: true, laidOut: true, gainedLayout };
+}
+
+/** Apple/Google imagery is slaved to Leaflet and misses the first region until a later move. */
+export function syncVendorBasemaps(map, googleMap, mapsEvent = globalThis.google?.maps?.event) {
+  if (googleMap && typeof mapsEvent?.trigger === 'function') {
+    try { mapsEvent.trigger(googleMap, 'resize'); } catch { /* container not visible yet */ }
+  }
+  try { map?.__swGoogleSync?.(); } catch { /* region not ready */ }
+  try { map?.__swAppleSync?.(); } catch { /* region not ready */ }
+}
+
+/**
+ * A fit key must not be consumed while the map is 0×0, or the real
+ * geometry never gets a second chance to frame itself.
+ */
+export function consumeFitKey({ map, fitKey, lastFitKey, hasGeometry }) {
+  if (!hasGeometry) return { nextFitKey: lastFitKey, shouldFit: false };
+  if (lastFitKey === fitKey) return { nextFitKey: lastFitKey, shouldFit: false };
+  if (!mapHasLayout(map?.getSize?.())) return { nextFitKey: lastFitKey, shouldFit: false };
+  return { nextFitKey: fitKey, shouldFit: true };
+}
+
+export function shouldFollowFleet({ followFleet, userMoved, signature, laidOut }) {
+  return Boolean(followFleet && !userMoved && signature && laidOut);
+}
+
 /** Great-circle distance in nautical miles. */
 export function distanceNm(a, b) {
   if (!a || !b) return null;

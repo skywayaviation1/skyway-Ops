@@ -30,6 +30,8 @@ import {
   createSatelliteCloudLayer, currentMapTheme, drawAltitudeTrail, drawFlightTrack,
   FLIGHT_REMAINING_COLOR, ALTITUDE_LEGEND, altitudeColor, aircraftIcon,
   airportIcon, groundedIcon, standardBasemapSpec,
+  mapHasLayout, programmaticViewOptions, clampedFitPadding, settleLeafletFrame,
+  syncVendorBasemaps, consumeFitKey, shouldFollowFleet,
 } from './tracking-map.js';
 import {
   APPLE_BASEMAP_LABELS,
@@ -97,6 +99,11 @@ export default function TrackingMap({
   const overlayGroupRef = useRef(null);
   const radarRef = useRef(null);
   const cloudRef = useRef(null);
+  const fitSceneRef = useRef(() => false);
+  const fitFleetRef = useRef(() => {});
+  const followFleetRef = useRef(followFleet);
+  const paintedSceneRef = useRef(false);
+  followFleetRef.current = followFleet;
 
   const [ready, setReady] = useState(false);
   const [error, setError] = useState(null);
@@ -191,6 +198,7 @@ export default function TrackingMap({
             keyboardShortcuts: false,
           });
           googleMapRef.current = googleMap;
+          map.__swGoogleMap = googleMap;
           const syncGoogleRegion = () => {
             const center = map.getCenter();
             googleMap.setCenter({ lat: center.lat, lng: center.lng });
@@ -202,10 +210,20 @@ export default function TrackingMap({
             if (cancelled) return;
             console.warn('[tracking-map] Google Maps authorization failed; using standard basemap');
             googleMapRef.current = null;
+            map.__swGoogleMap = null;
             if (googleContainerRef.current) googleContainerRef.current.style.display = 'none';
             useStandardBasemap();
           });
-          setTimeout(syncGoogleRegion, 0);
+          // The container was display:none, so the first region is ignored
+          // until Google hears a resize after it is actually visible.
+          const kickGoogle = () => {
+            if (cancelled) return;
+            try { google.maps.event.trigger(googleMap, 'resize'); } catch { /* API still booting */ }
+            settleLeafletFrame(map, { forceView: true, sync: syncGoogleRegion });
+          };
+          kickGoogle();
+          requestAnimationFrame(() => requestAnimationFrame(kickGoogle));
+          setTimeout(kickGoogle, 50);
           if (!cancelled) setMapProvider('google');
           return true;
         };
@@ -258,7 +276,15 @@ export default function TrackingMap({
             try { map.attributionControl?.remove(); } catch { /* already gone */ }
             el.style.display = '';
             el.style.visibility = 'visible';
-            syncAppleRegion();
+            // MapKit drops setRegion while the element is visibility:hidden.
+            // Sync again after it has painted, not only on the next user move.
+            const kickApple = () => {
+              if (cancelled) return;
+              settleLeafletFrame(map, { forceView: true, sync: syncAppleRegion });
+            };
+            kickApple();
+            requestAnimationFrame(() => requestAnimationFrame(kickApple));
+            setTimeout(kickApple, 50);
             if (!cancelled) setMapProvider('apple');
           };
           const fallBackFromApple = async (event) => {
@@ -352,6 +378,7 @@ export default function TrackingMap({
   useEffect(() => {
     if (presentationRef.current === presentation) return;
     presentationRef.current = presentation;
+    paintedSceneRef.current = false;
     if (presentation === 'flight') {
       setBasemap('satellite');
       setCloudsOn(true);
@@ -406,28 +433,25 @@ export default function TrackingMap({
     };
   }, [ready, cloudsOn]);
 
-  /* ─── Keep Leaflet's size cache honest ─────────────────────────────────── */
-  useEffect(() => {
-    if (!ready || !mapRef.current || !containerRef.current) return;
+  /* ─── Paint as soon as the frame has a real size ────────────────────────
+     Full-bleed glass layout often measures 0×0 on the first effect, and
+     Apple/Google ignore a region set while their container is hidden.
+     Settling here — and again after mode, basemap, and size changes —
+     is what makes tiles and overlays appear with no user gesture.
+     ─────────────────────────────────────────────────────────────────────── */
+  const paintFrame = useCallback((forceView = false) => {
     const map = mapRef.current;
-    const invalidate = () => { try { map.invalidateSize(false); } catch { /* not mounted */ } };
-    const ro = new ResizeObserver(invalidate);
-    ro.observe(containerRef.current);
-    // Panels that mount the map inside a hidden tab need an explicit nudge.
-    window.addEventListener('skyway-map-invalidate', invalidate);
-    return () => {
-      ro.disconnect();
-      window.removeEventListener('skyway-map-invalidate', invalidate);
-    };
-  }, [ready]);
-
-  useEffect(() => {
-    if (!ready || !mapRef.current) return;
-    const t = setTimeout(() => {
-      try { mapRef.current.invalidateSize(false); } catch { /* not mounted */ }
-    }, 220);
-    return () => clearTimeout(t);
-  }, [ready, fullscreen]);
+    if (!map) return null;
+    const result = settleLeafletFrame(map, {
+      forceView,
+      sync: () => syncVendorBasemaps(map, googleMapRef.current),
+    });
+    if (result.gainedLayout && !userMovedRef.current) {
+      if (followFleetRef.current) fitFleetRef.current();
+      else fitSceneRef.current();
+    }
+    return result;
+  }, []);
 
   /* ─── Draw the scene ──────────────────────────────────────────────────── */
   useEffect(() => {
@@ -517,11 +541,23 @@ export default function TrackingMap({
         }).addTo(group);
         if (onSelectAircraft) marker.on('click', () => onSelectAircraft(a.id));
       });
+
+    const geometry = aircraft.some((a) => Number.isFinite(a?.lat))
+      || airports.some((a) => Number.isFinite(a?.lat));
+    if (geometry && !paintedSceneRef.current) {
+      paintedSceneRef.current = true;
+      settleLeafletFrame(mapRef.current, {
+        forceView: true,
+        sync: () => syncVendorBasemaps(mapRef.current, googleMapRef.current),
+      });
+    } else {
+      syncVendorBasemaps(mapRef.current, googleMapRef.current);
+    }
   }, [ready, scene, routes, airports, aircraft, selectedId, onSelectAircraft, trailOn, trailStyle, presentation]);
 
   /* ─── Fit ─────────────────────────────────────────────────────────────── */
   const fitScene = useCallback(() => {
-    if (!mapRef.current) return;
+    if (!mapRef.current || !mapHasLayout(mapRef.current.getSize())) return false;
     const L = window.L;
     const pts = [];
     const inFocus = (a) => !Array.isArray(focusIds) || focusIds.includes(a.id);
@@ -549,31 +585,38 @@ export default function TrackingMap({
     }
     if (pts.length >= 2) {
       try {
-        const insets = fitInsets && typeof fitInsets === 'object' ? fitInsets : null;
+        const insets = fitInsets && typeof fitInsets === 'object' ? fitInsets : { left: 40, top: 40, right: 40, bottom: 40 };
+        const padding = clampedFitPadding(mapRef.current.getSize(), insets);
         mapRef.current.fitBounds(L.latLngBounds(pts), {
-          paddingTopLeft: insets ? [insets.left || 40, insets.top || 40] : [40, 40],
-          paddingBottomRight: insets ? [insets.right || 40, insets.bottom || 40] : [40, 40],
+          paddingTopLeft: [padding.left, padding.top],
+          paddingBottomRight: [padding.right, padding.bottom],
           maxZoom: 10,
-          animate: true,
-          duration: 0.6,
+          ...programmaticViewOptions(),
         });
       } catch { /* degenerate bounds */ }
     } else if (pts.length === 1) {
-      mapRef.current.setView(pts[0], 9, { animate: true });
+      mapRef.current.setView(pts[0], 9, programmaticViewOptions());
     }
+    return true;
   }, [aircraft, airports, routes, scene.trail, focusIds, fitInsets]);
 
   // Re-fit when the caller signals a meaningful change (selection, trip, first
   // data arrival). Position updates alone must not steal the user's pan/zoom.
+  // A 0×0 frame does not consume the key, so the fit retries once Leaflet
+  // has measured the glass layout.
   const lastFitRef = useRef(null);
   useEffect(() => {
     if (!ready || followFleet) return;
-    if (lastFitRef.current === fitKey) return;
     const hasGeometry = aircraft.some((a) => Number.isFinite(a?.lat))
       || airports.some((a) => Number.isFinite(a?.lat));
-    if (!hasGeometry) return;
-    lastFitRef.current = fitKey;
-    fitScene();
+    const decision = consumeFitKey({
+      map: mapRef.current,
+      fitKey,
+      lastFitKey: lastFitRef.current,
+      hasGeometry,
+    });
+    if (!decision.shouldFit) return;
+    if (fitScene()) lastFitRef.current = decision.nextFitKey;
   }, [ready, followFleet, fitKey, aircraft, airports, fitScene]);
 
   // Fleet follow: frame airborne tails (or every tail when none are airborne)
@@ -583,20 +626,20 @@ export default function TrackingMap({
   const userMovedRef = useRef(false);
   const fittingRef = useRef(false);
   const fitFleetBounds = useCallback(() => {
-    if (!mapRef.current || !window.L) return;
+    if (!mapRef.current || !window.L || !mapHasLayout(mapRef.current.getSize())) return;
     const targets = fleetFitPositions(aircraft);
     if (targets.length === 0) return;
     fittingRef.current = true;
     try {
       if (targets.length === 1) {
-        mapRef.current.setView([targets[0].lat, targets[0].lon], 8, { animate: true });
+        mapRef.current.setView([targets[0].lat, targets[0].lon], 8, programmaticViewOptions());
       } else {
+        const padding = clampedFitPadding(mapRef.current.getSize(), { left: 48, top: 48, right: 56, bottom: 160 });
         mapRef.current.fitBounds(window.L.latLngBounds(targets.map((item) => [item.lat, item.lon])), {
-          paddingTopLeft: [48, 48],
-          paddingBottomRight: [56, 160],
+          paddingTopLeft: [padding.left, padding.top],
+          paddingBottomRight: [padding.right, padding.bottom],
           maxZoom: 8,
-          animate: true,
-          duration: 0.45,
+          ...programmaticViewOptions(),
         });
       }
     } catch { /* degenerate bounds */ }
@@ -608,11 +651,46 @@ export default function TrackingMap({
     fitFleetBounds();
   }, [fitFleetBounds]);
 
+  fitSceneRef.current = fitScene;
+  fitFleetRef.current = fitFleetBounds;
+
   const fleetSignature = fleetFitSignature(aircraft);
   useEffect(() => {
-    if (!ready || !followFleet || userMovedRef.current || !fleetSignature) return;
+    if (!shouldFollowFleet({
+      followFleet,
+      userMoved: userMovedRef.current,
+      signature: fleetSignature,
+      laidOut: mapHasLayout(mapRef.current?.getSize?.()),
+    })) return;
     fitFleetBounds();
   }, [ready, followFleet, fleetSignature, fitFleetBounds]);
+
+  useEffect(() => {
+    if (!ready || !mapRef.current || !containerRef.current) return undefined;
+    const container = containerRef.current;
+    let secondFrame = 0;
+    const paint = () => { paintFrame(false); };
+    const paintForced = () => { paintFrame(true); };
+    const ro = new ResizeObserver(paint);
+    ro.observe(container);
+    window.addEventListener('skyway-map-invalidate', paintForced);
+    const firstFrame = requestAnimationFrame(() => {
+      paintForced();
+      secondFrame = requestAnimationFrame(paintForced);
+    });
+    const soon = setTimeout(paintForced, 0);
+    const afterLayout = setTimeout(paintForced, 50);
+    const afterChrome = setTimeout(paintForced, 250);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('skyway-map-invalidate', paintForced);
+      cancelAnimationFrame(firstFrame);
+      cancelAnimationFrame(secondFrame);
+      clearTimeout(soon);
+      clearTimeout(afterLayout);
+      clearTimeout(afterChrome);
+    };
+  }, [ready, fullscreen, presentation, basemap, mapProvider, paintFrame]);
 
   useEffect(() => {
     const map = mapRef.current;
