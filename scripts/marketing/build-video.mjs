@@ -173,6 +173,9 @@ const AVIO_FIXTURE = () => {
 async function prepare(context) {
   await context.addInitScript(CURSOR_SCRIPT);
   await context.addInitScript(AVIO_FIXTURE);
+  await context.addInitScript(() => {
+    window.__FBO_PREVIEW_SETTINGS__ = { testMode: false, live: false, arrivalAutoLeadHours: 24 };
+  });
   await context.route('**/*', (route) => {
     const url = route.request().url();
     let host = '';
@@ -588,17 +591,17 @@ async function sceneFleet(page, markReady) {
 
 async function sceneWeather(page, markReady) {
   await openLeadTrip(page);
+  const notam = page.getByRole('button', { name: /^NOTAM/ }).first();
+  await notam.waitFor({ timeout: 15000 });
+  markReady();
+  await page.waitForTimeout(400);
+  await clickAt(page, notam);
+  await page.getByText(/Taxiway B|braking action/).first().waitFor({ timeout: 8000 });
+  await page.waitForTimeout(1400);
   await clickAt(page, page.getByRole('button', { name: 'Operations', exact: true }));
   await clickAt(page, page.locator('[data-tab-id="weather"]'));
-  markReady();
-  await page.waitForTimeout(1600);
-  const notam = page.getByRole('button', { name: /NOTAM/ }).first();
-  if (await notam.count()) {
-    await clickAt(page, notam);
-    await page.waitForTimeout(1800);
-  } else {
-    await page.waitForTimeout(1800);
-  }
+  await page.getByText('METAR').first().waitFor({ timeout: 8000 });
+  await page.waitForTimeout(1400);
 }
 
 async function sceneAirport(page, markReady) {
@@ -801,7 +804,7 @@ const CHAPTERS = [
   { id: 'dispatch', kicker: 'DISPATCH', benefit: 'Every leg, ready to open.', narration: 'Dispatch is the working board. Each leg can be opened the moment it needs a decision.', shoot: sceneDispatch },
   { id: 'schedule', kicker: 'SCHEDULE', benefit: 'Find the flight. The leg opens with crew and route.', narration: 'Search the tail on the schedule. The leg opens with the route, the crew, and the customer.', shoot: sceneSchedule },
   { id: 'trip', kicker: 'TRIP STATUS', benefit: 'Logged times stay on the leg. The next one is a tap.', narration: 'Status steps run down the leg. This flight already shows crew onsite through wheels up. The next leg is still ahead, so the controller marks the aircraft ready, and the time is logged.', shoot: sceneTrip, highlight: true },
-  { id: 'push', kicker: 'CREW NOTIFICATION', benefit: 'The tap, and wheels-up, land on the lock screen.', narration: 'The crew phone gets the status tap, and wheels up when the aircraft is airborne. Trip ID WEQVQD, not a trip number.', shoot: scenePush },
+  { id: 'push', kicker: 'CREW NOTIFICATION', benefit: 'The tap, and wheels-up, land on the lock screen.', narration: 'The crew phone gets the status tap, and wheels up when the aircraft is airborne. Trip ID WEQVQD, not a trip number.', shoot: scenePush, highlight: true },
   { id: 'fleet', kicker: 'LIVE FLEET', benefit: 'Select an aircraft. ETA is on the map.', narration: 'On the fleet map, select the airborne aircraft. Position and ETA sit beside the track.', shoot: sceneFleet, highlight: true },
   { id: 'weather', kicker: 'WEATHER AND NOTAMS', benefit: 'METAR on the leg. Open the NOTAM.', narration: 'Weather for the city pair is on the trip. A significant NOTAM opens in place.', shoot: sceneWeather },
   { id: 'airport', kicker: 'AIRPORT AND FBO', benefit: 'aviowiki contacts, fuel, and the uplift cost.', narration: 'Airport and fuel pulls the FBO from aviowiki and prices the planned uplift.', shoot: sceneAirport },
@@ -869,7 +872,16 @@ function framePhone(src, dest) {
 }
 
 function speak(text, dest) {
-  run(EDGE, ['--voice', VOICE, '--rate=-6%', '--text', text, '--write-media', dest]);
+  let last = 'tts failed';
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    const result = spawnSync(EDGE, [
+      '--voice', VOICE, '--rate=-6%', '--text', text, '--write-media', dest,
+    ], { encoding: 'utf8' });
+    if (result.status === 0) return;
+    last = result.stderr || result.stdout || last;
+    spawnSync('sleep', [String(attempt * 2)]);
+  }
+  throw new Error(`edge-tts failed\n${last}`);
 }
 
 function writeMusic(duration, dest) {
@@ -1016,6 +1028,16 @@ async function main() {
     if (failures.length) throw new Error(`Probe failed: ${failures.join(', ')}`);
     return;
   }
+  if (process.env.RESUME === '1') {
+    const saved = JSON.parse(readFileSync(`${WORK}/recorded.json`, 'utf8'));
+    const recorded = saved.map((row) => {
+      const chapter = CHAPTERS.find((item) => item.id === row.id);
+      if (!chapter) throw new Error(`No chapter ${row.id}`);
+      return { ...chapter, ...row };
+    });
+    await finish(recorded);
+    return;
+  }
   const browser = await chromium.launch({ args: ['--disable-dev-shm-usage'] });
   const selected = CHAPTERS.filter((chapter) => !ONLY || chapter.id === ONLY);
   const recorded = [];
@@ -1030,7 +1052,12 @@ async function main() {
     console.log('Single chapter captured. Skipping assembly.');
     return;
   }
+  writeFileSync(`${WORK}/recorded.json`, JSON.stringify(recorded.map(({ id, src, trim }) => ({ id, src, trim }))));
 
+  await finish(recorded);
+}
+
+async function finish(recorded) {
   await phonePlate();
   const normalized = [];
   for (const clip of recorded) {
