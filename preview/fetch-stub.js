@@ -757,10 +757,13 @@ export function installFetchStub() {
 
     if (path === '/api/trip-public') return json(brokerPayload());
     if (path === '/api/trip-share') {
+      const shareBase = new URLSearchParams(window.location.search).get('demoLink') === '1'
+        ? 'https://skyway.app'
+        : window.location.origin;
       if (!window.__SHARE_PREVIEW__) {
         window.__SHARE_PREVIEW__ = {
           issuedAt: 1_700_000_000_000,
-          url: `${window.location.origin}/trip-track.html?token=preview-share-token`,
+          url: `${shareBase}/trip-track?token=demo-weqvqd`,
           revoked: false,
         };
       }
@@ -771,8 +774,19 @@ export function installFetchStub() {
       }
       if (body.action === 'rotate') {
         store.issuedAt = Date.now();
-        store.url = `${window.location.origin}/trip-track.html?token=preview-share-${store.issuedAt}`;
+        store.url = `${shareBase}/trip-track?token=demo-weqvqd`;
         store.revoked = false;
+      }
+      // The email action is acknowledged locally. Nothing is delivered.
+      if (body.action === 'email') {
+        return json({
+          ok: true,
+          sent: false,
+          preview: true,
+          url: store.url,
+          token: 'demo-weqvqd',
+          issuedAt: store.issuedAt,
+        });
       }
       if (body.shareSelection) store.rule = body.shareSelection;
       return json({
