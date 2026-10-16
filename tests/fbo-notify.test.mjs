@@ -23,6 +23,7 @@ import {
   legSyncRecord,
   matchFbo,
   mergeSyncedLeg,
+  omitUndefined,
   inboundDecision,
   paxLabel,
   pickDepartureSignal,
@@ -435,6 +436,22 @@ test('confirmation tokens expire and reject a bad signature', () => {
   assert.equal(expired.reason, 'expired');
   assert.equal(verifyFboToken(`${token}x`, issued + HOUR, env).ok, false);
   assert.throws(() => signFboToken('leg-1', issued, { FBO_LINK_SECRET: 'short' }));
+});
+
+test('omitUndefined removes optional Firestore fields and keeps explicit nulls', () => {
+  const written = omitUndefined({
+    updatedAt: 1,
+    arrival: {
+      email: 'teb@meridian.example',
+      sentForEnd: null,
+      timeChangeForEnd: undefined,
+      services: 'GPU',
+    },
+  });
+  assert.equal(Object.hasOwn(written.arrival, 'timeChangeForEnd'), false);
+  assert.equal(written.arrival.sentForEnd, null);
+  assert.equal(written.arrival.services, 'GPU');
+  assert.equal(written.updatedAt, 1);
 });
 
 test('the departure cron requires the bearer CRON_SECRET', () => {
