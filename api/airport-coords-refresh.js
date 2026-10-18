@@ -26,7 +26,10 @@ import { getFirestore } from 'firebase-admin/firestore';
 import {
   AIRPORT_CACHE_COLLECTION,
   AIRPORT_CACHE_META_ID,
+  UNKNOWN_DELETE_TRANSACTION_BYTES,
   buildAirportCachePlan,
+  chunkCacheOperations,
+  estimateTransactionBytes,
 } from './_airport-cache.js';
 
 const OURAIRPORTS_CSV_URL = 'https://davidmegginson.github.io/ourairports-data/airports.csv';
@@ -125,16 +128,45 @@ async function fetchAndParseOurAirports() {
   return out;
 }
 
-// Firestore batches cap at 500 writes. Today's sharded plan is ~100 ops,
-// so a refresh commits in one batch: shards, _meta, and deletes of letter
-// docs that the shards replace. Chunk only if a future extract outgrows that.
-const MAX_BATCH_OPS = 450;
+// A delete counts the stored document and its index entries, which the plan
+// does not carry. Read those docs so two large letter docs are not committed
+// together. A miss is free. A read that fails falls back to the largest
+// letter doc Firestore could still be holding.
+const DELETE_READ_BATCH = 5;
+
+async function measureDeletedDocuments(db, operations) {
+  const ids = operations.filter((op) => op.type === 'delete').map((op) => op.id);
+  const measured = new Map();
+  if (!ids.length) return measured;
+  const collRef = db.collection(AIRPORT_CACHE_COLLECTION);
+  for (let i = 0; i < ids.length; i += DELETE_READ_BATCH) {
+    const slice = ids.slice(i, i + DELETE_READ_BATCH);
+    try {
+      const snaps = await db.getAll(...slice.map((id) => collRef.doc(id)));
+      for (const snap of snaps) {
+        measured.set(
+          snap.id,
+          snap.exists ? estimateTransactionBytes(snap.id, snap.data()) : 0,
+        );
+      }
+    } catch (error) {
+      console.error('[airport-coords-refresh] Could not size documents to delete:', error);
+      for (const id of slice) {
+        if (!measured.has(id)) measured.set(id, UNKNOWN_DELETE_TRANSACTION_BYTES);
+      }
+    }
+  }
+  return measured;
+}
 
 async function commitCacheOperations(db, operations) {
+  const deleteBytes = await measureDeletedDocuments(db, operations);
+  const commits = chunkCacheOperations(operations, { deleteBytes });
   const collRef = db.collection(AIRPORT_CACHE_COLLECTION);
-  for (let i = 0; i < operations.length; i += MAX_BATCH_OPS) {
+  console.log(`[airport-coords-refresh] Committing ${operations.length} ops in ${commits.length} batches`);
+  for (const commit of commits) {
     const batch = db.batch();
-    for (const op of operations.slice(i, i + MAX_BATCH_OPS)) {
+    for (const op of commit) {
       const ref = collRef.doc(op.id);
       if (op.type === 'delete') batch.delete(ref);
       else batch.set(ref, op.data);
