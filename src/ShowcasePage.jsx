@@ -8,48 +8,36 @@
 import React, { useEffect, useRef, useState } from 'react';
 import TvDesignFrame from './TvDesignFrame.jsx';
 import { applyBasemap, loadLeaflet } from './tracking-map.js';
-import { placeForAirport } from './showcase-places.js';
 import {
   drawAirports,
-  drawCelebration,
   drawLiveRoute,
   drawPlane,
-  drawRipples,
   drawSettledRoute,
-  drawSparkles,
-  drawStars,
-  drawWave,
 } from './showcase-draw.js';
 import {
   PUBLIC_LEG_KEYS,
-  SHOWCASE_CELEBRATE_MS,
   SHOWCASE_HOLD_MS,
   SHOWCASE_LOOP_MS,
   SHOWCASE_PLAY_MS,
-  activeMilestone,
   formatShowcaseCount,
   formatShowcaseDate,
   frameActors,
   initialPlayMs,
   isShowcaseToken,
   legEndpoints,
-  milestoneCrossings,
   playbackWindow,
   pointAlong,
   sampleRoute,
   scheduleShowcasePlayback,
-  showcaseCallouts,
-  showcaseColorKey,
   showcaseSnapshot,
-  showcaseTailColor,
 } from './showcase-replay.js';
 
-const BG = '#060a10';
-const LINE = 'rgba(186, 214, 224, 0.22)';
-const TEXT = '#f4fbff';
-const MUTED = 'rgba(231, 238, 243, 0.72)';
-const FONT = "'DM Sans', system-ui, sans-serif";
-const DISPLAY = "'Bebas Neue', 'Arial Narrow', Impact, sans-serif";
+const BG = '#070c14';
+const LINE = 'rgba(214, 226, 234, 0.14)';
+const TEXT = '#f4f7fa';
+const MUTED = 'rgba(214, 226, 234, 0.62)';
+const ACCENT = '#3FA9CC';
+const FONT = "'Inter', 'DM Sans', system-ui, sans-serif";
 
 function publicLegs(legs) {
   const out = [];
@@ -94,10 +82,10 @@ function fitProject(points, width, height) {
   const maxX = Math.max(...merc.map((p) => p.x));
   const minY = Math.min(...merc.map((p) => p.y));
   const maxY = Math.max(...merc.map((p) => p.y));
-  const padL = 56;
-  const padT = 128;
-  const padR = 470;
-  const padB = 188;
+  const padL = 64;
+  const padT = 112;
+  const padR = 64;
+  const padB = 168;
   const spanX = Math.max(0.02, maxX - minX);
   const spanY = Math.max(0.02, maxY - minY);
   const scale = Math.min((width - padL - padR) / spanX, (height - padT - padB) / spanY);
@@ -121,50 +109,33 @@ function turnBank(samples, fraction) {
   return Math.max(-32, Math.min(32, turn * 0.5));
 }
 
-function RankSlots({ title, prefix }) {
-  return (
-    <div>
-      <div style={{ fontFamily: DISPLAY, fontSize: 28, letterSpacing: '0.12em', color: '#99f6e4', lineHeight: '28px' }}>{title}</div>
-      <div style={{ marginTop: 8, display: 'grid', gap: 6 }}>
-        {Array.from({ length: 4 }, (_, index) => (
-          <div key={index} style={{ display: 'grid', gridTemplateColumns: '28px 1fr auto', gap: 8, alignItems: 'baseline' }}>
-            <span style={{ fontFamily: DISPLAY, fontSize: 26, color: 'rgba(231,238,243,0.45)' }}>{index + 1}</span>
-            <span data-rank={`${prefix}-label-${index}`} style={{ fontSize: 28, fontWeight: 700, letterSpacing: '0.04em' }}>—</span>
-            <span data-rank={`${prefix}-count-${index}`} style={{ fontFamily: DISPLAY, fontSize: 32, color: '#fde68a', letterSpacing: '0.04em' }} />
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function Counter({ label, count, hint, hero = false }) {
+function Stat({ label, count, hint, hero = false, rule = false }) {
   return (
     <div style={{
       flex: hero ? 1.45 : 1,
       minWidth: 0,
-      padding: hero ? '12px 18px 10px' : '12px 16px 10px',
-      borderRadius: 16,
-      background: hero ? 'rgba(36, 28, 8, 0.94)' : 'rgba(8, 14, 22, 0.9)',
-      border: hero ? '1px solid rgba(253, 230, 138, 0.8)' : `1px solid ${LINE}`,
-      boxShadow: hero ? '0 0 28px rgba(253, 230, 138, 0.18)' : 'inset 0 0 0 1px rgba(94,234,212,0.06)',
+      padding: hero ? '4px 36px 2px 8px' : '4px 28px 2px',
+      borderLeft: rule ? `1px solid ${LINE}` : 'none',
     }}>
       <div style={{
-        fontFamily: DISPLAY,
-        fontSize: hero ? 26 : 20,
-        letterSpacing: '0.14em',
-        color: hero ? '#fde68a' : '#99f6e4',
-        lineHeight: hero ? '26px' : '20px',
+        fontSize: 13,
+        fontWeight: 600,
+        letterSpacing: '0.18em',
+        textTransform: 'uppercase',
+        color: hero ? ACCENT : MUTED,
+        lineHeight: '16px',
       }}>{label}</div>
       <div data-count={count} style={{
-        marginTop: 2,
-        fontFamily: DISPLAY,
-        fontSize: hero ? 76 : 56,
-        lineHeight: hero ? '76px' : '56px',
-        letterSpacing: '0.02em',
-        color: hero ? '#fff7d6' : TEXT,
+        marginTop: 8,
+        fontSize: hero ? 76 : 44,
+        fontWeight: 500,
+        lineHeight: hero ? '76px' : '46px',
+        letterSpacing: '-0.03em',
+        color: TEXT,
       }}>0</div>
-      {hint && <div data-count={hint} style={{ marginTop: -2, fontSize: 16, color: MUTED, fontVariantNumeric: 'tabular-nums' }} />}
+      {hint && (
+        <div data-count={hint} style={{ marginTop: 2, fontSize: 14, fontWeight: 500, color: MUTED }} />
+      )}
     </div>
   );
 }
@@ -180,19 +151,6 @@ function Shell({ children }) {
         fontFamily: FONT,
         fontVariantNumeric: 'tabular-nums',
       }}>
-        <style>{`
-          @keyframes showcase-twilight {
-            0% { opacity: 0.72; }
-            50% { opacity: 1; }
-            100% { opacity: 0.72; }
-          }
-          .showcase-sky {
-            animation: showcase-twilight 10s ease-in-out infinite;
-          }
-          @media (prefers-reduced-motion: reduce) {
-            .showcase-sky { animation: none; }
-          }
-        `}</style>
         {children}
       </div>
     </TvDesignFrame>
@@ -204,24 +162,11 @@ function StatusScreen({ title, detail }) {
     <Shell>
       <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
         <img src="/skyway-logo-nav-reverse.png" alt="Skyway" style={{ height: 48 }} />
-        <div style={{ fontFamily: DISPLAY, fontSize: 72, letterSpacing: '0.04em' }}>{title}</div>
-        {detail && <div style={{ fontSize: 22, color: MUTED }}>{detail}</div>}
+        <div style={{ fontSize: 40, fontWeight: 500, letterSpacing: '-0.02em' }}>{title}</div>
+        {detail && <div style={{ fontSize: 18, color: MUTED }}>{detail}</div>}
       </div>
     </Shell>
   );
-}
-
-function planeGlyph(color) {
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('viewBox', '0 0 24 24');
-  svg.setAttribute('width', '26');
-  svg.setAttribute('height', '26');
-  svg.setAttribute('aria-hidden', 'true');
-  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-  path.setAttribute('fill', color);
-  path.setAttribute('d', 'M12 2.2c.3 0 .6.3.7.8l.5 6.2 6.6 2c.5.2.7.6.5 1-.2.4-.6.5-1 .4l-6.6-1.6v6.2l2 .9c.3.1.4.4.2.7l-.5.6-2.4-1.1-2.4 1.1-.5-.6c-.2-.3-.1-.6.2-.7l2-.9V11l-6.6 1.6c-.4.1-.8 0-1-.4-.2-.4 0-.8.5-1l6.6-2 .5-6.2c.1-.5.4-.8.7-.8z');
-  svg.append(path);
-  return svg;
 }
 
 export default function ShowcasePage({ token = '' }) {
@@ -300,29 +245,17 @@ export default function ShowcasePage({ token = '' }) {
     let project = null;
     let projected = [];
     let drawn = new Set();
-    let waveCursor = 0;
-    const waveLit = new Set();
     let resetSettled = true;
     let lastLoop = -1;
-    const shown = { flights: 0, nm: 0, sm: 0, block: 0, airports: 0, states: 0, countries: 0 };
-    const velocity = { flights: 0, nm: 0, sm: 0, block: 0, airports: 0, states: 0, countries: 0 };
-    const shownInt = {};
-    let listSig = '';
-    const ripples = [];
-    const pops = new Map();
+    const shown = { flights: 0, nm: 0, sm: 0, block: 0, airports: 0 };
+    const velocity = { flights: 0, nm: 0, sm: 0, block: 0, airports: 0 };
     const pose = new Map();
-    let landingsPrimed = false;
-    const seenLandings = new Set();
-    let party = null;
-    let partyPrimed = false;
-    const seenParty = new Set();
 
     const span = playbackWindow(payload);
     const scheduled = scheduleShowcasePlayback(publicLegs(payload.legs), span).map((leg, index) => {
       const ends = legEndpoints(leg);
       return { ...leg, id: index, samples: sampleRoute(ends.from, ends.to) };
     });
-    const crossings = milestoneCrossings(scheduled);
     const note = root.querySelector('[data-showcase-note]');
     if (note) {
       if (!scheduled.length) {
@@ -352,79 +285,12 @@ export default function ShowcasePage({ token = '' }) {
       shown.nm = 0;
       shown.sm = 0;
       shown.block = 0;
-      waveCursor = 0;
-      waveLit.clear();
       shown.airports = 0;
-      shown.states = 0;
-      shown.countries = 0;
       for (const key of Object.keys(velocity)) velocity[key] = 0;
-      listSig = '';
-      ripples.length = 0;
-      pops.clear();
       pose.clear();
-      landingsPrimed = false;
-      seenLandings.clear();
-      party = null;
-      partyPrimed = false;
-      seenParty.clear();
     }
 
-    function syncLists(snapshot) {
-      const fleetSig = snapshot.leaderboard.map((row) => `${row.tail || row.label}:${Math.round((row.nm || row.hours || 0) * 10)}`).join();
-      const sig = `${snapshot.flights}|${snapshot.topDestinations.map((row) => row.label).join()}|${fleetSig}`;
-      if (sig === listSig) return;
-      listSig = sig;
-      for (let i = 0; i < 4; i += 1) {
-        const label = root.querySelector(`[data-rank="dest-label-${i}"]`);
-        const count = root.querySelector(`[data-rank="dest-count-${i}"]`);
-        const row = snapshot.topDestinations[i];
-        if (!label || !count) continue;
-        label.textContent = row?.label || '—';
-        count.textContent = row ? formatShowcaseCount(row.count) : '';
-      }
-      const fleet = root.querySelector('[data-showcase-fleet]');
-      const fleetTitle = root.querySelector('[data-showcase-fleet-title]');
-      if (fleetTitle) {
-        fleetTitle.textContent = snapshot.leaderboard.some((row) => row.tail) ? 'FLEET MILES' : 'LONGEST ROUTES';
-      }
-      if (!fleet) return;
-      fleet.replaceChildren(...snapshot.leaderboard.map((row) => {
-        const item = document.createElement('div');
-        item.style.cssText = 'display:grid;grid-template-columns:26px 1fr auto;gap:8px;align-items:center';
-        const name = document.createElement('span');
-        name.textContent = row.tail || row.label;
-        name.style.cssText = `font-size:${row.tail ? 26 : 22}px;font-weight:750;letter-spacing:0.04em`;
-        const miles = document.createElement('span');
-        miles.textContent = row.tail
-          ? `${formatShowcaseCount(Math.round(row.nm))} nm`
-          : `${formatShowcaseCount(row.hours, 1)} h`;
-        miles.style.cssText = `font-family:${DISPLAY};font-size:30px;color:#fde68a;letter-spacing:0.03em`;
-        item.append(planeGlyph(row.color), name, miles);
-        return item;
-      }));
-    }
-
-    function syncParty(playMs, now) {
-      const live = activeMilestone(crossings, playMs);
-      if (!partyPrimed) {
-        partyPrimed = true;
-        for (const row of crossings) {
-          if (row.at < playMs && (!live || row.id !== live.id)) seenParty.add(row.id);
-        }
-        if (live && !seenParty.has(live.id)) {
-          party = { ...live, startedAt: now };
-          seenParty.add(live.id);
-        }
-        return;
-      }
-      if (live && !seenParty.has(live.id)) {
-        party = { ...live, startedAt: now };
-        seenParty.add(live.id);
-      }
-      if (party && now - party.startedAt > 5600) party = null;
-    }
-
-    function paint(playMs, now) {
+    function paint(playMs) {
       const width = mapNode.clientWidth || 1920;
       const height = mapNode.clientHeight || 1080;
       const resized = settledCanvas.width !== Math.floor(width * 2) || settledCanvas.height !== Math.floor(height * 2);
@@ -436,8 +302,6 @@ export default function ShowcasePage({ token = '' }) {
         projected = scheduled.map((leg) => leg.samples.map((sample) => project(sample.lat, sample.lng)));
         settledCtx.clearRect(0, 0, width, height);
         drawn = new Set();
-        waveLit.clear();
-        waveCursor = 0;
         resetSettled = false;
       }
       const actors = frameActors(scheduled, playMs);
@@ -445,53 +309,14 @@ export default function ShowcasePage({ token = '' }) {
       for (const leg of actors.finished) {
         if (drawn.has(leg.id)) continue;
         if (settledBudget <= 0) break;
-        drawSettledRoute(settledCtx, projected[leg.id], showcaseColorKey(leg));
+        drawSettledRoute(settledCtx, projected[leg.id]);
         drawn.add(leg.id);
         settledBudget -= 1;
       }
-      if (!landingsPrimed) {
-        for (const leg of actors.finished) seenLandings.add(leg.id);
-        landingsPrimed = true;
-      } else {
-        for (const leg of actors.finished) {
-          if (seenLandings.has(leg.id)) continue;
-          seenLandings.add(leg.id);
-          const at = project(leg.toLat, leg.toLng);
-          ripples.push({
-            x: at.x,
-            y: at.y,
-            born: now,
-            color: showcaseTailColor(showcaseColorKey(leg)),
-            code: leg.to,
-          });
-          pops.set(leg.to, now);
-          if (ripples.length > 24) ripples.shift();
-        }
-      }
 
       liveCtx.clearRect(0, 0, width, height);
-      drawStars(liveCtx, width, height, now);
       const holding = playMs >= SHOWCASE_PLAY_MS;
       const holdT = holding ? playMs - SHOWCASE_PLAY_MS : 0;
-      if (holding && scheduled.length <= 700) {
-        drawWave(liveCtx, projected, scheduled, holdT, SHOWCASE_HOLD_MS);
-      } else if (holding) {
-        const travel = Math.max(0, Math.min(1, holdT / (SHOWCASE_HOLD_MS * 0.52)));
-        const total = scheduled.length;
-        let stamped = 0;
-        for (let step = 0; step < total && stamped < 240; step += 1) {
-          const index = (waveCursor + step) % total;
-          if (waveLit.has(index)) continue;
-          const delay = ((index % 19) / 19) * 0.16;
-          const local = Math.max(0, Math.min(1, (travel - delay) / 0.84));
-          if (local < 0.92) continue;
-          const points = projected[index];
-          if (points) drawSettledRoute(settledCtx, points, showcaseColorKey(scheduled[index]));
-          waveLit.add(index);
-          stamped += 1;
-        }
-        if (total) waveCursor = (waveCursor + 240) % total;
-      }
 
       const visits = new Map();
       for (const leg of actors.finished) {
@@ -507,28 +332,23 @@ export default function ShowcasePage({ token = '' }) {
         }
       }
       const dense = actors.active.length > 40;
-      drawAirports(liveCtx, visits.values(), now, pops, dense);
-      drawRipples(liveCtx, ripples, now);
+      drawAirports(liveCtx, visits.values());
 
       for (const leg of actors.active) {
         const points = projected[leg.id];
         if (!points) continue;
         const along = pointAlong(leg.samples, leg.f);
         const head = Math.max(1, Math.round(leg.f * (points.length - 1)));
-        drawLiveRoute(liveCtx, points, head, showcaseColorKey(leg), dense);
-        if (!dense) drawSparkles(liveCtx, points, head, now);
+        drawLiveRoute(liveCtx, points, head, dense);
         const at = project(along.lat, along.lng);
         const targetBank = turnBank(leg.samples, leg.f);
         const prev = pose.get(leg.id) || { bank: targetBank };
         const bank = prev.bank + (targetBank - prev.bank) * (freeze ? 1 : 0.35);
         pose.set(leg.id, { bank });
-        drawPlane(liveCtx, at.x, at.y, along.heading, bank, showcaseTailColor(showcaseColorKey(leg)), dense);
+        drawPlane(liveCtx, at.x, at.y, along.heading, bank);
       }
 
-      syncParty(playMs, now);
-      if (party) drawCelebration(liveCtx, width, height, now - party.startedAt);
-
-      const snapshot = showcaseSnapshot(scheduled, playMs, placeForAirport, span);
+      const snapshot = showcaseSnapshot(scheduled, playMs, span);
       const ease = (key, target) => {
         if (playMs < lastLoop) shown[key] = 0;
         if (freeze || Math.abs(target - shown[key]) < 0.45) {
@@ -547,17 +367,6 @@ export default function ShowcasePage({ token = '' }) {
       const writeCount = (key, text) => {
         const node = counts[key];
         if (!node) return;
-        const nextInt = Number(String(text).replace(/,/g, ''));
-        if (speed <= 1 && Number.isFinite(nextInt) && shownInt[key] != null && nextInt !== shownInt[key]) {
-          const delta = Math.abs(nextInt - shownInt[key]);
-          if (delta > 0 && delta < 5) {
-            node.animate(
-              [{ transform: 'translateY(0) scale(1)' }, { transform: 'translateY(-8px) scale(1.12)' }, { transform: 'translateY(0) scale(1)' }],
-              { duration: 420, easing: 'cubic-bezier(.2,1.6,.3,1)' },
-            );
-          }
-        }
-        if (Number.isFinite(nextInt)) shownInt[key] = nextInt;
         node.textContent = text;
       };
       writeCount('flights', formatShowcaseCount(Math.round(ease('flights', snapshot.flights))));
@@ -565,11 +374,6 @@ export default function ShowcasePage({ token = '' }) {
       if (counts.sm) counts.sm.textContent = `${formatShowcaseCount(Math.round(ease('sm', snapshot.sm)))} statute mi`;
       writeCount('block', formatShowcaseCount(ease('block', snapshot.hours), 1));
       writeCount('airports', formatShowcaseCount(Math.round(ease('airports', snapshot.airports))));
-      if (counts.places) {
-        const states = Math.round(ease('states', snapshot.states));
-        const countries = Math.round(ease('countries', snapshot.countries));
-        counts.places.textContent = `${formatShowcaseCount(states)}  /  ${formatShowcaseCount(countries)}`;
-      }
       const date = formatShowcaseDate(snapshot.dateMs);
       const dateNode = root.querySelector('[data-showcase-date]');
       const yearNode = root.querySelector('[data-showcase-year]');
@@ -582,35 +386,17 @@ export default function ShowcasePage({ token = '' }) {
         const p = snapshot.holding ? 1 : Math.max(0, Math.min(1, playMs / SHOWCASE_PLAY_MS));
         bar.style.width = `${(p * 100).toFixed(2)}%`;
       }
-      const lines = showcaseCallouts(snapshot);
-      const callout = root.querySelector('[data-showcase-callout]');
-      if (callout) {
-        callout.textContent = lines.length
-          ? lines[Math.floor(now / 4200) % lines.length]
-          : 'The year is lining up';
-      }
-      const celebrate = root.querySelector('[data-showcase-celebrate]');
-      const celebrateTitle = root.querySelector('[data-showcase-celebrate-title]');
-      if (celebrate) {
-        const age = party ? now - party.startedAt : SHOWCASE_CELEBRATE_MS;
-        const visible = party && age < 5200;
-        celebrate.style.opacity = visible ? '1' : '0';
-        celebrate.style.transform = visible ? 'translateY(0) scale(1)' : 'translateY(12px) scale(0.96)';
-        if (celebrateTitle && party) celebrateTitle.textContent = party.title;
-      }
       const finaleT = holding ? Math.max(0, Math.min(1, (holdT - SHOWCASE_HOLD_MS * 0.42) / 1600)) : 0;
       const finale = root.querySelector('[data-showcase-finale]');
       if (finale) {
         finale.style.opacity = String(finaleT);
-        finale.style.transform = `translateY(${(1 - finaleT) * 18}px)`;
+        finale.style.transform = `translateY(${(1 - finaleT) * 8}px)`;
       }
-      syncLists(snapshot);
       root.setAttribute('data-showcase-ready', '1');
       root.setAttribute('data-showcase-phase', snapshot.holding ? 'hold' : 'play');
       root.setAttribute('data-showcase-flights', String(snapshot.flights));
       root.setAttribute('data-showcase-block', snapshot.hours.toFixed(1));
       root.setAttribute('data-showcase-active', String(snapshot.active));
-      root.setAttribute('data-showcase-celebrate', party && (now - party.startedAt) < 5200 ? party.id : '');
       root.setAttribute('data-showcase-finale', finaleT > 0.85 ? '1' : '0');
     }
 
@@ -619,10 +405,11 @@ export default function ShowcasePage({ token = '' }) {
       const gap = Math.max(0, now - lastTick);
       const dt = speed > 1 ? Math.min(gap, 3000 / speed) : Math.min(40, gap);
       lastTick = now;
-      if (!freeze) elapsed += dt * speed;
+      // Dev captures can pin the playhead once the finale is up. The booth never sets this.
+      if (!(freeze || (dev && window.__SHOWCASE_FREEZE__))) elapsed += dt * speed;
       const playMs = elapsed % SHOWCASE_LOOP_MS;
       if (lastLoop >= 0 && playMs < lastLoop) resetLoop();
-      paint(playMs, now);
+      paint(playMs);
       lastLoop = playMs;
       raf = requestAnimationFrame(loop);
     }
@@ -665,8 +452,8 @@ export default function ShowcasePage({ token = '' }) {
         const bounds = pairs.length ? L.latLngBounds(pairs) : null;
         if (bounds?.isValid()) {
           map.fitBounds(bounds, {
-            paddingTopLeft: [48, 128],
-            paddingBottomRight: [470, 188],
+            paddingTopLeft: [64, 104],
+            paddingBottomRight: [64, 156],
             maxZoom: 6,
             animate: false,
           });
@@ -708,13 +495,12 @@ export default function ShowcasePage({ token = '' }) {
       >
         <div ref={mapRef} className="showcase-map" style={{ position: 'absolute', inset: 0, zIndex: 0 }} />
         <div
-          className="showcase-sky"
           style={{
             position: 'absolute',
             inset: 0,
             zIndex: 1,
             pointerEvents: 'none',
-            background: 'radial-gradient(1100px 420px at 16% -8%, rgba(147, 51, 234, 0.28), transparent 70%), radial-gradient(860px 340px at 78% 0%, rgba(45, 212, 191, 0.2), transparent 68%), linear-gradient(180deg, rgba(30, 27, 75, 0.38) 0%, rgba(6, 10, 16, 0) 24%)',
+            background: 'linear-gradient(180deg, rgba(7,12,20,0.72) 0%, rgba(7,14,24,0.28) 16%, rgba(7,14,24,0.12) 72%, rgba(7,12,20,0.78) 100%)',
           }}
         />
         <canvas ref={settledRef} style={{ position: 'absolute', inset: 0, zIndex: 2, pointerEvents: 'none' }} />
@@ -726,93 +512,47 @@ export default function ShowcasePage({ token = '' }) {
           left: 0,
           right: 0,
           zIndex: 5,
-          height: 108,
+          height: 92,
           display: 'flex',
           alignItems: 'center',
-          gap: 18,
-          padding: '0 28px 8px',
-          background: 'linear-gradient(180deg, rgba(6,10,16,0.94) 0%, rgba(6,10,16,0.55) 70%, rgba(6,10,16,0) 100%)',
+          gap: 22,
+          padding: '0 36px',
         }}>
           <img
             src="/skyway-logo-nav-reverse.png"
             srcSet="/skyway-logo-nav-reverse.png 1x, /skyway-logo-nav-reverse@2x.png 2x"
             alt="Skyway"
-            style={{ height: 48, width: 'auto' }}
+            style={{ height: 36, width: 'auto' }}
           />
-          <div style={{ width: 1, height: 46, background: LINE }} />
+          <div style={{ width: 1, height: 32, background: LINE }} />
           <div style={{ minWidth: 0 }}>
-            <h1 style={{ margin: 0, fontFamily: DISPLAY, fontSize: 64, fontWeight: 400, letterSpacing: '0.04em', lineHeight: '60px' }}>
-              {`Moving with Skyway — ${payload.year}`}
+            <h1 style={{ margin: 0, fontSize: 32, fontWeight: 500, letterSpacing: '-0.02em', lineHeight: '36px' }}>
+              Moving with Skyway
+              <span style={{ marginLeft: 14, fontWeight: 400, color: MUTED }}>{payload.year}</span>
             </h1>
-            <div data-showcase-note="" style={{ marginTop: 2, fontSize: 18, color: MUTED }} />
+            <div data-showcase-note="" style={{ marginTop: 4, fontSize: 15, fontWeight: 400, color: MUTED }} />
           </div>
-          <div style={{ marginLeft: 'auto', minWidth: 280, textAlign: 'right' }}>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'baseline', gap: 12 }}>
-              <div data-showcase-date="" style={{ fontFamily: DISPLAY, fontSize: 52, letterSpacing: '0.06em', lineHeight: '52px' }} />
-              <div data-showcase-year="" style={{ fontSize: 20, color: MUTED }} />
+          <div style={{ marginLeft: 'auto', width: 220, textAlign: 'right' }}>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'baseline', gap: 8 }}>
+              <div data-showcase-date="" style={{ fontSize: 18, fontWeight: 500, letterSpacing: '0.04em' }} />
+              <div data-showcase-year="" style={{ fontSize: 14, color: MUTED }} />
             </div>
-            <div data-showcase-hold="" style={{ height: 22, fontFamily: DISPLAY, fontSize: 22, letterSpacing: '0.16em', color: '#5eead4', opacity: 0 }}>
+            <div data-showcase-hold="" style={{ height: 16, marginTop: 2, fontSize: 11, fontWeight: 600, letterSpacing: '0.16em', color: ACCENT, opacity: 0 }}>
               YEAR TO DATE
             </div>
-            <div style={{ marginLeft: 'auto', width: 260, height: 5, borderRadius: 99, background: 'rgba(231,238,243,0.14)' }}>
-              <div data-showcase-progress="" style={{ height: '100%', width: 0, borderRadius: 99, background: 'linear-gradient(90deg, #5eead4, #fde68a)' }} />
+            <div style={{ marginLeft: 'auto', marginTop: 8, width: 160, height: 2, borderRadius: 99, background: 'rgba(214,226,234,0.16)' }}>
+              <div data-showcase-progress="" style={{ height: '100%', width: 0, borderRadius: 99, background: ACCENT }} />
             </div>
           </div>
         </header>
 
         <div
-          data-showcase-callout=""
-          style={{
-            position: 'absolute',
-            left: 28,
-            top: 116,
-            zIndex: 6,
-            maxWidth: 860,
-            padding: '8px 18px 6px',
-            borderRadius: 999,
-            background: 'rgba(8, 14, 22, 0.86)',
-            border: '1px solid rgba(253, 230, 138, 0.55)',
-            fontFamily: DISPLAY,
-            fontSize: 36,
-            letterSpacing: '0.04em',
-            lineHeight: '40px',
-            color: '#fff7d6',
-            pointerEvents: 'none',
-          }}
-        />
-
-        <div
-          data-showcase-celebrate=""
-          style={{
-            position: 'absolute',
-            left: 40,
-            right: 500,
-            top: 188,
-            zIndex: 6,
-            textAlign: 'center',
-            pointerEvents: 'none',
-            opacity: 0,
-          }}
-        >
-          <div style={{
-            display: 'inline-block',
-            padding: '8px 32px 12px',
-            borderRadius: 24,
-            background: 'rgba(6, 10, 16, 0.78)',
-            border: '1px solid rgba(253, 230, 138, 0.65)',
-          }}>
-            <div style={{ fontFamily: DISPLAY, fontSize: 28, letterSpacing: '0.22em', color: '#fde68a' }}>Milestone</div>
-            <div data-showcase-celebrate-title="" style={{ fontFamily: DISPLAY, fontSize: 108, lineHeight: '100px', letterSpacing: '0.03em', color: '#ffffff' }} />
-          </div>
-        </div>
-
-        <div
           data-showcase-finale=""
           style={{
             position: 'absolute',
-            left: 48,
-            right: 500,
-            bottom: 200,
+            left: 0,
+            right: 0,
+            bottom: 168,
             zIndex: 6,
             textAlign: 'center',
             pointerEvents: 'none',
@@ -820,62 +560,49 @@ export default function ShowcasePage({ token = '' }) {
           }}
         >
           <div style={{
-            display: 'inline-block',
-            padding: '10px 36px 16px',
-            borderRadius: 28,
-            background: 'rgba(6, 10, 16, 0.82)',
-            border: '1px solid rgba(94, 234, 212, 0.55)',
-            boxShadow: '0 16px 50px rgba(0,0,0,0.45)',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 16,
+            padding: '12px 22px',
+            borderRadius: 14,
+            background: 'rgba(8, 14, 22, 0.82)',
+            border: `1px solid ${LINE}`,
           }}>
-            <div style={{ fontFamily: DISPLAY, fontSize: 108, lineHeight: '100px', letterSpacing: '0.04em', color: '#ffffff' }}>
+            <img
+              src="/skyway-logo-nav-reverse.png"
+              srcSet="/skyway-logo-nav-reverse.png 1x, /skyway-logo-nav-reverse@2x.png 2x"
+              alt=""
+              style={{ height: 28, width: 'auto' }}
+            />
+            <div style={{ width: 1, height: 24, background: LINE }} />
+            <div style={{ fontSize: 28, fontWeight: 500, letterSpacing: '-0.02em', color: TEXT }}>
               Fly with Skyway
-            </div>
-            <div style={{ marginTop: 2, fontSize: 28, fontWeight: 700, color: '#99f6e4' }}>
-              The whole year, one loop
             </div>
           </div>
         </div>
 
-        <aside style={{
-          position: 'absolute',
-          top: 116,
-          right: 18,
-          bottom: 18,
-          width: 430,
-          zIndex: 5,
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 16,
-          padding: '16px 18px 14px',
-          borderRadius: 20,
-          background: 'rgba(8, 14, 22, 0.9)',
-          border: `1px solid ${LINE}`,
-          boxShadow: '-20px 0 48px rgba(0,0,0,0.28)',
-        }}>
-          <div>
-            <div data-showcase-fleet-title="" style={{ fontFamily: DISPLAY, fontSize: 28, letterSpacing: '0.12em', color: '#99f6e4', lineHeight: '28px' }}>FLEET MILES</div>
-            <div data-showcase-fleet="" style={{ marginTop: 10, display: 'grid', gap: 8 }} />
-          </div>
-          <div style={{ height: 1, background: LINE }} />
-          <RankSlots title="TOP DESTINATIONS" prefix="dest" />
-        </aside>
-
         <footer style={{
           position: 'absolute',
-          left: 18,
-          right: 466,
+          left: 28,
+          right: 28,
           bottom: 22,
           zIndex: 5,
-          display: 'flex',
-          gap: 10,
         }}>
-          <Counter label="BLOCK HOURS" count="block" hero />
-          <Counter label="FLIGHTS" count="flights" />
-          <Counter label="NAUTICAL MILES" count="nm" hint="sm" />
-          <Counter label="AIRPORTS" count="airports" />
-          <Counter label="STATES / COUNTRIES" count="places" />
+          <div style={{
+            display: 'flex',
+            alignItems: 'stretch',
+            padding: '16px 20px 14px',
+            borderRadius: 16,
+            background: 'rgba(8, 14, 22, 0.78)',
+            border: `1px solid ${LINE}`,
+          }}>
+            <Stat label="Block hours" count="block" hero />
+            <Stat label="Flights" count="flights" rule />
+            <Stat label="Nautical miles" count="nm" hint="sm" rule />
+            <Stat label="Airports" count="airports" rule />
+          </div>
         </footer>
-        <div style={{ position: 'absolute', left: 24, bottom: 4, zIndex: 5, fontSize: 11, color: 'rgba(231,238,243,0.4)' }}>
+        <div style={{ position: 'absolute', right: 40, bottom: 6, zIndex: 5, fontSize: 11, letterSpacing: '0.02em', color: 'rgba(214,226,234,0.38)' }}>
           Map data © Esri
         </div>
       </div>

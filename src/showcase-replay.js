@@ -531,74 +531,6 @@ export function initialPlayMs({ at, reducedMotion } = {}) {
   return 0;
 }
 
-export const SHOWCASE_FLIGHT_MILESTONES = Object.freeze([50, 100, 250]);
-export const SHOWCASE_MILE_MILESTONES = Object.freeze([10_000, 50_000]);
-export const SHOWCASE_BLOCK_MILESTONES = Object.freeze([1_000, 2_500, 5_000]);
-/** How long a crossing stays on screen, in playback milliseconds. */
-export const SHOWCASE_CELEBRATE_MS = 4_200;
-
-/**
- * Playhead times when the running totals cross a booth milestone.
- * `at` is the playback millisecond of the leg that tipped the count.
- */
-export function milestoneCrossings(scheduled) {
-  const legs = [...(scheduled || [])]
-    .filter((leg) => Number.isFinite(leg.playEnd))
-    .sort((a, b) => a.playEnd - b.playEnd || a.playStart - b.playStart);
-  const flightMarks = new Set(SHOWCASE_FLIGHT_MILESTONES);
-  const out = [];
-  let nm = 0;
-  let hours = 0;
-  let mileIndex = 0;
-  let blockIndex = 0;
-  for (let i = 0; i < legs.length; i += 1) {
-    const flights = i + 1;
-    nm += legs[i].nm || 0;
-    hours += legs[i].blockHours || 0;
-    if (flightMarks.has(flights)) {
-      out.push({
-        id: `flights-${flights}`,
-        kind: 'flights',
-        value: flights,
-        at: legs[i].playEnd,
-        title: `${formatShowcaseCount(flights)} flights`,
-      });
-    }
-    while (mileIndex < SHOWCASE_MILE_MILESTONES.length && nm >= SHOWCASE_MILE_MILESTONES[mileIndex]) {
-      const value = SHOWCASE_MILE_MILESTONES[mileIndex];
-      out.push({
-        id: `nm-${value}`,
-        kind: 'nm',
-        value,
-        at: legs[i].playEnd,
-        title: `${formatShowcaseCount(value)} nautical miles`,
-      });
-      mileIndex += 1;
-    }
-    while (blockIndex < SHOWCASE_BLOCK_MILESTONES.length && hours >= SHOWCASE_BLOCK_MILESTONES[blockIndex]) {
-      const value = SHOWCASE_BLOCK_MILESTONES[blockIndex];
-      out.push({
-        id: `block-${value}`,
-        kind: 'block',
-        value,
-        at: legs[i].playEnd,
-        title: `${formatShowcaseCount(value)} block hours`,
-      });
-      blockIndex += 1;
-    }
-  }
-  return out;
-}
-
-/** The milestone whose celebration window covers `playMs`, if any. */
-export function activeMilestone(crossings, playMs, windowMs = SHOWCASE_CELEBRATE_MS) {
-  let hit = null;
-  for (const row of crossings || []) {
-    if (row.at <= playMs && playMs - row.at <= windowMs && (!hit || row.at >= hit.at)) hit = row;
-  }
-  return hit;
-}
-
 export function frameActors(scheduled, playMs) {
   const holding = playMs >= SHOWCASE_PLAY_MS;
   const active = [];
@@ -616,67 +548,17 @@ export function frameActors(scheduled, playMs) {
   return { active, finished, holding };
 }
 
-function ranked(map, limit = 5) {
-  return [...map.entries()]
-    .sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])))
-    .slice(0, limit)
-    .map(([label, count]) => ({ label, count }));
-}
-
-/**
- * Counters and panels for the legs that have finished by `playMs`.
- * `place(code, lat, lng)` returns `{ country, state }`.
- */
-export function showcaseSnapshot(scheduled, playMs, place, window) {
+/** Counters for the legs that have finished by `playMs`. */
+export function showcaseSnapshot(scheduled, playMs, window) {
   const { active, finished, holding } = frameActors(scheduled, playMs);
   let nm = 0;
   let hours = 0;
   const airports = new Set();
-  const states = new Set();
-  const countries = new Set();
-  const destinations = new Map();
-  const routes = new Map();
-  const routeHours = new Map();
-  const tails = new Map();
-  const miles = new Map();
-  let farthest = null;
-  let just = null;
-  const remember = (code, lat, lng) => {
-    if (!code) return null;
-    airports.add(code);
-    const hit = typeof place === 'function' ? place(code, lat, lng) : null;
-    if (hit?.state) states.add(hit.state);
-    if (hit?.country) countries.add(hit.country);
-    return hit;
-  };
   for (const leg of finished) {
     nm += leg.nm || 0;
     hours += leg.blockHours || 0;
-    remember(leg.from, leg.fromLat, leg.fromLng);
-    remember(leg.to, leg.toLat, leg.toLng);
-    destinations.set(leg.to, (destinations.get(leg.to) || 0) + 1);
-    const route = `${leg.from} → ${leg.to}`;
-    routes.set(route, (routes.get(route) || 0) + 1);
-    routeHours.set(route, (routeHours.get(route) || 0) + (leg.blockHours || 0));
-    if (leg.tail) {
-      tails.set(leg.tail, (tails.get(leg.tail) || 0) + 1);
-      miles.set(leg.tail, (miles.get(leg.tail) || 0) + (leg.nm || 0));
-    }
-    if (!farthest || (leg.nm || 0) > (farthest.nm || 0)) farthest = leg;
-    if (!just || leg.playEnd >= just.playEnd) just = leg;
-  }
-  for (const leg of active) {
-    if (leg.tail) tails.set(leg.tail, tails.get(leg.tail) || 0);
-  }
-  const topDestinations = ranked(destinations);
-  const busiest = topDestinations[0];
-  const cityOf = (code, lat, lng) => (
-    typeof place === 'function' ? place(code, lat, lng)?.city || null : null
-  );
-  let busiestCity = null;
-  if (busiest) {
-    const sample = finished.find((leg) => leg.to === busiest.label);
-    if (sample) busiestCity = cityOf(sample.to, sample.toLat, sample.toLng);
+    if (leg.from) airports.add(leg.from);
+    if (leg.to) airports.add(leg.to);
   }
   return {
     flights: finished.length,
@@ -684,71 +566,13 @@ export function showcaseSnapshot(scheduled, playMs, place, window) {
     sm: nm * SM_PER_NM,
     hours,
     airports: airports.size,
-    states: states.size,
-    countries: countries.size,
     active: active.length,
     holding,
     dateMs: replayDateMs(playMs, window),
-    topDestinations,
-    topRoutes: ranked(routes),
-    tails: [...tails.entries()]
-      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-      .slice(0, 8)
-      .map(([tail, count]) => ({ tail, count, color: showcaseTailColor(tail) })),
-    leaderboard: miles.size
-      ? [...miles.entries()]
-        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-        .slice(0, 5)
-        .map(([tail, flown]) => ({ tail, nm: flown, color: showcaseTailColor(tail) }))
-      : [...routeHours.entries()]
-        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-        .slice(0, 5)
-        .map(([label, flown]) => ({ label, hours: flown, color: showcaseTailColor(label) })),
-    justLanded: just ? {
-      tail: just.tail,
-      from: just.from,
-      to: just.to,
-      city: cityOf(just.to, just.toLat, just.toLng),
-    } : null,
-    farthest: farthest ? {
-      tail: farthest.tail,
-      from: farthest.from,
-      to: farthest.to,
-      nm: farthest.nm || 0,
-      city: cityOf(farthest.to, farthest.toLat, farthest.toLng),
-    } : null,
-    busiestCity,
   };
 }
 
-/** Rotating booth lines. Only tail, city, and airport codes — never a customer. */
-export function showcaseCallouts(snapshot) {
-  const lines = [];
-  const landed = snapshot?.justLanded;
-  if (landed?.to) {
-    const where = landed.city || landed.to;
-    lines.push(landed.tail ? `Just landed: ${landed.tail} in ${where}` : `Just landed in ${where}!`);
-  }
-  const far = snapshot?.farthest;
-  if (far?.from && far?.to && far.nm > 0) {
-    const where = far.city ? ` · ${far.city}` : '';
-    lines.push(`Farthest trip this year: ${far.from} → ${far.to}${where}`);
-  }
-  const busy = snapshot?.topDestinations?.[0];
-  if (busy?.label && busy.count) {
-    const name = snapshot.busiestCity ? `${snapshot.busiestCity} · ` : '';
-    lines.push(`Busiest airport: ${name}${busy.label}`);
-  }
-  const lead = snapshot?.leaderboard?.[0];
-  if (lead?.tail && lead.nm > 0) {
-    lines.push(`${lead.tail} leads the fleet`);
-  } else if (lead?.label && lead.hours > 0) {
-    lines.push(`Longest route: ${lead.label}`);
-  }
-  return lines;
-}
-
-/** Neon pair for a tail, or for the city pair when the archive has no tail. */
+/** Stable key for a tail, or for the city pair when the archive has no tail. */
 export function showcaseColorKey(leg) {
   if (leg && typeof leg === 'object') {
     if (leg.tail) return leg.tail;
@@ -757,23 +581,11 @@ export function showcaseColorKey(leg) {
   return String(leg || '');
 }
 
-const TAIL_PAIRS = [
-  ['#5eead4', '#22d3ee'],
-  ['#fb7185', '#fda4af'],
-  ['#fbbf24', '#fdba74'],
-  ['#c4b5fd', '#a5b4fc'],
-  ['#4ade80', '#6ee7b7'],
-  ['#38bdf8', '#818cf8'],
-  ['#f9a8d4', '#e879f9'],
-  ['#fde047', '#fb923c'],
-];
+// One Skyway accent. The booth does not color routes by tail.
+const BRAND_ARC = ['#3FA9CC', '#7EB6CC'];
 
-export function showcaseTailPalette(tail) {
-  let hash = 0;
-  const text = String(tail || '');
-  for (let i = 0; i < text.length; i += 1) hash = (hash * 33 + text.charCodeAt(i)) >>> 0;
-  const pair = TAIL_PAIRS[hash % TAIL_PAIRS.length];
-  return { core: pair[0], edge: pair[1] };
+export function showcaseTailPalette() {
+  return { core: BRAND_ARC[0], edge: BRAND_ARC[1] };
 }
 
 export function showcaseTailColor(tail) {
