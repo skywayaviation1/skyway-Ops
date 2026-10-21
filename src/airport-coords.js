@@ -21,6 +21,8 @@ const COORDS = {
   OPF:  { lat: 25.9070, lng: -80.2784 },
   TMB:  { lat: 25.6479, lng: -80.4327 },
   PBI:  { lat: 26.6832, lng: -80.0956 },
+  // Palm Beach was renamed in FAA data on 2026-07-09: PBI/KPBI → DJT/KDJT.
+  DJT:  { lat: 26.6832, lng: -80.0956 },
   TPA:  { lat: 27.9755, lng: -82.5332 },
   PIE:  { lat: 27.9106, lng: -82.6874 },
   APF:  { lat: 26.1525, lng: -81.7752 },

@@ -89,6 +89,7 @@ const FboLegSyncLazy = lazy(() => import('./FboDesk.jsx').then((m) => ({ default
 // roles that never see it.
 const OpsDashboardLazy = lazy(() => import('./OpsDashboard.jsx'));
 const AdminSettingsLazy = lazy(() => import('./AdminSettings.jsx'));
+const ShowcaseAdminCardLazy = lazy(() => import('./ShowcaseAdminCard.jsx'));
 
 // Code-split: Lodging tab loads only when a user opens it on a trip.
 // Trip detail is the most-touched screen — keeping this lazy means the
@@ -159,7 +160,7 @@ import {
   Download, Trash2, Plus, FileText, Zap, Radio, AlertCircle, Upload,
   Check, CheckCheck, UserCheck, Sparkles, Hash, Cloud, Wrench, Hotel, BookOpen, Search,
   Activity, Palette, ShieldCheck, Edit2, Home, CreditCard, Fuel, Building2,
-  MoreHorizontal, LogOut, ChevronRight,
+  MoreHorizontal, LogOut, ChevronRight, Monitor,
 } from 'lucide-react';
 // Shared design-system primitives. New UI should compose these rather than
 // re-deriving borders, spacing and tone colors inline.
@@ -27858,7 +27859,9 @@ export default function CharterOps() {
   }, [profile, impersonateUid, users, sandboxView]);
   // Shift handoff lives on the home screen. A leftover handoff dispatch
   // view falls back to flight control.
-  const activeDispatchView = dispatchView === 'schedule' ? 'schedule' : 'control';
+  const activeDispatchView = dispatchView === 'schedule' || dispatchView === 'showcase'
+    ? dispatchView
+    : 'control';
 
   // Tick clock
   useEffect(() => {
@@ -29110,6 +29113,7 @@ export default function CharterOps() {
                 {[
                   { id: 'control', label: 'Flight control', icon: Zap },
                   { id: 'schedule', label: 'Schedule & feeds', icon: Calendar },
+                  { id: 'showcase', label: 'Trade show', icon: Monitor },
                 ].map((item) => (
                   <button
                     key={item.id}
@@ -29142,6 +29146,14 @@ export default function CharterOps() {
                     onOpenTrip={(uid) => { setSelectedId(uid); setSection('schedule'); }}
                   />
                 </Suspense>
+              )}
+
+              {activeDispatchView === 'showcase' && (
+                <div className="mx-auto max-w-3xl p-4 md:p-6">
+                  <Suspense fallback={<div className="flex items-center justify-center py-16 text-content-muted"><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading trade show link…</div>}>
+                    <ShowcaseAdminCardLazy />
+                  </Suspense>
+                </div>
               )}
 
               {activeDispatchView === 'schedule' && (
