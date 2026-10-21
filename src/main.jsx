@@ -6,6 +6,8 @@ import { ServiceTechPage } from './ServiceRequests.jsx';
 import TripTrackPage from './TripTrack.jsx';
 import OperatorFlightPortal from './OperatorFlightPortal.jsx';
 import FboConfirmPage from './FboConfirmPage.jsx';
+import ShowcasePage from './ShowcasePage.jsx';
+import { parseShowcasePath } from './showcase-replay.js';
 import './index.css';
 
 // Chromium's install event is one-shot and can fire while Firebase is still
@@ -116,6 +118,12 @@ const isFboConfirmRoute =
   typeof window !== 'undefined'
   && window.location.pathname.replace(/\/+$/, '') === '/fbo-confirm';
 
+// PUBLIC TRADE-SHOW REPLAY — a booth TV. Decided before App mounts so the
+// display never touches the signed-in Firebase flow.
+const showcaseRoute =
+  typeof window !== 'undefined' ? parseShowcasePath(window.location.pathname) : null;
+const isShowcaseRoute = showcaseRoute != null;
+
 /* ============================================================
    PWA SERVICE WORKER REGISTRATION
    ------------------------------------------------------------
@@ -134,7 +142,7 @@ const isFboConfirmRoute =
    ============================================================ */
 if (!isNativeApp() && typeof window !== 'undefined' && 'serviceWorker' in navigator
     && !isExternalTechRoute && !isServiceTechRoute && !isTripTrackRoute
-    && !isOperatorFlightRoute && !isFboConfirmRoute) {
+    && !isOperatorFlightRoute && !isFboConfirmRoute && !isShowcaseRoute) {
   // Register after the page has finished loading so we don't compete
   // with initial render for the network. The native shell is excluded by
   // Capacitor.isNativePlatform() above — web push is the wrong path there.
@@ -200,6 +208,12 @@ if (isExternalTechRoute) {
   rootEl.render(
     <React.StrictMode>
       <FboConfirmPage token={params.get('token') || ''} />
+    </React.StrictMode>
+  );
+} else if (isShowcaseRoute) {
+  rootEl.render(
+    <React.StrictMode>
+      <ShowcasePage token={showcaseRoute.token} />
     </React.StrictMode>
   );
 } else {

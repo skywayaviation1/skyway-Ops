@@ -58,6 +58,12 @@
     },
     "api/schedule-legs-cron.js": {
       "maxDuration": 60
+    },
+    "api/showcase-replay.js": {
+      "maxDuration": 60
+    },
+    "api/showcase-admin.js": {
+      "maxDuration": 60
     }
   },
   "rewrites": [

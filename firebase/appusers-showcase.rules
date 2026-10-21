@@ -1,0 +1,26 @@
+// Fragment for the named Firestore database `appusers`.
+// Merge this match block into the deployed appusers ruleset.
+// Do not replace the database ruleset with this file alone.
+// Do not deploy this file by itself.
+// Do not copy this file onto `appreview`.
+//
+// Trade-show replay configuration (the unguessable TV token and its
+// enabled flag) is written only by the Admin SDK (api/showcase-admin.js).
+// The public board reads through api/showcase-replay.js, which returns
+// tail, airport codes, coordinates, and times — never this document.
+// Denying client access keeps a broad `match /{document=**}` grant from
+// exposing the token. Completed legs stay in the existing `legs`
+// collection; this fragment does not change those rules. The server
+// reads `legs` with the Admin SDK and projects them before responding.
+//
+// No backfill runs. Existing trip, schedule, and leg documents are not
+// modified by these rules.
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /showcase/{id} {
+      allow read, write: if false;
+    }
+  }
+}

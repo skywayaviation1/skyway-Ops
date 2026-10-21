@@ -23,6 +23,7 @@ import {
 import { DUTY_TRACKER_ENABLED } from './duty-feature.js';
 import MailboxSettingsPanel from './MailboxSettingsPanel.jsx';
 import { FboEmailSafety } from './FboDesk.jsx';
+import ShowcaseAdminCard from './ShowcaseAdminCard.jsx';
 
 const DEFAULT_ALERT_EMAILS = [
   'jim@flyskyway.com',
@@ -370,6 +371,7 @@ export default function AdminSettings({
           </div>
 
           <div className="space-y-4">
+            <ShowcaseAdminCard />
             <Card padded={false}>
               <div className="p-4 pb-3">
                 <CardHeader title="Operational services" subtitle="Company-wide feature controls." icon={Settings} />

@@ -17,7 +17,8 @@ export default function TvDesignFrame({ children, marker = 'data-tv-board' }) {
     return () => window.removeEventListener('resize', apply);
   }, []);
 
-  const attr = marker === 'data-board-signin' ? { 'data-board-signin': '' } : { 'data-tv-board': '' };
+  const allowed = marker === 'data-board-signin' || marker === 'data-showcase' || marker === 'data-tv-board';
+  const attr = { [allowed ? marker : 'data-tv-board']: '' };
   return (
     <div className="h-screen w-screen overflow-hidden bg-slate-950">
       <div
