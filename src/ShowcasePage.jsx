@@ -478,7 +478,8 @@ export default function ShowcasePage({ token = '' }) {
       const gap = Math.max(0, now - lastTick);
       const dt = speed > 1 ? Math.min(gap, 3000 / speed) : Math.min(40, gap);
       lastTick = now;
-      if (!freeze) elapsed += dt * speed;
+      // Dev captures can pin the playhead once the finale is up. The booth never sets this.
+      if (!(freeze || (dev && window.__SHOWCASE_FREEZE__))) elapsed += dt * speed;
       const playMs = elapsed % SHOWCASE_LOOP_MS;
       if (lastLoop >= 0 && playMs < lastLoop) resetLoop();
       paint(playMs, now);
