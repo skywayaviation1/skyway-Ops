@@ -60,10 +60,21 @@
          discovering the Google Fonts origin from an @import inside CSS. -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- media=print keeps this stylesheet from blocking the first paint.
+         The splash is inline; Inter was added for the trade-show board and
+         must not hold the signed-in app on fonts.googleapis.com. -->
     <link
       rel="stylesheet"
       href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600;9..40,700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      media="print"
+      onload="this.media='all'"
     />
+    <noscript>
+      <link
+        rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600;9..40,700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      />
+    </noscript>
     <!-- Apply saved theme BEFORE React mounts so there's no flash of wrong colors. -->
     <script>
       (function() {

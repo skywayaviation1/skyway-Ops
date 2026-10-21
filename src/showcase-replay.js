@@ -70,16 +70,7 @@ export function showcaseUrl(token, origin = SHOWCASE_ORIGIN) {
   return `${base}${showcasePath(token)}`;
 }
 
-/** `/showcase` and `/showcase/<token>` are the public TV route. Anything else is null. */
-export function parseShowcasePath(pathname) {
-  const path = String(pathname || '').replace(/\/+$/, '') || '/';
-  if (path !== '/showcase' && !path.startsWith('/showcase/')) return null;
-  if (path === '/showcase') return { token: '' };
-  let token = path.slice('/showcase/'.length);
-  try { token = decodeURIComponent(token); } catch { /* keep the raw segment */ }
-  if (token.includes('/')) return { token: '' };
-  return { token };
-}
+export { parseShowcasePath } from './showcase-route.js';
 
 export function zonedParts(ms, timeZone = SHOWCASE_TIME_ZONE) {
   const dtf = new Intl.DateTimeFormat('en-US', {
