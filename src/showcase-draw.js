@@ -2,7 +2,7 @@
 // Strokes stay on the main thread: wide translucent passes stand in for
 // shadowBlur so a few hundred legs can still repaint at 60fps.
 
-import { showcaseTailPalette } from './showcase-replay.js';
+import { showcaseColorKey, showcaseTailPalette } from './showcase-replay.js';
 
 const SPARKLE = ['#fff', '#fef9c3', '#e0f2fe'];
 
@@ -194,7 +194,7 @@ export function drawWave(ctx, projected, scheduled, holdT, holdMs) {
     const local = Math.max(0, Math.min(1, (travel - delay) / 0.84));
     if (local <= 0) continue;
     const head = Math.max(1, Math.round(local * (points.length - 1)));
-    const { core, edge } = showcaseTailPalette(scheduled[i].tail);
+    const { core, edge } = showcaseTailPalette(showcaseColorKey(scheduled[i]));
     const bright = local > 0.92;
     strokeRoute(ctx, points, 0, head, core, bright ? 3.2 : 2.4, bright ? 0.9 : 0.62);
     if (!bright) strokeRoute(ctx, points, Math.max(0, head - 3), head, edge, 6, 0.35);

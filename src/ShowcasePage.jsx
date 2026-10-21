@@ -39,6 +39,7 @@ import {
   sampleRoute,
   scheduleShowcasePlayback,
   showcaseCallouts,
+  showcaseColorKey,
   showcaseSnapshot,
   showcaseTailColor,
 } from './showcase-replay.js';
@@ -56,6 +57,10 @@ function publicLegs(legs) {
     const leg = {};
     let ok = true;
     for (const key of PUBLIC_LEG_KEYS) {
+      if (key === 'tail') {
+        leg.tail = raw?.tail ? String(raw.tail) : '';
+        continue;
+      }
       if (raw?.[key] == null || raw[key] === '') ok = false;
       leg[key] = raw?.[key];
     }
@@ -133,19 +138,32 @@ function RankSlots({ title, prefix }) {
   );
 }
 
-function Counter({ label, count, hint }) {
+function Counter({ label, count, hint, hero = false }) {
   return (
     <div style={{
-      flex: 1,
+      flex: hero ? 1.45 : 1,
       minWidth: 0,
-      padding: '12px 16px 10px',
+      padding: hero ? '12px 18px 10px' : '12px 16px 10px',
       borderRadius: 16,
-      background: 'rgba(8, 14, 22, 0.9)',
-      border: `1px solid ${LINE}`,
-      boxShadow: 'inset 0 0 0 1px rgba(94,234,212,0.06)',
+      background: hero ? 'rgba(36, 28, 8, 0.94)' : 'rgba(8, 14, 22, 0.9)',
+      border: hero ? '1px solid rgba(253, 230, 138, 0.8)' : `1px solid ${LINE}`,
+      boxShadow: hero ? '0 0 28px rgba(253, 230, 138, 0.18)' : 'inset 0 0 0 1px rgba(94,234,212,0.06)',
     }}>
-      <div style={{ fontFamily: DISPLAY, fontSize: 20, letterSpacing: '0.14em', color: '#99f6e4', lineHeight: '20px' }}>{label}</div>
-      <div data-count={count} style={{ marginTop: 2, fontFamily: DISPLAY, fontSize: 64, lineHeight: '64px', letterSpacing: '0.02em' }}>0</div>
+      <div style={{
+        fontFamily: DISPLAY,
+        fontSize: hero ? 26 : 20,
+        letterSpacing: '0.14em',
+        color: hero ? '#fde68a' : '#99f6e4',
+        lineHeight: hero ? '26px' : '20px',
+      }}>{label}</div>
+      <div data-count={count} style={{
+        marginTop: 2,
+        fontFamily: DISPLAY,
+        fontSize: hero ? 76 : 56,
+        lineHeight: hero ? '76px' : '56px',
+        letterSpacing: '0.02em',
+        color: hero ? '#fff7d6' : TEXT,
+      }}>0</div>
       {hint && <div data-count={hint} style={{ marginTop: -2, fontSize: 16, color: MUTED, fontVariantNumeric: 'tabular-nums' }} />}
     </div>
   );
@@ -282,10 +300,12 @@ export default function ShowcasePage({ token = '' }) {
     let project = null;
     let projected = [];
     let drawn = new Set();
+    let waveCursor = 0;
+    const waveLit = new Set();
     let resetSettled = true;
     let lastLoop = -1;
-    const shown = { flights: 0, nm: 0, sm: 0, hours: 0, airports: 0, states: 0, countries: 0 };
-    const velocity = { flights: 0, nm: 0, sm: 0, hours: 0, airports: 0, states: 0, countries: 0 };
+    const shown = { flights: 0, nm: 0, sm: 0, block: 0, airports: 0, states: 0, countries: 0 };
+    const velocity = { flights: 0, nm: 0, sm: 0, block: 0, airports: 0, states: 0, countries: 0 };
     const shownInt = {};
     let listSig = '';
     const ripples = [];
@@ -311,7 +331,7 @@ export default function ShowcasePage({ token = '' }) {
         const from = formatShowcaseDate(Date.parse(payload.storedFrom));
         note.textContent = `Recorded flights begin ${from.day}. Earlier ${payload.year} legs were not stored.`;
       } else {
-        note.textContent = 'Completed flights, year to date';
+        note.textContent = 'Every completed flight since January 1';
       }
     }
 
@@ -331,7 +351,9 @@ export default function ShowcasePage({ token = '' }) {
       shown.flights = 0;
       shown.nm = 0;
       shown.sm = 0;
-      shown.hours = 0;
+      shown.block = 0;
+      waveCursor = 0;
+      waveLit.clear();
       shown.airports = 0;
       shown.states = 0;
       shown.countries = 0;
@@ -348,7 +370,7 @@ export default function ShowcasePage({ token = '' }) {
     }
 
     function syncLists(snapshot) {
-      const fleetSig = snapshot.leaderboard.map((row) => `${row.tail}:${Math.round(row.nm)}`).join();
+      const fleetSig = snapshot.leaderboard.map((row) => `${row.tail || row.label}:${Math.round((row.nm || row.hours || 0) * 10)}`).join();
       const sig = `${snapshot.flights}|${snapshot.topDestinations.map((row) => row.label).join()}|${fleetSig}`;
       if (sig === listSig) return;
       listSig = sig;
@@ -361,15 +383,21 @@ export default function ShowcasePage({ token = '' }) {
         count.textContent = row ? formatShowcaseCount(row.count) : '';
       }
       const fleet = root.querySelector('[data-showcase-fleet]');
+      const fleetTitle = root.querySelector('[data-showcase-fleet-title]');
+      if (fleetTitle) {
+        fleetTitle.textContent = snapshot.leaderboard.some((row) => row.tail) ? 'FLEET MILES' : 'LONGEST ROUTES';
+      }
       if (!fleet) return;
       fleet.replaceChildren(...snapshot.leaderboard.map((row) => {
         const item = document.createElement('div');
         item.style.cssText = 'display:grid;grid-template-columns:26px 1fr auto;gap:8px;align-items:center';
         const name = document.createElement('span');
-        name.textContent = row.tail;
-        name.style.cssText = 'font-size:26px;font-weight:750;letter-spacing:0.04em';
+        name.textContent = row.tail || row.label;
+        name.style.cssText = `font-size:${row.tail ? 26 : 22}px;font-weight:750;letter-spacing:0.04em`;
         const miles = document.createElement('span');
-        miles.textContent = `${formatShowcaseCount(Math.round(row.nm))} nm`;
+        miles.textContent = row.tail
+          ? `${formatShowcaseCount(Math.round(row.nm))} nm`
+          : `${formatShowcaseCount(row.hours, 1)} h`;
         miles.style.cssText = `font-family:${DISPLAY};font-size:30px;color:#fde68a;letter-spacing:0.03em`;
         item.append(planeGlyph(row.color), name, miles);
         return item;
@@ -408,12 +436,14 @@ export default function ShowcasePage({ token = '' }) {
         projected = scheduled.map((leg) => leg.samples.map((sample) => project(sample.lat, sample.lng)));
         settledCtx.clearRect(0, 0, width, height);
         drawn = new Set();
+        waveLit.clear();
+        waveCursor = 0;
         resetSettled = false;
       }
       const actors = frameActors(scheduled, playMs);
       for (const leg of actors.finished) {
         if (drawn.has(leg.id)) continue;
-        drawSettledRoute(settledCtx, projected[leg.id], leg.tail);
+        drawSettledRoute(settledCtx, projected[leg.id], showcaseColorKey(leg));
         drawn.add(leg.id);
       }
       if (!landingsPrimed) {
@@ -428,7 +458,7 @@ export default function ShowcasePage({ token = '' }) {
             x: at.x,
             y: at.y,
             born: now,
-            color: showcaseTailColor(leg.tail),
+            color: showcaseTailColor(showcaseColorKey(leg)),
             code: leg.to,
           });
           pops.set(leg.to, now);
@@ -440,7 +470,25 @@ export default function ShowcasePage({ token = '' }) {
       drawStars(liveCtx, width, height, now);
       const holding = playMs >= SHOWCASE_PLAY_MS;
       const holdT = holding ? playMs - SHOWCASE_PLAY_MS : 0;
-      if (holding) drawWave(liveCtx, projected, scheduled, holdT, SHOWCASE_HOLD_MS);
+      if (holding && scheduled.length <= 700) {
+        drawWave(liveCtx, projected, scheduled, holdT, SHOWCASE_HOLD_MS);
+      } else if (holding) {
+        const travel = Math.max(0, Math.min(1, holdT / (SHOWCASE_HOLD_MS * 0.52)));
+        const total = scheduled.length;
+        let stamped = 0;
+        for (let step = 0; step < total && stamped < 240; step += 1) {
+          const index = (waveCursor + step) % total;
+          if (waveLit.has(index)) continue;
+          const delay = ((index % 19) / 19) * 0.16;
+          const local = Math.max(0, Math.min(1, (travel - delay) / 0.84));
+          if (local < 0.92) continue;
+          const points = projected[index];
+          if (points) drawSettledRoute(settledCtx, points, showcaseColorKey(scheduled[index]));
+          waveLit.add(index);
+          stamped += 1;
+        }
+        if (total) waveCursor = (waveCursor + 240) % total;
+      }
 
       const visits = new Map();
       for (const leg of actors.finished) {
@@ -463,14 +511,14 @@ export default function ShowcasePage({ token = '' }) {
         if (!points) continue;
         const along = pointAlong(leg.samples, leg.f);
         const head = Math.max(1, Math.round(leg.f * (points.length - 1)));
-        drawLiveRoute(liveCtx, points, head, leg.tail);
-        drawSparkles(liveCtx, points, head, now);
+        drawLiveRoute(liveCtx, points, head, showcaseColorKey(leg));
+        if (actors.active.length <= 80) drawSparkles(liveCtx, points, head, now);
         const at = project(along.lat, along.lng);
         const targetBank = turnBank(leg.samples, leg.f);
         const prev = pose.get(leg.id) || { bank: targetBank };
         const bank = prev.bank + (targetBank - prev.bank) * (freeze ? 1 : 0.35);
         pose.set(leg.id, { bank });
-        drawPlane(liveCtx, at.x, at.y, along.heading, bank, showcaseTailColor(leg.tail));
+        drawPlane(liveCtx, at.x, at.y, along.heading, bank, showcaseTailColor(showcaseColorKey(leg)));
       }
 
       syncParty(playMs, now);
@@ -511,7 +559,7 @@ export default function ShowcasePage({ token = '' }) {
       writeCount('flights', formatShowcaseCount(Math.round(ease('flights', snapshot.flights))));
       writeCount('nm', formatShowcaseCount(Math.round(ease('nm', snapshot.nm))));
       if (counts.sm) counts.sm.textContent = `${formatShowcaseCount(Math.round(ease('sm', snapshot.sm)))} statute mi`;
-      writeCount('hours', formatShowcaseCount(ease('hours', snapshot.hours), snapshot.hours >= 100 ? 0 : 1));
+      writeCount('block', formatShowcaseCount(ease('block', snapshot.hours), 1));
       writeCount('airports', formatShowcaseCount(Math.round(ease('airports', snapshot.airports))));
       if (counts.places) {
         const states = Math.round(ease('states', snapshot.states));
@@ -556,6 +604,7 @@ export default function ShowcasePage({ token = '' }) {
       root.setAttribute('data-showcase-ready', '1');
       root.setAttribute('data-showcase-phase', snapshot.holding ? 'hold' : 'play');
       root.setAttribute('data-showcase-flights', String(snapshot.flights));
+      root.setAttribute('data-showcase-block', snapshot.hours.toFixed(1));
       root.setAttribute('data-showcase-active', String(snapshot.active));
       root.setAttribute('data-showcase-celebrate', party && (now - party.startedAt) < 5200 ? party.id : '');
       root.setAttribute('data-showcase-finale', finaleT > 0.85 ? '1' : '0');
@@ -581,8 +630,8 @@ export default function ShowcasePage({ token = '' }) {
     }
 
     (async () => {
-      const points = scheduled.flatMap((leg) => leg.samples);
       const fallback = () => {
+        const points = scheduled.flatMap((leg) => leg.samples);
         const projector = fitProject(
           points.length ? points : [{ lat: 39, lng: -96 }],
           mapNode.clientWidth || 1920,
@@ -799,7 +848,7 @@ export default function ShowcasePage({ token = '' }) {
           boxShadow: '-20px 0 48px rgba(0,0,0,0.28)',
         }}>
           <div>
-            <div style={{ fontFamily: DISPLAY, fontSize: 28, letterSpacing: '0.12em', color: '#99f6e4', lineHeight: '28px' }}>FLEET MILES</div>
+            <div data-showcase-fleet-title="" style={{ fontFamily: DISPLAY, fontSize: 28, letterSpacing: '0.12em', color: '#99f6e4', lineHeight: '28px' }}>FLEET MILES</div>
             <div data-showcase-fleet="" style={{ marginTop: 10, display: 'grid', gap: 8 }} />
           </div>
           <div style={{ height: 1, background: LINE }} />
@@ -815,9 +864,9 @@ export default function ShowcasePage({ token = '' }) {
           display: 'flex',
           gap: 10,
         }}>
+          <Counter label="BLOCK HOURS" count="block" hero />
           <Counter label="FLIGHTS" count="flights" />
           <Counter label="NAUTICAL MILES" count="nm" hint="sm" />
-          <Counter label="FLIGHT HOURS" count="hours" />
           <Counter label="AIRPORTS" count="airports" />
           <Counter label="STATES / COUNTRIES" count="places" />
         </footer>

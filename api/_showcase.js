@@ -5,6 +5,8 @@
 // security rules; firebase/appusers-showcase.rules denies every client.
 
 import { timingSafeEqual, randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import admin from 'firebase-admin';
 import { FieldPath, getFirestore } from 'firebase-admin/firestore';
 import { reviewerSessionBlock } from '../src/reviewer-account.js';
@@ -12,9 +14,11 @@ import { lookupCoords } from '../src/airport-coords.js';
 import {
   SHOWCASE_CACHE_MS,
   SHOWCASE_ORIGIN,
+  buildShowcaseArchive,
   isShowcaseToken,
+  parseShowcaseHistoryCsv,
   publicShowcaseBody,
-  selectShowcaseLegs,
+  showcaseDayKey,
   showcaseUrl,
 } from '../src/showcase-replay.js';
 
@@ -24,12 +28,27 @@ const ROLES = ['admin', 'ops'];
 
 let adminApp = null;
 let database = null;
-const memoryCache = { token: '', at: 0, body: null };
+let historyRows = null;
+const memoryCache = { token: '', day: '', at: 0, body: null };
 
 export function clearShowcaseCache() {
   memoryCache.token = '';
+  memoryCache.day = '';
   memoryCache.at = 0;
   memoryCache.body = null;
+}
+
+/** Parsed owner file. Cached for the life of the server process. */
+export function loadShowcaseHistoryRows() {
+  if (historyRows) return historyRows;
+  const file = fileURLToPath(new URL('../data/showcase-legs-2026.csv', import.meta.url));
+  historyRows = parseShowcaseHistoryCsv(readFileSync(file, 'utf8'));
+  return historyRows;
+}
+
+function historyFor(deps) {
+  if (Array.isArray(deps.historyRows)) return deps.historyRows;
+  return loadShowcaseHistoryRows();
 }
 
 function adminAppInstance() {
@@ -158,20 +177,25 @@ export async function loadPublicShowcase(deps = {}) {
   const now = Number.isFinite(deps.now) ? deps.now : Date.now();
   const cache = deps.cache || memoryCache;
   const token = deps.token;
+  const day = showcaseDayKey(now);
   if (
     cache.body
     && cache.token === token
+    && cache.day === day
     && (now - cache.at) < SHOWCASE_CACHE_MS
   ) {
     return { body: cache.body, cached: true };
   }
   const raw = await readAllLegs(db);
-  const selected = selectShowcaseLegs(raw, {
+  const selected = buildShowcaseArchive({
+    historyRows: historyFor(deps),
+    storedLegs: raw,
     now,
     lookupCoords: deps.lookupCoords || lookupCoords,
   });
   const body = publicShowcaseBody(selected, now);
   cache.token = token;
+  cache.day = day;
   cache.at = now;
   cache.body = body;
   return { body, cached: false };
@@ -190,6 +214,8 @@ export function adminView(config, coverage) {
     storedFrom: coverage?.storedFrom || null,
     storedTo: coverage?.storedTo || null,
     legCount: coverage?.legCount || 0,
+    blockHours: coverage?.blockHours ?? null,
+    unresolved: coverage?.unresolved || [],
     truncated: coverage?.truncated === true,
   };
 }
@@ -197,16 +223,22 @@ export function adminView(config, coverage) {
 export async function coverageFor(db, deps = {}) {
   const now = Number.isFinite(deps.now) ? deps.now : Date.now();
   const raw = await readAllLegs(db);
-  const selected = selectShowcaseLegs(raw, {
+  const selected = buildShowcaseArchive({
+    historyRows: historyFor(deps),
+    storedLegs: raw,
     now,
     lookupCoords: deps.lookupCoords || lookupCoords,
   });
   const body = publicShowcaseBody(selected, now);
+  const blockHours = body.legs.reduce((sum, leg) => sum + (Number(leg.block) || 0), 0);
   return {
     year: body.year,
     storedFrom: body.storedFrom,
     storedTo: body.storedTo,
     legCount: body.legs.length,
+    blockHours: Math.round(blockHours * 10) / 10,
+    unresolved: selected.unresolved || [],
+    archive: body.archive,
     truncated: body.truncated,
   };
 }

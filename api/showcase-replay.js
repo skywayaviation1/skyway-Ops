@@ -2,7 +2,8 @@
 // GET /api/showcase-replay?token=<unguessable>
 //
 // Unknown and disabled tokens are not found. A hit is cached for 15 minutes.
-// The JSON legs contain only tail, airport codes, coordinates, and times.
+// The JSON legs contain a tail only when Firestore has one, plus airport
+// codes, coordinates, times, and block hours.
 
 import {
   loadPublicShowcase,

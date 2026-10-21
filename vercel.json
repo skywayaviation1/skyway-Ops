@@ -60,10 +60,12 @@
       "maxDuration": 60
     },
     "api/showcase-replay.js": {
-      "maxDuration": 60
+      "maxDuration": 60,
+      "includeFiles": "data/showcase-legs-2026.csv"
     },
     "api/showcase-admin.js": {
-      "maxDuration": 60
+      "maxDuration": 60,
+      "includeFiles": "data/showcase-legs-2026.csv"
     }
   },
   "rewrites": [

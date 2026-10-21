@@ -4,11 +4,11 @@
 // public API both go through this module so a leg can only reach the TV with
 // the fields listed in PUBLIC_LEG_KEYS.
 //
-// The JetInsight feed window (retainRelevantLegs) is about three days back
-// and 21 days ahead. /api/schedule-legs-cron merge-writes that window into
-// legs/{uid} and does not delete older documents, so the collection is the
-// archive. Flights that left the feed before a cron run observed them are
-// not stored. Playback uses whatever completed legs exist.
+// data/showcase-legs-2026.csv is the primary archive (date, origin, destination,
+// block hours — no trip, booking, or crew). A leg is included when its calendar
+// date is on or before today in America/New_York, so future rows in the file
+// wait until that morning. Firestore legs are merged only for dates after the
+// file's coverage, and can attach a tail onto a matching file row.
 
 import { distanceNm } from './tracking-map.js';
 
@@ -24,7 +24,7 @@ export const SHOWCASE_MAX_LEG_MS = 7_600;
 /** A stored range that starts well after Jan 1 plays across its own dates. */
 export const SHOWCASE_ABBREVIATE_GAP_MS = 7 * 24 * 60 * 60 * 1000;
 export const SHOWCASE_CACHE_MS = 15 * 60 * 1000;
-export const SHOWCASE_ROUTE_SAMPLES = 48;
+export const SHOWCASE_ROUTE_SAMPLES = 24;
 export const SHOWCASE_MAX_LEGS = 12_000;
 
 export const PUBLIC_LEG_KEYS = Object.freeze([
@@ -37,6 +37,7 @@ export const PUBLIC_LEG_KEYS = Object.freeze([
   'toLng',
   'departure',
   'arrival',
+  'block',
 ]);
 
 const SKIP_CATEGORIES = new Set(['HOLD', 'MX', 'MAINTENANCE', 'TRAINING']);
@@ -194,6 +195,11 @@ export function projectShowcaseLeg(raw, lookupCoords) {
   const arrival = instantMs(raw.arrival || raw.end);
   const nm = distanceNm({ lat: fromLat, lon: fromLng }, { lat: toLat, lon: toLng });
   if (!Number.isFinite(nm) || nm < 1) return null;
+  const given = Number(raw.block);
+  const clockHours = (arrival - departure) / 3_600_000;
+  const block = Number.isFinite(given) && given > 0
+    ? Math.round(given * 10) / 10
+    : Math.round(clockHours * 10) / 10;
   return {
     tail,
     from,
@@ -204,6 +210,201 @@ export function projectShowcaseLeg(raw, lookupCoords) {
     toLng: roundCoord(toLng),
     departure: new Date(departure).toISOString(),
     arrival: new Date(arrival).toISOString(),
+    block,
+  };
+}
+
+/** Calendar date in the showcase zone, `YYYY-MM-DD`. */
+export function showcaseDayKey(ms, timeZone = SHOWCASE_TIME_ZONE) {
+  const parts = zonedParts(ms, timeZone);
+  return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
+}
+
+/**
+ * Owner route file: `date,orig,dest,block`. Blank lines and the header are
+ * ignored. Block hours stay at one decimal, matching the source.
+ */
+export function parseShowcaseHistoryCsv(text) {
+  const rows = [];
+  const lines = String(text || '').split(/\r?\n/);
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    if (i === 0 && /^date\s*,/i.test(line)) continue;
+    const parts = line.split(',');
+    if (parts.length < 4) continue;
+    const date = parts[0].trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+    const block = Math.round(Number(parts[3]) * 10) / 10;
+    rows.push({
+      date,
+      from: normCode(parts[1]),
+      to: normCode(parts[2]),
+      block,
+    });
+  }
+  return rows;
+}
+
+function zonedClockMs(date, minutesFromMidnight, timeZone) {
+  const [year, month, day] = date.split('-').map(Number);
+  const hour = Math.floor(minutesFromMidnight / 60);
+  const minute = Math.floor(minutesFromMidnight % 60);
+  const second = Math.round((minutesFromMidnight % 1) * 60);
+  let utc = Date.UTC(year, month - 1, day, hour, minute, second);
+  for (let i = 0; i < 4; i += 1) {
+    const parts = zonedParts(utc, timeZone);
+    const asUtc = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
+    const want = Date.UTC(year, month - 1, day, hour, minute, second);
+    utc += want - asUtc;
+  }
+  return utc;
+}
+
+function canonCode(code) {
+  const normalized = normCode(code);
+  if (normalized.length === 4 && normalized.startsWith('K') && /^[A-Z]{3}$/.test(normalized.slice(1))) {
+    return normalized.slice(1);
+  }
+  return normalized;
+}
+
+function placeable(code, lookup) {
+  if (!code || typeof lookup !== 'function') return false;
+  const hit = lookup(code);
+  const lat = Number(hit?.lat ?? hit?.latitude);
+  const lng = Number(hit?.lng ?? hit?.lon ?? hit?.longitude);
+  return Number.isFinite(lat) && Number.isFinite(lng);
+}
+
+/**
+ * History rows are the schedule through the file's last date. Firestore adds
+ * a tail when the same Eastern date and city pair exist, and adds a leg only
+ * when its date is after that coverage and still on or before today.
+ * Same-airport rows and codes the coordinate cache cannot place are skipped.
+ */
+export function buildShowcaseArchive({
+  historyRows = [],
+  storedLegs = [],
+  now = Date.now(),
+  lookupCoords,
+  timeZone = SHOWCASE_TIME_ZONE,
+} = {}) {
+  const yearStart = zonedStartOfYearMs(now, timeZone);
+  const today = showcaseDayKey(now, timeZone);
+  const year = zonedParts(now, timeZone).year;
+  const yearStartKey = `${year}-01-01`;
+  let coverageEnd = '';
+  let coverageStart = '';
+  for (const row of historyRows || []) {
+    const date = row?.date;
+    if (!date) continue;
+    if (!coverageEnd || date > coverageEnd) coverageEnd = date;
+    if (!coverageStart || date < coverageStart) coverageStart = date;
+  }
+  const useHistory = Boolean(coverageStart) && coverageStart <= `${year}-01-08`;
+  if (!useHistory) {
+    const selected = selectShowcaseLegs(storedLegs, { now, lookupCoords, timeZone });
+    return {
+      ...selected,
+      archive: 'stored',
+      unresolved: [],
+      coverageEnd: coverageEnd || null,
+    };
+  }
+
+  const unresolved = new Set();
+  const byDay = new Map();
+  for (const row of historyRows || []) {
+    if (!row?.date || row.date < yearStartKey || row.date > today) continue;
+    if (!row.from || !row.to || row.from === row.to) continue;
+    if (!Number.isFinite(row.block) || row.block <= 0) continue;
+    const list = byDay.get(row.date) || [];
+    list.push(row);
+    byDay.set(row.date, list);
+  }
+
+  const tails = new Map();
+  const extras = [];
+  const completed = [];
+  for (const raw of storedLegs || []) {
+    if (!isCompletedShowcaseLeg(raw, { now, yearStart })) continue;
+    completed.push(raw);
+  }
+  completed.sort((a, b) => instantMs(a.departure || a.start) - instantMs(b.departure || b.start));
+  for (const raw of completed) {
+    const date = showcaseDayKey(instantMs(raw.departure || raw.start), timeZone);
+    const from = normCode(raw.from);
+    const to = normCode(raw.to);
+    if (date > coverageEnd) {
+      extras.push(raw);
+      continue;
+    }
+    const key = `${date}|${canonCode(from)}|${canonCode(to)}`;
+    const queue = tails.get(key) || [];
+    queue.push(normTail(raw.tail));
+    tails.set(key, queue);
+  }
+
+  const built = [];
+  for (const date of [...byDay.keys()].sort()) {
+    const list = byDay.get(date);
+    const count = list.length;
+    list.forEach((row, index) => {
+      if (!placeable(row.from, lookupCoords)) unresolved.add(row.from);
+      if (!placeable(row.to, lookupCoords)) unresolved.add(row.to);
+      if (!placeable(row.from, lookupCoords) || !placeable(row.to, lookupCoords)) return;
+      const minutes = (7 * 60) + (count <= 1 ? 0 : (index / count) * 14 * 60);
+      const departure = zonedClockMs(date, minutes, timeZone);
+      const arrival = departure + row.block * 3_600_000;
+      const queue = tails.get(`${date}|${canonCode(row.from)}|${canonCode(row.to)}`);
+      const tail = queue?.length ? queue.shift() : '';
+      const leg = projectShowcaseLeg({
+        from: row.from,
+        to: row.to,
+        tail,
+        block: row.block,
+        departure,
+        arrival,
+      }, lookupCoords);
+      if (leg) built.push(leg);
+    });
+  }
+
+  for (const raw of extras) {
+    const departure = instantMs(raw.departure || raw.start);
+    const date = showcaseDayKey(departure, timeZone);
+    if (date > today) continue;
+    const from = normCode(raw.from);
+    const to = normCode(raw.to);
+    if (from && !placeable(from, lookupCoords)) unresolved.add(from);
+    if (to && !placeable(to, lookupCoords)) unresolved.add(to);
+    const leg = projectShowcaseLeg(raw, lookupCoords);
+    if (!leg) continue;
+    const duplicate = built.some((row) => (
+      showcaseDayKey(Date.parse(row.departure), timeZone) === date
+      && row.from === leg.from
+      && row.to === leg.to
+      && row.block === leg.block
+    ));
+    if (!duplicate) built.push(leg);
+  }
+
+  built.sort((a, b) => (
+    Date.parse(a.departure) - Date.parse(b.departure)
+    || String(a.tail).localeCompare(String(b.tail))
+    || a.from.localeCompare(b.from)
+    || a.to.localeCompare(b.to)
+  ));
+  const truncated = built.length > SHOWCASE_MAX_LEGS;
+  return {
+    yearStart,
+    now,
+    truncated,
+    archive: 'history',
+    unresolved: [...unresolved].sort(),
+    coverageEnd,
+    legs: truncated ? built.slice(built.length - SHOWCASE_MAX_LEGS) : built,
   };
 }
 
@@ -251,6 +452,7 @@ export function publicShowcaseBody(selected, now = selected?.now || Date.now()) 
     storedFrom,
     storedTo,
     truncated: selected?.truncated === true,
+    archive: selected?.archive === 'history' ? 'history' : 'stored',
     legs,
   };
 }
@@ -265,7 +467,9 @@ export function playbackWindow(body) {
   const storedFrom = Date.parse(body?.storedFrom);
   const safeEnd = Number.isFinite(end) ? end : Date.now();
   const safeStart = Number.isFinite(yearStart) ? yearStart : safeEnd;
-  const abbreviated = Number.isFinite(storedFrom) && (storedFrom - safeStart) > SHOWCASE_ABBREVIATE_GAP_MS;
+  const abbreviated = body?.archive === 'history'
+    ? false
+    : Number.isFinite(storedFrom) && (storedFrom - safeStart) > SHOWCASE_ABBREVIATE_GAP_MS;
   const start = abbreviated ? storedFrom : safeStart;
   return {
     start,
@@ -297,11 +501,13 @@ export function scheduleShowcasePlayback(legs, window) {
     const fraction = Math.max(0, Math.min(1, (departure - start) / span));
     const playStart = fraction * launchWindow;
     const playDur = legScreenMs(departure, arrival);
+    const clockHours = Math.max(0, (arrival - departure) / 3_600_000);
+    const given = Number(leg.block);
     return {
       ...leg,
       playStart,
       playEnd: playStart + playDur,
-      blockHours: Math.max(0, (arrival - departure) / 3_600_000),
+      blockHours: Number.isFinite(given) && given > 0 ? given : clockHours,
       nm: distanceNm(
         { lat: leg.fromLat, lon: leg.fromLng },
         { lat: leg.toLat, lon: leg.toLng },
@@ -327,6 +533,7 @@ export function initialPlayMs({ at, reducedMotion } = {}) {
 
 export const SHOWCASE_FLIGHT_MILESTONES = Object.freeze([50, 100, 250]);
 export const SHOWCASE_MILE_MILESTONES = Object.freeze([10_000, 50_000]);
+export const SHOWCASE_BLOCK_MILESTONES = Object.freeze([1_000, 2_500, 5_000]);
 /** How long a crossing stays on screen, in playback milliseconds. */
 export const SHOWCASE_CELEBRATE_MS = 4_200;
 
@@ -341,10 +548,13 @@ export function milestoneCrossings(scheduled) {
   const flightMarks = new Set(SHOWCASE_FLIGHT_MILESTONES);
   const out = [];
   let nm = 0;
+  let hours = 0;
   let mileIndex = 0;
+  let blockIndex = 0;
   for (let i = 0; i < legs.length; i += 1) {
     const flights = i + 1;
     nm += legs[i].nm || 0;
+    hours += legs[i].blockHours || 0;
     if (flightMarks.has(flights)) {
       out.push({
         id: `flights-${flights}`,
@@ -364,6 +574,17 @@ export function milestoneCrossings(scheduled) {
         title: `${formatShowcaseCount(value)} nautical miles`,
       });
       mileIndex += 1;
+    }
+    while (blockIndex < SHOWCASE_BLOCK_MILESTONES.length && hours >= SHOWCASE_BLOCK_MILESTONES[blockIndex]) {
+      const value = SHOWCASE_BLOCK_MILESTONES[blockIndex];
+      out.push({
+        id: `block-${value}`,
+        kind: 'block',
+        value,
+        at: legs[i].playEnd,
+        title: `${formatShowcaseCount(value)} block hours`,
+      });
+      blockIndex += 1;
     }
   }
   return out;
@@ -415,6 +636,7 @@ export function showcaseSnapshot(scheduled, playMs, place, window) {
   const countries = new Set();
   const destinations = new Map();
   const routes = new Map();
+  const routeHours = new Map();
   const tails = new Map();
   const miles = new Map();
   let farthest = null;
@@ -435,12 +657,17 @@ export function showcaseSnapshot(scheduled, playMs, place, window) {
     destinations.set(leg.to, (destinations.get(leg.to) || 0) + 1);
     const route = `${leg.from} → ${leg.to}`;
     routes.set(route, (routes.get(route) || 0) + 1);
-    tails.set(leg.tail, (tails.get(leg.tail) || 0) + 1);
-    miles.set(leg.tail, (miles.get(leg.tail) || 0) + (leg.nm || 0));
+    routeHours.set(route, (routeHours.get(route) || 0) + (leg.blockHours || 0));
+    if (leg.tail) {
+      tails.set(leg.tail, (tails.get(leg.tail) || 0) + 1);
+      miles.set(leg.tail, (miles.get(leg.tail) || 0) + (leg.nm || 0));
+    }
     if (!farthest || (leg.nm || 0) > (farthest.nm || 0)) farthest = leg;
     if (!just || leg.playEnd >= just.playEnd) just = leg;
   }
-  for (const leg of active) tails.set(leg.tail, tails.get(leg.tail) || 0);
+  for (const leg of active) {
+    if (leg.tail) tails.set(leg.tail, tails.get(leg.tail) || 0);
+  }
   const topDestinations = ranked(destinations);
   const busiest = topDestinations[0];
   const cityOf = (code, lat, lng) => (
@@ -468,10 +695,15 @@ export function showcaseSnapshot(scheduled, playMs, place, window) {
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
       .slice(0, 8)
       .map(([tail, count]) => ({ tail, count, color: showcaseTailColor(tail) })),
-    leaderboard: [...miles.entries()]
-      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-      .slice(0, 5)
-      .map(([tail, flown]) => ({ tail, nm: flown, color: showcaseTailColor(tail) })),
+    leaderboard: miles.size
+      ? [...miles.entries()]
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .slice(0, 5)
+        .map(([tail, flown]) => ({ tail, nm: flown, color: showcaseTailColor(tail) }))
+      : [...routeHours.entries()]
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .slice(0, 5)
+        .map(([label, flown]) => ({ label, hours: flown, color: showcaseTailColor(label) })),
     justLanded: just ? {
       tail: just.tail,
       from: just.from,
@@ -493,8 +725,9 @@ export function showcaseSnapshot(scheduled, playMs, place, window) {
 export function showcaseCallouts(snapshot) {
   const lines = [];
   const landed = snapshot?.justLanded;
-  if (landed?.tail && landed?.to) {
-    lines.push(`Just landed: ${landed.tail} in ${landed.city || landed.to}`);
+  if (landed?.to) {
+    const where = landed.city || landed.to;
+    lines.push(landed.tail ? `Just landed: ${landed.tail} in ${where}` : `Just landed in ${where}!`);
   }
   const far = snapshot?.farthest;
   if (far?.from && far?.to && far.nm > 0) {
@@ -509,8 +742,19 @@ export function showcaseCallouts(snapshot) {
   const lead = snapshot?.leaderboard?.[0];
   if (lead?.tail && lead.nm > 0) {
     lines.push(`${lead.tail} leads the fleet`);
+  } else if (lead?.label && lead.hours > 0) {
+    lines.push(`Longest route: ${lead.label}`);
   }
   return lines;
+}
+
+/** Neon pair for a tail, or for the city pair when the archive has no tail. */
+export function showcaseColorKey(leg) {
+  if (leg && typeof leg === 'object') {
+    if (leg.tail) return leg.tail;
+    return `${leg.from || ''}-${leg.to || ''}`;
+  }
+  return String(leg || '');
 }
 
 const TAIL_PAIRS = [

@@ -17,12 +17,14 @@ import {
   SHOWCASE_PLAY_MS,
   activeMilestone,
   bearingDeg,
+  buildShowcaseArchive,
   frameActors,
   initialPlayMs,
   interpolateGreatCircle,
   isCompletedShowcaseLeg,
   isShowcaseToken,
   milestoneCrossings,
+  parseShowcaseHistoryCsv,
   parseShowcasePath,
   playbackWindow,
   projectShowcaseLeg,
@@ -31,6 +33,8 @@ import {
   scheduleShowcasePlayback,
   selectShowcaseLegs,
   showcaseCallouts,
+  showcaseColorKey,
+  showcaseDayKey,
   showcaseSnapshot,
   showcaseUrl,
   zonedStartOfYearMs,
@@ -165,7 +169,7 @@ test('completed legs keep only the public fields', () => {
     raw({ departure: '2025-12-31T22:00:00.000Z', arrival: '2026-01-01T01:00:00.000Z' }),
     raw({ departure: '2026-01-01T04:30:00.000Z', arrival: '2026-01-01T07:00:00.000Z' }),
     raw({ departure: '2026-10-21T18:00:00.000Z', arrival: '2026-10-21T21:00:00.000Z' }),
-  ], { now: NOW, lookupCoords: lookup });
+  ], { now: NOW, lookupCoords: lookup, historyRows: [] });
   assert.equal(selected.legs.length, 2);
   assert.equal(selected.legs[0].tail, 'N551SK');
   assert.equal(selected.legs[1].category, undefined);
@@ -231,7 +235,7 @@ test('the year plays in 2.5 minutes, holds 8 seconds, and overlaps same-day flig
     departure: '2026-06-10T14:00:00.000Z',
     arrival: '2026-06-10T19:00:00.000Z',
   });
-  const selected = selectShowcaseLegs([early, sameDay, later], { now: NOW, lookupCoords: lookup });
+  const selected = selectShowcaseLegs([early, sameDay, later], { now: NOW, lookupCoords: lookup, historyRows: [] });
   const body = publicShowcaseBody(selected, NOW);
   const span = playbackWindow(body);
   assert.equal(span.abbreviated, false);
@@ -275,7 +279,7 @@ test('counters grow as legs finish and rank routes from airport codes', () => {
       departure: '2026-07-01T14:00:00.000Z',
       arrival: '2026-07-01T16:00:00.000Z',
     }),
-  ], { now: NOW, lookupCoords: lookup });
+  ], { now: NOW, lookupCoords: lookup, historyRows: [] });
   const body = publicShowcaseBody(selected, NOW);
   const span = playbackWindow(body);
   const scheduled = scheduleShowcasePlayback(body.legs, span);
@@ -345,6 +349,172 @@ test('demo flights cover the year without private fields', () => {
   assert.equal(placeForAirport('ASE', 39.22, -106.87).state, 'CO');
 });
 
+test('block-hour milestones celebrate at 1000, 2500, and 5000', () => {
+  const scheduled = [
+    { playStart: 0, playEnd: 1000, nm: 100, blockHours: 1000 },
+    { playStart: 500, playEnd: 2000, nm: 100, blockHours: 1500 },
+    { playStart: 1500, playEnd: 3000, nm: 100, blockHours: 2500 },
+  ];
+  const marks = milestoneCrossings(scheduled);
+  assert.equal(marks.find((row) => row.id === 'block-1000')?.at, 1000);
+  assert.equal(marks.find((row) => row.id === 'block-2500')?.at, 2000);
+  assert.equal(marks.find((row) => row.id === 'block-5000')?.at, 3000);
+  assert.equal(marks.find((row) => row.id === 'block-1000')?.title, '1,000 block hours');
+  assert.equal(activeMilestone(marks, 1200)?.id, 'block-1000');
+});
+
+test('a route with no tail keeps its own color and the ticker omits the tail', () => {
+  assert.equal(showcaseColorKey({ tail: '', from: 'TEB', to: 'ASE' }), 'TEB-ASE');
+  assert.equal(showcaseColorKey({ tail: 'N551SK', from: 'TEB', to: 'ASE' }), 'N551SK');
+  const lines = showcaseCallouts({
+    justLanded: { tail: '', to: 'ASE', city: 'Aspen' },
+    farthest: null,
+    topDestinations: [],
+    leaderboard: [{ label: 'TEB → ASE', hours: 12.4 }],
+  });
+  assert.deepEqual(lines, ['Just landed in Aspen!', 'Longest route: TEB → ASE']);
+});
+
+test('history rows are primary, future dates wait, and Firestore fills the gap after the file', () => {
+  const history = [
+    { date: '2026-01-02', from: 'TEB', to: 'MIA', block: 3.2 },
+    { date: '2026-10-15', from: 'MIA', to: 'OPF', block: 0.6 },
+    { date: '2026-10-22', from: 'OPF', to: 'TEB', block: 3.4 },
+    { date: '2026-06-01', from: 'ZZZ', to: 'QQQ', block: 1.1 },
+    { date: '2026-03-01', from: 'TEB', to: 'TEB', block: 0.4 },
+  ];
+  const stored = [
+    raw({
+      from: 'KTEB',
+      to: 'KMIA',
+      tail: 'N551SK',
+      customer: 'Northwind Charter',
+      departure: '2026-01-02T16:00:00.000Z',
+      arrival: '2026-01-02T20:00:00.000Z',
+    }),
+    raw({
+      from: 'OPF',
+      to: 'LAS',
+      tail: 'N100SK',
+      departure: '2026-10-20T15:00:00.000Z',
+      arrival: '2026-10-20T19:30:00.000Z',
+    }),
+  ];
+  const earlyCoverage = history.filter((row) => row.date <= '2026-10-15');
+  const withGap = buildShowcaseArchive({
+    historyRows: earlyCoverage,
+    storedLegs: stored,
+    now: NOW,
+    lookupCoords: lookup,
+  });
+  assert.deepEqual(withGap.unresolved, ['QQQ', 'ZZZ']);
+  assert.equal(withGap.legs.length, 3);
+  const january = withGap.legs.find((leg) => leg.from === 'TEB' && leg.to === 'MIA');
+  assert.equal(january.tail, 'N551SK');
+  assert.equal(january.block, 3.2);
+  assert.equal(showcaseDayKey(Date.parse(january.departure)), '2026-01-02');
+  const added = withGap.legs.find((leg) => leg.tail === 'N100SK');
+  assert.equal(added.from, 'OPF');
+  assert.equal(added.to, 'LAS');
+  assert.equal(added.block, 4.5);
+  assert.equal(JSON.stringify(withGap.legs).includes('Northwind'), false);
+
+  const covered = buildShowcaseArchive({
+    historyRows: history,
+    storedLegs: stored,
+    now: NOW,
+    lookupCoords: lookup,
+  });
+  assert.equal(covered.legs.some((leg) => leg.tail === 'N100SK'), false);
+  assert.equal(covered.legs.some((leg) => showcaseDayKey(Date.parse(leg.departure)) > '2026-10-21'), false);
+  assert.equal(covered.legs.some((leg) => leg.from === 'OPF' && leg.to === 'TEB'), false);
+  const body = publicShowcaseBody(covered, NOW);
+  assert.equal(body.archive, 'history');
+  assert.equal(playbackWindow(body).abbreviated, false);
+  assert.equal(playbackWindow(body).start, YEAR_START);
+});
+
+test('the 2026 route file plays through today in Eastern time', async () => {
+  const csv = await readFile(path.join(root, 'data/showcase-legs-2026.csv'), 'utf8');
+  const rows = parseShowcaseHistoryCsv(csv);
+  assert.equal(rows.length, 4038);
+  const throughToday = rows.filter((row) => row.date >= '2026-01-01' && row.date <= '2026-10-21');
+  assert.equal(throughToday.length, 3766);
+  assert.equal(throughToday.reduce((sum, row) => sum + Math.round(row.block * 10), 0), 60651);
+  assert.deepEqual(lookupCoords('DJT'), lookupCoords('PBI'));
+  assert.deepEqual(lookupCoords('KDJT'), lookupCoords('PBI'));
+  assert.equal(airportCity('DJT'), 'Palm Beach');
+
+  const selected = buildShowcaseArchive({
+    historyRows: rows,
+    storedLegs: [],
+    now: NOW,
+    lookupCoords,
+  });
+  assert.deepEqual(selected.unresolved, []);
+  assert.equal(selected.archive, 'history');
+  assert.equal(selected.legs.length, 3717);
+  assert.equal(selected.legs.reduce((sum, leg) => sum + Math.round(leg.block * 10), 0), 60407);
+  assert.equal(selected.legs.every((leg) => leg.tail === ''), true);
+  assert.equal(selected.legs.some((leg) => leg.from === 'DJT' || leg.to === 'DJT'), true);
+  const dates = new Set(selected.legs.map((leg) => showcaseDayKey(Date.parse(leg.departure))));
+  assert.equal(dates.has('2026-10-21'), true);
+  assert.equal([...dates].some((date) => date > '2026-10-21' || date < '2026-01-01'), false);
+
+  const body = publicShowcaseBody(selected, NOW);
+  assert.equal(body.archive, 'history');
+  assert.equal(playbackWindow(body).abbreviated, false);
+  assert.deepEqual(Object.keys(body.legs[0]), [...PUBLIC_LEG_KEYS]);
+  const span = playbackWindow(body);
+  const scheduled = scheduleShowcasePlayback(body.legs, span);
+  const hold = showcaseSnapshot(scheduled, SHOWCASE_PLAY_MS + 500, placeForAirport, span);
+  assert.equal(hold.flights, 3717);
+  assert.equal(Math.round(hold.hours * 10), 60407);
+  assert.equal(hold.leaderboard[0].tail, undefined);
+  assert.match(hold.leaderboard[0].label, /→/);
+  assert.ok(hold.leaderboard[0].hours >= hold.leaderboard[1].hours);
+  const lines = showcaseCallouts(hold);
+  assert.ok(lines.some((line) => line.startsWith('Just landed in ')));
+  assert.equal(lines.some((line) => line.includes('N5')), false);
+  const blockMarks = milestoneCrossings(scheduled).filter((row) => row.kind === 'block');
+  assert.deepEqual(blockMarks.map((row) => row.id), ['block-1000', 'block-2500', 'block-5000']);
+  assert.ok(blockMarks.every((row) => row.at > 0 && row.at < SHOWCASE_PLAY_MS));
+
+  const token = 'd'.repeat(43);
+  const db = memoryDb({ config: { token, enabled: true }, legs: [] });
+  const res = responseCapture();
+  await handleShowcaseReplay({ method: 'GET', query: { token } }, res, {
+    db,
+    now: NOW,
+    lookupCoords,
+    cache: { token: '', day: '', at: 0, body: null },
+  });
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.archive, 'history');
+  assert.equal(res.body.legs.length, 3717);
+  assert.equal(res.body.legs.reduce((sum, leg) => sum + Math.round(leg.block * 10), 0), 60407);
+});
+
+test('the showcase cache refreshes when the Eastern date changes', async () => {
+  const token = 'a'.repeat(43);
+  const db = memoryDb({ config: { token, enabled: true }, legs: [raw()] });
+  const cache = { token: '', day: '', at: 0, body: null };
+  const evening = Date.parse('2026-10-21T03:55:00.000Z');
+  const morning = Date.parse('2026-10-21T04:05:00.000Z');
+  const first = responseCapture();
+  await handleShowcaseReplay({ method: 'GET', query: { token } }, first, {
+    db, now: evening, lookupCoords: lookup, historyRows: [], cache,
+  });
+  assert.equal(first.statusCode, 200);
+  assert.equal(db.legReads(), 1);
+  const next = responseCapture();
+  await handleShowcaseReplay({ method: 'GET', query: { token } }, next, {
+    db, now: morning, lookupCoords: lookup, historyRows: [], cache,
+  });
+  assert.equal(next.statusCode, 200);
+  assert.equal(db.legReads(), 2);
+});
+
 test('the public route is a token path and unknown tokens are not found', async () => {
   assert.equal(parseShowcasePath('/showcase/abc')?.token, 'abc');
   assert.equal(parseShowcasePath('/schedule'), null);
@@ -360,7 +530,7 @@ test('the public route is a token path and unknown tokens are not found', async 
   });
   const cache = { token: '', at: 0, body: null };
   const ok = responseCapture();
-  await handleShowcaseReplay({ method: 'GET', query: { token } }, ok, { db, now: NOW, lookupCoords: lookup, cache });
+  await handleShowcaseReplay({ method: 'GET', query: { token } }, ok, { db, now: NOW, lookupCoords: lookup, historyRows: [], cache });
   assert.equal(ok.statusCode, 200);
   assert.equal(ok.headers['cache-control'], 'public, max-age=900');
   assert.equal(ok.body.legs.length, 1);
@@ -369,7 +539,7 @@ test('the public route is a token path and unknown tokens are not found', async 
   assert.equal(db.legReads(), 1);
 
   const again = responseCapture();
-  await handleShowcaseReplay({ method: 'GET', query: { token } }, again, { db, now: NOW + 60_000, lookupCoords: lookup, cache });
+  await handleShowcaseReplay({ method: 'GET', query: { token } }, again, { db, now: NOW + 60_000, lookupCoords: lookup, historyRows: [], cache });
   assert.equal(again.statusCode, 200);
   assert.equal(db.legReads(), 1);
 
@@ -377,7 +547,7 @@ test('the public route is a token path and unknown tokens are not found', async 
   await handleShowcaseReplay({ method: 'GET', query: { token } }, stale, {
     db,
     now: NOW + SHOWCASE_CACHE_MS + 1000,
-    lookupCoords: lookup,
+    lookupCoords: lookup, historyRows: [],
     cache,
   });
   assert.equal(stale.statusCode, 200);
@@ -385,14 +555,14 @@ test('the public route is a token path and unknown tokens are not found', async 
 
   for (const bad of ['nope', 'short-token', token.slice(0, -1) + 'b']) {
     const missed = responseCapture();
-    await handleShowcaseReplay({ method: 'GET', query: { token: bad } }, missed, { db, now: NOW, lookupCoords: lookup, cache: { token: '', at: 0, body: null } });
+    await handleShowcaseReplay({ method: 'GET', query: { token: bad } }, missed, { db, now: NOW, lookupCoords: lookup, historyRows: [], cache: { token: '', at: 0, body: null } });
     assert.equal(missed.statusCode, 404, bad);
     assert.equal(missed.body.error, 'Not found');
   }
 
   db.state.config = { token, enabled: false };
   const disabled = responseCapture();
-  await handleShowcaseReplay({ method: 'GET', query: { token } }, disabled, { db, now: NOW, lookupCoords: lookup, cache: { token: '', at: 0, body: null } });
+  await handleShowcaseReplay({ method: 'GET', query: { token } }, disabled, { db, now: NOW, lookupCoords: lookup, historyRows: [], cache: { token: '', at: 0, body: null } });
   assert.equal(disabled.statusCode, 404);
 });
 
@@ -408,7 +578,7 @@ test('ops can mint, rotate, and disable the TV link', async () => {
   const deps = {
     db,
     now: NOW,
-    lookupCoords: lookup,
+    lookupCoords: lookup, historyRows: [],
     mint: () => tokens.shift(),
     verifyIdToken: async (token) => {
       if (token === 'ops-session') return { uid: 'ops' };
@@ -437,10 +607,10 @@ test('ops can mint, rotate, and disable the TV link', async () => {
   assert.equal(rotated.body.url, showcaseUrl('c'.repeat(43)));
 
   const oldLink = responseCapture();
-  await handleShowcaseReplay({ method: 'GET', query: { token: 'b'.repeat(43) } }, oldLink, { db, now: NOW, lookupCoords: lookup, cache: { token: '', at: 0, body: null } });
+  await handleShowcaseReplay({ method: 'GET', query: { token: 'b'.repeat(43) } }, oldLink, { db, now: NOW, lookupCoords: lookup, historyRows: [], cache: { token: '', at: 0, body: null } });
   assert.equal(oldLink.statusCode, 404);
   const newLink = responseCapture();
-  await handleShowcaseReplay({ method: 'GET', query: { token: 'c'.repeat(43) } }, newLink, { db, now: NOW, lookupCoords: lookup, cache: { token: '', at: 0, body: null } });
+  await handleShowcaseReplay({ method: 'GET', query: { token: 'c'.repeat(43) } }, newLink, { db, now: NOW, lookupCoords: lookup, historyRows: [], cache: { token: '', at: 0, body: null } });
   assert.equal(newLink.statusCode, 200);
 
   const off = responseCapture();
@@ -448,7 +618,7 @@ test('ops can mint, rotate, and disable the TV link', async () => {
   assert.equal(off.body.enabled, false);
   assert.equal(off.body.url, null);
   const gone = responseCapture();
-  await handleShowcaseReplay({ method: 'GET', query: { token: 'c'.repeat(43) } }, gone, { db, now: NOW, lookupCoords: lookup, cache: { token: '', at: 0, body: null } });
+  await handleShowcaseReplay({ method: 'GET', query: { token: 'c'.repeat(43) } }, gone, { db, now: NOW, lookupCoords: lookup, historyRows: [], cache: { token: '', at: 0, body: null } });
   assert.equal(gone.statusCode, 404);
 });
 
@@ -466,6 +636,8 @@ test('showcase rules deny every client and the page stays signed-out', async () 
   const page = await readFile(path.join(root, 'src/ShowcasePage.jsx'), 'utf8');
   assert.match(page, /import\.meta\.env\.DEV && window\.__SHOWCASE_PAYLOAD__/);
   assert.match(page, /import\.meta\.env\.DEV && params\.get\('fixture'\) === '1'/);
+  assert.match(page, /Earlier \$\{payload\.year\} legs were not stored/);
+  assert.match(page, /BLOCK HOURS/);
   assert.match(page, /TvDesignFrame/);
   assert.match(page, /canvas/);
   const app = await readFile(path.join(root, 'src/App.jsx'), 'utf8');
