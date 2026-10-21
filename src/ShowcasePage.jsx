@@ -430,7 +430,9 @@ export default function ShowcasePage({ token = '' }) {
       }
       paint(playMs);
       lastLoop = playMs;
-      if (!freeze) raf = requestAnimationFrame(loop);
+      // Keep painting while frozen so a late basemap resize still draws the arcs.
+      // Elapsed time does not advance, so the frame stays on the requested instant.
+      raf = requestAnimationFrame(loop);
     }
 
     function arm(projectFn) {

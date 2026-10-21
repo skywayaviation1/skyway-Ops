@@ -112,9 +112,7 @@ export async function readAllLegs(db, { pageSize = 400, maxPages = 40 } = {}) {
 }
 
 async function defaultVerify(idToken) {
-  const decoded = reviewerSessionBlock(
-    await admin.auth(adminAppInstance()).verifyIdToken(idToken, true),
-  );
+  const decoded = reviewerSessionBlock(await admin.auth(adminAppInstance()).verifyIdToken(idToken, true));
   return decoded;
 }
 
