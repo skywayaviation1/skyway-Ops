@@ -572,7 +572,7 @@ export function showcaseSnapshot(scheduled, playMs, window) {
   };
 }
 
-/** Neon pair for a tail, or for the city pair when the archive has no tail. */
+/** Stable key for a tail, or for the city pair when the archive has no tail. */
 export function showcaseColorKey(leg) {
   if (leg && typeof leg === 'object') {
     if (leg.tail) return leg.tail;
@@ -581,23 +581,11 @@ export function showcaseColorKey(leg) {
   return String(leg || '');
 }
 
-const TAIL_PAIRS = [
-  ['#5eead4', '#22d3ee'],
-  ['#fb7185', '#fda4af'],
-  ['#fbbf24', '#fdba74'],
-  ['#c4b5fd', '#a5b4fc'],
-  ['#4ade80', '#6ee7b7'],
-  ['#38bdf8', '#818cf8'],
-  ['#f9a8d4', '#e879f9'],
-  ['#fde047', '#fb923c'],
-];
+// One Skyway accent. The booth does not color routes by tail.
+const BRAND_ARC = ['#3FA9CC', '#7EB6CC'];
 
-export function showcaseTailPalette(tail) {
-  let hash = 0;
-  const text = String(tail || '');
-  for (let i = 0; i < text.length; i += 1) hash = (hash * 33 + text.charCodeAt(i)) >>> 0;
-  const pair = TAIL_PAIRS[hash % TAIL_PAIRS.length];
-  return { core: pair[0], edge: pair[1] };
+export function showcaseTailPalette() {
+  return { core: BRAND_ARC[0], edge: BRAND_ARC[1] };
 }
 
 export function showcaseTailColor(tail) {
