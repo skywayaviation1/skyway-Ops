@@ -24,6 +24,7 @@ import {
   frameActors,
   initialPlayMs,
   isShowcaseToken,
+  normalizeShowcaseToken,
   legEndpoints,
   playbackWindow,
   pointAlong,
@@ -198,12 +199,13 @@ export default function ShowcasePage({ token = '' }) {
         }
         return;
       }
-      if (!isShowcaseToken(token)) {
+      const presented = normalizeShowcaseToken(token);
+      if (!isShowcaseToken(presented)) {
         if (!dead) setPhase('missing');
         return;
       }
       try {
-        const res = await fetch(`/api/showcase-replay?token=${encodeURIComponent(token)}`);
+        const res = await fetch(`/api/showcase-replay?token=${encodeURIComponent(presented)}`);
         if (dead) return;
         if (res.status === 404) {
           setPhase('missing');

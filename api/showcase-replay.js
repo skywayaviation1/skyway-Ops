@@ -8,17 +8,26 @@
 import {
   loadPublicShowcase,
   readShowcaseConfig,
+  recordShowcaseMiss,
   requestToken,
+  showcaseClientIp,
   showcaseDb,
+  showcaseMissLimited,
   showcaseTokenMatches,
 } from './_showcase.js';
-import { isShowcaseToken } from '../src/showcase-replay.js';
+import { isShowcaseToken, normalizeShowcaseToken } from '../src/showcase-replay.js';
 
 export const config = { runtime: 'nodejs', maxDuration: 60 };
 
 function notFound(res) {
   res.setHeader('Cache-Control', 'no-store');
   res.status(404).json({ error: 'Not found' });
+}
+
+function tooMany(res) {
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Retry-After', '600');
+  res.status(429).json({ error: 'Too many lookups' });
 }
 
 export async function handleShowcaseReplay(req, res, deps = {}) {
@@ -28,16 +37,27 @@ export async function handleShowcaseReplay(req, res, deps = {}) {
     res.status(405).json({ error: 'GET only' });
     return;
   }
-  const token = requestToken(req);
-  if (!isShowcaseToken(token)) {
+  const token = normalizeShowcaseToken(requestToken(req));
+  const ip = deps.ip || showcaseClientIp(req);
+  const now = Number.isFinite(deps.now) ? deps.now : Date.now();
+  const misses = deps.misses;
+  const deny = () => {
+    if (showcaseMissLimited(ip, now, misses)) {
+      tooMany(res);
+      return;
+    }
+    recordShowcaseMiss(ip, now, misses);
     notFound(res);
+  };
+  if (!isShowcaseToken(token)) {
+    deny();
     return;
   }
   try {
     const db = deps.db || showcaseDb();
     const saved = await readShowcaseConfig(db);
     if (!saved || saved.enabled !== true || !showcaseTokenMatches(saved.token, token)) {
-      notFound(res);
+      deny();
       return;
     }
     const { body } = await loadPublicShowcase({ ...deps, db, token });

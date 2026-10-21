@@ -82,16 +82,16 @@ export default function ShowcaseAdminCard() {
         </p>
       )}
       {view?.url && (
-        <div className="mb-3 flex items-center gap-2">
-          <input
-            readOnly
-            value={view.url}
+        <div className="mb-4 rounded-xl border border-accent/40 bg-surface-sunken px-4 py-4">
+          <p className="text-2xs font-semibold uppercase tracking-[0.16em] text-content-muted">TV link</p>
+          <p
             aria-label="Trade show link"
-            className="min-w-0 flex-1 rounded-lg border border-edge bg-surface-sunken px-3 py-2 font-mono text-xs text-content"
-            onFocus={(event) => event.target.select()}
-          />
-          <Button type="button" variant="secondary" icon={copied ? Check : Copy} onClick={copy}>
-            {copied ? 'Copied' : 'Copy'}
+            className={`mt-2 break-all font-mono font-medium tracking-wide text-content ${view.url.split('/').pop().length === 6 ? 'text-2xl' : 'text-sm'}`}
+          >
+            {view.url.replace(/^https:\/\//, '')}
+          </p>
+          <Button type="button" className="mt-3" variant="primary" icon={copied ? Check : Copy} onClick={copy}>
+            {copied ? 'Copied' : 'Copy link'}
           </Button>
         </div>
       )}
