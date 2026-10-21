@@ -241,10 +241,68 @@ const STATE_BOXES = [
   ['AK', 51.2, 71.4, -179.2, -129.9],
 ];
 
+const CITIES = {
+  OPF: 'Opa-locka',
+  FXE: 'Fort Lauderdale',
+  FLL: 'Fort Lauderdale',
+  MIA: 'Miami',
+  PBI: 'Palm Beach',
+  APF: 'Naples',
+  TPA: 'Tampa',
+  MCO: 'Orlando',
+  EYW: 'Key West',
+  JAX: 'Jacksonville',
+  PNS: 'Pensacola',
+  TLH: 'Tallahassee',
+  TEB: 'Teterboro',
+  HPN: 'White Plains',
+  EWR: 'Newark',
+  JFK: 'New York',
+  BOS: 'Boston',
+  ACK: 'Nantucket',
+  DCA: 'Washington',
+  IAD: 'Dulles',
+  BWI: 'Baltimore',
+  CLT: 'Charlotte',
+  ATL: 'Atlanta',
+  CHS: 'Charleston',
+  BNA: 'Nashville',
+  MSY: 'New Orleans',
+  AUS: 'Austin',
+  DAL: 'Dallas',
+  HOU: 'Houston',
+  ASE: 'Aspen',
+  EGE: 'Vail',
+  DEN: 'Denver',
+  LAS: 'Las Vegas',
+  PHX: 'Phoenix',
+  LAX: 'Los Angeles',
+  VNY: 'Van Nuys',
+  SAN: 'San Diego',
+  SFO: 'San Francisco',
+  SEA: 'Seattle',
+  ORD: 'Chicago',
+  DTW: 'Detroit',
+  MSP: 'Minneapolis',
+  NAS: 'Nassau',
+  CUN: 'Cancún',
+  YYZ: 'Toronto',
+  MBJ: 'Montego Bay',
+  SJU: 'San Juan',
+};
+
 function explicit(code) {
   const hit = PLACES[code];
   if (!hit) return null;
   return { country: hit[0], state: hit[1] };
+}
+
+/** Friendly city for the booth ticker. Unknown fields stay as the airport code. */
+export function airportCity(code) {
+  const c = String(code || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  return CITIES[c]
+    || (c.length === 4 && c.startsWith('K') ? CITIES[c.slice(1)] : null)
+    || null;
 }
 
 function countryFromPrefix(code) {
@@ -287,12 +345,13 @@ export function placeForAirport(code, lat, lng) {
   const named = explicit(c)
     || (c.length === 4 && c.startsWith('K') ? explicit(c.slice(1)) : null)
     || (c.length === 3 ? explicit(`K${c}`) : null);
-  if (named) return named;
+  const city = airportCity(c);
+  if (named) return { ...named, city };
   const prefixed = countryFromPrefix(c);
-  if (prefixed && prefixed !== 'United States') return { country: prefixed, state: null };
+  if (prefixed && prefixed !== 'United States') return { country: prefixed, state: null, city };
   const state = stateFromPoint(lat, lng);
   if (prefixed === 'United States' || state) {
-    return { country: 'United States', state };
+    return { country: 'United States', state, city };
   }
-  return { country: countryFromPoint(lat, lng), state: null };
+  return { country: countryFromPoint(lat, lng), state: null, city };
 }

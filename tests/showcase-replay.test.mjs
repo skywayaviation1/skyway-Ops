@@ -5,21 +5,24 @@ import path from 'node:path';
 
 import { lookupCoords } from '../src/airport-coords.js';
 import { demoShowcasePayload } from '../src/showcase-demo.js';
-import { placeForAirport, stateFromPoint } from '../src/showcase-places.js';
+import { airportCity, placeForAirport, stateFromPoint } from '../src/showcase-places.js';
 import {
   PUBLIC_LEG_KEYS,
   SHOWCASE_CACHE_MS,
+  SHOWCASE_CELEBRATE_MS,
   SHOWCASE_HOLD_MS,
   SHOWCASE_LOOP_MS,
   SHOWCASE_MAX_LEG_MS,
   SHOWCASE_MIN_LEG_MS,
   SHOWCASE_PLAY_MS,
+  activeMilestone,
   bearingDeg,
   frameActors,
   initialPlayMs,
   interpolateGreatCircle,
   isCompletedShowcaseLeg,
   isShowcaseToken,
+  milestoneCrossings,
   parseShowcasePath,
   playbackWindow,
   projectShowcaseLeg,
@@ -27,6 +30,7 @@ import {
   sampleRoute,
   scheduleShowcasePlayback,
   selectShowcaseLegs,
+  showcaseCallouts,
   showcaseSnapshot,
   showcaseUrl,
   zonedStartOfYearMs,
@@ -321,6 +325,24 @@ test('demo flights cover the year without private fields', () => {
   assert.equal(hold.active, 0);
   assert.ok(hold.states >= 8);
   assert.ok(hold.countries >= 3);
+  assert.ok(hold.leaderboard.length >= 2);
+  assert.ok(hold.leaderboard[0].nm >= hold.leaderboard[1].nm);
+  assert.equal(hold.justLanded.tail.length > 0, true);
+  const lines = showcaseCallouts(hold);
+  assert.ok(lines.some((line) => line.startsWith('Just landed:')));
+  assert.equal(JSON.stringify(lines).includes('customer'), false);
+  assert.equal(JSON.stringify(lines).includes('broker'), false);
+  const marks = milestoneCrossings(scheduled);
+  const hundred = marks.find((row) => row.id === 'flights-100');
+  assert.ok(hundred && hundred.at > 0 && hundred.at < SHOWCASE_PLAY_MS);
+  assert.equal(activeMilestone(marks, 0), null);
+  assert.equal(activeMilestone(marks, hundred.at + 400)?.id, 'flights-100');
+  assert.equal(activeMilestone(marks, hundred.at + SHOWCASE_CELEBRATE_MS + 50), null);
+  const finale = initialPlayMs({ at: 'finale' });
+  assert.ok(finale > SHOWCASE_PLAY_MS && finale < SHOWCASE_LOOP_MS);
+  assert.equal(airportCity('ASE'), 'Aspen');
+  assert.equal(placeForAirport('ASE', 39.22, -106.87).city, 'Aspen');
+  assert.equal(placeForAirport('ASE', 39.22, -106.87).state, 'CO');
 });
 
 test('the public route is a token path and unknown tokens are not found', async () => {
