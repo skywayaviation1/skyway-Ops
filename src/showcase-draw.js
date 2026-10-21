@@ -53,9 +53,13 @@ export function drawSettledRoute(ctx, points, tail) {
   strokeRoute(ctx, points, 0, last, routeGradient(ctx, points, core, edge), 2.5, 0.62);
 }
 
-export function drawLiveRoute(ctx, points, head, tail) {
+export function drawLiveRoute(ctx, points, head, tail, dense = false) {
   if (!points || head < 1) return;
   const { core, edge } = showcaseTailPalette(tail);
+  if (dense) {
+    strokeRoute(ctx, points, Math.max(0, head - 5), head, core, 3.2, 0.92);
+    return;
+  }
   const glowFrom = Math.max(0, head - Math.ceil(points.length * 0.24));
   strokeRoute(ctx, points, 0, head, core, 2.2, 0.28);
   strokeRoute(ctx, points, glowFrom, head, routeGradient(ctx, points, edge, '#ffffff'), 7, 0.22);
@@ -81,18 +85,20 @@ export function drawSparkles(ctx, points, head, time) {
 }
 
 /** Top-down jet. `bank` leans the wings through a turn, in degrees. */
-export function drawPlane(ctx, x, y, heading, bank, color) {
+export function drawPlane(ctx, x, y, heading, bank, color, dense = false) {
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate((heading * Math.PI) / 180);
   const lean = Math.max(-1, Math.min(1, bank / 32));
   ctx.transform(1, lean * 0.42, 0, 1, 0, 0);
-  ctx.beginPath();
-  ctx.arc(0, 0, 18, 0, Math.PI * 2);
-  ctx.fillStyle = color;
-  ctx.globalAlpha = 0.22;
-  ctx.fill();
-  ctx.globalAlpha = 1;
+  if (!dense) {
+    ctx.beginPath();
+    ctx.arc(0, 0, 18, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.globalAlpha = 0.22;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
   ctx.beginPath();
   ctx.moveTo(0, -18);
   ctx.quadraticCurveTo(4, -8, 5, -2);
@@ -137,7 +143,7 @@ export function drawStars(ctx, width, height, time) {
   ctx.globalAlpha = 1;
 }
 
-export function drawAirports(ctx, airports, time, pops) {
+export function drawAirports(ctx, airports, time, pops, dense = false) {
   const now = time;
   for (const airport of airports) {
     const pop = pops.get(airport.code);
@@ -145,11 +151,13 @@ export function drawAirports(ctx, airports, time, pops) {
     const bounce = age < 1 ? 1 + 0.7 * (1 - age) : 1;
     const pulse = 1 + 0.1 * Math.sin(now / 380 + airport.x);
     const radius = Math.min(15, (4.5 + Math.sqrt(airport.n) * 1.7) * pulse * bounce);
-    ctx.beginPath();
-    ctx.arc(airport.x, airport.y, radius * 2.5, 0, Math.PI * 2);
-    ctx.fillStyle = '#5eead4';
-    ctx.globalAlpha = 0.16;
-    ctx.fill();
+    if (!dense) {
+      ctx.beginPath();
+      ctx.arc(airport.x, airport.y, radius * 2.5, 0, Math.PI * 2);
+      ctx.fillStyle = '#5eead4';
+      ctx.globalAlpha = 0.16;
+      ctx.fill();
+    }
     ctx.globalAlpha = 0.95;
     ctx.beginPath();
     ctx.arc(airport.x, airport.y, radius, 0, Math.PI * 2);

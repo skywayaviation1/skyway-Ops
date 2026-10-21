@@ -441,10 +441,13 @@ export default function ShowcasePage({ token = '' }) {
         resetSettled = false;
       }
       const actors = frameActors(scheduled, playMs);
+      let settledBudget = freeze ? actors.finished.length : 100;
       for (const leg of actors.finished) {
         if (drawn.has(leg.id)) continue;
+        if (settledBudget <= 0) break;
         drawSettledRoute(settledCtx, projected[leg.id], showcaseColorKey(leg));
         drawn.add(leg.id);
+        settledBudget -= 1;
       }
       if (!landingsPrimed) {
         for (const leg of actors.finished) seenLandings.add(leg.id);
@@ -503,7 +506,8 @@ export default function ShowcasePage({ token = '' }) {
           }
         }
       }
-      drawAirports(liveCtx, visits.values(), now, pops);
+      const dense = actors.active.length > 40;
+      drawAirports(liveCtx, visits.values(), now, pops, dense);
       drawRipples(liveCtx, ripples, now);
 
       for (const leg of actors.active) {
@@ -511,14 +515,14 @@ export default function ShowcasePage({ token = '' }) {
         if (!points) continue;
         const along = pointAlong(leg.samples, leg.f);
         const head = Math.max(1, Math.round(leg.f * (points.length - 1)));
-        drawLiveRoute(liveCtx, points, head, showcaseColorKey(leg));
-        if (actors.active.length <= 80) drawSparkles(liveCtx, points, head, now);
+        drawLiveRoute(liveCtx, points, head, showcaseColorKey(leg), dense);
+        if (!dense) drawSparkles(liveCtx, points, head, now);
         const at = project(along.lat, along.lng);
         const targetBank = turnBank(leg.samples, leg.f);
         const prev = pose.get(leg.id) || { bank: targetBank };
         const bank = prev.bank + (targetBank - prev.bank) * (freeze ? 1 : 0.35);
         pose.set(leg.id, { bank });
-        drawPlane(liveCtx, at.x, at.y, along.heading, bank, showcaseTailColor(showcaseColorKey(leg)));
+        drawPlane(liveCtx, at.x, at.y, along.heading, bank, showcaseTailColor(showcaseColorKey(leg)), dense);
       }
 
       syncParty(playMs, now);
@@ -612,7 +616,8 @@ export default function ShowcasePage({ token = '' }) {
 
     function loop(now) {
       if (dead) return;
-      const dt = Math.min(40, now - lastTick);
+      const gap = Math.max(0, now - lastTick);
+      const dt = speed > 1 ? Math.min(gap, 3000 / speed) : Math.min(40, gap);
       lastTick = now;
       if (!freeze) elapsed += dt * speed;
       const playMs = elapsed % SHOWCASE_LOOP_MS;
