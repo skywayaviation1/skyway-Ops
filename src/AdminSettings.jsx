@@ -1,8 +1,10 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   Bell,
   Check,
+  Loader2,
+  Monitor,
   Plane,
   Plus,
   Radar,
@@ -23,7 +25,33 @@ import {
 import { DUTY_TRACKER_ENABLED } from './duty-feature.js';
 import MailboxSettingsPanel from './MailboxSettingsPanel.jsx';
 import { FboEmailSafety } from './FboDesk.jsx';
-import ShowcaseAdminCard from './ShowcaseAdminCard.jsx';
+
+// The card's first paint calls /api/showcase-admin, which reads the whole
+// legs collection. Load that module only after someone opens this section.
+const ShowcaseAdminCardLazy = lazy(() => import('./ShowcaseAdminCard.jsx'));
+
+function TradeShowSettings() {
+  const [open, setOpen] = useState(false);
+  if (!open) {
+    return (
+      <Card>
+        <CardHeader
+          title="Trade show map"
+          subtitle="Booth TV link. Opening this reads the stored flight archive."
+          icon={Monitor}
+        />
+        <Button type="button" variant="secondary" icon={Monitor} onClick={() => setOpen(true)}>
+          Open trade show link
+        </Button>
+      </Card>
+    );
+  }
+  return (
+    <Suspense fallback={<div className="flex items-center justify-center py-10 text-content-muted"><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading trade show link…</div>}>
+      <ShowcaseAdminCardLazy />
+    </Suspense>
+  );
+}
 
 const DEFAULT_ALERT_EMAILS = [
   'jim@flyskyway.com',
@@ -371,7 +399,7 @@ export default function AdminSettings({
           </div>
 
           <div className="space-y-4">
-            <ShowcaseAdminCard />
+            <TradeShowSettings />
             <Card padded={false}>
               <div className="p-4 pb-3">
                 <CardHeader title="Operational services" subtitle="Company-wide feature controls." icon={Settings} />

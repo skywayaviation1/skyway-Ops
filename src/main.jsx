@@ -6,8 +6,7 @@ import { ServiceTechPage } from './ServiceRequests.jsx';
 import TripTrackPage from './TripTrack.jsx';
 import OperatorFlightPortal from './OperatorFlightPortal.jsx';
 import FboConfirmPage from './FboConfirmPage.jsx';
-import ShowcasePage from './ShowcasePage.jsx';
-import { parseShowcasePath } from './showcase-replay.js';
+import { parseShowcasePath } from './showcase-route.js';
 import './index.css';
 
 // Chromium's install event is one-shot and can fire while Firebase is still
@@ -211,11 +210,17 @@ if (isExternalTechRoute) {
     </React.StrictMode>
   );
 } else if (isShowcaseRoute) {
-  rootEl.render(
-    <React.StrictMode>
-      <ShowcasePage token={showcaseRoute.token} />
-    </React.StrictMode>
-  );
+  // The replay page and its scheduler stay off the signed-in startup path.
+  // A booth TV is the only route that loads them.
+  import('./ShowcasePage.jsx').then(({ default: ShowcasePage }) => {
+    rootEl.render(
+      <React.StrictMode>
+        <ShowcasePage token={showcaseRoute.token} />
+      </React.StrictMode>
+    );
+  }).catch((err) => {
+    console.error('[showcase] replay failed to load:', err?.message || err);
+  });
 } else {
   rootEl.render(
     <React.StrictMode>

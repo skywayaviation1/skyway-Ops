@@ -635,6 +635,14 @@ test('showcase rules deny every client and the page stays signed-out', async () 
   assert.match(main, /ShowcasePage/);
   assert.match(main, /isShowcaseRoute/);
   assert.match(main, /!isShowcaseRoute/);
+  // Signed-in startup must not evaluate the replay scheduler. The booth
+  // route loads ShowcasePage only after the path matches.
+  assert.match(main, /import\('\.\/ShowcasePage\.jsx'\)/);
+  assert.doesNotMatch(main, /from '\.\/showcase-replay\.js'/);
+  assert.doesNotMatch(main, /import ShowcasePage from/);
+  const settings = await readFile(path.join(root, 'src/AdminSettings.jsx'), 'utf8');
+  assert.doesNotMatch(settings, /import ShowcaseAdminCard from/);
+  assert.match(settings, /import\('\.\/ShowcaseAdminCard\.jsx'\)/);
   const page = await readFile(path.join(root, 'src/ShowcasePage.jsx'), 'utf8');
   assert.match(page, /import\.meta\.env\.DEV && window\.__SHOWCASE_PAYLOAD__/);
   assert.match(page, /import\.meta\.env\.DEV && params\.get\('fixture'\) === '1'/);
