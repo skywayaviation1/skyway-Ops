@@ -75,10 +75,10 @@ export function drawSparkles(ctx, points, head, time) {
     const fade = (i - start) / Math.max(1, head - start);
     const twinkle = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(time / 120 + i * 1.7));
     const wobble = Math.sin(time / 180 + i) * 3.5;
-    ctx.globalAlpha = fade * twinkle * 0.9;
+    ctx.globalAlpha = fade * twinkle * 0.42;
     ctx.fillStyle = SPARKLE[i % SPARKLE.length];
     ctx.beginPath();
-    ctx.arc(point.x + wobble, point.y, 1.2 + fade * 2.4, 0, Math.PI * 2);
+    ctx.arc(point.x + wobble, point.y, 1 + fade * 1.6, 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.globalAlpha = 1;
@@ -155,7 +155,7 @@ export function drawAirports(ctx, airports, time, pops, dense = false) {
       ctx.beginPath();
       ctx.arc(airport.x, airport.y, radius * 2.5, 0, Math.PI * 2);
       ctx.fillStyle = '#5eead4';
-      ctx.globalAlpha = 0.16;
+      ctx.globalAlpha = 0.08;
       ctx.fill();
     }
     ctx.globalAlpha = 0.95;
@@ -174,20 +174,16 @@ export function drawAirports(ctx, airports, time, pops, dense = false) {
 export function drawRipples(ctx, ripples, now) {
   for (let i = ripples.length - 1; i >= 0; i -= 1) {
     const ripple = ripples[i];
-    const age = (now - ripple.born) / 900;
+    const age = (now - ripple.born) / 1400;
     if (age >= 1) {
       ripples.splice(i, 1);
       continue;
     }
     ctx.strokeStyle = ripple.color;
-    ctx.lineWidth = 3;
-    ctx.globalAlpha = (1 - age) * 0.85;
+    ctx.lineWidth = 1.25;
+    ctx.globalAlpha = (1 - age) * 0.38;
     ctx.beginPath();
-    ctx.arc(ripple.x, ripple.y, 8 + age * 52, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.globalAlpha = (1 - age) * 0.45;
-    ctx.beginPath();
-    ctx.arc(ripple.x, ripple.y, 3 + age * 28, 0, Math.PI * 2);
+    ctx.arc(ripple.x, ripple.y, 5 + age * 28, 0, Math.PI * 2);
     ctx.stroke();
   }
   ctx.globalAlpha = 1;
@@ -209,42 +205,3 @@ export function drawWave(ctx, projected, scheduled, holdT, holdMs) {
   }
 }
 
-const CONFETTI = ['#5eead4', '#fbbf24', '#fb7185', '#c4b5fd', '#7dd3fc', '#f9a8d4', '#fde047'];
-
-export function drawCelebration(ctx, width, height, ageMs) {
-  const t = ageMs / 3800;
-  if (t < 0 || t >= 1) return;
-  for (let i = 0; i < 70; i += 1) {
-    const column = ((i * 137) % 1000) / 1000;
-    const speed = 0.42 + (i % 7) / 12;
-    const x = column * width + Math.sin(t * 7 + i) * 16;
-    const y = -24 + t * height * 0.92 * speed;
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.rotate(t * 5 + i);
-    ctx.globalAlpha = Math.max(0, 1 - t) * 0.95;
-    ctx.fillStyle = CONFETTI[i % CONFETTI.length];
-    ctx.fillRect(-3.5, -8, 7, 16);
-    ctx.restore();
-  }
-  const bursts = [
-    [width * 0.2, height * 0.3],
-    [width * 0.46, height * 0.22],
-    [width * 0.68, height * 0.34],
-  ];
-  bursts.forEach((burst, index) => {
-    const local = t - index * 0.06;
-    if (local <= 0 || local > 0.62) return;
-    const radius = local * 110;
-    const alpha = (1 - local / 0.62) * 0.9;
-    for (let k = 0; k < 16; k += 1) {
-      const angle = (k / 16) * Math.PI * 2;
-      ctx.globalAlpha = alpha;
-      ctx.fillStyle = CONFETTI[(k + index) % CONFETTI.length];
-      ctx.beginPath();
-      ctx.arc(burst[0] + Math.cos(angle) * radius, burst[1] + Math.sin(angle) * radius * 0.7, 3.4, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  });
-  ctx.globalAlpha = 1;
-}

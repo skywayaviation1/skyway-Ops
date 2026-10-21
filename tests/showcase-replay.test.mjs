@@ -5,17 +5,14 @@ import path from 'node:path';
 
 import { lookupCoords } from '../src/airport-coords.js';
 import { demoShowcasePayload } from '../src/showcase-demo.js';
-import { airportCity, placeForAirport, stateFromPoint } from '../src/showcase-places.js';
 import {
   PUBLIC_LEG_KEYS,
   SHOWCASE_CACHE_MS,
-  SHOWCASE_CELEBRATE_MS,
   SHOWCASE_HOLD_MS,
   SHOWCASE_LOOP_MS,
   SHOWCASE_MAX_LEG_MS,
   SHOWCASE_MIN_LEG_MS,
   SHOWCASE_PLAY_MS,
-  activeMilestone,
   bearingDeg,
   buildShowcaseArchive,
   frameActors,
@@ -23,7 +20,6 @@ import {
   interpolateGreatCircle,
   isCompletedShowcaseLeg,
   isShowcaseToken,
-  milestoneCrossings,
   parseShowcaseHistoryCsv,
   parseShowcasePath,
   playbackWindow,
@@ -32,7 +28,6 @@ import {
   sampleRoute,
   scheduleShowcasePlayback,
   selectShowcaseLegs,
-  showcaseCallouts,
   showcaseColorKey,
   showcaseDayKey,
   showcaseSnapshot,
@@ -269,7 +264,7 @@ test('a short stored archive plays its own dates and says the year is incomplete
   assert.equal(span.start, Date.parse(storedFrom));
 });
 
-test('counters grow as legs finish and rank routes from airport codes', () => {
+test('counters grow as legs finish', () => {
   const selected = selectShowcaseLegs([
     raw(),
     raw({
@@ -283,34 +278,16 @@ test('counters grow as legs finish and rank routes from airport codes', () => {
   const body = publicShowcaseBody(selected, NOW);
   const span = playbackWindow(body);
   const scheduled = scheduleShowcasePlayback(body.legs, span);
-  const early = showcaseSnapshot(scheduled, 0, placeForAirport, span);
+  const early = showcaseSnapshot(scheduled, 0, span);
   assert.equal(early.flights, 0);
-  const done = showcaseSnapshot(scheduled, SHOWCASE_PLAY_MS, placeForAirport, span);
+  const done = showcaseSnapshot(scheduled, SHOWCASE_PLAY_MS, span);
   assert.equal(done.flights, 2);
   assert.ok(done.nm > 800);
   assert.ok(done.sm > done.nm);
   assert.ok(done.hours > 4);
   assert.equal(done.airports, 3);
-  assert.ok(done.states >= 2);
-  assert.ok(done.countries >= 2);
-  assert.equal(done.topDestinations[0].label === 'MIA' || done.topDestinations[0].label === 'NAS', true);
-  assert.ok(done.topRoutes.some((row) => row.label === 'TEB → MIA'));
-  assert.equal(placeForAirport('TEB', 40.85, -74.06).state, 'NJ');
-  assert.equal(placeForAirport('MIA', 25.8, -80.29).state, 'FL');
-  assert.equal(placeForAirport('NAS', 25.04, -77.47).country, 'Bahamas');
-  assert.equal(placeForAirport('DCA', 38.85, -77.04).state, 'VA');
-  assert.equal(placeForAirport('PNS', 30.47, -87.19).state, 'FL');
-  assert.equal(stateFromPoint(41.97, -87.9), 'IL');
-  assert.equal(stateFromPoint(33.94, -118.4), 'CA');
-  assert.equal(stateFromPoint(47.45, -122.3), 'WA');
-  assert.equal(stateFromPoint(39.86, -104.67), 'CO');
-  assert.equal(stateFromPoint(32.9, -97.04), 'TX');
-  assert.equal(stateFromPoint(36.08, -115.15), 'NV');
-  assert.equal(stateFromPoint(21.32, -157.92), 'HI');
-  assert.equal(stateFromPoint(61.17, -150), 'AK');
-  assert.equal(stateFromPoint(42.36, -71.01), 'MA');
-  assert.equal(stateFromPoint(33.64, -84.43), 'GA');
-  assert.equal(stateFromPoint(30.44, -84.28), 'FL');
+  assert.equal(done.topDestinations, undefined);
+  assert.equal(done.leaderboard, undefined);
 });
 
 test('demo flights cover the year without private fields', () => {
@@ -321,58 +298,20 @@ test('demo flights cover the year without private fields', () => {
   assert.equal(JSON.stringify(body).includes('customer'), false);
   const span = playbackWindow(body);
   const scheduled = scheduleShowcasePlayback(body.legs, span);
-  const mid = showcaseSnapshot(scheduled, SHOWCASE_PLAY_MS * 0.45, placeForAirport, span);
+  const mid = showcaseSnapshot(scheduled, SHOWCASE_PLAY_MS * 0.45, span);
   assert.ok(mid.active >= 2, `active ${mid.active}`);
   assert.ok(mid.flights > 40, `flights ${mid.flights}`);
-  const hold = showcaseSnapshot(scheduled, SHOWCASE_PLAY_MS + 500, placeForAirport, span);
+  const hold = showcaseSnapshot(scheduled, SHOWCASE_PLAY_MS + 500, span);
   assert.equal(hold.flights, body.legs.length);
   assert.equal(hold.active, 0);
-  assert.ok(hold.states >= 8);
-  assert.ok(hold.countries >= 3);
-  assert.ok(hold.leaderboard.length >= 2);
-  assert.ok(hold.leaderboard[0].nm >= hold.leaderboard[1].nm);
-  assert.equal(hold.justLanded.tail.length > 0, true);
-  const lines = showcaseCallouts(hold);
-  assert.ok(lines.some((line) => line.startsWith('Just landed:')));
-  assert.equal(JSON.stringify(lines).includes('customer'), false);
-  assert.equal(JSON.stringify(lines).includes('broker'), false);
-  const marks = milestoneCrossings(scheduled);
-  const hundred = marks.find((row) => row.id === 'flights-100');
-  assert.ok(hundred && hundred.at > 0 && hundred.at < SHOWCASE_PLAY_MS);
-  assert.equal(activeMilestone(marks, 0), null);
-  assert.equal(activeMilestone(marks, hundred.at + 400)?.id, 'flights-100');
-  assert.equal(activeMilestone(marks, hundred.at + SHOWCASE_CELEBRATE_MS + 50), null);
+  assert.ok(hold.airports > 8);
   const finale = initialPlayMs({ at: 'finale' });
   assert.ok(finale > SHOWCASE_PLAY_MS && finale < SHOWCASE_LOOP_MS);
-  assert.equal(airportCity('ASE'), 'Aspen');
-  assert.equal(placeForAirport('ASE', 39.22, -106.87).city, 'Aspen');
-  assert.equal(placeForAirport('ASE', 39.22, -106.87).state, 'CO');
 });
 
-test('block-hour milestones celebrate at 1000, 2500, and 5000', () => {
-  const scheduled = [
-    { playStart: 0, playEnd: 1000, nm: 100, blockHours: 1000 },
-    { playStart: 500, playEnd: 2000, nm: 100, blockHours: 1500 },
-    { playStart: 1500, playEnd: 3000, nm: 100, blockHours: 2500 },
-  ];
-  const marks = milestoneCrossings(scheduled);
-  assert.equal(marks.find((row) => row.id === 'block-1000')?.at, 1000);
-  assert.equal(marks.find((row) => row.id === 'block-2500')?.at, 2000);
-  assert.equal(marks.find((row) => row.id === 'block-5000')?.at, 3000);
-  assert.equal(marks.find((row) => row.id === 'block-1000')?.title, '1,000 block hours');
-  assert.equal(activeMilestone(marks, 1200)?.id, 'block-1000');
-});
-
-test('a route with no tail keeps its own color and the ticker omits the tail', () => {
+test('a route with no tail keeps its own color', () => {
   assert.equal(showcaseColorKey({ tail: '', from: 'TEB', to: 'ASE' }), 'TEB-ASE');
   assert.equal(showcaseColorKey({ tail: 'N551SK', from: 'TEB', to: 'ASE' }), 'N551SK');
-  const lines = showcaseCallouts({
-    justLanded: { tail: '', to: 'ASE', city: 'Aspen' },
-    farthest: null,
-    topDestinations: [],
-    leaderboard: [{ label: 'TEB → ASE', hours: 12.4 }],
-  });
-  assert.deepEqual(lines, ['Just landed in Aspen!', 'Longest route: TEB → ASE']);
 });
 
 test('history rows are primary, future dates wait, and Firestore fills the gap after the file', () => {
@@ -443,7 +382,6 @@ test('the 2026 route file plays through today in Eastern time', async () => {
   assert.equal(throughToday.reduce((sum, row) => sum + Math.round(row.block * 10), 0), 60651);
   assert.deepEqual(lookupCoords('DJT'), lookupCoords('PBI'));
   assert.deepEqual(lookupCoords('KDJT'), lookupCoords('PBI'));
-  assert.equal(airportCity('DJT'), 'Palm Beach');
 
   const selected = buildShowcaseArchive({
     historyRows: rows,
@@ -467,18 +405,10 @@ test('the 2026 route file plays through today in Eastern time', async () => {
   assert.deepEqual(Object.keys(body.legs[0]), [...PUBLIC_LEG_KEYS]);
   const span = playbackWindow(body);
   const scheduled = scheduleShowcasePlayback(body.legs, span);
-  const hold = showcaseSnapshot(scheduled, SHOWCASE_PLAY_MS + 500, placeForAirport, span);
+  const hold = showcaseSnapshot(scheduled, SHOWCASE_PLAY_MS + 500, span);
   assert.equal(hold.flights, 3717);
   assert.equal(Math.round(hold.hours * 10), 60407);
-  assert.equal(hold.leaderboard[0].tail, undefined);
-  assert.match(hold.leaderboard[0].label, /→/);
-  assert.ok(hold.leaderboard[0].hours >= hold.leaderboard[1].hours);
-  const lines = showcaseCallouts(hold);
-  assert.ok(lines.some((line) => line.startsWith('Just landed in ')));
-  assert.equal(lines.some((line) => line.includes('N5')), false);
-  const blockMarks = milestoneCrossings(scheduled).filter((row) => row.kind === 'block');
-  assert.deepEqual(blockMarks.map((row) => row.id), ['block-1000', 'block-2500', 'block-5000']);
-  assert.ok(blockMarks.every((row) => row.at > 0 && row.at < SHOWCASE_PLAY_MS));
+  assert.ok(hold.airports > 50);
 
   const token = 'd'.repeat(43);
   const db = memoryDb({ config: { token, enabled: true }, legs: [] });
@@ -638,6 +568,12 @@ test('showcase rules deny every client and the page stays signed-out', async () 
   assert.match(page, /import\.meta\.env\.DEV && params\.get\('fixture'\) === '1'/);
   assert.match(page, /Earlier \$\{payload\.year\} legs were not stored/);
   assert.match(page, /BLOCK HOURS/);
+  assert.match(page, /Fly with Skyway/);
+  assert.doesNotMatch(page, /data-showcase-celebrate|data-showcase-callout|LONGEST ROUTES|TOP DESTINATIONS|STATES \/ COUNTRIES/);
+  const replaySource = await readFile(path.join(root, 'src/showcase-replay.js'), 'utf8');
+  assert.doesNotMatch(replaySource, /milestoneCrossings|showcaseCallouts/);
+  const draw = await readFile(path.join(root, 'src/showcase-draw.js'), 'utf8');
+  assert.doesNotMatch(draw, /drawCelebration/);
   assert.match(page, /TvDesignFrame/);
   assert.match(page, /canvas/);
   const app = await readFile(path.join(root, 'src/App.jsx'), 'utf8');
