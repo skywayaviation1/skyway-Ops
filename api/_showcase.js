@@ -15,7 +15,9 @@ import {
   SHOWCASE_CACHE_MS,
   SHOWCASE_ORIGIN,
   buildShowcaseArchive,
+  SHOWCASE_TOKEN_ALPHABET,
   isShowcaseToken,
+  normalizeShowcaseToken,
   parseShowcaseHistoryCsv,
   publicShowcaseBody,
   showcaseDayKey,
@@ -77,9 +79,61 @@ export function showcaseTokenMatches(stored, provided) {
   return timingSafeEqual(left, right);
 }
 
+const MISS_LIMIT = 20;
+const MISS_WINDOW_MS = 10 * 60 * 1000;
+const missBuckets = new Map();
+
+/** Six lowercase characters. Bytes that would bias the alphabet are discarded. */
 export function mintShowcaseToken() {
-  return randomBytes(32).toString('base64url');
+  const alphabet = SHOWCASE_TOKEN_ALPHABET;
+  const limit = 256 - (256 % alphabet.length);
+  let token = '';
+  while (token.length < 6) {
+    const bytes = randomBytes(12);
+    for (const byte of bytes) {
+      if (byte >= limit) continue;
+      token += alphabet[byte % alphabet.length];
+      if (token.length === 6) break;
+    }
+  }
+  return token;
 }
+
+export function clearShowcaseMisses() {
+  missBuckets.clear();
+}
+
+export function showcaseClientIp(req) {
+  const header = req?.headers?.['x-forwarded-for'] ?? req?.headers?.['x-real-ip'] ?? '';
+  const raw = Array.isArray(header) ? header[0] : header;
+  const first = String(raw || '').split(',')[0].trim();
+  return first || 'unknown';
+}
+
+function missStore(store) {
+  return store || missBuckets;
+}
+
+/** True once this address has already used its failed lookups for the window. */
+export function showcaseMissLimited(ip, now = Date.now(), store) {
+  const row = missStore(store).get(ip || 'unknown');
+  if (!row || row.resetAt <= now) return false;
+  return row.count >= MISS_LIMIT;
+}
+
+export function recordShowcaseMiss(ip, now = Date.now(), store) {
+  const key = ip || 'unknown';
+  const buckets = missStore(store);
+  let row = buckets.get(key);
+  if (!row || row.resetAt <= now) {
+    row = { count: 0, resetAt: now + MISS_WINDOW_MS };
+    buckets.set(key, row);
+  }
+  row.count += 1;
+  return row.count >= MISS_LIMIT;
+}
+
+export { normalizeShowcaseToken };
 
 function readBody(req) {
   if (!req?.body) return {};

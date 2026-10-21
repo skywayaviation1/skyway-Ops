@@ -43,8 +43,22 @@ export const PUBLIC_LEG_KEYS = Object.freeze([
 const SKIP_CATEGORIES = new Set(['HOLD', 'MX', 'MAINTENANCE', 'TRAINING']);
 const SM_PER_NM = 1.150779448;
 
+/** Crockford-style alphabet: no 0/O, 1/I/L. Short codes are lowercase. */
+export const SHOWCASE_TOKEN_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
+const SHORT_TOKEN = new RegExp(`^[${SHOWCASE_TOKEN_ALPHABET}]{6}$`);
+const LONG_TOKEN = /^[A-Za-z0-9_-]{32,128}$/;
+
+export function normalizeShowcaseToken(value) {
+  if (typeof value !== 'string') return '';
+  const token = value.trim();
+  if (token.length === 6) return token.toLowerCase();
+  return token;
+}
+
+/** Six-character codes, or a legacy token minted before those codes. */
 export function isShowcaseToken(value) {
-  return typeof value === 'string' && /^[A-Za-z0-9_-]{32,128}$/.test(value);
+  const token = normalizeShowcaseToken(value);
+  return SHORT_TOKEN.test(token) || LONG_TOKEN.test(token);
 }
 
 export function showcasePath(token) {

@@ -19,7 +19,9 @@ import {
   initialPlayMs,
   interpolateGreatCircle,
   isCompletedShowcaseLeg,
+  SHOWCASE_TOKEN_ALPHABET,
   isShowcaseToken,
+  normalizeShowcaseToken,
   parseShowcaseHistoryCsv,
   parseShowcasePath,
   playbackWindow,
@@ -36,6 +38,7 @@ import {
 } from '../src/showcase-replay.js';
 import { handleShowcaseReplay } from '../api/showcase-replay.js';
 import { handleShowcaseAdmin } from '../api/showcase-admin.js';
+import { mintShowcaseToken } from '../api/_showcase.js';
 
 const root = path.resolve(import.meta.dirname, '..');
 const NOW = Date.parse('2026-10-21T16:00:00.000Z');
@@ -450,6 +453,12 @@ test('the public route is a token path and unknown tokens are not found', async 
   assert.equal(parseShowcasePath('/schedule'), null);
   assert.equal(parseShowcasePath('/showcase')?.token, '');
   assert.equal(isShowcaseToken('short'), false);
+  assert.equal(isShowcaseToken('k7m2xq'), true);
+  assert.equal(normalizeShowcaseToken('K7M2XQ'), 'k7m2xq');
+  assert.equal(isShowcaseToken('K7M2XQ'), true);
+  for (const bad of ['k7m2x0', 'k7m2xo', 'k7m2x1', 'k7m2xl', 'k7m2xi']) {
+    assert.equal(isShowcaseToken(bad), false, bad);
+  }
   const token = 'a'.repeat(43);
   assert.equal(isShowcaseToken(token), true);
   assert.equal(showcaseUrl(token), `https://skyway.app/showcase/${token}`);
@@ -536,6 +545,26 @@ test('ops can mint, rotate, and disable the TV link', async () => {
   await handleShowcaseAdmin({ method: 'POST', body: { idToken: 'ops-session', action: 'regenerate' } }, rotated, deps);
   assert.equal(rotated.body.url, showcaseUrl('c'.repeat(43)));
 
+  const collided = ['k7m2xq', 'k7m2xq', 'p4n8wc'];
+  const collisionDb = memoryDb({
+    legs: [raw()],
+    users: { ops: { role: 'ops', active: true, approved: true, name: 'Skyway Ops' } },
+  });
+  const collisionDeps = {
+    db: collisionDb,
+    now: NOW,
+    lookupCoords: lookup,
+    historyRows: [],
+    mint: () => collided.shift(),
+    verifyIdToken: async () => ({ uid: 'ops' }),
+  };
+  const firstCode = responseCapture();
+  await handleShowcaseAdmin({ method: 'POST', body: { idToken: 'ops-session', action: 'generate' } }, firstCode, collisionDeps);
+  assert.equal(firstCode.body.url, showcaseUrl('k7m2xq'));
+  const rotatedCode = responseCapture();
+  await handleShowcaseAdmin({ method: 'POST', body: { idToken: 'ops-session', action: 'regenerate' } }, rotatedCode, collisionDeps);
+  assert.equal(rotatedCode.body.url, showcaseUrl('p4n8wc'));
+
   const oldLink = responseCapture();
   await handleShowcaseReplay({ method: 'GET', query: { token: 'b'.repeat(43) } }, oldLink, { db, now: NOW, lookupCoords: lookup, historyRows: [], cache: { token: '', at: 0, body: null } });
   assert.equal(oldLink.statusCode, 404);
@@ -550,6 +579,49 @@ test('ops can mint, rotate, and disable the TV link', async () => {
   const gone = responseCapture();
   await handleShowcaseReplay({ method: 'GET', query: { token: 'c'.repeat(43) } }, gone, { db, now: NOW, lookupCoords: lookup, historyRows: [], cache: { token: '', at: 0, body: null } });
   assert.equal(gone.statusCode, 404);
+});
+
+test('new showcase codes are six unambiguous characters and bad guesses are limited', async () => {
+  const seen = new Set();
+  for (let i = 0; i < 24; i += 1) {
+    const code = mintShowcaseToken();
+    assert.match(code, /^[abcdefghjkmnpqrstuvwxyz23456789]{6}$/);
+    assert.equal(code.includes('0') || code.includes('1') || /[oli]/.test(code), false);
+    assert.equal(SHOWCASE_TOKEN_ALPHABET.includes(code[0]), true);
+    seen.add(code);
+  }
+  assert.ok(seen.size > 1);
+
+  const token = 'k7m2xq';
+  const db = memoryDb({ config: { token, enabled: true }, legs: [raw()] });
+  const misses = new Map();
+  const ip = '198.51.100.10';
+  const deps = { db, now: NOW, lookupCoords: lookup, historyRows: [], misses, ip };
+  const ok = responseCapture();
+  await handleShowcaseReplay({ method: 'GET', query: { token: 'K7M2XQ' } }, ok, deps);
+  assert.equal(ok.statusCode, 200);
+
+  for (let i = 0; i < 20; i += 1) {
+    const missed = responseCapture();
+    await handleShowcaseReplay({ method: 'GET', query: { token: 'zzzzzz' } }, missed, deps);
+    assert.equal(missed.statusCode, 404);
+  }
+  const blocked = responseCapture();
+  await handleShowcaseReplay({ method: 'GET', query: { token: 'yyyyyy' } }, blocked, deps);
+  assert.equal(blocked.statusCode, 429);
+  assert.equal(blocked.headers['retry-after'], '600');
+
+  const stillLive = responseCapture();
+  await handleShowcaseReplay({ method: 'GET', query: { token } }, stillLive, deps);
+  assert.equal(stillLive.statusCode, 200);
+
+  const legacy = 'd'.repeat(43);
+  const legacyDb = memoryDb({ config: { token: legacy, enabled: true }, legs: [raw()] });
+  const legacyRes = responseCapture();
+  await handleShowcaseReplay({ method: 'GET', query: { token: legacy } }, legacyRes, {
+    db: legacyDb, now: NOW, lookupCoords: lookup, historyRows: [], misses: new Map(), ip: '198.51.100.11',
+  });
+  assert.equal(legacyRes.statusCode, 200);
 });
 
 test('showcase rules deny every client and the page stays signed-out', async () => {
@@ -582,6 +654,8 @@ test('showcase rules deny every client and the page stays signed-out', async () 
   assert.match(app, /\/api\/showcase-admin|ShowcaseAdminCard/);
   const admin = await readFile(path.join(root, 'src/ShowcaseAdminCard.jsx'), 'utf8');
   assert.match(admin, /\/api\/showcase-admin/);
+  assert.match(admin, /Copy link/);
+  assert.match(admin, /aria-label="Trade show link"/);
   const replay = await readFile(path.join(root, 'api/showcase-replay.js'), 'utf8');
   assert.match(replay, /max-age=900/);
 });

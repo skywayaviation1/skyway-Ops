@@ -39,11 +39,22 @@ export async function handleShowcaseAdmin(req, res, deps = {}) {
     let next = current;
 
     const mint = deps.mint || mintShowcaseToken;
+    const takeToken = () => {
+      const avoid = current?.token || '';
+      let token = '';
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        token = mint();
+        if (token && token !== avoid) return token;
+      }
+      const error = new Error('Could not mint a showcase link');
+      error.status = 500;
+      throw error;
+    };
     if (action === 'generate') {
       const live = current?.enabled === true && isShowcaseToken(current?.token || '');
       if (!live) {
         next = {
-          token: mint(),
+          token: takeToken(),
           enabled: true,
           createdAt: current?.createdAt || now,
           updatedAt: now,
@@ -54,7 +65,7 @@ export async function handleShowcaseAdmin(req, res, deps = {}) {
       }
     } else if (action === 'regenerate') {
       next = {
-        token: mint(),
+        token: takeToken(),
         enabled: true,
         createdAt: current?.createdAt || now,
         updatedAt: now,
