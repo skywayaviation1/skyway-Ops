@@ -15,8 +15,14 @@
  * Prefixes that fit stay in the legacy one-character doc so existing
  * readers keep working. Prefixes that do not fit are stored as sorted
  * slices `{prefix}~000`, `{prefix}~001`, ... Ranges live on `_meta` so a
- * single-code read can open the right shard. A refresh deletes a legacy
- * letter doc only after its shards are in the same commit.
+ * single-code read can open the right shard.
+ *
+ * A refresh writes every shard before `_meta`, then deletes replaced docs.
+ * The bulk lookup merges the whole collection and lets a shard id override
+ * the legacy letter doc, so coordinates stay readable if a later commit
+ * fails. Single-code reads follow `_meta` only after the shards it names
+ * exist, and replaced docs are removed only after `_meta` no longer
+ * addresses them.
  */
 
 export const AIRPORT_CACHE_COLLECTION = 'airport-cache-ourairports';
@@ -30,8 +36,25 @@ export const FIRESTORE_DOCUMENT_BYTE_LIMIT = 1_048_576;
 export const MAX_AIRPORTS_PER_SHARD = 1000;
 export const MAX_SHARD_BYTES = 800_000;
 
+// Commit RPC budget. Firestore rejects a batch once the documents and the
+// index entries they add or remove exceed 10 MiB
+// ("Transaction too big. Decrease transaction size."), independent of the
+// 500-write cap. A set that overwrites a shard removes the previous index
+// entries and adds new ones, so the pack budget is under half of 10 MiB.
+export const FIRESTORE_TRANSACTION_BYTE_LIMIT = 10 * 1024 * 1024;
+export const MAX_COMMIT_BYTES = 4 * 1024 * 1024;
+export const MAX_BATCH_OPS = 450;
+
+// A legacy letter doc cannot be stored past the 40,000 index-entry cap
+// (3,333 airports of this shape, about 5.5 MiB of document + index bytes).
+// Deletes we could not read are charged this much so two of them cannot
+// share a commit.
+export const UNKNOWN_DELETE_TRANSACTION_BYTES = 6 * 1024 * 1024;
+
 const DOC_OVERHEAD_BYTES = 256;
 const ENTRY_OVERHEAD_BYTES = 48;
+const INDEX_VALUE_TRUNCATE_BYTES = 1500;
+const ROOT_PARENT_NAME_BYTES = 16;
 
 export function indexEntryCount(airportCount) {
   const count = Number(airportCount) || 0;
@@ -50,6 +73,134 @@ export function estimateEntriesBytes(entries) {
   const pairs = entries instanceof Map ? entries.entries() : Object.entries(entries || {});
   for (const [code, entry] of pairs) bytes += estimateEntryBytes(code, entry);
   return bytes;
+}
+
+function stringSize(value) {
+  return Buffer.byteLength(String(value), 'utf8') + 1;
+}
+
+function scalarSize(value) {
+  if (value == null) return 1;
+  if (typeof value === 'boolean') return 1;
+  if (typeof value === 'number') return 8;
+  if (typeof value === 'string') return stringSize(value);
+  return 1;
+}
+
+function valueSize(value) {
+  if (Array.isArray(value)) {
+    let size = 0;
+    for (const item of value) size += valueSize(item);
+    return size;
+  }
+  if (value && typeof value === 'object') return mapValueSize(value);
+  return scalarSize(value);
+}
+
+function mapValueSize(obj) {
+  let size = 32;
+  for (const [key, child] of Object.entries(obj)) {
+    size += stringSize(key) + valueSize(child);
+  }
+  return size;
+}
+
+function documentNameSize(docId) {
+  return stringSize(AIRPORT_CACHE_COLLECTION) + stringSize(docId) + 16;
+}
+
+// One collection-scope single-field index entry, ascending or descending.
+function indexEntrySize(docName, fieldPath, indexedValueSize) {
+  return docName
+    + ROOT_PARENT_NAME_BYTES
+    + stringSize(fieldPath)
+    + Math.min(indexedValueSize, INDEX_VALUE_TRUNCATE_BYTES)
+    + 32;
+}
+
+/**
+ * Bytes Firestore counts toward the commit transaction limit for one
+ * document: stored document size plus ascending and descending single-field
+ * index entries. Map fields count once for the whole map (truncated at
+ * 1,500 bytes) and again for each nested field. This is the cost that makes
+ * a ~100-op refresh exceed 10 MiB even though the document bodies are ~6 MiB.
+ */
+export function estimateTransactionBytes(docId, data) {
+  const body = data && typeof data === 'object' ? data : {};
+  const docName = documentNameSize(docId);
+  let indexBytes = 0;
+  const walk = (value, path) => {
+    if (Array.isArray(value)) {
+      indexBytes += indexEntrySize(docName, path, valueSize(value)) * 2;
+      for (const item of value) {
+        indexBytes += indexEntrySize(docName, path, valueSize(item));
+      }
+      return;
+    }
+    if (value && typeof value === 'object') {
+      indexBytes += indexEntrySize(docName, path, mapValueSize(value)) * 2;
+      for (const [key, child] of Object.entries(value)) {
+        walk(child, `${path}.${key}`);
+      }
+      return;
+    }
+    indexBytes += indexEntrySize(docName, path, scalarSize(value)) * 2;
+  };
+  for (const [key, child] of Object.entries(body)) walk(child, key);
+  return docName + mapValueSize(body) + indexBytes;
+}
+
+export function estimateOperationBytes(op, deleteBytes) {
+  if (Number.isFinite(op?.bytes)) return op.bytes;
+  if (op?.type === 'delete') {
+    if (deleteBytes && deleteBytes.has(op.id)) return deleteBytes.get(op.id);
+    return UNKNOWN_DELETE_TRANSACTION_BYTES;
+  }
+  return estimateTransactionBytes(op.id, op.data);
+}
+
+function operationPhase(op) {
+  if (op.type === 'delete') return 2;
+  if (op.id === AIRPORT_CACHE_META_ID) return 1;
+  return 0;
+}
+
+/**
+ * Split a cache plan into commits that stay under the write cap and the
+ * transaction byte budget.
+ *
+ * Phases, in order: shard and letter sets, then `_meta`, then deletes.
+ * `_meta` is the last set, after every shard it names. Deletes come after
+ * `_meta`, so a failed delete cannot remove a document the previous `_meta`
+ * still addresses, and a failed `_meta` write cannot drop the letter docs
+ * the bulk lookup is still merging.
+ */
+export function chunkCacheOperations(operations, options = {}) {
+  const maxOps = options.maxOps ?? MAX_BATCH_OPS;
+  const maxBytes = options.maxBytes ?? MAX_COMMIT_BYTES;
+  const deleteBytes = options.deleteBytes;
+  const ordered = operations.map((op, index) => ({ op, index }));
+  ordered.sort((a, b) => operationPhase(a.op) - operationPhase(b.op) || a.index - b.index);
+
+  const chunks = [];
+  let current = [];
+  let bytes = 0;
+  const flush = () => {
+    if (!current.length) return;
+    chunks.push(current);
+    current = [];
+    bytes = 0;
+  };
+  for (const { op } of ordered) {
+    const opBytes = estimateOperationBytes(op, deleteBytes);
+    if (current.length > 0 && (current.length >= maxOps || bytes + opBytes > maxBytes)) {
+      flush();
+    }
+    current.push(op);
+    bytes += opBytes;
+  }
+  flush();
+  return chunks;
 }
 
 export function cachePrefix(code) {
@@ -151,8 +302,8 @@ function assertShardSafe(id, entries) {
  * `previousMeta` is the existing `_meta` doc, used to delete letter docs
  * and shard docs this plan no longer writes. Pass null on a first fill.
  *
- * Operation order is data docs, then `_meta`, then deletes, so a single
- * batch commit publishes shards and drops the old letter docs together.
+ * Operation order is data docs, then `_meta`, then deletes. Commits follow
+ * that order across multiple batches so a partial refresh stays readable.
  */
 export function buildAirportCachePlan(codeMap, previousMeta, options = {}) {
   const maxPerShard = options.maxPerShard ?? MAX_AIRPORTS_PER_SHARD;

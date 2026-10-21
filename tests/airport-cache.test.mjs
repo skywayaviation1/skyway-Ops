@@ -6,10 +6,15 @@ import test from 'node:test';
 import {
   FIRESTORE_DOCUMENT_BYTE_LIMIT,
   FIRESTORE_INDEX_ENTRY_LIMIT,
+  FIRESTORE_TRANSACTION_BYTE_LIMIT,
   MAX_AIRPORTS_PER_SHARD,
+  MAX_BATCH_OPS,
+  MAX_COMMIT_BYTES,
   buildAirportCachePlan,
   cacheDocIdForCode,
+  chunkCacheOperations,
   estimateEntriesBytes,
+  estimateOperationBytes,
   indexEntryCount,
   mergeCacheDocuments,
 } from '../api/_airport-cache.js';
@@ -120,7 +125,7 @@ test('today\'s OurAirports letters shard under the index and document caps', () 
   const deletes = plan.operations.filter((op) => op.type === 'delete');
   assert.equal(sets.at(-1).id, '_meta');
   assert.deepEqual(deletes.map((op) => op.id), plan.deleteIds);
-  assert.ok(plan.operations.length < 450, 'production refresh still fits in one batch');
+  assert.ok(plan.operations.length <= MAX_BATCH_OPS, 'op count stays under the 500-write cap');
   assert.equal(plan.meta.layout, 'prefix-shards');
   assert.equal(plan.meta.refreshedAt, 1_700_000_000_000);
 });
@@ -208,6 +213,97 @@ test('refresh and lookup are wired to the shared cache plan', async () => {
   const lookup = await readFile(path.join(root, 'api/airport-coords-lookup.js'), 'utf8');
   assert.match(refresh, /buildAirportCachePlan\(map, previousMeta\)/);
   assert.match(refresh, /commitCacheOperations\(db, plan\.operations\)/);
+  assert.match(refresh, /chunkCacheOperations\(operations, \{ deleteBytes \}\)/);
+  assert.match(refresh, /measureDeletedDocuments\(db, operations\)/);
   assert.doesNotMatch(refresh, /chunks\[prefix\]/);
   assert.match(lookup, /mergeCacheDocuments\(docs\)/);
+});
+
+function productionPlan() {
+  const codes = mapFromCounts(OURAIRPORTS_PREFIX_COUNTS);
+  return buildAirportCachePlan(codes, {
+    chunkPrefixes: Object.keys(OURAIRPORTS_PREFIX_COUNTS),
+    refreshedAt: 1,
+    totalCodes: codes.size,
+    source: 'ourairports.com',
+  }, { now: 1_700_000_000_000 });
+}
+
+function commitBytes(commit, deleteBytes) {
+  return commit.reduce((sum, op) => sum + estimateOperationBytes(op, deleteBytes), 0);
+}
+
+test('op-count chunking leaves the weekly plan over the transaction limit', () => {
+  const plan = productionPlan();
+  const oldCommits = [];
+  for (let i = 0; i < plan.operations.length; i += MAX_BATCH_OPS) {
+    oldCommits.push(plan.operations.slice(i, i + MAX_BATCH_OPS));
+  }
+  assert.equal(oldCommits.length, 1);
+  const setBytes = oldCommits[0]
+    .filter((op) => op.type === 'set')
+    .reduce((sum, op) => sum + estimateOperationBytes(op), 0);
+  assert.ok(
+    setBytes > FIRESTORE_TRANSACTION_BYTE_LIMIT,
+    `weekly set payload is ${setBytes} bytes`,
+  );
+});
+
+test('a plan over the transaction limit is split and _meta is written after every shard', () => {
+  const plan = productionPlan();
+  const commits = chunkCacheOperations(plan.operations);
+  assert.ok(commits.length > 1);
+  assert.ok(plan.operations.length <= MAX_BATCH_OPS);
+
+  const sets = plan.operations.filter((op) => op.type === 'set' && op.id !== '_meta');
+  const deletes = plan.operations.filter((op) => op.type === 'delete');
+  assert.deepEqual(
+    commits.flat().map((op) => op.id),
+    [...sets.map((op) => op.id), '_meta', ...deletes.map((op) => op.id)],
+  );
+  assert.equal(commits.flat().filter((op) => op.type === 'set').at(-1).id, '_meta');
+
+  let seenMeta = false;
+  for (const commit of commits) {
+    assert.ok(commit.length <= MAX_BATCH_OPS);
+    assert.ok(commit.length > 0);
+    if (commit.length > 1) assert.ok(commitBytes(commit) <= MAX_COMMIT_BYTES);
+    for (const op of commit) {
+      if (op.id === '_meta') seenMeta = true;
+      else if (seenMeta) assert.equal(op.type, 'delete');
+      else assert.equal(op.type, 'set');
+    }
+  }
+  assert.equal(seenMeta, true);
+  assert.ok(commits.at(-1).every((op) => op.type === 'delete'));
+});
+
+test('small plans still commit once, with _meta last', () => {
+  const plan = buildAirportCachePlan(new Map([
+    ['KTEB', entry('KTEB', 'Teterboro')],
+    ['TEB', entry('TEB', 'Teterboro')],
+  ]), null, { now: 5 });
+  const commits = chunkCacheOperations(plan.operations);
+  assert.equal(commits.length, 1);
+  assert.equal(commits[0].at(-1).id, '_meta');
+  assert.ok(commitBytes(commits[0]) <= MAX_COMMIT_BYTES);
+});
+
+test('measured deletes pack together and unread deletes stay isolated', () => {
+  const plan = buildAirportCachePlan(new Map([
+    ['KTEB', entry('KTEB', 'Teterboro')],
+  ]), { chunkPrefixes: ['M', 'S'], chunkDocIds: ['M', 'S'] }, { now: 8 });
+  assert.deepEqual(plan.deleteIds, ['M', 'S']);
+  const packed = chunkCacheOperations(plan.operations, {
+    deleteBytes: new Map([['M', 100], ['S', 100]]),
+  });
+  assert.equal(packed.length, 1);
+  assert.equal(packed[0].at(-1).type, 'delete');
+  const isolated = chunkCacheOperations(plan.operations);
+  assert.ok(isolated.length > 1);
+  assert.equal(isolated.at(-1).length, 1);
+  assert.equal(isolated.at(-1)[0].id, 'S');
+  const metaCommit = isolated.findIndex((commit) => commit.some((op) => op.id === '_meta'));
+  assert.ok(metaCommit >= 0);
+  assert.ok(metaCommit < isolated.length - 1);
 });
