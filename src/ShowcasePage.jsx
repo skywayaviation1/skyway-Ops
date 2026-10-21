@@ -393,7 +393,7 @@ export default function ShowcasePage({ token = '' }) {
         party = { ...live, startedAt: now };
         seenParty.add(live.id);
       }
-      if (party && now - party.startedAt > 3800) party = null;
+      if (party && now - party.startedAt > 5600) party = null;
     }
 
     function paint(playMs, now) {
@@ -541,7 +541,7 @@ export default function ShowcasePage({ token = '' }) {
       const celebrateTitle = root.querySelector('[data-showcase-celebrate-title]');
       if (celebrate) {
         const age = party ? now - party.startedAt : SHOWCASE_CELEBRATE_MS;
-        const visible = party && age < 3400;
+        const visible = party && age < 5200;
         celebrate.style.opacity = visible ? '1' : '0';
         celebrate.style.transform = visible ? 'translateY(0) scale(1)' : 'translateY(12px) scale(0.96)';
         if (celebrateTitle && party) celebrateTitle.textContent = party.title;
@@ -557,7 +557,7 @@ export default function ShowcasePage({ token = '' }) {
       root.setAttribute('data-showcase-phase', snapshot.holding ? 'hold' : 'play');
       root.setAttribute('data-showcase-flights', String(snapshot.flights));
       root.setAttribute('data-showcase-active', String(snapshot.active));
-      root.setAttribute('data-showcase-celebrate', party && (now - party.startedAt) < 3400 ? party.id : '');
+      root.setAttribute('data-showcase-celebrate', party && (now - party.startedAt) < 5200 ? party.id : '');
       root.setAttribute('data-showcase-finale', finaleT > 0.85 ? '1' : '0');
     }
 
@@ -605,6 +605,7 @@ export default function ShowcasePage({ token = '' }) {
           zoomSnap: 0.25,
         });
         map.getContainer().style.background = BG;
+        map.getContainer().style.zIndex = '0';
         applyBasemap(L, map, 'dark', 'dark');
         const pairs = scheduled.flatMap((leg) => [[leg.fromLat, leg.fromLng], [leg.toLat, leg.toLng]]);
         const bounds = pairs.length ? L.latLngBounds(pairs) : null;
@@ -651,7 +652,7 @@ export default function ShowcasePage({ token = '' }) {
         data-showcase-board=""
         style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden', background: BG }}
       >
-        <div ref={mapRef} className="showcase-map" style={{ position: 'absolute', inset: 0 }} />
+        <div ref={mapRef} className="showcase-map" style={{ position: 'absolute', inset: 0, zIndex: 0 }} />
         <div
           className="showcase-sky"
           style={{
@@ -732,36 +733,52 @@ export default function ShowcasePage({ token = '' }) {
             position: 'absolute',
             left: 40,
             right: 500,
-            top: 200,
+            top: 188,
             zIndex: 6,
             textAlign: 'center',
             pointerEvents: 'none',
             opacity: 0,
-            transition: 'opacity 180ms linear',
           }}
         >
-          <div style={{ fontFamily: DISPLAY, fontSize: 28, letterSpacing: '0.22em', color: '#fde68a' }}>Milestone</div>
-          <div data-showcase-celebrate-title="" style={{ fontFamily: DISPLAY, fontSize: 108, lineHeight: '100px', letterSpacing: '0.03em', color: '#ffffff', textShadow: '0 8px 30px rgba(0,0,0,0.45)' }} />
+          <div style={{
+            display: 'inline-block',
+            padding: '8px 32px 12px',
+            borderRadius: 24,
+            background: 'rgba(6, 10, 16, 0.78)',
+            border: '1px solid rgba(253, 230, 138, 0.65)',
+          }}>
+            <div style={{ fontFamily: DISPLAY, fontSize: 28, letterSpacing: '0.22em', color: '#fde68a' }}>Milestone</div>
+            <div data-showcase-celebrate-title="" style={{ fontFamily: DISPLAY, fontSize: 108, lineHeight: '100px', letterSpacing: '0.03em', color: '#ffffff' }} />
+          </div>
         </div>
 
         <div
           data-showcase-finale=""
           style={{
             position: 'absolute',
-            left: 24,
-            right: 490,
-            bottom: 188,
+            left: 48,
+            right: 500,
+            bottom: 200,
             zIndex: 6,
             textAlign: 'center',
             pointerEvents: 'none',
             opacity: 0,
           }}
         >
-          <div style={{ fontFamily: DISPLAY, fontSize: 120, lineHeight: '110px', letterSpacing: '0.04em', color: '#ffffff', textShadow: '0 10px 28px rgba(0,0,0,0.55)' }}>
-            Fly with Skyway
-          </div>
-          <div style={{ marginTop: 4, fontSize: 28, fontWeight: 650, color: '#99f6e4' }}>
-            The whole year, one loop
+          <div style={{
+            display: 'inline-block',
+            padding: '10px 36px 16px',
+            borderRadius: 28,
+            background: 'rgba(6, 10, 16, 0.82)',
+            border: '1px solid rgba(94, 234, 212, 0.55)',
+            boxShadow: '0 16px 50px rgba(0,0,0,0.45)',
+          }}>
+            <div style={{ fontFamily: DISPLAY, fontSize: 108, lineHeight: '100px', letterSpacing: '0.04em', color: '#ffffff' }}>
+              Fly with Skyway
+            </div>
+            <div style={{ marginTop: 2, fontSize: 28, fontWeight: 700, color: '#99f6e4' }}>
+              The whole year, one loop
+            </div>
           </div>
         </div>
 
