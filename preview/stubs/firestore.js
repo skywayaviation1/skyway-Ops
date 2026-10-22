@@ -1,3 +1,5 @@
+import { CONFIG } from '../sample-data.js';
+
 // Minimal Firestore shim for the preview harness.
 //
 // Several screens call the Firestore SDK directly with the `db` handle rather
@@ -45,6 +47,22 @@ export function onSnapshot(target, next) {
     // A document listener expects a document snapshot; a collection listener
     // expects a query snapshot. Collection paths have an odd segment count.
     const segments = String(target?.path || '').split('/').filter(Boolean);
+    const path = segments.join('/');
+    // The full app otherwise falls back to the production default tail list.
+    // Preview imagery should show the invented sample fleet only.
+    if (path === 'app-config/fleet') {
+      handler({
+        id: 'fleet',
+        exists: () => true,
+        data: () => ({
+          configured: true,
+          managedTails: CONFIG.fleetTails,
+          aircraftByTail: CONFIG.aircraftByTail,
+        }),
+        ref: target,
+      });
+      return () => {};
+    }
     handler(segments.length % 2 === 1 ? emptySnapshot : missingDoc(target));
   }
   return () => {};

@@ -44,6 +44,7 @@ const FIREBASE_STUBS = new Map([
 // finishes rendering.
 const SDK_STUBS = new Map([
   ['firebase/firestore', stub('firestore.js')],
+  ['firebase/storage', stub('storage.js')],
 ]);
 
 function previewStubs() {
