@@ -15,7 +15,6 @@
 
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 const ORIGIN = (process.env.MIRROR_ORIGIN || 'https://www.skyway.app').replace(/\/$/, '');
 const OUT = path.resolve(process.env.MIRROR_OUT || 'dist');
@@ -114,14 +113,7 @@ async function mirror() {
   console.log(`mirrored ${saved} file${saved === 1 ? '' : 's'} from ${ORIGIN} into ${OUT}`);
 }
 
-const invokedDirectly = process.argv[1]
-  && import.meta.url === pathToFileURL(process.argv[1]).href;
-
-if (invokedDirectly) {
-  mirror().catch((error) => {
-    console.error(error instanceof Error ? error.message : error);
-    process.exitCode = 1;
-  });
-}
-
-export { add, collect, mirror };
+mirror().catch((error) => {
+  console.error(error instanceof Error ? error.message : error);
+  process.exitCode = 1;
+});
