@@ -8,6 +8,12 @@
 
 import { computeOutstanding } from './ops-readiness.js';
 import { statusEventAt, statusEventDone } from './trip-status.js';
+import {
+  activeWheelsUpAt,
+  airborneEta,
+  airborneProgressPct,
+  etaInstant,
+} from './leg-event-time.js';
 
 export const MS_HOUR = 3600_000;
 
@@ -144,8 +150,16 @@ export function buildTodayFlightRows(trips, tripStates, positions, now = Date.no
         sic: trip.info?.sic || '',
         scheduledMs: legHours(trip) * MS_HOUR,
         actualMs: actualFlightMsForTrip(trip, state, position, now),
-        phase: flightPhase(trip, state, position, now),
-        estimatedOn: telemetryMatchesTrip(position, trip) ? position?.estimatedOn || null : null,
+      phase: flightPhase(trip, state, position, now),
+      estimatedOn: flightPhase(trip, state, position, now) === 'airborne'
+        ? etaInstant(airborneEta({
+          flightAware: telemetryMatchesTrip(position, trip) ? position : null,
+          wheelsUpAt: activeWheelsUpAt(state),
+          scheduledStart: trip.start,
+          scheduledEnd: trip.end,
+          to: trip.info?.to,
+        }))
+        : null,
       };
     })
     .sort((a, b) => (a.startAt || 0) - (b.startAt || 0));
@@ -414,6 +428,10 @@ export function buildFleetRows({
 
     const referenceLeg = activeLeg || nextLeg || null;
     const tripState = tripStates && referenceLeg ? tripStates.get(referenceLeg.uid) || null : null;
+    const flyingLeg = position?.airborne
+      ? (all.find((trip) => telemetryMatchesTrip(position, trip)) || activeLeg)
+      : activeLeg;
+    const flyingState = flyingLeg ? stateForTrip(tripStates, flyingLeg.uid) : tripState;
 
     return {
       tail,
@@ -425,7 +443,7 @@ export function buildFleetRows({
       airworthiness,
       aogEvent,
       position,
-      location: describeLocation(position, activeLeg, nextLeg),
+      location: describeLocation(position, flyingLeg || activeLeg, nextLeg, flyingState),
       legs: all,
       legsToday: today,
       flightLegsToday: flightLegs.length,
@@ -444,17 +462,31 @@ export function buildFleetRows({
 }
 
 /** Where the aircraft physically is, preferring live telemetry over schedule. */
-export function describeLocation(position, activeLeg, nextLeg) {
+export function describeLocation(position, activeLeg, nextLeg, state = null) {
   if (position?.airborne) {
     const from = position.origin || activeLeg?.info?.from || '';
     const to = position.destination || activeLeg?.info?.to || '';
+    const wheelsUpAt = activeWheelsUpAt(state);
+    const eta = airborneEta({
+      flightAware: position,
+      wheelsUpAt,
+      scheduledStart: activeLeg?.start,
+      scheduledEnd: activeLeg?.end,
+      to: activeLeg?.info?.to || position.destination,
+    });
+    const progress = airborneProgressPct({
+      wheelsUpAt: wheelsUpAt || position.actualOff,
+      etaMs: eta.etaMs,
+      reportedPercent: position.progressPercent,
+    });
     return {
       kind: 'airborne',
       label: from && to ? `${normalizeAirport(from)} → ${normalizeAirport(to)}` : 'En route',
       altitude: Number.isFinite(position.altitude) ? position.altitude : null,
       groundspeed: Number.isFinite(position.groundspeed) ? position.groundspeed : null,
-      eta: position.estimatedOn || null,
-      progress: Number.isFinite(position.progressPercent) ? position.progressPercent : null,
+      eta: etaInstant(eta),
+      etaSource: eta.source,
+      progress,
     };
   }
   const at = position?.groundedAt

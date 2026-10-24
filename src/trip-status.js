@@ -20,15 +20,24 @@
    interchangeable regardless of which writer produced the record.
    ============================================================================= */
 
+function millisFrom(raw) {
+  const ms = typeof raw === 'number' ? raw : Number(raw);
+  return Number.isFinite(ms) && ms > 0 ? ms : null;
+}
+
 /**
  * Milliseconds since epoch for a status event, or null when absent/malformed.
- * Accepts `timestamp` (Firestore writers), `at` (public API), and `ts`.
+ * `originalTimestamp` is the first time the milestone happened. It wins over
+ * `timestamp` so a later retoggle that stamps "now" cannot move duty math,
+ * the stale-airborne guard, or ETA. Also accepts `timestamp` (Firestore
+ * writers), `at` (public API), and `ts`.
  */
 export function statusEventAt(entry) {
   if (!entry || typeof entry !== 'object') return null;
-  const raw = entry.timestamp ?? entry.at ?? entry.ts;
-  const ms = typeof raw === 'number' ? raw : Number(raw);
-  return Number.isFinite(ms) && ms > 0 ? ms : null;
+  return millisFrom(entry.originalTimestamp)
+    ?? millisFrom(entry.timestamp)
+    ?? millisFrom(entry.at)
+    ?? millisFrom(entry.ts);
 }
 
 /** True when the step has been recorded at all, regardless of shape. */

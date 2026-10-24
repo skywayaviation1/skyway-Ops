@@ -3,6 +3,18 @@ import { APP_REVIEWER_EMAIL, passwordSignInAllowed } from './reviewer-account.js
 import { DEMO_AIRCRAFT_BY_TAIL, DEMO_TAILS } from './reviewer-demo-data.js';
 import { readReviewerDatabaseFlag } from './reviewer-sandbox.js';
 import { isNativeApp } from './mobile-runtime.js';
+import {
+  PRESERVED_EVENT_STEPS,
+  activeWheelsUpAt,
+  airborneEta,
+  airportsMatch,
+  displayedMilestoneAt,
+  etaInstant,
+  legForAirborneEta,
+  originalEventAt,
+  preserveClearedEvent,
+  resolveMilestoneOn,
+} from './leg-event-time.js';
 import { demoFlightDetail, demoPositionsMap, demoTrackPoints } from './reviewer-demo-track.js';
 
 // Classy theme override stylesheet — applied when the user switches to
@@ -5099,6 +5111,49 @@ function QuickActionButton({ icon: Icon, label, onClick }) {
 /* ============================================================
    Trip detail view
    ============================================================ */
+
+// Cached AeroAPI snapshot written by /api/flightaware-cron-poll. Missing
+// actuals fall through to one /api/flightaware-positions read, the same
+// proxy the Update ETA button already uses.
+async function readFlightAwareTail(tail) {
+  const ident = String(tail || '').toUpperCase().replace(/[^A-Z0-9-]/g, '');
+  if (!ident) return null;
+  try {
+    const { db } = await import('./firebase.js');
+    const { doc, getDoc } = await import('firebase/firestore');
+    const snap = await getDoc(doc(db, 'flightaware-state', ident));
+    return snap.exists() ? (snap.data() || null) : null;
+  } catch (err) {
+    console.warn('[status] flightaware-state read failed:', err?.message || err);
+    return null;
+  }
+}
+
+async function fetchFlightAwarePosition(tail) {
+  const ident = String(tail || '').toUpperCase().replace(/[^A-Z0-9-]/g, '');
+  if (!ident) return null;
+  try {
+    const { auth } = await import('./firebase.js');
+    const idToken = await auth.currentUser?.getIdToken();
+    if (!idToken) return null;
+    const response = await fetch('/api/flightaware-positions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ idToken, idents: [ident] }),
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    const pos = Array.isArray(data.positions)
+      ? data.positions.find((item) => String(item?.ident || '').toUpperCase() === ident)
+      : null;
+    if (!pos) return null;
+    return { ...pos, actualOn: pos.actualOn || pos.groundedSince || null };
+  } catch (err) {
+    console.warn('[status] flightaware position lookup failed:', err?.message || err);
+    return null;
+  }
+}
+
 function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], allTrips, config, opsEmail, onBack, onArchive, tripDetailOrder, onReorderTripDetail }) {
   const requestedTripTab = () => {
     if (typeof window === 'undefined') return null;
@@ -5121,6 +5176,8 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
     && !managedTailsForTrip.includes(tripTail)
   );
   const [statuses, setStatuses] = useState({});
+  const [preservedEvents, setPreservedEvents] = useState({});
+  const [faLeg, setFaLeg] = useState(null);
   const [passengers, setPassengers] = useState([]);
   const [scanning, setScanning] = useState(false);
   const [brokerEmail, setBrokerEmail] = useState(trip.info.broker || '');
@@ -5349,6 +5406,7 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
         const { subscribeToTripState } = await import('./firebase-data.js');
         unsub = subscribeToTripState(trip.uid, (state) => {
           setStatuses(state.statuses);
+          setPreservedEvents(state.preservedEvents && typeof state.preservedEvents === 'object' ? state.preservedEvents : {});
           setPassengers(state.passengers);
           setBrokerEmail(state.brokerEmail || trip.info.broker || '');
           setAutoNotify(state.autoNotify);
@@ -5387,6 +5445,37 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
     })();
     return () => { if (unsub) unsub(); };
   }, [trip.uid, trip.info.broker]);
+
+  // Live FlightAware snapshot for this tail. The cron writes
+  // flightaware-state/{tail} about once a minute from AeroAPI
+  // GET /flights/{ident} (estimated_on → estimatedOn, actual_off → actualOff,
+  // actual_on → actualOn). The listener updates when that document changes.
+  useEffect(() => {
+    const tail = String(trip.info?.tail || '').toUpperCase().replace(/[^A-Z0-9-]/g, '');
+    if (!tail) {
+      setFaLeg(null);
+      return undefined;
+    }
+    let unsub = () => {};
+    let cancelled = false;
+    (async () => {
+      try {
+        const { db } = await import('./firebase.js');
+        const { doc, onSnapshot } = await import('firebase/firestore');
+        if (cancelled) return;
+        unsub = onSnapshot(doc(db, 'flightaware-state', tail), (snap) => {
+          setFaLeg(snap.exists() ? (snap.data() || null) : null);
+        }, () => setFaLeg(null));
+      } catch (err) {
+        console.warn('[status] flightaware listener failed:', err?.message || err);
+        if (!cancelled) setFaLeg(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      try { unsub(); } catch (_) {}
+    };
+  }, [trip.uid, trip.info?.tail]);
 
   // ── PAX CARRY-OVER ────────────────────────────────────────────────────────
   // On multi-leg trips (fuel stop, same-day round trip), skip the ID re-scan
@@ -5624,15 +5713,72 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   };
 
   const updateStatus = async (step, gpsCoords, sendNotif) => {
-    const newStatus = {
-      timestamp: Date.now(),
-      coords: gpsCoords || null,
-      author: currentUserDisplayName || (currentUser?.name || 'Unknown'),
-      notified: false, // set to true only after email actually sends
-    };
+    const clickedAt = Date.now();
+    const prior = statuses[step.id] || null;
+    const preserved = preservedEvents?.[step.id] || null;
+    const keepsTime = PRESERVED_EVENT_STEPS.has(step.id);
+    let flightAware = null;
+    // Only look up FlightAware when this milestone has no original time yet.
+    // A retoggle must not replace that time, so the lookup is unnecessary.
+    if (keepsTime && originalEventAt(prior) == null && originalEventAt(preserved) == null) {
+      flightAware = await readFlightAwareTail(trip.info?.tail);
+      const haveActual = step.id === 'wheels_up'
+        ? flightAware?.actualOff
+        : (flightAware?.actualOn || flightAware?.groundedSince);
+      if (!haveActual) {
+        const live = await fetchFlightAwarePosition(trip.info?.tail);
+        if (live) flightAware = { ...(flightAware || {}), ...live };
+      }
+    }
+    const resolved = keepsTime
+      ? resolveMilestoneOn({
+        stepId: step.id,
+        existing: prior,
+        preserved,
+        clickedAt,
+        flightAware,
+        from: trip.info?.from,
+        to: trip.info?.to,
+      })
+      : null;
+    const newStatus = keepsTime
+      ? {
+        timestamp: resolved.timestamp,
+        originalTimestamp: resolved.originalTimestamp,
+        recordedAt: resolved.recordedAt,
+        timestampSource: resolved.timestampSource,
+        ...(resolved.faFlightId ? { faFlightId: resolved.faFlightId } : {}),
+        coords: (resolved.kept && resolved.coords) || gpsCoords || null,
+        author: (resolved.kept && resolved.author) || currentUserDisplayName || (currentUser?.name || 'Unknown'),
+        notified: resolved.kept ? resolved.notified : false,
+      }
+      : {
+        timestamp: clickedAt,
+        coords: gpsCoords || null,
+        author: currentUserDisplayName || (currentUser?.name || 'Unknown'),
+        notified: false,
+      };
     const nextStatuses = { ...statuses, [step.id]: newStatus };
+    const nextPreserved = { ...(preservedEvents || {}) };
+    if (keepsTime) delete nextPreserved[step.id];
     setStatuses(nextStatuses);
-    await persist({ statuses: nextStatuses, passengers, brokerEmail, autoNotify, completed, hasCatering, paxOverride });
+    if (keepsTime) setPreservedEvents(nextPreserved);
+    await persist({
+      statuses: nextStatuses,
+      ...(keepsTime ? { preservedEvents: nextPreserved } : {}),
+      passengers, brokerEmail, autoNotify, completed, hasCatering, paxOverride,
+    });
+
+    if (resolved?.kept) {
+      const clock = new Date(resolved.timestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      notify.info(
+        step.id === 'landed' ? 'Kept the original landing time' : 'Kept the original wheels-up time',
+        { description: `${clock}. Turning this back on does not move the clock or the ETA.` },
+      );
+      // Already announced. A second broker email or push would repeat the
+      // original event at the time of the click.
+      if (newStatus.notified) return;
+    }
 
     // Parse broker email field — supports comma-separated list of recipients
     // (e.g. "broker@x.com, ops@flightsupport.com")
@@ -5652,8 +5798,14 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       return;
     }
 
-    // Use first broker email for the "Hi [Name]" greeting
-    const emailContent = buildStatusEmail(step, trip, brokerEmails[0] || '');
+    // Use first broker email for the "Hi [Name]" greeting.
+    // Pass the stored event time — the step definition has no timestamp,
+    // and buildStatusEmail would otherwise format the click as "now".
+    const emailContent = buildStatusEmail(
+      { ...step, timestamp: newStatus.timestamp },
+      trip,
+      brokerEmails[0] || '',
+    );
     if (!emailContent) {
       console.warn('[email] No email template for step:', step.id, '· legType:', trip.info?.legType);
       return;
@@ -5737,7 +5889,11 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
       notify.error('No recipients configured. Add a broker email on the NOTIFY tab first.');
       return;
     }
-    const emailContent = buildStatusEmail(step, trip, brokerEmails[0] || '');
+    const emailContent = buildStatusEmail(
+      { ...step, timestamp: originalEventAt(existing) || existing.timestamp },
+      trip,
+      brokerEmails[0] || '',
+    );
     if (!emailContent) {
       notify.error(`No email template available for "${step.label}" on this leg type.`);
       return;
@@ -5889,11 +6045,32 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   };
 
   const handleStatusUntrigger = async (step) => {
-    // Remove the status from the timeline
+    // Remove the status from the active timeline. Wheels-up and landed keep
+    // their original time in preservedEvents so the next ON restores it
+    // instead of stamping the click.
     const nextStatuses = { ...statuses };
+    const existing = nextStatuses[step.id];
     delete nextStatuses[step.id];
+    const nextPreserved = { ...(preservedEvents || {}) };
+    const keepsTime = PRESERVED_EVENT_STEPS.has(step.id);
+    if (keepsTime) {
+      const kept = preserveClearedEvent(existing);
+      if (kept) nextPreserved[step.id] = kept;
+      else delete nextPreserved[step.id];
+    }
     setStatuses(nextStatuses);
-    await persist({ statuses: nextStatuses, passengers, brokerEmail, autoNotify, completed, hasCatering, paxOverride });
+    if (keepsTime) setPreservedEvents(nextPreserved);
+    await persist({
+      statuses: nextStatuses,
+      ...(keepsTime ? { preservedEvents: nextPreserved } : {}),
+      passengers, brokerEmail, autoNotify, completed, hasCatering, paxOverride,
+    });
+    if (keepsTime && existing) {
+      notify.info(
+        step.id === 'landed' ? 'Landing cleared' : 'Wheels-up cleared',
+        { description: 'Turning it back on keeps the original time.' },
+      );
+    }
   };
 
   const addPassenger = async (pax) => {
@@ -6138,6 +6315,22 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
   );
   const completedCount = applicableSteps.filter(s => statuses[s.id]).length;
   const nextStep = applicableSteps.find(s => !statuses[s.id]);
+  const legEta = useMemo(() => {
+    if (originalEventAt(statuses.landed)) return null;
+    const wheelsUp = originalEventAt(statuses.wheels_up);
+    const faAirborne = faLeg?.airborne === true && (
+      !faLeg?.origin || !trip.info?.from || airportsMatch(faLeg.origin, trip.info.from)
+    );
+    if (!wheelsUp && !faAirborne) return null;
+    const eta = airborneEta({
+      flightAware: faLeg,
+      wheelsUpAt: wheelsUp,
+      scheduledStart: trip.start,
+      scheduledEnd: trip.end,
+      to: trip.info?.to,
+    });
+    return eta.etaMs == null ? null : eta;
+  }, [statuses, faLeg, trip.start, trip.end, trip.info?.from, trip.info?.to]);
 
   // === WEAR CHECK gating helpers ===
   // Determine whether THIS leg is the first or last scheduled flight for
@@ -6936,6 +7129,24 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
                 />
               </div>
 
+              {legEta && (
+                <div className="mb-4 rounded border border-accent-border bg-accent-soft px-3 py-2">
+                  <div className="font-mono text-sm font-semibold text-content">
+                    ETA {(() => {
+                      const local = formatLocalTime(new Date(legEta.etaMs), trip.info.to);
+                      return local.tz ? `${local.time} ${local.tz}` : local.time;
+                    })()}
+                  </div>
+                  <div className="mt-0.5 text-[10px] text-content-subtle">
+                    {legEta.source === 'flightaware'
+                      ? 'FlightAware estimated arrival. The fleet poll refreshes about every minute.'
+                      : legEta.source === 'wheels-up-block'
+                        ? 'Calculated from the original wheels-up time plus the scheduled block.'
+                        : 'Scheduled arrival. FlightAware has no estimate for this leg yet.'}
+                  </div>
+                </div>
+              )}
+
               {trip.info.legType === 'REVENUE' && !paxComplete && (
                 <div className="mb-4 flex items-start gap-2 rounded border border-warning-border bg-warning-soft p-3 text-2xs text-warning">
                   <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
@@ -6957,7 +7168,16 @@ function TripDetail({ trip, currentUser, currentUserDisplayName, users = [], all
                   const active = nextStep?.id === step.id && !blocked;
                   const displayStep = getStepDisplay(step, trip);
                   const StepIcon = displayStep.icon;
-                  const at = status?.timestamp || status?.at || status?.ts;
+                  const milestone = (step.id === 'wheels_up' || step.id === 'landed')
+                    ? displayedMilestoneAt({
+                      stepId: step.id,
+                      entry: status,
+                      flightAware: faLeg,
+                      from: trip.info?.from,
+                      to: trip.info?.to,
+                    })
+                    : null;
+                  const at = milestone?.atMs || status?.timestamp || status?.at || status?.ts;
                   const time = at ? new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : null;
                   return (
                     <div key={step.id} className="relative flex gap-4">
@@ -23099,10 +23319,21 @@ function FleetListItem({ tail, state, trips, tripStates, isSelected, onClick }) 
   const destination = state?.destination || null;
   const groundedAt = state?.groundedAt || null;
   const groundedCity = state?.groundedCity || null;
+  const flying = legForAirborneEta(trips, tripStates, tail);
+  const etaInfo = airborne
+    ? airborneEta({
+      flightAware: state,
+      wheelsUpAt: activeWheelsUpAt(flying.state),
+      scheduledStart: flying.trip?.start,
+      scheduledEnd: flying.trip?.end,
+      to: flying.trip?.info?.to || state?.destination,
+    })
+    : null;
+  const etaValue = etaInstant(etaInfo);
   let etaLabel = '';
-  if (state?.estimatedOn) {
+  if (etaValue) {
     try {
-      etaLabel = new Date(state.estimatedOn).toLocaleString('en-US', {
+      etaLabel = new Date(etaValue).toLocaleString('en-US', {
         hour: '2-digit', minute: '2-digit', timeZoneName: 'short',
       });
     } catch (_) { etaLabel = ''; }

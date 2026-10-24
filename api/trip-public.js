@@ -90,10 +90,12 @@ function sanitizeTrip(tripId, data, legs, liveLegData = {}) {
     cleanStatuses[legNum] = {};
     for (const [event, payload] of Object.entries(byEvent)) {
       if (!payload || typeof payload !== 'object') continue;
-      // Only forward { at, ts, completed } shape. Drop sender names/emails/notes.
+      // Only forward the event time. originalTimestamp is the first
+      // wheels-up / landed time and wins over a later retoggle stamp.
+      const at = payload.originalTimestamp || payload.timestamp || payload.at || payload.ts || null;
       cleanStatuses[legNum][event] = {
-        at: payload.at || payload.ts || null,
-        completed: payload.completed === true || !!payload.at,
+        at,
+        completed: payload.completed === true || !!at,
       };
     }
   }
@@ -246,6 +248,7 @@ async function fetchPosition(tail) {
       destinationCity: pos.destinationCity || null,
       estimatedOn: pos.estimatedOn || null,
       actualOff: pos.actualOff || null,
+      actualOn: pos.actualOn || pos.groundedSince || null,
       faFlightId: pos.faFlightId || null,
       polledAt: pos.polledAt || null,
     };
@@ -486,7 +489,8 @@ async function fetchLiveLegData(legs) {
       for (const key of STATUS_KEYS) {
         const v = bag[key];
         if (v && typeof v === 'object') {
-          const at = Number.isFinite(v.timestamp) ? v.timestamp
+          const at = Number.isFinite(v.originalTimestamp) ? v.originalTimestamp
+                    : Number.isFinite(v.timestamp) ? v.timestamp
                     : Number.isFinite(v.at) ? v.at
                     : null;
           if (at !== null) liveStatuses[key] = { at };
