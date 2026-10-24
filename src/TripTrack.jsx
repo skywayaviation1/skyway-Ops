@@ -38,6 +38,7 @@ import { flightCategoryStyle, normalizeTrail, distanceNm } from './tracking-map.
 // unauthenticated reads for now (NOTAM data is public FAA info).
 import FAANotamBadge from './FAANotamBadge.jsx';
 import { showsCateringStatus } from './ops-readiness.js';
+import { airborneEta, etaInstant } from './leg-event-time.js';
 import { demoTrackingResponse, isDemoTrackingToken } from './reviewer-demo-track.js';
 
 const POLL_MS = 120000; // refresh live position every 2 minutes
@@ -140,8 +141,15 @@ function HeroCard({ trip, position }) {
   // Subtitle line varies by mode
   let subtitle = null;
   if (mode === 'airborne') {
-    // ETA preferred from FA position; fall back to scheduled arrival
-    const eta = position?.estimatedOn || activeLeg.arrival;
+    // FlightAware estimated_on, then original wheels-up plus the scheduled block.
+    const etaInfo = airborneEta({
+      flightAware: position,
+      wheelsUpAt: activeLeg.status?.wheels_up?.at,
+      scheduledStart: activeLeg.departure,
+      scheduledEnd: activeLeg.arrival,
+      to: activeLeg.to,
+    });
+    const eta = etaInstant(etaInfo) || activeLeg.arrival;
     subtitle = (
       <>
         {activeLeg.from} → {activeLeg.to}
@@ -264,17 +272,18 @@ function LegProgress({ leg, position }) {
       </div>
     );
   }
-  // Airborne = compute % between wheels_up and arrival/ETA
+  // Airborne = original wheels-up through FlightAware ETA, or that
+  // wheels-up plus the scheduled block when FlightAware has no estimate.
   if (status.wheels_up) {
     const start = status.wheels_up.at;
-    // Prefer FA ETA if it pertains to this leg (matches the destination code),
-    // otherwise fall back to scheduled arrival.
-    let end = null;
-    if (position?.estimatedOn && position.destination
-        && String(position.destination).toUpperCase() === String(leg.to).toUpperCase()) {
-      end = new Date(position.estimatedOn).getTime();
-    }
-    if (!end && leg.arrival) end = new Date(leg.arrival).getTime();
+    const etaInfo = airborneEta({
+      flightAware: position,
+      wheelsUpAt: start,
+      scheduledStart: leg.departure,
+      scheduledEnd: leg.arrival,
+      to: leg.to,
+    });
+    let end = etaInfo.etaMs;
     if (start && end && end > start) {
       const now = Date.now();
       const pct = Math.max(2, Math.min(98, ((now - start) / (end - start)) * 100));

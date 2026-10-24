@@ -124,6 +124,10 @@ export function subscribeToTripState(tripId, onUpdate) {
           // FBO names parsed from the trip sheet for THIS leg's two airports.
           fromFbo: data.fromFbo || null,
           toFbo: data.toFbo || null,
+          // Original wheels-up / landed times kept after the milestone is cleared.
+          preservedEvents: data.preservedEvents && typeof data.preservedEvents === 'object'
+            ? data.preservedEvents
+            : {},
         });
       } else {
         // No state yet — emit empty defaults
@@ -139,6 +143,7 @@ export function subscribeToTripState(tripId, onUpdate) {
           tripSheetNotesEditedByName: null,
           fromFbo: null,
           toFbo: null,
+          preservedEvents: {},
         });
       }
     },
@@ -209,6 +214,11 @@ export async function saveTripState(tripId, state) {
   // tripMeta — route/tail/start info, used by the FlightAware webhook to match
   // incoming events to this trip. See PR 2c.
   if (has('tripMeta'))             patch.tripMeta = state.tripMeta || null;
+  // Original wheels-up / landed timestamps. Survives a clear so turning
+  // the milestone back on does not stamp the click time.
+  if (has('preservedEvents'))      patch.preservedEvents = state.preservedEvents && typeof state.preservedEvents === 'object'
+    ? state.preservedEvents
+    : {};
 
   const ref = doc(db, 'trip-state', safeId);
 

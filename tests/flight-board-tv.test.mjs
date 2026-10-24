@@ -137,6 +137,33 @@ test('board rows use the 6–7 character trip id and never a trip number', () =>
   assert.match(airborne.timeLabel, /4:12 PM EDT/);
   assert.equal(airborne.etaLabel, '16:12');
   assert.equal(airborne.stepLabel, null);
+  assert.equal(airborne.etaSource, 'flightaware');
+});
+
+test('airborne ETA falls back to the original wheels-up plus the scheduled block', () => {
+  const wheelsUp = Date.parse('2026-08-10T12:43:00Z');
+  const row = buildTvBoardRow({
+    trip: {
+      uid: 'leg-air',
+      start: '2026-08-10T12:30:00Z',
+      end: '2026-08-10T14:00:00Z',
+      info: { tail: 'N651TW', from: 'TEB', to: 'PBI', tripCode: 'R4NCBX' },
+    },
+    state: {
+      statuses: {
+        wheels_up: { originalTimestamp: wheelsUp, timestamp: Date.parse('2026-08-10T12:55:00Z') },
+      },
+    },
+    phase: 'airborne',
+    faPosition: { airborne: true, destination: 'KTEB' },
+    now: Date.parse('2026-08-10T13:13:00Z'),
+    timeZone: 'America/New_York',
+  });
+  // 8:43 wheels-up plus a 90-minute block is 10:13 EDT, not 8:55 plus 90 minutes.
+  assert.equal(row.etaSource, 'wheels-up-block');
+  assert.equal(row.etaLabel, '10:13');
+  assert.equal(row.etdLabel, '08:43');
+  assert.equal(row.remainLabel, '1h 0m');
 });
 
 test('the TV map scene keeps airborne ETA bubbles and parked ETD bubbles', () => {

@@ -347,7 +347,7 @@ function FlightDetail({
   const dest = airborne
     ? (telemetry?.destination || row.activeLeg?.info?.to)
     : (telemetry?.groundedAt || row.location?.label);
-  const eta = airborne ? (telemetry?.estimatedOn || row.location?.eta) : null;
+  const eta = airborne ? (row.location?.eta || telemetry?.estimatedOn) : null;
   const progress = Number.isFinite(telemetry?.progressPercent)
     ? telemetry.progressPercent
     : row.location?.progress;
@@ -462,7 +462,7 @@ function SelectedOverlay({ row, telemetry, trackLoading, trackPoints, now }) {
   const airborne = row.location?.kind === 'airborne';
   const origin = telemetry?.origin || row.activeLeg?.info?.from;
   const dest = airborne ? (telemetry?.destination || row.activeLeg?.info?.to) : row.location?.label;
-  const eta = airborne ? fmtClock(telemetry?.estimatedOn || row.location?.eta) : null;
+  const eta = airborne ? fmtClock(row.location?.eta || telemetry?.estimatedOn) : null;
 
   return (
     <div className="pointer-events-auto rounded-lg border border-edge bg-surface/92 px-2.5 py-2 shadow-overlay backdrop-blur">

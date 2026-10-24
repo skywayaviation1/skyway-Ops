@@ -54,6 +54,13 @@ import {
 } from './flight-board-tv.js';
 import { watchAppleMapKit } from './mapkit-fallback.js';
 import { statusEventAt } from './trip-status.js';
+import {
+  activeWheelsUpAt,
+  airborneEta,
+  airborneProgressPct,
+  displayedMilestoneAt,
+  etaInstant,
+} from './leg-event-time.js';
 import TrackingMap from './TrackingMap.jsx';
 import TvDesignFrame from './TvDesignFrame.jsx';
 import { Wordmark } from './ui.jsx';
@@ -184,31 +191,52 @@ function FlightRow({ trip, state, faPosition, phase }) {
     }).replace(' ', '');
   } catch (_) {}
 
-  // For airborne flights, replace the TYPE column with live timing
-  // info from FlightAware: actual wheels-up time, projected landing,
-  // and time remaining. All three matter operationally — dispatch
-  // needs UP for duty-time math, ETA for handler/customer comms, and
-  // remaining for quick "when can I call them" glances.
-  let etaCellContent = null;
-  if (phase === 'airborne' && faPosition?.estimatedOn) {
+  // For airborne flights, replace the TYPE column with live timing.
+  // Wheels-up is the original milestone time (not a later retoggle).
+  // ETA is FlightAware estimated_on when that poll matches this leg,
+  // otherwise original wheels-up plus the scheduled block.
+  const fmtBoardClock = (value) => {
     try {
-      const fmt = (iso) => new Date(iso).toLocaleString('en-US', {
+      return new Date(value).toLocaleString('en-US', {
         hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/New_York',
       }).replace(' ', '');
-      const etaDate = new Date(faPosition.estimatedOn);
-      const remainMs = etaDate.getTime() - Date.now();
-      const etaStr = fmt(faPosition.estimatedOn);
-      const upStr = faPosition.actualOff ? fmt(faPosition.actualOff) : null;
-      let remainStr = '';
+    } catch (_) {
+      return null;
+    }
+  };
+  let etaCellContent = null;
+  if (phase === 'airborne') {
+    const wheelsUp = displayedMilestoneAt({
+      stepId: 'wheels_up',
+      entry: state?.statuses?.wheels_up,
+      flightAware: faPosition,
+      from: trip.info?.from,
+      to: trip.info?.to,
+    });
+    const eta = airborneEta({
+      flightAware: faPosition,
+      wheelsUpAt: wheelsUp.atMs || faPosition?.actualOff,
+      scheduledStart: trip.start,
+      scheduledEnd: trip.end,
+      to: trip.info?.to,
+    });
+    if (eta.etaMs != null) {
+      const remainMs = eta.etaMs - Date.now();
+      const etaStr = fmtBoardClock(etaInstant(eta));
+      const upStr = wheelsUp.atMs != null ? fmtBoardClock(wheelsUp.atMs) : null;
+      let remainStr = 'landing';
       if (remainMs > 0) {
         const h = Math.floor(remainMs / 3600_000);
         const m = Math.floor((remainMs % 3600_000) / 60_000);
         remainStr = h > 0 ? `${h}h ${m}m` : `${m}m`;
-      } else {
-        remainStr = 'landing';
       }
+      const sourceLabel = eta.source === 'flightaware'
+        ? 'FlightAware'
+        : eta.source === 'wheels-up-block'
+          ? 'from wheels-up'
+          : 'scheduled';
       etaCellContent = (
-        <div className="leading-tight">
+        <div className="leading-tight" title={`ETA source: ${sourceLabel}`}>
           {upStr && (
             <div className="text-[11px] text-emerald-300 tabular-nums" style={{ fontFamily: 'JetBrains Mono, monospace' }}>
               UP {upStr}
@@ -222,28 +250,44 @@ function FlightRow({ trip, state, faPosition, phase }) {
           </div>
         </div>
       );
-    } catch (_) {}
+    }
+  } else if (phase === 'landed' || phase === 'completed') {
+    const landed = displayedMilestoneAt({
+      stepId: 'landed',
+      entry: state?.statuses?.landed,
+      flightAware: faPosition,
+      from: trip.info?.from,
+      to: trip.info?.to,
+    });
+    const onStr = landed.atMs != null ? fmtBoardClock(landed.atMs) : null;
+    if (onStr) {
+      etaCellContent = (
+        <div className="text-[11px] text-emerald-300 tabular-nums leading-tight" style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          title={landed.source === 'flightaware' ? 'FlightAware actual on' : 'Original wheels-down time'}>
+          ON {onStr}
+        </div>
+      );
+    }
   }
 
-  // Progress percent from FA (0-100). Used to draw the progress bar
-  // below the row for airborne flights. Fall back to time-based
-  // estimate if FA didn't provide one (this happens sometimes for
-  // short hops): elapsed / total = elapsed / (eta - departure).
+  // Progress along the leg. FlightAware's own percent wins when the poll
+  // has one. Otherwise elapsed time runs from the original wheels-up to
+  // the ETA above, never from a later retoggle click.
   let progressPct = null;
   if (phase === 'airborne') {
-    if (Number.isFinite(faPosition?.progressPercent)) {
-      progressPct = Math.max(0, Math.min(100, faPosition.progressPercent));
-    } else if (faPosition?.estimatedOn && faPosition?.actualOff) {
-      try {
-        const departed = new Date(faPosition.actualOff).getTime();
-        const arriving = new Date(faPosition.estimatedOn).getTime();
-        const total = arriving - departed;
-        const elapsed = Date.now() - departed;
-        if (total > 0 && elapsed >= 0) {
-          progressPct = Math.max(0, Math.min(100, (elapsed / total) * 100));
-        }
-      } catch (_) {}
-    }
+    const wheelsUpAt = activeWheelsUpAt(state) || faPosition?.actualOff || null;
+    const eta = airborneEta({
+      flightAware: faPosition,
+      wheelsUpAt,
+      scheduledStart: trip.start,
+      scheduledEnd: trip.end,
+      to: trip.info?.to,
+    });
+    progressPct = airborneProgressPct({
+      wheelsUpAt,
+      etaMs: eta.etaMs,
+      reportedPercent: faPosition?.progressPercent,
+    });
   }
 
   return (

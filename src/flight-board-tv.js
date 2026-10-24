@@ -4,6 +4,12 @@
 import { lookupCoords } from './airport-coords.js';
 import { positionSaysAirborne } from './flightaware-active.js';
 import { buildFleetMapScene, fleetMarkerCallout, formatMarkerTime, readTripId } from './fleet-tracking.js';
+import {
+  activeWheelsUpAt,
+  airborneEta,
+  airborneProgressPct,
+  etaInstant,
+} from './leg-event-time.js';
 
 /** A departure this close to its ETD is treated as out, matching the office TV. */
 export const BOARD_AIRBORNE_EARLY_MS = 40 * 60 * 1000;
@@ -237,13 +243,23 @@ function clampPercent(value) {
   return Math.max(0, Math.min(100, Math.round(n)));
 }
 
-function airborneProgress(trip, faPosition, now) {
-  const reported = clampPercent(faPosition?.progressPercent);
-  if (reported != null) return reported;
-  const start = new Date(faPosition?.actualOff || trip?.start).getTime();
-  const end = new Date(faPosition?.estimatedOn || trip?.end).getTime();
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
-  return clampPercent(((now - start) / (end - start)) * 100);
+function airborneProgress(trip, faPosition, now, state = null) {
+  const wheelsUpAt = activeWheelsUpAt(state) || faPosition?.actualOff || trip?.start;
+  const eta = airborneEta({
+    flightAware: faPosition,
+    wheelsUpAt,
+    scheduledStart: trip?.start,
+    scheduledEnd: trip?.end,
+    to: trip?.info?.to,
+  });
+  const pct = airborneProgressPct({
+    now,
+    wheelsUpAt,
+    etaMs: eta.etaMs,
+    reportedPercent: faPosition?.progressPercent,
+  });
+  if (pct == null) return null;
+  return clampPercent(pct);
 }
 
 function formatOccAltitude(ft) {
@@ -273,9 +289,19 @@ export function buildTvBoardRow({
   const info = trip?.info || {};
   const tripId = readTripId(state, trip);
   const airborne = phase === 'airborne';
-  const etaSource = airborne ? (faPosition?.estimatedOn || trip?.end || null) : null;
+  const wheelsUpAt = activeWheelsUpAt(state) || faPosition?.actualOff || null;
+  const eta = airborne
+    ? airborneEta({
+      flightAware: faPosition,
+      wheelsUpAt,
+      scheduledStart: trip?.start,
+      scheduledEnd: trip?.end,
+      to: info.to,
+    })
+    : { etaMs: null, iso: null, source: null };
+  const etaSource = airborne ? etaInstant(eta) : null;
   const timeSource = airborne ? etaSource : trip?.start;
-  const etaMs = etaSource ? new Date(etaSource).getTime() : NaN;
+  const etaMs = eta.etaMs;
   const pax = Number(info.pax);
   return {
     uid: trip?.uid || null,
@@ -284,11 +310,12 @@ export function buildTvBoardRow({
     stepLabel: phase === 'preflight' ? currentCrewStep(state) : null,
     timeLabel: formatMarkerTime(timeSource, timeZone),
     timeKind: airborne ? 'eta' : 'etd',
-    etdLabel: formatBoardTableTime(airborne ? (faPosition?.actualOff || trip?.start) : trip?.start, timeZone),
-    etaLabel: formatBoardTableTime(airborne ? (faPosition?.estimatedOn || trip?.end) : trip?.end, timeZone),
+    etdLabel: formatBoardTableTime(airborne ? (wheelsUpAt || trip?.start) : trip?.start, timeZone),
+    etaLabel: formatBoardTableTime(airborne ? (etaSource || trip?.end) : trip?.end, timeZone),
+    etaSource: airborne ? eta.source : null,
     remainLabel: airborne ? remainLabel(etaMs, now) : null,
     countdown: airborne ? null : formatDepartureCountdown(trip?.start, now),
-    progress: airborne ? airborneProgress(trip, faPosition, now) : null,
+    progress: airborne ? airborneProgress(trip, faPosition, now, state) : null,
     altitudeLabel: airborne ? formatOccAltitude(faPosition?.altitude) : '',
     speedLabel: airborne ? formatOccSpeed(faPosition?.groundspeed) : '',
     tail: info.tail || '',
@@ -576,8 +603,19 @@ export function placeBoardAircraft(aircraft, {
     const to = airportLatLon(trip?.info?.to);
     const fa = positions?.[tail] || null;
     const { start, end } = boardLegTimes(trip);
-    const elapsed = Number.isFinite(start) && Number.isFinite(end) && end > start
-      ? Math.max(0.04, Math.min(0.96, (now - start) / (end - start)))
+    const legState = boardState(tripStates, trip?.uid);
+    const wheelsUpAt = activeWheelsUpAt(legState) || fa?.actualOff || null;
+    const eta = airborneEta({
+      flightAware: fa,
+      wheelsUpAt,
+      scheduledStart: trip?.start,
+      scheduledEnd: trip?.end,
+      to: trip?.info?.to,
+    });
+    const progressStart = wheelsUpAt ? new Date(wheelsUpAt).getTime() : start;
+    const progressEnd = eta.etaMs || end;
+    const elapsed = Number.isFinite(progressStart) && Number.isFinite(progressEnd) && progressEnd > progressStart
+      ? Math.max(0.04, Math.min(0.96, (now - progressStart) / (progressEnd - progressStart)))
       : 0.35;
     const reported = Number(fa?.progressPercent);
     const fraction = Number.isFinite(reported) ? Math.max(0.04, Math.min(0.96, reported / 100)) : elapsed;
@@ -587,8 +625,8 @@ export function placeBoardAircraft(aircraft, {
       ? { lat: Number(fa.latitude), lon: Number(fa.longitude) }
       : null;
     const here = live || (from && to ? pointOnArc(from, to, fraction) : null);
-    const etaSource = fa?.estimatedOn || trip?.end || null;
-    const etaMs = new Date(etaSource).getTime();
+    const etaSource = etaInstant(eta) || trip?.end || null;
+    const etaMs = eta.etaMs ?? new Date(trip?.end).getTime();
     let marker = byTail.get(tail);
     if (!marker && here) {
       marker = { id: tail, tail, showLabel: true };

@@ -5,6 +5,12 @@
 
 import { lookupCoords } from './airport-coords.js';
 import { normalizeFleetTails } from './fleet-config.js';
+import {
+  airborneEta,
+  etaInstant,
+  legForAirborneEta,
+  activeWheelsUpAt,
+} from './leg-event-time.js';
 
 function toMs(value) {
   if (value == null) return null;
@@ -219,11 +225,21 @@ export function fleetMarkerCallout({
   const upcoming = legs.find((trip) => (toMs(trip.start) || 0) > now) || null;
 
   if (telemetry?.airborne === true) {
-    const destination = telemetry.destination || active?.info?.to || null;
+    const flying = legForAirborneEta(trips, tripStates, tail, now);
+    const etaLeg = flying.trip || active;
+    const eta = airborneEta({
+      flightAware: telemetry,
+      wheelsUpAt: activeWheelsUpAt(flying.state) ?? activeWheelsUpAt(stateForTrip(tripStates, active?.uid)),
+      scheduledStart: etaLeg?.start,
+      scheduledEnd: etaLeg?.end,
+      to: etaLeg?.info?.to || telemetry.destination,
+    });
+    const destination = telemetry.destination || etaLeg?.info?.to || null;
     return {
       tripId: readTripId(stateForTrip(tripStates, active?.uid), active),
       destination: destination ? String(destination).trim().toUpperCase() : null,
-      etaLabel: formatMarkerTime(telemetry.estimatedOn || active?.end, timeZone),
+      etaLabel: formatMarkerTime(etaInstant(eta), timeZone),
+      etaSource: eta.source,
       departureLabel: null,
     };
   }
